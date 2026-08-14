@@ -27,8 +27,7 @@ DIFFUSE_SIGMA = 1e6
 
 
 class Normal(BaseModel):
-    """Normal distribution.
-    """
+    """Normal distribution."""
 
     model_config = ConfigDict(frozen=True)
 

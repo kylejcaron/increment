@@ -1,5 +1,4 @@
-"""Estimation primitives.
-"""
+"""Estimation primitives."""
 
 from increment.estimation.inference import DIFFUSE_SIGMA, Normal
 

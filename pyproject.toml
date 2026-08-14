@@ -36,6 +36,16 @@ Issues = "https://github.com/kylejcaron/increment/issues"
 requires = ["hatchling>=1.31", "hatch-vcs>=0.5"]
 build-backend = "hatchling.build"
 
+# Synced into .venv by `uv run`, so `uv run pytest` and `uv run ty check`
+# resolve test-only imports. Without a declared group these tools only see
+# runtime deps and report pytest as an unresolved import.
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "ruff>=0.8.0",
+    "ty>=0.0.1a5",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["increment"]
 

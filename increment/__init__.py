@@ -1,5 +1,4 @@
-"""A/B testing querying and stats engine.
-"""
+"""A/B testing querying and stats engine."""
 
 from importlib.metadata import PackageNotFoundError, version
 
