@@ -1,7 +1,6 @@
 # increment
 
-A package for incremental analysis - coming soon!
-
+Coming soon
 
 ## License
 

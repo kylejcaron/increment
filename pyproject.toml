@@ -1,21 +1,33 @@
 [project]
 name = "increment"
 dynamic = ["version"]
-description = "Coming soon"
+description = "A/B testing"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Kyle Caron", email = "kyle.j.caron@gmail.com" }]
 requires-python = ">=3.12,<3.15"
+# Declare only what is imported. numpy and scipy return with the estimators
+# that need them; shipping them now would make every installer resolve two
+# large packages this alpha never touches.
 dependencies = [
-    "numpy>=1.26",
-    "scipy>=1.14",
+    "pydantic>=2.12.3",
 ]
 classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Information Analysis",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
 ]
+# No "License :: OSI Approved ::" classifier -- PEP 639 forbids pairing one
+# with the `license` expression above, and PyPI rejects the combination.
+
+[project.urls]
+Homepage = "https://github.com/kylejcaron/increment"
+Repository = "https://github.com/kylejcaron/increment"
+Issues = "https://github.com/kylejcaron/increment/issues"
 
 # Required. Without this table PEP 517 falls back to setuptools, which ignores
 # every [tool.hatch.*] table below -- the wheel builds "successfully" as
@@ -23,6 +35,16 @@ classifiers = [
 [build-system]
 requires = ["hatchling>=1.31", "hatch-vcs>=0.5"]
 build-backend = "hatchling.build"
+
+# Synced into .venv by `uv run`, so `uv run pytest` and `uv run ty check`
+# resolve test-only imports. Without a declared group these tools only see
+# runtime deps and report pytest as an unresolved import.
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "ruff>=0.8.0",
+    "ty>=0.0.1a5",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["increment"]
