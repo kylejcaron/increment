@@ -1,0 +1,180 @@
+name: release
+
+# Tag-driven release. `hatch-vcs` derives the version from the git tag, so the
+# tag IS the version bump -- nothing writes a version string into a file.
+#
+#   .github/workflows/bump.yml  -> creates and pushes the vX.Y.Z tag
+#   this workflow               -> build, verify, publish to PyPI, GitHub Release
+#
+# Publishing uses PyPI Trusted Publishing (OIDC). No API token is stored.
+# One-time setup on PyPI (Account -> Publishing, as a "pending publisher" if the
+# project does not exist yet):
+#   owner: kylejcaron   repository: increment
+#   workflow: release.yml   environment: pypi
+# A pending publisher does NOT reserve the name; it is claimed on first publish.
+
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # hatch-vcs reads tags to compute the version; a shallow clone yields
+          # a bogus 0.1.dev0 instead of the real tag.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with:
+          enable-cache: true
+
+      - run: uv build --sdist --wheel --out-dir dist
+
+      - name: Verify built version matches the tag
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          # Wheel filename is {name}-{version}-{python}-{abi}-{platform}.whl
+          whl=$(ls dist/*.whl)
+          built=$(basename "$whl" | cut -d- -f2)
+          echo "tag=$tag built=$built"
+
+          if [ "$tag" != "$built" ]; then
+            echo "::error::tag v$tag does not match built version $built."
+            echo "::error::Usually means the tag is not on the checked-out commit,"
+            echo "::error::or the tree is dirty so hatch-vcs appended a dev/local segment."
+            exit 1
+          fi
+
+          # PyPI rejects PEP 440 local versions outright ("Can't use PEP 440
+          # local versions"), so fail here with a clear message rather than at
+          # upload time after a release has already been tagged.
+          case "$built" in
+            *+*) echo "::error::version $built has a local segment; PyPI will reject it"; exit 1 ;;
+          esac
+
+          # a/b/rc/dev -> mark the GitHub Release as a prerelease
+          if printf '%s' "$built" | grep -Eq '(a|b|rc|\.dev)[0-9]+'; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$built" >> "$GITHUB_OUTPUT"
+
+      - name: Check metadata renders on PyPI
+        run: uvx twine check --strict dist/*
+
+      - name: Verify artifacts actually contain the package
+        shell: bash
+        run: |
+          set -euo pipefail
+          # hatchling does NOT error when `packages = ["increment"]` points at a
+          # directory that does not exist -- it builds a metadata-only wheel and
+          # exits 0. Every other gate here passes on that wheel: the version
+          # matches the tag and `twine check` only inspects metadata. Without
+          # this step a mistagged or wrongly-checked-out build publishes an
+          # empty package, and PyPI version numbers can never be reused.
+          python3 - <<'PY'
+          import glob, sys, tarfile, zipfile
+
+          def one(pattern):
+              hits = glob.glob(pattern)
+              if not hits:
+                  sys.exit(f"::error::no artifact matching {pattern} -- the build produced nothing")
+              if len(hits) > 1:
+                  sys.exit(f"::error::expected exactly one {pattern}, found {len(hits)}: {hits}")
+              return hits[0]
+
+          whl = one("dist/*.whl")
+          mods = [n for n in zipfile.ZipFile(whl).namelist()
+                  if n.startswith("increment/") and n.endswith(".py")]
+          if not mods:
+              sys.exit(f"::error::{whl} contains no increment/*.py modules -- "
+                       "refusing to publish an empty wheel")
+          print(f"wheel: {len(mods)} module(s)")
+
+          sdist = one("dist/*.tar.gz")
+          with tarfile.open(sdist) as tf:
+              src = [n for n in tf.getnames()
+                     if "/increment/" in n and n.endswith(".py")]
+          if not src:
+              sys.exit(f"::error::{sdist} contains no increment/ sources")
+          print(f"sdist: {len(src)} module(s)")
+          PY
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Gate releases behind a protected environment so a pushed tag alone cannot
+    # publish. Configure required reviewers on the `pypi` environment.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/increment/${{ needs.build.outputs.version }}
+    permissions:
+      # OIDC token for Trusted Publishing. This is the ONLY credential used.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        # Signs each artifact with Sigstore and uploads the attestation
+        # alongside it; on by default, pinned here so it is explicit.
+        with:
+          attestations: true
+          print-hash: true
+
+  github-release:
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          args=(--verify-tag --generate-notes --title "$TAG")
+          [ "$PRERELEASE" = "true" ] && args+=(--prerelease)
+          gh release create "$TAG" "${args[@]}" dist/*

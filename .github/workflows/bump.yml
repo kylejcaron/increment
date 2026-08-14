@@ -1,0 +1,119 @@
+name: bump
+
+# Creates and pushes the release tag. Pushing that tag triggers release.yml.
+#
+# There is no version string to edit: hatch-vcs derives the version from the
+# tag, so "bumping" is exactly "tagging". This is why the repo does not use
+# release-please or bump-my-version -- both write a version into files and
+# would fight hatch-vcs for ownership of the number.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, without the leading v (e.g. 0.1.0, 1.2.0rc1)"
+        required: true
+        type: string
+      force:
+        description: "Tag even if the commit has no successful checks"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: bump
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      checks: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Validate version is PEP 440 and not already tagged
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # Reject a leading v up front; the tag gets one, the version does not.
+          case "$VERSION" in
+            v*) echo "::error::pass the version without the leading v (got $VERSION)"; exit 1 ;;
+          esac
+
+          python3 - <<'PY'
+          import os, re, sys
+          # PEP 440 public version identifiers only. Local versions (with '+')
+          # are deliberately unmatched: PyPI rejects them.
+          pattern = r'^([1-9][0-9]*!)?(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))*((a|b|rc)(0|[1-9][0-9]*))?(\.post(0|[1-9][0-9]*))?(\.dev(0|[1-9][0-9]*))?$'
+          v = os.environ["VERSION"]
+          if not re.match(pattern, v):
+              sys.exit(f"::error::'{v}' is not a valid PEP 440 public version")
+          print(f"{v} is a valid PEP 440 public version")
+          PY
+
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "::error::tag v$VERSION already exists"
+            exit 1
+          fi
+
+      - name: Require green checks on this commit
+        if: ${{ !inputs.force }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Two independent systems report status on a commit and neither
+          # subsumes the other: the Checks API (GitHub Actions, most Apps) and
+          # the legacy commit-statuses API (external CI, webhooks). Query both,
+          # or a red build on whichever one is unqueried leaves the gate green.
+          runs=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/check-runs" \
+                   --jq '[.check_runs[] | select(.status == "completed")]')
+          checks_total=$(printf '%s' "$runs" | jq 'length')
+
+          bad=$(printf '%s' "$runs" \
+                  | jq -r '[.[] | select(.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")] | .[].name')
+
+          # combined state is one of: success | pending | failure | error.
+          # "pending" is also what an entirely status-free commit reports, so
+          # only treat it as a failure when statuses actually exist.
+          status_json=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/status")
+          status_state=$(printf '%s' "$status_json" | jq -r '.state')
+          status_total=$(printf '%s' "$status_json" | jq '.statuses | length')
+          if [ "$status_total" -gt 0 ] && [ "$status_state" != "success" ]; then
+            bad="$bad"$'\n'$(printf '%s' "$status_json" \
+                  | jq -r '[.statuses[] | select(.state != "success")] | .[].context')
+          fi
+
+          if [ "$checks_total" -eq 0 ] && [ "$status_total" -eq 0 ]; then
+            echo "::error::no completed checks or statuses on $SHA. Wait for CI, or re-run with force=true."
+            exit 1
+          fi
+
+          bad=$(printf '%s' "$bad" | sed '/^$/d')
+          if [ -n "$bad" ]; then
+            echo "::error::these checks did not pass on $SHA:"
+            printf '%s\n' "$bad"
+            exit 1
+          fi
+          echo "$checks_total check run(s), $status_total commit status(es), all green"
+
+      - name: Create and push the tag
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "Release v$VERSION"
+          git push origin "v$VERSION"
+          echo "Pushed v$VERSION -- release.yml will build and publish it." >> "$GITHUB_STEP_SUMMARY"
