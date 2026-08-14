@@ -1,0 +1,17 @@
+# Every path is owned by the maintainer, so "Require review from Code Owners"
+# in the main-review ruleset makes every pull request need an explicit approval
+# from @kylejcaron before it can merge.
+#
+# Later, narrow ownership per area rather than loosening this catch-all, e.g.
+#   /increment/inference/  @kylejcaron @some-stats-reviewer
+# More specific patterns win; the last matching pattern applies.
+
+* @kylejcaron
+
+# Anything governing licensing, contributor rights, or how releases reach PyPI.
+# Called out separately so these never inherit a broader owner by accident.
+/LICENSE            @kylejcaron
+/NOTICE             @kylejcaron
+/.github/CLA.md     @kylejcaron
+/.github/workflows/ @kylejcaron
+/pyproject.toml     @kylejcaron
