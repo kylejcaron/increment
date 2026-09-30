@@ -1,6 +1,18 @@
 # Contributing to increment
 
-Thanks for your interest in contributing.
+Thank you for your interest in contributing.
+
+## Submitting changes
+
+If you do not have write access, fork the repository, create a branch in your
+fork, and open a pull request into `main`.
+
+A pull request can merge only when CI (`ci-ok`) and the CLA check pass and a
+code owner has approved it. Commits are squash-merged.
+
+Release notes are generated from merged PR titles. Label your PR so it lands in
+the right section: `breaking`, `feature`, `fix`, `stats`/`inference`, `docs`,
+or `internal`. Use `skip-changelog` to omit it.
 
 ## License and the CLA
 
