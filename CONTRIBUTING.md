@@ -1,6 +1,6 @@
 # Contributing to increment
 
-Thanks for your interest in contributing.
+Thank you for your interest in contributing.
 
 ## License and the CLA
 
