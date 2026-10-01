@@ -1,0 +1,564 @@
+/* Scoped visual system for increment.dashboard sections.
+   Every rule is prefixed inc-dashboard- so a notebook's other output and
+   marimo's own chrome are untouched. */
+
+.inc-dashboard-root {
+  --inc-dashboard-canvas: #f2f0e9;
+  --inc-dashboard-panel: #fffef9;
+  --inc-dashboard-text: #292d26;
+  --inc-dashboard-muted: #62695d;
+  --inc-dashboard-accent: #42644d;
+  --inc-dashboard-favorable: #386647;
+  --inc-dashboard-warning: #956017;
+  --inc-dashboard-unfavorable: #a23c3c;
+  --inc-dashboard-inconclusive: #80601c;
+  --inc-dashboard-inconclusive-bg: #f4ecd7;
+  --inc-dashboard-favorable-bg: #e6efe7;
+  --inc-dashboard-unfavorable-bg: #f5e5e2;
+  --inc-dashboard-rule: #dcded1;
+  --inc-dashboard-band: #f5f5ed;
+  --inc-dashboard-column: #ecefe4;
+
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1180px;
+  margin: 0 auto;
+  color: var(--inc-dashboard-text);
+  font-family: var(--marimo-text-font, system-ui, -apple-system, "Segoe UI", sans-serif);
+  font-size: 14px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+
+.inc-dashboard-root *,
+.inc-dashboard-root *::before,
+.inc-dashboard-root *::after {
+  box-sizing: inherit;
+}
+
+.inc-dashboard-section {
+  background: var(--inc-dashboard-panel);
+  border-bottom: 1px solid var(--inc-dashboard-rule);
+  padding: 30px 0;
+  scroll-margin-top: 110px;
+}
+
+/* Headings: h1 in the header, h2 per section, h3 inside one. */
+
+.inc-dashboard-title {
+  margin: 0;
+  font-family: Georgia, "Iowan Old Style", serif;
+  font-size: 43px;
+  font-weight: 500;
+  letter-spacing: -0.045em;
+}
+
+.inc-dashboard-heading {
+  margin: 0 0 4px;
+  font-family: Georgia, "Iowan Old Style", serif;
+  font-size: 26px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.inc-dashboard-subheading {
+  margin: 24px 0 8px;
+  font-size: 14px;
+  font-weight: 620;
+  color: var(--inc-dashboard-text);
+}
+
+.inc-dashboard-subtitle,
+.inc-dashboard-lede {
+  margin: 0 0 16px;
+  color: var(--inc-dashboard-muted);
+}
+
+.inc-dashboard-lede {
+  max-width: 76ch;
+}
+
+/* Header */
+
+.inc-dashboard-headline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding-bottom: 8px;
+}
+
+.inc-dashboard-source {
+  color: var(--inc-dashboard-muted);
+  font-size: 13px;
+}
+
+.inc-dashboard-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 16px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.inc-dashboard-chips li {
+  padding: 0 16px 0 0;
+  font-size: 13px;
+  color: var(--inc-dashboard-muted);
+}
+
+.inc-dashboard-chips b {
+  color: var(--inc-dashboard-text);
+  font-weight: 600;
+}
+
+.inc-dashboard-arm {
+  font-family: var(--marimo-monospace-font, ui-monospace, SFMono-Regular, monospace);
+}
+
+/* Summary cards */
+
+.inc-dashboard-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  border-top: 1px solid var(--inc-dashboard-rule);
+  margin: 24px 0 0;
+  padding-top: 22px;
+}
+
+.inc-dashboard-card {
+  min-width: 0;
+  border-right: 1px solid var(--inc-dashboard-rule);
+  padding: 0 24px;
+}
+
+.inc-dashboard-card:first-child {
+  padding-left: 0;
+}
+
+.inc-dashboard-card:last-child {
+  border-right: 0;
+}
+
+.inc-dashboard-card-label {
+  margin: 0 0 4px;
+  font-size: 10px;
+  font-weight: 620;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--inc-dashboard-muted);
+}
+
+.inc-dashboard-card-value {
+  margin: 0;
+  font-family: Georgia, "Iowan Old Style", serif;
+  font-size: 31px;
+  font-weight: 500;
+  overflow-wrap: break-word;
+}
+
+/* A worded verdict needs a readable line, not a numeric display size. */
+.inc-dashboard-card-value--text {
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+.inc-dashboard-card-detail {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--inc-dashboard-muted);
+}
+
+.inc-dashboard-primary-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin: 0 0 7px;
+  font-family: Georgia, "Iowan Old Style", serif;
+  letter-spacing: -0.025em;
+}
+
+.inc-dashboard-primary-estimate {
+  font-size: 29px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.inc-dashboard-primary-interval {
+  color: var(--inc-dashboard-muted);
+  font-size: 16px;
+  white-space: nowrap;
+}
+
+.inc-dashboard-primary-caption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 8px;
+  color: var(--inc-dashboard-muted);
+  font-size: 13px;
+}
+
+.inc-dashboard-primary-status {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.inc-dashboard-primary--inconclusive .inc-dashboard-primary-estimate {
+  color: var(--inc-dashboard-inconclusive);
+}
+
+.inc-dashboard-primary--inconclusive .inc-dashboard-primary-status {
+  color: var(--inc-dashboard-inconclusive);
+  background: var(--inc-dashboard-inconclusive-bg);
+}
+
+.inc-dashboard-primary--favorable .inc-dashboard-primary-estimate {
+  color: var(--inc-dashboard-favorable);
+}
+
+.inc-dashboard-primary--favorable .inc-dashboard-primary-status {
+  color: var(--inc-dashboard-favorable);
+  background: var(--inc-dashboard-favorable-bg);
+}
+
+.inc-dashboard-primary--unfavorable .inc-dashboard-primary-estimate {
+  color: var(--inc-dashboard-unfavorable);
+}
+
+.inc-dashboard-primary--unfavorable .inc-dashboard-primary-status {
+  color: var(--inc-dashboard-unfavorable);
+  background: var(--inc-dashboard-unfavorable-bg);
+}
+
+.inc-dashboard-primary--neutral .inc-dashboard-primary-status {
+  color: var(--inc-dashboard-muted);
+  background: var(--inc-dashboard-column);
+}
+
+/* Status, warnings, caveats */
+
+.inc-dashboard-status {
+  margin: 16px 0 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--inc-dashboard-rule);
+  font-weight: 600;
+}
+
+.inc-dashboard-status--ok {
+  border-left-color: var(--inc-dashboard-favorable);
+  color: var(--inc-dashboard-favorable);
+}
+
+.inc-dashboard-status--warn {
+  border-left-color: var(--inc-dashboard-warning);
+  color: var(--inc-dashboard-warning);
+}
+
+.inc-dashboard-status--bad {
+  border-left-color: var(--inc-dashboard-unfavorable);
+  color: var(--inc-dashboard-unfavorable);
+}
+
+.inc-dashboard-flags,
+.inc-dashboard-caveats,
+.inc-dashboard-reasons {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.inc-dashboard-flags li,
+.inc-dashboard-caveats li,
+.inc-dashboard-reasons li {
+  margin-bottom: 8px;
+}
+
+.inc-dashboard-flags li {
+  color: var(--inc-dashboard-warning);
+}
+
+.inc-dashboard-note {
+  margin: 0;
+  color: var(--inc-dashboard-muted);
+}
+
+.inc-dashboard-missing {
+  font-weight: 620;
+  color: var(--inc-dashboard-muted);
+}
+
+.inc-dashboard-reason {
+  color: var(--inc-dashboard-muted);
+}
+
+.inc-dashboard-code,
+.inc-dashboard-root code {
+  font-family: var(--marimo-monospace-font, ui-monospace, SFMono-Regular, monospace);
+  font-size: 13px;
+  color: var(--inc-dashboard-muted);
+}
+
+.inc-dashboard-favorable {
+  color: var(--inc-dashboard-favorable);
+}
+
+.inc-dashboard-unfavorable {
+  color: var(--inc-dashboard-unfavorable);
+}
+
+/* Tables: scroll inside the panel, never widen the page. */
+
+.inc-dashboard-table-wrap {
+  margin: 16px 0 0;
+  overflow-x: auto;
+}
+
+.inc-dashboard-disclosure .inc-dashboard-table-wrap {
+  margin: 12px 0 4px;
+}
+
+.inc-dashboard-disclosure .inc-dashboard-table {
+  min-width: 720px;
+}
+
+.inc-dashboard-unavailable-reasons {
+  display: block;
+  width: 24rem;
+  max-width: 60vw;
+  white-space: normal;
+  text-align: left;
+}
+
+.inc-dashboard-root table {
+  background: var(--inc-dashboard-panel) !important;
+  color: var(--inc-dashboard-text) !important;
+}
+
+.inc-dashboard-root table td {
+  color: var(--inc-dashboard-text) !important;
+}
+
+.inc-dashboard-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.inc-dashboard-table th,
+.inc-dashboard-table td {
+  padding: 8px 12px;
+  text-align: right;
+  border-bottom: 1px solid var(--inc-dashboard-rule);
+  white-space: nowrap;
+}
+
+.inc-dashboard-table thead th {
+  background: var(--inc-dashboard-column);
+  font-size: 12px;
+  font-weight: 620;
+  letter-spacing: 0.02em;
+  color: var(--inc-dashboard-muted);
+}
+
+.inc-dashboard-table th:first-child,
+.inc-dashboard-table td:first-child {
+  text-align: left;
+}
+
+.inc-dashboard-table tbody th {
+  font-weight: 600;
+}
+
+.inc-dashboard-tag {
+  margin-left: 8px;
+  padding: 1px 8px;
+  border: 1px solid var(--inc-dashboard-rule);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--inc-dashboard-muted);
+}
+
+/* Definition lists for disclosure blocks */
+
+.inc-dashboard-kv {
+  display: grid;
+  grid-template-columns: minmax(0, 12rem) minmax(0, 1fr);
+  gap: 8px 16px;
+  margin: 16px 0 0;
+}
+
+.inc-dashboard-kv dt {
+  font-weight: 650;
+  color: var(--inc-dashboard-text);
+}
+
+.inc-dashboard-kv dd {
+  margin: 0;
+  color: var(--inc-dashboard-muted);
+  overflow-wrap: anywhere;
+}
+
+.inc-dashboard-disclosure {
+  margin-top: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--inc-dashboard-rule);
+}
+
+.inc-dashboard-disclosure summary {
+  cursor: pointer;
+  color: var(--inc-dashboard-muted);
+  font-weight: 600;
+}
+
+.inc-dashboard-disclosure[open] summary {
+  margin-bottom: 12px;
+  color: var(--inc-dashboard-text);
+}
+
+.inc-dashboard-meter {
+  display: inline-block;
+  position: relative;
+  width: 140px;
+  height: 10px;
+  margin-right: 12px;
+  border-radius: 5px;
+  background: var(--inc-dashboard-column);
+  vertical-align: middle;
+}
+
+.inc-dashboard-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--inc-dashboard-accent);
+}
+
+.inc-dashboard-meter-fill--control {
+  background: var(--inc-dashboard-muted);
+}
+
+.inc-dashboard-meter-target {
+  position: absolute;
+  top: -3px;
+  height: 16px;
+  width: 2px;
+  background: var(--inc-dashboard-text);
+}
+
+/* Notebook navigation uses the same palette without styling other outputs. */
+
+.inc-dashboard-navigation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.inc-dashboard-brand {
+  font-family: Georgia, "Iowan Old Style", serif;
+  font-size: 28px;
+  letter-spacing: -0.055em;
+  color: var(--inc-dashboard-text);
+  text-decoration: none;
+}
+
+.inc-dashboard-navigation nav {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.inc-dashboard-navigation a {
+  color: var(--inc-dashboard-muted);
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.inc-dashboard-navigation a:hover,
+.inc-dashboard-navigation a:focus-visible {
+  color: var(--inc-dashboard-accent);
+}
+
+.inc-dashboard-navigation nav a {
+  display: block;
+  padding: 8px 12px;
+  border-radius: 0;
+  background: transparent;
+  font-size: 13px;
+}
+
+.inc-dashboard-navigation .inc-dashboard-brand {
+  color: var(--inc-dashboard-text);
+}
+
+.inc-dashboard-controls {
+  padding-top: 22px;
+}
+
+.inc-dashboard-controls,
+.inc-dashboard-navigation {
+  font-size: 14px;
+}
+
+.inc-dashboard-root button:focus-visible,
+.inc-dashboard-root a:focus-visible,
+.inc-dashboard-root summary:focus-visible {
+  outline: 2px solid var(--inc-dashboard-accent);
+  outline-offset: 2px;
+}
+
+@media (max-width: 760px) {
+  .inc-dashboard-navigation {
+    display: block;
+  }
+
+  .inc-dashboard-navigation nav {
+    margin-top: 10px;
+  }
+
+  .inc-dashboard-section {
+    padding: 24px 0;
+    scroll-margin-top: 160px;
+  }
+
+  .inc-dashboard-cards {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+
+  .inc-dashboard-card {
+    border: 0;
+    padding: 0;
+  }
+
+  .inc-dashboard-kv {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px 0;
+  }
+
+  .inc-dashboard-kv dd {
+    margin-bottom: 8px;
+  }
+
+  .inc-dashboard-title {
+    font-size: 32px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .inc-dashboard-root * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

@@ -1,0 +1,315 @@
+# A/B Testing Dashboard
+
+`increment.dashboard` is an optional presentation layer over one bound
+experiment. It provides section-level `mo.Html` helpers and thin adapters
+around the public `Analysis` and `CoefTable` APIs. It renders allocation
+health, the role-grouped readout, optional time and segment exploration,
+definitions and provenance, and downloadable readout and group-data CSVs. The bundled
+`examples/ab_testing_dashboard.py` notebook shows one readable composition;
+use it as an example rather than a template to copy and edit.
+
+Core Increment never imports this package: estimation, power, and the
+dataframe entry points stay free of marimo, CoefTable, and pandas.
+
+## Install
+
+```bash
+pip install "increment[dashboard]"
+```
+
+The extra adds `marimo`, `coeftable>=0.13.1`, and `pandas`. Running the
+bundled notebook against its synthetic fixture also needs the local `demo`
+extra (DuckDB):
+
+```bash
+pip install "increment[dashboard,demo]"
+```
+
+## Bind your own experiment
+
+Changing experiments is a source-binding operation, not a renderer change:
+construct your own `Analysis`, supply a `DashboardConfig`, and reuse the same
+rendering calls. The package has no "checkout" conditional and never assumes
+a 50/50 allocation.
+
+<!-- skip: next "requires increment[dashboard] and a configured warehouse" -->
+
+```python
+import ibis
+from increment import Analysis
+from increment.dashboard import (
+    DashboardConfig,
+    dashboard_styles,
+    prepare_dashboard,
+    render_header,
+    render_health,
+    render_results,
+)
+
+con = ibis.snowflake.connect(...)
+analysis = Analysis.from_definitions("checkout_redesign", "definitions/", con)
+config = DashboardConfig(
+    expected_allocation={"control": 0.5, "treatment": 0.5},
+    source_label="Production warehouse",
+    metric_units={"revenue_per_user": "USD", "checkout_latency_ms": "ms"},
+)
+
+snapshot = prepare_dashboard(analysis, config=config)
+
+dashboard_styles()
+render_header(snapshot)
+render_health(snapshot)
+render_results(snapshot)
+```
+
+Put each rendering call in its own notebook cell, including `dashboard_styles()`.
+Install your warehouse's Ibis backend separately.
+
+The default Paper & Ink styling uses warm paper surfaces, serif headings,
+muted green charts, and light section rules. Packaged styles stay scoped to
+dashboard sections. The example's horizontal navigation and outer page frame
+use `examples/ab_testing_dashboard.css`, loaded through marimo's `css_file`
+setting; keep that stylesheet beside the notebook when copying the example.
+
+`prepare_dashboard` is the headline computation boundary. It validates the
+experiment and config, then invokes one source-owned snapshot operation.
+Allocation, enrollment history, headline estimates, and observed group data
+share its pinned inputs; the caller's `Analysis` is not rebound. Captured
+sequential decisions retain each displayed metric's checkpoint, including
+earlier frozen secondaries. These results form an immutable `DashboardSnapshot`.
+
+Every `render_*` function below takes that snapshot and returns one complete
+`mo.Html` section; none of them queries, recomputes, or mutates it.
+Re-executing the source/prepare cell intentionally creates a new snapshot;
+changing a display control does not.
+You retain ownership of `analysis` and its connection; the package does not
+close or replace them. When deliberately rebinding to a different experiment,
+the caller must close the old connection.
+
+Explore requests must match the snapshot's experiment and metric
+configuration, including arms, windows, breakouts, and policy. Matching only
+the name is insufficient.
+
+## Supported experiments
+
+The dashboard supports ordinary, definitions-backed, two-arm randomized
+experiments (`Analysis.from_definitions`) with a declared primary metric and
+fixed-horizon, registered Bernoulli, or registered asymptotic-mean inference.
+Capture finalized sequential observations before preparation; an unregistered
+`always_valid` declaration is not supported. Ordinary cases include:
+
+- Renamed arms (the configured control arm must match the bound experiment;
+  the treatment label is whatever the other declared arm is called).
+- Unequal allocation — `expected_allocation` is a required mapping because
+  the definitions-backed SRM check has no safe implicit default; an assumed
+  even split would silently turn an unequal design into a false mismatch.
+- A different declared primary metric, and any number of secondaries and
+  guardrails.
+- Experiments with no declared breakouts.
+
+`DashboardConfig.expected_allocation` must declare exactly two distinct,
+non-empty arm labels with finite positive weights; an unusable configuration
+is refused with `InvalidRequestError` (`dashboard.invalid_config`) before
+any data loads. Metric roles, decision methods, inference, population,
+direction, tested alternative, intervals, and the multiplicity policy are
+all inherited from your `Analysis` — there is no confidence slider or method
+selector that silently changes the analysis contract. An experiment whose
+`run()` returns contrast results rather than lift estimates (for example a
+switchback design) is refused with `CapabilityError`
+(`dashboard.unsupported_experiment`) rather than shown as an empty result.
+
+`metric_units` contains presentation labels, not statistical settings. Unknown
+metric names and empty labels are refused before source reads. Conversion and
+retention values use percentages; other metrics use explicit units or the
+generic label `value`. Currency is never inferred from a metric's name.
+
+## Sections
+
+| Call | Renders |
+|---|---|
+| `dashboard_styles()` | The packaged, scoped stylesheet as one style block. Reads `_dashboard.css` with `importlib.resources`, so it needs no repository-relative path. |
+| `render_header(snapshot)` | Experiment identity, window, population, inference, arms, and three summary cards: enrolled units, observed arm split, and a compact primary lift with its bracketed interval and direction-aware significance status. |
+| `render_health(snapshot)` | Visual allocation bars with target markers, the SRM verdict, and visible assignment warnings and result caveats. Allocation over time and evidence expands to a CoefTable with one row per variant, cumulative enrolled share, and the check statistics. |
+| `render_results(snapshot)` | The whole declared family through CoefTable, grouped by role, with forest plots and an explicit adverse-guardrail callout. Discovery is omitted from the visual columns; family metadata remains in details and CSV. Evidence geometry and statistical interpretation expand on demand. |
+| `render_metric_details(snapshot, metric=...)` | Lift, interval, and direction chips; policy and evidence-geometry details; observed data by group, including eligibility, exclusions, counts, units, and provenance. |
+| `load_explore(analysis, snapshot=..., metric=..., view=..., completed_windows_only=..., breakout=...)` | One requested advanced view (`analysis.run_asof_lift`, `run_daily`, `run_asof`, or `run_breakout`), dispatched from the public readout API. `metric=None` loads every declared metric together in any view. It never reruns the headline family, allocation check/history, or materialization. |
+| `render_explore(snapshot, data, metric=..., view=..., completed_windows_only=...)` | One Explore section with a combined cumulative-lift table or separate absolute daily/cumulative tables per metric, actual date basis/range, and visible unavailable-point reasons. Applicable headline evidence geometry is labeled separately from the series. Pass the same metric selection used to load data; `metric=None` renders every declared metric together. |
+| `render_details(snapshot)` | Collapsible experiment metadata, per-metric policies, provenance, and static-snapshot limitations. |
+| `readout_csv(snapshot)` | The current headline readout as UTF-8 CSV bytes, for `mo.download`. |
+| `group_data_csv(snapshot, metric=None)` | The observed group-data rows as UTF-8 CSV bytes. Select one declared metric or export all; no warehouse query occurs. |
+
+Headline and metric-detail intervals retain declared one-sided bounds:
+`(−∞, upper]` or `[lower, +∞)`. Relative effects use percentages; absolute
+effects use outcome units. A declared open endpoint is not missing data.
+An ordinary, non-FCR point-backed Fieller result retains its central display
+interval: for a 5% one-sided test, that interval has 90% coverage. The separate
+confidence-set column labels the 95% directional set explicitly. FCR-selected
+directional rows retain their re-estimated open display interval instead.
+
+Binomial, Fieller, and winsorized confidence sets retain their geometry even
+without a finite point estimate. The table adds a confidence-set column and
+the result's significance indicator; significance is distinct from family
+selection. Disconnected sets remain unions of intervals; their forest bars
+are omitted rather than filling the excluded gap.
+An undefined endpoint is shown with its reason and any finite opposite bound,
+never as infinity. Its numeric interval and forest bar are omitted rather
+than drawing a false open interval; an available point is still shown.
+Unavailable inference is not labeled nonsignificant. A usable absolute-null
+decision remains visible when only the relative confidence set is unavailable.
+
+**Evidence geometry** explains captured test direction, exact binary counts,
+and confidence-set shape without changing the inference. In the shipped
+checkout demo, D7 retention is an increasing one-sided guardrail: its test
+constrains the lower relative-lift bound and intentionally leaves the upper
+direction unconstrained. This is different from a zero-control-count result;
+inspect **Data by group** for the observed rates, counts, and maturity.
+Observed retention rates remain between 0% and 100%; relative lift is a
+different quantity. A binary decreasing test also retains the physical −100%
+relative-lift floor rather than inventing an open lower endpoint.
+
+Multiple applicable explanations remain visible. Disconnected sets retain
+their excluded gap, whole-line sets retain both infinite ends, and a wide but
+finite interval is not reclassified by a size threshold. When relative
+evidence is unavailable, its recorded reason and any available absolute
+bounds appear separately in metric units (percentage points for rates).
+Explore's **Headline evidence geometry** describes the captured headline,
+not a new inference for each daily or cumulative point.
+
+CSV downloads neutralize formula-leading string cells with an apostrophe.
+Numeric cells remain numeric and unavailable numbers remain empty.
+Confidence-set cells contain unrounded JSON metadata, omitting retained
+samples and solver references. This CSV is a readout, not a portable inference
+checkpoint.
+
+`ExploreView` is the literal type `"cumulative_lift" | "daily_values" |
+"cumulative_values" | "segments"`. An unknown metric/view, a daily-values or
+segments request carrying the cumulative-only `completed_windows_only` gate, or an
+ambiguous breakout selection is refused with `InvalidRequestError`
+(`dashboard.invalid_view`); the refusal names the requested metric, view,
+and dimension.
+
+Every Explore view in the notebook shows all metrics together, without a
+metric selector. One readout query supplies the declared metric family;
+the table retains each result's interval and multiplicity metadata.
+Temporal plots use a separate value scale per metric. When daily metrics
+use different date bases, rows explicitly distinguish observation dates
+from exposure-cohort dates rather than overlaying incompatible series.
+Passing a metric name remains available for a single-metric API readout.
+
+Absolute daily and cumulative plots show numeric y-axis ticks. Both arms
+share a scale within each metric; unrelated metrics keep separate scales
+and formatters. Rates and explicit `%` units display percentages, `USD`
+displays currency, and `count` retains fractional values. Other declared
+units appear as suffixes. Formatting changes neither values nor intervals.
+
+### Allocation history
+
+Health uses first-assignment enrollment counts, independent of outcome
+availability and retention maturity. The plot shows each variant's cumulative
+share on observed enrollment dates, using the experiment's day boundary.
+Each row has a dashed reference line at its configured target allocation
+and a shaded pointwise 95% Wilson interval around its observed share.
+These intervals remain nonzero at observed shares of zero or one.
+They are descriptive, not corrected for repeated looks, and are not
+sequential SRM thresholds; the separate allocation check supplies that verdict.
+
+`snapshot.allocation_history` stores immutable rows from
+`Analysis.allocation_history()`. A capability refusal is retained in
+`snapshot.allocation_history_refusal` and displayed without disabling the
+headline results. A refused allocation check does not query history.
+Cluster-randomized and non-native sources do not supply this unit timeline.
+
+## Truthful inference, not a verdict
+
+- There is no automatic ship/no-ship verdict. Allocation checks, metric
+  evidence, and guardrail evidence are rendered as separate things.
+- Unavailable values render as `N/A` with the reason supplied by the result,
+  never as a zero-filled number or an implied passing check.
+- The primary headline is amber when the estimate is not statistically
+  significant. Significant estimates are green or red only after comparing
+  the observed side with the metric's declared preferred direction.
+  Unavailable or directionless estimates stay neutral; a significant
+  directionless result still receives a significance badge.
+- `stat_sig=False` on a guardrail means its declared test did
+  not reject; it does **not** mean "no harm" or "safe". An interval
+  entirely on the adverse side stays visibly unfavorable even when
+  `stat_sig=False`; `render_results` calls this out explicitly rather than
+  relying on someone reading the table correctly.
+- A fixed-horizon cumulative monitoring view is labeled descriptive
+  monitoring, never "safe for repeated decisions". Registered Bernoulli
+  inference retains its sequential guarantee; asymptotic-mean monitoring is
+  labeled asymptotic and does not claim a finite-sample guarantee.
+- Guardrail tests are labeled by their own tested tail (`alternative`), read
+  from each original estimate — never hardcoded to "all guardrails test
+  improvement".
+
+## Observed data by group
+
+Each metric's disclosure and group-data download use the same captured rows.
+They show assigned and eligible units, the observed arm value, counts and
+totals where meaningful, the observation cutoff and window, and exclusion
+reasons. The accounting is
+`assigned = eligible + not mature + no observed day + other excluded`.
+The header's enrolled count is not a metric denominator.
+Available group data remains inspectable when the snapshot has no decision
+row for that metric. This does not bypass analysis refusals for invalid inputs.
+
+Values precede CUPED, prior shrinkage, and winsorization while retaining the
+same cohort, filters and windows. Ratios are ratios of group component totals,
+not averages of individual ratios. Quantiles use the linear sample-quantile
+definition. A sum of per-unit averages is not an event-level revenue total.
+Converted/retained unit counts are distinct from qualifying event counts.
+
+Sequential disclosures use the checkpoint displayed by that metric, never
+current warehouse outcomes alongside an earlier stopped result. The source
+kind and prefix identify the evidence. Historical exclusions, raw event
+counts, and pre-transform values that were not retained are unavailable with
+reasons; retained transformed inputs are labeled separately.
+
+Unavailable numeric CSV cells stay empty, with reasons in JSON. Finite means
+can remain available when a display total is outside the numeric range.
+Rows include experiment, preparation timestamp, binding fingerprint, and
+checkpoint prefix where applicable; unit identifiers and event rows are
+never exported. String cells are spreadsheet-safe, and numeric values are
+unrounded. Preparing a new snapshot cannot change an earlier download.
+
+## No-breakout experiments
+
+`snapshot.breakouts` is a tuple of `(declared_source, dimension)` pairs read
+from the bound experiment. When it is empty, the notebook omits the segment
+selector. Selecting the segments view shows "No declared breakouts" and
+issues no breakout query. This is an
+ordinary supported case, not a rendering failure: a real experiment with one
+declared breakout dimension and a single resolved segment is equally valid.
+
+## Live notebook vs. static export
+
+The live notebook (`marimo edit` or `marimo run`) loads cumulative lift for
+every declared metric immediately. Selecting another Explore view runs only
+that requested temporal or segment computation. The metric-detail selector
+and Explore controls never recompute the headline snapshot.
+
+A static HTML export (`marimo export html`) includes Overview, Health,
+Results, the default cumulative-lift Explore view, Metric details, and Details.
+Changing analysis controls in a static export requires a live `marimo` session;
+the export cannot execute Python.
+
+## Run the example
+
+See the [A/B testing dashboard notebook](../examples/ab_testing_dashboard.md)
+for the bundled `checkout_redesign` fixture end to end, and the
+[API reference](../api.md) for the complete `increment.dashboard` surface.
+
+```bash
+uv run --extra dashboard --extra demo marimo edit examples/ab_testing_dashboard.py
+```
+
+The equivalent `marimo run` serves the same notebook read-only, and
+`uv run --extra dashboard --extra demo python examples/ab_testing_dashboard.py`
+runs it as a script for a quick smoke check. The notebook pins itself to
+light mode with notebook-local `# /// script` metadata
+(`[tool.marimo.display] theme = "light"`); that metadata is also why the
+bare `uv run examples/ab_testing_dashboard.py` form is not supported here —
+without an explicit `python`/`marimo` command, `uv run` treats a directly
+executed `.py` file carrying that metadata as an isolated script
+environment and never installs the `dashboard`/`demo` extras at all.

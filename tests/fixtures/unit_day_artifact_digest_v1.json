@@ -1,0 +1,1016 @@
+{
+  "format": 1,
+  "vectors": [
+    {
+      "name": "unit_covariate_nullable",
+      "role": "unit_covariate",
+      "fields": [
+        {
+          "name": "experiment_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "unit_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "value",
+          "type": "FLOAT64",
+          "nullable": true
+        }
+      ],
+      "primary_key": [
+        "experiment_id",
+        "unit_id"
+      ],
+      "rows": [
+        {
+          "experiment_id": "exp",
+          "unit_id": "u2",
+          "value": 17.5
+        },
+        {
+          "experiment_id": "exp",
+          "unit_id": "u1",
+          "value": -0.0
+        },
+        {
+          "experiment_id": "exp",
+          "unit_id": "u0",
+          "value": null
+        }
+      ],
+      "schema_bytes_hex": "000000030000000d6578706572696d656e745f6964010000000007756e69745f696401000000000576616c75650301",
+      "rows_bytes_hex": "00000003010000000000000003657870010000000000000002753000000000000000000000000003010000000000000003657870010000000000000002753103000000000000000800000000000000000000000301000000000000000365787001000000000000000275320300000000000000084031800000000000",
+      "schema_sha256": "558af5971e2bb9d3b27bcb21b63bff08087863d60e0c3e9be726330706345110",
+      "content_sha256": "57e6944cb1259eb38913eda6e1b39cd4c611e9aa6c2bec61248d8786c5865a69"
+    },
+    {
+      "name": "unit_covariate_level_nullable",
+      "role": "unit_covariate_level",
+      "fields": [
+        {
+          "name": "experiment_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "unit_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "level",
+          "type": "STRING",
+          "nullable": true
+        }
+      ],
+      "primary_key": [
+        "experiment_id",
+        "unit_id"
+      ],
+      "rows": [
+        {
+          "experiment_id": "exp",
+          "unit_id": "u3",
+          "level": "None"
+        },
+        {
+          "experiment_id": "exp",
+          "unit_id": "u2",
+          "level": "é"
+        },
+        {
+          "experiment_id": "exp",
+          "unit_id": "u1",
+          "level": ""
+        },
+        {
+          "experiment_id": "exp",
+          "unit_id": "u0",
+          "level": null
+        }
+      ],
+      "schema_bytes_hex": "000000030000000d6578706572696d656e745f6964010000000007756e69745f69640100000000056c6576656c0101",
+      "rows_bytes_hex": "000000030100000000000000036578700100000000000000027530000000000000000000000000030100000000000000036578700100000000000000027531010000000000000000000000030100000000000000036578700100000000000000027532010000000000000002c3a90000000301000000000000000365787001000000000000000275330100000000000000044e6f6e65",
+      "schema_sha256": "cf21cde5492a537b540c85a88b5ba1e5dd94206a7201f431d74603ba774a45f5",
+      "content_sha256": "9f6704d2bca01c6e487d984b9666ac82a50f0d31d28eabc824dd662bedf12a46"
+    },
+    {
+      "name": "empty_exposures",
+      "role": "exposures",
+      "fields": [
+        {
+          "name": "experiment_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "unit_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "group_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "first_exposure_ts",
+          "type": "TIMESTAMP_UTC_US",
+          "nullable": false
+        },
+        {
+          "name": "first_exposure_date",
+          "type": "DATE",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "experiment_id",
+        "unit_id"
+      ],
+      "rows": [],
+      "schema_bytes_hex": "000000050000000d6578706572696d656e745f6964010000000007756e69745f696401000000000867726f75705f696401000000001166697273745f6578706f737572655f747305000000001366697273745f6578706f737572655f646174650400",
+      "rows_bytes_hex": "",
+      "schema_sha256": "69f2a545d85730683e9c035ac635730f513eef0d7221e45c5768089c450b92cb",
+      "content_sha256": "92ff37afe41803f3b01a53d06de494ebace02988d2b74967012ef3e5daa04307"
+    },
+    {
+      "name": "exposures_boundaries",
+      "role": "exposures",
+      "fields": [
+        {
+          "name": "experiment_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "unit_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "group_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "first_exposure_ts",
+          "type": "TIMESTAMP_UTC_US",
+          "nullable": false
+        },
+        {
+          "name": "first_exposure_date",
+          "type": "DATE",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "experiment_id",
+        "unit_id"
+      ],
+      "rows": [
+        {
+          "experiment_id": "exp",
+          "unit_id": "u-0",
+          "group_id": "control",
+          "first_exposure_ts": "1970-01-01T00:00:00Z",
+          "first_exposure_date": "1970-01-01"
+        },
+        {
+          "experiment_id": "exp",
+          "unit_id": "u-1",
+          "group_id": "treatment",
+          "first_exposure_ts": "1970-01-01T00:00:00Z",
+          "first_exposure_date": "1970-01-01"
+        }
+      ],
+      "schema_bytes_hex": "000000050000000d6578706572696d656e745f6964010000000007756e69745f696401000000000867726f75705f696401000000001166697273745f6578706f737572655f747305000000001366697273745f6578706f737572655f646174650400",
+      "rows_bytes_hex": "00000005010000000000000003657870010000000000000003752d30010000000000000007636f6e74726f6c05000000000000000800000000000000000400000000000000040000000000000005010000000000000003657870010000000000000003752d3101000000000000000974726561746d656e74050000000000000008000000000000000004000000000000000400000000",
+      "schema_sha256": "69f2a545d85730683e9c035ac635730f513eef0d7221e45c5768089c450b92cb",
+      "content_sha256": "a769413cacd4c8e154a22421237edee11970508733082020a37924c03f30a709"
+    },
+    {
+      "name": "measure_stats_boundaries",
+      "role": "measure_stats",
+      "fields": [
+        {
+          "name": "experiment_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "unit_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "ds",
+          "type": "DATE",
+          "nullable": false
+        },
+        {
+          "name": "measure_key",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "n_events",
+          "type": "INT64",
+          "nullable": false
+        },
+        {
+          "name": "sum_value",
+          "type": "FLOAT64",
+          "nullable": false
+        },
+        {
+          "name": "min_value",
+          "type": "FLOAT64",
+          "nullable": false
+        },
+        {
+          "name": "max_value",
+          "type": "FLOAT64",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "experiment_id",
+        "unit_id",
+        "ds",
+        "measure_key"
+      ],
+      "rows": [
+        {
+          "experiment_id": "exp",
+          "unit_id": "u-0",
+          "ds": "1970-01-01",
+          "measure_key": "m",
+          "n_events": 2,
+          "sum_value": -0.0,
+          "min_value": 0.0,
+          "max_value": 1.25
+        },
+        {
+          "experiment_id": "exp",
+          "unit_id": "u-1",
+          "ds": "1970-01-02",
+          "measure_key": "n",
+          "n_events": 3,
+          "sum_value": 1.25,
+          "min_value": 0.0,
+          "max_value": 1.25
+        }
+      ],
+      "schema_bytes_hex": "000000080000000d6578706572696d656e745f6964010000000007756e69745f6964010000000002647304000000000b6d6561737572655f6b65790100000000086e5f6576656e747302000000000973756d5f76616c75650300000000096d696e5f76616c75650300000000096d61785f76616c75650300",
+      "rows_bytes_hex": "00000008010000000000000003657870010000000000000003752d30040000000000000004000000000100000000000000016d0200000000000000080000000000000002030000000000000008000000000000000003000000000000000800000000000000000300000000000000083ff400000000000000000008010000000000000003657870010000000000000003752d31040000000000000004000000010100000000000000016e02000000000000000800000000000000030300000000000000083ff400000000000003000000000000000800000000000000000300000000000000083ff4000000000000",
+      "schema_sha256": "f5f205435874c9454583a7c787bead1d2167f730f5e7e1edb7721a6fcd5ba11e",
+      "content_sha256": "caf049f3a3366d43a1f891e05ae20d1aa6b1d383a174c16bc386492cea11729e"
+    },
+    {
+      "name": "breakout_dimension_boundaries",
+      "role": "breakout_dimension",
+      "fields": [
+        {
+          "name": "experiment_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "unit_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "value_is_missing",
+          "type": "BOOLEAN",
+          "nullable": false
+        },
+        {
+          "name": "dimension_value",
+          "type": "STRING",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "experiment_id",
+        "unit_id"
+      ],
+      "rows": [
+        {
+          "experiment_id": "exp",
+          "unit_id": "u-0",
+          "value_is_missing": false,
+          "dimension_value": "a"
+        },
+        {
+          "experiment_id": "exp",
+          "unit_id": "u-1",
+          "value_is_missing": true,
+          "dimension_value": "a"
+        }
+      ],
+      "schema_bytes_hex": "000000040000000d6578706572696d656e745f6964010000000007756e69745f696401000000001076616c75655f69735f6d697373696e6706000000000f64696d656e73696f6e5f76616c75650100",
+      "rows_bytes_hex": "00000004010000000000000003657870010000000000000003752d30060000000000000001000100000000000000016100000004010000000000000003657870010000000000000003752d310600000000000000010101000000000000000161",
+      "schema_sha256": "9b898859a1379da90c72f0365ac6afc84ae1c263cc6b551014d42476d16cf54e",
+      "content_sha256": "46d5021bb26235b2b0d76e5896cbe0d0151f4de0421e98682c17c5011361f3e7"
+    },
+    {
+      "name": "factor_dimension_boundaries",
+      "role": "factor_dimension",
+      "fields": [
+        {
+          "name": "experiment_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "unit_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "value_is_missing",
+          "type": "BOOLEAN",
+          "nullable": false
+        },
+        {
+          "name": "factor_value",
+          "type": "STRING",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "experiment_id",
+        "unit_id"
+      ],
+      "rows": [
+        {
+          "experiment_id": "exp",
+          "unit_id": "u-0",
+          "value_is_missing": false,
+          "factor_value": "f"
+        },
+        {
+          "experiment_id": "exp",
+          "unit_id": "u-1",
+          "value_is_missing": true,
+          "factor_value": "f"
+        }
+      ],
+      "schema_bytes_hex": "000000040000000d6578706572696d656e745f6964010000000007756e69745f696401000000001076616c75655f69735f6d697373696e6706000000000c666163746f725f76616c75650100",
+      "rows_bytes_hex": "00000004010000000000000003657870010000000000000003752d30060000000000000001000100000000000000016600000004010000000000000003657870010000000000000003752d310600000000000000010101000000000000000166",
+      "schema_sha256": "9bef83f7f5db52872b191dde052c9c749bd7f2a7a3cac577c94ee9d7963cf92d",
+      "content_sha256": "cd3156b94530ed0e5b2c0ed9af4865d5fc0d92f706be06eed784665ecc050b52"
+    },
+    {
+      "name": "cluster_identity_boundaries",
+      "role": "cluster_identity",
+      "fields": [
+        {
+          "name": "experiment_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "unit_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "cluster_id",
+          "type": "STRING",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "experiment_id",
+        "unit_id"
+      ],
+      "rows": [
+        {
+          "experiment_id": "exp",
+          "unit_id": "u-0",
+          "cluster_id": "cluster-1"
+        },
+        {
+          "experiment_id": "exp",
+          "unit_id": "u-1",
+          "cluster_id": "cluster-1"
+        }
+      ],
+      "schema_bytes_hex": "000000030000000d6578706572696d656e745f6964010000000007756e69745f696401000000000a636c75737465725f69640100",
+      "rows_bytes_hex": "00000003010000000000000003657870010000000000000003752d30010000000000000009636c75737465722d3100000003010000000000000003657870010000000000000003752d31010000000000000009636c75737465722d31",
+      "schema_sha256": "9ae0a37c964057606cd8edd37d06300dcc874d047004dc99bd5b3a3186bd1fc1",
+      "content_sha256": "7921e7d32c04a2e2492d778ad584bcb0b997fbc377a36e99d0b0ed3613f94817"
+    },
+    {
+      "name": "cuped_preperiod_boundaries",
+      "role": "cuped_preperiod",
+      "fields": [
+        {
+          "name": "experiment_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "unit_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "x",
+          "type": "FLOAT64",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "experiment_id",
+        "unit_id"
+      ],
+      "rows": [
+        {
+          "experiment_id": "exp",
+          "unit_id": "u-0",
+          "x": 1.5
+        },
+        {
+          "experiment_id": "exp",
+          "unit_id": "u-1",
+          "x": 1.5
+        }
+      ],
+      "schema_bytes_hex": "000000030000000d6578706572696d656e745f6964010000000007756e69745f6964010000000001780300",
+      "rows_bytes_hex": "00000003010000000000000003657870010000000000000003752d300300000000000000083ff800000000000000000003010000000000000003657870010000000000000003752d310300000000000000083ff8000000000000",
+      "schema_sha256": "ceefc683db54396c12c9e26308f022aa0aec54134ebeaf822c38e6bb595435de",
+      "content_sha256": "f4ac8dcbbf9db48721ec8b4454cb670a1035514826ee596836084dba05672b00"
+    },
+    {
+      "name": "assignment_counts_boundaries",
+      "role": "assignment_counts",
+      "fields": [
+        {
+          "name": "experiment_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "population",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "group_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "n_units",
+          "type": "INT64",
+          "nullable": false
+        },
+        {
+          "name": "n_randomization_units",
+          "type": "INT64",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "experiment_id",
+        "population",
+        "group_id"
+      ],
+      "rows": [
+        {
+          "experiment_id": "exp",
+          "population": "assigned",
+          "group_id": "control",
+          "n_units": 2,
+          "n_randomization_units": 1
+        },
+        {
+          "experiment_id": "exp",
+          "population": "triggered",
+          "group_id": "treatment",
+          "n_units": 3,
+          "n_randomization_units": 2
+        }
+      ],
+      "schema_bytes_hex": "000000050000000d6578706572696d656e745f696401000000000a706f70756c6174696f6e01000000000867726f75705f69640100000000076e5f756e6974730200000000156e5f72616e646f6d697a6174696f6e5f756e6974730200",
+      "rows_bytes_hex": "0000000501000000000000000365787001000000000000000861737369676e6564010000000000000007636f6e74726f6c020000000000000008000000000000000202000000000000000800000000000000010000000501000000000000000365787001000000000000000974726967676572656401000000000000000974726561746d656e7402000000000000000800000000000000030200000000000000080000000000000002",
+      "schema_sha256": "28b54d3a06fbdf60da4529c793032daeff34291f5fd71c7e24f50bba3c673e68",
+      "content_sha256": "26f87019bc1e72328b0fdef2d4b7485ff2e0e0bf49c5865da17f2ac879a8aa85"
+    },
+    {
+      "name": "trigger_population_boundaries",
+      "role": "trigger_population",
+      "fields": [
+        {
+          "name": "experiment_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "unit_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "first_trigger_ts",
+          "type": "TIMESTAMP_UTC_US",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "experiment_id",
+        "unit_id"
+      ],
+      "rows": [
+        {
+          "experiment_id": "exp",
+          "unit_id": "u-0",
+          "first_trigger_ts": "1970-01-01T00:00:00Z"
+        },
+        {
+          "experiment_id": "exp",
+          "unit_id": "u-1",
+          "first_trigger_ts": "1970-01-02T00:00:00Z"
+        }
+      ],
+      "schema_bytes_hex": "000000030000000d6578706572696d656e745f6964010000000007756e69745f696401000000001066697273745f747269676765725f74730500",
+      "rows_bytes_hex": "00000003010000000000000003657870010000000000000003752d30050000000000000008000000000000000000000003010000000000000003657870010000000000000003752d31050000000000000008000000141dd76000",
+      "schema_sha256": "6dd0c2dc2675d1cfdc31ebecab6ddbac63ecd9ddcfeda697fed16c4313f8fe65",
+      "content_sha256": "12c71a362a6cc4f8ce53d4763caa7e91b9cff2336754dfa732206debdb343a96"
+    },
+    {
+      "name": "encouragement_uptake_boundaries",
+      "role": "encouragement_uptake",
+      "fields": [
+        {
+          "name": "experiment_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "unit_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "uptake",
+          "type": "BOOLEAN",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "experiment_id",
+        "unit_id"
+      ],
+      "rows": [
+        {
+          "experiment_id": "exp",
+          "unit_id": "u-0",
+          "uptake": true
+        },
+        {
+          "experiment_id": "exp",
+          "unit_id": "u-1",
+          "uptake": false
+        }
+      ],
+      "schema_bytes_hex": "000000030000000d6578706572696d656e745f6964010000000007756e69745f6964010000000006757074616b650600",
+      "rows_bytes_hex": "00000003010000000000000003657870010000000000000003752d300600000000000000010100000003010000000000000003657870010000000000000003752d3106000000000000000100",
+      "schema_sha256": "07e04309417292cc883fce79ec4015002e9410f56b097f5f43ca5da9865f5ef7",
+      "content_sha256": "4d44195909310d244c84ffc402428921787145b13cc68ae5fefd0d810e48c3ba"
+    },
+    {
+      "name": "site_volume_boundaries",
+      "role": "site_volume",
+      "fields": [
+        {
+          "name": "experiment_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "ds",
+          "type": "DATE",
+          "nullable": false
+        },
+        {
+          "name": "measure_key",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "n_events",
+          "type": "INT64",
+          "nullable": false
+        },
+        {
+          "name": "sum_value",
+          "type": "FLOAT64",
+          "nullable": false
+        },
+        {
+          "name": "min_value",
+          "type": "FLOAT64",
+          "nullable": false
+        },
+        {
+          "name": "max_value",
+          "type": "FLOAT64",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "experiment_id",
+        "ds",
+        "measure_key"
+      ],
+      "rows": [
+        {
+          "experiment_id": "exp",
+          "ds": "1970-01-01",
+          "measure_key": "m",
+          "n_events": 2,
+          "sum_value": -0.0,
+          "min_value": 0.0,
+          "max_value": 1.25
+        },
+        {
+          "experiment_id": "exp",
+          "ds": "1970-01-02",
+          "measure_key": "n",
+          "n_events": 3,
+          "sum_value": 1.25,
+          "min_value": 0.0,
+          "max_value": 1.25
+        }
+      ],
+      "schema_bytes_hex": "000000070000000d6578706572696d656e745f6964010000000002647304000000000b6d6561737572655f6b65790100000000086e5f6576656e747302000000000973756d5f76616c75650300000000096d696e5f76616c75650300000000096d61785f76616c75650300",
+      "rows_bytes_hex": "00000007010000000000000003657870040000000000000004000000000100000000000000016d0200000000000000080000000000000002030000000000000008000000000000000003000000000000000800000000000000000300000000000000083ff400000000000000000007010000000000000003657870040000000000000004000000010100000000000000016e02000000000000000800000000000000030300000000000000083ff400000000000003000000000000000800000000000000000300000000000000083ff4000000000000",
+      "schema_sha256": "bf5adc519a2a6cd8112cfbd3411e98997a713d49a69f0c9cf231b237dcbbea3b",
+      "content_sha256": "801008d36d5f61ade418bab1377e142e2001325b9431b605b7ad087190b02c69"
+    },
+    {
+      "name": "measure_stats_int64_boundaries",
+      "role": "measure_stats",
+      "fields": [
+        {
+          "name": "experiment_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "unit_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "ds",
+          "type": "DATE",
+          "nullable": false
+        },
+        {
+          "name": "measure_key",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "n_events",
+          "type": "INT64",
+          "nullable": false
+        },
+        {
+          "name": "sum_value",
+          "type": "FLOAT64",
+          "nullable": false
+        },
+        {
+          "name": "min_value",
+          "type": "FLOAT64",
+          "nullable": false
+        },
+        {
+          "name": "max_value",
+          "type": "FLOAT64",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "experiment_id",
+        "unit_id",
+        "ds",
+        "measure_key"
+      ],
+      "rows": [
+        {
+          "experiment_id": "exp",
+          "unit_id": "u-min",
+          "ds": "1970-01-01",
+          "measure_key": "min",
+          "n_events": 1,
+          "sum_value": -1.0,
+          "min_value": -1.0,
+          "max_value": -1.0
+        },
+        {
+          "experiment_id": "exp",
+          "unit_id": "u-max",
+          "ds": "1970-01-02",
+          "measure_key": "max",
+          "n_events": 2,
+          "sum_value": 1.0,
+          "min_value": 1.0,
+          "max_value": 1.0
+        }
+      ],
+      "schema_bytes_hex": "000000080000000d6578706572696d656e745f6964010000000007756e69745f6964010000000002647304000000000b6d6561737572655f6b65790100000000086e5f6576656e747302000000000973756d5f76616c75650300000000096d696e5f76616c75650300000000096d61785f76616c75650300",
+      "rows_bytes_hex": "00000008010000000000000003657870010000000000000005752d6d6178040000000000000004000000010100000000000000036d617802000000000000000800000000000000020300000000000000083ff00000000000000300000000000000083ff00000000000000300000000000000083ff000000000000000000008010000000000000003657870010000000000000005752d6d696e040000000000000004000000000100000000000000036d696e0200000000000000080000000000000001030000000000000008bff0000000000000030000000000000008bff0000000000000030000000000000008bff0000000000000",
+      "schema_sha256": "f5f205435874c9454583a7c787bead1d2167f730f5e7e1edb7721a6fcd5ba11e",
+      "content_sha256": "6575f5a98a564e52f6e3f9556c2fcb3a012f768796d87397fb60d4e6f9d60634"
+    },
+    {
+      "name": "trigger_population_timestamp_boundaries",
+      "role": "trigger_population",
+      "fields": [
+        {
+          "name": "experiment_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "unit_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "first_trigger_ts",
+          "type": "TIMESTAMP_UTC_US",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "experiment_id",
+        "unit_id"
+      ],
+      "rows": [
+        {
+          "experiment_id": "exp",
+          "unit_id": "u-min",
+          "first_trigger_ts": "0001-01-01T00:00:00Z"
+        },
+        {
+          "experiment_id": "exp",
+          "unit_id": "u-max",
+          "first_trigger_ts": "9999-12-31T23:59:59.999999Z"
+        }
+      ],
+      "schema_bytes_hex": "000000030000000d6578706572696d656e745f6964010000000007756e69745f696401000000001066697273745f747269676765725f74730500",
+      "rows_bytes_hex": "00000003010000000000000003657870010000000000000005752d6d61780500000000000000080384440ccc735fff00000003010000000000000003657870010000000000000005752d6d696e050000000000000008ff23400100d44000",
+      "schema_sha256": "6dd0c2dc2675d1cfdc31ebecab6ddbac63ecd9ddcfeda697fed16c4313f8fe65",
+      "content_sha256": "e6f2b464a34479cb54aa671fa816f45673df6fa5d80d4785f0354c03b0c54a91"
+    },
+    {
+      "name": "site_volume_date_boundaries",
+      "role": "site_volume",
+      "fields": [
+        {
+          "name": "experiment_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "ds",
+          "type": "DATE",
+          "nullable": false
+        },
+        {
+          "name": "measure_key",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "n_events",
+          "type": "INT64",
+          "nullable": false
+        },
+        {
+          "name": "sum_value",
+          "type": "FLOAT64",
+          "nullable": false
+        },
+        {
+          "name": "min_value",
+          "type": "FLOAT64",
+          "nullable": false
+        },
+        {
+          "name": "max_value",
+          "type": "FLOAT64",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "experiment_id",
+        "ds",
+        "measure_key"
+      ],
+      "rows": [
+        {
+          "experiment_id": "exp",
+          "ds": "0001-01-01",
+          "measure_key": "min",
+          "n_events": 1,
+          "sum_value": 0.0,
+          "min_value": 0.0,
+          "max_value": 0.0
+        },
+        {
+          "experiment_id": "exp",
+          "ds": "9999-12-31",
+          "measure_key": "max",
+          "n_events": 2,
+          "sum_value": 1.0,
+          "min_value": 1.0,
+          "max_value": 1.0
+        }
+      ],
+      "schema_bytes_hex": "000000070000000d6578706572696d656e745f6964010000000002647304000000000b6d6561737572655f6b65790100000000086e5f6576656e747302000000000973756d5f76616c75650300000000096d696e5f76616c75650300000000096d61785f76616c75650300",
+      "rows_bytes_hex": "00000007010000000000000003657870040000000000000004fff506c60100000000000000036d696e020000000000000008000000000000000103000000000000000800000000000000000300000000000000080000000000000000030000000000000008000000000000000000000007010000000000000003657870040000000000000004002cc0a00100000000000000036d617802000000000000000800000000000000020300000000000000083ff00000000000000300000000000000083ff00000000000000300000000000000083ff0000000000000",
+      "schema_sha256": "bf5adc519a2a6cd8112cfbd3411e98997a713d49a69f0c9cf231b237dcbbea3b",
+      "content_sha256": "19f54daedc6b1bbe0973f3d09c37c6e1d1d4b5e1eb0552f5ece0e33d800f908e"
+    },
+    {
+      "name": "encouragement_uptake_v2_timestamp_and_null",
+      "role": "encouragement_uptake",
+      "fields": [
+        {
+          "name": "experiment_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "unit_id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "uptake",
+          "type": "BOOLEAN",
+          "nullable": false
+        },
+        {
+          "name": "first_uptake_ts",
+          "type": "TIMESTAMP_UTC_US",
+          "nullable": true
+        }
+      ],
+      "primary_key": [
+        "experiment_id",
+        "unit_id"
+      ],
+      "rows": [
+        {
+          "experiment_id": "exp",
+          "unit_id": "u-0",
+          "uptake": true,
+          "first_uptake_ts": "1970-01-01T00:00:00Z"
+        },
+        {
+          "experiment_id": "exp",
+          "unit_id": "u-1",
+          "uptake": false,
+          "first_uptake_ts": null
+        }
+      ],
+      "schema_bytes_hex": "000000040000000d6578706572696d656e745f6964010000000007756e69745f6964010000000006757074616b6506000000000f66697273745f757074616b655f74730501",
+      "rows_bytes_hex": "00000004010000000000000003657870010000000000000003752d3006000000000000000101050000000000000008000000000000000000000004010000000000000003657870010000000000000003752d3106000000000000000100000000000000000000",
+      "schema_sha256": "10530143b1c6f8bf4afdb98acc4c78ef0d3b316576acd04a9faecb336ba39793",
+      "content_sha256": "92a44cb6bc1003bebe33c8eb2c0b9e6309a69846191a01897f3b0fa4ec3644ae"
+    }
+  ],
+  "refusals": [
+    {
+      "name": "nonfinite_float",
+      "code": "artifact.digest.nonfinite",
+      "input": "NaN"
+    },
+    {
+      "name": "null_schema_type",
+      "code": "artifact.digest.schema",
+      "input": "NULL"
+    },
+    {
+      "name": "timestamp_without_utc",
+      "code": "artifact.digest.timestamp",
+      "input": "1970-01-01T00:00:00"
+    }
+  ],
+  "special_vectors": [
+    {
+      "name": "unicode_delimiter_strings",
+      "role": "special_unicode_nullable",
+      "fields": [
+        {
+          "name": "id",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "label",
+          "type": "STRING",
+          "nullable": true
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "rows": [
+        {
+          "id": "u-😀|\u0000",
+          "label": null
+        },
+        {
+          "id": "u-𐀀",
+          "label": "é|\u0000"
+        }
+      ],
+      "schema_bytes_hex": "000000020000000269640100000000056c6162656c0101",
+      "rows_bytes_hex": "00000002010000000000000006752df0908080010000000000000004c3a97c0000000002010000000000000008752df09f98807c00000000000000000000",
+      "schema_sha256": "af12c349241f6e850f5749eebbde21486a5f693bdcf718611ec4fc3bd3965ee0",
+      "content_sha256": "6c30f2ea55a97b295a1f76c0b51577997864d59aefc17370eeeb77f40e57eeb8"
+    },
+    {
+      "name": "int64_boundaries",
+      "role": "codec_int64_boundaries",
+      "fields": [
+        {
+          "name": "key",
+          "type": "STRING",
+          "nullable": false
+        },
+        {
+          "name": "value",
+          "type": "INT64",
+          "nullable": false
+        }
+      ],
+      "primary_key": [
+        "key"
+      ],
+      "rows": [
+        {
+          "key": "min",
+          "value": -9223372036854775808
+        },
+        {
+          "key": "max",
+          "value": 9223372036854775807
+        }
+      ],
+      "schema_bytes_hex": "00000002000000036b657901000000000576616c75650200",
+      "rows_bytes_hex": "000000020100000000000000036d61780200000000000000087fffffffffffffff000000020100000000000000036d696e0200000000000000088000000000000000",
+      "schema_sha256": "00bce2eef81b8cb4a675e56a87706abba0a1cd660e1adb7442974ea99a4a7113",
+      "content_sha256": "ad5218924fb662277de16ffb8370f2fe076f3a7a669e8093057ad58a9f4bcf74"
+    }
+  ],
+  "manifest_vectors": [
+    {
+      "name": "manifest_generation_1",
+      "body": {
+        "artifact_format": 1,
+        "artifact_id": "00000000-0000-0000-0000-000000000001",
+        "generation_id": "00000000-0000-0000-0000-000000000002",
+        "experiment_id": "exp",
+        "manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "manifest_sha256": "5cc74112d005a969bb6155e00310c2ece3125349ddbb307f74725af62c268644"
+    },
+    {
+      "name": "manifest_generation_2",
+      "body": {
+        "artifact_format": 1,
+        "artifact_id": "00000000-0000-0000-0000-000000000001",
+        "generation_id": "00000000-0000-0000-0000-000000000003",
+        "experiment_id": "exp",
+        "manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "manifest_sha256": "2d5ecffd77b61e7db41cd0321c60aae11b7deb223878a0df98e553aa2b3f5e9d"
+    },
+    {
+      "name": "context_literal",
+      "body": {
+        "context_format": 1,
+        "canonical_json": "{\"a\":1,\"z\":\"é\"}",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "context_sha256": "4246266765a2cb9ef04323ea9ec6068cd0d9e180bc77e20b2a4362756b38b7d9"
+    }
+  ]
+}

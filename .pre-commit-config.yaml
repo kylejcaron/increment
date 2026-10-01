@@ -1,0 +1,67 @@
+# Hooks are scoped to an explicit allowlist: source, tests, and the config
+# that gates the build.
+files: |
+  (?x)^(
+    increment/.*
+    |tests/.*
+    |scripts/.*
+    |integration/.*
+    |calibration/.*
+    |conftest\.py
+    |docs/.*\.py
+    |examples/.*\.ya?ml
+    |\.github/.*\.ya?ml
+    |noxfile\.py
+    |pyproject\.toml
+    |\.pre-commit-config\.yaml
+    |Makefile
+    |vulture_whitelist\.py
+  )$
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.0
+    hooks:
+      - id: ruff-check
+        types_or: [python, pyi]
+        args: ["--fix", "--output-format=full"]
+      - id: ruff-format
+        types_or: [python, pyi]
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-toml
+      - id: check-yaml
+      - id: debug-statements
+      # Size is worth checking repo-wide, so this one opts out of the allowlist.
+      - id: check-added-large-files
+        files: ""
+  # Type-checking uses the Nox session so hooks install every optional
+  # integration dependency before checking the complete repository.
+  - repo: local
+    hooks:
+      - id: ty-check
+        name: ty check
+        entry: uv run --with nox nox -s typecheck
+        language: system
+        pass_filenames: false
+      - id: prose-audit
+        name: comment and docstring prose audit
+        entry: uv run python scripts/audit_verbosity.py --gate
+        language: system
+        types: [python]
+      - id: fast-tests
+        name: fast unit tests
+        entry: make test-fast
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+      # Keep the two test tiers separate; calling `make check` would repeat lint/typecheck.
+      - id: slow-tests
+        name: functional slow tests
+        entry: make test-slow
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

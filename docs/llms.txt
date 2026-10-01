@@ -1,0 +1,22 @@
+# Increment
+
+> Increment is an open-source Python library for warehouse-native A/B testing, causal inference, and experiment analysis.
+
+Analyze randomized experiments from dataframes or SQL warehouses, or
+observational treatments from dataframes. Increment supports CUPED, power
+analysis, MDE, sequential and always-valid inference, SRM diagnostics, IPTW,
+DML, AIPW, encouragement designs, and heterogeneous treatment effects.
+
+It does not assign traffic, manage feature flags, ingest events, or maintain a
+separate event store.
+
+## Documentation
+
+- [README](https://raw.githubusercontent.com/kylejcaron/increment/main/README.md): Project overview and installation.
+- [Quickstart](https://raw.githubusercontent.com/kylejcaron/increment/main/docs/guides/quickstart.md): Analyze A/B tests from Python dataframes.
+- [Method selection](https://raw.githubusercontent.com/kylejcaron/increment/main/docs/guides/choose-a-method.md): Choose a design and estimator from the treatment process and analysis goal.
+- [Data model](https://raw.githubusercontent.com/kylejcaron/increment/main/docs/guides/data-model.md): Declare warehouse sources, exposures, metrics, and experiments.
+- [Observational causal inference](https://raw.githubusercontent.com/kylejcaron/increment/main/docs/guides/observational.md): Use IPTW, DML, and AIPW with explicit causal assumptions.
+- [CUPED](https://raw.githubusercontent.com/kylejcaron/increment/main/docs/guides/cuped.md): Reduce variance with pre-treatment data.
+- [Power analysis](https://raw.githubusercontent.com/kylejcaron/increment/main/docs/guides/power-analysis.md): Calculate sample size, power, and MDE.
+- [API reference](https://raw.githubusercontent.com/kylejcaron/increment/main/docs/api.md): Public Python API.

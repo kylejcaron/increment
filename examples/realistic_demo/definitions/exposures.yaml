@@ -1,0 +1,9 @@
+# ── Exposures ─────────────────────────────────────────────────────────────
+
+exposures:
+  - name: checkout_trigger
+    fact: exposure
+    description: >
+      Exposure is the first `exposure` event in fact_exposure -- the
+      triggered subset of `fact_assignment`'s bucketed users who actually
+      reached the checkout surface.

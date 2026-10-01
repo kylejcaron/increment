@@ -1,0 +1,448 @@
+{
+  "alpha": 0.05,
+  "compliance": {
+    "alpha": "1/20",
+    "alternative": "two-sided",
+    "family": false,
+    "null_lift": "0"
+  },
+  "declared": true,
+  "inference": {
+    "kind": "asymptotic_mean",
+    "registration": {
+      "asymptotic_family": "e_bh",
+      "committed_before_data": true,
+      "control_group": "control",
+      "definitions_id": "d61a04bba043803aa05b3cd1bc8c7577bee1f0d7510f61c4b01a0ff8cd0916b0",
+      "models": [
+        {
+          "assignment": "iid_fixed_bernoulli_randomization",
+          "consistency_and_no_interference": true,
+          "construction": "direct_shifted_contrast_v1",
+          "law": "scalar_mean",
+          "metric": "orders",
+          "moments": "finite_2_plus_delta",
+          "observable": "outcome",
+          "positive_limiting_variance": true,
+          "positive_population_control": true,
+          "rho": "1460119446673205/36028797018963968",
+          "segment_membership": "pre_assignment",
+          "start_count": 2,
+          "treatment_probability": "1/2",
+          "unit_model": "iid_stationary_potential_outcomes",
+          "validity_regime": "asymptotic_sequential"
+        },
+        {
+          "assignment": "iid_fixed_bernoulli_randomization",
+          "consistency_and_no_interference": true,
+          "construction": "direct_shifted_contrast_v1",
+          "law": "scalar_mean",
+          "metric": "revenue",
+          "moments": "finite_2_plus_delta",
+          "observable": "outcome",
+          "positive_limiting_variance": true,
+          "positive_population_control": true,
+          "rho": "1460119446673205/36028797018963968",
+          "segment_membership": "pre_assignment",
+          "start_count": 2,
+          "treatment_probability": "1/2",
+          "unit_model": "iid_stationary_potential_outcomes",
+          "validity_regime": "asymptotic_sequential"
+        },
+        {
+          "control_prior": {
+            "a": "1",
+            "b": "1",
+            "kappa": null,
+            "kind": "beta",
+            "mean": [],
+            "nu": null,
+            "scale": []
+          },
+          "law": "bernoulli",
+          "metric": "uptake",
+          "observable": "uptake",
+          "positive_population_control": true,
+          "positive_population_denominators": false,
+          "treatment_prior": {
+            "a": "1",
+            "b": "1",
+            "kappa": null,
+            "kind": "beta",
+            "mean": [],
+            "nu": null,
+            "scale": []
+          }
+        }
+      ],
+      "q": "3602879701896397/36028797018963968",
+      "reveal": {
+        "filtration_id": "7d3aab04cbd1a26d0c204bbc2d9fd69261e4f1c730967afa4a8425286d01cb99",
+        "immutable_finalized_outcomes": true,
+        "independent_unit_vectors": true,
+        "longest_window_days": 0,
+        "outcome_independent_order": true,
+        "simultaneous_metrics": true
+      },
+      "roster": [
+        {
+          "alpha": "3602879701896397/72057594037927936",
+          "alternative": "two-sided",
+          "estimand": "itt",
+          "family": true,
+          "group_id": "treatment",
+          "metric": "orders",
+          "null_lift": "0",
+          "segment": []
+        },
+        {
+          "alpha": "3602879701896397/72057594037927936",
+          "alternative": "two-sided",
+          "estimand": "itt",
+          "family": false,
+          "group_id": "treatment",
+          "metric": "revenue",
+          "null_lift": "0",
+          "segment": []
+        },
+        {
+          "alpha": "1/20",
+          "alternative": "two-sided",
+          "estimand": "compliance",
+          "family": false,
+          "group_id": "treatment",
+          "metric": "uptake",
+          "null_lift": "0",
+          "segment": []
+        }
+      ],
+      "source_id": "frame",
+      "version": 2
+    }
+  },
+  "path": "frame",
+  "procedures": {
+    "orders": {
+      "alpha": 0.05,
+      "alternative": "two-sided",
+      "axis": "relative",
+      "decision_method": {
+        "name": "unadjusted",
+        "variance_reduction": "none"
+      },
+      "family": {
+        "family": {
+          "axes": [
+            "metric",
+            "arm"
+          ],
+          "correction": "e_bh",
+          "guarantee": "fdr",
+          "kind": "multiplicity",
+          "name": "secondary",
+          "q": 0.1,
+          "validity_regime": "asymptotic_sequential"
+        },
+        "member": true
+      },
+      "inference": {
+        "kind": "asymptotic_mean",
+        "registration": {
+          "asymptotic_family": "e_bh",
+          "committed_before_data": true,
+          "control_group": "control",
+          "definitions_id": "d61a04bba043803aa05b3cd1bc8c7577bee1f0d7510f61c4b01a0ff8cd0916b0",
+          "models": [
+            {
+              "assignment": "iid_fixed_bernoulli_randomization",
+              "consistency_and_no_interference": true,
+              "construction": "direct_shifted_contrast_v1",
+              "law": "scalar_mean",
+              "metric": "orders",
+              "moments": "finite_2_plus_delta",
+              "observable": "outcome",
+              "positive_limiting_variance": true,
+              "positive_population_control": true,
+              "rho": "1460119446673205/36028797018963968",
+              "segment_membership": "pre_assignment",
+              "start_count": 2,
+              "treatment_probability": "1/2",
+              "unit_model": "iid_stationary_potential_outcomes",
+              "validity_regime": "asymptotic_sequential"
+            },
+            {
+              "assignment": "iid_fixed_bernoulli_randomization",
+              "consistency_and_no_interference": true,
+              "construction": "direct_shifted_contrast_v1",
+              "law": "scalar_mean",
+              "metric": "revenue",
+              "moments": "finite_2_plus_delta",
+              "observable": "outcome",
+              "positive_limiting_variance": true,
+              "positive_population_control": true,
+              "rho": "1460119446673205/36028797018963968",
+              "segment_membership": "pre_assignment",
+              "start_count": 2,
+              "treatment_probability": "1/2",
+              "unit_model": "iid_stationary_potential_outcomes",
+              "validity_regime": "asymptotic_sequential"
+            },
+            {
+              "control_prior": {
+                "a": "1",
+                "b": "1",
+                "kappa": null,
+                "kind": "beta",
+                "mean": [],
+                "nu": null,
+                "scale": []
+              },
+              "law": "bernoulli",
+              "metric": "uptake",
+              "observable": "uptake",
+              "positive_population_control": true,
+              "positive_population_denominators": false,
+              "treatment_prior": {
+                "a": "1",
+                "b": "1",
+                "kappa": null,
+                "kind": "beta",
+                "mean": [],
+                "nu": null,
+                "scale": []
+              }
+            }
+          ],
+          "q": "3602879701896397/36028797018963968",
+          "reveal": {
+            "filtration_id": "7d3aab04cbd1a26d0c204bbc2d9fd69261e4f1c730967afa4a8425286d01cb99",
+            "immutable_finalized_outcomes": true,
+            "independent_unit_vectors": true,
+            "longest_window_days": 0,
+            "outcome_independent_order": true,
+            "simultaneous_metrics": true
+          },
+          "roster": [
+            {
+              "alpha": "3602879701896397/72057594037927936",
+              "alternative": "two-sided",
+              "estimand": "itt",
+              "family": true,
+              "group_id": "treatment",
+              "metric": "orders",
+              "null_lift": "0",
+              "segment": []
+            },
+            {
+              "alpha": "3602879701896397/72057594037927936",
+              "alternative": "two-sided",
+              "estimand": "itt",
+              "family": false,
+              "group_id": "treatment",
+              "metric": "revenue",
+              "null_lift": "0",
+              "segment": []
+            },
+            {
+              "alpha": "1/20",
+              "alternative": "two-sided",
+              "estimand": "compliance",
+              "family": false,
+              "group_id": "treatment",
+              "metric": "uptake",
+              "null_lift": "0",
+              "segment": []
+            }
+          ],
+          "source_id": "frame",
+          "version": 2
+        }
+      },
+      "kind": "relative",
+      "methods_explicitly_empty": false,
+      "metric": "orders",
+      "null_lift": 0.0,
+      "prior": null,
+      "prior_is_global": true,
+      "role": "secondary",
+      "scale": "relative",
+      "sensitivity_methods": []
+    },
+    "revenue": {
+      "alpha": 0.05,
+      "alternative": "two-sided",
+      "axis": "relative",
+      "decision_method": {
+        "name": "unadjusted",
+        "variance_reduction": "none"
+      },
+      "family": {
+        "family": {
+          "kind": "none"
+        },
+        "member": false
+      },
+      "inference": {
+        "kind": "asymptotic_mean",
+        "registration": {
+          "asymptotic_family": "e_bh",
+          "committed_before_data": true,
+          "control_group": "control",
+          "definitions_id": "d61a04bba043803aa05b3cd1bc8c7577bee1f0d7510f61c4b01a0ff8cd0916b0",
+          "models": [
+            {
+              "assignment": "iid_fixed_bernoulli_randomization",
+              "consistency_and_no_interference": true,
+              "construction": "direct_shifted_contrast_v1",
+              "law": "scalar_mean",
+              "metric": "orders",
+              "moments": "finite_2_plus_delta",
+              "observable": "outcome",
+              "positive_limiting_variance": true,
+              "positive_population_control": true,
+              "rho": "1460119446673205/36028797018963968",
+              "segment_membership": "pre_assignment",
+              "start_count": 2,
+              "treatment_probability": "1/2",
+              "unit_model": "iid_stationary_potential_outcomes",
+              "validity_regime": "asymptotic_sequential"
+            },
+            {
+              "assignment": "iid_fixed_bernoulli_randomization",
+              "consistency_and_no_interference": true,
+              "construction": "direct_shifted_contrast_v1",
+              "law": "scalar_mean",
+              "metric": "revenue",
+              "moments": "finite_2_plus_delta",
+              "observable": "outcome",
+              "positive_limiting_variance": true,
+              "positive_population_control": true,
+              "rho": "1460119446673205/36028797018963968",
+              "segment_membership": "pre_assignment",
+              "start_count": 2,
+              "treatment_probability": "1/2",
+              "unit_model": "iid_stationary_potential_outcomes",
+              "validity_regime": "asymptotic_sequential"
+            },
+            {
+              "control_prior": {
+                "a": "1",
+                "b": "1",
+                "kappa": null,
+                "kind": "beta",
+                "mean": [],
+                "nu": null,
+                "scale": []
+              },
+              "law": "bernoulli",
+              "metric": "uptake",
+              "observable": "uptake",
+              "positive_population_control": true,
+              "positive_population_denominators": false,
+              "treatment_prior": {
+                "a": "1",
+                "b": "1",
+                "kappa": null,
+                "kind": "beta",
+                "mean": [],
+                "nu": null,
+                "scale": []
+              }
+            }
+          ],
+          "q": "3602879701896397/36028797018963968",
+          "reveal": {
+            "filtration_id": "7d3aab04cbd1a26d0c204bbc2d9fd69261e4f1c730967afa4a8425286d01cb99",
+            "immutable_finalized_outcomes": true,
+            "independent_unit_vectors": true,
+            "longest_window_days": 0,
+            "outcome_independent_order": true,
+            "simultaneous_metrics": true
+          },
+          "roster": [
+            {
+              "alpha": "3602879701896397/72057594037927936",
+              "alternative": "two-sided",
+              "estimand": "itt",
+              "family": true,
+              "group_id": "treatment",
+              "metric": "orders",
+              "null_lift": "0",
+              "segment": []
+            },
+            {
+              "alpha": "3602879701896397/72057594037927936",
+              "alternative": "two-sided",
+              "estimand": "itt",
+              "family": false,
+              "group_id": "treatment",
+              "metric": "revenue",
+              "null_lift": "0",
+              "segment": []
+            },
+            {
+              "alpha": "1/20",
+              "alternative": "two-sided",
+              "estimand": "compliance",
+              "family": false,
+              "group_id": "treatment",
+              "metric": "uptake",
+              "null_lift": "0",
+              "segment": []
+            }
+          ],
+          "source_id": "frame",
+          "version": 2
+        }
+      },
+      "kind": "relative",
+      "methods_explicitly_empty": false,
+      "metric": "revenue",
+      "null_lift": 0.0,
+      "prior": null,
+      "prior_is_global": true,
+      "role": "primary",
+      "scale": "relative",
+      "sensitivity_methods": []
+    }
+  },
+  "q": 0.1,
+  "view_policies": {
+    "asof": {
+      "axes": [
+        "metric",
+        "arm"
+      ],
+      "correction": "none",
+      "guarantee": "none",
+      "kind": "multiplicity",
+      "name": "asof",
+      "q": null
+    },
+    "encouragement_breakout": {
+      "axes": [
+        "metric",
+        "arm",
+        "segment"
+      ],
+      "correction": "none",
+      "guarantee": "none",
+      "kind": "multiplicity",
+      "name": "breakout",
+      "q": null
+    },
+    "randomized_breakout": {
+      "axes": [
+        "metric",
+        "arm",
+        "segment"
+      ],
+      "correction": "bh",
+      "guarantee": "fdr",
+      "kind": "multiplicity",
+      "name": "breakout",
+      "q": 0.1
+    }
+  },
+  "wire_version": 3
+}

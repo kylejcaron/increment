@@ -1,0 +1,213 @@
+#compatibility-reference {
+  --compat-border: color-mix(in srgb, currentColor 24%, transparent);
+  --compat-surface: color-mix(in srgb, currentColor 6%, transparent);
+
+  /* Semantic status colors, keyed by the exact snake_case values
+     scripts/render_compatibility.py's STATUS_LABELS admits (runtime:
+     supported/limited/refused/not_applicable/unknown; family adds
+     participates/excluded). Color is additive, never the only signal --
+     every element these are applied to (`.compatibility-cell`,
+     `#compatibility-drawer dd`) already shows the status word via
+     text/aria-label; these tokens only add a semantic tint on top.
+     Chosen and pinned (test_status_colors_meet_wcag_aa_contrast_against_the_page_background)
+     for >=4.5:1 contrast (WCAG 2.1 AA, normal text) against a white
+     page background. The slate (dark) override block below repeats the
+     same check against mkdocs-material's slate background. Distinct
+     hues throughout so no two statuses that can appear side by side
+     (a scenario's Runtime and Family fields) read as the same color:
+     supported=green, limited=amber, refused=red, not_applicable=neutral
+     gray, unknown=purple (deliberately neither green/amber/red so an
+     unclassified combination never *looks* like a real verdict),
+     participates=blue, excluded=mauve. */
+  --compat-status-supported: #1e7d32;
+  --compat-status-limited: #8a5a00;
+  --compat-status-refused: #b3261e;
+  --compat-status-not-applicable: #5f6368;
+  --compat-status-unknown: #6a3fb5;
+  --compat-status-participates: #0b5fa5;
+  --compat-status-excluded: #8a4566;
+}
+
+/* Same semantic tokens, re-pointed at lighter/desaturated-enough hues to
+   clear >=4.5:1 contrast against mkdocs-material's slate background
+   (`[data-md-color-scheme="slate"]`, itself `hsl(225deg 15% 14%)`) --
+   the light-scheme values above fail that contrast in dark mode. */
+[data-md-color-scheme="slate"] #compatibility-reference {
+  --compat-status-supported: #6fcf7d;
+  --compat-status-limited: #f2b84b;
+  --compat-status-refused: #ff8a80;
+  --compat-status-not-applicable: #b5b9bf;
+  --compat-status-unknown: #c4a3ff;
+  --compat-status-participates: #7fb8f0;
+  --compat-status-excluded: #e2a8c4;
+}
+
+/* The static <details> fallback (#compatibility-static-details) is the
+   no-JS baseline -- always visible until compatibility.js finishes
+   initializing. Once it has (marked by the .compatibility-js-enhanced
+   class the script adds to #compatibility-reference), the interactive
+   matrix/pair buttons and drawer take over and the static block is
+   hidden so it can never visibly duplicate them. If JS fails before
+   reaching that point, the class is never added and this fallback
+   stays visible. */
+.compatibility-js-enhanced #compatibility-static-details {
+  display: none;
+}
+
+.compatibility-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.compatibility-matrix,
+.compatibility-pairs {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.compatibility-matrix th,
+.compatibility-matrix td,
+.compatibility-pairs th,
+.compatibility-pairs td {
+  padding: 0.5rem;
+  border: 1px solid var(--compat-border);
+  white-space: nowrap;
+}
+
+/* The matrix stays single-word cells (nowrap keeps every column the
+   same width down the table); the pairs table's Reason column is
+   free text and reads better wrapped than horizontally scrolled. */
+.compatibility-pairs td:last-child {
+  white-space: normal;
+}
+
+.compatibility-matrix tbody th {
+  position: sticky;
+  left: 0;
+  background: var(--md-default-bg-color);
+  z-index: 1;
+}
+
+/* The header row itself stays in normal flow (Critical fix: it must
+   NOT share the tbody row headers left:0 rule, or every metric column
+   heading pins to the same spot and overlaps on scroll) -- except its
+   own corner cell, which labels the pinned row-header column and so
+   is pinned to match it, one tier above so it draws over scrolled
+   body rows. */
+.compatibility-matrix thead th:first-child {
+  position: sticky;
+  left: 0;
+  background: var(--md-default-bg-color);
+  z-index: 2;
+}
+
+.compatibility-cell {
+  width: 100%;
+  border: 0;
+  padding: 0.45rem;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+/* Semantic coloring for every matrix/pair status button (via the
+   `data-status` attribute scripts/render_compatibility.py emits) and for
+   the drawer's Runtime/Family fields and each cataloged interaction's
+   nested fields (the `dd` compatibility.js's `render()`/
+   `buildRecordFields()` tag with the same attribute). `color` only --
+   background stays whatever `.compatibility-cell`/`#compatibility-drawer
+   dd` already set, and the status word itself remains the accessible
+   name and the primary signal; this is a supplementary tint, never the
+   only way to tell statuses apart. */
+.compatibility-cell[data-status="supported"],
+#compatibility-drawer dd[data-status="supported"] {
+  color: var(--compat-status-supported);
+}
+
+.compatibility-cell[data-status="limited"],
+#compatibility-drawer dd[data-status="limited"] {
+  color: var(--compat-status-limited);
+}
+
+.compatibility-cell[data-status="refused"],
+#compatibility-drawer dd[data-status="refused"] {
+  color: var(--compat-status-refused);
+}
+
+.compatibility-cell[data-status="not_applicable"],
+#compatibility-drawer dd[data-status="not_applicable"] {
+  color: var(--compat-status-not-applicable);
+}
+
+.compatibility-cell[data-status="unknown"],
+#compatibility-drawer dd[data-status="unknown"] {
+  color: var(--compat-status-unknown);
+}
+
+#compatibility-drawer dd[data-status="participates"] {
+  color: var(--compat-status-participates);
+}
+
+#compatibility-drawer dd[data-status="excluded"] {
+  color: var(--compat-status-excluded);
+}
+
+.compatibility-cell:focus-visible {
+  outline: 3px solid var(--md-accent-fg-color);
+  outline-offset: 2px;
+}
+
+.compatibility-cell[aria-current="true"],
+#compatibility-drawer {
+  background: var(--compat-surface);
+}
+
+#compatibility-drawer {
+  margin-block: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--compat-border);
+}
+
+#compatibility-drawer dl {
+  display: grid;
+  grid-template-columns: minmax(7rem, auto) 1fr;
+  gap: 0.5rem 1rem;
+}
+
+#compatibility-drawer dt {
+  font-weight: 700;
+}
+
+#compatibility-drawer dd {
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+/* Each cataloged interaction for the selected matrix cell is a native
+   <details>/<summary> the reader opens independently -- no JS toggle
+   logic, no re-render on open/close. The left border visually nests it
+   under the "Known interactions" heading without a boxed/card look. */
+.compatibility-interactions summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.compatibility-interactions details {
+  margin-block: 0.5rem;
+  padding-inline-start: 0.75rem;
+  border-inline-start: 2px solid var(--compat-border);
+}
+
+.compatibility-interactions dl {
+  margin-block-start: 0.5rem;
+}
+
+@media (max-width: 720px) {
+  #compatibility-drawer dl {
+    grid-template-columns: 1fr;
+  }
+
+  #compatibility-drawer dd {
+    margin-inline-start: 0;
+  }
+}

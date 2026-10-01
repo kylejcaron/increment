@@ -1,0 +1,393 @@
+"""Planning for the runtime's exact binomial risk-ratio decision.
+
+A binomial-eligible conversion or retention plan reports the probability that
+the unchanged runtime decision (``binomial_rr.p_plus``/``p_minus`` below the
+compiled tail allocation) rejects, integrated over the binomial count law at
+the analyzed integer counts.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from typing import Any
+
+import numpy as np
+import pytest
+from scipy.stats import binom
+
+from increment.estimation import binomial_rr
+from increment.estimation.arm_contract import ArmPlanningProcedure, RelativeDecisionPolicy
+from increment.power import (
+    Baseline,
+    PowerDesign,
+    PowerResult,
+    achieved_power,
+    minimum_detectable_effect,
+    power_curve,
+    required_sample_size,
+)
+from increment.power._binomial import BinomialDecision, RejectionGeometry
+from tests.power._procedures import make_procedure
+
+
+def _runtime_power(
+    n_c: int, n_t: int, p_c: float, p_t: float, procedure: ArmPlanningProcedure
+) -> float:
+    """Independent enumeration of the unchanged runtime decision over every
+    count pair."""
+    decision = procedure.decision
+    assert isinstance(decision, RelativeDecisionPolicy)
+    r0 = 1.0 + decision.null_lift
+    beta = binomial_rr.nuisance_beta(procedure.compiled_alpha)
+    tail = procedure.compiled_tail_alpha
+    total = 0.0
+    w_t = binom.pmf(np.arange(n_t + 1), n_t, p_t)
+    for x_c, w_c in enumerate(binom.pmf(np.arange(n_c + 1), n_c, p_c)):
+        for x_t in range(n_t + 1):
+            plus = binomial_rr.p_plus(r0, x_c, n_c, x_t, n_t, beta)
+            minus = binomial_rr.p_minus(r0, x_c, n_c, x_t, n_t, beta)
+            if decision.alternative == "greater":
+                rejects = plus < tail
+            elif decision.alternative == "less":
+                rejects = minus < tail
+            else:
+                rejects = min(plus, minus) < tail
+            total += w_c * w_t[x_t] * rejects
+    return total
+
+
+def _conversion(**overrides: Any) -> ArmPlanningProcedure:
+    return make_procedure(
+        metric_type="conversion",
+        identification="randomized",
+        population="assigned",
+        variance_adjustment="none",
+        **overrides,
+    )
+
+
+class TestExactRouteMatchesRuntime:
+    """(a) The exact route integrates the runtime's own decisions."""
+
+    @pytest.mark.parametrize(
+        ("n_t", "allocation", "p_c", "lift", "overrides"),
+        [
+            (15, 0.6, 0.3, 0.8, {}),
+            (12, 0.5, 0.25, 0.9, {"alternative": "greater", "null_lift": 0.2, "alpha": 0.01}),
+            (10, 0.4, 0.5, -0.6, {"alternative": "less", "null_lift": -0.2}),
+        ],
+    )
+    def test_power_equals_enumerated_runtime_rejections(
+        self, n_t, allocation, p_c, lift, overrides
+    ):
+        procedure = _conversion(**overrides)
+        design = PowerDesign(allocation=allocation)
+        result = achieved_power(n_t, lift, Baseline.from_proportion(p_c), procedure, design)
+        n_c = result.n_total - result.n_per_arm
+        expected = _runtime_power(n_c, n_t, p_c, p_c * (1.0 + lift), procedure)
+        assert result.power_basis == "exact"
+        assert result.power == pytest.approx(expected, abs=1e-11)
+
+    @pytest.mark.slow
+    @pytest.mark.parametrize(
+        ("n_c", "n_t", "null_ratio", "alpha", "tail", "alternative"),
+        [
+            (20, 30, 1.0, 0.05, 0.025, "two-sided"),
+            (40, 60, 1.2, 0.01, 0.01, "greater"),
+            (60, 40, 0.8, 0.05, 0.05, "less"),
+        ],
+    )
+    def test_every_decision_equals_the_runtime(
+        self, n_c, n_t, null_ratio, alpha, tail, alternative
+    ):
+        beta = binomial_rr.nuisance_beta(alpha)
+        decision = BinomialDecision(n_c, n_t, null_ratio, beta, tail, alternative)
+        plus_cells, minus_cells = RejectionGeometry(decision, "exact").cells(0, n_c, 0, n_t)
+        for x_c in range(n_c + 1):
+            for x_t in range(n_t + 1):
+                plus = binomial_rr.p_plus(null_ratio, x_c, n_c, x_t, n_t, beta) < tail
+                minus = binomial_rr.p_minus(null_ratio, x_c, n_c, x_t, n_t, beta) < tail
+                assert plus_cells[x_c, x_t] == ("plus" in decision.kinds and plus)
+                assert minus_cells[x_c, x_t] == ("minus" in decision.kinds and minus)
+
+
+class TestConversionExample:
+    """(b) At 701 per arm, 10% baseline and a 50% lift the Wald model
+    reported 0.8004; the runtime decision rejects with probability 0.7144."""
+
+    _BASELINE = Baseline.from_proportion(0.1)
+    _PROCEDURE = ArmPlanningProcedure.standard("conversion")
+
+    @pytest.mark.slow
+    def test_achieved_power_is_the_runtime_rejection_probability(self):
+        result = achieved_power(701, 0.5, self._BASELINE, self._PROCEDURE)
+        assert result.power_basis == "exact"
+        assert result.power == pytest.approx(0.7144117742557778, abs=1e-11)
+        # The companion effect reaches the target at the runtime decision.
+        assert result.mde_relative is not None
+        at_mde = achieved_power(701, result.mde_relative, self._BASELINE, self._PROCEDURE)
+        assert at_mde.power >= PowerDesign().power
+
+    @pytest.mark.slow
+    def test_required_sample_size_reaches_target_at_its_integer_size(self):
+        sized = required_sample_size(0.5, self._BASELINE, self._PROCEDURE)
+        assert sized.power_basis == "exact"
+        assert sized.n_per_arm == 832
+        assert sized.power >= 0.8
+        assert sized.power == pytest.approx(0.8001358214147365, abs=1e-11)
+        smaller = achieved_power(sized.n_per_arm - 1, 0.5, self._BASELINE, self._PROCEDURE)
+        assert smaller.power < 0.8
+
+
+def test_triggered_sizing_agrees_with_achieved_power_at_its_assigned_size():
+    """The size search runs over assigned units, so the returned size and
+    its assigned predecessor are judged at the analyzed counts
+    ``achieved_power`` uses."""
+    baseline = Baseline(mean=0.3, var=0.21, trigger_rate=0.35)
+    procedure = ArmPlanningProcedure.standard("conversion")
+    sized = required_sample_size(0.8, baseline, procedure)
+    replay = achieved_power(sized.n_per_arm, 0.8, baseline, procedure)
+    assert (replay.power, replay.power_basis) == (sized.power, sized.power_basis)
+    assert replay.n_triggered_per_arm == sized.n_triggered_per_arm
+    assert sized.power_basis == "exact"
+    assert sized.power >= PowerDesign().power
+    assert achieved_power(sized.n_per_arm - 1, 0.8, baseline, procedure).power < 0.8
+
+
+def test_sizing_is_refused_only_by_the_selected_route(monkeypatch):
+    """At a (constructed) arm ceiling of 150 treatment units the approximate
+    replay stays below target while the exact decision reaches it: the
+    approximate proposal must not refuse a design the exact route can size."""
+    from increment.power import core
+
+    procedure = _conversion(alternative="greater", null_lift=0.2, alpha=0.01)
+    baseline = Baseline.from_proportion(0.1)
+    exact = achieved_power(150, 2.5, baseline, procedure, PowerDesign(allocation=0.6667))
+    n_c = exact.n_total - exact.n_per_arm
+    decision = BinomialDecision(n_c, 150, 1.2, binomial_rr.nuisance_beta(0.01), 0.01, "greater")
+    approximate = RejectionGeometry(decision, "approximate").evaluate(0.1, 0.35).power
+    target = (approximate + exact.power) / 2.0
+    assert exact.power_basis == "exact" and approximate < target < exact.power
+    design = PowerDesign(power=target, allocation=0.6667)
+
+    monkeypatch.setattr(core, "_binomial_arm_ceiling", lambda design, floor, baseline: 150)
+    sized = required_sample_size(2.5, baseline, procedure, design)
+    assert sized.power_basis == "exact"
+    assert sized.n_per_arm <= 150
+    assert sized.power >= target
+    assert achieved_power(sized.n_per_arm, 2.5, baseline, procedure, design).power == sized.power
+    assert achieved_power(sized.n_per_arm - 1, 2.5, baseline, procedure, design).power < target
+
+
+@pytest.mark.parametrize(
+    ("reject_margin", "inferred"),
+    [(2.0 * 5e-11, False), (math.nextafter(2.0 * 5e-11, 1.0), True)],
+)
+def test_rejection_is_inferred_only_beyond_twice_the_rounding(monkeypatch, reject_margin, inferred):
+    """The replay rejects only at a strictly positive margin, so a neighbour's
+    rejection margin of exactly twice the rounding room certifies nothing;
+    one representable step above it does."""
+    from increment.power import _binomial
+
+    assert _binomial._ROOT_ROUNDING == 5e-11
+
+    def margins(decision, groups, g, j):
+        return np.full(j.size, -1.0), np.full(j.size, reject_margin)
+
+    monkeypatch.setattr(_binomial, "_root_margins", margins)
+    decision = BinomialDecision(50, 50, 1.0, binomial_rr.nuisance_beta(0.05), 0.05, "greater")
+    ints = np.array([0])
+    groups = _binomial._Groups(
+        kind=ints,
+        x_c=np.array([5]),
+        a=np.array([0.1]),
+        hi=np.array([0.2]),
+        wlo=ints,
+        width=np.array([51]),
+        omitted=np.zeros(1),
+        margin=np.zeros(1),
+        j0=np.array([0]),
+        j1=np.array([20]),
+        dmin=ints,
+        dmax=ints,
+        offsets=np.zeros((1, 1), np.int64),
+    )
+    j = np.arange(21)
+    settled, rejected = _binomial._root_settled(decision, groups, np.zeros(21, np.int64), j)
+    assert settled.tolist() == [inferred] * 21
+    assert rejected.tolist() == [inferred] * 21
+
+
+class TestApproximateRoute:
+    """(c) The Normal-tail replay stays within the errors the feasibility
+    study measured against the runtime on its retained witness rows."""
+
+    # ((n_c, n_t), (p_c, p_t), alpha, null ratio, alternative, runtime power,
+    # the replay's power measured in the feasibility study).
+    _WITNESSES = (
+        ((20, 20), (0.05, 0.25), 0.05, 1.0, "two-sided", 0.123815805538, 0.123815805538),
+        ((40, 60), (0.1, 0.25), 0.01, 1.2, "greater", 0.014667364180, 0.012439421342),
+        ((60, 40), (0.3, 0.1), 0.05, 0.8, "less", 0.083402470113, 0.083402470113),
+        ((25, 25), (0.8, 0.95), 0.05, 1.0, "two-sided", 0.051897357556, 0.051897357556),
+        ((100, 100), (0.01, 0.15), 0.05, 1.0, "two-sided", 0.816115665003, 0.816115665003),
+        ((75, 150), (0.1, 0.35), 0.01, 1.2, "greater", 0.625496290137, 0.617596569857),
+        ((100, 100), (0.5, 0.75), 0.05, 1.0, "two-sided", 0.924221311024, 0.923878905738),
+        ((20, 30), (0.4, 0.95), 0.05, 2.0, "greater", 0.085496937736, 0.085496937736),
+    )
+
+    @pytest.mark.parametrize("witness", _WITNESSES)
+    def test_power_error_within_measured_error(self, witness):
+        (n_c, n_t), (p_c, p_t), alpha, ratio, alternative, runtime, measured = witness
+        tail = alpha / 2.0 if alternative == "two-sided" else alpha
+        decision = BinomialDecision(
+            n_c, n_t, ratio, binomial_rr.nuisance_beta(alpha), tail, alternative
+        )
+        geometry = RejectionGeometry(decision, "approximate")
+        approximate = geometry.evaluate(p_c, p_t).power
+        assert geometry.route == "approximate"
+        # Twelve printed digits plus the windows' omitted mass.
+        assert abs(approximate - runtime) <= abs(measured - runtime) + 2e-12
+
+    def test_rare_large_arm_witness_decisions(self):
+        """Counts ``(1e6, 4e6, 100, j)``: the runtime rejects at ``j = 511``
+        (p+ 0.023945) where the replay's p+ is 0.025486; both reject from
+        512 and neither at 510."""
+        n_c, n_t = 1_000_000, 4_000_000
+        beta = binomial_rr.nuisance_beta(0.05)
+        decision = BinomialDecision(n_c, n_t, 1.0, beta, 0.025, "greater")
+        plus, _ = RejectionGeometry(decision, "approximate").cells(100, 100, 510, 512)
+        runtime = [binomial_rr.p_plus(1.0, 100, n_c, j, n_t, beta) < 0.025 for j in (510, 511, 512)]
+        assert runtime == [False, True, True]
+        assert plus[0].tolist() == [False, False, True]
+
+    def test_plans_beyond_the_cell_budget_are_approximate(self):
+        result = achieved_power(2_600, 0.1, Baseline.from_proportion(0.1), _conversion())
+        assert result.power_basis == "approximate"
+        assert 0.0 < result.power < 1.0
+
+    @pytest.mark.parametrize(
+        ("n_c", "n_t", "p", "ratio", "alternative"),
+        [
+            (300, 300, 0.1, 1.0, "two-sided"),
+            (150, 600, 0.3, 0.9, "greater"),
+            (400, 400, 0.5, 1.2, "less"),
+        ],
+    )
+    def test_inferred_root_exits_match_replaying_every_count(
+        self, monkeypatch, n_c, n_t, p, ratio, alternative
+    ):
+        """Counts whose root exit is inferred from a neighbour's margin get
+        the decision their own replay gives, across whole rows (including
+        rows constant at both ends) and the band around each crossing."""
+        from increment.power import _binomial
+
+        tail = 0.025 if alternative == "two-sided" else 0.05
+        decision = BinomialDecision(
+            n_c, n_t, ratio, binomial_rr.nuisance_beta(0.05), tail, alternative
+        )
+        wc = _binomial._window(n_c, p)
+        j_lo = _binomial._window(n_t, ratio * p * 0.6).lo
+        j_hi = _binomial._window(n_t, min(1.0, ratio * p * 1.7)).hi
+        requests = [
+            _binomial._Request(x, kind, j_lo, j_hi)
+            for x in range(max(0, wc.lo - 60), min(n_c, wc.hi + 60) + 1)
+            for kind in decision.kinds
+        ]
+        inferred = _binomial.classify(decision, "approximate", requests)
+
+        def replay_everything(decision, groups, group, j):
+            return np.zeros(j.size, bool), np.zeros(j.size, bool)
+
+        monkeypatch.setattr(_binomial, "_root_settled", replay_everything)
+        replayed = _binomial.classify(decision, "approximate", requests)
+        rows = [np.asarray(mask) for mask in replayed]
+        assert any(row.all() or not row.any() for row in rows)
+        assert any(row.any() and not row.all() for row in rows)
+        for got, expected in zip(inferred, rows, strict=True):
+            assert np.array_equal(got, expected)
+
+
+class TestRouting:
+    """(d) The basis is a function of the inputs, and every plan the runtime
+    does not decide with the binomial test keeps the log-ratio model."""
+
+    def test_repeated_calls_agree(self):
+        baseline = Baseline.from_proportion(0.2)
+        first = achieved_power(120, 0.4, baseline, _conversion())
+        second = achieved_power(120, 0.4, baseline, _conversion())
+        assert first == second
+        assert first.power_basis == "exact"
+
+    @pytest.mark.parametrize(
+        "procedure",
+        [
+            make_procedure(),
+            make_procedure(metric_type="conversion"),
+            _conversion(decision_method="cuped"),
+            ArmPlanningProcedure.standard("conversion", clustered=True),
+        ],
+        ids=["mean", "absorbed_conversion", "cuped_conversion", "clustered_conversion"],
+    )
+    def test_non_binomial_plans_are_asymptotic(self, procedure):
+        overrides: dict[str, float] = {}
+        if procedure.decision_method.variance_reduction == "cuped":
+            overrides["cuped_rho"] = 0.3
+        if procedure.dependence == "cluster":
+            overrides.update(cluster_icc=0.01, avg_cluster_size=5.0)
+        baseline = Baseline(mean=0.1, var=0.09, **overrides)
+        for result in (
+            achieved_power(2_000, 0.2, baseline, procedure),
+            minimum_detectable_effect(2_000, baseline, procedure),
+            required_sample_size(0.2, baseline, procedure),
+        ):
+            assert result.power_basis == "asymptotic"
+
+    def test_sequential_conversion_is_asymptotic(self):
+        from increment.semantics.models import InferenceSpec
+
+        procedure = ArmPlanningProcedure.standard(
+            "conversion", inference=InferenceSpec(kind="asymptotic_mean")
+        )
+        result = achieved_power(2_000, 0.2, Baseline.from_proportion(0.1), procedure)
+        assert result.power_basis == "asymptotic"
+
+
+class TestPowerBasisSurvivesSerialization:
+    """(e) The basis travels with every serialized form."""
+
+    def test_result_round_trips(self):
+        result = achieved_power(60, 0.8, Baseline.from_proportion(0.2), _conversion())
+        assert result.power_basis == "exact"
+        dumped = result.model_dump(mode="json")
+        assert dumped["power_basis"] == "exact"
+        assert PowerResult.model_validate(json.loads(json.dumps(dumped))) == result
+
+    @pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
+    def test_curve_rows_and_frames_carry_the_basis(self, backend):
+        curve = power_curve(
+            n_per_arm=[60],
+            relative_lift=[0.5, 0.8],
+            baseline=Baseline.from_proportion(0.2),
+            procedure=[_conversion(), make_procedure()],
+        )
+        expected = ["exact", "asymptotic", "exact", "asymptotic"]
+        assert [row["power_basis"] for row in curve.to_dicts()] == expected
+        frame: Any = curve.to_frame(backend=backend)
+        column = frame["power_basis"]
+        values = column.to_pylist() if backend == "pyarrow" else list(column)
+        assert [str(value) for value in values] == expected
+
+    def test_curve_matches_scalar_solvers(self):
+        baseline = Baseline.from_proportion(0.2)
+        curve = power_curve(
+            n_per_arm=60, relative_lift=[0.5, 0.8], baseline=baseline, procedure=_conversion()
+        )
+        for point, lift in zip(curve, (0.5, 0.8), strict=True):
+            direct = achieved_power(60, lift, baseline, _conversion())
+            assert (point.power, point.power_basis, point.mde_relative) == (
+                direct.power,
+                direct.power_basis,
+                direct.mde_relative,
+            )
+            assert math.isfinite(point.power)

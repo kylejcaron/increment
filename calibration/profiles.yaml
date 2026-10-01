@@ -1,0 +1,231 @@
+# Execution profiles for the certification campaigns.
+#
+# `delta` is the scientific excess-error tolerance, not a runtime setting: a
+# profile names one of the enumerated tolerances below and can never supply a
+# free value. Loosening it weakens the claim, so a certificate records the
+# tolerance it was produced under and is invalid for any other.
+#
+# The hashed manifest remains the declared design. A profile only selects which
+# declared cells execute and how they stop; cells a profile omits are reported
+# as uncertified rather than silently dropped.
+#
+# Two campaigns declare profiles here. The I15 calibration campaign owns this
+# document's root; the I11 sequential campaign owns the `sequential` section at
+# the bottom. The `tolerances` and `stopping` enumerations below are shared,
+# because those name what a certificate claims and neither campaign may invent
+# a tolerance the other has never heard of.
+
+tolerances:
+  # The declared release tolerance: accept coverage within 0.005 of nominal.
+  # A tolerance is stated at the reference nominal error 0.05 and scales down
+  # proportionally below it, so a small q is never swamped by a flat
+  # allowance; at 0.005 that reproduces the repository's scientific_delta.
+  strict: 0.005
+  # Reduced-hardware tolerance. Certifies a materially weaker claim; n scales
+  # as 1/delta^2, so this is ~4x cheaper than `strict`.
+  reduced: 0.01
+
+cell_sets:
+  # Every case in the manifest.
+  all:
+    rule: every-case
+  # One case per distinct arm shape and clipping quantile. Covers the sizing
+  # and quantile axes; does NOT cover every distribution family, so cells it
+  # omits are reported uncertified.
+  representative:
+    rule: one-per-axis-combination
+    axes: [n_c, n_t, quantile]
+
+# The CLASS of stopping rule, which is what the claim depends on and what
+# stays stable across procedure changes.
+stopping:
+  # Fixed repetition count, certified by the exact one-sided Clopper-Pearson
+  # upper bound on the miss rate. The reported object is that bound.
+  - fixed
+  # Stop as soon as the accumulated evidence decides. The reported object is
+  # a sequential decision, not a confidence bound.
+  - sequential
+
+# A profile that stops sequentially must ALSO name the exact procedure in its
+# own `sequential_rule` field. The two are deliberately separate: `stopping`
+# names the class of rule, which a certificate's claim depends on, while
+# `sequential_rule` pins the concrete versioned procedure that produced the
+# evidence. Swapping in a different sequential procedure bumps the rule id and
+# leaves `stopping: sequential` true, instead of turning the profile value
+# itself into a lie. The valid rule ids are the ones `calibration.stopping`
+# implements (currently only `sprt-v1`, a Wald SPRT whose two error
+# probabilities are the fixed design's own at its operating point); a profile
+# naming anything else is refused at load, so configuration can never
+# advertise a procedure nothing can execute. `stopping: fixed` must omit the
+# field entirely -- a stray rule id there would misreport the evidence.
+
+profiles:
+  # Full declared claim. Not runnable on developer hardware: ~193 core-hours
+  # even sequentially. Intended for rented compute.
+  release:
+    tolerance: strict
+    cells: all
+    stopping: fixed
+
+  # Full matrix with sequential stopping, for rented compute.
+  release-sequential:
+    tolerance: strict
+    cells: all
+    stopping: sequential
+    sequential_rule: sprt-v1
+
+  # What a developer machine can actually certify. Weaker tolerance and a
+  # representative subset; every omitted cell is reported uncertified.
+  local:
+    tolerance: reduced
+    cells: representative
+    stopping: sequential
+    sequential_rule: sprt-v1
+
+# ---------------------------------------------------------------------------
+# The I11 sequential certification campaign.
+#
+# Its cells are the frozen runtime cases of `principal_manifest()`, identified
+# by `name`, and its gates are the acceptance bounds `case_acceptance_gates`
+# binds to each one. The declared design states every budgeted gate at the
+# scientific excess 1/200 with a Monte-Carlo margin of exactly half that, and
+# each availability gate at its slack with a margin of a quarter of it. A
+# profile's tolerance rescales BOTH numbers by the same ratio, so a gate keeps
+# its declared shape and only its resolution moves. The replication count is
+# set by the margin, not by the tolerance, so it falls as 1/ratio^2 -- the
+# reduced tolerance is ~4x cheaper per cell and claims proportionally less.
+# At the strict tolerance the ratio is 1 and every gate, the per-decision
+# error and the whole replication ledger are bit-identical to the declared
+# design.
+#
+# NO PROFILE HERE CERTIFIES THE WHOLE MANIFEST, and that is not a gap to be
+# closed later. Even after a measured 2,361x of guarantee-preserving speedups
+# the full manifest is months on 12 cores (157 days when it was measured at
+# 1,033 cells; the 817 that remain cost less, not enough less), so the
+# campaign is a LADDER of budgeted tiers and every tier reports the cells it
+# did not reach as uncertified. The whole-manifest figure is recorded under
+# `full_manifest_reference` so nobody has to rediscover it, and it is
+# deliberately not declarable as a profile.
+sequential:
+  # Cost is concentrated in a handful of cells -- the cheapest 60% of the
+  # manifest carries 1.33% of the cost -- so a budgeted tier must admit cells
+  # by cost, never by position in the manifest. This is the measured model
+  # that orders them.
+  #
+  # MODELLED, NOT MEASURED, per cell. The model was fitted by the I11 cost
+  # analysis against 7 timed replications; residual ratios 0.69-1.24 on the six
+  # cost-bearing anchors, so every figure derived from it carries a +/-35%
+  # per-case band. Reach is therefore a prediction. The budget is close to one:
+  # the runner meters actual core-seconds and stops admitting cells once the
+  # declared budget is spent, so a model error costs reach and can never
+  # certify a cell that did not run. Admission is checked before a cell starts,
+  # so a run overruns by at most the cost of the cell that crossed the budget.
+  cost_model:
+    provenance: >-
+      I11 sequential-campaign cost analysis. Per-look, per-cell inference
+      timings taken on the real capture path with both lru_caches cleared at
+      each look, plus a direct grid over units per arm from single-capture
+      snapshots; the knee is where that grid transitions and `cheap` is the
+      sub-knee plateau. Reproduces the analysis's own frozen per-case table to
+      3.1e-15 relative across all 1033 cases of the manifest it was fitted on;
+      the 817 cells that remain, the six timed anchors among them, are unchanged.
+    band: 0.35
+    # The larger arm crosses the knee first and the exact kernels are flat in
+    # n above it, so the larger arm's unit count is what drives per-look cost.
+    unit_scale: max-allocation
+    # Which looks pay for inverting the confidence sequence. Every gated
+    # statistic except scalar_mean's rejects(), which IS the asymptotic set,
+    # is read at the stopped look, so only that look pays -- and scalar_mean
+    # pays at every look, where the set is closed-form and costs nothing.
+    bounds_at: stopped-look
+    laws:
+      bernoulli:      {knee: 50,   cheap: 0.0013, certificate: 0.120, bounds: 0.330}
+      gaussian:       {knee: 12,   cheap: 0.0100, certificate: 0.014, bounds: 0.200}
+      gaussian_ratio: {knee: 48,   cheap: 0.0450, certificate: 0.041, bounds: 2.150}
+      scalar_mean:    {knee: null, cheap: 0.0054, certificate: 0.000, bounds: 0.0054}
+    # The executed route builds no records, so a tier pays no capture cost.
+    # The two record-bearing modes are retained because the timed anchors the
+    # coefficients were fitted against were measured on the raw-record path,
+    # and a model that cannot reproduce its own anchors cannot be checked.
+    capture: none
+    capture_coefficients:
+      # Cubic ancestor replay, as the snapshot identity behaved when the
+      # anchors were timed.
+      pre-fix:  {per_pass: 1.100e-6, per_record: 9.700e-6}
+      # The two irreducible passes per look that remain now that validation is
+      # flat in ancestor count.
+      post-fix: {per_pass: 3.942e-6, per_record: 3.846e-6}
+
+  # Ranking must not depend on the tier doing the ranking, so a cell's cost is
+  # always stated at the DECLARED ledger's replication requirement. A tier's
+  # own run is cheaper -- it recomputes the per-decision error over only the
+  # cells it certifies, sizes Bernoulli gates by the exact binomial, and
+  # curtails them sequentially -- and that saving shows up as headroom against
+  # the metered budget rather than as a moving ranking.
+  full_manifest_reference:
+    cases: 817
+    # Sum of every cell's modelled core-hours at the declared ledger's
+    # replication requirement (9,058,572.00; 9,277,901 before the 216
+    # finite-look cells left the manifest).
+    modelled_core_hours: 9058572
+    # Measured on the 1,033-cell manifest. The speedup stack is not part of the
+    # declared model, so this is not re-derivable here; the smaller manifest
+    # costs less, so it bounds the current figure from above.
+    twelve_core_days_after_the_full_speedup_stack: 157
+    note: >-
+      Not a profile. The whole manifest is not certifiable on any schedule this
+      project has; the ladder below is what a certificate can honestly cover.
+
+  cell_sets:
+    # Budgets are modelled core-hours under `cost_model`, and each was chosen
+    # to admit the reach the campaign plan calls for. Reach is stated as the
+    # prediction it is; the budget is what the runner enforces.
+    smoke-budget:      # admits 73 of 817
+      rule: cheapest-within-budget
+      budget_core_hours: 650
+    nightly-budget:    # admits 176 of 817
+      rule: cheapest-within-budget
+      budget_core_hours: 6100
+    weekly-budget:     # admits 373 of 817
+      rule: cheapest-within-budget
+      budget_core_hours: 49600
+    release-budget:    # admits 675 of 817
+      rule: cheapest-within-budget
+      budget_core_hours: 990000
+
+  # Every tier stops sequentially. The SPRT inherits its two error
+  # probabilities from the fixed design's own operating characteristic, so it
+  # weakens nothing, and without it no tier above `smoke` is runnable at all.
+  # A cell whose truth sits near the rule's indifference rate exhausts the cap
+  # and resolves `unresolved`; the campaign reports that cell as uncertified
+  # rather than accepting it by default.
+  profiles:
+    # The cheapest cells that fit a coffee break. Reduced tolerance.
+    smoke:
+      tolerance: reduced
+      cells: smoke-budget
+      stopping: sequential
+      sequential_rule: sprt-v1
+
+    # A nightly job's worth. Reduced tolerance.
+    nightly:
+      tolerance: reduced
+      cells: nightly-budget
+      stopping: sequential
+      sequential_rule: sprt-v1
+
+    # A weekend's worth at the declared tolerance.
+    weekly:
+      tolerance: strict
+      cells: weekly-budget
+      stopping: sequential
+      sequential_rule: sprt-v1
+
+    # The strongest claim this campaign can make: the declared tolerance over
+    # every cell that fits a rented-compute budget. It still leaves 142 cells
+    # uncertified and says which.
+    release:
+      tolerance: strict
+      cells: release-budget
+      stopping: sequential
+      sequential_rule: sprt-v1

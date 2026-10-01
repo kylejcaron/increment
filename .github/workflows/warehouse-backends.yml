@@ -1,0 +1,103 @@
+name: warehouse-backends
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend_mode:
+        description: Backend gates to run
+        type: choice
+        options: [all, postgres, cloud]
+        default: all
+  workflow_call:
+    inputs:
+      backend_mode:
+        description: "Backend gates to run: all, postgres, or cloud (Snowflake and BigQuery)."
+        required: false
+        type: string
+        default: all
+
+permissions:
+  contents: read
+
+env:
+  UV_LOCKED: "1"
+
+jobs:
+  # Invalid reusable-workflow inputs must fail, not skip every backend.
+  reject-unknown-backend-mode:
+    if: ${{ inputs.backend_mode != 'all' && inputs.backend_mode != 'postgres' && inputs.backend_mode != 'cloud' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: |
+          echo "::error::backend_mode must be all, postgres or cloud; got '$MODE'"
+          exit 1
+        env: {MODE: "${{ inputs.backend_mode }}"}
+
+  postgres:
+    if: ${{ inputs.backend_mode == 'all' || inputs.backend_mode == 'postgres' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env: {POSTGRES_PASSWORD: increment, POSTGRES_DB: increment_test}
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with: {enable-cache: true, python-version: "3.12"}
+      - run: uv run --with nox nox -s tests_warehouse_postgres
+        env:
+          INCREMENT_TEST_POSTGRES_HOST: localhost
+          INCREMENT_TEST_POSTGRES_PORT: "5432"
+          INCREMENT_TEST_POSTGRES_USER: postgres
+          INCREMENT_TEST_POSTGRES_PASSWORD: increment
+          INCREMENT_TEST_POSTGRES_DB: increment_test
+
+  # Cloud gates share scratch resources: serialize each backend across runs.
+  # Required credentials fail rather than silently skipping live probes.
+  snowflake:
+    if: ${{ inputs.backend_mode == 'all' || inputs.backend_mode == 'cloud' }}
+    concurrency:
+      group: live-snowflake-backend
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with: {enable-cache: true, python-version: "3.12"}
+      - run: uv run --with nox nox -s tests_warehouse_snowflake
+        env:
+          INCREMENT_TEST_SNOWFLAKE_ACCOUNT: ${{ secrets.INCREMENT_TEST_SNOWFLAKE_ACCOUNT }}
+          INCREMENT_TEST_SNOWFLAKE_USER: ${{ secrets.INCREMENT_TEST_SNOWFLAKE_USER }}
+          INCREMENT_TEST_SNOWFLAKE_PRIVATE_KEY: ${{ secrets.INCREMENT_TEST_SNOWFLAKE_PRIVATE_KEY }}
+          INCREMENT_TEST_SNOWFLAKE_WAREHOUSE: ${{ secrets.INCREMENT_TEST_SNOWFLAKE_WAREHOUSE }}
+          INCREMENT_TEST_SNOWFLAKE_DATABASE: ${{ secrets.INCREMENT_TEST_SNOWFLAKE_DATABASE }}
+          INCREMENT_TEST_SNOWFLAKE_SCHEMA: ${{ secrets.INCREMENT_TEST_SNOWFLAKE_SCHEMA }}
+
+  bigquery:
+    if: ${{ inputs.backend_mode == 'all' || inputs.backend_mode == 'cloud' }}
+    concurrency:
+      group: live-bigquery-backend
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with: {enable-cache: true, python-version: "3.12"}
+      - name: Write service-account key
+        run: printf '%s' "$SA_KEY" > "$RUNNER_TEMP/gcp-sa.json"
+        env: {SA_KEY: "${{ secrets.INCREMENT_TEST_BIGQUERY_SA_KEY }}"}
+      - run: uv run --with nox nox -s tests_warehouse_bigquery
+        env:
+          INCREMENT_TEST_BIGQUERY_PROJECT: ${{ secrets.INCREMENT_TEST_BIGQUERY_PROJECT }}
+          INCREMENT_TEST_BIGQUERY_DATASET: ${{ secrets.INCREMENT_TEST_BIGQUERY_DATASET }}
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/gcp-sa.json

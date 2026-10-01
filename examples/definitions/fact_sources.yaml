@@ -1,0 +1,52 @@
+# ── Fact Sources ──────────────────────────────────────────────────────────
+#
+# Each fact source is a SQL relation (table, view, or CTE) whose rows are
+# events.  The semantic layer validates these SQL strings at load time but
+# never builds or executes them itself — that's the query layer's job.
+#
+# Facts are the event-level value columns you aggregate into metrics.
+# Properties are categorical / dimensional columns you filter on.
+
+dialect: duckdb
+
+fact_sources:
+  - name: event_log
+    sql: |
+      SELECT *
+      FROM analytics.event_log
+      WHERE event_at >= '2024-01-01'
+    timestamp_column: event_at
+    entities:
+      - user_id
+      - session_id
+    facts:
+      - name: page_view
+        column: null
+        description: A user viewed a page (occurrence-only event)
+      - name: purchase
+        column: revenue
+        description: A purchase event with revenue amount
+      - name: session_start
+        column: null
+        description: A session was started
+      - name: session_end
+        column: duration_s
+        description: Session ended with duration in seconds
+    properties:
+      - name: country
+        column: country_code
+        dtype: string
+        as_of: static
+        description: >-
+          Geographic region, fixed per unit for the unit's lifetime (the
+          seeded population assigns it once). as_of=static: the breakout
+          lookup is unscoped — correct only because the value cannot change
+          during the experiment.
+      - name: platform
+        column: device_type
+        dtype: string
+        description: Device platform (ios / android / web)
+      - name: plan_tier
+        column: plan
+        dtype: string
+        description: User's plan at event time (free / pro / enterprise)
