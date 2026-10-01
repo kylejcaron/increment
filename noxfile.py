@@ -195,6 +195,17 @@ def tests_warehouse_snowflake(session: nox.Session) -> None:
     _sync(session, "dev", "warehouse-backends", extras=("demo",))
     session.run(
         "pytest",
+        "tests/query/test_session.py::test_hosted_metadata_creation_targets_the_explicit_catalog",
+        "-q",
+        "-k",
+        "snowflake",
+        "-m",
+        "",
+        "-p",
+        "no:tach",
+    )
+    session.run(
+        "pytest",
         "integration/warehouse_execution/test_snowflake_execution.py",
         "-q",
         "-m",
@@ -210,6 +221,17 @@ def tests_warehouse_snowflake(session: nox.Session) -> None:
 def tests_warehouse_bigquery(session: nox.Session) -> None:
     """Execute real BigQuery probes; missing credentials fail."""
     _sync(session, "dev", "warehouse-backends", extras=("demo",))
+    session.run(
+        "pytest",
+        "tests/query/test_session.py::test_hosted_metadata_creation_targets_the_explicit_catalog",
+        "-q",
+        "-k",
+        "bigquery",
+        "-m",
+        "",
+        "-p",
+        "no:tach",
+    )
     session.run(
         "pytest",
         "integration/warehouse_execution/test_bigquery_execution.py",

@@ -1118,8 +1118,9 @@ def run_artifact_explicit_catalog_probe(con, dialect: str) -> None:
 
     A probe-owned scratch namespace is addressed as ``catalog=<scratch catalog>,
     schema_name=<scratch schema>`` (the catalog is the connection's current project
-    or database on Snowflake and BigQuery, where the store qualifies ``create_table``
-    with a dotted string). A minimal generation is published and left published; a
+    or database on Snowflake and BigQuery). Snowflake qualifies ``create_table``
+    with a dotted namespace; BigQuery uses a fully qualified table name and bare
+    dataset. A minimal generation is published and left published; a
     FRESH store built the same way lists it, ``open_snapshot`` reads its manifest,
     ``drop_generation`` makes it invisible and refuses reads with
     ``artifact.generation.dropped``, and both relations are gone from the namespace.

@@ -130,6 +130,10 @@ materialization, and cleanup isolation—not just SQL compilation. PostgreSQL
 additionally checks parity against dataframe oracles. Their CI schedule is
 described above.
 
+Cloud Nox sessions also execute credential-free namespace regression cases
+through the installed backend's real DDL compiler. The generated SQL runs in
+DuckDB; these cases do not substitute for the live probes.
+
 Snowflake and BigQuery run weekly or on manual dispatch, not on every PR or
 main push. Before merging warehouse changes, dispatch the existing workflow
 on the reviewed, trusted PR branch and wait for both cloud jobs:
