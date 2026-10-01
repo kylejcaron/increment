@@ -650,6 +650,10 @@ def run_artifact_confidentiality_probe(con, dialect: str) -> None:
     events = _qualified_table_identifier(con, dialect, "events_confidentiality_smoke")
     users = _qualified_table_identifier(con, dialect, "users_confidentiality_smoke")
     enrolled = _qualified_table_identifier(con, dialect, "enrolled_confidentiality_smoke")
+    unit = _quoted_identifier(dialect, "user_id")
+    unit_alias = _quoted_identifier(dialect, "unit_id")
+    timestamp = _quoted_identifier(dialect, "ts")
+    group = _quoted_identifier(dialect, "group_id")
     yaml = f"""
 dialect: {dialect}
 fact_sources:
@@ -679,9 +683,9 @@ dim_sources:
       - {{name: unused_segment, column: segment, dtype: string, as_of: static}}
 exposures:
   - name: enrollment
-    sql: SELECT user_id AS unit_id, ts, group_id FROM {enrolled} /* {secrets["exposure_used"]} */
+    sql: SELECT {unit} AS {unit_alias}, {timestamp}, {group} FROM {enrolled} /* {secrets["exposure_used"]} */
   - name: unused_enrollment
-    sql: SELECT user_id AS unit_id, ts, group_id FROM {enrolled} /* {secrets["exposure_unused"]} */
+    sql: SELECT {unit} AS {unit_alias}, {timestamp}, {group} FROM {enrolled} /* {secrets["exposure_unused"]} */
 metrics:
   - name: conversion
     type: conversion

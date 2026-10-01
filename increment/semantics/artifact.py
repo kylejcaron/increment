@@ -31,6 +31,7 @@ from increment.semantics.models import (
 
 _ARTIFACT_DIGEST_ROOT = b"increment.unit-day-artifact\x00v1\x00"
 _ARTIFACT_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
+_ARTIFACT_CATALOG_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$-]*$")
 _ARTIFACT_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 RelationRole = Literal[
@@ -95,11 +96,12 @@ def _artifact_scalar(value: str, field_name: str) -> str:
 
 def _artifact_identifier(value: str, field_name: str) -> str:
     value = _artifact_scalar(value, field_name)
-    if not _ARTIFACT_IDENTIFIER_RE.fullmatch(value):
+    pattern = _ARTIFACT_CATALOG_RE if field_name == "catalog" else _ARTIFACT_IDENTIFIER_RE
+    if not pattern.fullmatch(value):
         _definition_refusal(
             "definition.single_sql_identifier",
             f"{field_name} must be a single SQL identifier "
-            "(letters, digits, '_', '$'; no quoting or separators)",
+            "(letters, digits, '_', '$', '-' in catalogs; no quoting or separators)",
             field_name=field_name,
         )
     return value

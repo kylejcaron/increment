@@ -187,6 +187,35 @@ def test_relation_locator_alias_and_identifier_syntax_are_strict():
         RelationLocator(schema_name="analytics.prod", name="table")
 
 
+def test_relation_locator_round_trips_a_hyphenated_catalog():
+    locator = RelationLocator(catalog="release-project-123", schema="analytics", name="unit_day")
+    restored = RelationLocator.model_validate_json(locator.model_dump_json())
+    assert restored.catalog == "release-project-123"
+    assert restored.schema_name == "analytics"
+    assert restored.name == "unit_day"
+
+
+@pytest.mark.parametrize(
+    "catalog",
+    [
+        "release.project",
+        '"release-project"',
+        "`release-project`",
+        "release project",
+        "release;drop",
+    ],
+)
+def test_relation_locator_refuses_sql_fragments_in_catalog(catalog):
+    with pytest.raises(DefinitionError):
+        RelationLocator(catalog=catalog, schema="analytics", name="unit_day")
+
+
+@pytest.mark.parametrize("field", ["schema_name", "name"])
+def test_relation_locator_keeps_non_catalog_identifiers_strict(field):
+    with pytest.raises(DefinitionError):
+        RelationLocator(**{"name": "unit_day", field: "not-an-identifier"})
+
+
 def test_ref_and_required_relation_bindings_refuse_tampering():
     manifest = _manifest()
     bad = manifest.model_dump()
