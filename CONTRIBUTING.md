@@ -94,6 +94,14 @@ Snowflake, and BigQuery checks live under `integration/warehouse_execution/`
 and require dedicated scratch resources and credentials. Contributors do not
 need those services for ordinary changes.
 
+CI requires lint, fast tests on Python 3.12–3.14, package builds, and live
+PostgreSQL 16 probes through `ci-ok`. The
+[weekly workflow](.github/workflows/weekly.yml) runs Sundays at 08:00 UTC or
+on manual dispatch: full slow/examples suites at latest dependencies and
+floors on all three Python versions, four Monte-Carlo shards on Python 3.12,
+and all three warehouse backends. Test jobs retain evidence for 30 days;
+failures create or update a GitHub issue labelled `weekly-failure`.
+
 Tests run in parallel and must not depend on execution order or state created
 by another test. Mark functional slow tests with `slow`; simulation-based
 coverage, bias, and parameter-recovery checks also use

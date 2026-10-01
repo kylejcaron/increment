@@ -64,7 +64,7 @@ pip install 'ibis-framework[duckdb]'    # or [snowflake], [bigquery], [postgres]
 PostgreSQL, Snowflake and BigQuery each have a live-execution probe suite under
 `integration/warehouse_execution/`. Snowflake and BigQuery additionally have SQL
 compilation checks in the default suite. CI runs the PostgreSQL 16 probes on every pull
-request; all three backends run weekly and at every release through the
+request; all three backends run weekly and on manual dispatch through the
 [warehouse gate](.github/workflows/warehouse-backends.yml), which fails, never skips, when
 credentials are absent. These hosted gates have not yet been observed running, so read the
 tier as verified by developer runs.

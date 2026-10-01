@@ -78,19 +78,25 @@ jobs:
           print(f"{len(mods)} module(s)")
           PY
 
+  warehouse-postgres:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/warehouse-backends.yml
+    with: {backend_mode: postgres}
+
   # Single check to require in the main-review ruleset. A matrix job reports
   # one check per entry ("test (3.12)", ...), so requiring them individually
   # means editing the ruleset every time the matrix changes.
   ci-ok:
     runs-on: ubuntu-latest
-    needs: [lint, test, build]
+    needs: [lint, test, build, warehouse-postgres]
     if: always()
     steps:
       - name: Fail if any upstream job did not succeed
         run: |
           set -euo pipefail
-          results="${{ needs.lint.result }} ${{ needs.test.result }} ${{ needs.build.result }}"
-          echo "lint/test/build -> $results"
+          results="${{ needs.lint.result }} ${{ needs.test.result }} ${{ needs.build.result }} ${{ needs.warehouse-postgres.result }}"
+          echo "lint/test/build/postgres -> $results"
           for r in $results; do
             [ "$r" = "success" ] || { echo "::error::a required job reported '$r'"; exit 1; }
           done
