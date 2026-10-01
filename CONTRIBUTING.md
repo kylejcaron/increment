@@ -109,6 +109,17 @@ coverage, bias, and parameter-recovery checks also use
 [AGENTS.md](AGENTS.md) for the repository's architecture, parity, numerical,
 and test-contract requirements.
 
+### Backend verification
+
+DuckDB runs in the default test suite. Dedicated PostgreSQL, Snowflake, and
+BigQuery probes check live query execution, dataframe/artifact parity,
+materialization, and cleanup isolation—not just SQL compilation. Their CI
+schedule is described above.
+
+Probe coverage is not blanket support for every metric, design, or artifact
+extension. Use the [compatibility matrix](docs/guides/compatibility.md) and
+[statistical limitations](docs/limitations.md) to check the combination you need.
+
 ### Calibration commands
 
 Scientific campaigns and probability probes live in `calibration/`.
