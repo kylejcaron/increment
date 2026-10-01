@@ -390,8 +390,8 @@ def _supervise_process(
     stream: TextIO,
     windows_job: int | None,
     check_interrupt: Callable[[], None],
-) -> int:
-    """Wait for *process*, emitting heartbeats and stopping its group at the deadline."""
+) -> tuple[int, bool]:
+    """Return the exit status and whether the supervisor deadline fired."""
     next_heartbeat = started + heartbeat_seconds
     budget_display = "disabled" if budget_seconds is None else f"{budget_seconds:g}s"
     while True:
@@ -406,12 +406,12 @@ def _supervise_process(
                 flush=True,
             )
             _stop_process_group(process, process.pid, signal.SIGTERM, grace_seconds, windows_job)
-            return _TIMEOUT_STATUS
+            return _TIMEOUT_STATUS, True
         wait_seconds = min(0.1, max(0.01, next_heartbeat - now))
         if remaining is not None:
             wait_seconds = min(remaining, wait_seconds)
         try:
-            return _exit_status(process.wait(timeout=wait_seconds))
+            return _exit_status(process.wait(timeout=wait_seconds)), False
         except subprocess.TimeoutExpired:
             now = time.monotonic()
             if next_heartbeat <= now and (deadline is None or now < deadline):
@@ -460,6 +460,7 @@ def run_with_budget(
     process: subprocess.Popen[bytes] | None = None
     windows_job: int | None = None
     startup_gate: int | None = None
+    timed_out = False
     try:
         process, windows_job, startup_gate = _start_process(
             command,
@@ -471,7 +472,7 @@ def run_with_budget(
             _close_fd(startup_gate)
             startup_gate = None
 
-        status = _supervise_process(
+        status, timed_out = _supervise_process(
             process,
             tier=tier,
             started=started,
@@ -515,7 +516,7 @@ def run_with_budget(
         status = 128 + pending_signal
     termination = (
         "budget_timeout"
-        if status == _TIMEOUT_STATUS
+        if timed_out and pending_signal is None
         else "interrupted"
         if status in (128 + signum for signum in forwarded)
         else "process_exit"
