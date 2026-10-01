@@ -714,7 +714,7 @@ def build_manifest() -> dict:
                 for c in records
                 if c.get("kind") in ("aa", "alternative")
             ),
-            "release_gate": "make test-all plus a complete run_i15_campaign --selection full evidence bundle",
+            "release_gate": "make test-all plus a complete calibration.inference_diagnostics --selection full evidence bundle",
             "acceptance": "Every frozen gate and repetition must pass; deterministic parity and exhaustive labels are necessary but insufficient.",
             "sampling": "Winsor draws sample control then treatment from the original case DGP; each draw invokes the captured-array estimator with its outer ordinal as bootstrap stream, without batching.",
         },
@@ -725,7 +725,7 @@ def build_manifest() -> dict:
         "bound_census": BOUND_CENSUS,
         "bounds_per_case": BOUNDS_PER_CASE,
         "eta": ETA,
-        "runtime_artifacts": "run_i15_campaign output bundle with immutable manifest, shard summaries, and completion status",
+        "runtime_artifacts": "calibration.inference_diagnostics output bundle with immutable manifest, shard summaries, and completion status",
         "reference_derivation": {
             "raw_moments": "LN: E[X^k]=exp(k*mu+k^2*sigma^2/2); Gamma(2,b): b^k*Gamma(2+k); mixtures: weighted sums.",
             "cutoff": "H(c)=w_c*F_c(c)+w_t*F_t(c)=p; w_g=n_g/(n_c+n_t). Analytic CDF, Brent xtol=1e-12, rtol=1e-13.",

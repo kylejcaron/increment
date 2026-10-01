@@ -18,8 +18,6 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 
 def _default(value):
@@ -57,7 +55,7 @@ def _sources():
     files.extend(
         ROOT / name
         for name in (
-            "scripts/run_i13_campaign.py",
+            "calibration/cluster_diagnostics.py",
             "scripts/run_test_tier.py",
             "tests/estimation/_i13_manifest.py",
             "tests/estimation/_i13_adapters.py",
@@ -94,7 +92,7 @@ def _command(function, payload):
     return [
         sys.executable,
         "-c",
-        f"import json, sys; from scripts.run_i13_campaign import {function}; "
+        f"import json, sys; from calibration.cluster_diagnostics import {function}; "
         f"raise SystemExit({function}(json.loads(sys.argv[1])))",
         _json(payload),
     ]
@@ -403,7 +401,7 @@ def _controller(payload):
                     "historical_repetitions": historical_repetitions,
                 },
             ),
-            tier=f"i13-{name}",
+            tier=f"cluster-{name}",
             budget_seconds=min(payload["case_budget"], remaining),
         )
         _write(output / f"{name}-execution.json", {"worker_exit_code": code})
@@ -610,7 +608,7 @@ def main(argv=None):
                 "case_budget": args.case_seconds,
             },
         ),
-        tier="i13-research-campaign",
+        tier="cluster-diagnostics",
         budget_seconds=budget,
     )
     _write(output / "launcher.json", {"controller_exit_code": code, "budget_seconds": budget})

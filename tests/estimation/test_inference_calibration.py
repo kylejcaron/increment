@@ -1,6 +1,6 @@
 """Bounded parity checks and helpers for the frozen inference calibration campaign.
 
-The full 141-case design runs only through scripts.run_i15_campaign and retains
+The full 141-case design runs only through calibration.inference_diagnostics and retains
 its original replication counts. Pytest checks representative parity and exact
 arithmetic; it does not certify the full campaign. CLI evidence is stored in an
 immutable output bundle, including failed gates and refusal counts.
@@ -1276,7 +1276,7 @@ def test_allocation_swap_collapse_certifies_every_declared_twin():
     one of them. This pins the accounting so a twin can never be silently
     dropped, nor silently reported as executed.
     """
-    from scripts.run_i15_campaign import _is_swap_image, _selection
+    from calibration.inference_diagnostics import _is_swap_image, _selection
 
     class _Args:
         case_ids = None
@@ -1325,7 +1325,7 @@ def test_allocation_swap_collapse_refuses_a_broken_premise():
     """A candidate twin that is not an exact swap image must fail loudly."""
     import copy
 
-    from scripts.run_i15_campaign import _allocation_swap_partners
+    from calibration.inference_diagnostics import _allocation_swap_partners
 
     source = copy.deepcopy(CASES["winsor-aa-ln-s0.5-n50-1x4-p0.95"])
     twin = copy.deepcopy(CASES["winsor-aa-ln-s0.5-n50-4x1-p0.95"])
@@ -1342,7 +1342,7 @@ def test_swap_exactness_tracks_lift_scale_representability():
     ``expm1(-b)`` collapses onto -1. Such a draw cannot carry the twin's
     availability count, so the campaign must not count it as exact.
     """
-    from scripts.run_i15_campaign import _observation, _swap_exact
+    from calibration.inference_diagnostics import _observation, _swap_exact
 
     case = CASES["winsor-aa-ln-s0.5-n50-1x4-p0.95"]
 
@@ -1365,7 +1365,7 @@ def test_a_twin_is_only_certified_by_a_source_that_can_carry_it():
     source can fail to stand in for its twin has to surface as an uncertified
     row rather than a silently inherited pass.
     """
-    from scripts.run_i15_campaign import _equivariance_record
+    from calibration.inference_diagnostics import _equivariance_record
 
     item = {"case_id": "twin", "requested": 100, "execution": "certified_by_equivariance"}
     source = {
@@ -1406,8 +1406,8 @@ def test_exact_case_worker_records_its_draws_in_the_journal(tmp_path):
     It once received the output Path where a DrawJournal was due, so the first
     draw raised AttributeError and every exact case lost its accounting.
     """
+    from calibration.inference_diagnostics import _worker
     from calibration.journal import verify
-    from scripts.run_i15_campaign import _worker
 
     case_id = "winsor-exact-labels"
     (tmp_path / "unit.json").write_text(

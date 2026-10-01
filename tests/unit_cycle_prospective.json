@@ -1,5 +1,5 @@
 {
-  "protocol_notice": "Original matrix and frozen-protocol metadata retained as a historical record, not current release requirements. Current release calibration uses representative public-source gates; scripts.run_unit_cycle_campaign runs the complete matrix with declared finite effect grids, summable checkpoint error spending, and retained incomplete outcomes. See docs/guides/switchback.md.",
+  "protocol_notice": "Original matrix and frozen-protocol metadata retained as a historical record, not current release requirements. Current release calibration uses representative public-source gates; calibration.unit_cycle runs the complete matrix with declared finite effect grids, summable checkpoint error spending, and retained incomplete outcomes. See docs/guides/switchback.md.",
   "task": "I14 independent unit-cycle design; prospective and unexecuted",
   "status": "certification_blocked_by_prospective_cost",
   "base": "83b7dae4 (release 0f7508a3 plus C11 571df87a)",

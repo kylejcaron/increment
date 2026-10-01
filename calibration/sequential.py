@@ -1,6 +1,6 @@
 """Execute the sequential certification campaign at a declared profile.
 
-Run from the checkout with ``python -m scripts.run_sequential_campaign``.
+Run from the checkout with ``python -m calibration.sequential``.
 
 A profile names the enumerated tolerance the acceptance gates are decided
 against, the declared cells it certifies, and the stopping rule. Cells the
@@ -61,7 +61,7 @@ CAMPAIGN = "sequential"
 CHECKPOINT_MEMO_ENTRIES = 4096
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_FILES = (
-    "scripts/run_sequential_campaign.py",
+    "calibration/sequential.py",
     "scripts/run_test_tier.py",
     "calibration/journal.py",
     "calibration/profile.py",
@@ -972,7 +972,7 @@ def _controller(output: Path, case_seconds: float, work_seconds: float) -> int:
                 sys.executable,
                 "-c",
                 "from pathlib import Path; import sys; "
-                "from scripts.run_sequential_campaign import _worker_entry; "
+                "from calibration.sequential import _worker_entry; "
                 "raise SystemExit(_worker_entry(Path(sys.argv[1])))",
                 str(directory),
             ],
@@ -1340,7 +1340,7 @@ def main(argv=None):
                 sys.executable,
                 "-c",
                 "from pathlib import Path; import sys; "
-                "from scripts.run_sequential_campaign import _controller; "
+                "from calibration.sequential import _controller; "
                 "raise SystemExit(_controller(Path(sys.argv[1]), float(sys.argv[2]), "
                 "float(sys.argv[3])))",
                 str(args.output),

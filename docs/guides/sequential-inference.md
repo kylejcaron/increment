@@ -397,7 +397,7 @@ registration by capturing without `previous=`.
 An automatic exact Bernoulli registration built from
 `InferenceSpec(kind="always_valid", baseline_rate=p0)` commits `Beta(w * p0, w * (1 - p0))`
 on both arms. The e-process is valid for every proper prior, so `w` only moves power;
-`scripts/probe_bernoulli_prior_weight.py` measured it on the grid below (200 replications
+`calibration/bernoulli_prior.py` measured it on the grid below (200 replications
 per cell, one look every 250 units per arm to 4000, `alpha = 0.05`; "type I" is the fraction
 of null replications that ever crossed, "power" the fraction that crossed by the stated look).
 
@@ -776,9 +776,9 @@ research campaign rather than an implicit unbounded pytest tier. Run the
 sequential-specific CLI with a new output directory:
 
 ```bash
-python -m scripts.run_sequential_campaign \
-  --output research/sequential-2026-09-19 \
-  --selection representative \
+uv run python -m calibration.sequential \
+  --output /tmp/sequential-campaign \
+  --profile smoke \
   --budget-seconds 3600 \
   --case-seconds 60
 ```

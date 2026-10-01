@@ -23,9 +23,9 @@ the smallest weight within five points of the best mean power wins.
 
 Run outside pytest under a hard deadline:
 
-    uv run python -m scripts.probe_bernoulli_prior_weight \\
+    uv run python -m calibration.bernoulli_prior \\
         --output research/prior-weight --pilot
-    uv run python -m scripts.probe_bernoulli_prior_weight \\
+    uv run python -m calibration.bernoulli_prior \\
         --output research/prior-weight --budget-seconds 3600
 
 Every completed cell is written to <output>/cells/<name>.json before the next
@@ -365,7 +365,7 @@ def main(argv=None) -> int:
         [
             sys.executable,
             "-m",
-            "scripts.probe_bernoulli_prior_weight",
+            "calibration.bernoulli_prior",
             "--worker",
             "--output",
             str(args.output),

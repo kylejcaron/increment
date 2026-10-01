@@ -614,7 +614,7 @@ class RatioVarianceModel:
     small n - with a lognormal(sigma=1.5) denominator and an independent
     numerator, measured 85.5% coverage at nominal 95% with n=20 units/arm,
     89.6% at n=50 and 92.7% at n=100; benign denominators are nominal even
-    at n=20 (``scripts/probe_ratio_denominator_precision.py``). The
+    at n=20 (``calibration/ratio_precision.py``). The
     second-order moments cannot see the skew itself, but
     :func:`ratio_denominator_precision` - the denominator mean's relative
     standard error - tracks the failure, and the engine attaches a

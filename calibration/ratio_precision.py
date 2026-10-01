@@ -27,8 +27,8 @@ log-scale admission guard are reported separately.
 
 Run outside pytest, with a hard deadline::
 
-    uv run python scripts/probe_ratio_denominator_precision.py
-    uv run python scripts/probe_ratio_denominator_precision.py --pilot
+    uv run python -m calibration.ratio_precision
+    uv run python -m calibration.ratio_precision --pilot
 """
 
 from __future__ import annotations

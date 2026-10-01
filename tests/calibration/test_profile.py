@@ -205,7 +205,7 @@ def test_no_sequential_tier_certifies_the_whole_manifest():
     support. Each tier admits the cheapest cells its declared budget affords
     and reports the rest as uncertified rather than dropping them.
     """
-    from scripts.run_sequential_campaign import manifest_records
+    from calibration.sequential import manifest_records
 
     cases = manifest_records()
     reached = {}
@@ -263,7 +263,7 @@ def test_the_declared_cost_model_reproduces_its_measured_anchors():
     moves an anchor outside the declared band has changed what the ladder
     means and must fail here.
     """
-    from scripts.run_sequential_campaign import case_cost_seconds, cost_model
+    from calibration.sequential import case_cost_seconds, cost_model
     from tests.estimation._sequential_acceptance import principal_manifest
 
     model = cost_model()
@@ -298,7 +298,7 @@ def test_a_reference_profile_over_every_cell_reproduces_the_declared_ledger(tmp_
     frozen ledger field for field -- the per-decision error, the binding gate
     and the whole replication total included.
     """
-    from scripts.run_sequential_campaign import campaign_plan
+    from calibration.sequential import campaign_plan
     from tests.estimation._sequential_acceptance import CERTIFICATION_LEDGER
 
     path = _write(
@@ -340,7 +340,7 @@ def test_a_weaker_sequential_tolerance_rescales_the_margin_that_drives_cost():
     campaign MORE expensive while claiming less. The reduced profile scales the
     margin with it, which is what buys the roughly fourfold cut per gate.
     """
-    from scripts.run_sequential_campaign import campaign_plan, rescaled_gate
+    from calibration.sequential import campaign_plan, rescaled_gate
     from tests.estimation._sequential_acceptance import ACCEPTANCE_GATES, CERTIFICATION_DESIGN
 
     plan = campaign_plan(load("smoke", campaign="sequential"))

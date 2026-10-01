@@ -1,6 +1,6 @@
 """Run the retained unit-cycle stress matrix with bounded, checkpointed execution.
 
-Invoke with ``python -m scripts.run_unit_cycle_campaign``. Existing output
+Invoke with ``python -m calibration.unit_cycle``. Existing output
 bundles are never overwritten. Restart a range deterministically with
 ``--start-design`` and the same source; failed outcomes remain in their bundle.
 """
@@ -39,7 +39,7 @@ def command(args, *internal):
     result = [
         sys.executable,
         "-m",
-        "scripts.run_unit_cycle_campaign",
+        "calibration.unit_cycle",
         "--output",
         str(args.output),
         "--budget-seconds",

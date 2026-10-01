@@ -45,7 +45,7 @@ BreakoutCorrection = Literal["bh", "bonferroni", "none"]
 
 # Pseudo-observation weight of the declared-baseline Beta prior in automatic exact
 # Bernoulli registration: the largest weight that beats a flat prior at the declared
-# rate and keeps power if the true rate doubles (scripts/probe_bernoulli_prior_weight.py;
+# rate and keeps power if the true rate doubles (calibration/bernoulli_prior.py;
 # table in docs/guides/sequential-inference.md). Validity holds at every weight.
 DEFAULT_BERNOULLI_PRIOR_WEIGHT = 10
 

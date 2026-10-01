@@ -540,7 +540,7 @@ def test_deterministic_integration_cost_ceiling_precedes_record_expansion():
 
 
 def test_campaign_detects_changed_shared_registration_source(tmp_path, monkeypatch):
-    from scripts import run_sequential_campaign as campaign
+    from calibration import sequential as campaign
 
     relative = "tests/sequential_cases.py"
     fixture = tmp_path / relative
@@ -557,7 +557,7 @@ def test_scalar_manifest_freezes_the_declared_science_and_cli_selection():
     from dataclasses import replace
 
     from calibration.profile import load as load_profile
-    from scripts.run_sequential_campaign import CAMPAIGN, _indices, _parser, campaign_plan
+    from calibration.sequential import CAMPAIGN, _indices, _parser, campaign_plan
     from tests.estimation._sequential_acceptance import (
         RuntimeCase,
         campaign_declaration,

@@ -36,6 +36,7 @@ htmlcov/
 *.cover
 .hypothesis/
 /.test-evidence/
+/.test_durations
 
 # Documentation and notebook outputs
 /site/

@@ -7,8 +7,8 @@ import math
 import pytest
 from scipy.stats import binom as _binom
 
+from calibration import binomial_grid as cbg
 from increment.estimation import binomial_rr
-from scripts import calibrate_binomial_grid as cbg
 
 pytestmark = pytest.mark.slow
 
@@ -564,7 +564,7 @@ class TestUsefulnessAcceptance:
             elif fault == "unreportable":
                 row["acceptance"]["passed"] = False
         output = tmp_path / "calibration.json"
-        argv = ["calibrate_binomial_grid", "--output", str(output)]
+        argv = ["binomial_grid", "--output", str(output)]
         if fault == "missing_power":
             argv.append("--interval-only")
         monkeypatch.setattr(sys, "argv", argv)

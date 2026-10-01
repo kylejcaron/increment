@@ -607,7 +607,7 @@ The complete 4,320-cell manifest remains unchanged. Its two effect rows share
 each of 2,160 model/MDE designs. Run the full campaign explicitly:
 
 ```bash
-uv run python -m scripts.run_unit_cycle_campaign \
+uv run python -m calibration.unit_cycle \
   --output /tmp/unit-cycle-campaign \
   --budget-seconds 3600 --case-budget-seconds 60
 ```

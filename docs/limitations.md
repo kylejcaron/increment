@@ -265,7 +265,7 @@ A unit-grain ratio row (unadjusted or CUPED, fixed horizon) carries a
 `ratio_denominator_precision` note when either arm's denominator mean is resolved to a
 relative standard error `sqrt(var_d / n) / d_bar` above 0.15. This is an advisory
 qualification, not a refusal or a corrected interval: the interval is emitted unchanged.
-The threshold comes from `scripts/probe_ratio_denominator_precision.py`, a seeded coverage
+The threshold comes from `calibration/ratio_precision.py`, a seeded coverage
 grid over sample sizes 20-2000 and lognormal, exponential and gamma denominators with an
 independent numerator. Every cell covering below 93% at nominal 95% exceeds it in most
 draws, and no cell covering at least 94.5% does. The note names the arm, the statistic and
@@ -341,8 +341,8 @@ Representative release checks are diagnostics, not certification of the original
 stress matrix. Run the preserved cases and paired-width criteria explicitly:
 
 ```bash
-uv run python scripts/run_i13_campaign.py --output /tmp/i13-diagnostic --repetitions 4
-uv run python scripts/run_i13_campaign.py --selection full --output /tmp/i13-stress
+uv run python -m calibration.cluster_diagnostics --output /tmp/cluster-diagnostics --repetitions 4
+uv run python -m calibration.cluster_diagnostics --selection full --output /tmp/cluster-stress
 ```
 
 Output directories must be new. Budgets are bounded at one hour; started,

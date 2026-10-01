@@ -16,7 +16,7 @@ def run_campaign(output, *options, timeout=40):
         [
             sys.executable,
             "-m",
-            "scripts.run_unit_cycle_campaign",
+            "calibration.unit_cycle",
             "--output",
             str(output),
             *options,

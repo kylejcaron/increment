@@ -16,8 +16,6 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 SWAP_ARGUMENT = "aa_allocation_swap_equivariance"
 SWAP_ARGUMENT_TEXT = (
@@ -432,14 +430,14 @@ def _controller(output: Path, case_seconds: float, work_seconds: float) -> int:
         command = [
             sys.executable,
             "-c",
-            "from pathlib import Path; import sys; from scripts.run_i15_campaign import _worker; "
+            "from pathlib import Path; import sys; from calibration.inference_diagnostics import _worker; "
             "raise SystemExit(_worker(Path(sys.argv[1])))",
             str(directory),
         ]
         started = time.monotonic()
         code = run_with_budget(
             command,
-            tier=f"i15-{unit['directory']}",
+            tier=f"inference-{unit['directory']}",
             budget_seconds=min(case_seconds * len(unit["case_ids"]), remaining),
         )
         _publish(
@@ -819,13 +817,13 @@ def main(argv=None):
             [
                 sys.executable,
                 "-c",
-                "from pathlib import Path; import sys; from scripts.run_i15_campaign import _controller; "
+                "from pathlib import Path; import sys; from calibration.inference_diagnostics import _controller; "
                 "raise SystemExit(_controller(Path(sys.argv[1]), float(sys.argv[2]), float(sys.argv[3])))",
                 str(args.output),
                 str(args.case_seconds),
                 str(remaining),
             ],
-            tier="i15-research-campaign",
+            tier="inference-diagnostics",
             budget_seconds=remaining,
         )
     return _summarize(args.output, selection, provenance, code)

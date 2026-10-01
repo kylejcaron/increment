@@ -20,7 +20,7 @@ def _cases(campaign: str) -> list[dict]:
         return json.loads(_I15_MANIFEST.read_text(encoding="utf-8"))["cases"]
     # The sequential ladder admits cells by modelled cost, so its records must
     # carry that cost; the campaign runner owns the declared model.
-    from scripts.run_sequential_campaign import manifest_records
+    from calibration.sequential import manifest_records
 
     return manifest_records()
 

@@ -27,7 +27,7 @@ def _cells(power, null=0.01):
 
 
 def test_grid_has_every_declared_cell_once():
-    from scripts.probe_bernoulli_prior_weight import cell_grid
+    from calibration.bernoulli_prior import cell_grid
 
     cells = cell_grid(replications=200)
     keys = {(c["declared_rate"], c["true_rate"], c["lift"], c["weight"]) for c in cells}
@@ -40,7 +40,7 @@ def test_grid_has_every_declared_cell_once():
 
 
 def test_choose_weight_prefers_the_smallest_weight_within_five_points_of_the_best():
-    from scripts.probe_bernoulli_prior_weight import choose_weight
+    from calibration.bernoulli_prior import choose_weight
 
     power = {}
     for p0 in ("0.02", "0.1", "0.3"):
@@ -53,7 +53,7 @@ def test_choose_weight_prefers_the_smallest_weight_within_five_points_of_the_bes
 
 
 def test_choose_weight_excludes_a_weight_whose_null_rate_exceeds_alpha_anywhere():
-    from scripts.probe_bernoulli_prior_weight import choose_weight
+    from calibration.bernoulli_prior import choose_weight
 
     power = {}
     for p0 in ("0.02", "0.1", "0.3"):
@@ -73,7 +73,7 @@ def test_choose_weight_falls_back_to_mean_power_when_no_weight_wins_everywhere()
     """Each declared rate favours a different weight by more than the five-point
     tolerance, so no weight is within tolerance of the best at every rate and
     `choose_weight` must fall back to averaging power across rates."""
-    from scripts.probe_bernoulli_prior_weight import choose_weight
+    from calibration.bernoulli_prior import choose_weight
 
     power = {
         ("0.02", 2): 0.30,
@@ -97,7 +97,7 @@ def test_choose_weight_falls_back_to_mean_power_when_no_weight_wins_everywhere()
 
 @pytest.mark.slow
 def test_run_cell_drives_the_registered_route_and_agrees_with_the_public_decision():
-    from scripts.probe_bernoulli_prior_weight import run_cell
+    from calibration.bernoulli_prior import run_cell
 
     result = run_cell(
         {
