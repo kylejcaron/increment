@@ -553,6 +553,56 @@ def test_campaign_detects_changed_shared_registration_source(tmp_path, monkeypat
     assert after[relative] != before[relative]
 
 
+def test_sufficient_state_campaign_worker_journals_completed_replication(tmp_path):
+    import subprocess
+    import sys
+
+    from calibration import sequential as campaign
+    from calibration.journal import verify
+    from calibration.profile import load
+    from tests.estimation._sequential_acceptance import campaign_identity
+
+    plan = campaign.campaign_plan(load("smoke", campaign="sequential"), repetitions=1)
+    case_plan = next(item for item in plan["cases"] if item["case_index"] == 0)
+    campaign._write(
+        tmp_path / "manifest.json",
+        {
+            "source_files": campaign._sources(),
+            "scientific_identity": campaign_identity(principal_manifest()),
+            "plan": plan,
+        },
+    )
+    directory = tmp_path / "case"
+    directory.mkdir()
+    campaign._write(directory / "plan.json", case_plan)
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; import sys; "
+            "from calibration.sequential import _worker_entry; "
+            "raise SystemExit(_worker_entry(Path(sys.argv[1])))",
+            str(directory),
+        ],
+        cwd=campaign.ROOT,
+        check=True,
+        timeout=30,
+    )
+
+    result = json.loads((directory / "result.json").read_text())
+    totals = verify(directory, case_id=case_plan["case_id"])
+    assert (totals.started, totals.completed) == (1, 1)
+    assert totals.counters["completed"] == 1
+    assert result["journal_digest"] == totals.digest
+    assert (result["attempted"], result["completed"], result["failed"], result["unfinished"]) == (
+        1,
+        1,
+        0,
+        0,
+    )
+
+
 def test_scalar_manifest_freezes_the_declared_science_and_cli_selection():
     from dataclasses import replace
 

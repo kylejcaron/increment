@@ -97,9 +97,6 @@ _COUNTERS = (
     ("certified_interval", "certified_intervals"),
     ("selected_cell", "selected_cells"),
     ("undeclared_point_reason", "undeclared_point_reasons"),
-    ("finite_look_cell", "finite_look_confidence_cells"),
-    ("finite_look_miss", "finite_look_confidence_misses"),
-    ("finite_look_unknown", "finite_look_confidence_unknown"),
 )
 # Per-replication 0/1 events, sealed as counters and reconciled against the
 # published statistic sums, which must agree exactly because each of those is

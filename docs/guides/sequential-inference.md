@@ -790,6 +790,14 @@ failures and unavailable numerical cases are retained rather than relabeled as
 success. This campaign does not add support for models or transformations
 outside the registered raw-likelihood contract.
 
+Replication journals retain the simulator's selection, availability,
+certified-interval, and point-reason counters. They do not measure interim
+finite-look confidence coverage.
+
+For a one-draw diagnostic, add `--case 0 --repetitions 1`. A completed draw is
+not campaign certification: the CLI exits 2 while the campaign remains
+incomplete, even when its controller and workers exit 0.
+
 ## Primary references
 
 The public Bernoulli e-process is qualified by a predeclared common
