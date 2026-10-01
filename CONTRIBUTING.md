@@ -93,6 +93,12 @@ pytest-split distributes tests evenly.
 `.test-evidence/`. Add `--runtime-diagnostics` through `PYTEST_ARGS` when
 investigating slow tests; retained artifacts are not committed.
 
+Ordinary Make/Nox suites disable Tach's unused impact-analysis plugin; direct
+`uv run pytest --tach ...` remains available for impact-selected work. Override
+Make's `PYTEST_ARGS` when you need different pytest options. Notebook checks share one
+batched Marimo invocation while retaining a separate guard for each notebook;
+export and warehouse-regeneration scenarios still execute independently.
+
 Unit tests do not use the network or real warehouses. Live PostgreSQL,
 Snowflake, and BigQuery checks live under `integration/warehouse_execution/`
 and require dedicated scratch resources and credentials. Contributors do not
@@ -103,8 +109,11 @@ PostgreSQL 16 probes through `ci-ok`. The
 [weekly workflow](.github/workflows/weekly.yml) runs Sundays at 08:00 UTC or
 on manual dispatch: full slow/examples suites at locked dependencies and
 floors on all three Python versions, four Monte-Carlo shards on Python 3.12,
-and all three warehouse backends. Test jobs retain evidence for 30 days;
-failures create or update a GitHub issue labelled `weekly-failure`.
+and all three warehouse backends. Fast, full and Monte-Carlo jobs retain test
+evidence, including per-test timings, for 30 days. Live warehouse timings stay
+in the job logs, where GitHub masks secrets; raw cloud tracebacks are not
+uploaded as artifacts. Weekly failures create or update a GitHub issue
+labelled `weekly-failure`.
 
 Tests run in parallel and must not depend on execution order or state created
 by another test. Mark functional slow tests with `slow`; simulation-based
@@ -120,6 +129,18 @@ BigQuery probes check live query execution, native-warehouse/artifact parity,
 materialization, and cleanup isolation—not just SQL compilation. PostgreSQL
 additionally checks parity against dataframe oracles. Their CI schedule is
 described above.
+
+Snowflake and BigQuery run weekly or on manual dispatch, not on every PR or
+main push. Before merging warehouse changes, dispatch the existing workflow
+on the reviewed, trusted PR branch and wait for both cloud jobs:
+
+```bash
+gh workflow run warehouse-backends.yml --ref <trusted-pr-branch> -f backend_mode=cloud
+```
+
+These manual jobs are not required by `ci-ok`; do not use an untrusted branch
+with repository credentials. Use `backend_mode=postgres` for credential-free
+PostgreSQL probes or `all` to run all three backends.
 
 Probe coverage is not blanket support for every metric, design, or artifact
 extension. Use the [compatibility matrix](docs/guides/compatibility.md) and

@@ -2,7 +2,7 @@
 
 # Loadgroup keeps modules sharing mutable filesystem paths on one worker.
 TEST_RUNNER = uv run --extra demo --extra tables --extra dashboard python -m scripts.run_test_tier
-PYTEST_ARGS = -n auto --dist loadgroup
+PYTEST_ARGS = -n auto --dist loadgroup -p no:tach
 install:
 	uv sync --group dev --extra demo --extra tables --extra dashboard
 	uv run prek install -t pre-commit -t pre-push

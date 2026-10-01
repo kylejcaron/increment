@@ -43,7 +43,16 @@ jobs:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
-      - run: make test-fast
+      - run: make test-fast PYTEST_ARGS="-n auto --dist loadgroup -p no:tach --durations=25 --evidence-root .test-evidence"
+      - name: Retain fast-suite evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fast-suite-${{ matrix.python-version }}-${{ github.run_attempt }}
+          path: .test-evidence/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
 
   # Catches packaging breakage on every push/PR rather than at release time,
   # using the same gates release.yml applies before publishing.

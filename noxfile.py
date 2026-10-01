@@ -75,7 +75,7 @@ DUCKDB_FLOORS: dict[str, str] = {
 # suites mutate shared paths on disk and would race otherwise. Sessions
 # whose whole selection is one such group stay serial -- splitting them
 # buys nothing and costs worker startup.
-PARALLEL = ("-n", "auto", "--dist", "loadgroup")
+PYTEST_ARGS = ("-n", "auto", "--dist", "loadgroup", "-p", "no:tach")
 TEST_RUNNER = ("python", "-m", "scripts.run_test_tier")
 
 
@@ -147,7 +147,7 @@ def tests(session: nox.Session) -> None:
     ``importorskip`` guard, so duckdb has to actually be installed.
     """
     _sync(session, "dev", extras=("demo", "dashboard"))
-    _run_test_tier(session, "fast", "-q", *PARALLEL)
+    _run_test_tier(session, "fast", "-q", *PYTEST_ARGS)
 
 
 @nox.session(python=PYTHON_VERSIONS)
@@ -166,7 +166,7 @@ def tests_full(session: nox.Session) -> None:
         session,
         "all-except-parameter-recovery",
         "-q",
-        *PARALLEL,
+        *PYTEST_ARGS,
         "--evidence-root",
         ".test-evidence",
     )
@@ -182,6 +182,10 @@ def tests_warehouse_postgres(session: nox.Session) -> None:
         "-q",
         "-m",
         "warehouse_postgres",
+        "-p",
+        "no:tach",
+        "--durations=0",
+        *session.posargs,
     )
 
 
@@ -195,6 +199,10 @@ def tests_warehouse_snowflake(session: nox.Session) -> None:
         "-q",
         "-m",
         "warehouse_snowflake",
+        "-p",
+        "no:tach",
+        "--durations=0",
+        *session.posargs,
     )
 
 
@@ -208,13 +216,17 @@ def tests_warehouse_bigquery(session: nox.Session) -> None:
         "-q",
         "-m",
         "warehouse_bigquery",
+        "-p",
+        "no:tach",
+        "--durations=0",
+        *session.posargs,
     )
 
 
 @nox.session(python=PYTHON_VERSIONS)
 def tests_floor(session: nox.Session) -> None:
     """Run the fast suite at dependency floors on every supported interpreter."""
-    _run_pytest_at_floor(session, "fast", "-q", *PARALLEL, extras=("demo", "dashboard"))
+    _run_pytest_at_floor(session, "fast", "-q", *PYTEST_ARGS, extras=("demo", "dashboard"))
 
 
 @nox.session(python=PYTHON_VERSIONS)
@@ -224,7 +236,7 @@ def tests_slow_floor(session: nox.Session) -> None:
         session,
         "slow",
         "-q",
-        *PARALLEL,
+        *PYTEST_ARGS,
         extras=("demo", "tables", "dashboard"),
     )
 
@@ -243,7 +255,7 @@ def tests_floor_full(session: nox.Session) -> None:
         session,
         "all-except-parameter-recovery",
         "-q",
-        *PARALLEL,
+        *PYTEST_ARGS,
         "--evidence-root",
         ".test-evidence",
         extras=("demo", "tables", "dashboard"),
@@ -263,7 +275,7 @@ def tests_parameter_recovery(session: nox.Session) -> None:
         session,
         "parameter-recovery",
         "-q",
-        *PARALLEL,
+        *PYTEST_ARGS,
         "--evidence-root",
         ".test-evidence",
         *session.posargs,
@@ -285,7 +297,7 @@ def examples(session: nox.Session) -> None:
     _sync(session, "dev", extras=("demo", "tables", "dashboard"))
     session.run("ruff", "check", "examples")
     session.run("ruff", "format", "--check", "examples")
-    _run_test_tier(session, "examples", "-q", *PARALLEL)
+    _run_test_tier(session, "examples", "-q", *PYTEST_ARGS)
 
 
 @nox.session(python="3.12")
@@ -337,7 +349,7 @@ def tests_slow(session: nox.Session) -> None:
     result notifies nobody.
     """
     _sync(session, "dev", extras=("demo", "tables", "dashboard"))
-    _run_test_tier(session, "slow", "-q", *PARALLEL)
+    _run_test_tier(session, "slow", "-q", *PYTEST_ARGS)
 
 
 @nox.session(python="3.12")

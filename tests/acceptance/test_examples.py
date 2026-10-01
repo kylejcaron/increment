@@ -9,9 +9,9 @@ export can duplicate text between the source panel and rendered output
 on unrelated dependency bumps. `power.py` is the deterministic
 closed-form exception, so pinning its figures is safe.
 
-`marimo check` (lint, no execution) is a lightweight per-notebook guard.
-All tests are `slow`+`examples` (~1-3s each, `tables` extra required for
-most); run via `make test-examples`.
+`marimo check` batches all notebooks once per module, preserving a guard for
+each file. All tests are `slow`+`examples` (`tables` extra required for most);
+run via `make test-examples`.
 """
 
 from __future__ import annotations
@@ -89,8 +89,23 @@ def _export_html(notebook: str, tmp_path: Path) -> str:
     return out.read_text(encoding="utf-8")
 
 
-def _check(notebook: str) -> subprocess.CompletedProcess[str]:
-    return _run(sys.executable, "-m", "marimo", "check", f"examples/{notebook}")
+def _check(*notebooks: Path) -> dict[Path, list[dict[str, Any]]]:
+    result = _run(
+        sys.executable, "-m", "marimo", "check", "--format", "json", *(str(p) for p in notebooks)
+    )
+    assert result.stdout, result.stderr
+    report = json.loads(result.stdout)
+    failures: dict[Path, list[dict[str, Any]]] = {}
+    for issue in report["issues"]:
+        if issue.get("severity") == "breaking" or issue["type"] == "error":
+            failures.setdefault(Path(issue["filename"]).resolve(), []).append(issue)
+    assert result.returncode == bool(failures), result.stdout + result.stderr
+    return failures
+
+
+@pytest.fixture(scope="module")
+def checked_notebooks():
+    return _check(*(EXAMPLES_DIR / notebook for notebook in _MARIMO_NOTEBOOKS))
 
 
 def test_notebook_subprocess_fails_on_unhandled_warning():
@@ -112,10 +127,27 @@ def test_notebook_subprocess_allows_exact_ibis_warning():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+@pytest.mark.xdist_group("marimo_check")
 @pytest.mark.parametrize("notebook", _MARIMO_NOTEBOOKS)
-def test_marimo_check_reports_no_diagnostics(notebook):
-    result = _check(notebook)
-    assert result.returncode == 0, result.stdout + result.stderr
+def test_marimo_check_reports_no_diagnostics(notebook, checked_notebooks):
+    failures = checked_notebooks.get(EXAMPLES_DIR / notebook, [])
+    assert not failures, failures
+
+
+@pytest.mark.parametrize("breaking", [False, True])
+def test_batched_notebook_checks_attribute_only_breaking_diagnostics(tmp_path, breaking):
+    valid = tmp_path / "valid.py"
+    candidate = tmp_path / "candidate.py"
+    source = "import marimo\napp = marimo.App()\n"
+    valid.write_text(source)
+    if breaking:
+        source += (
+            "@app.cell\ndef _():\n    value = 1\n    return (value,)\n"
+            "@app.cell\ndef _():\n    value = 2\n    return (value,)\n"
+        )
+    candidate.write_text(source)
+    failures = _check(valid, candidate)
+    assert set(failures) == ({candidate} if breaking else set())
 
 
 def _rendered_table_title_index(html: str, title: str) -> int:
