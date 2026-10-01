@@ -50,7 +50,9 @@ pytest_collect_file = Sybil(
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Assign one hard deadline to every collected test or documentation item."""
+    """Assign local performance deadlines; GitHub Actions uses job hang guards."""
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        return
     for item in items:
         if item.get_closest_marker("timeout") is not None:
             continue

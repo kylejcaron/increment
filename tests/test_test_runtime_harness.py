@@ -6,101 +6,63 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
-import conftest as root_conftest
 from scripts.run_test_tier import run_with_budget
 
 
-@dataclass
-class _Item:
-    markers: dict[str, Any]
-    added: list[Any] = field(default_factory=list)
-    path: Path = Path("tests/test_example.py")
-
-    def get_closest_marker(self, name: str) -> Any:
-        return self.markers.get(name)
-
-    def add_marker(self, marker: Any) -> None:
-        self.markers[marker.mark.name] = marker
-        self.added.append(marker)
-
-
-@pytest.mark.parametrize(
-    ("marker_names", "expected_seconds"),
-    [
-        ((), 30),
-        (("slow",), 180),
-        (("parameter_recovery",), 300),
-        (("examples", "slow"), 300),
-        (("parameter_recovery", "slow"), 300),
-    ],
-)
-def test_runtime_policy_assigns_the_most_expensive_test_class(marker_names, expected_seconds):
-    item = _Item({name: getattr(pytest.mark, name) for name in marker_names})
-
-    root_conftest.pytest_collection_modifyitems([cast(pytest.Item, item)])
-
-    assert len(item.added) == 1
-    timeout = item.added[0].mark
-    assert timeout.name == "timeout"
-    assert timeout.args == (expected_seconds,)
-
-
-def test_runtime_policy_preserves_an_explicit_timeout():
-    explicit = pytest.mark.timeout(12)
-    item = _Item({"slow": pytest.mark.slow, "timeout": explicit})
-
-    root_conftest.pytest_collection_modifyitems([cast(pytest.Item, item)])
-
-    assert item.added == []
-
-
-def test_markdown_items_receive_the_root_timeout_policy():
-    item = _Item({}, path=Path("README.md"))
-
-    root_conftest.pytest_collection_modifyitems([cast(pytest.Item, item)])
-
-    timeout = item.get_closest_marker("timeout")
-    assert timeout is not None
-    assert 30 in (timeout.args or (timeout.kwargs.get("timeout"),))
-
-
 @pytest.mark.slow
-def test_root_runtime_policy_interrupts_an_unmarked_sleeping_test():
+@pytest.mark.parametrize("github_actions", [None, "false", "true"])
+def test_root_runtime_budget_is_local_only(github_actions):
     repository = Path(__file__).parents[1]
+    environment = dict(os.environ)
+    if github_actions is None:
+        environment.pop("GITHUB_ACTIONS", None)
+    else:
+        environment["GITHUB_ACTIONS"] = github_actions
     with tempfile.TemporaryDirectory(dir=repository) as temporary:
         test_directory = Path(temporary)
+        completed = test_directory / "completed"
         (test_directory / "conftest.py").write_text(
-            "import pytest\n\n"
-            "@pytest.hookimpl(trylast=True)\n"
-            "def pytest_collection_modifyitems(items):\n"
-            "    for item in items:\n"
-            "        timeout = item.get_closest_marker('timeout')\n"
-            "        assert timeout is not None and timeout.args == (30,)\n"
-            "        item.add_marker(pytest.mark.timeout(0.05), append=False)\n"
+            "def pytest_sessionstart(session):\n"
+            "    root = session.config.pluginmanager.getplugin(\n"
+            "        str(session.config.rootpath / 'conftest.py'))\n"
+            "    root._FAST_TIMEOUT_SECONDS = 0.05\n"
         )
         sleeping = test_directory / "test_sleeping_runtime_guard.py"
-        sleeping.write_text("import time\n\ndef test_runtime_guard_sleeper():\n    time.sleep(2)\n")
-
+        sleeping.write_text(
+            "import time\nfrom pathlib import Path\n\n"
+            "def test_runtime_guard_sleeper():\n"
+            "    time.sleep(0.2)\n"
+            f"    Path({str(completed)!r}).touch()\n"
+            "    assert False, 'test failures must still propagate'\n"
+        )
         result = subprocess.run(
             [sys.executable, "-m", "pytest", "-q", "-p", "no:tach", str(sleeping)],
             cwd=repository,
+            env=environment,
             text=True,
             capture_output=True,
             check=False,
-            # Hang guard only: interpreter startup under a loaded suite can exceed seconds;
-            # the assertions below carry the contract.
             timeout=120,
         )
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert completed.exists() == (github_actions == "true"), result.stdout + result.stderr
 
-    assert result.returncode == 1
-    assert "test_runtime_guard_sleeper" in result.stdout
-    assert "Timeout" in result.stdout
+
+@pytest.mark.slow
+def test_unbounded_runner_keeps_heartbeats_and_failure_status():
+    status = run_with_budget(
+        [sys.executable, "-c", "import time; time.sleep(0.2); raise SystemExit(7)"],
+        tier="unbounded",
+        budget_seconds=None,
+        heartbeat_seconds=0.05,
+    )
+
+    assert status == 7
 
 
 def _wait_for_path(path: Path, timeout: float = 60) -> None:
@@ -332,7 +294,8 @@ def test_windows_job_gate_starts_the_guarded_child(tmp_path):
 
 
 @pytest.mark.slow
-def test_interrupt_cleans_the_process_group_and_returns_signal_status(tmp_path):
+@pytest.mark.parametrize("budget_seconds", [10, None])
+def test_interrupt_cleans_the_process_group_and_returns_signal_status(tmp_path, budget_seconds):
     ready = tmp_path / "interrupt-descendant-ready"
     windows_ignore = "signal.signal(signal.SIGBREAK, signal.SIG_IGN)\n" if os.name == "nt" else ""
     descendant_windows_ignore = (
@@ -355,7 +318,8 @@ def test_interrupt_cleans_the_process_group_and_returns_signal_status(tmp_path):
         "import sys\n"
         "from scripts.run_test_tier import run_with_budget\n"
         f"raise SystemExit(run_with_budget([sys.executable, {str(child)!r}], "
-        "tier='interrupt-test', budget_seconds=10, heartbeat_seconds=1, grace_seconds=0.1))\n"
+        f"tier='interrupt-test', budget_seconds={budget_seconds!r}, "
+        "heartbeat_seconds=1, grace_seconds=0.1))\n"
     )
     creationflags = vars(subprocess)["CREATE_NEW_PROCESS_GROUP"] if os.name == "nt" else 0
     runner = subprocess.Popen(

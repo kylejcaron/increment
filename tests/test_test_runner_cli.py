@@ -87,3 +87,52 @@ def test_make_test_keeps_a_quoted_expression_in_the_focused_tier(tmp_path):
         "-x",
         "-q",
     ]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("github_actions", [None, "false", "true"])
+@pytest.mark.parametrize("entrypoint", ["tier", "examples"])
+def test_cli_performance_budget_is_local_only(tmp_path, github_actions, entrypoint):
+    project = Path(__file__).parents[1]
+    environment = dict(os.environ)
+    if github_actions is None:
+        environment.pop("GITHUB_ACTIONS", None)
+    else:
+        environment["GITHUB_ACTIONS"] = github_actions
+    config = tmp_path / "pytest.ini"
+    config.write_text("[pytest]\n")
+    failing = tmp_path / "test_failure.py"
+    failing.write_text(
+        "import time\n\ndef test_failure():\n"
+        "    time.sleep(0.2)\n"
+        "    assert False, 'test failures must still propagate'\n"
+    )
+    if entrypoint == "tier":
+        code = (
+            "from scripts.run_test_tier import TIERS, Tier, main\n"
+            "TIERS['focused'] = Tier(marker='', budget_seconds=0.05)\n"
+            f"raise SystemExit(main(['focused', {str(failing)!r}, "
+            f"'-c', {str(config)!r}, '-q']))\n"
+        )
+    else:
+        code = (
+            "import sys\n"
+            "from scripts.run_test_entrypoint import ENTRYPOINTS, Entrypoint, main\n"
+            "ENTRYPOINTS['examples'] = Entrypoint(\n"
+            f"    command=(sys.executable, '-m', 'pytest', '-c', {str(config)!r}, "
+            f"{str(failing)!r}, '-q'),\n"
+            "    budget_seconds=0.05, cleanup_grace_seconds=1)\n"
+            "raise SystemExit(main(['examples']))\n"
+        )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=project,
+        env=environment,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == (1 if github_actions == "true" else 124), (
+        result.stdout + result.stderr
+    )

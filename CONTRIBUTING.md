@@ -80,10 +80,14 @@ Additional commands:
   that change estimation or a wire format. It is not a routine contributor
   check.
 
-Test tiers enforce wall-clock limits and stop their subprocess groups on
-timeout. No private authorization or task environment is required. For
-statistical shards, use `make test-parameter-recovery SPLITS=4 GROUP=1`;
-without local timing data, pytest-split distributes tests evenly.
+Automatic per-test and aggregate test-tier budgets apply locally only.
+GitHub Actions (`GITHUB_ACTIONS=true`) skips those performance budgets;
+workflow job timeouts still stop hangs. Explicit timeouts and scientific
+campaign deadlines remain enforced, and runners still clean up subprocess
+groups on interruption. No private authorization or task environment is
+required. For statistical shards, use
+`make test-parameter-recovery SPLITS=4 GROUP=1`; without local timing data,
+pytest-split distributes tests evenly.
 
 `make test-all` retains failure outputs and JUnit reports under
 `.test-evidence/`. Add `--runtime-diagnostics` through `PYTEST_ARGS` when

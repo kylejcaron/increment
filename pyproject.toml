@@ -141,9 +141,9 @@ package = true
 # test. The `docs_snippets` Nox session and `docs-snippets` CI job run them.
 testpaths = ["tests"]
 markers = [
-    "slow: excluded from fast suite and pre-push; individual deadline 180 seconds",
-    "parameter_recovery: statistical recovery/calibration test (Monte-Carlo); excluded from fast suite and pre-push; individual deadline 300 seconds",
-    "examples: exercises runnable notebooks end-to-end via real marimo/duckdb subprocesses; always slow-marked too; individual deadline 300 seconds",
+    "slow: excluded from fast suite and pre-push; local individual deadline 180 seconds",
+    "parameter_recovery: statistical recovery/calibration test (Monte-Carlo); excluded from fast suite and pre-push; local individual deadline 300 seconds",
+    "examples: exercises runnable notebooks end-to-end via real marimo/duckdb subprocesses; always slow-marked too; local individual deadline 300 seconds",
     "creates_tables: intentionally leaves new tables on the shared query-test `con` connection; exempts a test from the no-stray-tables guard",
     "compatibility(id): links a test to one exact compatibility scenario rendered in the reference",
     "warehouse_postgres: executes real query builders against a live PostgreSQL connection under integration/warehouse_execution/ -- selected only by the tests_warehouse_postgres nox session, never collected from testpaths",

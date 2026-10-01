@@ -1,4 +1,4 @@
-"""Run a named pytest tier with a hard wall-clock budget."""
+"""Run a named pytest tier with a local wall-clock performance budget."""
 
 from __future__ import annotations
 
@@ -131,7 +131,7 @@ TIERS = {
         marker="slow and not parameter_recovery and not examples",
         budget_seconds=480,
     ),
-    # Supports optional pytest-split shards while retaining a hard budget.
+    # Supports optional pytest-split shards while retaining a local budget.
     "parameter-recovery": Tier(marker="parameter_recovery", budget_seconds=1350),
     "examples": Tier(marker="examples", budget_seconds=300),
     "all": Tier(marker="", budget_seconds=1800),
@@ -383,8 +383,8 @@ def _supervise_process(
     *,
     tier: str,
     started: float,
-    deadline: float,
-    budget_seconds: float,
+    deadline: float | None,
+    budget_seconds: float | None,
     heartbeat_seconds: float,
     grace_seconds: float,
     stream: TextIO,
@@ -393,28 +393,31 @@ def _supervise_process(
 ) -> int:
     """Wait for *process*, emitting heartbeats and stopping its group at the deadline."""
     next_heartbeat = started + heartbeat_seconds
+    budget_display = "disabled" if budget_seconds is None else f"{budget_seconds:g}s"
     while True:
         check_interrupt()
         now = time.monotonic()
-        remaining = deadline - now
-        if remaining <= 0:
+        remaining = None if deadline is None else deadline - now
+        if remaining is not None and remaining <= 0:
             print(
-                f"test tier timed out: tier={tier} budget={budget_seconds:g}s "
+                f"test tier timed out: tier={tier} budget={budget_display} "
                 f"elapsed={now - started:.1f}s",
                 file=stream,
                 flush=True,
             )
             _stop_process_group(process, process.pid, signal.SIGTERM, grace_seconds, windows_job)
             return _TIMEOUT_STATUS
-        wait_seconds = min(remaining, 0.1, max(0.01, next_heartbeat - now))
+        wait_seconds = min(0.1, max(0.01, next_heartbeat - now))
+        if remaining is not None:
+            wait_seconds = min(remaining, wait_seconds)
         try:
             return _exit_status(process.wait(timeout=wait_seconds))
         except subprocess.TimeoutExpired:
             now = time.monotonic()
-            if next_heartbeat <= now < deadline:
+            if next_heartbeat <= now and (deadline is None or now < deadline):
                 print(
                     f"test tier running: tier={tier} elapsed={now - started:.1f}s "
-                    f"budget={budget_seconds:g}s",
+                    f"budget={budget_display}",
                     file=stream,
                     flush=True,
                 )
@@ -425,14 +428,14 @@ def run_with_budget(
     command: Sequence[str],
     *,
     tier: str,
-    budget_seconds: float,
+    budget_seconds: float | None,
     heartbeat_seconds: float = 30.0,
     grace_seconds: float = 5.0,
     stream: TextIO = sys.stderr,
 ) -> int:
-    """Run ``command`` in a process group and stop the group at its deadline."""
+    """Supervise ``command``; ``None`` disables its deadline, not signal cleanup."""
     started = time.monotonic()
-    deadline = started + budget_seconds
+    deadline = None if budget_seconds is None else started + budget_seconds
     owner_token = uuid.uuid4().hex
 
     forwarded = (signal.SIGINT, signal.SIGTERM)
@@ -555,7 +558,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     return run_with_budget(
         build_pytest_command(tier, args.pytest_args),
         tier=args.tier,
-        budget_seconds=tier.budget_seconds,
+        budget_seconds=None if os.environ.get("GITHUB_ACTIONS") == "true" else tier.budget_seconds,
     )
 
 

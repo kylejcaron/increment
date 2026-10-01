@@ -280,7 +280,7 @@ def examples(session: nox.Session) -> None:
     interpreter compatibility, so the 3-way matrix the ``tests`` session
     runs would just triple the cost for no extra coverage.
     Documentation snippets run separately in ``docs_snippets`` so this
-    complete examples tier has one five-minute aggregate budget.
+    complete examples tier has one five-minute local aggregate budget.
     """
     _sync(session, "dev", extras=("demo", "tables", "dashboard"))
     session.run("ruff", "check", "examples")
@@ -290,7 +290,7 @@ def examples(session: nox.Session) -> None:
 
 @nox.session(python="3.12")
 def docs_snippets(session: nox.Session) -> None:
-    """Execute shipped README/docs Python snippets under one fast-tier budget."""
+    """Execute shipped README/docs Python snippets under one local fast-tier budget."""
     _sync(session, "dev", extras=("demo", "tables", "dashboard"))
     _run_test_tier(
         session,

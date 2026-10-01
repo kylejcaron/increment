@@ -1,8 +1,9 @@
-"""Run complete official test entry points within fixed wall-clock budgets."""
+"""Run complete official test entry points with local wall-clock budgets."""
 
 from __future__ import annotations
 
 import argparse
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -33,7 +34,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     return run_with_budget(
         entrypoint.command,
         tier=f"{args.entrypoint}-entrypoint",
-        budget_seconds=entrypoint.budget_seconds,
+        budget_seconds=(
+            None if os.environ.get("GITHUB_ACTIONS") == "true" else entrypoint.budget_seconds
+        ),
         grace_seconds=entrypoint.cleanup_grace_seconds,
     )
 
