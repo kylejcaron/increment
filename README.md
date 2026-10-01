@@ -22,6 +22,8 @@ It analyzes data that already exists; it does not assign traffic, ship feature f
   ratio CUPED, and asymptotic sequential adjustment under `asymptotic_mean`. The
   exact Bernoulli e-process route and sources lacking the required covariate moments
   refuse; see the [CUPED guide](docs/guides/cuped.md) for each path.
+- **Bayesian inference** — combine prior beliefs with experiment data to estimate effects and
+  probabilities of benefit.
 - **Switchback contrasts** — estimate fixed-horizon additive treatment-versus-control
   differences over randomized within-unit cycles.
 - **Sequential analysis and always-valid inference** — monitor experiments with confidence
