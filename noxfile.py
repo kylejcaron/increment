@@ -152,13 +152,13 @@ def tests(session: nox.Session) -> None:
 
 @nox.session(python=PYTHON_VERSIONS)
 def tests_full(session: nox.Session) -> None:
-    """Nightly-only: slow + examples against latest dependencies, across every
+    """Weekly: slow + examples against locked dependencies, across every
     supported Python version. Mirrors ``make test-all`` (demo, tables and
     dashboard extras, marker filter cleared) minus the Monte-Carlo tier --
     ``tests_parameter_recovery`` runs that once, sharded, instead of once per
     matrix cell. Pins the interpreter per matrix cell -- ``make test-all``
     alone resolves whatever ``.python-version``/the caller's default is, so
-    the nightly workflow's 3.13/3.14 matrix legs would otherwise silently
+    the weekly workflow's 3.13/3.14 matrix legs would otherwise silently
     re-run 3.12 three times instead of actually exercising each version.
     """
     _sync(session, "dev", extras=("demo", "tables", "dashboard"))
@@ -231,11 +231,11 @@ def tests_slow_floor(session: nox.Session) -> None:
 
 @nox.session(python=PYTHON_VERSIONS)
 def tests_floor_full(session: nox.Session) -> None:
-    """Nightly-only: slow + examples against direct dependency floors, across
+    """Weekly: slow + examples against direct dependency floors, across
     every supported Python version, minus the Monte-Carlo tier (see
     ``tests_parameter_recovery``).
 
-    ``tests_floor`` above is CI's push/PR gate and stays fast-only.
+    ``tests_floor`` above is the narrower fast-only floor session.
     This full floor session also exercises coverage checks against core,
     table and dashboard dependency floors.
     """

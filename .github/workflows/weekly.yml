@@ -12,10 +12,10 @@ env:
   UV_LOCKED: "1"
 
 jobs:
-  # Slow and notebook examples are outside CI's fast suite. Exercise latest
+  # Slow and notebook examples are outside CI's fast suite. Exercise locked
   # dependencies and floors on each interpreter; Monte Carlo runs once below.
   test-all:
-    name: full suite (slow + examples, ${{ matrix.python-version }})
+    name: full suite (locked dependencies, slow + examples, ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -62,7 +62,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # One Python/latest-dependency run, split four ways. Without a local durations
+  # One Python/locked-dependency run, split four ways. Without a local durations
   # file, pytest-split distributes by test count; do not assume balanced runtimes.
   test-parameter-recovery:
     name: Monte-Carlo tier, shard ${{ matrix.group }}/4

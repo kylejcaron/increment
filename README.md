@@ -149,7 +149,8 @@ does not make an observational comparison causal without identification assumpti
 Exact and asymptotic methods have different guarantees. Repeated looks require a
 compatible sequential procedure to claim frequentist error control; Bayesian
 posterior probabilities do not automatically provide that guarantee. Unsupported
-combinations raise explicit errors rather than silently changing the analysis.
+combinations surface coded errors or warnings; partial results may be returned
+when only some requested cells are unsupported.
 
 Read the [statistical limitations](docs/limitations.md),
 [compatibility matrix](docs/guides/compatibility.md), and

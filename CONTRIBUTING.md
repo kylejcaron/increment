@@ -97,7 +97,7 @@ need those services for ordinary changes.
 CI requires lint, fast tests on Python 3.12–3.14, package builds, and live
 PostgreSQL 16 probes through `ci-ok`. The
 [weekly workflow](.github/workflows/weekly.yml) runs Sundays at 08:00 UTC or
-on manual dispatch: full slow/examples suites at latest dependencies and
+on manual dispatch: full slow/examples suites at locked dependencies and
 floors on all three Python versions, four Monte-Carlo shards on Python 3.12,
 and all three warehouse backends. Test jobs retain evidence for 30 days;
 failures create or update a GitHub issue labelled `weekly-failure`.
@@ -112,9 +112,10 @@ and test-contract requirements.
 ### Backend verification
 
 DuckDB runs in the default test suite. Dedicated PostgreSQL, Snowflake, and
-BigQuery probes check live query execution, dataframe/artifact parity,
-materialization, and cleanup isolation—not just SQL compilation. Their CI
-schedule is described above.
+BigQuery probes check live query execution, native-warehouse/artifact parity,
+materialization, and cleanup isolation—not just SQL compilation. PostgreSQL
+additionally checks parity against dataframe oracles. Their CI schedule is
+described above.
 
 Probe coverage is not blanket support for every metric, design, or artifact
 extension. Use the [compatibility matrix](docs/guides/compatibility.md) and
