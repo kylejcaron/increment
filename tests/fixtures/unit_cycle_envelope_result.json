@@ -1,0 +1,91 @@
+{
+  "metric": "value",
+  "control_group": "control",
+  "treatment_group": "treatment",
+  "method": "switchback_unit_variance_envelope",
+  "method_role": "decision",
+  "role": "primary",
+  "estimand": "mean_unit_retained_window_difference",
+  "aggregation": "sum",
+  "probability_ct": 0.5,
+  "randomization_law": "independent_bernoulli_order",
+  "independence_grain": "unit_cycle",
+  "washout_steps": 0,
+  "carryover_order": 0,
+  "observation_steps": 1,
+  "retained_steps": 1,
+  "identifying_assumption": "no_residual_carryover_after_discarded_steps",
+  "estimate": {
+    "value": 2.0,
+    "lb": 1.0,
+    "ub": 3.0,
+    "open_side": null,
+    "level": 0.75,
+    "alpha": 0.25,
+    "log_mean": null,
+    "log_se": null
+  },
+  "standard_error": 0.0,
+  "standard_error_unavailable_reason": null,
+  "alternative": "two-sided",
+  "preferred_direction": null,
+  "null_abs": 0.0,
+  "alpha": 0.25,
+  "n_units": 4,
+  "n_cycles": 4,
+  "n_blocks": null,
+  "dof": null,
+  "dof_unavailable_reason": "not_applicable",
+  "assignment": "switchback",
+  "inference": "fixed",
+  "reference": "residual_chebyshev",
+  "mean_slope": 1.0,
+  "ct_cycles": 2,
+  "tc_cycles": 2,
+  "minimum_cycles_per_unit": 1,
+  "maximum_cycles_per_unit": 1,
+  "effective_alpha": 0.25,
+  "refusal_probability_upper": 0.0,
+  "residual_cutoff": 1.0,
+  "residual_p_value": 0.0625,
+  "reference_spec": {
+    "kind": "unit_cycle_residual_variance_v1",
+    "assignment": {
+      "kind": "switchback",
+      "periods_per_cycle": 2,
+      "sequence": {
+        "scheme": "independent_bernoulli_order",
+        "probability_ct": 0.5,
+        "independence_unit": "unit_cycle"
+      },
+      "window": {
+        "washout_steps": 0,
+        "observation_steps": 1,
+        "carryover_order": 0
+      }
+    },
+    "metric": "value",
+    "control_group": "control",
+    "treatment_group": "treatment",
+    "aggregation": "sum",
+    "response_meaning": "retained_total",
+    "estimand": "mean_unit_retained_window_difference",
+    "cycles_per_unit": 1,
+    "target_population": "independent_unit_population",
+    "effect_model": "additive_retained_aggregate_shift",
+    "residual_variance_upper": 1.0,
+    "provenance": {
+      "assumption_id": "bounded-residual",
+      "assumption_version": "1",
+      "justification": "Prospective test population residual variance bound.",
+      "declaration_id": "test-declaration"
+    }
+  },
+  "provenance": {
+    "assumption_id": "bounded-residual",
+    "assumption_version": "1",
+    "justification": "Prospective test population residual variance bound.",
+    "declaration_id": "test-declaration"
+  },
+  "response_meaning": "retained_total"
+}

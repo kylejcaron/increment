@@ -1,0 +1,127 @@
+{
+  "protocol_notice": "Original matrix and frozen-protocol metadata retained as a historical record, not current release requirements. Current release calibration uses representative public-source gates; scripts.run_unit_cycle_campaign runs the complete matrix with declared finite effect grids, summable checkpoint error spending, and retained incomplete outcomes. See docs/guides/switchback.md.",
+  "task": "I14 independent unit-cycle design; prospective and unexecuted",
+  "status": "certification_blocked_by_prospective_cost",
+  "base": "83b7dae4 (release 0f7508a3 plus C11 571df87a)",
+  "axes": {
+    "units": [
+      4,
+      10,
+      20,
+      40,
+      200
+    ],
+    "cycles": [
+      1,
+      5,
+      20
+    ],
+    "probability_ct": [
+      0.25,
+      0.5,
+      0.75,
+      0.9
+    ],
+    "noise": [
+      "normal",
+      "centered_lognormal",
+      "centered_gamma"
+    ],
+    "correlation": [
+      0.0,
+      0.5,
+      0.9
+    ],
+    "counts": [
+      "equal",
+      "unequal"
+    ],
+    "effect": [
+      0.0,
+      1.0
+    ],
+    "response_meaning": [
+      "retained_total",
+      "pre_normalized_retained_mean"
+    ]
+  },
+  "axis_order": [
+    "units",
+    "cycles",
+    "probability_ct",
+    "noise",
+    "correlation",
+    "counts",
+    "effect",
+    "response_meaning"
+  ],
+  "enumeration": "Full Cartesian product in axis_order; last axis varies fastest; no cell exclusions",
+  "cell_count": 4320,
+  "law": {
+    "order": "Independent Bernoulli(probability_ct) per unit-cycle, independent of type and all potential errors",
+    "unit_type": "Independent equiprobable -1/+1; all cycles of a unit share the type",
+    "counts": "equal=2; unequal=1+2*((cycle+period+(type>0)) mod 2); fixed before orders",
+    "mean": "tests._unit_cycle_design.schedule: full treatment potential contrast delta+.4*type+.2*centered_cycle+.35*(2*period-1)",
+    "noise": "Unit reuse selector Bernoulli(rho): common treatment innovation if selected, otherwise independent micro-observation innovations. Each innovation has exact named centered unit-variance marginal; an aggregate is explicitly a sum/mean, not the original marginal.",
+    "covariance": "Distinct treatment micro-errors in a unit have covariance rho; independent units; zero control errors. Aggregated period covariance rho*load_j*load_k. Conditional non-reuse variance load_j^2/count_j.",
+    "missingness": "None. Counts are micro-observations aggregated into complete schedule cells, not missing rows.",
+    "truth": "Population mean-unit retained effect delta, independent of production; fixed schedules enumerate all order assignments separately",
+    "carryover": "I14 base true=declared=0; C12 full true x declared {0,1,2} x {0,1,2} for BOTH laws remains separate and required",
+    "weak_null": "Average population treatment effect zero with heterogeneous unit, period and cycle effects; sharp-null permutations cannot certify it"
+  },
+  "dgp_seed": 202609170140,
+  "smoke_seed": 202609170141,
+  "inferential_resampling_seed": 202609170142,
+  "inferential_resampling": "None. Reserved inference seed remains unused.",
+  "rng": "PCG64; SeedSequence([dgp_seed, cell_index, stream]); streams order=0,type=1,noise=2,reuse=3",
+  "batch_rule": "min(512, max(1, 240000 // (units*cycles*6))) experiments; no outcome-dependent batching",
+  "family_alpha": 0.001,
+  "family_allocation": "Reserved .001 slice of release .01 budget; not a reset of R03 global eta",
+  "gated_statistics": [
+    "coverage all lanes",
+    "availability all lanes",
+    "analytic returned-point bias plus empirical accounting",
+    "actual-power equivalence all lanes",
+    "MDE target equivalence",
+    "oracle disagreement",
+    "simultaneous MDE search",
+    "useful-power witness"
+  ],
+  "additional_gate": "One exact-normal nontrivial power witness",
+  "alpha": 0.05,
+  "scientific_tolerance": 0.005,
+  "maximum_mc_margin": 0.0025,
+  "coverage_gate": "CP lower >= .945 in all lanes including MDE",
+  "availability_gate": "CP lower >= .99 in all lanes including MDE",
+  "null_size_gate": "CP upper <= .055",
+  "planning_agreement_gate": "Total planning and runtime margin <= .0025; entire difference interval inside +/-.005",
+  "power_witness": "N40/C1/p.5/V0=1/delta1 normal; exact normal envelope power >=.90; production CP lower >=.80",
+  "failure_accounting": "R,P,I,H,excluded,failed; interval reasons distinct from failures; conditional H/I and unconditional H/R; null when denominator zero; every exception/code and all-same-order event counted; no redraw",
+  "public_path_parity": "All cells source/stats/estimate/evidence/planning metadata/frame/wire parity. Confirmation calls public estimator for every attempt.",
+  "model_design_count": 2160,
+  "response_meaning_scope": {
+    "retained_total": "Micro-observation totals supplied as complete retained period cells; mean units and cycles, not pooled observations",
+    "pre_normalized_retained_mean": "Micro-observation means normalized before source ingress; mean units and cycles, not a new source weighting selector",
+    "limitation": "Distinct response meanings and potential outcomes; no micro-count or second weighting selector enters runtime. Unequal retained schedule rows remain unsupported."
+  },
+  "sizing_program": "python -m tests.simulate.unit_cycle_sizing --ledger LEDGER.json --output FROZEN.json --max-repetitions COMPUTATION_LIMIT",
+  "repetitions": "Derived by terminal binomial passing-set sizing; no integer repetitions frozen before execution",
+  "checkpoint_rule": "J=4; R_j=ceil(R_J/2**(J-j)); eta_gj=eta_g/[j*(j+1)]",
+  "margin_allocation": {
+    "reference_planning": 0.00125,
+    "runtime_confirmation": 0.00125,
+    "total": 0.0025
+  },
+  "analytic_evidence": "4320 cells: exact rational moments, residual variance, actual admission mask mass, positive slopes, unconditional coverage, finite width, admitted-point bias",
+  "mde_design": "2160 designs; simultaneous DKW exploratory search, frozen candidate, independent fixed-effect planning and runtime confirmation; no fallback effect",
+  "bias_accounting": "Analytic admitted-point standardized bias bound <= .05 and actual returned-point mean/MCSE in every lane",
+  "directional_allocation": "2160*(2 independent exploratory DKW + 8 production search DKW + 24 fixed-effect planning DKW + 15 runtime CP)+5 witness=105845; certificate replay shares the production search bands and adds computation, not another allocation",
+  "nominal_failure_allocation": "Main supplies nominal reservation; half covers terminal count-set failures over 2160*15+5 gates, half covers all simultaneous MC-band failures. eta=min(.001/105845,nominal/(2*105845)); zeta=nominal/(2*32405). MDE passing set reserves reference-band width within the unchanged .005 tolerance.",
+  "confirmation_seed": "Original SeedSequence([dgp_seed, original_cell_index, stream]) for BOTH declared-effect rows. Shared MDE lane reuses zero-effect-row primitives. All four original streams are retained.",
+  "planning_seed": "Independent exploration namespace [dgp_seed, original_index, 14000, stream]; production search seed namespace 14001; fixed-effect planning namespace 14002+lane; never selected after outcomes",
+  "cost_ceiling": {
+    "maximum_experiment_evaluations": 1000000000,
+    "meaning": "Operational cap on the full prospective maximum, including certificate replay; not a scientific tolerance or permission to truncate trials. Exceeding it leaves release certification incomplete."
+  },
+  "certification_artifacts": "make test-all requires tests/unit_cycle_frozen_sizing.json and executes all required evidence tests; missing sizing fails, without environment opt-ins. Per-test evidence is retained in pytest tmp_path and recorded in JUnit properties."
+}

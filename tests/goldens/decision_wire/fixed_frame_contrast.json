@@ -1,0 +1,66 @@
+{
+  "alpha": 0.05,
+  "compliance": null,
+  "declared": true,
+  "inference": {
+    "kind": "fixed"
+  },
+  "path": "frame/contrast",
+  "procedures": {
+    "revenue_2024-01-15": {
+      "alpha": 0.05,
+      "alternative": "greater",
+      "family": {
+        "kind": "none"
+      },
+      "inference": {
+        "kind": "fixed"
+      },
+      "kind": "contrast",
+      "metric": "revenue_2024-01-15",
+      "null_abs": 0.0,
+      "preferred_direction": "increase",
+      "reference": {
+        "kind": "unit_t_approximation"
+      },
+      "role": "primary"
+    }
+  },
+  "q": 0.1,
+  "view_policies": {
+    "asof": {
+      "axes": [
+        "date",
+        "metric"
+      ],
+      "correction": "bonferroni",
+      "guarantee": "fwer",
+      "kind": "multiplicity",
+      "name": "asof_family",
+      "q": null
+    },
+    "encouragement_breakout": {
+      "axes": [
+        "date",
+        "metric"
+      ],
+      "correction": "none",
+      "guarantee": "none",
+      "kind": "multiplicity",
+      "name": "encouragement_family",
+      "q": null
+    },
+    "randomized_breakout": {
+      "axes": [
+        "date",
+        "metric"
+      ],
+      "correction": "bh",
+      "guarantee": "fdr",
+      "kind": "multiplicity",
+      "name": "randomized_family",
+      "q": 0.1
+    }
+  },
+  "wire_version": 2
+}

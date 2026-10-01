@@ -1,0 +1,110 @@
+{
+  "alpha": 0.05,
+  "compliance": null,
+  "declared": true,
+  "inference": {
+    "kind": "fixed"
+  },
+  "path": "warehouse",
+  "procedures": {
+    "orders_2024-01-16": {
+      "alpha": 0.05,
+      "alternative": "less",
+      "axis": "absolute",
+      "decision_method": {
+        "name": "unadjusted",
+        "variance_reduction": "none"
+      },
+      "family": {
+        "family": {
+          "kind": "none"
+        },
+        "member": false
+      },
+      "inference": {
+        "kind": "fixed"
+      },
+      "kind": "absolute",
+      "methods_explicitly_empty": true,
+      "metric": "orders_2024-01-16",
+      "null_abs": 0.0,
+      "prior": null,
+      "prior_is_global": true,
+      "role": "secondary",
+      "scale": "absolute",
+      "sensitivity_methods": []
+    },
+    "revenue_2024-01-15": {
+      "alpha": 0.05,
+      "alternative": "two-sided",
+      "axis": "relative",
+      "decision_method": {
+        "name": "unadjusted",
+        "variance_reduction": "none"
+      },
+      "family": {
+        "family": {
+          "kind": "none"
+        },
+        "member": false
+      },
+      "inference": {
+        "kind": "fixed"
+      },
+      "kind": "relative",
+      "methods_explicitly_empty": false,
+      "metric": "revenue_2024-01-15",
+      "null_lift": 0.0,
+      "prior": {
+        "mu": 0.0,
+        "sigma": 0.2
+      },
+      "prior_is_global": true,
+      "role": "primary",
+      "scale": "relative",
+      "sensitivity_methods": [
+        {
+          "name": "cuped",
+          "variance_reduction": "cuped"
+        }
+      ]
+    }
+  },
+  "q": 0.1,
+  "view_policies": {
+    "asof": {
+      "axes": [
+        "date",
+        "metric"
+      ],
+      "correction": "bonferroni",
+      "guarantee": "fwer",
+      "kind": "multiplicity",
+      "name": "asof_family",
+      "q": null
+    },
+    "encouragement_breakout": {
+      "axes": [
+        "date",
+        "metric"
+      ],
+      "correction": "none",
+      "guarantee": "none",
+      "kind": "multiplicity",
+      "name": "encouragement_family",
+      "q": null
+    },
+    "randomized_breakout": {
+      "axes": [
+        "date",
+        "metric"
+      ],
+      "correction": "bh",
+      "guarantee": "fdr",
+      "kind": "multiplicity",
+      "name": "randomized_family",
+      "q": 0.1
+    }
+  },
+  "wire_version": 2
+}

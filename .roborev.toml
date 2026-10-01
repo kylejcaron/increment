@@ -1,0 +1,34 @@
+# Repository-specific review criteria. Agent, model, reasoning, timeouts, and
+# credentials inherit from each contributor's global Roborev configuration.
+review_guidelines = """
+Architecture:
+- Flag only coupling introduced or worsened by this base-to-head diff. Name the
+  concrete dependency or caller and the future change that would now require
+  edits in additional module owners.
+- Flag facade code that prepares source data, manages source cache/query
+  lifecycle, or branches on a concrete adapter. A facade should validate, call
+  one complete typed operation or handler, and return.
+- Flag a decision rule duplicated across module owners, or a family-specific
+  branch outside the owning family or dispatch seam.
+- Review the exact branch tip and full range; do not report a defect already
+  fixed by a descendant commit in that range.
+
+Change quality:
+- Usability: flag a new or changed public input that requires niche statistical
+  knowledge, exposes an internal quantity, or lacks a defensible default.
+- Statistics: flag weakened guarantees, changed estimands or nulls, loosened
+  tolerances, sample estimates presented as certificates, or replacement of a
+  calibrated method with a less defensible one.
+- Engineering: flag duplicated quantities without equivalence tests, message
+  assertions on coded errors, silent fallbacks, and private cross-module
+  reach-ins.
+- Multiplicity: check that new inference routes join the error-rate family
+  across primary, secondary, guardrail, and breakout roles.
+- Path coverage: check every applicable Analysis constructor and require a
+  parity-harness row; unsupported paths must refuse explicitly by source.
+- Every finding cites a concrete caller, signature, equation, or regression
+  test.
+"""
+
+# Combine repository policy with each contributor's global review guidance.
+review_guidelines_supersede_global = false

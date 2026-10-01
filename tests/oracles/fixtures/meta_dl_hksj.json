@@ -1,0 +1,57 @@
+{
+  "generator": "tests/oracles/generate/gen_meta_oracle.R",
+  "package_versions": {
+    "r": "R version 4.4.2 (2024-10-31)",
+    "metafor": "4.8.0"
+  },
+  "tolerance": {
+    "dl_tau2_rel": 1e-08,
+    "hksj_abs": 1e-06,
+    "i2_ci_abs": 1e-06,
+    "note": "DL tau^2 and HKSJ's t-based interval are closed-form (no root finding), so both sides round the identical formula to double precision; 1e-8 relative / 1e-6 absolute leaves headroom for R-vs-numpy summation-order differences without hiding a real formula mismatch. The HT I^2 CI additionally exponentiates a normal CI on ln(H), so its tolerance stays absolute (percentage points, /100 to compare against meta.py's 0-1 fraction)."
+  },
+  "cases": [
+    {
+      "id": "k5_moderate_heterogeneity",
+      "input": {
+        "est": [0.12, 0.28, -0.05, 0.31, 0.09],
+        "var": [0.02, 0.015, 0.025, 0.012, 0.018],
+        "alpha": 0.05
+      },
+      "dl_tau2": 0.003526736672051701,
+      "hksj": {
+        "mu_hat": 0.1757775878579737,
+        "se": 0.06429090457465671,
+        "lower": -0.002722579457070384,
+        "upper": 0.3542777551730178,
+        "dof": 4
+      },
+      "i2_ci": {
+        "q": 4.820695488721806,
+        "i2_lb_pct": 0,
+        "i2_ub_pct": 82.744044934042918
+      }
+    },
+    {
+      "id": "k8_high_heterogeneity",
+      "input": {
+        "est": [0.05, 0.45, -0.2, 0.38, 0.02, 0.5, -0.15, 0.33],
+        "var": [0.03, 0.02, 0.025, 0.018, 0.028, 0.022, 0.03, 0.016],
+        "alpha": 0.05
+      },
+      "dl_tau2": 0.04978389928244729,
+      "hksj": {
+        "mu_hat": 0.1859701621534754,
+        "se": 0.09715777281467204,
+        "lower": -0.04377146367484022,
+        "upper": 0.4157117879817911,
+        "dof": 7
+      },
+      "i2_ci": {
+        "q": 22.38764364320734,
+        "i2_lb_pct": 34.569861358637446,
+        "i2_ub_pct": 85.058249894680387
+      }
+    }
+  ]
+}

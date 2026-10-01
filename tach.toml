@@ -1,0 +1,580 @@
+source_roots = ["."]
+root_module = "ignore"
+exact = true
+ignore_type_checking_imports = true
+forbid_circular_dependencies = true
+
+[[modules]]
+path = "increment._literals"
+depends_on = []
+
+[[modules]]
+path = "increment._immutable"
+depends_on = []
+
+[[modules]]
+path = "increment"
+depends_on = []
+
+[[modules]]
+path = "increment.errors"
+depends_on = []
+
+[[modules]]
+path = "increment.compatibility"
+depends_on = ["increment.errors"]
+
+[[modules]]
+path = "increment.semantics"
+depends_on = ["increment._immutable", "increment._literals", "increment.winsor", "increment.errors", "increment._canonical"]
+
+[[modules]]
+path = "increment._canonical"
+depends_on = []
+
+[[modules]]
+path = "increment._identity"
+depends_on = ["increment.errors"]
+
+[[modules]]
+path = "increment._unit_cycle"
+depends_on = ["increment._literals", "increment.errors", "increment.semantics"]
+
+[[modules]]
+path = "increment._window"
+depends_on = ["increment.semantics", "increment.errors"]
+
+[[modules]]
+path = "increment._study"
+depends_on = ["increment.semantics", "increment.errors"]
+
+[[modules]]
+path = "increment._policy_alpha"
+depends_on = ["increment.compatibility"]
+
+[[modules]]
+path = "increment._source_operations"
+depends_on = ["increment.errors"]
+
+[[modules]]
+path = "increment._plan_compatibility"
+depends_on = ["increment._literals", "increment.errors"]
+
+[[modules]]
+path = "increment._compatibility_inspector"
+depends_on = ["increment.compatibility", "increment.errors"]
+
+[[modules]]
+path = "increment.impute"
+depends_on = ["increment.errors"]
+
+[[modules]]
+path = "increment.results"
+depends_on = []
+
+[[modules]]
+path = "increment._labels"
+depends_on = []
+
+[[modules]]
+path = "increment._source_types"
+depends_on = ["increment._moment_plan", "increment.errors"]
+
+[[modules]]
+path = "increment.estimation.decision_types"
+depends_on = [
+  "increment._literals",
+  "increment.errors", "increment.estimation._certified", "increment.estimation._sequential_likelihood",
+  "increment.estimation.sequential_result", "increment.sequential_state",
+  "increment.semantics",
+]
+
+# Numerical state and inference policy leaves must not depend on estimator dispatch.
+[[modules]]
+path = "increment.estimation._certified"
+depends_on = ["increment.errors"]
+
+[[modules]]
+path = "increment.estimation._sequential_likelihood"
+depends_on = ["increment._literals", "increment.errors", "increment.estimation._certified"]
+
+[[modules]]
+path = "increment.estimation._sequential_inversion"
+depends_on = [
+  "increment._literals",
+  "increment.errors", "increment.estimation._certified",
+  "increment.estimation._sequential_likelihood",
+]
+
+[[modules]]
+path = "increment.estimation.asymptotic_mean"
+depends_on = [
+  "increment._literals",
+  "increment.errors", "increment.estimation._certified",
+  "increment.estimation._sequential_likelihood", "increment.semantics",
+]
+
+[[modules]]
+path = "increment.estimation.asymptotic_joint"
+depends_on = [
+  "increment._literals",
+  "increment.errors", "increment.estimation._sequential_likelihood",
+  "increment.estimation.asymptotic_mean", "increment.semantics",
+]
+
+[[modules]]
+path = "increment.estimation.sequential_result"
+depends_on = [
+  "increment.errors", "increment.estimation._certified",
+  "increment.estimation._sequential_inversion", "increment.estimation._sequential_likelihood",
+  "increment.estimation.asymptotic_joint", "increment.estimation.asymptotic_mean",
+  "increment.semantics", "increment.sequential_state",
+]
+
+[[modules]]
+path = "increment.estimation.sequential"
+depends_on = ["increment.errors", "increment.semantics"]
+
+[[modules]]
+path = "increment.sequential_state"
+depends_on = [
+  "increment.errors", "increment.estimation._sequential_likelihood", "increment.semantics",
+]
+
+[[modules]]
+path = "increment.sequential_source"
+depends_on = [
+  "increment._analysis_config",
+  "increment.errors", "increment.estimation.asymptotic_mean", "increment.estimation.sequential",
+  "increment.semantics", "increment.sequential_state",
+    "increment._window",
+]
+
+[[modules]]
+path = "increment._metric_specs"
+depends_on = ["increment._literals", "increment.errors", "increment.estimation", "increment.semantics"]
+
+# Shared source and decision types live in leaf modules, keeping the core
+# decision/plan/source/request/config dependency graph acyclic.
+[[modules]]
+path = "increment.decision"
+depends_on = [
+  "increment._literals",
+  "increment._plan_compatibility", "increment._source_types", "increment._study",
+  "increment.compatibility", "increment.errors", "increment.estimation",
+  "increment.estimation.decision_types", "increment.estimation.sequential", "increment.semantics",
+  "increment.sequential_source", "increment.sequential_state",
+]
+
+[[modules]]
+path = "increment.plan"
+depends_on = [
+  "increment._literals",
+  "increment._analysis_config", "increment._plan_compatibility",
+  "increment.decision", "increment.errors", "increment.estimation", "increment.semantics",
+  "increment.estimation.sequential", "increment.sequential_source", "increment.sequential_state",
+]
+
+[[modules]]
+path = "increment.decision_wire"
+depends_on = [
+  "increment._literals",
+  "increment._immutable",
+  "increment.compatibility", "increment.decision", "increment.errors", "increment.estimation",
+  "increment.estimation.sequential", "increment.semantics",
+  "increment.sequential_source", "increment.sequential_state",
+]
+
+[[modules]]
+path = "increment.sources"
+depends_on = [
+  "increment.winsor",
+  "increment.estimation.decision_types",
+  "increment._analysis_config", "increment._labels", "increment._moment_plan", "increment._source_types",
+  "increment.decision", "increment.decision_wire", "increment.errors", "increment.plan", "increment.semantics",
+  "increment.sequential_source", "increment.sequential_state",
+]
+
+[[modules]]
+path = "increment._readout_request"
+depends_on = [
+  "increment._analysis_config",
+  "increment._literals",
+  "increment.compatibility", "increment.errors", "increment.estimation",
+  "increment.estimation.sequential", "increment.plan", "increment.semantics",
+  "increment.sequential_source", "increment.sources",
+]
+
+[[modules]]
+path = "increment._analysis_config"
+depends_on = ["increment.estimation", "increment.semantics", "increment.errors"]
+
+[[modules]]
+path = "increment._moment_plan"
+depends_on = []
+
+[[modules]]
+path = "increment.estimation"
+depends_on = [
+  "increment._literals",
+  "increment._identity",
+  "increment._moment_plan",
+  "increment._source_types", "increment._winsor_rank", "increment.winsor", "increment._labels", "increment._window", "increment.compatibility",
+  "increment.errors", "increment.estimation._certified", "increment.estimation.decision_types",
+  "increment.estimation.sequential", "increment.estimation.sequential_result",
+  "increment.semantics", "increment.sequential_state",
+  "increment._unit_cycle",
+]
+
+[[modules]]
+path = "increment._lift_options"
+depends_on = ["increment._analysis_config", "increment.estimation"]
+
+[[modules]]
+path = "increment._frame_moments"
+depends_on = ["increment._frame_panel", "increment._frame_validation", "increment._moment_plan", "increment._window", "increment.errors", "increment.semantics", "increment.sources"]
+
+[[modules]]
+path = "increment._frame_panel"
+depends_on = ["increment._frame_validation", "increment._window", "increment.errors", "increment.sources"]
+
+[[modules]]
+path = "increment._frame_validation"
+depends_on = ["increment._metric_specs", "increment.errors", "increment.estimation", "increment.plan", "increment.semantics", "increment.sources"]
+
+[[modules]]
+path = "increment._frame_sequential"
+depends_on = [
+  "increment._frame_moments", "increment._frame_panel",
+  "increment.sequential_source", "increment.sequential_state",
+]
+
+[[modules]]
+path = "increment.frame"
+depends_on = [
+  "increment._source_types",
+  "increment._identity",
+  "increment.winsor",
+  "increment._analysis_config", "increment._frame_moments", "increment._frame_panel",
+  "increment._frame_sequential", "increment._frame_validation", "increment._metric_specs", "increment._window",
+  "increment.decision", "increment.errors", "increment.semantics",
+  "increment.sequential_source", "increment.sequential_state",
+  "increment.sources", "increment.switchback",
+]
+
+[[modules]]
+path = "increment.switchback"
+depends_on = [
+  "increment._frame_validation", "increment._metric_specs", "increment._study",
+  "increment.decision", "increment.errors", "increment.estimation", "increment.power.switchback", "increment.semantics",
+  "increment._unit_cycle",
+]
+
+[[modules]]
+path = "increment.query"
+depends_on = [
+  "increment._analysis_config", "increment._canonical", "increment._labels", "increment._frame_validation", "increment._metric_specs", "increment._moment_plan",
+  "increment._source_operations", "increment._source_types",
+  "increment.winsor",
+  "increment.breakout.estimates",
+  "increment._window", "increment.decision", "increment.decision_wire", "increment.errors",
+  "increment.estimation", "increment.plan", "increment.semantics", "increment.sources",
+  "increment.sequential_source", "increment.sequential_state",
+]
+
+[[modules]]
+path = "increment.power"
+depends_on = [
+  "increment.estimation",
+  "increment.power.core", "increment.power.curve", "increment.power.switchback", "increment.power.unit_cycle",
+]
+
+[[modules]]
+path = "increment.power.core"
+depends_on = [
+  "increment._literals", "increment.compatibility", "increment.decision", "increment.errors",
+  "increment.estimation", "increment.estimation.sequential", "increment.semantics",
+  "increment.power._binomial", "increment.power._noncentral_t", "increment.power._search",
+  "increment.power._validation", "increment.power.sequential",
+]
+
+[[modules]]
+path = "increment.power.sequential"
+depends_on = [
+  "increment.errors", "increment.estimation.asymptotic_mean", "increment.estimation.sequential",
+  "increment.power._search", "increment.power._validation", "increment.sequential_state",
+]
+
+[[modules]]
+path = "increment.power._search"
+depends_on = ["increment.errors"]
+
+[[modules]]
+path = "increment.power.switchback"
+depends_on = [
+  "increment.compatibility", "increment.errors", "increment.estimation", "increment.estimation.decision_types",
+  "increment.power._noncentral_t", "increment.power._search", "increment.semantics",
+]
+
+[[modules]]
+path = "increment.power.curve"
+depends_on = ["increment.decision", "increment.errors", "increment.estimation", "increment.power.core"]
+
+[[modules]]
+path = "increment.power.unit_cycle"
+depends_on = [
+  "increment._unit_cycle", "increment.errors", "increment.estimation.decision_types",
+  "increment.power._search", "increment.semantics",
+]
+
+[[modules]]
+path = "increment.power._binomial"
+depends_on = ["increment._literals", "increment.estimation"]
+
+[[modules]]
+path = "increment.power._validation"
+depends_on = ["increment.errors"]
+
+[[modules]]
+path = "increment.power._noncentral_t"
+depends_on = ["increment._literals", "increment.estimation"]
+
+[[modules]]
+path = "increment.breakout.estimates"
+depends_on = [
+  "increment._literals", "increment._moment_plan",
+  "increment.winsor", "increment._policy_alpha", "increment.compatibility", "increment.decision", "increment.errors",
+  "increment.estimation", "increment.estimation.sequential", "increment.estimation.sequential_result",
+  "increment.semantics", "increment.sequential_source", "increment.sequential_state",
+]
+
+[[modules]]
+path = "increment.breakout"
+depends_on = [
+  "increment._literals",
+  "increment.breakout.estimates", "increment.estimation", "increment.semantics", "increment.errors",
+  "increment.sequential_state",
+]
+
+[[modules]]
+path = "increment._whole_window"
+depends_on = [
+  "increment._literals",
+  "increment._analysis_config", "increment._day_axis", "increment._readout_request",
+  "increment._source_types",
+  "increment.errors", "increment.readouts", "increment.sources",
+]
+
+[[modules]]
+path = "increment._breakout_readouts"
+depends_on = [
+  "increment._literals",
+  "increment._analysis_config", "increment._source_operations", "increment._source_types",
+  "increment._whole_window",
+  "increment.breakout.estimates", "increment.errors", "increment.readouts",
+  "increment.sequential_state",
+]
+
+[[modules]]
+path = "increment._sitewide"
+depends_on = [
+  "increment._source_operations", "increment._source_types", "increment._whole_window", "increment.errors",
+  "increment.estimation", "increment.query", "increment.semantics",
+]
+
+[[modules]]
+path = "increment._planning_baseline"
+depends_on = [
+  "increment._analysis_config", "increment._source_operations", "increment.errors",
+  "increment.estimation", "increment.power", "increment.power.core", "increment.query", "increment.sources",
+]
+
+[[modules]]
+path = "increment.analysis"
+depends_on = [
+  "increment._literals",
+  "increment.cate",
+  "increment._frame_validation",
+  "increment._analysis_config", "increment._breakout_readouts", "increment._day_axis",
+  "increment._evidence_dispatch", "increment._planning_baseline", "increment._sitewide",
+  "increment._source_operations", "increment._source_types", "increment._study", "increment._whole_window",
+  "increment.breakout.estimates", "increment.decision", "increment.errors", "increment.estimation",
+  "increment.frame", "increment.plan",
+  "increment.query", "increment.readouts", "increment.semantics",
+  "increment.sources", "increment.switchback",
+  "increment.sequential_source", "increment.sequential_state",
+]
+
+[[modules]]
+path = "increment._sequential_readouts"
+depends_on = ["increment.estimation", "increment.sequential_source", "increment.sequential_state"]
+
+[[modules]]
+path = "increment.readouts"
+depends_on = [
+  "increment._literals",
+  "increment._frame_panel",
+  "increment._source_types",
+  "increment._source_operations",
+  "increment.winsor",
+  "increment._analysis_config", "increment._policy_alpha", "increment._readout_request",
+  "increment._window", "increment.breakout.estimates", "increment.compatibility", "increment.decision", "increment.errors",
+  "increment.estimation", "increment.estimation.decision_types", "increment.semantics", "increment.sources",
+  "increment._sequential_readouts", "increment.estimation.sequential",
+  "increment.sequential_state",
+]
+
+[[modules]]
+path = "increment._day_axis"
+depends_on = [
+  "increment._frame_panel",
+  "increment._analysis_config", "increment._lift_options", "increment._readout_request", "increment._source_types",
+  "increment.breakout.estimates", "increment.errors", "increment.estimation", "increment.query",
+  "increment.readouts", "increment.semantics", "increment.sources",
+  "increment.sequential_state",
+]
+
+[[modules]]
+path = "increment._evidence_dispatch"
+depends_on = [
+  "increment._literals",
+  "increment._analysis_config", "increment._readout_request", "increment.decision",
+  "increment.errors", "increment.estimation", "increment.readouts", "increment.semantics", "increment.sources",
+  "increment._unit_cycle",
+]
+
+[[modules]]
+path = "increment.cate"
+depends_on = ["increment._identity", "increment.errors", "increment.estimation", "increment.sources"]
+
+[[modules]]
+path = "increment.absorption"
+depends_on = ["increment.estimation", "increment.errors"]
+
+[[modules]]
+path = "increment.tables"
+depends_on = [
+  "increment.breakout.estimates", "increment.estimation", "increment.errors",
+  "increment.estimation.sequential_result",
+]
+
+[[modules]]
+path = "increment.dashboard"
+depends_on = ["increment._canonical", "increment._source_operations", "increment.breakout.estimates", "increment.errors", "increment.estimation", "increment.tables"]
+
+[[modules]]
+path = "increment.reporting"
+depends_on = ["increment.errors", "increment.estimation", "increment.query", "increment.semantics"]
+
+[[modules]]
+path = "increment.logged_policy"
+depends_on = ["increment._identity", "increment.compatibility", "increment.errors", "increment.estimation"]
+
+[[modules]]
+path = "increment.simulate"
+depends_on = [
+  "increment.winsor",
+  "increment.decision", "increment.power",
+  "increment.analysis", "increment.cate", "increment.estimation", "increment.frame",
+  "increment.logged_policy", "increment.query", "increment.readouts", "increment.semantics",
+  "increment.sources", "increment.errors",
+]
+
+[[interfaces]]
+from = ["increment.compatibility"]
+expose = [
+  "ARM_COMPATIBILITY_REFUSALS",
+  "SEQUENTIAL_CUPED_REFUSAL",
+  "ClusterFloor",
+  "IndependentBlockFloor",
+  "IndependentUnitFloor",
+  "PowerDesign",
+  "SamplingFloor",
+  "Support",
+  "Supported",
+  "UnitFloor",
+  "Unsupported",
+  "_conservative_divide",
+  "_conservative_ratio",
+  "refuse_unsupported",
+]
+
+[[interfaces]]
+from = ["increment._plan_compatibility"]
+expose = [
+  "PlanFamilyCompatibilityRequest",
+  "PlanFamilyDecision",
+  "PlanFamilyParticipation",
+  "Role",
+  "plan_family_compatibility",
+]
+
+[[interfaces]]
+from = ["increment.errors"]
+expose = [
+  "_freeze",
+  "_thaw",
+  "_safe_error_value",
+  "CapabilityError",
+  "CodedError",
+  "CodedModel",
+  "CodedValidationMixin",
+  "DefinitionError",
+  "IncrementDeprecationWarning",
+  "IncrementRuntimeWarning",
+  "IncrementWarning",
+  "InvalidRequestError",
+  "RefusalSpec",
+  "RETIRED_CODES",
+  "UnsupportedRequestError",
+  "WarningSpec",
+  "WireFormatError",
+  "raiser",
+  "refusals",
+  "refuse",
+  "unwrap_coded",
+  "warn",
+]
+
+[[interfaces]]
+from = ["increment.estimation.decision_types"]
+expose = [
+  "ArmHypothesisKey",
+  "DECISION_ARM_DECISION_ONE_SIDED_ALPHA",
+  "exact_fraction",
+  "AsymptoticSequentialEvidence",
+  "ContrastDecisionProcedure",
+  "ContrastHypothesisKey",
+  "DecisionComputation",
+  "DecisionFailure",
+  "EValueEvidence",
+  "FixedInference",
+  "NoFamily",
+  "PValueEvidence",
+  "SegmentHypothesisKey",
+  "TestEvidence",
+  "sequential_hypothesis_key",
+]
+
+[[interfaces]]
+from = ["increment._day_axis"]
+expose = [
+  "DayAxisReadouts", "DayAxisRequest", "EvidenceSlice", "validate_day_axis",
+  "_CLUSTERED_DAY_AXIS", "_TRIGGER_UNSUPPORTED", "_day_axis_source_route",
+]
+
+[[interfaces]]
+from = ["increment._lift_options"]
+expose = ["LiftOptions", "MetricRoles"]
+
+[[modules]]
+path = "increment.winsor"
+depends_on = ["increment._winsor_errors", "increment._winsor_rank", "increment.errors"]
+
+[[modules]]
+path = "increment._winsor_errors"
+depends_on = ["increment.errors"]
+
+[[modules]]
+path = "increment._winsor_rank"
+depends_on = ["increment._winsor_errors"]

@@ -21,8 +21,8 @@ jobs:
         with: {persist-credentials: false}
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with: {enable-cache: true}
-      - run: uv run ruff check increment tests
-      - run: uv run ruff format --check increment tests
+      - run: uv sync --group dev --extra demo --extra tables --extra dashboard
+      - run: make lint
       - run: uv run ty check
 
   test:
@@ -42,7 +42,8 @@ jobs:
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
-      - run: uv run pytest -q
+      - run: uv sync --group dev --extra demo --extra tables --extra dashboard
+      - run: make test-fast
 
   # Catches packaging breakage on every push/PR rather than at release time,
   # using the same gates release.yml applies before publishing.
@@ -61,6 +62,7 @@ jobs:
         with: {enable-cache: true}
       - run: uv build --sdist --wheel --out-dir dist
       - run: uvx twine check --strict dist/*
+      - run: uv run --with nox nox -s wheel_smoke wheel_smoke_demo
       - name: Reject artifacts with no package in them
         run: |
           set -euo pipefail

@@ -1,0 +1,30 @@
+{
+  "generator": "tests/oracles/generate/gen_quantile_oracle.R",
+  "package_versions": {
+    "r": "R version 4.4.2 (2024-10-31)"
+  },
+  "tolerance": {
+    "se_rel": 1e-12,
+    "note": "Measured after running this generator (not assumed): with the rank selection now independently computed via R's own qbinom() (rather than survey::oldsvyquantile's asymptotic Wald+interpolated estimator), the order statistics R and scipy.stats.binom.ppf/isf select are bit-identical on this fixture's two cases -- both are exact binomial quantile functions reading the same shared CSV. The test compares log_quantile_se's returned se against (log(upper)-log(lower))/(2*z) computed from these R-selected order statistics using the identical z log_quantile_se uses, so 1e-12 relative is floating-point headroom, not a genuine methodological tolerance -- any real rank-selection defect would fail this by orders of magnitude."
+  },
+  "cases": [
+    {
+      "id": "n40_q90",
+      "q": 0.9,
+      "n": 40,
+      "a": 32,
+      "b": 40,
+      "lower": 4.782509537115458,
+      "upper": 8.855642364560287
+    },
+    {
+      "id": "n120_q50",
+      "q": 0.5,
+      "n": 120,
+      "a": 49,
+      "b": 72,
+      "lower": 6.836491067279969,
+      "upper": 7.906315141185126
+    }
+  ]
+}

@@ -1,66 +1,186 @@
 [project]
 name = "increment"
 dynamic = ["version"]
-description = "A/B testing"
+description = "Python library for warehouse-native A/B testing, causal inference, and experiment analysis"
+keywords = [
+    "python",
+    "a-b-testing",
+    "experimentation",
+    "causal-inference",
+    "statistics",
+    "data-analysis",
+    "power-analysis",
+    "cuped",
+    "sequential-inference",
+    "ibis",
+    "sql",
+    "data-warehouse",
+]
 readme = "README.md"
 license = "Apache-2.0"
-license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Kyle Caron", email = "kyle.j.caron@gmail.com" }]
 requires-python = ">=3.12,<3.15"
-# Declare only what is imported. numpy and scipy return with the estimators
-# that need them; shipping them now would make every installer resolve two
-# large packages this alpha never touches.
 dependencies = [
+    "ibis-framework>=10.1.0; python_version < '3.14'",
+    # Ibis 10.1 imports duckdb.functional, but no DuckDB release that both
+    # exposes that module and ships CPython 3.14 wheels exists.
+    "ibis-framework>=11.0.0; python_version >= '3.14'",
     "pydantic>=2.12.3",
+    # Ibis's compiler registry imports packaging even without backend extras.
+    "packaging>=24.0",
+    # PyYAML gained CPython 3.13 support in 6.0.2 and 3.14 in 6.0.3, so a
+    # single bound would advertise a minimum that cannot be exercised by the
+    # floor session. Kept in step with noxfile's FLOOR_PINS.
+    "pyyaml>=6.0.1; python_version < '3.13'",
+    "pyyaml>=6.0.2; python_version == '3.13'",
+    "pyyaml>=6.0.3; python_version >= '3.14'",
+    "numpy>=1.26",
+    "scipy>=1.14",
+    "sqlglot>=27.24.2,<30.18",
+    "narwhals>=2.24",
+    # Arrow 23.0.1 is the security floor; 25.0.0 crashes after its loading thread exits.
+    # Exclude the broken release rather than changing process-wide allocators.
+    "pyarrow>=23.0.1,!=25.0.0; python_version < '3.13'",
+    "pyarrow>=23.0.1,!=25.0.0; python_version == '3.13'",
+    "pyarrow>=23.0.1,!=25.0.0; python_version >= '3.14'",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Science/Research",
-    "Topic :: Scientific/Engineering :: Information Analysis",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
 ]
-# No "License :: OSI Approved ::" classifier -- PEP 639 forbids pairing one
-# with the `license` expression above, and PyPI rejects the combination.
 
 [project.urls]
 Homepage = "https://github.com/kylejcaron/increment"
 Repository = "https://github.com/kylejcaron/increment"
-Issues = "https://github.com/kylejcaron/increment/issues"
 
-# Required. Without this table PEP 517 falls back to setuptools, which ignores
-# every [tool.hatch.*] table below -- the wheel builds "successfully" as
-# version 0.0.0 with no vcs-derived version at all.
+[project.optional-dependencies]
+demo   = [
+    "ibis-framework[duckdb]>=10.1.0; python_version < '3.14'",
+    "ibis-framework[duckdb]>=11.0.0; python_version >= '3.14'",
+]
+tables = ["coeftable>=0.13.1", "pandas>=2.2"]
+# Optional presentation layer for `increment.dashboard`. Core Increment,
+# estimation, power, and the dataframe entry points never import these.
+dashboard = [
+    "marimo>=0.25.0",
+    "coeftable>=0.13.1",
+    "pandas>=2.2",
+]
+
 [build-system]
 requires = ["hatchling>=1.31", "hatch-vcs>=0.5"]
 build-backend = "hatchling.build"
 
-# Synced into .venv by `uv run`, so `uv run pytest` and `uv run ty check`
-# resolve test-only imports. Without a declared group these tools only see
-# runtime deps and report pytest as an unresolved import.
 [dependency-groups]
 dev = [
-    "pytest>=9.0.2",
     "ruff>=0.8.0",
+    "prek>=0.4.11",
+    "jupyter>=1.1.1",
+    "notebook>=7.4.5",
+    "ipywidgets>=8.1.7",
+    "marimo>=0.25.0",
+    "altair>=5.4",
+    "pytest>=9.0.2",
     "ty>=0.0.1a5",
+    "pytest-cov>=6.0",
+    "pytest-xdist>=3.6",
+    "psutil>=7.2.2",
+    "nox>=2025.5",
+    "virtualenv>=21.7.13",
+    "polars>=1.0",
+    "sybil>=10.1.0",
+    "tach>=0.35.0",
+    "vulture>=2.14",
+    "hypothesis>=6.112",
+    "pytest-timeout>=2.4",
+    "pytest-split>=0.11.0",
+    "mutmut>=3.8,<3.9",
+    "pydoclint>=0.9.1",
+    "complexipy==8.0.1",
+]
+warehouse-backends = [
+    "ibis-framework[postgres]>=10.1.0",
+    # ibis pulls psycopg without a driver; the pure-Python path needs a system
+    # libpq, which neither a clean CI image nor a clean checkout has.
+    "psycopg[binary]>=3.2",
+    "ibis-framework[snowflake]>=10.1.0",
+    "ibis-framework[bigquery]>=10.1.0",
+]
+docs = [
+    "griffe-pydantic>=1.3.1",
+    "mkdocs-material>=9.7.7",
+    "mkdocstrings[python]>=1.0.6",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["increment"]
 
+# The sdist ships only what's needed to build the wheel plus licensing and
+# readme metadata -- not tests, examples, docs, or repository process notes.
+[tool.hatch.build.targets.sdist]
+include = [
+    "/increment",
+    "/README.md",
+    "/LICENSE",
+    "/NOTICE",
+]
+
+# Read versions from git tags and expose installed metadata at runtime; no generated module.
+# Archives without git metadata use 0.0.0 as an unknown-version sentinel, not release provenance.
 [tool.hatch.version]
 source = "vcs"
+fallback-version = "0.0.0"
 
 [tool.uv]
 package = true
 
+[tool.pytest.ini_options]
+# Doc snippets (README.md, docs/) are collected by the root conftest's sybil
+# hook but stay out of testpaths: prose integrity is its own tier, not a unit
+# test. The `docs_snippets` Nox session and `docs-snippets` CI job run them.
+testpaths = ["tests"]
+markers = [
+    "slow: excluded from fast suite and pre-push; individual deadline 180 seconds",
+    "parameter_recovery: statistical recovery/calibration test (Monte-Carlo); excluded from fast suite and pre-push; individual deadline 300 seconds",
+    "examples: exercises runnable notebooks end-to-end via real marimo/duckdb subprocesses; always slow-marked too; individual deadline 300 seconds",
+    "creates_tables: intentionally leaves new tables on the shared query-test `con` connection; exempts a test from the no-stray-tables guard",
+    "compatibility(id): links a test to one exact compatibility scenario rendered in the reference",
+    "warehouse_postgres: executes real query builders against a live PostgreSQL connection under integration/warehouse_execution/ -- selected only by the tests_warehouse_postgres nox session, never collected from testpaths",
+    "warehouse_snowflake: executes real query builders against a live Snowflake connection under integration/warehouse_execution/ -- selected only by the tests_warehouse_snowflake nox session, never collected from testpaths",
+    "warehouse_bigquery: executes real query builders against a live BigQuery connection under integration/warehouse_execution/ -- selected only by the tests_warehouse_bigquery nox session, never collected from testpaths",
+]
+addopts = "-m 'not slow and not parameter_recovery'"
+filterwarnings = [
+    "error",
+    # Ibis 12.0.0 calls DuckDB's deprecated fetch method; upstream main uses to_arrow_table().
+    # Remove this exact exemption after upgrading to the first stable Ibis release containing that fix.
+    "ignore:^fetch_arrow_table\\(\\) is deprecated, use to_arrow_table\\(\\) instead\\.$:DeprecationWarning:^ibis\\.backends\\.duckdb$",
+    # Ibis calls the deprecated BigQuery dataframe/Arrow readers directly.
+    # Installing pandas-gbq does not help; remove this once Ibis changes its readers.
+    "ignore:.* via google-cloud-bigquery(-storage)? is deprecated\\.:PendingDeprecationWarning",
+    # Snowflake's vendored TLS stack calls the deprecated X509 accessor.
+    # Remove this exemption once the connector no longer uses that path.
+    "ignore:^X509\\.get_subject is deprecated:DeprecationWarning",
+]
+
 [tool.ty.src]
-include = ["increment", "tests"]
+include = ["increment", "tests", "calibration", "scripts"]
+
+# Docstrings must match signatures. Existing mismatches are frozen in the
+# baseline; lint fails on a new one, and on a fixed one still listed there.
+[tool.pydoclint]
+style = "numpy"
+baseline = "pydoclint-baseline.txt"
+auto-regenerate-baseline = false
+quiet = true
+# Model fields are documented as Parameters; attribute lists would pin every field.
+check-class-attributes = false
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+exclude = ["notebooks"]
 
 [tool.ruff.lint]
 select = [
@@ -71,18 +191,60 @@ select = [
     "B",   # flake8-bugbear
     "C4",  # flake8-comprehensions
     "UP",  # pyupgrade
+    "C901",    # complexity shape
+    "PLR0913", # public signature shape
+    "PLR0915", # statement-count shape
+    "FBT001",  # boolean positional shape
+    "FBT002",  # boolean default shape
+    "RUF100",  # marker validity
 ]
 ignore = [
     "E501",  # line too long (handled by line-length)
     "E741",  # ambiguous variable names
 ]
 
+# Initial shape baseline flags complexity at 25+; tightening toward 15 is a config bump plus marker pass.
+# PLR0912/PLR0911/FBT003 stay off: branch fan-out duplicates C901; early-return guards are established.
+[tool.ruff.lint.mccabe]
+max-complexity = 24
+
+[tool.ruff.lint.pylint]
+max-statements = 60
+max-args = 12
+
 [tool.ruff.lint.per-file-ignores]
-# marimo cells render their final bare expression -- that is the display
-# mechanism, not a mistake flake8-bugbear's B018 is right to flag elsewhere.
-"examples/*.py" = ["B018"]
+# Marimo cells are generated `_` functions, so per-function shape metrics are noise.
+"examples/*.py" = ["B018", "C901", "PLR0913", "PLR0915", "FBT001", "FBT002"]
+# Test helpers legitimately take flag arguments; the boolean-trap gate targets the library API surface.
+"tests/*" = ["FBT001", "FBT002"]
+"vulture_whitelist.py" = ["F821", "B018"]
 
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
 skip-magic-trailing-comma = false
+
+[tool.mutmut]
+source_paths = ["increment"]
+only_mutate = [
+    "increment/estimation/armstats.py",
+    "increment/estimation/variance.py",
+    "increment/estimation/_tails.py",
+    "increment/estimation/meta.py",
+    "increment/estimation/quantile.py",
+    "increment/power/_validation.py",
+]
+pytest_add_cli_args_test_selection = [
+    "tests/estimation/test_armstats.py",
+    "tests/estimation/test_variance.py",
+    "tests/estimation/test_tails.py",
+    "tests/estimation/test_meta.py",
+    "tests/estimation/test_quantile.py",
+    "tests/power/",
+]
+also_copy = ["docs/guides", "examples"]
+pytest_add_cli_args = ["-x", "-q"]
+# mutmut owns process isolation; project addopts still apply the fast-tier marker.
+process_isolation = "fork"
+# On fork-unsafe numerical stacks, use scripts/mutation_campaign.py instead
+# of the mutmut CLI directly: it runs each stage in a fresh interpreter.

@@ -1,0 +1,107 @@
+# ── Experiments ───────────────────────────────────────────────────────────
+#
+# An experiment ties together an exposure, a unit of randomization, a set
+# of metrics, and a schedule.  The loader validates every reference:
+#   - exposure must be a defined Exposure name
+#   - every metric / guardrail must be a defined Metric name
+#   - every metric's entity must match the experiment's unit
+#   - a CUPED binding needs n_pre_periods > 0 (a ratio's covariate is its numerator)
+#   - every breakout property must resolve to a fact source carrying it
+#     and every declared metric's source
+
+experiments:
+  - name: new_onboarding_v2
+    description: "Test a redesigned onboarding flow against the current flow"
+    exposure: first_page_view
+    unit: user_id
+    start: 2025-01-15
+    end: 2025-02-15
+    # Day buckets roll at a declared fixed UTC offset (default UTC).
+    # Part of the estimand: declare before launch, treat as frozen.
+    # day_boundary: "UTC-05:00"
+    # start/end are days at this boundary: offset-less values read as written, aware ones convert.
+    # Enrollment closed 2025-02-15. The onboarding flow is delivered once, at
+    # signup, so a unit enrolled on the last day keeps its treatment for the
+    # whole of its metric window -- observation can safely run past the end.
+    # Commented out so the example's numbers match the docs; uncomment to keep
+    # the final cohorts instead of censoring them.
+    # observation_end: 2025-03-01
+    plan:
+      view_multiplicity:
+        correction: bonferroni
+      secondaries:
+        - purchase_rate
+        - avg_session_duration
+      guardrails:
+        - metric: d7_retention
+          prior:
+            mu: 0.0
+            sigma: 5.0  # weakly informative -- documents the binding form
+    n_pre_periods: 14  # CUPED lookback in days
+    control_group: control
+    breakouts:
+      - property: country
+    # NOTE: this experiment also sets n_pre_periods above -- CUPED and
+    # factor absorption do not currently compose; absorb_factor ignores
+    # the CUPED covariate entirely.
+    factors:
+      - property: country
+
+  - name: pricing_tier_test
+    description: "Test impact of showing enterprise upsell on free plan"
+    exposure: first_page_view
+    unit: user_id
+    start: 2025-03-01
+    # end: 2025-04-01   # still running
+    plan:
+      secondaries:
+        - purchase_rate
+        - revenue_per_session
+      guardrails:
+        - avg_session_duration
+        - d7_retention
+    n_pre_periods: 0  # no CUPED; includes ratio metrics
+    control_group: control
+
+  # ── AOV decomposition ────────────────────────────────────────────────
+  # User-randomized. AOV's denominator (order count) is itself an outcome,
+  # so an AOV lift is the gap between two effects -- revenue growth minus
+  # order growth -- not an effect on order values. The trio is declared
+  # together so the readout decomposes: AOV down + orders up + revenue up
+  # reads correctly as "incremental small orders", not as a loss.
+  - name: aov_decomposition
+    description: "Checkout test read through the AOV = revenue/orders decomposition"
+    exposure: first_page_view
+    unit: user_id
+    start: 2025-05-01
+    end: 2025-05-31
+    plan:
+      secondaries:
+        - aov
+        - revenue_per_user
+        - orders_per_user
+    n_pre_periods: 0  # no CUPED lookback declared
+    control_group: control
+
+  # ── Session-randomized experiment ────────────────────────────────────
+  # The unit is session_id: assignment must be stamped per SESSION on the
+  # exposure event (one user may legitimately appear in both arms across
+  # sessions). Because randomization and analysis are at the SAME grain,
+  # the plain per-arm variance is valid -- per-session assignment breaks
+  # the user-level correlation, so no cluster correction is needed. If you
+  # randomize by USER instead, analyze session-denominated outcomes as a
+  # user-grain ratio metric (see revenue_per_session), never at session
+  # grain. Caveat: session randomization shows one user both variants, so
+  # carryover can bias user-visible changes -- best suited to
+  # backend/latency-style tests.
+  - name: session_checkout
+    description: "Session-randomized checkout latency test"
+    exposure: first_page_view
+    unit: session_id
+    start: 2025-05-01
+    end: 2025-05-31
+    plan:
+      secondaries:
+        - session_purchase_rate
+    n_pre_periods: 0
+    control_group: control

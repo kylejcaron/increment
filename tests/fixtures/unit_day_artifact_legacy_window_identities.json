@@ -1,0 +1,185 @@
+{
+ "identities": {
+  "aware_offset": {
+   "context_sha256": "e346cffe15a69d3d03526e0ebe6191e910c14dde700a82b6c5f0d4c4ebff771a",
+   "end": "2025-01-19T19:00:00-05:00",
+   "native_recipe_sha256": "55d1f7d22e153e2d09338c5af0ae454ec3597d7a4534a7c48815563a338e0571",
+   "start": "2025-01-09T19:00:00-05:00"
+  },
+  "aware_z": {
+   "context_sha256": "e346cffe15a69d3d03526e0ebe6191e910c14dde700a82b6c5f0d4c4ebff771a",
+   "end": "2025-01-20T00:00:00Z",
+   "native_recipe_sha256": "55d1f7d22e153e2d09338c5af0ae454ec3597d7a4534a7c48815563a338e0571",
+   "start": "2025-01-10T00:00:00Z"
+  },
+  "naive": {
+   "context_sha256": "e346cffe15a69d3d03526e0ebe6191e910c14dde700a82b6c5f0d4c4ebff771a",
+   "end": "2025-01-20T00:00:00",
+   "native_recipe_sha256": "55d1f7d22e153e2d09338c5af0ae454ec3597d7a4534a7c48815563a338e0571",
+   "start": "2025-01-10T00:00:00"
+  }
+ },
+ "native_registration": {
+  "definitions": {
+   "dialect": "duckdb",
+   "experiments": [
+    {
+     "allocation": {
+      "control": 0.3333333333333333,
+      "treatment_a": 0.3333333333333333,
+      "treatment_b": 0.3333333333333333
+     },
+     "control_group": "control",
+     "end": "2025-01-20",
+     "exposure": "assignment",
+     "name": "exp",
+     "plan": {
+      "alpha": 0.05,
+      "alternative": "two-sided",
+      "compliance": null,
+      "guardrails": [],
+      "inference": {
+       "baseline_rate": null,
+       "kind": "always_valid",
+       "registration": null
+      },
+      "primary": "purchase_rate",
+      "q": 0.1,
+      "secondaries": null,
+      "view_multiplicity": null
+     },
+     "start": "2025-01-10",
+     "unit": "user_id"
+    }
+   ],
+   "exposures": [
+    {
+     "fact": "exposure",
+     "name": "assignment"
+    }
+   ],
+   "fact_sources": [
+    {
+     "entities": [
+      "user_id"
+     ],
+     "facts": [
+      {
+       "column": null,
+       "name": "exposure"
+      },
+      {
+       "column": "revenue",
+       "name": "purchase"
+      },
+      {
+       "column": "sess",
+       "name": "session_end"
+      },
+      {
+       "column": "latency",
+       "name": "latency_sample"
+      }
+     ],
+     "name": "events",
+     "sql": "SELECT * FROM events",
+     "timestamp_column": "event_at"
+    }
+   ],
+   "metrics": [
+    {
+     "entity": "user_id",
+     "fact": "purchase",
+     "name": "purchase_rate",
+     "preferred_direction": "increase",
+     "type": "conversion",
+     "window_days": 1
+    }
+   ]
+  },
+  "plan": {
+   "alpha": 0.05,
+   "alternative": "two-sided",
+   "compliance": null,
+   "guardrails": [],
+   "inference": {
+    "baseline_rate": null,
+    "expected_decision_sample_size": null,
+    "kind": "always_valid",
+    "registration": {
+     "committed_before_data": true,
+     "control_group": "control",
+     "definitions_id": "bfa6d5f04f8b40efd58ae14f67c2bddfcb5bc6d84bbc91181c638ecebff28dfb",
+     "models": [
+      {
+       "control_prior": {
+        "a": "1",
+        "b": "1",
+        "kappa": null,
+        "kind": "beta",
+        "mean": [],
+        "nu": null,
+        "scale": []
+       },
+       "law": "bernoulli",
+       "metric": "purchase_rate",
+       "observable": "outcome",
+       "positive_population_control": true,
+       "positive_population_denominators": false,
+       "treatment_prior": {
+        "a": "1",
+        "b": "1",
+        "kappa": null,
+        "kind": "beta",
+        "mean": [],
+        "nu": null,
+        "scale": []
+       }
+      }
+     ],
+     "q": "3602879701896397/36028797018963968",
+     "reveal": {
+      "filtration_id": "d1ded7a4c580d800740f99b08297c80998f1327177873ce5f0c6edbe2f223ef0",
+      "immutable_finalized_outcomes": true,
+      "independent_unit_vectors": true,
+      "longest_window_days": 1,
+      "outcome_independent_order": true,
+      "simultaneous_metrics": true
+     },
+     "roster": [
+      {
+       "alpha": "3602879701896397/144115188075855872",
+       "alternative": "two-sided",
+       "estimand": "itt",
+       "family": false,
+       "group_id": "treatment_a",
+       "metric": "purchase_rate",
+       "null_lift": "0",
+       "segment": []
+      },
+      {
+       "alpha": "3602879701896397/144115188075855872",
+       "alternative": "two-sided",
+       "estimand": "itt",
+       "family": false,
+       "group_id": "treatment_b",
+       "metric": "purchase_rate",
+       "null_lift": "0",
+       "segment": []
+      }
+     ],
+     "source_id": "exp",
+     "version": 2
+    }
+   },
+   "primary": "purchase_rate",
+   "q": 0.1,
+   "secondaries": null,
+   "view_multiplicity": null
+  },
+  "source_mapping": {
+   "recipe_sha256": "27dc0e4d4827106e770e10f2f263fedd786e25a4b7bf08874a0b6a70c6a2c8dc",
+   "source_mapping_format": 2
+  }
+ }
+}

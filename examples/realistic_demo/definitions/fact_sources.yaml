@@ -1,0 +1,88 @@
+# ── Fact Sources ──────────────────────────────────────────────────────────
+#
+# Binds increment's semantic layer to 4 of the normalized realistic_demo
+# warehouse's 7 tables; the two user dimensions live in dim_sources.yaml,
+# and dim_experiment (tiny, unpartitioned experiment metadata) is unused.
+# Every table in use is Hive-partitioned Parquet under
+# examples/realistic_demo/warehouse/. Every source projects a literal
+# `event` column - the query layer filters `WHERE event = '<fact name>'`
+# to select which rows belong to which declared fact.
+
+dialect: duckdb
+
+fact_sources:
+  # fact_orders, dim-joined to users (equi) and user_plan (temporal range,
+  # keyed on ordered_at) - completed orders only.
+  - name: orders
+    sql: |
+      SELECT
+        'order' AS event,
+        user_id,
+        ordered_at,
+        total_amount
+      FROM read_parquet('examples/realistic_demo/warehouse/fact_orders/**/*.parquet')
+      WHERE status = 'completed'
+    timestamp_column: ordered_at
+    entities:
+      - user_id
+    dims: [users, user_plan]
+    facts:
+      - name: order
+        column: total_amount
+        description: A completed order, valued at its total amount.
+
+  # events (page_view + page_load, discriminated by event_name), dim-joined
+  # to users and user_plan (temporal range, keyed on event_ts). `page`
+  # stays inline - it's an event attribute, not a dim.
+  - name: web_events
+    sql: |
+      SELECT
+        event_name AS event,
+        user_id,
+        event_ts,
+        load_time_ms,
+        page
+      FROM read_parquet('examples/realistic_demo/warehouse/events/**/*.parquet')
+    timestamp_column: event_ts
+    entities:
+      - user_id
+    dims: [users, user_plan]
+    facts:
+      - name: page_view
+        column: null
+        description: A page view event (occurrence only).
+      - name: page_load
+        column: load_time_ms
+        description: A page load event, valued at its load time in milliseconds.
+    properties:
+      - name: page
+        column: page
+        dtype: string
+        as_of: event_time
+        description: >-
+          Page path the event occurred on. Metric-filter use only (e.g.
+          restricting page_load to /checkout) - refused as a breakout
+          since it is event_time (post-exposure).
+
+  # fact_exposure JOIN fact_assignment on (user_id, experiment_id) -
+  # the triggered subset of assigned users, carrying their randomization
+  # group.
+  - name: experiment_exposure
+    sql: |
+      SELECT
+        'exposure' AS event,
+        fe.user_id AS user_id,
+        fe.experiment_id AS experiment_id,
+        fa.variant AS group_id,
+        fe.exposed_at AS exposed_at
+      FROM read_parquet('examples/realistic_demo/warehouse/fact_exposure/**/*.parquet') fe
+      JOIN read_parquet('examples/realistic_demo/warehouse/fact_assignment/**/*.parquet') fa
+        ON fe.user_id = fa.user_id
+        AND fe.experiment_id = fa.experiment_id
+    timestamp_column: exposed_at
+    entities:
+      - user_id
+    facts:
+      - name: exposure
+        column: null
+        description: A user was exposed (triggered the checkout surface) after being bucketed.

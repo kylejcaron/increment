@@ -1,0 +1,66 @@
+# ── Metrics ───────────────────────────────────────────────────────────────
+
+metrics:
+  # Primary
+  - type: conversion
+    name: conversion_rate
+    description: "Did the user complete an order within the analysis window?"
+    entity: user_id
+    preferred_direction: increase
+    fact: order
+    window_days: 14
+
+  # Secondary
+  - type: mean
+    name: revenue_per_user
+    description: "Total completed-order revenue per enrolled user"
+    entity: user_id
+    preferred_direction: increase
+    fact: order
+    aggregation: sum
+    window_days: 14
+
+  - type: ratio
+    name: average_order_value
+    description: "Average order value: total revenue / total orders"
+    entity: user_id
+    preferred_direction: increase
+    numerator:
+      fact: order
+      aggregation: sum
+      window_days: 14
+    denominator:
+      fact: order
+      aggregation: count
+      window_days: 14
+
+  # Guardrails
+  - type: retention
+    name: d7_retention
+    description: "User returned (page_view) at least once during days 7-13 post-exposure"
+    entity: user_id
+    preferred_direction: increase
+    fact: page_view
+    threshold_days: [7, 14]
+
+  - type: ratio
+    name: checkout_latency_ms
+    description: "Event-weighted mean checkout page load latency (lower is better)"
+    entity: user_id
+    preferred_direction: decrease
+    numerator:
+      fact: page_load
+      aggregation: sum
+      window_days: 14
+      filters:
+        - property: page
+          op: equals
+          values: ["/checkout"]
+    denominator:
+      fact: page_load
+      aggregation: count
+      window_days: 14
+      filters:
+        - property: page
+          op: equals
+          values: ["/checkout"]

@@ -1,0 +1,42 @@
+# ── Exposures ─────────────────────────────────────────────────────────────
+#
+# An exposure defines what marks a unit as "enrolled" in an experiment.
+# It is either:
+#   1. Fact-based: count the first occurrence of a fact within the
+#      experiment's analysis window.
+#   2. Query-based: an explicit SQL that returns unit_id, ts and group_id
+#      rows (plus an optional experiment_id).
+#
+# Fact-based exposures may carry filters to restrict which events qualify.
+
+exposures:
+  - name: first_page_view
+    fact: page_view
+    description: >
+      Exposure is the first page view in the analysis window.
+      Used for experiments on the general user experience where
+      every active user is expected to have at least one page view.
+
+  - name: first_purchase
+    fact: purchase
+    description: >
+      Exposure is the first purchase event. Used for revenue /
+      conversion experiments where only users who complete a
+      purchase are eligible.
+
+  - name: sql_enrolled
+    sql: |
+      SELECT
+        user_id AS unit_id,
+        event_at AS ts,
+        variant AS group_id
+      FROM analytics.enrollments
+      WHERE experiment_id = 'experiment_name'
+    description: >
+      Query-based exposure for experiments that use a dedicated
+      enrollment table. Returns raw enrollment rows rather than
+      aggregating per unit: first_exposures() takes the first row per
+      unit itself, keeping the timestamp paired with the arm it was
+      recorded with. Collapsing with MIN(event_at) plus ANY_VALUE(variant)
+      would pair the earliest timestamp with an arbitrary arm and hide a
+      unit enrolled in two arms from the mixed-assignment check.

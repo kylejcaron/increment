@@ -1,0 +1,27 @@
+# ── Experiments ───────────────────────────────────────────────────────────
+
+experiments:
+  - name: checkout_redesign
+    description: "A streamlined one-page checkout increases purchase conversion without hurting short-term retention."
+    exposure: checkout_trigger
+    unit: user_id
+    start: 2025-01-15
+    end: 2025-02-14
+    n_pre_periods: 0
+    control_group: control
+    plan:
+      # This joint report includes a quantile guardrail: use fixed-horizon inference.
+      view_multiplicity:
+        correction: bonferroni
+      primary: conversion_rate
+      secondaries:
+        - revenue_per_user
+        - average_order_value
+      guardrails:
+        - d7_retention
+        - checkout_latency_ms
+    breakouts:
+      - property: country
+        source: web_events
+      - property: plan
+        source: web_events

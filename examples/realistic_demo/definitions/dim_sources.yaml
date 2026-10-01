@@ -1,0 +1,35 @@
+# ── Dim Sources ───────────────────────────────────────────────────────────
+#
+# The two user dimensions of the realistic_demo warehouse, declared once
+# and referenced by name from any fact source's `dims:` list; the engine
+# generates the join. `dialect` is declared in fact_sources.yaml and
+# applies to every file in this directory (the loader refuses a second
+# one), and these read the same Hive-partitioned Parquet.
+
+dim_sources:
+  # One row per user - signup-time attributes, joined by key.
+  - name: users
+    sql: SELECT user_id, country FROM read_parquet('examples/realistic_demo/warehouse/dim_user/**/*.parquet')
+    entity: user_id
+    properties:
+      - name: country
+        column: country
+        dtype: string
+        as_of: static
+        description: User's signup country (fixed for the unit's lifetime).
+
+  # Plan history - one row per plan version, closed with the far-future
+  # sentinel. The engine adds the temporal range join keyed on each fact
+  # source's own timestamp.
+  - name: user_plan
+    sql: SELECT user_id, plan, valid_from, valid_to FROM read_parquet('examples/realistic_demo/warehouse/snap_user_plan/**/*.parquet')
+    entity: user_id
+    validity:
+      valid_from: valid_from
+      valid_to: valid_to
+    properties:
+      - name: plan
+        column: plan
+        dtype: string
+        as_of: pre_exposure
+        description: User's plan, resolved from the plan-version history.

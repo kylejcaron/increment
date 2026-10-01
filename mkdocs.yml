@@ -1,0 +1,94 @@
+site_name: increment
+site_description: Python library for warehouse-native A/B testing, causal inference, and experiment analysis
+repo_url: https://github.com/kylejcaron/increment
+repo_name: kylejcaron/increment
+exclude_docs: |
+  superpowers/
+  proposals/
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: numpy
+            docstring_options:
+              warn_unknown_params: false
+            extensions:
+              - griffe_pydantic
+            show_source: false
+            show_root_heading: true
+            members_order: source
+            separate_signature: true
+            signature_crossrefs: true
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.arithmatex:
+      generic: true
+  - toc:
+      permalink: true
+
+extra_css:
+  - stylesheets/compatibility.css
+
+extra_javascript:
+  - javascripts/compatibility.js
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
+
+nav:
+  - Home: index.md
+  - API Reference: api.md
+  - Statistical Limitations: limitations.md
+  - Guides:
+      - Which Method Should I Use?: guides/choose-a-method.md
+      - Method Compatibility Reference: guides/compatibility.md
+      - Quickstart: guides/quickstart.md
+      - Data Model & YAML Definitions: guides/data-model.md
+      - Metric Types: guides/metric-types.md
+      - CUPED: guides/cuped.md
+      - Switchback Contrasts: guides/switchback.md
+      - Observational Comparisons: guides/observational.md
+      - Encouragement Designs: guides/encouragement.md
+      - Power Analysis: guides/power-analysis.md
+      - Sitewide Impact: guides/sitewide-impact.md
+      - Logged-Policy Evaluation: guides/logged-policy.md
+      - A/B Testing Dashboard: guides/dashboard.md
+      - Registered Sequential Inference: guides/sequential-inference.md
+      - Priors and Bayesian Decisions: guides/priors-and-decisions.md
+      - Multiplicity: guides/multiplicity.md
+      - Quantile Metrics: guides/quantile-metrics.md
+      - Heterogeneity and Rollout: guides/heterogeneity-and-rollout.md
+      - SRM Diagnostics: guides/srm-diagnostics.md
+  - Examples:
+      - DataFrame Analysis Tutorial: examples/analysis_from_a_dataframe.md
+      - Warehouse Analysis: examples/analysis_from_a_warehouse.md
+      - CUPED: examples/cuped.md
+      - Breakouts: examples/breakout.md
+      - Observational: examples/observational.md
+      - Power Analysis: examples/power.md
+      - Encouragement Design: examples/encouragement.md
+      - Heterogeneous Effects: examples/hte.md
+      - A/B Testing Dashboard: examples/ab_testing_dashboard.md
+      - LATE Over Time: examples/late_over_time.md

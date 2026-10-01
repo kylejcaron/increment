@@ -1,0 +1,136 @@
+# ── Metrics ───────────────────────────────────────────────────────────────
+#
+# Four metric types: mean, conversion, retention, ratio.
+# Every metric carries:
+#   - name, entity, description (identity)
+#   - fact reference (which fact column to aggregate)
+#   - optional filters; a window_days for the windowed types
+#
+# Metric names are globally unique across all types.
+
+metrics:
+  # ── Mean metric ────────────────────────────────────────────────────────
+  # Aggregate a numeric fact per unit, then average across units.
+  - type: mean
+    name: avg_session_duration
+    description: "Mean session duration (seconds) per user"
+    entity: user_id
+    preferred_direction: increase
+    fact: session_end
+    aggregation: avg_calendar_day
+    window_days: 7
+    filters:
+      - property: platform
+        op: equals
+        values: [web]
+
+  # ── Conversion metric ──────────────────────────────────────────────────
+  # Binary: did the event occur at least once within the window?
+  - type: conversion
+    name: purchase_rate
+    description: "Did the user purchase within the analysis window?"
+    entity: user_id
+    preferred_direction: increase
+    fact: purchase
+    window_days: 14
+
+  # ── Retention metric ───────────────────────────────────────────────────
+  # Bounded survival: did the user return in the half-open band [a, b)
+  # post-exposure, declared as threshold_days: [a, b]? A bare integer N
+  # declares the unbounded band [N, inf) instead.
+  - type: retention
+    name: d7_retention
+    description: "User returned at least once during days 7-13 post-exposure"
+    entity: user_id
+    preferred_direction: increase
+    fact: page_view
+    threshold_days: [7, 14]  # half-open: a return counts on days 7-13
+
+  # ── Ratio metric ───────────────────────────────────────────────────────
+  # Numerator and denominator are both random and finer-grained than the
+  # randomization unit.  Analyzed via the delta method.
+  - type: ratio
+    name: revenue_per_session
+    description: "Revenue per session (ratio of sums)"
+    entity: user_id
+    preferred_direction: increase
+    numerator:
+      fact: purchase
+      aggregation: sum
+      window_days: 7
+    denominator:
+      fact: session_end
+      aggregation: count
+      window_days: 7
+
+  # ── Guardrail metric (non-inferiority) ────────────────────────────────
+  # Declared here for reference, but not attached to either example
+  # experiment above. Adding it to their metric lists would change those
+  # experiments' existing readout counts.
+  - type: mean
+    name: revenue_guardrail
+    description: "Revenue guardrail: confirm we didn't lose more than 1%"
+    entity: user_id
+    preferred_direction: increase
+    margin: 0.01
+    fact: purchase
+    aggregation: sum
+    window_days: 14
+
+  # ── AOV decomposition trio ─────────────────────────────────────────────
+  # Average order value under USER randomization. Orders cluster within
+  # users, so AOV must be declared as a ratio metric: the point estimate
+  # is identical to fanning out to order grain and taking the mean, but
+  # the delta method on per-user (revenue, orders) sums is what prices the
+  # clustering into the SE -- treating orders as independent units would
+  # understate the variance.
+  #
+  # Never read AOV alone: on the log scale,
+  #   aov lift = revenue_per_user lift - orders_per_user lift,
+  # so a treatment that only ADDS small incremental orders (a pure win)
+  # shows AOV down while revenue is up. Declaring the trio together makes
+  # a mix shift self-diagnosing. tests/acceptance/test_example_definitions.py pins
+  # both the identity and that sign pattern.
+  - type: ratio
+    name: aov
+    description: "Average order value: total revenue / total orders"
+    entity: user_id
+    preferred_direction: increase
+    numerator:
+      fact: purchase
+      aggregation: sum
+      window_days: 14
+    denominator:
+      fact: purchase
+      aggregation: count
+      window_days: 14
+
+  - type: mean
+    name: revenue_per_user
+    description: "Total purchase revenue per enrolled user"
+    entity: user_id
+    preferred_direction: increase
+    fact: purchase
+    aggregation: sum
+    window_days: 14
+
+  - type: mean
+    name: orders_per_user
+    description: "Purchase count per enrolled user"
+    entity: user_id
+    preferred_direction: increase
+    fact: purchase
+    aggregation: count
+    window_days: 14
+
+  # ── Session-grain metric ───────────────────────────────────────────────
+  # For a session-RANDOMIZED experiment (unit: session_id). The entity must
+  # match the experiment's unit; event_log declares session_id among its
+  # entities, so the same fact source serves both grains.
+  - type: conversion
+    name: session_purchase_rate
+    description: "Did the session include a purchase?"
+    entity: session_id
+    preferred_direction: increase
+    fact: purchase
+    window_days: 1

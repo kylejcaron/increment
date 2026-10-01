@@ -1,10 +1,10 @@
-# ---------------------------------------------------------------- Python ----
+# Python bytecode and native extensions
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 
-# Distribution / packaging
+# Distribution and packaging
 build/
 dist/
 wheels/
@@ -13,30 +13,21 @@ wheels/
 *.egg
 MANIFEST
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# uv: uv.lock IS committed -- do not ignore it.
-
-# ------------------------------------------------------- Virtual envs -------
+# Virtual environments
 .venv/
 venv/
 env/
 ENV/
+.nox/
+.tox/
 
-# -------------------------------------------------- Test / lint caches ------
-# ruff and pytest write self-ignoring .gitignore files inside these, so they
-# are usually invisible anyway; listed explicitly so the repo does not depend
-# on that behaviour.
+# Test, lint, type-check, and coverage outputs
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 .dmypy.json
 .pyre/
 .pytype/
-.nox/
-.tox/
 .cache/
 .coverage
 .coverage.*
@@ -44,36 +35,26 @@ coverage.xml
 htmlcov/
 *.cover
 .hypothesis/
+/.test-evidence/
 
-# ------------------------------------------------------------- Docs ---------
+# Documentation and notebook outputs
 /site/
 /docs/examples/*.html
-
-# ------------------------------------------------------------ marimo --------
-# session cache created by `marimo check` / `export` / `edit`
 **/__marimo__/
 
-# ------------------------------------------------- Agent / dev tooling ------
-# NOTE: .kata.toml and .roborev.toml are shared project config and ARE
-# committed. Only local overrides and generated state are ignored here.
+# Generated example data
+/increment_moments.parquet
+/examples/realistic_demo/warehouse/
 
-# kata -- per-developer overrides and local state
+# Local project tooling
 .kata.local.toml
 .kata/
-
-# roborev -- review snapshots, regenerated on demand
 /.roborev/
-
-# superpowers -- local skill state
 /.superpowers/
-
-# git worktrees created by the agent tooling
 /.worktrees/
-
-# claude code -- CLAUDE.md and AGENTS.md are committed; local settings are not
 .claude/settings.local.json
 
-# ---------------------------------------------------------- Editors / OS ----
+# Editors and operating systems
 .DS_Store
 .idea/
 .vscode/
@@ -81,5 +62,5 @@ htmlcov/
 *.swo
 *~
 
-# Internal working notes, untracked by decision.
+# Internal working notes
 /notes/

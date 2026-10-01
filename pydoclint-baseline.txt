@@ -1,0 +1,134 @@
+increment/absorption.py
+    DOC105: Function `absorb_factor`: Argument names match, but type hints in these args do not match: pooling
+    DOC502: Function `absorb_factor` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+--------------------
+increment/analysis.py
+    DOC105: Method `Analysis.__init__`: Argument names match, but type hints in these args do not match: store, on_mixed_assignment
+    DOC201: Method `Analysis.materialize` does not have a return section in docstring
+    DOC203: Method `Analysis.materialize` return type(s) in docstring not consistent with the return annotation. Return annotation has 1 type(s); docstring return section has 0 type(s).
+    DOC502: Method `Analysis.materialize` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+    DOC105: Method `Analysis.srm`: Argument names match, but type hints in these args do not match: inference, population
+    DOC502: Method `Analysis.sitewide` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+    DOC104: Method `Analysis.run`: Arguments are the same in the docstring and the function signature, but are in a different order.
+    DOC105: Method `Analysis.run`: Argument names match, but type hints in these args do not match: prior, value_scale
+    DOC101: Method `Analysis.run_breakout`: Docstring contains fewer arguments than in function signature.
+    DOC110: Method `Analysis.run_breakout`: The option `--arg-type-hints-in-docstring` is `True` but not all args in the docstring arg list have type hints
+    DOC103: Method `Analysis.run_breakout`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [decision_method: Method | _Unset, prior: Prior | None | _Unset, sensitivity_methods: Sequence[Method] | _Unset]. Arguments in the docstring but not in the function signature: [decision_method, sensitivity_methods, prior: ].
+    DOC502: Method `Analysis.run_daily` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+    DOC101: Method `Analysis.run_daily_lift`: Docstring contains fewer arguments than in function signature.
+    DOC103: Method `Analysis.run_daily_lift`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [decision_method: Method | _Unset, sensitivity_methods: Sequence[Method] | _Unset]. Arguments in the docstring but not in the function signature: [decision_method, sensitivity_methods: Method | Sequence[Method] | _Unset].
+    DOC502: Method `Analysis.run_daily_lift` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+    DOC502: Method `Analysis.run_asof` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+    DOC101: Method `Analysis.run_asof_lift`: Docstring contains fewer arguments than in function signature.
+    DOC103: Method `Analysis.run_asof_lift`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [decision_method: Method | _Unset, sensitivity_methods: Sequence[Method] | _Unset]. Arguments in the docstring but not in the function signature: [decision_method, sensitivity_methods: Method | Sequence[Method] | _Unset].
+    DOC502: Method `Analysis.run_asof_lift` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+--------------------
+increment/breakout/estimates.py
+    DOC105: Function `to_frame`: Argument names match, but type hints in these args do not match: backend
+    DOC101: Function `_estimate_encouragement_or_reason`: Docstring contains fewer arguments than in function signature.
+    DOC103: Function `_estimate_encouragement_or_reason`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [alpha: float, alternative: str, design: Encouragement, estimands: Sequence[str], inference: AsymptoticMean | AlwaysValid | MixedFamily | None, method_roles: Mapping[str, Literal['decision', 'sensitivity']] | None, methods: list[Method] | None, metrics: Sequence[Metric], prior: Prior | None, summary: list[Mapping[str, Any]]].
+    DOC501: Function `_estimate_encouragement_or_reason` has raise statements, but the docstring does not have a "Raises" section
+    DOC503: Function `_estimate_encouragement_or_reason` exceptions in the "Raises" section in the docstring do not match those in the function body. Raised exceptions in the docstring: []. Raised exceptions in the body: ['InvalidRequestError'].
+    DOC101: Function `run_breakout`: Docstring contains fewer arguments than in function signature.
+    DOC110: Function `run_breakout`: The option `--arg-type-hints-in-docstring` is `True` but not all args in the docstring arg list have type hints
+    DOC103: Function `run_breakout`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [alternative: Alternative, control_group: str, method_roles: Mapping[str, Literal['decision', 'sensitivity']] | None, method_roles_by_metric: Mapping[str, Mapping[str, Literal['decision', 'sensitivity']]] | None, methods: list[Method] | None, methods_by_metric: Mapping[str, list[Method]] | None, metrics: Sequence[Metric], policy_name: Literal['compiled_plan', 'default_exploratory'], prior: Prior | None]. Arguments in the docstring but not in the function signature: [metrics, control_group, methods, prior, alternative: ].
+    DOC502: Function `run_breakout` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+    DOC105: Function `run_daily`: Argument names match, but type hints in these args do not match: view
+    DOC101: Function `run_daily_lift`: Docstring contains fewer arguments than in function signature.
+    DOC110: Function `run_daily_lift`: The option `--arg-type-hints-in-docstring` is `True` but not all args in the docstring arg list have type hints
+    DOC103: Function `run_daily_lift`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [alpha: float, alternative: Alternative, control_group: str, correction: Literal['none', 'bonferroni'], dimension: str | None, method_roles: Mapping[str, Literal['decision', 'sensitivity']] | None, method_roles_by_metric: Mapping[str, Mapping[str, Literal['decision', 'sensitivity']]] | None, methods: list[Method] | None, methods_by_metric: Mapping[str, list[Method]] | None, metrics: Sequence[Metric], prior: Prior | None, prior_by_metric: Mapping[str, Prior | None] | None, source: str | None]. Arguments in the docstring but not in the function signature: [alpha, alternative, correction: , metrics, control_group, methods, prior: ].
+    DOC502: Function `run_daily_lift` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+--------------------
+increment/breakout/heterogeneity.py
+    DOC101: Function `segment_contrast`: Docstring contains fewer arguments than in function signature.
+    DOC103: Function `segment_contrast`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [alpha: float, dimension_value_a: str, dimension_value_b: str, estimates: BreakoutEstimates].
+    DOC201: Function `segment_contrast` does not have a return section in docstring
+    DOC203: Function `segment_contrast` return type(s) in docstring not consistent with the return annotation. Return annotation has 1 type(s); docstring return section has 0 type(s).
+    DOC502: Function `segment_contrast` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+--------------------
+increment/breakout/rollout.py
+    DOC105: Function `segment_rollout_recommendation`: Argument names match, but type hints in these args do not match: metrics, rollout_cost
+    DOC502: Function `segment_rollout_recommendation` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+--------------------
+increment/estimation/sitewide.py
+    DOC101: Method `SitewideContrast.from_iid`: Docstring contains fewer arguments than in function signature.
+    DOC103: Method `SitewideContrast.from_iid`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [control: ArmStats, target: ArmStats]. Arguments in the docstring but not in the function signature: [control, target: ArmStats].
+    DOC203: Method `SitewideContrast.from_iid` return type(s) in docstring not consistent with the return annotation. Return annotation types: ['Self']; docstring return section types: ['SitewideContrast']
+    DOC502: Method `SitewideContrast.from_iid` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+    DOC101: Method `SitewideContrast.from_clusters`: Docstring contains fewer arguments than in function signature.
+    DOC103: Method `SitewideContrast.from_clusters`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [control: ArmStats, target: ArmStats]. Arguments in the docstring but not in the function signature: [control, target: ArmStats].
+    DOC203: Method `SitewideContrast.from_clusters` return type(s) in docstring not consistent with the return annotation. Return annotation types: ['Self']; docstring return section types: ['SitewideContrast']
+    DOC502: Method `SitewideContrast.from_clusters` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+    DOC101: Method `SitewideRatioContrast.from_iid`: Docstring contains fewer arguments than in function signature.
+    DOC103: Method `SitewideRatioContrast.from_iid`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [control: ArmStats, target: ArmStats]. Arguments in the docstring but not in the function signature: [control, target: ArmStats].
+    DOC203: Method `SitewideRatioContrast.from_iid` return type(s) in docstring not consistent with the return annotation. Return annotation types: ['Self']; docstring return section types: ['SitewideRatioContrast']
+    DOC502: Method `SitewideRatioContrast.from_iid` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+    DOC101: Method `SitewideRatioContrast.from_clusters`: Docstring contains fewer arguments than in function signature.
+    DOC103: Method `SitewideRatioContrast.from_clusters`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [control: ArmStats, target: ArmStats]. Arguments in the docstring but not in the function signature: [control, target: ArmStats].
+    DOC203: Method `SitewideRatioContrast.from_clusters` return type(s) in docstring not consistent with the return annotation. Return annotation types: ['Self']; docstring return section types: ['SitewideRatioContrast']
+    DOC502: Method `SitewideRatioContrast.from_clusters` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+    DOC502: Function `sitewide_impact` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+    DOC101: Function `sitewide_impact_ratio`: Docstring contains fewer arguments than in function signature.
+    DOC103: Function `sitewide_impact_ratio`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [site_total_denominator: float, site_total_numerator: float]. Arguments in the docstring but not in the function signature: [site_total_numerator, site_total_denominator: float].
+    DOC502: Function `sitewide_impact_ratio` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+--------------------
+increment/frame.py
+    DOC101: Function `from_unit_summary`: Docstring contains fewer arguments than in function signature.
+    DOC103: Function `from_unit_summary`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [group: str, unit: str]. Arguments in the docstring but not in the function signature: [unit, group: str].
+    DOC502: Function `from_unit_summary` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+    DOC101: Function `from_unit_panel`: Docstring contains fewer arguments than in function signature.
+    DOC103: Function `from_unit_panel`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [cluster: str | None, control: str, group: str, unit: str]. Arguments in the docstring but not in the function signature: [unit, group, control, cluster: str].
+    DOC502: Function `from_unit_panel` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+--------------------
+increment/power/core.py
+    DOC101: Function `segment_pairwise_required_sample_size`: Docstring contains fewer arguments than in function signature.
+    DOC103: Function `segment_pairwise_required_sample_size`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [baseline_a: Baseline, baseline_b: Baseline | None, design: PowerDesign | None, procedure: ArmPlanningProcedure, q_a: float, q_b: float, r_a: float, r_b: float].
+    DOC201: Function `segment_pairwise_required_sample_size` does not have a return section in docstring
+    DOC203: Function `segment_pairwise_required_sample_size` return type(s) in docstring not consistent with the return annotation. Return annotation has 1 type(s); docstring return section has 0 type(s).
+    DOC502: Function `segment_pairwise_required_sample_size` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+    DOC101: Function `segment_pairwise_achieved_power`: Docstring contains fewer arguments than in function signature.
+    DOC103: Function `segment_pairwise_achieved_power`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [baseline_a: Baseline, baseline_b: Baseline | None, design: PowerDesign | None, n_per_arm: int, procedure: ArmPlanningProcedure, q_a: float, q_b: float, r_a: float, r_b: float].
+    DOC201: Function `segment_pairwise_achieved_power` does not have a return section in docstring
+    DOC203: Function `segment_pairwise_achieved_power` return type(s) in docstring not consistent with the return annotation. Return annotation has 1 type(s); docstring return section has 0 type(s).
+    DOC502: Function `segment_pairwise_achieved_power` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+    DOC101: Function `segment_pairwise_minimum_detectable_effect`: Docstring contains fewer arguments than in function signature.
+    DOC103: Function `segment_pairwise_minimum_detectable_effect`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [baseline_a: Baseline, baseline_b: Baseline | None, design: PowerDesign | None, n_per_arm: int, procedure: ArmPlanningProcedure, q_a: float, q_b: float].
+    DOC201: Function `segment_pairwise_minimum_detectable_effect` does not have a return section in docstring
+    DOC203: Function `segment_pairwise_minimum_detectable_effect` return type(s) in docstring not consistent with the return annotation. Return annotation has 1 type(s); docstring return section has 0 type(s).
+    DOC502: Function `segment_pairwise_minimum_detectable_effect` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+    DOC105: Function `joint_q_power_fixed`: Argument names match, but type hints in these args do not match: theta, var
+    DOC203: Function `joint_q_power_fixed` return type(s) in docstring not consistent with the return annotation. Return annotation has 1 type(s); docstring return section has 6 type(s).
+    DOC105: Function `joint_q_power_random`: Argument names match, but type hints in these args do not match: var
+    DOC203: Function `joint_q_power_random` return type(s) in docstring not consistent with the return annotation. Return annotation has 1 type(s); docstring return section has 3 type(s).
+--------------------
+increment/query/builders.py
+    DOC101: Function `cluster_exposure_counts`: Docstring contains fewer arguments than in function signature.
+    DOC103: Function `cluster_exposure_counts`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [experiment: Experiment, exposures: ir.Table].
+    DOC502: Function `cluster_exposure_counts` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+    DOC101: Function `check_cluster_size_balance`: Docstring contains fewer arguments than in function signature.
+    DOC103: Function `check_cluster_size_balance`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [cluster: str, control_group: str, experiment_name: str, n_clusters: Mapping[str, int], n_units: Mapping[str, int], target_group: str].
+    DOC502: Function `check_cluster_size_balance` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+    DOC101: Function `daily_exposure_counts`: Docstring contains fewer arguments than in function signature.
+    DOC103: Function `daily_exposure_counts`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [experiment: Experiment | None, exposures: ir.Table].
+    DOC101: Function `metric_events`: Docstring contains fewer arguments than in function signature.
+    DOC103: Function `metric_events`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [fact_table: ir.Table, keep: Sequence[str], metric: Metric, part: Literal['numerator', 'denominator'], value_column: str | None].
+    DOC101: Function `site_volume`: Docstring contains fewer arguments than in function signature.
+    DOC103: Function `site_volume`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [experiment: Experiment, fact_table: ir.Table, metric: Metric, value_column: str | None].
+    DOC101: Function `unit_day_stats`: Docstring contains fewer arguments than in function signature.
+    DOC103: Function `unit_day_stats`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [day_boundary_offset: dt.timedelta, events: ir.Table, experiment: Experiment | None, source_key: str].
+    DOC201: Function `panel_spine` does not have a return section in docstring
+    DOC203: Function `panel_spine` return type(s) in docstring not consistent with the return annotation. Return annotation has 1 type(s); docstring return section has 0 type(s).
+    DOC101: Function `unit_day_spine_stats`: Docstring contains fewer arguments than in function signature.
+    DOC103: Function `unit_day_spine_stats`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [events: ir.Table, experiment: Experiment, exposures: ir.Table, metric_name: str].
+    DOC201: Function `unit_day_spine_stats` does not have a return section in docstring
+    DOC203: Function `unit_day_spine_stats` return type(s) in docstring not consistent with the return annotation. Return annotation has 2 type(s); docstring return section has 0 type(s).
+    DOC101: Function `unit_totals`: Docstring contains fewer arguments than in function signature.
+    DOC103: Function `unit_totals`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [by: list[str] | None, experiment: Experiment, metric: Metric, pre_stats: ir.Table | None, properties_table: ir.Table | None, spine: ir.Table, stats: ir.Table, uptake_events: ir.Table | None, uptake_window_days: int | None].
+    DOC201: Function `unit_totals` does not have a return section in docstring
+    DOC203: Function `unit_totals` return type(s) in docstring not consistent with the return annotation. Return annotation has 1 type(s); docstring return section has 0 type(s).
+    DOC102: Function `group_summary`: Docstring contains more arguments than in function signature.
+    DOC110: Function `group_summary`: The option `--arg-type-hints-in-docstring` is `True` but not all args in the docstring arg list have type hints
+    DOC103: Function `group_summary`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [totals: ir.Table]. Arguments in the docstring but not in the function signature: [The row shape comes from ``_moment_plan.UNIT_GRAIN`` (or the cluster: , emitted (typed NULL when *totals* has no ``d`` column), centered on the: , overall group reference, never on the ``d = 1`` subgroup mean.: , plans under *cluster*): ``sum_d``/``cyd``/``cy2d``/``cxd`` are always].
+    DOC201: Function `group_summary` does not have a return section in docstring
+    DOC203: Function `group_summary` return type(s) in docstring not consistent with the return annotation. Return annotation has 1 type(s); docstring return section has 0 type(s).
+--------------------
