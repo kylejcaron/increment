@@ -1,14 +1,10 @@
 # A/B testing dashboard
 
-This notebook composes reusable `increment.dashboard` helpers into one
-readable report: allocation health, the full role-grouped CoefTable readout,
-metric time trends and segments, definitions and provenance, and a
-downloadable CSV for the bundled synthetic `checkout_redesign` experiment.
-
-This static export includes Overview, Health, Results, cumulative-lift Explore
-charts, Metric details, and Details. Open the notebook live to change the
-metric-detail selector, Explore view, or maturity controls.
-
+This notebook binds the synthetic `checkout_redesign` experiment to a
+shared summary and four tabs: **Readout**, **Explore**, **Health**, and a
+printable **Report**. Explore compares native CoefTable relative-lift or
+per-arm absolute trajectories across declared breakouts. Browser controls
+and CSV downloads also work in the static export.
 
 [Open the notebook in a full browser tab](ab_testing_dashboard.html)
 

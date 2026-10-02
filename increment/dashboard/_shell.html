@@ -1,0 +1,1191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>Experiment dashboard</title>
+<style>
+/* ===== Tokens and base ===================================================== */
+:root {
+  --ink: #292d26;
+  --muted: #62695d;
+  --accent: #42644d;
+  --line: #dcded1;
+  --surface: #fffef9;
+  --bg: #f6f7f2;
+  --favorable: #386647;
+  --favorable-bg: #e6efe7;
+  --unfavorable: #a23c3c;
+  --unfavorable-bg: #f5e5e2;
+  --inconclusive: #80601c;
+  --inconclusive-bg: #f4ecd7;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+  font-synthesis: none;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input, select { font: inherit; }
+button, a { touch-action: manipulation; }
+button {
+  cursor: pointer;
+  border: 1px solid var(--line);
+  background: white;
+  border-radius: 5px;
+  padding: 9px 13px;
+  color: var(--ink);
+}
+button:hover { background: #edf1e9; }
+button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible,
+[tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+h1, h2, h3, p { margin-top: 0; }
+h1, h2, h3 { font-family: Georgia, "Times New Roman", serif; font-weight: 400; }
+a { color: inherit; }
+code, .number { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
+.eyebrow { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; font-weight: 650; color: var(--muted); }
+.muted { color: var(--muted); }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+[hidden] { display: none !important; }
+
+.shell { max-width: 1368px; margin: 0 auto; padding: 0 36px 36px; }
+.shell, .view, .view > * { min-width: 0; }
+.fatal { margin: 40px auto; max-width: 560px; padding: 16px 20px; border: 1px solid #e4caca; border-left: 3px solid var(--unfavorable); background: var(--unfavorable-bg); color: var(--unfavorable); }
+
+/* ===== Masthead and shared hero =========================================== */
+.masthead { display: flex; align-items: center; justify-content: space-between; height: 76px; }
+.brand { font-family: Georgia, serif; font-size: 29px; letter-spacing: -1.4px; text-decoration: none; }
+
+.experiment-hero { display: grid; grid-template-columns: minmax(0, 1fr) 310px; gap: 36px; align-items: center; padding: 10px 0 30px; }
+.experiment-hero.no-primary { grid-template-columns: minmax(0, 1fr); }
+.hero-titleline { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin: 10px 0 12px; }
+.hero-titleline h1 { font-size: 40px; line-height: 1.1; letter-spacing: -1px; margin: 0; overflow-wrap: anywhere; }
+.hero-description { font-size: 14px; line-height: 1.6; max-width: 640px; margin: 0 0 13px; overflow-wrap: anywhere; }
+.hero-meta { font-size: 11px; color: var(--muted); line-height: 1.65; margin: 0; overflow-wrap: anywhere; }
+.hero-description:empty, .hero-meta:empty { display: none; }
+
+/* The pill reports allocation only; its wording comes from the payload. */
+.health-pill {
+  font-size: 11px; line-height: 1.3; text-decoration: none; border-radius: 99px; padding: 7px 11px;
+  white-space: nowrap; border: 1px solid var(--line); background: #eeeee7; color: var(--muted);
+}
+.health-pill[data-kind="healthy"] { background: var(--favorable-bg); color: var(--favorable); border-color: #cfdcca; }
+.health-pill[data-kind="warning"] { background: var(--inconclusive-bg); color: var(--inconclusive); border-color: #dfd3af; }
+.health-mark { font-size: 13px; margin-right: 4px; }
+
+.primary-box {
+  border-radius: 6px; padding: 18px 21px; border: 1px solid #dfd3af; border-left: 3px solid var(--inconclusive);
+  background: var(--inconclusive-bg); color: var(--inconclusive);
+}
+.primary-box.tone-favorable { background: var(--favorable-bg); color: var(--favorable); border-color: #cfdfd0; border-left-color: var(--favorable); }
+.primary-box.tone-unfavorable { background: var(--unfavorable-bg); color: var(--unfavorable); border-color: #e4caca; border-left-color: var(--unfavorable); }
+.primary-box.tone-neutral { background: #eeeee8; color: var(--muted); border-color: var(--line); border-left-color: var(--muted); }
+.primary-label { font-size: 10px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; line-height: 1.5; margin: 0 0 8px; overflow-wrap: anywhere; }
+.primary-value { font: 38px/1.1 Georgia, serif; font-variant-numeric: tabular-nums; margin: 0 0 8px; overflow-wrap: anywhere; }
+.primary-interval, .primary-method { font-size: 12px; line-height: 1.5; font-variant-numeric: tabular-nums; margin: 0; overflow-wrap: anywhere; }
+.primary-method { margin-top: 4px; opacity: .85; }
+.primary-interval:empty, .primary-method:empty { display: none; }
+
+/* ===== Tabs ================================================================ */
+.navigation { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); margin-bottom: 27px; }
+.tabs { display: flex; gap: 30px; overflow-x: auto; }
+.tabs [role="tab"] {
+  font-size: 14px; background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+  padding: 0 2px 15px; color: var(--ink); white-space: nowrap;
+}
+.tabs [role="tab"]:hover { background: none; color: var(--accent); }
+.tabs [role="tab"][aria-selected="true"] { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.nav-note { font-size: 10px; color: var(--muted); padding-bottom: 15px; }
+
+/* ===== Sections shared by views =========================================== */
+.section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 18px; margin: 0 0 17px; }
+.section-head h2 { font-size: 26px; letter-spacing: -.5px; margin: 0; }
+.section-head p { font-size: 12px; color: var(--muted); margin: 0; line-height: 1.5; }
+.table-surface { background: white; border: 1px solid var(--line); border-radius: 6px; padding: 18px 24px; overflow-x: auto; }
+.csv-link { font-size: 11px; color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+
+/* Native Python-rendered HTML (CoefTable, health, provenance, metric detail). */
+.native-output { min-width: 0; }
+.native-output .inc-dashboard-root { max-width: none; width: 100%; margin: 0; padding: 0; background: transparent; font-size: 13px; }
+.native-output .inc-dashboard-section { border-bottom: 0; }
+.native-output .inc-dashboard-heading { display: none; }
+.native-output .inc-dashboard-root th, .native-output .inc-dashboard-root td { font-size: 12px; }
+.native-output svg { max-width: 100%; }
+.native-output .inc-dashboard-table-wrap { margin: 0; }
+.native-output .inc-dashboard-kv { grid-template-columns: 145px minmax(0, 1fr); }
+.native-output p, .native-output li, .native-output dd, .native-output dt { overflow-wrap: anywhere; }
+
+/* Metric cells in native result tables. */
+.metric-select {
+  display: block; text-align: left; border: 0; background: none !important; padding: 0;
+  min-width: 130px; font-size: 12px; line-height: 1.5; color: var(--ink);
+}
+button.metric-select:hover { color: var(--accent); text-decoration: underline; }
+.metric-select strong { font-weight: 600; }
+.metric-select small { display: block; font: 9px ui-monospace, monospace; color: var(--muted); text-decoration: none; overflow-wrap: anywhere; }
+.metric-row { cursor: pointer; }
+.metric-row[data-selected] .metric-select strong { color: var(--accent); text-decoration: underline; }
+
+/* ===== Readout ============================================================= */
+.readout-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; align-items: start; }
+.readout-layout.inspector-open { grid-template-columns: minmax(0, 1fr) 340px; }
+.inspector {
+  position: sticky; top: 16px; background: white;
+  border: 1px solid var(--line); border-top: 2px solid var(--accent); padding: 18px; min-width: 0;
+}
+.inspector-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; border-bottom: 1px solid var(--line); padding-bottom: 12px; margin-bottom: 13px; }
+.inspector-heading h3 { font-size: 20px; margin: 0; overflow-wrap: anywhere; }
+.inspector-heading h3:focus { outline: none; }
+.inspector-heading h3:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.inspector-heading p { font-size: 10px; margin: 0 0 4px; }
+.inspector-heading button { border: 0; padding: 0 6px; font-size: 20px; background: none; }
+.readout-bottom { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-top: 16px; }
+.readout-help { font-size: 11px; color: var(--muted); margin: 0; }
+.metric-detail { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--line); }
+.metric-detail > summary { font-size: 12px; cursor: pointer; color: var(--muted); }
+.metric-detail-body { margin-top: 16px; }
+.metric-detail-note { font-size: 11px; margin: 12px 0 0; }
+
+/* ===== Explore ============================================================= */
+.scope-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 20px; border: 1px solid var(--line);
+  border-radius: 6px; background: white; padding: 15px 20px; margin-bottom: 25px;
+}
+.scope-label { font-size: 12px; font-weight: 600; white-space: nowrap; }
+.scope-controls { display: flex; flex-wrap: wrap; gap: 5px; }
+.scope-controls button { font-size: 12px; border: 1px solid transparent; background: transparent; padding: 8px 14px; overflow-wrap: anywhere; }
+.scope-controls button[aria-pressed="true"] { background: #e8eee2; border-color: #c9d6c3; color: var(--accent); font-weight: 600; }
+.scope-description { font-size: 11px; color: var(--muted); line-height: 1.6; text-align: right; max-width: 300px; margin: 0; }
+
+.explore-layout { display: grid; grid-template-columns: 205px minmax(0, 1fr); gap: 30px; align-items: start; }
+.metric-list { border-right: 1px solid var(--line); padding-right: 22px; min-width: 0; }
+.metric-list .eyebrow { margin: 4px 0 12px; }
+.metric-group-label { font-size: 10px; color: var(--muted); margin: 22px 0 8px; text-transform: uppercase; letter-spacing: .05em; }
+.metric-tab {
+  display: block; text-align: left; width: 100%; border: 0; border-left: 2px solid transparent; border-radius: 0;
+  background: transparent; padding: 12px 9px; font-size: 12px; line-height: 1.5; margin: 1px 0; overflow-wrap: anywhere;
+}
+.metric-tab strong { font-weight: 500; }
+.metric-tab[aria-pressed="true"] { border-left-color: var(--accent); background: #eaf0e4; }
+.metric-tab:hover { background: #eef2e9; }
+
+.explore-workspace { min-width: 0; background: white; border: 1px solid var(--line); border-radius: 6px; padding: 24px; }
+.explore-workspace h3 { font-size: 26px; letter-spacing: -.5px; margin: 0 0 8px; overflow-wrap: anywhere; }
+.explore-workspace .context { font-size: 12px; color: var(--muted); margin: 0 0 16px; line-height: 1.65; overflow-wrap: anywhere; }
+.view-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin: 0 0 18px; }
+.segmented { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 6px; padding: 2px; background: #f3f5ee; gap: 2px; }
+.segmented button { font-size: 12px; border: 1px solid transparent; background: transparent; padding: 6px 12px; }
+.segmented button[aria-pressed="true"] { background: white; border-color: #c9d6c3; color: var(--accent); font-weight: 600; }
+.complete-toggle { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; cursor: pointer; }
+.complete-toggle input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
+.trajectory-wrap { overflow-x: auto; min-width: 0; }
+.trajectory-caption { font-size: 11px; color: var(--muted); line-height: 1.7; border-top: 1px solid var(--line); padding-top: 16px; margin: 18px 0 0; overflow-wrap: anywhere; }
+.plot-notes ul { font-size: 12px; line-height: 1.65; padding-left: 20px; margin: 14px 0 0; }
+.plot-notes li { margin-bottom: 4px; overflow-wrap: anywhere; }
+.explore-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 16px; font-size: 11px; color: var(--muted); }
+.explore-empty { font-size: 13px; color: var(--muted); }
+
+/* ===== Health ============================================================== */
+.health-intro { font-size: 13px; line-height: 1.7; color: var(--muted); max-width: 680px; margin: 0 0 14px; }
+.health-status { font-size: 13px; line-height: 1.6; max-width: 760px; margin: 0 0 22px; padding: 10px 14px; border-left: 3px solid var(--line); background: #eeeee7; overflow-wrap: anywhere; }
+.health-status strong { display: block; font-weight: 650; }
+.health-status[data-kind="healthy"] { border-left-color: var(--favorable); background: var(--favorable-bg); }
+.health-status[data-kind="warning"] { border-left-color: var(--inconclusive); background: var(--inconclusive-bg); }
+.health-surface { background: white; border: 1px solid var(--line); border-radius: 6px; padding: 22px 27px; }
+.health-surface .inc-dashboard-status { font-size: 15px; }
+
+/* Provenance disclosure under the Readout. */
+.provenance-disclosure { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.provenance-disclosure > summary { font-size: 12px; cursor: pointer; color: var(--muted); }
+.provenance-disclosure > .native-output { margin-top: 14px; background: white; border: 1px solid var(--line); border-radius: 6px; padding: 14px 20px; }
+
+.page-footer { font-size: 10px; color: var(--muted); line-height: 1.7; border-top: 1px solid var(--line); margin-top: 28px; padding-top: 14px; }
+
+/* ===== Report (scoped to .rpt) ============================================ */
+.rpt { padding: 4px 0 40px; }
+.rpt *, .rpt *::before, .rpt *::after { box-sizing: border-box; }
+.rpt-toolbar { max-width: 1020px; margin: 0 auto 14px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 0 2px; }
+.rpt-toolbar-title { font-family: inherit; font-size: 12px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; margin: 0; }
+.rpt-toolbar-scope { font-size: 13px; color: var(--muted); margin: 0; flex: 1 1 260px; min-width: 0; }
+.rpt-toolbar-scope::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-right: 8px; vertical-align: 1px; }
+.rpt-toolbar-actions { display: flex; align-items: center; gap: 14px; margin-left: auto; }
+.rpt-back { font-size: 13px; color: var(--muted); background: none; border: 0; padding: 6px 2px; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line); }
+.rpt-back:hover, .rpt-back:focus-visible { color: var(--ink); background: none; text-decoration-color: currentColor; }
+.rpt-print { font-size: 13px; font-weight: 600; color: #fff; background: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 8px 16px; }
+.rpt-print:hover { background: var(--ink); border-color: var(--ink); }
+
+.rpt-paper { max-width: 1020px; margin: 0 auto; background: #fff; border: 1px solid var(--line); box-shadow: 0 1px 2px rgba(37,54,45,.06), 0 14px 36px -18px rgba(37,54,45,.22); padding: 56px 64px 48px; }
+.rpt-masthead { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 6px 24px; padding-bottom: 10px; border-bottom: 2px solid var(--ink); }
+.rpt-brand { font-size: 11.5px; font-weight: 650; letter-spacing: .14em; text-transform: uppercase; margin: 0; }
+.rpt-brand span { color: var(--muted); font-weight: 500; }
+.rpt-kind { font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0; }
+.rpt-title-block { padding: 28px 0 22px; border-bottom: 1px solid var(--line); }
+.rpt-title { font-size: 40px; line-height: 1.12; letter-spacing: -.01em; margin: 0 0 10px; overflow-wrap: anywhere; }
+.rpt-meta { font-size: 13px; line-height: 1.5; color: var(--muted); margin: 0; overflow-wrap: anywhere; }
+.rpt-meta:empty { display: none; }
+
+/* Compact, estimate-only summary. Tone colours come from .primary-box; only layout is set here. */
+.rpt-primary { display: block; width: fit-content; max-width: 100%; min-width: min(100%, 220px); margin: 24px 0 4px; padding: 14px 20px 16px; }
+.rpt-primary-label { margin: 0 0 6px; font-size: 11px; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; }
+.rpt-primary-label span { font-weight: 500; letter-spacing: .04em; text-transform: none; font-size: 13px; margin-left: 6px; }
+.rpt-primary-value { margin: 0; font-size: 40px; line-height: 1.05; overflow-wrap: anywhere; }
+
+.rpt-section { padding: 26px 0 8px; border-bottom: 1px solid var(--line); }
+.rpt-section:last-of-type { border-bottom: 0; }
+.rpt-section-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; margin: 0 0 14px; }
+.rpt-section-num { font-size: 11px; font-weight: 650; letter-spacing: .1em; color: var(--accent); }
+.rpt-h2 { font-size: 24px; line-height: 1.2; margin: 0; }
+.rpt-caption { font-size: 13.5px; line-height: 1.55; color: var(--muted); margin: 0 0 16px; max-width: 76ch; }
+.rpt-caption strong { color: var(--ink); font-weight: 600; }
+.rpt-health-status { font-size: 13.5px; line-height: 1.55; margin: 0 0 14px; max-width: 76ch; overflow-wrap: anywhere; }
+.rpt-health-status strong { font-weight: 650; }
+.rpt-health-status:empty { display: none; }
+
+.rpt-slot { min-width: 0; max-width: 100%; margin: 0 0 22px; }
+.rpt-slot:empty { display: none; }
+.rpt-slot-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.rpt-slot details { margin: 8px 0; }
+.rpt-slot details > summary { cursor: pointer; }
+.rpt #report-table { font-variant-numeric: tabular-nums; }
+.rpt #report-health { font-variant-numeric: tabular-nums; }
+.rpt #report-provenance .inc-dashboard-kv { display: grid; grid-template-columns: minmax(0, 10rem) minmax(0, 1fr) minmax(0, 10rem) minmax(0, 1fr); gap: 6px 18px; margin: 10px 0 0; font-size: 13px; line-height: 1.4; }
+.rpt #report-provenance .inc-dashboard-kv dt, .rpt #report-provenance .inc-dashboard-kv dd { margin: 0; }
+.rpt-method { border-top: 1px solid var(--line); margin: 0; padding: 14px 0 0; font-size: 12.5px; line-height: 1.55; color: var(--muted); max-width: 84ch; }
+.rpt-method strong { color: var(--ink); font-weight: 600; }
+.rpt-colophon { margin: 18px 0 0; padding-top: 12px; border-top: 2px solid var(--ink); display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 24px; font-size: 11.5px; color: var(--muted); }
+.rpt-colophon p { margin: 0; }
+
+/* ===== Responsive ========================================================== */
+@media (max-width: 1100px) {
+  .readout-layout.inspector-open { grid-template-columns: 1fr; }
+  .inspector { position: static; max-height: none; }
+  .experiment-hero { grid-template-columns: minmax(0, 1fr) 285px; gap: 24px; }
+  .hero-titleline h1 { font-size: 36px; }
+  .scope-description { display: none; }
+  .explore-layout { grid-template-columns: 180px minmax(0, 1fr); gap: 22px; }
+  .explore-workspace { padding: 20px 16px; }
+  .metric-list { padding-right: 14px; }
+}
+@media (max-width: 900px) {
+  .rpt-paper { padding: 40px 36px 36px; }
+  .rpt-title { font-size: 34px; }
+  .rpt #report-provenance .inc-dashboard-kv { grid-template-columns: minmax(0, 10rem) minmax(0, 1fr); }
+}
+@media (max-width: 700px) {
+  .shell { padding: 0 16px 28px; }
+  .masthead { height: 64px; }
+  .brand { font-size: 26px; }
+  .experiment-hero { grid-template-columns: 1fr; gap: 18px; padding: 8px 0 25px; }
+  .hero-titleline { gap: 12px; margin: 10px 0; }
+  .hero-titleline h1 { font-size: 33px; }
+  .hero-description { font-size: 13px; }
+  .health-pill { white-space: normal; max-width: 100%; }
+  .primary-box { padding: 15px 18px; }
+  .primary-value { font-size: 32px; margin-bottom: 7px; }
+  .tabs { gap: 23px; }
+  .tabs [role="tab"] { font-size: 13px; }
+  .nav-note { display: none; }
+  .section-head { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .section-head h2 { font-size: 24px; }
+  .table-surface { padding: 13px 10px; }
+  .table-surface table { min-width: 670px; }
+  .scope-bar { flex-direction: column; align-items: stretch; padding: 12px 10px; gap: 8px; margin-bottom: 20px; }
+  .scope-label { padding-left: 4px; font-size: 11px; }
+  .scope-controls button { padding: 8px 10px; font-size: 11px; }
+  .explore-layout { grid-template-columns: 1fr; gap: 18px; }
+  .metric-list { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 6px; padding: 0; border: 0; }
+  .metric-list > .eyebrow { grid-column: 1 / -1; margin: 0 0 7px; }
+  .metric-group-label { display: none; }
+  .metric-tab { padding: 10px 9px; }
+  .explore-workspace { padding: 18px 12px; }
+  .explore-workspace h3 { font-size: 23px; }
+  .trajectory-wrap table { min-width: 850px; }
+  .explore-footer, .readout-bottom { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .health-surface { padding: 18px 14px; }
+  .health-surface .inc-dashboard-table-wrap { overflow-x: auto; }
+  .native-output .inc-dashboard-kv { grid-template-columns: 110px minmax(0, 1fr); }
+  .rpt-title { font-size: 28px; }
+}
+@media (max-width: 560px) {
+  .rpt-paper { padding: 28px 18px 28px; border-left-width: 0; border-right-width: 0; box-shadow: none; }
+  .rpt-toolbar { padding: 0 4px; }
+  .rpt-toolbar-actions { margin-left: 0; width: 100%; justify-content: space-between; }
+  .rpt-h2 { font-size: 21px; }
+  .rpt-primary { padding: 12px 16px 14px; }
+  .rpt-primary-value { font-size: 34px; }
+  .rpt #report-provenance .inc-dashboard-kv { grid-template-columns: minmax(0, 1fr); gap: 2px 0; }
+  .rpt #report-provenance .inc-dashboard-kv dd { margin-bottom: 8px; }
+}
+
+/* ===== Print: the Report only, A4 portrait ================================ */
+@page { size: A4 portrait; margin: 16mm 14mm 18mm; }
+@media print {
+  html, body { background: #fff !important; color: #000; }
+  .shell { max-width: none; padding: 0; }
+  .masthead, .experiment-hero, .navigation, .page-footer, .rpt-toolbar,
+  .view:not([data-view="report"]) { display: none !important; }
+  .view[data-view="report"], .view[data-view="report"][hidden] { display: block !important; }
+  .rpt { padding: 0; color: #000; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .rpt-paper { max-width: none; width: 100%; margin: 0; padding: 0; border: 0; box-shadow: none !important; background: #fff !important; }
+  .rpt-title-block { padding: 16px 0 12px; }
+  .rpt-title { font-size: 26pt; }
+  .rpt-meta, .rpt-caption, .rpt-method { color: #3b4a41; }
+  .rpt-meta { font-size: 9.5pt; }
+  .rpt-primary { margin: 14px 0 2px; padding: 10pt 14pt 12pt; max-width: 90mm; break-inside: avoid; }
+  .rpt-primary-label, .rpt-brand, .rpt-kind, .rpt-section-num { font-size: 8pt; }
+  .rpt-primary-label span { font-size: 9pt; }
+  .rpt-primary-value { font-size: 26pt; }
+  .rpt-h2 { font-size: 15pt; }
+  .rpt-caption, .rpt-health-status { font-size: 9.5pt; }
+  .rpt-method, .rpt-colophon { font-size: 8.5pt; }
+  .rpt-section { padding: 16px 0 4px; break-inside: auto; }
+  .rpt-section-head, .rpt-caption { break-after: avoid; }
+  .rpt-masthead, .rpt-title-block, .rpt-method, .rpt-colophon { break-inside: avoid; }
+  .rpt-slot { margin-bottom: 14px; }
+  .rpt-slot, .rpt-slot-scroll { overflow: visible !important; }
+  .rpt-slot * { max-width: 100%; box-shadow: none !important; text-shadow: none !important; }
+  .rpt-slot a { color: inherit; text-decoration: none; }
+  .rpt-slot td, .rpt-slot th { overflow-wrap: break-word; word-break: normal; }
+  .rpt-slot thead { display: table-header-group; }
+  .rpt-slot tr, .rpt-slot figure, .rpt-slot svg { break-inside: avoid; }
+  .rpt-slot .metric-select { min-width: 0; }
+  .rpt-slot .metric-select small { font-size: 7pt; }
+
+  /* Results: fit the A4 width; every group stays expanded. */
+  .rpt #report-table { font-size: 9pt; overflow: visible !important; }
+  .rpt #report-table .inc-dashboard-table-wrap, .rpt #report-table .inc-dashboard-table-wrap > div { overflow: visible !important; width: auto !important; height: auto !important; }
+  .rpt #report-table table { width: 100% !important; border-collapse: collapse; }
+  .rpt #report-table tr[data-ct-group-member] { display: table-row !important; }
+  .rpt #report-table .ct-caret { display: none; }
+  .rpt #report-table .gt_col_heading, .rpt #report-table .gt_row { font-size: 8.5pt !important; padding: 5pt 4pt !important; }
+  .rpt #report-table .gt_col_heading { white-space: normal !important; overflow-wrap: normal; word-break: normal; hyphens: none; vertical-align: bottom; }
+  .rpt #report-table td { overflow-wrap: anywhere; }
+  .rpt #report-table svg { width: 100% !important; height: auto !important; }
+  /* Five-column results (metric, arm, lift, plot, interval) get a fixed grid. */
+  .rpt #report-table table[data-cols="5"] { table-layout: fixed !important; }
+  .rpt #report-table table[data-cols="5"] .gt_col_heading:nth-child(1) { width: 27%; }
+  .rpt #report-table table[data-cols="5"] .gt_col_heading:nth-child(2) { width: 10%; }
+  .rpt #report-table table[data-cols="5"] .gt_col_heading:nth-child(3) { width: 13%; }
+  .rpt #report-table table[data-cols="5"] .gt_col_heading:nth-child(4) { width: 29%; }
+  .rpt #report-table table[data-cols="5"] .gt_col_heading:nth-child(5) { width: 21%; }
+
+  .rpt #report-health { font-size: 9pt; }
+  .rpt #report-health table { width: 100% !important; table-layout: auto; border-collapse: collapse; }
+  .rpt #report-health th, .rpt #report-health td { padding: 4pt 4pt !important; }
+  .rpt #report-health .inc-dashboard-table-wrap { overflow: visible !important; }
+  .rpt #report-health .inc-dashboard-disclosure .inc-dashboard-table { min-width: 0; }
+
+  .rpt #report-observed .inc-dashboard-table-wrap { overflow: visible !important; }
+  .rpt #report-observed table { width: 100% !important; min-width: 0 !important; table-layout: fixed; }
+  .rpt #report-observed th, .rpt #report-observed td {
+    white-space: normal !important; overflow-wrap: anywhere; font-size: 8pt !important; padding: 4pt 2pt !important;
+  }
+
+  .rpt #report-provenance { font-size: 8.5pt; }
+  .rpt #report-provenance .inc-dashboard-kv { grid-template-columns: 27mm minmax(0, 1fr) 27mm minmax(0, 1fr); gap: 2pt 10pt; font-size: 8.5pt; line-height: 1.35; margin-top: 6pt; }
+  .rpt .native-output .inc-dashboard-kv { display: grid; grid-template-columns: 30mm minmax(0, 1fr); font-size: 8.5pt; gap: 2pt 10pt; line-height: 1.35; }
+  .rpt .native-output .inc-dashboard-kv dt, .rpt .native-output .inc-dashboard-kv dd { margin: 0; }
+  .rpt .native-output details { break-inside: avoid; margin: 6pt 0; padding: 6pt 0; }
+  .rpt .native-output details > summary { list-style: none; cursor: default; font-weight: 650; break-after: avoid; }
+  .rpt .native-output details > summary::-webkit-details-marker { display: none; }
+  .rpt .rpt-slot details::details-content { content-visibility: visible !important; height: auto !important; }
+}
+</style>
+</head>
+<body>
+<div class="shell" id="shell">
+  <header class="masthead"><a class="brand" id="brand" href="#readout">increment</a></header>
+
+  <header class="experiment-hero" id="hero" aria-label="Experiment summary">
+    <div>
+      <div class="eyebrow">Experiment / captured snapshot</div>
+      <div class="hero-titleline">
+        <h1 id="hero-title"></h1>
+        <a class="health-pill" id="hero-health" href="#health" hidden aria-describedby="hero-health-detail">
+          <span class="health-mark" id="hero-health-mark" aria-hidden="true"></span><span id="hero-health-label"></span>
+        </a>
+        <span class="sr-only" id="hero-health-detail"></span>
+      </div>
+      <p class="hero-description" id="hero-description"></p>
+      <p class="hero-meta" id="hero-meta"></p>
+    </div>
+    <div class="primary-box" id="hero-primary" role="group" aria-labelledby="hero-primary-label" hidden>
+      <p class="primary-label" id="hero-primary-label"></p>
+      <p class="primary-value" id="hero-primary-effect"></p>
+      <p class="primary-interval" id="hero-primary-interval"></p>
+      <p class="primary-method" id="hero-primary-method"></p>
+    </div>
+  </header>
+
+  <nav class="navigation" aria-label="Analysis views">
+    <div class="tabs" role="tablist" aria-label="Analysis views">
+      <button type="button" role="tab" id="tab-readout" data-view-target="readout" aria-controls="panel-readout" aria-selected="true">Readout</button>
+      <button type="button" role="tab" id="tab-explore" data-view-target="explore" aria-controls="panel-explore" aria-selected="false" tabindex="-1">Explore</button>
+      <button type="button" role="tab" id="tab-health" data-view-target="health" aria-controls="panel-health" aria-selected="false" tabindex="-1">Health</button>
+      <button type="button" role="tab" id="tab-report" data-view-target="report" aria-controls="panel-report" aria-selected="false" tabindex="-1">Report</button>
+    </div>
+    <span class="nav-note">One snapshot · four views</span>
+  </nav>
+
+  <main>
+    <section class="view" id="panel-readout" data-view="readout" role="tabpanel" aria-labelledby="tab-readout">
+      <div class="section-head">
+        <h2>Experiment results</h2>
+        <p>Effect estimates and uncertainty, grouped by their declared role.</p>
+      </div>
+      <div class="readout-layout" id="readout-layout">
+        <div>
+          <div class="table-surface native-output" id="readout-table"></div>
+          <div class="readout-bottom">
+            <span class="readout-help">Select a metric row to inspect its definition and observed data.</span>
+            <a class="csv-link" id="readout-download" hidden>Download full readout ↓</a>
+          </div>
+          <details class="provenance-disclosure" id="readout-provenance-disclosure">
+            <summary>Experiment provenance &amp; definitions</summary>
+            <div class="native-output" id="readout-provenance"></div>
+          </details>
+        </div>
+        <aside class="inspector" id="inspector" aria-label="Selected metric evidence" hidden>
+          <div class="inspector-heading">
+            <div>
+              <p class="eyebrow">Metric evidence</p>
+              <h3 id="inspector-title" tabindex="-1"></h3>
+            </div>
+            <button type="button" id="close-inspector" aria-label="Close metric evidence">×</button>
+          </div>
+          <div class="native-output" id="readout-inspector"></div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="view" id="panel-explore" data-view="explore" role="tabpanel" aria-labelledby="tab-explore" hidden>
+      <div class="section-head">
+        <h2>Explore results</h2>
+        <p>Compare metrics across the experiment’s declared segments.</p>
+      </div>
+      <div class="scope-bar" id="scope-bar">
+        <span class="scope-label" id="scope-label">Compare by</span>
+        <div class="scope-controls" id="scope-controls" role="group" aria-labelledby="scope-label"></div>
+        <p class="scope-description" id="scope-description"></p>
+      </div>
+      <p class="explore-empty" id="explore-empty" hidden>No exploratory views were captured with this snapshot.</p>
+      <div class="explore-layout" id="explore-layout">
+        <aside class="metric-list" id="metric-list" aria-label="Focus metric"></aside>
+        <section class="explore-workspace" aria-labelledby="explore-metric-name">
+          <h3 id="explore-metric-name"></h3>
+          <p class="context" id="explore-context"></p>
+          <div class="view-controls" role="group" aria-label="Plot controls">
+            <div class="segmented" id="mode-group" role="group" aria-label="Values shown">
+              <button type="button" data-mode="relative" aria-pressed="true">Relative lift</button>
+              <button type="button" data-mode="absolute" aria-pressed="false">Absolute values</button>
+            </div>
+            <div class="segmented" id="cadence-group" role="group" aria-label="Absolute value window" hidden>
+              <button type="button" data-cadence="cumulative" aria-pressed="true">Cumulative</button>
+              <button type="button" data-cadence="daily" aria-pressed="false">Daily</button>
+            </div>
+            <label class="complete-toggle" id="complete-toggle"><input type="checkbox" id="complete-only"><span>Completed windows only</span></label>
+          </div>
+          <div class="trajectory-wrap native-output" id="explore-plot" role="region" tabindex="0"></div>
+          <p class="trajectory-caption" id="trajectory-caption"></p>
+          <details class="metric-detail plot-notes" id="plot-notes">
+            <summary id="plot-notes-summary"></summary>
+            <ul id="plot-notes-list"></ul>
+          </details>
+          <details class="metric-detail" id="metric-definition">
+            <summary>Metric definition &amp; observed data</summary>
+            <div class="metric-detail-body native-output" id="explore-inspector"></div>
+            <p class="muted metric-detail-note">Observed group data describes the whole experiment; segment estimates are shown in the plot above.</p>
+          </details>
+          <div class="explore-footer">
+            <span id="explore-count" aria-live="polite"></span>
+            <a class="csv-link" id="group-download" hidden>Download full-experiment group data ↓</a>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section class="view" id="panel-health" data-view="health" role="tabpanel" aria-labelledby="tab-health" hidden>
+      <div class="section-head">
+        <h2>Experiment health</h2>
+        <p>Assignment, allocation, and available result checks.</p>
+      </div>
+      <p class="health-intro">Health describes the quality of the available experiment checks—not whether a treatment is beneficial or safe to ship. Review assignment warnings, metric caveats, and allocation evidence here.</p>
+      <p class="health-status" id="health-status" hidden></p>
+      <div class="health-surface native-output" id="health-evidence"></div>
+    </section>
+
+    <section class="view" id="panel-report" data-view="report" role="tabpanel" aria-labelledby="tab-report" hidden>
+      <article class="rpt" aria-labelledby="report-title">
+        <div class="rpt-toolbar" role="region" aria-label="Report actions">
+          <h2 class="rpt-toolbar-title">Snapshot report</h2>
+          <p class="rpt-toolbar-scope">Full experiment snapshot · independent of Explore selections</p>
+          <div class="rpt-toolbar-actions">
+            <button type="button" class="rpt-back" id="report-back">Back to Readout</button>
+            <button type="button" class="rpt-print" id="report-print">Print / Save PDF</button>
+          </div>
+        </div>
+
+        <div class="rpt-paper">
+          <header>
+            <div class="rpt-masthead">
+              <p class="rpt-brand">increment <span>/ experiment report</span></p>
+              <p class="rpt-kind">Snapshot report</p>
+            </div>
+            <div class="rpt-title-block">
+              <h1 class="rpt-title" id="report-title"></h1>
+              <p class="rpt-meta" id="report-meta"></p>
+            </div>
+            <div class="primary-box rpt-primary" id="report-primary-box" role="group" aria-labelledby="report-primary-label" hidden>
+              <p class="rpt-primary-label" id="report-primary-label">Primary effect<span id="report-primary-metric"></span></p>
+              <p class="primary-value rpt-primary-value" id="report-primary-effect"></p>
+            </div>
+          </header>
+
+          <section class="rpt-section" aria-labelledby="rpt-h-results">
+            <div class="rpt-section-head"><span class="rpt-section-num">01</span><h2 class="rpt-h2" id="rpt-h-results">Results</h2></div>
+            <p class="rpt-caption">Every metric in the experiment as captured at snapshot time. Each row shows the estimated change and the <strong>interval</strong> of values consistent with the data. Selections made in Explore do not change this table.</p>
+            <div class="rpt-slot rpt-slot-scroll native-output" id="report-table" role="region" aria-label="Full experiment results table" tabindex="0"></div>
+            <p class="rpt-method"><strong>Method.</strong> Estimates and intervals are shown as emitted by the analysis; nothing is re-derived in this report. The decision to ship, extend or stop remains with the team reading this evidence.</p>
+          </section>
+
+          <section class="rpt-section" aria-labelledby="rpt-h-health">
+            <div class="rpt-section-head"><span class="rpt-section-num">02</span><h2 class="rpt-h2" id="rpt-h-health">Allocation &amp; health</h2></div>
+            <p class="rpt-caption">Traffic allocation and data-quality checks recorded for this snapshot. Read these before relying on the results above.</p>
+            <p class="rpt-health-status" id="report-health-status"></p>
+            <div class="rpt-slot rpt-slot-scroll native-output" id="report-health" role="region" aria-label="Allocation and experiment health" tabindex="0"></div>
+          </section>
+
+          <section class="rpt-section" aria-labelledby="rpt-h-prov">
+            <div class="rpt-section-head"><span class="rpt-section-num">03</span><h2 class="rpt-h2" id="rpt-h-prov">Definitions &amp; provenance</h2></div>
+            <p class="rpt-caption">Metric definitions and analysis policies, experiment definition, analysis settings and source details captured with this snapshot so the report can be reproduced and audited.</p>
+            <div class="rpt-slot native-output" id="report-provenance" role="region" aria-label="Captured definitions and provenance"></div>
+            <h3>Observed data by arm</h3>
+            <div id="report-observed"></div>
+          </section>
+
+          <footer class="rpt-colophon">
+            <p>increment / experiment report</p>
+            <p>Full experiment snapshot · independent of Explore selections</p>
+          </footer>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <footer class="page-footer">One captured snapshot. Explore controls choose among precomputed views; they never recalculate or replace the Readout.</footer>
+</div>
+
+<script type="application/json" id="dashboard-data"><!-- DASHBOARD_DATA --></script>
+<script>
+(function () {
+  'use strict';
+
+  /* ---------- Small helpers -------------------------------------------------- */
+  const VIEWS = ['readout', 'explore', 'health', 'report'];
+  const TONES = ['favorable', 'unfavorable', 'inconclusive', 'neutral'];
+  const $ = (id) => document.getElementById(id);
+  const str = (value) => (value === null || value === undefined ? '' : String(value));
+  const own = (object, key) =>
+    object !== null && typeof object === 'object' && Object.prototype.hasOwnProperty.call(object, key) ? object[key] : undefined;
+  const slug = (value) =>
+    str(value).normalize('NFKD').replace(/[^\w]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase().slice(0, 60) || 'dashboard';
+
+  /** Create an element; arbitrary strings only ever go through textContent or attributes. */
+  function el(tag, props, ...children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(props || {})) {
+      if (value === null || value === undefined || value === false) continue;
+      if (key === 'className') node.className = value;
+      else if (key === 'text') node.textContent = value;
+      else if (key === 'dataset') Object.assign(node.dataset, value);
+      else node.setAttribute(key, value === true ? '' : value);
+    }
+    for (const child of children) if (child !== null && child !== undefined) node.append(child);
+    return node;
+  }
+
+  /* ---------- Payload -------------------------------------------------------- */
+  let data;
+  try {
+    data = JSON.parse($('dashboard-data').textContent);
+  } catch (error) {
+    document.body.replaceChildren(el('p', { className: 'fatal', role: 'alert', text: 'The dashboard data is missing or invalid, so nothing can be shown.' }));
+    return;
+  }
+  const metrics = Array.isArray(data.metrics) ? data.metrics : [];
+  const metricByKey = new Map(metrics.map((metric) => [metric.key, metric]));
+  const metricByLabel = new Map();
+  for (const metric of metrics) if (!metricByLabel.has(metric.label)) metricByLabel.set(metric.label, metric);
+  const scopes = data.scopes && typeof data.scopes === 'object' ? data.scopes : {};
+  const scopeKeys = Object.keys(scopes).sort((a, b) => (a === 'overall' ? -1 : b === 'overall' ? 1 : 0));
+  const explore = data.explore && typeof data.explore === 'object' ? data.explore : {};
+  const exploreMetrics = (() => {
+    const covered = metrics.filter((metric) => scopeKeys.some((scope) => own(own(explore, scope), metric.key) !== undefined));
+    return covered.length ? covered : metrics;
+  })();
+  const fileBase = slug(data.title);
+
+  /* ---------- Native HTML mounting ------------------------------------------ */
+  // Native tables and charts ship with their own ids (random table ids, group checkboxes,
+  // chart clip paths) and their own <style> rules. Mounting rewrites every id to be unique
+  // per mount, rewrites every reference to it, and scopes loose style rules to the mount.
+  const REF_LISTS = ['headers', 'aria-labelledby', 'aria-describedby', 'aria-controls', 'aria-owns', 'aria-flowto', 'aria-details'];
+  const REF_SINGLE = ['for', 'list', 'form', 'aria-activedescendant', 'aria-errormessage'];
+  const URL_REF = /url\(\s*(["']?)#([^"')\s]+)\1\s*\)/g;
+
+  function topSvg(node) {
+    let found = null;
+    for (let n = node; n; n = n.parentElement) if (n.localName === 'svg') found = n;
+    return found;
+  }
+
+  /** Make every id in `root` unique to `prefix`, remap references, return old-id -> new-id. */
+  function remapIds(root, prefix) {
+    const elements = [...root.querySelectorAll('*')];
+    const svgNumbers = new Map();
+    const scopeMaps = new Map();
+    const globalMap = new Map();
+    const assigned = new Map();
+    const used = new Set();
+    for (const node of elements) {
+      const old = node.getAttribute('id');
+      if (!old) continue;
+      const svg = topSvg(node);
+      let scope = '';
+      if (svg) {
+        if (!svgNumbers.has(svg)) svgNumbers.set(svg, svgNumbers.size);
+        scope = 's' + svgNumbers.get(svg) + '_';
+      }
+      const base = prefix + '__' + scope + old;
+      let candidate = base;
+      for (let n = 1; used.has(candidate); ) candidate = base + '_' + ++n;
+      used.add(candidate);
+      assigned.set(node, candidate);
+      if (svg) {
+        if (!scopeMaps.has(svg)) scopeMaps.set(svg, new Map());
+        if (!scopeMaps.get(svg).has(old)) scopeMaps.get(svg).set(old, candidate);
+      }
+      if (!globalMap.has(old)) globalMap.set(old, candidate);
+    }
+    const resolve = (node, old) => {
+      const svg = topSvg(node);
+      const local = svg && scopeMaps.get(svg);
+      return (local && local.get(old)) || globalMap.get(old);
+    };
+    for (const node of elements) {
+      if (assigned.has(node)) node.setAttribute('id', assigned.get(node));
+      for (const attribute of [...node.attributes]) {
+        const name = attribute.name;
+        const value = attribute.value;
+        let next = value;
+        if (name === 'id') continue;
+        if (REF_LISTS.includes(name)) {
+          next = value.split(/\s+/).filter(Boolean).map((token) => resolve(node, token) || token).join(' ');
+        } else if (REF_SINGLE.includes(name)) {
+          next = resolve(node, value.trim()) || value;
+        } else if ((name === 'href' || name === 'xlink:href') && value.charAt(0) === '#') {
+          const target = resolve(node, value.slice(1));
+          if (target) next = '#' + target;
+        } else if (value.indexOf('url(') !== -1) {
+          next = value.replace(URL_REF, (match, quote, id) => {
+            const target = resolve(node, id);
+            return target ? 'url(#' + target + ')' : match;
+          });
+        }
+        if (next !== value) node.setAttribute(name, next);
+      }
+    }
+    return globalMap;
+  }
+
+  function rewriteUrls(text, context) {
+    return text.replace(URL_REF, (match, quote, id) => {
+      const target = context.mapId(id);
+      return target ? 'url(#' + target + ')' : match;
+    });
+  }
+  /** Prefix every selector with the mount host and remap #id / [for=id] to the mount's ids. */
+  function scopeSelectors(text, context) {
+    const host = '#' + context.hostId;
+    // The native stylesheets only use top-level commas, so a plain split is exact.
+    return text.split(',').map((selector) => {
+      const next = selector.trim()
+        .replace(/#((?:\\.|[\w-])+)/g, (match, id) => {
+          const target = context.mapId(id);
+          return target ? '#' + target : match;
+        })
+        .replace(/\[\s*(for|id)\s*=\s*(["']?)([^"'\]\s]+)\2\s*\]/g, (match, name, quote, id) => {
+          const target = context.mapId(id);
+          return target ? '[' + name + '=' + (quote || '"') + target + (quote || '"') + ']' : match;
+        });
+      if (next.startsWith(host + '__')) return next;
+      const root = /^(:root|html|body)(?![\w-])/.exec(next);
+      return root ? host + next.slice(root[0].length) : host + ' ' + next;
+    }).join(', ');
+  }
+  /** Scope style rules in place, descending into @media/@supports/etc. */
+  function scopeRules(rules, context) {
+    for (const rule of rules) {
+      if (typeof rule.selectorText === 'string') rule.selectorText = scopeSelectors(rule.selectorText, context);
+      else if (rule.cssRules) scopeRules(rule.cssRules, context);
+    }
+  }
+  /** Parse with the browser's CSS engine; replaceSync ignores @import, so nothing external loads. */
+  function rewriteCss(css, context) {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(css);
+    scopeRules(sheet.cssRules, context);
+    return rewriteUrls([...sheet.cssRules].map((rule) => rule.cssText).join('\n'), context);
+  }
+
+  // Idempotent display aliases for native column and disclosure titles.
+  const HEADER_ALIASES = { metric: 'Metric', group_id: 'Arm', segment: 'Segment', 'Lift %': 'Relative lift', 'Lift Plot': 'Effect interval', Interval: 'Confidence' };
+  const SUMMARY_ALIASES = { 'Evidence geometry': 'How to read these intervals', 'Statistical interpretation': 'Methods & assumptions' };
+
+  function lookupMetric(text) {
+    return metricByKey.get(text) || metricByLabel.get(text);
+  }
+
+  /** Replace metric-name cells with labelled controls (interactive) or labels. */
+  function labelMetricCells(host, interactive) {
+    for (const table of host.querySelectorAll('table')) {
+      const headRow = table.querySelector('thead tr:last-child');
+      const columns = [];
+      if (headRow) [...headRow.children].forEach((th, index) => { if (/^metrics?$/i.test(th.textContent.trim())) columns.push(index); });
+      if (!columns.length) columns.push(0);
+      for (const row of table.querySelectorAll('tbody > tr')) {
+        for (const index of columns) {
+          const cell = row.children[index];
+          if (!cell) continue;
+          const metric = lookupMetric(cell.textContent.trim());
+          if (!metric) continue;
+          const control = el(interactive ? 'button' : 'span', { className: 'metric-select' },
+            el('strong', { text: metric.label }),
+            metric.label !== metric.key ? el('small', { text: metric.key }) : null);
+          if (interactive) {
+            control.type = 'button';
+            control.dataset.metric = metric.key;
+            control.setAttribute('aria-pressed', 'false');
+            control.setAttribute('aria-controls', 'inspector');
+            row.dataset.metric = metric.key;
+            row.classList.add('metric-row');
+          }
+          cell.replaceChildren(control);
+        }
+      }
+    }
+  }
+
+  /**
+   * Mount Python-rendered HTML into `host` (its id is the id prefix, so it must be unique).
+   * options.metrics: false | 'label' | 'select' controls how metric-name cells render.
+   */
+  function mountNative(host, html, options) {
+    const settings = options || {};
+    const template = document.createElement('template');
+    template.innerHTML = str(html);
+    const fragment = template.content;
+    for (const script of fragment.querySelectorAll('script')) script.remove();
+    const ids = remapIds(fragment, host.id);
+    const context = { hostId: host.id, mapId: (id) => ids.get(id) };
+    for (const style of fragment.querySelectorAll('style')) style.textContent = rewriteCss(style.textContent, context);
+    host.replaceChildren(fragment);
+    for (const th of host.querySelectorAll('thead th')) {
+      const alias = own(HEADER_ALIASES, th.textContent.trim());
+      if (alias) th.textContent = alias;
+    }
+    for (const summary of host.querySelectorAll('summary')) {
+      const alias = own(SUMMARY_ALIASES, summary.textContent.trim());
+      if (alias) summary.textContent = alias;
+    }
+    for (const table of host.querySelectorAll('table')) {
+      const headRow = table.querySelector('thead tr:last-child');
+      if (headRow) table.dataset.cols = String(headRow.children.length);
+    }
+    if (settings.metrics) labelMetricCells(host, settings.metrics === 'select');
+    return host;
+  }
+
+  /* ---------- CSV downloads (object URLs, released when replaced or on unload) */
+  const downloads = [];
+  function createDownload(link) {
+    let url = null;
+    const handle = {
+      set(csv, filename) {
+        handle.release();
+        if (typeof csv !== 'string' || csv === '') {
+          link.hidden = true;
+          link.removeAttribute('href');
+          return;
+        }
+        url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+        link.href = url;
+        link.download = filename;
+        link.hidden = false;
+      },
+      release() {
+        if (url) URL.revokeObjectURL(url);
+        url = null;
+      },
+    };
+    downloads.push(handle);
+    return handle;
+  }
+  window.addEventListener('pagehide', (event) => {
+    if (!event.persisted) downloads.forEach((handle) => handle.release());
+  });
+
+  /* ---------- Shared hero ---------------------------------------------------- */
+  const primary = data.primary && typeof data.primary === 'object' ? data.primary : null;
+  const healthStatus = data.healthStatus && typeof data.healthStatus === 'object' ? data.healthStatus : null;
+  const healthKind = healthStatus && ['healthy', 'warning', 'unavailable'].includes(healthStatus.kind) ? healthStatus.kind : 'unavailable';
+  const toneClass = (tone) => 'tone-' + (TONES.includes(tone) ? tone : 'neutral');
+
+  function intervalLine(info) {
+    const parts = [];
+    if (info.interval) parts.push(info.levelLabel ? str(info.levelLabel) + ' CI' : 'Interval');
+    if (info.interval) parts.push(str(info.interval));
+    return parts.join(' · ');
+  }
+
+  function renderHero() {
+    document.title = str(data.title) || 'Experiment dashboard';
+    $('hero-title').textContent = str(data.title);
+    $('hero-description').textContent = str(data.description);
+    $('hero-meta').textContent = str(data.meta);
+    const box = $('hero-primary');
+    if (primary) {
+      box.hidden = false;
+      box.classList.add(toneClass(primary.tone));
+      $('hero-primary-label').textContent = 'Primary · ' + str(primary.label);
+      $('hero-primary-effect').textContent = str(primary.effect);
+      $('hero-primary-interval').textContent = intervalLine(primary);
+      $('hero-primary-method').textContent = str(primary.method);
+    } else {
+      $('hero').classList.add('no-primary');
+    }
+    const pill = $('hero-health');
+    if (healthStatus) {
+      pill.hidden = false;
+      pill.dataset.kind = healthKind;
+      $('hero-health-mark').textContent = healthKind === 'healthy' ? '✓' : healthKind === 'warning' ? '!' : '—';
+      $('hero-health-label').textContent = str(healthStatus.label);
+      $('hero-health-detail').textContent = str(healthStatus.detail);
+      pill.title = str(healthStatus.detail);
+    }
+  }
+
+  /* ---------- Readout -------------------------------------------------------- */
+  const readoutDownload = createDownload($('readout-download'));
+  let selectedReadoutMetric = null;
+
+  function syncReadoutSelection() {
+    for (const button of $('readout-table').querySelectorAll('.metric-select')) {
+      button.setAttribute('aria-pressed', String(button.dataset.metric === selectedReadoutMetric));
+    }
+    for (const row of $('readout-table').querySelectorAll('tr[data-metric]')) {
+      if (row.dataset.metric === selectedReadoutMetric) row.setAttribute('data-selected', '');
+      else row.removeAttribute('data-selected');
+    }
+  }
+
+  function openInspector(key, moveFocus) {
+    const metric = metricByKey.get(key);
+    if (!metric) return;
+    selectedReadoutMetric = key;
+    $('inspector-title').textContent = metric.label;
+    mountNative($('readout-inspector'), metric.detail);
+    $('inspector').hidden = false;
+    $('readout-layout').classList.add('inspector-open');
+    syncReadoutSelection();
+    if (moveFocus) $('inspector-title').focus();
+  }
+
+  function closeInspector() {
+    const focusWasInside = $('inspector').contains(document.activeElement);
+    const key = selectedReadoutMetric;
+    selectedReadoutMetric = null;
+    $('inspector').hidden = true;
+    $('readout-layout').classList.remove('inspector-open');
+    syncReadoutSelection();
+    if (focusWasInside) {
+      for (const button of $('readout-table').querySelectorAll('.metric-select')) {
+        if (button.dataset.metric === key) { button.focus(); break; }
+      }
+    }
+  }
+
+  function mountReadout() {
+    mountNative($('readout-table'), data.results, { metrics: 'select' });
+    mountNative($('readout-provenance'), data.provenance);
+    readoutDownload.set(data.readoutCsv, fileBase + '-readout.csv');
+    syncReadoutSelection();
+  }
+
+  $('readout-table').addEventListener('click', (event) => {
+    if (event.target.closest('a, label, input, summary')) return;
+    const row = event.target.closest('tr[data-metric]');
+    // detail === 0 is a keyboard activation of the in-row button.
+    if (row) openInspector(row.dataset.metric, event.detail === 0);
+  });
+  $('close-inspector').addEventListener('click', closeInspector);
+  $('inspector').addEventListener('keydown', (event) => { if (event.key === 'Escape') closeInspector(); });
+
+  /* ---------- Explore -------------------------------------------------------- */
+  const exploreState = { scope: scopeKeys.includes('overall') ? 'overall' : scopeKeys[0], metric: exploreMetrics.length ? exploreMetrics[0].key : null, mode: 'relative', cadence: 'cumulative', complete: false };
+  const groupDownload = createDownload($('group-download'));
+  const ROLE_ORDER = ['primary', 'secondary', 'guardrail'];
+  const ROLE_LABELS = { primary: 'Primary', secondary: 'Secondary outcomes', guardrail: 'Guardrails' };
+  const roleLabel = (role) => own(ROLE_LABELS, str(role).toLowerCase()) || (str(role) ? str(role).charAt(0).toUpperCase() + str(role).slice(1) : 'Other metrics');
+  const MODE_TEXT = { relative: 'cumulative relative lift versus the control arm', cumulative: 'cumulative per-arm absolute values', daily: 'daily per-arm absolute values' };
+  let exploreBuilt = false;
+  let notesOpen = false;
+
+  function viewKey() {
+    if (exploreState.mode === 'relative') return exploreState.complete ? 'cumulative_lift_complete' : 'cumulative_lift';
+    if (exploreState.cadence === 'daily') return 'daily_values';
+    return exploreState.complete ? 'cumulative_values_complete' : 'cumulative_values';
+  }
+
+  function buildExplore() {
+    exploreBuilt = true;
+    $('scope-bar').hidden = scopeKeys.length === 0;
+    $('scope-controls').replaceChildren(...scopeKeys.map((key) => {
+      const scope = scopes[key] || {};
+      const button = el('button', { type: 'button', text: str(scope.label) || (key === 'overall' ? 'Whole experiment' : key), 'aria-pressed': 'false' });
+      button.dataset.scope = key;
+      return button;
+    }));
+    const groups = new Map();
+    for (const metric of exploreMetrics) {
+      const role = str(metric.role);
+      if (!groups.has(role)) groups.set(role, []);
+      groups.get(role).push(metric);
+    }
+    const roles = [...groups.keys()].sort((a, b) => {
+      const ia = ROLE_ORDER.indexOf(a.toLowerCase());
+      const ib = ROLE_ORDER.indexOf(b.toLowerCase());
+      return (ia < 0 ? ROLE_ORDER.length : ia) - (ib < 0 ? ROLE_ORDER.length : ib);
+    });
+    const items = [el('p', { className: 'eyebrow', text: 'Focus metric' })];
+    for (const role of roles) {
+      items.push(el('p', { className: 'metric-group-label', text: roleLabel(role) }));
+      for (const metric of groups.get(role)) {
+        const button = el('button', { type: 'button', className: 'metric-tab', 'aria-pressed': 'false' }, el('strong', { text: metric.label }));
+        button.dataset.metric = metric.key;
+        items.push(button);
+      }
+    }
+    $('metric-list').replaceChildren(...items);
+    const empty = exploreMetrics.length === 0;
+    $('explore-empty').hidden = !empty;
+    $('explore-layout').hidden = empty;
+  }
+
+  function renderExplore() {
+    if (!exploreBuilt) buildExplore();
+    const metric = metricByKey.get(exploreState.metric);
+    if (!metric) return;
+    const scope = scopes[exploreState.scope] || {};
+    const scopeLabel = str(scope.label) || (exploreState.scope === 'overall' ? 'Whole experiment' : str(exploreState.scope));
+    const absolute = exploreState.mode === 'absolute';
+    const daily = absolute && exploreState.cadence === 'daily';
+
+    for (const button of $('scope-controls').children) button.setAttribute('aria-pressed', String(button.dataset.scope === exploreState.scope));
+    for (const button of $('metric-list').querySelectorAll('.metric-tab')) button.setAttribute('aria-pressed', String(button.dataset.metric === exploreState.metric));
+    for (const button of $('mode-group').children) button.setAttribute('aria-pressed', String(button.dataset.mode === exploreState.mode));
+    for (const button of $('cadence-group').children) button.setAttribute('aria-pressed', String(button.dataset.cadence === exploreState.cadence));
+    $('cadence-group').hidden = !absolute;
+    $('complete-toggle').hidden = daily;
+    $('complete-only').checked = exploreState.complete;
+    $('scope-description').textContent = 'The selected breakout applies to estimates and their entire uncertainty trajectory.' +
+      (scope.source ? ' Source: ' + str(scope.source) + '.' : '');
+
+    const packet = own(own(own(explore, exploreState.scope), exploreState.metric), viewKey());
+    $('explore-metric-name').textContent = metric.label;
+    $('explore-context').textContent = scopeLabel + ' · ' + MODE_TEXT[absolute ? (daily ? 'daily' : 'cumulative') : 'relative'] +
+      (!daily && exploreState.complete ? ' · completed windows only' : '');
+    const plot = $('explore-plot');
+    plot.setAttribute('aria-label', metric.label + ' · ' + scopeLabel + ' plot');
+    let notes = [];
+    if (packet && typeof packet === 'object') {
+      mountNative(plot, packet.html, { metrics: 'label' });
+      $('trajectory-caption').textContent = str(packet.caption);
+      notes = Array.isArray(packet.notes) ? packet.notes.map(str).filter(Boolean) : [];
+      const points = Number(packet.pointCount) || 0;
+      $('explore-count').textContent = points ? points.toLocaleString() + ' captured time point' + (points === 1 ? '' : 's') : 'No captured time points in this view';
+    } else {
+      plot.replaceChildren(el('p', { className: 'inc-dashboard-note', text: 'This view was not captured with the snapshot.' }));
+      $('trajectory-caption').textContent = 'This view was not captured with the snapshot.';
+      $('explore-count').textContent = '';
+    }
+
+    const notesBox = $('plot-notes');
+    notesBox.hidden = notes.length === 0;
+    notesBox.open = notesOpen;
+    $('plot-notes-summary').textContent = 'Plot notes (' + notes.length + ')';
+    $('plot-notes-list').replaceChildren(...notes.map((note) => el('li', { text: note })));
+
+    mountNative($('explore-inspector'), metric.detail);
+    groupDownload.set(metric.csv, fileBase + '-' + slug(metric.key) + '-groups.csv');
+  }
+
+  $('plot-notes').addEventListener('toggle', () => { notesOpen = $('plot-notes').open; });
+  $('panel-explore').addEventListener('click', (event) => {
+    const button = event.target.closest('button');
+    if (!button) return;
+    if (button.dataset.scope !== undefined) exploreState.scope = button.dataset.scope;
+    else if (button.dataset.metric !== undefined) exploreState.metric = button.dataset.metric;
+    else if (button.dataset.mode !== undefined) exploreState.mode = button.dataset.mode;
+    else if (button.dataset.cadence !== undefined) exploreState.cadence = button.dataset.cadence;
+    else return;
+    renderExplore();
+  });
+  $('complete-only').addEventListener('change', (event) => {
+    exploreState.complete = event.target.checked;
+    renderExplore();
+  });
+
+  /* ---------- Health and Report ---------------------------------------------- */
+  function renderHealthStatus(node) {
+    if (!healthStatus) { node.hidden = true; return; }
+    node.hidden = false;
+    node.dataset.kind = healthKind;
+    node.replaceChildren(el('strong', { text: str(healthStatus.label) }), document.createTextNode(str(healthStatus.detail)));
+  }
+  function mountHealth() {
+    renderHealthStatus($('health-status'));
+    mountNative($('health-evidence'), data.health);
+  }
+
+  function mountReport() {
+    $('report-title').textContent = str(data.title);
+    $('report-meta').textContent = str(data.meta);
+    const box = $('report-primary-box');
+    if (primary && str(primary.effect)) {
+      box.hidden = false;
+      box.classList.add(toneClass(primary.tone));
+      $('report-primary-metric').textContent = str(primary.label);
+      $('report-primary-effect').textContent = str(primary.effect);
+    }
+    mountNative($('report-table'), data.results, { metrics: 'label' });
+    renderHealthStatus($('report-health-status'));
+    $('report-health-status').hidden = !healthStatus;
+    mountNative($('report-health'), data.health);
+    mountNative($('report-provenance'), data.provenance);
+    const observed = $('report-observed');
+    metrics.forEach((metric, index) => {
+      observed.appendChild(el('h4', { text: str(metric.label) }));
+      const slot = el('div', { class: 'rpt-slot native-output', id: 'report-observed-' + index });
+      observed.appendChild(slot);
+      mountNative(slot, metric.groupData);
+    });
+  }
+
+  /* ---------- Views, tabs and hash navigation -------------------------------- */
+  const mounted = new Set();
+  const mounters = { readout: mountReadout, explore: renderExplore, health: mountHealth, report: mountReport };
+  function ensureMounted(view) {
+    if (mounted.has(view)) return;
+    mounted.add(view);
+    mounters[view]();
+  }
+
+  let currentView = null;
+  function showView(view) {
+    if (!VIEWS.includes(view)) view = 'readout';
+    currentView = view;
+    for (const panel of document.querySelectorAll('[data-view]')) panel.hidden = panel.dataset.view !== view;
+    for (const tab of document.querySelectorAll('[role="tab"]')) {
+      const active = tab.dataset.viewTarget === view;
+      tab.setAttribute('aria-selected', String(active));
+      tab.tabIndex = active ? 0 : -1;
+    }
+    ensureMounted(view);
+  }
+
+  function navigate(view) {
+    showView(view);
+    try {
+      if (location.hash !== '#' + view) location.hash = view;
+    } catch (error) { /* hash updates are best-effort inside embedded frames */ }
+  }
+
+  $('brand').addEventListener('click', (event) => { event.preventDefault(); navigate('readout'); });
+  $('hero-health').addEventListener('click', (event) => { event.preventDefault(); navigate('health'); });
+  $('report-back').addEventListener('click', () => navigate('readout'));
+  $('report-print').addEventListener('click', () => window.print());
+  const tabs = [...document.querySelectorAll('[role="tab"]')];
+  for (const tab of tabs) tab.addEventListener('click', () => navigate(tab.dataset.viewTarget));
+  $('shell').querySelector('[role="tablist"]').addEventListener('keydown', (event) => {
+    const index = tabs.indexOf(document.activeElement);
+    if (index < 0) return;
+    const target = { ArrowRight: (index + 1) % tabs.length, ArrowLeft: (index + tabs.length - 1) % tabs.length, Home: 0, End: tabs.length - 1 }[event.key];
+    if (target === undefined) return;
+    event.preventDefault();
+    tabs[target].focus();
+    navigate(tabs[target].dataset.viewTarget);
+  });
+  window.addEventListener('hashchange', () => {
+    const view = location.hash.slice(1);
+    if (VIEWS.includes(view) && view !== currentView) showView(view);
+  });
+
+  /* ---------- Print (Report only) -------------------------------------------- */
+  let printing = false;
+  let printRestore = [];
+  function preparePrint() {
+    if (printing) return;
+    printing = true;
+    ensureMounted('report');
+    for (const details of $('panel-report').querySelectorAll('details')) {
+      if (!details.open) { details.open = true; printRestore.push(details); }
+    }
+    for (const box of $('panel-report').querySelectorAll('.ct-group-state')) {
+      if (box.checked) { box.checked = false; printRestore.push(box); }
+    }
+  }
+  function endPrint() {
+    if (!printing) return;
+    printing = false;
+    for (const node of printRestore) {
+      if (node.localName === 'details') node.open = false;
+      else node.checked = true;
+    }
+    printRestore = [];
+    fitFrame();
+  }
+  window.addEventListener('beforeprint', preparePrint);
+  window.addEventListener('afterprint', endPrint);
+  if (window.matchMedia) {
+    const query = window.matchMedia('print');
+    const onChange = (event) => (event.matches ? preparePrint() : endPrint());
+    if (query.addEventListener) query.addEventListener('change', onChange);
+    else if (query.addListener) query.addListener(onChange);
+  }
+
+  /* ---------- Fit the embedding iframe to the content ------------------------ */
+  function fitFrame() {
+    if (printing) return;
+    let frame = null;
+    try { frame = window.frameElement; } catch (error) { return; }
+    if (!frame) return;
+    const height = Math.ceil($('shell').getBoundingClientRect().height);
+    try {
+      if (height > 0 && frame.style.height !== height + 'px') frame.style.height = height + 'px';
+    } catch (error) { /* cross-origin frames cannot be resized from inside */ }
+  }
+  if (window.ResizeObserver) new ResizeObserver(fitFrame).observe($('shell'));
+
+  /* ---------- Start ---------------------------------------------------------- */
+  renderHero();
+  showView(location.hash.slice(1));
+  fitFrame();
+})();
+</script>
+</body>
+</html>

@@ -693,6 +693,12 @@ def load_explore(
     family, the allocation check, or materialization, so changing a display
     control cannot change a verdict. ``metric=None`` selects every declared
     metric in snapshot order; a metric name selects just that metric.
+
+    ``breakout`` names one declared ``(source, dimension)`` choice. Segment
+    views require it when breakouts are declared; the temporal views break
+    their series out by it and keep only that source's rows, refusing a
+    dimension that resolves to several sources instead of showing another
+    source's segments. Without it a temporal view is the whole experiment.
     """
     if view not in get_args(ExploreView):
         refuse(_INVALID_VIEW, reason=f"unknown view {view!r}", view=view, metric=metric)
@@ -711,13 +717,30 @@ def load_explore(
     if view == "segments":
         return _load_segments(analysis, snapshot=snapshot, metric=metric, breakout=breakout)
     selected = list(metric_names(snapshot)) if metric is None else [metric]
-    if view == "cumulative_lift":
-        return analysis.run_asof_lift(
-            metrics=selected, completed_windows_only=completed_windows_only
+    declared_source: str | None = None
+    dimension: str | None = None
+    if breakout is not None:
+        declared_source, dimension = _declared_breakout(
+            snapshot, breakout, view=view, metric=metric
         )
-    if view == "daily_values":
-        return analysis.run_daily(metrics=selected)
-    return analysis.run_asof(metrics=selected, completed_windows_only=completed_windows_only)
+    if view == "cumulative_lift":
+        data = analysis.run_asof_lift(
+            metrics=selected, completed_windows_only=completed_windows_only, dimension=dimension
+        )
+    elif view == "daily_values":
+        data = analysis.run_daily(metrics=selected, dimension=dimension)
+    else:
+        data = analysis.run_asof(
+            metrics=selected, completed_windows_only=completed_windows_only, dimension=dimension
+        )
+    if dimension is None:
+        return data
+    source = declared_source or _resolved_source(
+        data, dimension=dimension, metric=metric, view=view
+    )
+    if isinstance(data, DailyLiftEstimates):
+        return DailyLiftEstimates(row for row in data if row.source == source)
+    return DailyMetricValues(row for row in data if row.source == source)
 
 
 def _require_same_experiment(
@@ -740,6 +763,28 @@ def _require_same_experiment(
         )
 
 
+def _declared_breakout(
+    snapshot: DashboardSnapshot,
+    breakout: tuple[str | None, str],
+    *,
+    view: str,
+    metric: str | None,
+) -> tuple[str | None, str]:
+    """The caller's choice, refused unless the experiment declares exactly it."""
+    requested = tuple(breakout)
+    if requested not in snapshot.breakouts:
+        refuse(
+            _INVALID_VIEW,
+            reason=f"{requested!r} is not a declared breakout of this experiment",
+            view=view,
+            metric=metric,
+            requested=requested,
+            declared=snapshot.breakouts,
+        )
+    source, dimension = requested
+    return source, dimension
+
+
 def _load_segments(
     analysis: Analysis,
     *,
@@ -758,16 +803,9 @@ def _load_segments(
             metric=metric,
             declared=snapshot.breakouts,
         )
-    if tuple(breakout) not in snapshot.breakouts:
-        refuse(
-            _INVALID_VIEW,
-            reason=f"{tuple(breakout)!r} is not a declared breakout of this experiment",
-            view="segments",
-            metric=metric,
-            requested=tuple(breakout),
-            declared=snapshot.breakouts,
-        )
-    declared_source, dimension = breakout
+    declared_source, dimension = _declared_breakout(
+        snapshot, breakout, view="segments", metric=metric
+    )
     metrics = [metric] if metric is not None else list(metric_names(snapshot))
     estimates = analysis.run_breakout(metrics=metrics)
     candidates = [
@@ -775,12 +813,14 @@ def _load_segments(
         for estimate in estimates
         if estimate.dimension == dimension and estimate.method_role == "decision"
     ]
-    source = declared_source or _resolved_source(candidates, dimension=dimension, metric=metric)
+    source = declared_source or _resolved_source(
+        candidates, dimension=dimension, metric=metric, view="segments"
+    )
     return BreakoutEstimates(estimate for estimate in candidates if estimate.source == source)
 
 
 def _resolved_source(
-    candidates: Sequence[Any], *, dimension: str, metric: str | None
+    candidates: Sequence[Any], *, dimension: str, metric: str | None, view: str
 ) -> str | None:
     """The single source a dimension resolved to, or a refusal when ambiguous."""
     sources = {estimate.source for estimate in candidates}
@@ -790,7 +830,7 @@ def _resolved_source(
             reason=(
                 f"dimension {dimension!r} resolved to more than one source; choose one explicitly"
             ),
-            view="segments",
+            view=view,
             metric=metric,
             dimension=dimension,
             sources=tuple(sorted(str(source) for source in sources)),

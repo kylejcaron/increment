@@ -13,6 +13,7 @@ package: estimation, power, and the dataframe entry points stay free of
 marimo, CoefTable, and pandas.
 """
 
+from increment.dashboard._app import render_dashboard
 from increment.dashboard._data import (
     DashboardConfig,
     DashboardSnapshot,
@@ -41,6 +42,7 @@ __all__ = [
     "load_explore",
     "prepare_dashboard",
     "readout_csv",
+    "render_dashboard",
     "render_details",
     "render_explore",
     "render_header",

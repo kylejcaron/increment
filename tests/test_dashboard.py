@@ -14,6 +14,7 @@ import datetime as dt
 import io
 import json
 import random
+import re
 from typing import Any
 
 import pytest
@@ -1462,3 +1463,330 @@ def test_readout_csv_neutralizes_formula_strings_without_stringifying_numbers(
     assert exported["metric"] == "'" + dangerous
     assert exported["excluded"] == "'@unsafe"
     assert exported["lift"] == "-2.5"
+
+
+COUNTRY = ("event_log", "country")
+
+
+def _fingerprint(rows) -> list[tuple[Any, ...]]:
+    """A trajectory as (segment, day, arm, point) so any slice drift is visible."""
+    out = []
+    for row in rows:
+        point = row.lift if hasattr(row, "lift") else row.value
+        out.append(
+            (
+                row.dimension_value,
+                row.ds,
+                row.group_id,
+                None if point is None else (point.value, point.lb, point.ub, point.level),
+            )
+        )
+    return out
+
+
+@pytest.mark.parametrize(
+    ("view", "engine", "kwargs"),
+    [
+        ("cumulative_lift", "run_asof_lift", {}),
+        ("cumulative_values", "run_asof", {}),
+        ("cumulative_values", "run_asof", {"completed_windows_only": True}),
+        ("daily_values", "run_daily", {}),
+    ],
+)
+def test_declared_breakout_temporal_views_are_the_engine_segment_trajectories(
+    storefront_analysis, storefront: DashboardSnapshot, view: ExploreView, engine: str, kwargs: dict
+) -> None:
+    metric = "checkout_conversion"
+    segmented = load_explore(
+        storefront_analysis,
+        snapshot=storefront,
+        metric=metric,
+        view=view,
+        breakout=COUNTRY,
+        **kwargs,
+    )
+    direct = getattr(storefront_analysis, engine)(metrics=[metric], dimension="country", **kwargs)
+    assert segmented, "a declared breakout must produce a segment trajectory"
+    actual, expected = _fingerprint(segmented), _fingerprint(direct)
+    assert len(actual) == len(expected)
+    for actual_row, expected_row in zip(actual, expected, strict=True):
+        assert actual_row[:3] == expected_row[:3]
+        if expected_row[3] is None:
+            assert actual_row[3] is None
+        else:
+            assert actual_row[3] == pytest.approx(expected_row[3])
+    assert {row.dimension_value for row in segmented} == {"US", "CA"}
+    assert {(row.dimension, row.source) for row in segmented} == {("country", "event_log")}
+    whole = load_explore(
+        storefront_analysis, snapshot=storefront, metric=metric, view=view, **kwargs
+    )
+    assert {row.dimension for row in whole} == {None}
+    assert _fingerprint(whole) != _fingerprint(segmented)
+
+
+def test_completed_windows_gate_changes_the_segment_absolute_series(
+    storefront_analysis, storefront: DashboardSnapshot
+) -> None:
+    def load(*, complete: bool):
+        return load_explore(
+            storefront_analysis,
+            snapshot=storefront,
+            metric="checkout_conversion",
+            view="cumulative_values",
+            breakout=COUNTRY,
+            completed_windows_only=complete,
+        )
+
+    provisional, mature = load(complete=False), load(complete=True)
+    assert min(row.ds for row in mature) > min(row.ds for row in provisional)
+    assert not any(row.value is None for row in mature)
+
+
+def test_temporal_breakouts_refuse_an_undeclared_dimension_before_any_query(
+    storefront_analysis, storefront: DashboardSnapshot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _fail(**_: Any) -> Any:
+        raise AssertionError("an undeclared breakout must not reach the engine")
+
+    monkeypatch.setattr(storefront_analysis, "run_asof_lift", _fail)
+    with pytest.raises(InvalidRequestError) as caught:
+        load_explore(
+            storefront_analysis,
+            snapshot=storefront,
+            metric="checkout_conversion",
+            view="cumulative_lift",
+            breakout=("event_log", "plan"),
+        )
+    assert caught.value.code == "dashboard.invalid_view"
+    assert caught.value.context["requested"] == ("event_log", "plan")
+
+
+def _shadow_source(rows, source: str):
+    return type(rows)(row.model_copy(update={"source": source}) for row in rows)
+
+
+def test_temporal_breakout_honours_the_declared_source_and_refuses_an_ambiguous_one(
+    storefront_analysis, storefront: DashboardSnapshot, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dimension declared on two sources never silently shows the other source's rows."""
+    real = storefront_analysis.run_asof_lift
+
+    def two_sources(**kwargs: Any) -> Any:
+        rows = real(**kwargs)
+        return type(rows)([*rows, *_shadow_source(rows, "other_log")])
+
+    monkeypatch.setattr(storefront_analysis, "run_asof_lift", two_sources)
+    both = dataclasses.replace(
+        storefront, breakouts=(COUNTRY, ("other_log", "country"), (None, "country"))
+    )
+
+    for source in ("event_log", "other_log"):
+        rows = load_explore(
+            storefront_analysis,
+            snapshot=both,
+            breakout=(source, "country"),
+            metric="checkout_conversion",
+            view="cumulative_lift",
+        )
+        assert rows and {row.source for row in rows} == {source}
+
+    with pytest.raises(InvalidRequestError) as caught:
+        load_explore(
+            storefront_analysis,
+            snapshot=both,
+            breakout=(None, "country"),
+            metric="checkout_conversion",
+            view="cumulative_lift",
+        )
+    assert caught.value.code == "dashboard.invalid_view"
+    assert caught.value.context["sources"] == ("event_log", "other_log")
+
+
+@pytest.fixture(scope="module")
+def storefront_payload(storefront: DashboardSnapshot, dashboard_con, dashboard_definitions):
+    from increment.dashboard._app import build_payload
+
+    analysis = _analysis(dashboard_con, dashboard_definitions, "storefront_refresh")
+    return build_payload(analysis, snapshot=storefront)
+
+
+def test_exploring_never_changes_the_confirmatory_snapshot(
+    storefront: DashboardSnapshot, dashboard_con, dashboard_definitions
+) -> None:
+    from increment.dashboard._app import build_payload
+
+    before = (storefront.estimates, storefront.readout_rows, readout_csv(storefront))
+    analysis = _analysis(dashboard_con, dashboard_definitions, "storefront_refresh")
+    build_payload(analysis, snapshot=storefront)
+    after = (storefront.estimates, storefront.readout_rows, readout_csv(storefront))
+    assert after == before
+
+
+def test_health_status_is_qualified_and_never_a_ship_recommendation(
+    storefront: DashboardSnapshot,
+) -> None:
+    from increment.dashboard._app import health_status
+
+    refused = dataclasses.replace(
+        storefront,
+        allocation=None,
+        allocation_refusal=("dashboard.allocation_not_applicable", "no assignment table"),
+        allocation_history=(),
+    )
+    unavailable = health_status(refused)
+    assert unavailable["kind"] == "unavailable"
+    assert "dashboard.allocation_not_applicable" in unavailable["detail"]
+    assert "no assignment table" in unavailable["detail"]
+
+    assert storefront.allocation is not None
+    flagged = health_status(_with_allocation(storefront, mixed_assignment_units=3))
+    assert flagged["kind"] == "warning"
+
+    assert health_status(_with_allocation(storefront, is_srm=True))["kind"] == "warning"
+
+    healthy = health_status(storefront)
+    assert healthy["kind"] == "healthy"
+
+
+def test_an_engine_refusal_is_visible_for_its_own_state_only(
+    storefront: DashboardSnapshot, dashboard_con, dashboard_definitions, monkeypatch
+) -> None:
+    from increment.dashboard._app import build_payload
+
+    analysis = _analysis(dashboard_con, dashboard_definitions, "storefront_refresh")
+    real = analysis.run_asof_lift
+
+    def refuse_segments(**kwargs: Any) -> Any:
+        if kwargs.get("dimension") is not None:
+            raise CapabilityError(
+                "segmented history needs retained states",
+                code="test.segmented_history",
+                context={},
+            )
+        return real(**kwargs)
+
+    monkeypatch.setattr(analysis, "run_asof_lift", refuse_segments)
+    payload = build_payload(analysis, snapshot=storefront)
+    refused = payload["explore"]["country"]["checkout_conversion"]["cumulative_lift"]
+    assert refused["pointCount"] == 0
+    assert "segmented history needs retained states" in refused["html"]
+    assert "test.segmented_history" in refused["html"]
+    assert refused["notes"] and "whole" in " ".join(refused["notes"]).lower()
+    assert payload["explore"]["overall"]["checkout_conversion"]["cumulative_lift"]["pointCount"] > 0
+    assert (
+        payload["explore"]["country"]["checkout_conversion"]["cumulative_values"]["pointCount"] > 0
+    )
+
+
+def test_unexpected_engine_failures_are_not_swallowed(
+    storefront: DashboardSnapshot, dashboard_con, dashboard_definitions, monkeypatch
+) -> None:
+    from increment.dashboard._app import build_payload
+
+    analysis = _analysis(dashboard_con, dashboard_definitions, "storefront_refresh")
+
+    def broken(**_: Any) -> Any:
+        raise RuntimeError("warehouse connection lost")
+
+    monkeypatch.setattr(analysis, "run_daily", broken)
+    with pytest.raises(RuntimeError, match="warehouse connection lost"):
+        build_payload(analysis, snapshot=storefront)
+
+
+def _open_sided_lift(metric: str, group: str, segment: str, day: int, value: float) -> Any:
+    from increment.breakout.estimates import DailyLiftEstimate
+    from increment.estimation.results import Estimate
+
+    return DailyLiftEstimate(
+        metric=metric,
+        group_id=group,
+        method="unadjusted",
+        method_role="decision",
+        alternative="greater",
+        ds=dt.date(2025, 1, 15) + dt.timedelta(days=day),
+        lift=Estimate(value=value, lb=value - 0.05, open_side="upper", level=0.95, alpha=0.05),
+        dimension="country",
+        dimension_value=segment,
+        source="event_log",
+    )
+
+
+def test_document_embeds_untrusted_payload_text_as_inert_json(storefront_payload) -> None:
+    from increment.dashboard._app import document
+
+    hostile = "</script><script>alert(1)</script>\u2028&"
+    html = document({**storefront_payload, "title": hostile, "description": hostile})
+    assert "<!-- DASHBOARD_DATA -->" not in html
+    blocks = re.findall(
+        r"""<script[^>]*id=["']dashboard-data["'][^>]*>(.*?)</script>""", html, re.S
+    )
+    assert len(blocks) == 1
+    block = re.match(r"(?s)(.*)", blocks[0])
+    assert block is not None
+    assert "</script" not in block.group(1) and "\u2028" not in block.group(1)
+    assert json.loads(block.group(1))["title"] == hostile
+
+
+def test_removed_set_column_preserves_disconnected_numeric_bounds(
+    storefront: DashboardSnapshot,
+) -> None:
+    from increment.estimation.results import JointContrastReference, relative_confidence_set
+
+    region = relative_confidence_set(JointContrastReference(a=10, c=0, var_a=1, var_c=1, cov_ac=0))
+    assert region.geometry == "disconnected"
+    snapshot = _with_primary_row(
+        storefront, lift=None, lower=None, higher=None, relative_confidence_set=region
+    )
+    rendered = render_results(snapshot).text
+    assert "∪" in rendered
+    for interval in region.intervals:
+        for endpoint in interval:
+            if endpoint is not None:
+                assert f"{endpoint:+.1%}" in rendered
+
+
+def test_segmented_temporal_rendering_accepts_distinct_decision_methods(
+    storefront_analysis,
+    storefront: DashboardSnapshot,
+) -> None:
+    from increment.breakout.estimates import DailyLiftEstimates
+
+    data = load_explore(
+        storefront_analysis,
+        snapshot=storefront,
+        metric=None,
+        view="cumulative_lift",
+        breakout=COUNTRY,
+    )
+    assert isinstance(data, DailyLiftEstimates)
+    mixed = DailyLiftEstimates(
+        row.model_copy(update={"method": "cuped"}) if row.metric == "revenue_per_user" else row
+        for row in data
+    )
+    rendered = render_explore(storefront, mixed, metric=None, view="cumulative_lift").text
+    assert "revenue_per_user" in rendered and storefront.primary_metric in rendered
+    assert "US" in rendered and "CA" in rendered
+
+
+def test_one_sided_bound_lines_keep_unavailable_dates_as_gaps(
+    storefront: DashboardSnapshot,
+) -> None:
+    from increment.breakout.estimates import DailyLiftEstimates
+
+    rows = DailyLiftEstimates(
+        _open_sided_lift(
+            storefront.primary_metric, storefront.treatment_group, "US", day, 0.02 * day
+        )
+        if day != 3
+        else _open_sided_lift(
+            storefront.primary_metric, storefront.treatment_group, "US", day, 0.0
+        ).model_copy(update={"lift": None})
+        for day in range(1, 6)
+    )
+    rendered = render_explore(
+        storefront, rows, metric=storefront.primary_metric, view="cumulative_lift"
+    ).text
+    polylines = re.findall(r'<polyline[^>]*points="([^"]+)"', rendered)
+    assert polylines
+    # Each estimate and bound is two separate two-date segments, never a bridge.
+    assert all(len(points.split()) == 2 for points in polylines)

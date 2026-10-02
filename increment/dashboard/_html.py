@@ -8,6 +8,7 @@ state: notebooks own their controls and pass the values in.
 from __future__ import annotations
 
 import datetime as dt
+import statistics
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from html import escape
@@ -29,7 +30,7 @@ from increment.dashboard._data import (
     require_metric,
     row_for_metric,
 )
-from increment.tables import estimates_to_readout, readout_table
+from increment.tables import _format_confidence_set, estimates_to_readout, readout_table
 
 if TYPE_CHECKING:
     from increment.breakout.estimates import (
@@ -870,6 +871,16 @@ _RELATIVE_SET_EXPLANATIONS = {
 def _geometry_explanations(snapshot: DashboardSnapshot, row: Mapping[str, Any]) -> list[str]:
     """Describe retained confidence-set geometry without changing its evidence."""
     explanations: list[str] = []
+    retained_set = _format_confidence_set(
+        row.get("confidence_set"),
+        relative=row.get("relative_confidence_set"),
+        binomial=row.get("binomial_set"),
+        unavailable=row.get("relative_unavailable_reason"),
+        scale=str(row.get("value_scale") or "relative"),
+        lift=row.get("lift"),
+    )
+    if retained_set:
+        explanations.append(f"Retained confidence set: {retained_set}.")
     alternative = row.get("alternative")
     open_side = row.get("open_side")
     binomial = row.get("binomial_set")
@@ -966,8 +977,36 @@ def _display_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return [{key: value for key, value in row.items() if key != "discovery"} for row in rows]
 
 
-def render_results(snapshot: DashboardSnapshot) -> mo.Html:
-    """The whole declared family, its readout table, and its disclosures."""
+# Numeric confidence-set evidence lives in interval disclosures, not a second table column.
+_REDUNDANT_COLUMNS = frozenset({"Significant", "Confidence set"})
+INTERVALS_DISCLOSURE = "How to read these intervals"
+_TABLE_WRAP = '<div class="inc-dashboard-table-wrap">{}</div>'
+
+
+def _drop_redundant_columns(table: ct.CoefTable) -> None:
+    table.columns = tuple(
+        column
+        for column in table.columns
+        if getattr(column, "label", None) not in _REDUNDANT_COLUMNS
+    )
+
+
+def _geometry_disclosure(
+    snapshot: DashboardSnapshot, rows: Iterable[Mapping[str, Any]], *, label: str
+) -> str:
+    geometry = _list(
+        [
+            f"<strong>{_esc(row.get('metric'))}</strong>: {_esc(text)}"
+            for row in rows
+            for text in _geometry_explanations(snapshot, row)
+        ],
+        css_class="inc-dashboard-reasons",
+    )
+    return _disclosure(label, geometry) if geometry else ""
+
+
+def results_table(snapshot: DashboardSnapshot) -> str:
+    """The whole declared family as one native CoefTable, without redundant columns."""
     table = readout_table(
         _display_rows(snapshot.readout_rows),
         title="",
@@ -977,26 +1016,30 @@ def render_results(snapshot: DashboardSnapshot) -> mo.Html:
         advisory=False,
         show_interval_level=True,
     )
+    _drop_redundant_columns(table)
     table.columns = tuple(
         replace(column, width=300, height=42) if isinstance(column, ct.Forest) else column
         for column in table.columns
     )
-    geometry = _list(
-        [
-            f"<strong>{_esc(row.get('metric'))}</strong>: {_esc(text)}"
-            for row in snapshot.readout_rows
-            for text in _geometry_explanations(snapshot, row)
-        ],
-        css_class="inc-dashboard-reasons",
+    return _TABLE_WRAP.format(table.as_raw_html())
+
+
+def results_notes(snapshot: DashboardSnapshot) -> str:
+    """Interval reading guide and the declared inference per role."""
+    return _geometry_disclosure(
+        snapshot, snapshot.readout_rows, label=INTERVALS_DISCLOSURE
+    ) + _disclosure(
+        "Statistical interpretation",
+        _list(_role_disclosures(snapshot), css_class="inc-dashboard-reasons"),
     )
+
+
+def render_results(snapshot: DashboardSnapshot) -> mo.Html:
+    """The whole declared family, its readout table, and its disclosures."""
     body = (
-        f'<div class="inc-dashboard-table-wrap">{table.as_raw_html()}</div>'
+        results_table(snapshot)
         + _adverse_block(snapshot)
-        + (_disclosure("Evidence geometry", geometry) if geometry else "")
-        + _disclosure(
-            "Statistical interpretation",
-            _list(_role_disclosures(snapshot), css_class="inc-dashboard-reasons"),
-        )
+        + results_notes(snapshot)
         + _caveats_list(_result_caveats(snapshot.readout_rows))
     )
     return _section("results", "Results", body)
@@ -1128,8 +1171,9 @@ def render_details(snapshot: DashboardSnapshot) -> mo.Html:
             "freshness guarantee. Data by group shows each metric's captured arm values, "
             "eligible counts, observation window and evidence source.</p>"
             '<p class="inc-dashboard-note">The CSV contains all unrounded headline rows, '
-            "including tested alternatives and unavailable values. Static HTML includes "
-            "the core snapshot; changing analysis controls requires a live marimo session.</p>",
+            "including tested alternatives and unavailable values. Static HTML captures the "
+            "rendered evidence; prepared dashboard tabs switch among captured views without "
+            "rerunning the analysis.</p>",
         ),
         subtitle="",
     )
@@ -1143,27 +1187,13 @@ def render_metric_details(snapshot: DashboardSnapshot, *, metric: str) -> mo.Htm
     model = require_metric(snapshot, metric)
     estimate = estimate_for_metric(snapshot, metric)
     row = row_for_metric(snapshot, metric)
-    group_body = _disclosure(
-        "Data by group",
-        _group_data_table(snapshot, metric)
-        + '<p class="inc-dashboard-note">Observed values are pre-adjustment aggregates. '
-        "Eligibility uses the same cohort and metric window as the analysis. For fixed-horizon "
-        "retention, assigned = eligible + not mature + no observed day + other exclusions; "
-        "the observation cutoff and window endpoints are shown when captured. "
-        "CUPED, a prior, or winsorization can make the reported effect differ from these raw values. "
-        "Only retained transformed inputs are shown in the separate analysis-input column; "
-        "pre-transform outcomes absent from a checkpoint remain unavailable.</p>",
-    )
+    group_body = _group_data_disclosure(snapshot, metric)
     if estimate is None or row is None:
         body = (
             f'<p class="inc-dashboard-note">{_missing("no decision result for this metric")}</p>'
             + group_body
         )
         return _section("metric-details", f"Metric: {metric}", body)
-    geometry = _list(
-        [_esc(text) for text in _geometry_explanations(snapshot, row)],
-        css_class="inc-dashboard-reasons",
-    )
     return _section(
         "metric-details",
         f"Metric: {model.name}",
@@ -1177,10 +1207,25 @@ def render_metric_details(snapshot: DashboardSnapshot, *, metric: str) -> mo.Htm
         + _disclosure(
             "Definition and analysis policy", _kv(_metric_detail_entries(snapshot, model, row))
         )
-        + (_disclosure("Evidence geometry", geometry) if geometry else "")
+        + _geometry_disclosure(snapshot, [row], label=INTERVALS_DISCLOSURE)
         + group_body
         + _list(_result_caveats([row]), css_class="inc-dashboard-caveats"),
         subtitle=str(getattr(model, "description", "") or ""),
+    )
+
+
+def _group_data_disclosure(snapshot: DashboardSnapshot, metric: str) -> str:
+    """Captured arm evidence, shared by metric inspection and the full report."""
+    return _disclosure(
+        "Data by group",
+        _group_data_table(snapshot, metric)
+        + '<p class="inc-dashboard-note">Observed values are pre-adjustment aggregates. '
+        "Eligibility uses the same cohort and metric window as the analysis. For fixed-horizon "
+        "retention, assigned = eligible + not mature + no observed day + other exclusions; "
+        "the observation cutoff and window endpoints are shown when captured. "
+        "CUPED, a prior, or winsorization can make the reported effect differ from these raw values. "
+        "Only retained transformed inputs are shown in the separate analysis-input column; "
+        "pre-transform outcomes absent from a checkpoint remain unavailable.</p>",
     )
 
 
@@ -1309,16 +1354,8 @@ def render_explore(
         if metric is None
         else tuple(row for row in snapshot.readout_rows if row.get("metric") == metric)
     )
-    geometry = _list(
-        [
-            f"<strong>{_esc(row.get('metric'))}</strong>: {_esc(text)}"
-            for row in rows
-            for text in _geometry_explanations(snapshot, row)
-        ],
-        css_class="inc-dashboard-reasons",
-    )
-    if geometry:
-        body = _disclosure("Headline evidence geometry", geometry) + body
+    headline = _geometry_disclosure(snapshot, rows, label=f"{INTERVALS_DISCLOSURE} (headline)")
+    body = headline + body
     return _section(
         "explore",
         f"Explore: {_VIEW_TITLES.get(view, view)}",
@@ -1353,6 +1390,32 @@ def _monitoring_sentence(rows: Sequence[Any], *, view: str) -> str:
     return "Descriptive monitoring of per-arm values."
 
 
+def temporal_figure(
+    snapshot: DashboardSnapshot, data: Any, *, metric: str | None, view: str
+) -> tuple[str, str]:
+    """The native table(s) for a non-empty temporal view, then its unavailable-point block.
+
+    A metric whose points mix calendar and cohort dates cannot share one axis, so it gets a
+    warning in place of a chart.
+    """
+    frame = data.to_frame()
+    if (
+        not frame["ds_basis"].dropna().nunique()
+        or (frame.groupby("metric")["ds_basis"].nunique() != 1).any()
+    ):
+        return (
+            _status(
+                "warn",
+                "A metric mixes calendar and cohort date bases, so its points cannot share one axis.",
+            ),
+            "",
+        )
+    return (
+        _temporal_table(snapshot, data, metric=metric, view=view),
+        _gaps_block(frame, view=view),
+    )
+
+
 def _temporal_body(
     snapshot: DashboardSnapshot,
     data: Any,
@@ -1374,13 +1437,8 @@ def _temporal_body(
         completed_windows_only=completed_windows_only,
         monitoring=_monitoring_sentence(rows, view=view),
     )
-    if not bases or (frame.groupby("metric")["ds_basis"].nunique() != 1).any():
-        return caption + _status(
-            "warn",
-            "A metric mixes calendar and cohort date bases, so its points cannot share one axis.",
-        )
-    table = _temporal_table(snapshot, data, metric=metric, view=view)
-    return table + caption + _gaps_block(frame, view=view)
+    figure, gaps = temporal_figure(snapshot, data, metric=metric, view=view)
+    return figure + caption + gaps
 
 
 def _temporal_caption(
@@ -1400,6 +1458,15 @@ def _temporal_caption(
         ("Date basis", _esc(basis_label)),
         ("Points", _count(len(frame))),
     ]
+    if "dimension_value" in frame.columns and frame["dimension_value"].notna().any():
+        segments = sorted(str(value) for value in frame["dimension_value"].dropna().unique())
+        entries.insert(
+            0,
+            (
+                "Broken out by",
+                f"{_esc(frame['dimension'].dropna().iloc[0])}: {_esc(', '.join(segments))}",
+            ),
+        )
     if view != "daily_values":
         entries.append(
             ("Maturity", _esc(_maturity_label(completed_windows_only=completed_windows_only)))
@@ -1454,32 +1521,37 @@ def _absolute_metric_table(
     *,
     metric: str,
 ) -> str:
-    """Render one absolute-value metric with one shared arm domain."""
+    """Render one absolute-value metric: both arms with their uncertainty, per segment if any."""
     metric_frame = frame.loc[frame["metric"] == metric].copy()
     if metric_frame.empty:
         return ""
-    metric_frame["Date basis"] = metric_frame["ds_basis"].map(
-        {"calendar": "Observation date", "cohort": "Exposure cohort"}
+    segmented = (
+        "dimension_value" in metric_frame.columns and metric_frame["dimension_value"].notna().any()
     )
-    labels = (
-        metric_frame[["metric", "Date basis"]]
-        .drop_duplicates()
-        .set_index("metric")
-        .reindex([metric])
-        .reset_index()
-    )
+    if segmented:
+        metric_frame["Segment"] = metric_frame["dimension_value"].astype(str)
+        nest = "Segment"
+    else:
+        metric_frame["Date basis"] = metric_frame["ds_basis"].map(
+            {"calendar": "Observation date", "cohort": "Exposure cohort"}
+        )
+        nest = "Date basis"
+    labels = metric_frame[["metric", nest]].drop_duplicates(ignore_index=True)
     model = next(model for model in snapshot.metrics if model.name == metric)
-    lower, upper = inf, -inf
-    for column in ("value", "lb", "ub"):
-        for value in metric_frame[column]:
-            if not _is_missing(value) and isfinite(value):
-                lower, upper = min(lower, value), max(upper, value)
-    span = upper - lower
-    if span == 0:
-        span = abs(upper) / 10
-    formatter = _metric_value_format(snapshot, model, span=span)
+    # Ticks must stay distinct on the tightest plotted segment.
+    spans: list[float] = []
+    for _, part in metric_frame.groupby(nest):
+        pooled = [
+            value
+            for column in ("value", "lb", "ub")
+            for value in part[column]
+            if not _is_missing(value) and isfinite(value)
+        ]
+        if pooled:
+            spans.append((max(pooled) - min(pooled)) or abs(max(pooled)) / 10)
+    formatter = _metric_value_format(snapshot, model, span=min(spans, default=0.0))
     table = (
-        ct.CoefTable(labels, rows="metric", nest="Date basis")
+        ct.CoefTable(labels, rows="metric", nest=nest)
         .sparkline(
             "Value over time",
             value="value",
@@ -1504,7 +1576,7 @@ def _absolute_metric_table(
         .header("", f"{snapshot.control_group} vs {snapshot.treatment_group}")
         .with_theme(DASHBOARD_THEME)
     )
-    return f'<div class="inc-dashboard-table-wrap">{table.as_raw_html()}</div>'
+    return _TABLE_WRAP.format(table.as_raw_html())
 
 
 def _absolute_tables(snapshot: DashboardSnapshot, frame: Any, *, selected: Sequence[str]) -> str:
@@ -1516,31 +1588,151 @@ def _absolute_tables(snapshot: DashboardSnapshot, frame: Any, *, selected: Seque
     )
 
 
+def _latest_points(estimates: Sequence[Any]) -> list[Any]:
+    """Each series' latest emitted point, in first-appearance order."""
+    latest: dict[tuple[Any, ...], Any] = {}
+    for estimate in estimates:
+        key = (
+            estimate.metric,
+            estimate.group_id,
+            estimate.method,
+            estimate.estimand,
+            estimate.dimension_value,
+        )
+        if key not in latest or estimate.ds >= latest[key].ds:
+            latest[key] = estimate
+    return list(latest.values())
+
+
+def _plotted_values(estimates: Sequence[Any]) -> list[float]:
+    """Every finite estimate and bound a trajectory plots; open sides contribute none."""
+    return [
+        value
+        for estimate in estimates
+        if estimate.lift is not None
+        for value in (estimate.lift.value, estimate.lift.lb, estimate.lift.ub)
+        if value is not None
+    ]
+
+
+def has_open_side(estimates: Sequence[Any]) -> bool:
+    """True when any plotted interval is one-sided, so a ribbon cannot be drawn for it."""
+    return any(e.lift is not None and e.lift.open_side is not None for e in estimates)
+
+
+def robust_fence(values: Sequence[float]) -> tuple[float, float] | None:
+    """The IQR/Tukey fence CoefTable documents for ``autoscale="robust"``.
+
+    ``None`` when quartiles are not meaningful (fewer than four values or a zero IQR), where the
+    chart falls back to a plain min/max fit and clips nothing. Used only to describe clipping.
+    """
+    if len(values) < 4:
+        return None
+    q1, _, q3 = statistics.quantiles(values, n=4, method="inclusive")
+    spread = q3 - q1
+    if spread == 0:
+        return None
+    return q1 - 1.5 * spread, q3 + 1.5 * spread
+
+
+def _percent_axis(estimates: Sequence[Any]) -> ct.Percent:
+    """Tick precision for the typical plotted range, so nearby ticks never repeat."""
+    values = _plotted_values(estimates)
+    fence = robust_fence(values)
+    span = (fence[1] - fence[0]) if fence else max(values, default=0.0) - min(values, default=0.0)
+    decimals = min(4, max(0, ceil(-log10(span * 100)) + 1)) if span > 0 else 1
+    return ct.Percent(scale=100.0, decimals=decimals, signed=True)
+
+
+def _with_bound_lines(column: ct.Sparkline) -> ct.Sparkline:
+    """Draw each finite interval bound as its own line beside the estimate.
+
+    The native ribbon needs both bounds; an open side has none to draw and nothing is invented
+    for it, so finite sides become labelled lines and absent ones simply have no line.
+    """
+    data = column.data
+    assert data is not None
+    palette = DASHBOARD_THEME.series_palette
+    parts = [data.assign(__series="Estimate", __plot=data[column.value])]
+    colors = {"Estimate": palette[1]}
+    for label, field, color in (
+        ("Lower CI", "lb", palette[0]),
+        ("Upper CI", "ub", DASHBOARD_THEME.inconclusive),
+    ):
+        if data[field].notna().any():
+            parts.append(data.assign(__series=label, __plot=data[field]))
+            colors[label] = color
+    return replace(
+        column,
+        data=pd.concat(parts, ignore_index=True),
+        value="__plot",
+        ci=None,
+        series="__series",
+        series_colors=colors,
+    )
+
+
+def _lift_trajectory_table(
+    snapshot: DashboardSnapshot, estimates: Sequence[Any], *, width: int
+) -> str:
+    """Cumulative lift as native CoefTable trajectories: latest reading beside its history."""
+    segmented = any(estimate.dimension is not None for estimate in estimates)
+    latest_rows = estimates_to_readout(_latest_points(estimates))
+    table = readout_table(
+        _display_rows(latest_rows),
+        title="",
+        subtitle=f"{snapshot.treatment_group} vs {snapshot.control_group}",
+        theme=DASHBOARD_THEME,
+        nest_by="segment" if segmented else "arm",
+        trend=list(estimates),
+        trend_label="Cumulative lift",
+        advisory=False,
+        show_interval_level=True,
+    )
+    axis = _percent_axis(estimates)
+    columns = []
+    for column in table.columns:
+        if isinstance(column, ct.Forest) or getattr(column, "label", None) in _REDUNDANT_COLUMNS:
+            continue
+        if isinstance(column, ct.Sparkline):
+            column = replace(
+                column,
+                width=width,
+                height=156,
+                scale="row",
+                show_y_axis=True,
+                y_axis_fmt=axis,
+                fmt=axis,
+                show_endpoint=False,
+            )
+            if has_open_side(estimates):
+                column = _with_bound_lines(column)
+        columns.append(column)
+    table.columns = tuple(columns)
+    return _TABLE_WRAP.format(table.as_raw_html()) + _geometry_disclosure(
+        snapshot, latest_rows, label=INTERVALS_DISCLOSURE
+    )
+
+
 def _temporal_table(
     snapshot: DashboardSnapshot, data: Any, *, metric: str | None, view: str
 ) -> str:
     """Render cumulative lift or independent absolute-value metric tables."""
     if view == "cumulative_lift":
-        headlines = [
-            row for row in snapshot.readout_rows if metric is None or row["metric"] == metric
-        ]
-        table = readout_table(
-            _display_rows(headlines),
-            title=metric or "All metrics",
-            theme=DASHBOARD_THEME,
-            trend=list(data),
-            trend_label="Cumulative lift",
-            advisory=False,
-            show_interval_level=True,
-        )
-        table.columns = tuple(
-            replace(column, width=380 if metric is None else 520, height=144, scale="row")
-            if isinstance(column, ct.Sparkline)
-            else column
-            for column in table.columns
-            if not isinstance(column, ct.Forest)
-        )
-        return f'<div class="inc-dashboard-table-wrap">{table.as_raw_html()}</div>'
+        decisions = [row for row in data if row.method_role == "decision"]
+        if not decisions:
+            return f'<p class="inc-dashboard-note">{_missing("no decision estimates in this view")}</p>'
+        if (
+            any(row.dimension is not None for row in decisions)
+            and len({row.method for row in decisions}) > 1
+        ):
+            return "".join(
+                _lift_trajectory_table(
+                    snapshot, [row for row in decisions if row.metric == name], width=380
+                )
+                for name in dict.fromkeys(row.metric for row in decisions)
+            )
+        return _lift_trajectory_table(snapshot, decisions, width=380 if metric is None else 560)
     frame = data.to_frame()
     selected = [model.name for model in snapshot.metrics if metric is None or model.name == metric]
     return _absolute_tables(snapshot, frame, selected=selected)
@@ -1583,10 +1775,12 @@ def _segments_body(snapshot: DashboardSnapshot, data: Any, *, metric: str | None
         nest_by="segment",
         show_interval_level=True,
     )
+    _drop_redundant_columns(table)
     return (
         f'<div class="inc-dashboard-table-wrap">{table.as_raw_html()}</div>'
         + _segments_caption(rows)
         + _caveats_list(_segment_caveats(rows))
+        + _geometry_disclosure(snapshot, rows, label=INTERVALS_DISCLOSURE)
     )
 
 
