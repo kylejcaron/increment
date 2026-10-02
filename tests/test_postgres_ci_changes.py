@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 
@@ -39,16 +40,18 @@ def _change(repo: Path, path: str) -> None:
 
 @pytest.fixture
 def repository(tmp_path):
-    _git(tmp_path, "init", "-q")
-    _change(tmp_path, "README.md")
-    _change(tmp_path, "increment/source.py")
-    (tmp_path / "README.md").write_text("base docs\n")
-    (tmp_path / "increment/source.py").write_text("base source\n")
-    _git(tmp_path, "add", ".")
-    _git(tmp_path, "commit", "-qm", "base")
-    base = _git(tmp_path, "rev-parse", "HEAD")
-    _git(tmp_path, "checkout", "-qb", "feature")
-    return tmp_path, base
+    with TemporaryDirectory(dir=tmp_path) as directory:
+        repo = Path(directory)
+        _git(repo, "init", "-q")
+        _change(repo, "README.md")
+        _change(repo, "increment/source.py")
+        (repo / "README.md").write_text("base docs\n")
+        (repo / "increment/source.py").write_text("base source\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-qm", "base")
+        base = _git(repo, "rev-parse", "HEAD")
+        _git(repo, "checkout", "-qb", "feature")
+        yield repo, base
 
 
 def _required(repo: Path, base: str, event: str = "pull_request") -> bool:

@@ -110,6 +110,16 @@ changes are known prose or static documentation assets. Library, test,
 fixture, dependency, CI, unknown, deletion, and rename changes require it;
 an unavailable diff also requires it. Main pushes never use this filter.
 
+Each fast Python-version cell has two duration-balanced `pytest-split` shards,
+with `xdist` workers inside each shard. `ci-ok` requires all six jobs. The
+machine-generated `.github/fast-test-durations.json` weights come from the
+complete hosted Python 3.13 run 36941053401; absent weights do not omit tests.
+Refresh them with the complete fast suite, preserving worker group suffixes:
+
+```bash
+make test-fast PYTEST_ARGS="-n auto --dist loadgroup -p no:tach --store-durations --durations-path .github/fast-test-durations.json"
+```
+
 The complete PostgreSQL suite runs across three isolated PostgreSQL services,
 balanced with `pytest-split` and `.github/postgres-test-durations.json`.
 The weights come from hosted run 36941053401; new cases still run using the
