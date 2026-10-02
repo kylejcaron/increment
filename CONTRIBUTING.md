@@ -50,6 +50,9 @@ uv sync --group dev --extra demo --extra tables --extra dashboard
 
 Commit `uv.lock` whenever a dependency change updates the resolution.
 
+Notebook examples use Marimo; the development environment does not include
+Jupyter Notebook, JupyterLab, or ipywidgets.
+
 ### Tests and quality checks
 
 Start with the smallest test selection that exercises your change:
