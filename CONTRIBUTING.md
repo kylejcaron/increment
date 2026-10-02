@@ -146,6 +146,10 @@ These manual jobs are not required by `ci-ok`; do not use an untrusted branch
 with repository credentials. Use `backend_mode=postgres` for credential-free
 PostgreSQL probes or `all` to run all three backends.
 
+BigQuery prints each live probe's result and has a 45-minute workflow hang
+guard; PostgreSQL and Snowflake retain 30-minute guards. These are job
+deadlines, not performance targets or reduced test coverage.
+
 Probe coverage is not blanket support for every metric, design, or artifact
 extension. Use the [compatibility matrix](docs/guides/compatibility.md) and
 [statistical limitations](docs/limitations.md) to check the combination you need.

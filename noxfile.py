@@ -235,7 +235,7 @@ def tests_warehouse_bigquery(session: nox.Session) -> None:
     session.run(
         "pytest",
         "integration/warehouse_execution/test_bigquery_execution.py",
-        "-q",
+        "-vv",
         "-m",
         "warehouse_bigquery",
         "-p",
