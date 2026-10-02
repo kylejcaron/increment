@@ -2,9 +2,10 @@
 
 This notebook binds the synthetic `checkout_redesign` experiment to a
 shared summary and four tabs: **Readout**, **Explore**, **Health**, and a
-printable **Report**. Explore compares native CoefTable relative-lift or
-per-arm absolute trajectories across declared breakouts. Browser controls
-and CSV downloads also work in the static export.
+one-page **Report** with every captured metric result and interval. Explore
+compares native CoefTable relative-lift or per-arm absolute trajectories across
+declared breakouts. Report provides the full-readout CSV and **Print / Save PDF**;
+browser controls and CSV downloads also work in the static export.
 
 [Open the notebook in a full browser tab](ab_testing_dashboard.html)
 

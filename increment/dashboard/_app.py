@@ -34,19 +34,24 @@ from increment.dashboard._data import (
 from increment.dashboard._html import (
     _allocation_evidence,
     _allocation_grain_label,
+    _confidence_set_text,
     _count,
     _date,
     _effect,
     _esc,
-    _group_data_disclosure,
     _headline_interval,
     _inference_word,
     _is_missing,
+    _levels_by_metric,
     _missing,
     _monitoring_sentence,
+    _null_text,
+    _population_label,
     _primary_method,
     _primary_tone,
     _result_caveats,
+    _tail_word,
+    _timestamp,
     dashboard_styles,
     has_open_side,
     render_details,
@@ -124,13 +129,19 @@ def build_payload(analysis: Analysis, *, snapshot: DashboardSnapshot) -> dict[st
     for key, (source, dimension), label in _declared_scopes(snapshot):
         scopes[key] = {"label": label, "dimension": dimension, "source": source}
         breakouts[key] = (source, dimension)
+    table = results_table(snapshot)
     return {
         "title": snapshot.title,
         "description": snapshot.description or "",
         "meta": _meta(snapshot),
         "primary": _primary(snapshot),
         "healthStatus": health_status(snapshot),
-        "results": _styled(results_table(snapshot) + results_notes(snapshot)),
+        "report": {
+            "results": _styled(table),
+            "notes": _report_notes(snapshot),
+            "context": _report_context(snapshot),
+        },
+        "results": _styled(table + results_notes(snapshot)),
         "health": _styled(render_health(snapshot).text),
         "provenance": _styled(render_details(snapshot).text),
         "metrics": [_metric_payload(snapshot, model.name) for model in snapshot.metrics],
@@ -263,9 +274,115 @@ def _metric_payload(snapshot: DashboardSnapshot, metric: str) -> dict[str, Any]:
         "label": _label(metric),
         "role": str(row.get("role") or "unassigned") if row is not None else "unassigned",
         "detail": _styled(render_metric_details(snapshot, metric=metric).text),
-        "groupData": _styled(_group_data_disclosure(snapshot, metric)),
         "csv": group_data_csv(snapshot, metric=metric).decode("utf-8"),
     }
+
+
+# Report
+
+
+def _report_context(snapshot: DashboardSnapshot) -> str:
+    """Comparison, population, capture time and source for the printed report."""
+    parts = [
+        f"{snapshot.treatment_group} vs {snapshot.control_group}",
+        _plain(_population_label(snapshot)),
+        f"captured {_plain(_timestamp(snapshot.computed_at))}",
+    ]
+    if snapshot.config.source_label:
+        parts.append(snapshot.config.source_label)
+    return " · ".join(parts)
+
+
+_INFERENCE_STATEMENTS = {
+    "always_valid": "Always-valid intervals remain valid at every look.",
+    "asymptotic_mean": (
+        "Asymptotic sequential intervals support repeated monitoring under the registered "
+        "assumptions, without a finite-sample guarantee."
+    ),
+    "fixed": "Fixed-horizon intervals are not corrected for repeated looks.",
+}
+
+
+def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
+    """The inference statements a reader needs beside the report table, as plain text.
+
+    Levels, inference kinds and tested directions are read from the captured rows, never derived
+    from policy. Confidence sets the point estimate cannot represent keep every endpoint, and
+    each unavailability reason is kept as the engine reported it.
+    """
+    rows = snapshot.readout_rows
+    if not rows:
+        return []
+    several_arms = len({row.get("group_id") for row in rows}) > 1
+    several_methods = len({(row.get("method"), row.get("method_role")) for row in rows}) > 1
+
+    def name(row: Mapping[str, Any]) -> str:
+        metric = str(row.get("metric"))
+        qualifiers = [str(row.get("group_id"))] if several_arms else []
+        if several_methods:
+            qualifiers.append(f"{row.get('method')}, {row.get('method_role')}")
+        return f"{metric} ({'; '.join(qualifiers)})" if qualifiers else metric
+
+    groups: dict[str, list[str]] = {}
+    for row in rows:
+        level = row.get("level")
+        prefix = "" if level is None or _is_missing(level) else f"{_percent(float(level))} "
+        kind = _inference_word(str(row.get("inference", "fixed")))
+        names = groups.setdefault(f"{prefix}{kind} intervals, {_tail_word(row)}", [])
+        if name(row) not in names:
+            names.append(name(row))
+    if len(groups) == 1:
+        notes = [f"All results: {next(iter(groups))}."]
+    else:
+        notes = [
+            "Intervals by metric: "
+            + "; ".join(f"{label} ({', '.join(names)})" for label, names in groups.items())
+            + "."
+        ]
+    levels = {float(row["level"]) for row in rows if not _is_missing(row.get("level"))}
+    if len(levels) > 1:
+        notes.append("Interval levels differ; compare each interval only with its own level.")
+    kinds = dict.fromkeys(str(row.get("inference", "fixed")) for row in rows)
+    notes.extend(
+        _INFERENCE_STATEMENTS.get(kind, f"Inference: {_inference_word(kind)}.") for kind in kinds
+    )
+    if any(row.get("alternative") in ("greater", "less") for row in rows):
+        notes.append(
+            "A one-sided test constrains only the tested direction; the opposite direction is "
+            "unconstrained."
+        )
+    if any(row.get("role") == "guardrail" for row in rows):
+        notes.append("A guardrail that does not reject is not evidence of no harm.")
+    shifted = [
+        f"{name(row)} {_null_text(row)}"
+        for row in rows
+        if not _is_missing(row.get("null_abs"))
+        or not (_is_missing(row.get("null_lift")) or row.get("null_lift") == 0)
+    ]
+    if shifted:
+        notes.append(f"Non-zero null boundaries: {'; '.join(shifted)}.")
+    axes = next((row.get("family_axes") for row in rows if row.get("family_axes")), None)
+    q = next((row.get("family_q") for row in rows if row.get("family_q") is not None), None)
+    if axes or q is not None:
+        family = "; ".join(
+            ([f"axes {', '.join(str(axis) for axis in axes)}"] if axes else [])
+            + ([f"q = {float(q):.3g}"] if q is not None else [])
+        )
+        notes.append(
+            f"Family selection ({family}) is separate from each row's tested-alternative verdict."
+        )
+    if any(row.get("family_guarantee") == "asymptotic_sequential" for row in rows):
+        notes.append("The sequential family guarantee is asymptotic, not finite-sample.")
+    for row in rows:
+        confidence_set = _confidence_set_text(row)
+        retained = _plain(confidence_set) if confidence_set else ""
+        if retained:
+            notes.append(f"{name(row)}: {retained}")
+        for caveat in _result_caveats([row]):
+            reason = _plain(caveat).partition(": ")[2]
+            if reason and reason not in retained:
+                notes.append(f"{name(row)}: {reason}")
+    return notes
 
 
 # Scoped HTML
@@ -470,8 +587,12 @@ def _notes(
     lift = view == "cumulative_lift"
     segmented = rows[0].dimension is not None
     points = [row.lift if lift else row.value for row in rows]
-    levels = sorted({point.level for point in points if point is not None and point.level})
-    level_text = ", ".join(_percent(level) for level in levels)
+    levelled = [
+        (row.metric, point.level)
+        for row, point in zip(rows, points, strict=True)
+        if point is not None and point.level
+    ]
+    level_text = ", ".join(_percent(level) for level in sorted({level for _, level in levelled}))
     segments = sorted({str(row.dimension_value) for row in rows}) if segmented else []
     notes = [_monitoring_sentence(rows, view=view)]
     if view != "daily_values":
@@ -493,7 +614,7 @@ def _notes(
         )
     if level_text:
         notes.append(
-            f"Intervals are at level {level_text}. "
+            f"Intervals are at level {_levels_by_metric(levelled, _percent)}. "
             + (
                 "They describe the lift of each point, one look at a time."
                 if lift

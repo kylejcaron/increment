@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import statistics
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
 from html import escape
 from importlib import resources
@@ -977,8 +977,26 @@ def _display_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return [{key: value for key, value in row.items() if key != "discovery"} for row in rows]
 
 
-# Numeric confidence-set evidence lives in interval disclosures, not a second table column.
-_REDUNDANT_COLUMNS = frozenset({"Significant", "Confidence set"})
+# Numeric confidence-set evidence lives in interval disclosures and the per-level wording beside
+# each table, so the verdict, set and per-row level columns are not repeated in the grid. The
+# unrounded values stay in the readout frame and CSV.
+_REDUNDANT_COLUMNS = frozenset({"Significant", "Confidence set", "Interval"})
+
+
+def _levels_by_metric(pairs: Iterable[tuple[Any, float]], fmt: Callable[[float], str]) -> str:
+    """Captured interval levels, attributed to their metrics only when they differ."""
+    by_level: dict[float, list[str]] = {}
+    for metric, level in pairs:
+        names = by_level.setdefault(float(level), [])
+        if str(metric) not in names:
+            names.append(str(metric))
+    if len(by_level) == 1:
+        return fmt(next(iter(by_level)))
+    return "; ".join(
+        f"{fmt(level)} ({', '.join(names)})" for level, names in sorted(by_level.items())
+    )
+
+
 INTERVALS_DISCLOSURE = "How to read these intervals"
 _TABLE_WRAP = '<div class="inc-dashboard-table-wrap">{}</div>'
 
@@ -1079,7 +1097,7 @@ def _adverse_block(snapshot: DashboardSnapshot) -> str:
 
 def _role_disclosures(snapshot: DashboardSnapshot) -> list[str]:
     rows_by_role: dict[str, list[Mapping[str, Any]]] = {}
-    for row in decision_rows(snapshot):
+    for row in snapshot.readout_rows:
         rows_by_role.setdefault(str(row.get("role") or "unassigned"), []).append(row)
     items = []
     for role in ("primary", "secondary", "guardrail", "unassigned"):
@@ -1093,9 +1111,19 @@ def _role_disclosure(role: str, rows: Sequence[Mapping[str, Any]]) -> str:
     label = _ROLE_LABELS.get(role, role)
     tails = "; ".join(f"{_esc(row.get('metric'))} {_tail_word(row)}" for row in rows)
     sentences = [f"<strong>{_esc(label)}</strong>: {tails}."]
-    levels = sorted({float(row["level"]) for row in rows if row.get("level") is not None})
-    if levels:
-        shown = ", ".join(f"{level:.1%}" for level in levels)
+    several_methods = len({(row.get("method"), row.get("method_role")) for row in rows}) > 1
+    levelled = [
+        (
+            f"{row.get('metric')} ({row.get('method')}, {row.get('method_role')})"
+            if several_methods
+            else row.get("metric"),
+            float(row["level"]),
+        )
+        for row in rows
+        if row.get("level") is not None
+    ]
+    if levelled:
+        shown = _esc(_levels_by_metric(levelled, lambda level: f"{level:.1%}"))
         sentences.append(f"Interval level {shown}.")
         if any(row.get("alternative") in ("greater", "less") for row in rows):
             sentences.append(
@@ -1215,7 +1243,7 @@ def render_metric_details(snapshot: DashboardSnapshot, *, metric: str) -> mo.Htm
 
 
 def _group_data_disclosure(snapshot: DashboardSnapshot, metric: str) -> str:
-    """Captured arm evidence, shared by metric inspection and the full report."""
+    """Captured arm evidence for one metric's inspection view."""
     return _disclosure(
         "Data by group",
         _group_data_table(snapshot, metric)
@@ -1786,7 +1814,9 @@ def _segments_body(snapshot: DashboardSnapshot, data: Any, *, metric: str | None
 
 def _segments_caption(rows: Sequence[Mapping[str, Any]]) -> str:
     segments = sorted({str(row.get("segment")) for row in rows})
-    levels = sorted({float(row["level"]) for row in rows if row.get("level") is not None})
+    levelled = [
+        (row.get("metric"), float(row["level"])) for row in rows if row.get("level") is not None
+    ]
     entries = [
         ("Dimension", _esc(rows[0].get("dimension"))),
         ("Source", _esc(rows[0].get("source") or "resolved by the readout")),
@@ -1794,7 +1824,9 @@ def _segments_caption(rows: Sequence[Mapping[str, Any]]) -> str:
         ("Segments", f"{_count(len(segments))}: {_esc(', '.join(segments))}"),
         (
             "Interval level",
-            _esc(", ".join(f"{level:.2%}" for level in levels)) or _missing("no interval"),
+            _esc(_levels_by_metric(levelled, lambda level: f"{level:.2%}"))
+            if levelled
+            else _missing("no interval"),
         ),
     ]
     notes = [

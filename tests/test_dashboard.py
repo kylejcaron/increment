@@ -1727,15 +1727,22 @@ def test_document_embeds_untrusted_payload_text_as_inert_json(storefront_payload
     assert json.loads(block.group(1))["title"] == hostile
 
 
+@pytest.mark.parametrize("method_role", ["decision", "sensitivity"])
 def test_removed_set_column_preserves_disconnected_numeric_bounds(
     storefront: DashboardSnapshot,
+    method_role: str,
 ) -> None:
     from increment.estimation.results import JointContrastReference, relative_confidence_set
 
     region = relative_confidence_set(JointContrastReference(a=10, c=0, var_a=1, var_c=1, cov_ac=0))
     assert region.geometry == "disconnected"
     snapshot = _with_primary_row(
-        storefront, lift=None, lower=None, higher=None, relative_confidence_set=region
+        storefront,
+        lift=None,
+        lower=None,
+        higher=None,
+        relative_confidence_set=region,
+        method_role=method_role,
     )
     rendered = render_results(snapshot).text
     assert "∪" in rendered
@@ -1743,6 +1750,82 @@ def test_removed_set_column_preserves_disconnected_numeric_bounds(
         for endpoint in interval:
             if endpoint is not None:
                 assert f"{endpoint:+.1%}" in rendered
+
+
+@pytest.mark.parametrize("method_role", ["decision", "sensitivity"])
+def test_summary_notes_preserve_disconnected_bounds_without_a_point(
+    storefront: DashboardSnapshot,
+    method_role: str,
+) -> None:
+    from increment.dashboard import _app
+    from increment.estimation.results import JointContrastReference, relative_confidence_set
+
+    region = relative_confidence_set(JointContrastReference(a=10, c=0, var_a=1, var_c=1, cov_ac=0))
+    snapshot = _with_primary_row(
+        storefront,
+        lift=None,
+        lower=None,
+        higher=None,
+        relative_confidence_set=region,
+        method_role=method_role,
+    )
+    notes = " ".join(_app._report_notes(snapshot))
+    assert "∪" in notes
+    displayed = [float(value) / 100 for value in re.findall(r"([+-]?\d+(?:\.\d+)?)%", notes)]
+    for interval in region.intervals:
+        for endpoint in interval:
+            if endpoint is not None:
+                assert any(abs(value - endpoint) <= 0.0005 for value in displayed)
+
+
+def test_summary_notes_attribute_each_captured_level_to_its_own_metric(
+    storefront: DashboardSnapshot,
+) -> None:
+    from increment.dashboard import _app
+    from increment.dashboard._data import decision_rows
+
+    rows = decision_rows(storefront)
+    assert len({row["level"] for row in rows}) > 1
+    summary = _app._report_notes(storefront)[0]
+    stated = [(m.start(), m.group()) for m in re.finditer(r"\d+(?:\.\d+)?%", summary)]
+    for row in rows:
+        metric_at = summary.index(str(row["metric"]))
+        preceding = [text for start, text in stated if start < metric_at]
+        assert float(preceding[-1].rstrip("%")) / 100 == pytest.approx(
+            float(row["level"]), abs=0.00005
+        )
+
+
+def test_summary_levels_distinguish_methods_for_the_same_metric(
+    storefront: DashboardSnapshot,
+) -> None:
+    from increment.dashboard import _app
+
+    decision = storefront.readout_rows[0]
+    sensitivity = {
+        **decision,
+        "method": "cuped" if decision["method"] != "cuped" else "unadjusted",
+        "method_role": "sensitivity",
+        "level": 0.8,
+    }
+    snapshot = dataclasses.replace(
+        storefront,
+        readout_rows=(*storefront.readout_rows, sensitivity),
+        estimates=(
+            *storefront.estimates,
+            storefront.estimates[0].model_copy(
+                update={"method": sensitivity["method"], "method_role": "sensitivity"}
+            ),
+        ),
+    )
+    summary = _app._report_notes(snapshot)[0]
+    levels = [
+        (m.start(), float(m.group()[:-1]) / 100) for m in re.finditer(r"\d+(?:\.\d+)?%", summary)
+    ]
+    for row in (decision, sensitivity):
+        method_at = summary.index(str(row["method"]))
+        preceding = [value for start, value in levels if start < method_at]
+        assert preceding[-1] == pytest.approx(float(row["level"]), abs=0.00005)
 
 
 def test_segmented_temporal_rendering_accepts_distinct_decision_methods(

@@ -122,11 +122,11 @@ generic label `value`. Currency is never inferred from a metric's name.
 
 | Call | Renders |
 |---|---|
-| `render_dashboard(analysis, snapshot=...)` | The complete interactive four-tab dashboard. Prepares declared temporal choices once; embeds native plots, scoped controls, downloads, metric inspectors, health, provenance, and a printable full-snapshot Report. |
+| `render_dashboard(analysis, snapshot=...)` | The complete interactive four-tab dashboard. Prepares declared temporal choices once; embeds native plots, scoped controls, metric inspectors, health, provenance, and a one-page Report with the full captured metric family. |
 | `dashboard_styles()` | The packaged, scoped stylesheet as one style block. Reads `_dashboard.css` with `importlib.resources`, so it needs no repository-relative path. |
 | `render_header(snapshot)` | Experiment identity, window, population, inference, arms, and three summary cards: enrolled units, observed arm split, and a compact primary lift with its bracketed interval and direction-aware significance status. |
 | `render_health(snapshot)` | Visual allocation bars with target markers, the SRM verdict, and visible assignment warnings and result caveats. Allocation over time and evidence expands to a CoefTable with one row per variant, cumulative enrolled share, and the check statistics. |
-| `render_results(snapshot)` | The whole declared family through CoefTable, grouped by role, with forest plots and an explicit adverse-guardrail callout. Redundant significance and confidence-set display columns are omitted; metadata remains in details and CSV. Interval interpretation expands on demand. |
+| `render_results(snapshot)` | The whole declared family through CoefTable, grouped by role, with forest plots and an explicit adverse-guardrail callout. Redundant confidence, significance, and confidence-set display columns are omitted; levels and interpretation remain in notes and CSV. |
 | `render_metric_details(snapshot, metric=...)` | Lift, interval, and direction chips; policy and evidence-geometry details; observed data by group, including eligibility, exclusions, counts, units, and provenance. |
 | `load_explore(analysis, snapshot=..., metric=..., view=..., completed_windows_only=..., breakout=...)` | One requested advanced view (`analysis.run_asof_lift`, `run_daily`, `run_asof`, or `run_breakout`), dispatched from the public readout API. `metric=None` loads every declared metric together in any view. It never reruns the headline family, allocation check/history, or materialization. |
 | `render_explore(snapshot, data, metric=..., view=..., completed_windows_only=...)` | One Explore section with a combined cumulative-lift table or separate absolute daily/cumulative tables per metric, actual date basis/range, and visible unavailable-point reasons. Applicable headline evidence geometry is labeled separately from the series. Pass the same metric selection used to load data; `metric=None` renders every declared metric together. |
@@ -291,10 +291,20 @@ relative/absolute, daily/cumulative, and maturity controls select embedded
 evidence in the browser; no Python kernel is needed after export.
 
 Readout and Report always retain the complete captured family, independent
-of Explore selections. The hero shows the primary estimate with its interval
-as subtext. Report uses a compact estimate-only summary; its result table
-retains intervals. **Print / Save PDF** prints Report with expanded policies,
-allocation evidence, observed values and eligibility by arm, and provenance.
+of Explore selections. Both the hero and Report primary card retain the
+captured uncertainty interval; the Report uses smaller, muted interval text.
+Tables omit the repeated **Confidence** column without changing statistical
+metadata or interval levels.
+
+Report is a one-page summary: every metric result and interval, compact
+allocation health, essential inference notes, and source/capture context.
+**Print / Save PDF** fits the summary to one A4 page without clipping metric
+rows. Large families may require smaller print type. Detailed policies,
+observed arm data, allocation history, and provenance remain in
+Readout, metric inspection, Explore, and Health rather than filling the PDF.
+
+The full-readout CSV download belongs to Report, not Readout. Explore retains
+its metric-specific group-data CSV; all downloads use the captured snapshot.
 
 Preparation can be more expensive than a single-view export because it
 computes the declared temporal choices. This is a captured analysis, not a
