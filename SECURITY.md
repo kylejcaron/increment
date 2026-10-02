@@ -2,12 +2,13 @@
 
 ## Reporting a vulnerability
 
-Please do not open a public issue for security problems. Email
+Please report security vulnerabilities privately through
+[GitHub's vulnerability reporting form](https://github.com/kylejcaron/increment/security/advisories/new).
+Do not open a public issue for security problems.
+
+If you cannot use GitHub's private reporting form, email
 kyle.j.caron@gmail.com with a description of the issue and reproduction
 steps. You will get an acknowledgement within a few days.
-
-Email is the preferred channel. GitHub private vulnerability reporting is not
-configured for this package.
 
 ## Supported versions
 
