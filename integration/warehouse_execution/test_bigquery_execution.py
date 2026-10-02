@@ -134,5 +134,5 @@ def test_artifact_abort_after_manifest_leaves_nothing_visible(bigquery_con):
 
 
 def test_artifact_explicit_catalog_path(bigquery_con):
-    """The hosted explicit-catalog path is unverified live; it needs BigQuery credentials."""
+    """Explicit project/dataset publication, fresh adoption and cleanup work on BigQuery."""
     run_artifact_explicit_catalog_probe(bigquery_con, dialect="bigquery")

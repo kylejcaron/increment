@@ -270,5 +270,5 @@ def test_artifact_abort_after_manifest_leaves_nothing_visible(snowflake_con):
 
 
 def test_artifact_explicit_catalog_path(snowflake_con):
-    """The hosted explicit-catalog path is unverified live; it needs Snowflake credentials."""
+    """Explicit catalog/schema publication, fresh adoption and cleanup work on Snowflake."""
     run_artifact_explicit_catalog_probe(snowflake_con, dialect="snowflake")

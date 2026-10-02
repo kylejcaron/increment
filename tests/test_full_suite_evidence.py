@@ -510,3 +510,49 @@ def test_runner_finalizes_owned_unfinished_evidence(tmp_path, wrapped, terminati
     assert summary["status"] == "finished"
     assert summary["exit_code"] == expected_status
     assert summary["termination"] == termination
+
+
+@pytest.mark.parametrize("budget_seconds", [None, 30])
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_child_exit_124_is_not_a_supervisor_timeout(tmp_path, budget_seconds, wrapped):
+    project = Path(__file__).resolve().parents[1]
+    evidence = tmp_path / "evidence"
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import json, os, pathlib; "
+            "run=pathlib.Path(os.environ['EVIDENCE'])/'run-manual'; "
+            "run.mkdir(parents=True); "
+            "(run/'run.json').write_text(json.dumps({'status':'running','exit_code':None,"
+            "'owner_token':os.environ['INCREMENT_EVIDENCE_OWNER']})); os._exit(124)"
+        ),
+        "--evidence-root",
+        str(evidence),
+    ]
+    if wrapped:
+        command = [
+            sys.executable,
+            "-c",
+            "import subprocess,sys; raise SystemExit(subprocess.call(sys.argv[1:]))",
+            *command,
+        ]
+    outcome = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from scripts.run_test_tier import run_with_budget; import sys; "
+            f"raise SystemExit(run_with_budget(sys.argv[1:], tier='manual-evidence', budget_seconds={budget_seconds!r}))",
+            *command,
+        ],
+        cwd=project,
+        env={**os.environ, "EVIDENCE": str(evidence)},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert outcome.returncode == 124, outcome.stdout + outcome.stderr
+    summary = json.loads((evidence / "run-manual" / "run.json").read_text())
+    assert summary["status"] == "finished"
+    assert summary["exit_code"] == 124
+    assert summary["termination"] == "process_exit"

@@ -93,18 +93,49 @@ pytest-split distributes tests evenly.
 `.test-evidence/`. Add `--runtime-diagnostics` through `PYTEST_ARGS` when
 investigating slow tests; retained artifacts are not committed.
 
+Ordinary Make/Nox suites disable Tach's unused impact-analysis plugin; direct
+`uv run pytest --tach ...` remains available for impact-selected work. Override
+Make's `PYTEST_ARGS` when you need different pytest options. Notebook checks share one
+batched Marimo invocation while retaining a separate guard for each notebook;
+export and warehouse-regeneration scenarios still execute independently.
+
 Unit tests do not use the network or real warehouses. Live PostgreSQL,
 Snowflake, and BigQuery checks live under `integration/warehouse_execution/`
 and require dedicated scratch resources and credentials. Contributors do not
 need those services for ordinary changes.
 
 CI requires lint, fast tests on Python 3.12–3.14, package builds, and live
-PostgreSQL 16 probes through `ci-ok`. The
+PostgreSQL 16 probes through `ci-ok`. PostgreSQL may skip a PR only when all
+changes are known prose or static documentation assets. Library, test,
+fixture, dependency, CI, unknown, deletion, and rename changes require it;
+an unavailable diff also requires it. Main pushes never use this filter.
+
+Each fast Python-version cell has two duration-balanced `pytest-split` shards,
+with `xdist` workers inside each shard. `ci-ok` requires all six jobs. The
+machine-generated `.github/fast-test-durations.json` weights come from the
+complete hosted Python 3.13 run 36941053401; absent weights do not omit tests.
+Refresh them with the complete fast suite, preserving worker group suffixes:
+
+```bash
+make test-fast PYTEST_ARGS="-n auto --dist loadgroup -p no:tach --store-durations --durations-path .github/fast-test-durations.json"
+```
+
+The complete PostgreSQL suite runs across three isolated PostgreSQL services,
+balanced with `pytest-split` and `.github/postgres-test-durations.json`.
+The weights come from hosted run 36941053401; new cases still run using the
+average weight. To refresh weights, run the complete suite with
+`--store-durations --durations-path .github/postgres-test-durations.json`.
+Do not run workers against a shared warehouse namespace.
+
+The
 [weekly workflow](.github/workflows/weekly.yml) runs Sundays at 08:00 UTC or
 on manual dispatch: full slow/examples suites at locked dependencies and
 floors on all three Python versions, four Monte-Carlo shards on Python 3.12,
-and all three warehouse backends. Test jobs retain evidence for 30 days;
-failures create or update a GitHub issue labelled `weekly-failure`.
+and all three warehouse backends. Fast, full and Monte-Carlo jobs retain test
+evidence, including per-test timings, for 30 days. Live warehouse timings stay
+in the job logs, where GitHub masks secrets; raw cloud tracebacks are not
+uploaded as artifacts. Weekly failures create or update a GitHub issue
+labelled `weekly-failure`.
 
 Tests run in parallel and must not depend on execution order or state created
 by another test. Mark functional slow tests with `slow`; simulation-based
@@ -120,6 +151,30 @@ BigQuery probes check live query execution, native-warehouse/artifact parity,
 materialization, and cleanup isolation—not just SQL compilation. PostgreSQL
 additionally checks parity against dataframe oracles. Their CI schedule is
 described above.
+
+Cloud Nox sessions also execute credential-free namespace regression cases
+through the installed backend's real DDL compiler. The generated SQL runs in
+DuckDB; these cases do not substitute for the live probes.
+
+Snowflake and BigQuery run weekly or on manual dispatch, not on every PR or
+main push. Before merging warehouse changes, dispatch the existing workflow
+on the reviewed, trusted PR branch and wait for both cloud jobs:
+
+```bash
+gh workflow run warehouse-backends.yml --ref <trusted-pr-branch> -f backend_mode=cloud
+```
+
+These manual jobs are not required by `ci-ok`; do not use an untrusted branch
+with repository credentials. Use `backend_mode=postgres` for credential-free
+PostgreSQL probes or `all` to run all three backends.
+
+BigQuery prints each live probe's result and has a 45-minute workflow hang
+guard; PostgreSQL and Snowflake retain 30-minute guards. These are job
+deadlines, not performance targets or reduced test coverage.
+If BigQuery returns `QueryUsagePerDay`, its project-level daily query quota
+is exhausted. Keep the run failed and wait for the
+[midnight Pacific quota reset](https://docs.cloud.google.com/bigquery/docs/custom-quotas)
+before repeating the full cloud workflow; do not convert the failure to a skip.
 
 Probe coverage is not blanket support for every metric, design, or artifact
 extension. Use the [compatibility matrix](docs/guides/compatibility.md) and

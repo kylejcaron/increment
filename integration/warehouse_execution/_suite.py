@@ -650,6 +650,10 @@ def run_artifact_confidentiality_probe(con, dialect: str) -> None:
     events = _qualified_table_identifier(con, dialect, "events_confidentiality_smoke")
     users = _qualified_table_identifier(con, dialect, "users_confidentiality_smoke")
     enrolled = _qualified_table_identifier(con, dialect, "enrolled_confidentiality_smoke")
+    unit = _quoted_identifier(dialect, "user_id")
+    unit_alias = _quoted_identifier(dialect, "unit_id")
+    timestamp = _quoted_identifier(dialect, "ts")
+    group = _quoted_identifier(dialect, "group_id")
     yaml = f"""
 dialect: {dialect}
 fact_sources:
@@ -679,9 +683,9 @@ dim_sources:
       - {{name: unused_segment, column: segment, dtype: string, as_of: static}}
 exposures:
   - name: enrollment
-    sql: SELECT user_id AS unit_id, ts, group_id FROM {enrolled} /* {secrets["exposure_used"]} */
+    sql: SELECT {unit} AS {unit_alias}, {timestamp}, {group} FROM {enrolled} /* {secrets["exposure_used"]} */
   - name: unused_enrollment
-    sql: SELECT user_id AS unit_id, ts, group_id FROM {enrolled} /* {secrets["exposure_unused"]} */
+    sql: SELECT {unit} AS {unit_alias}, {timestamp}, {group} FROM {enrolled} /* {secrets["exposure_unused"]} */
 metrics:
   - name: conversion
     type: conversion
@@ -1114,8 +1118,9 @@ def run_artifact_explicit_catalog_probe(con, dialect: str) -> None:
 
     A probe-owned scratch namespace is addressed as ``catalog=<scratch catalog>,
     schema_name=<scratch schema>`` (the catalog is the connection's current project
-    or database on Snowflake and BigQuery, where the store qualifies ``create_table``
-    with a dotted string). A minimal generation is published and left published; a
+    or database on Snowflake and BigQuery). Snowflake qualifies ``create_table``
+    with a dotted namespace; BigQuery uses a fully qualified table name and bare
+    dataset. A minimal generation is published and left published; a
     FRESH store built the same way lists it, ``open_snapshot`` reads its manifest,
     ``drop_generation`` makes it invisible and refuses reads with
     ``artifact.generation.dropped``, and both relations are gone from the namespace.

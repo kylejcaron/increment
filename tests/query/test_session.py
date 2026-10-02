@@ -6,7 +6,7 @@ import hashlib
 import warnings
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 from uuid import uuid4
 
 import ibis
@@ -803,145 +803,76 @@ def test_streaming_snapshot_failure_cleans_private_tables(monkeypatch, failure):
         con.disconnect()
 
 
-class _RecordingConnection:
-    """A DuckDB connection that reports another backend name and records the
-    `database=` namespace each table operation receives."""
-
-    def __init__(self, con: Any, backend: str, catalog: str, schema: str) -> None:
-        self.wrapped = con
-        self.forwarded_namespace = (catalog, schema)
-        self.name = backend
-        self.calls: list[tuple[str, str, Any]] = []
-
-    def __getattr__(self, attribute: str) -> Any:
-        return getattr(self.wrapped, attribute)
-
-    def create_table(self, name, *args, database=None, **kwargs):
-        self.calls.append(("create_table", name, database))
-        if kwargs.get("temp"):
-            return self.wrapped.create_table(name, *args, **kwargs)
-        # DuckDB cannot parse another backend's dotted form; forward the real namespace.
-        return self.wrapped.create_table(name, *args, database=self.forwarded_namespace, **kwargs)
-
-    def table(self, name, *args, database=None, **kwargs):
-        self.calls.append(("table", name, database))
-        return self.wrapped.table(name, *args, database=database, **kwargs)
-
-    def drop_table(self, name, *args, database=None, **kwargs):
-        self.calls.append(("drop_table", name, database))
-        return self.wrapped.drop_table(name, *args, database=database, **kwargs)
-
-    def insert(self, name, *args, database=None, **kwargs):
-        self.calls.append(("insert", name, database))
-        return self.wrapped.insert(name, *args, database=database, **kwargs)
-
-
-def _namespaces(recording: _RecordingConnection, operation: str) -> list[Any]:
-    """Namespaces of store-owned relations (scratch and snapshot copies live elsewhere)."""
-    return [
-        database
-        for op, name, database in recording.calls
-        if op == operation and name.startswith("ud_") and not name.startswith("ud_snap_")
-    ]
-
-
-@pytest.mark.parametrize(
-    ("backend", "create_is_string"),
-    [("snowflake", True), ("bigquery", True), ("duckdb", False)],
-)
-def test_explicit_catalog_reaches_create_table_in_the_backend_native_form(
-    backend: str, create_is_string: bool
-) -> None:
-    """Proves the store passes the native namespace form to a DuckDB wrapper posing as a hosted backend, not what a live hosted backend accepts."""
-    real = ibis.duckdb.connect()
-    catalog = real.current_catalog
-    real.create_database("ud_hosted", force=True)
-    con = _RecordingConnection(real, backend, catalog, "ud_hosted")
-    store = WarehouseArtifactStore(cast("Any", con), catalog=catalog, schema_name="ud_hosted")
-    ref, measure = _publish_in(store, unit_id="u1")
-    with store.open_snapshot(ref) as snapshot:
-        snapshot.verify_relation(measure, expected_role="measure_stats")
-    store.drop_generation(ref.artifact_id, ref.generation_id)
-
-    created = [(name, db) for op, name, db in con.calls if op == "create_table" and db is not None]
-    assert len(created) >= 4  # index, tombstone, two relations
-    for _, database in created:
-        assert isinstance(database, str) is create_is_string
-        if not create_is_string:
-            assert database == (catalog, "ud_hosted")
-    for operation in ("table", "drop_table", "insert"):
-        namespaces = _namespaces(con, operation)
-        assert namespaces
-        assert set(namespaces) == {(catalog, "ud_hosted")}
-
-
-class _CreateNamespaceProbe:
-    """Records the `database=` value handed to create_table without a warehouse."""
-
-    def __init__(self, backend: str) -> None:
-        self.name = backend
-        self.created: dict[str, Any] = {}
-        self._schemas: dict[str, Any] = {}
-
-    def to_pyarrow(self, *_: Any, **__: Any) -> Any:
-        raise NotImplementedError
-
-    def execute(self, *_: Any, **__: Any) -> Any:
-        raise NotImplementedError
-
-    def insert(self, *_: Any, **__: Any) -> Any:
-        raise NotImplementedError
-
-    def drop_table(self, *_: Any, **__: Any) -> Any:
-        raise NotImplementedError
-
-    def create_table(self, name, obj=None, *, schema=None, database=None, **_: Any):
-        self.created[name] = database
-        self._schemas[name] = schema
-
-    def table(self, name, *, database=None):
-        if name not in self._schemas:
-            raise LookupError(name)
-        return ibis.table(self._schemas[name], name=name)
-
-
 _HOSTED_NAMES = [
     ("My_Cat", "Sch"),
     ("analytics", "prod_artifacts"),
     ("Mixed_Case", "lower"),
     ("Cat$1", "ds_2"),
+    ("analytics-prod", "ud_hosted"),
 ]
 
 
+@pytest.mark.parametrize("backend_name", ["snowflake", "bigquery"])
 @pytest.mark.parametrize(("catalog", "schema"), _HOSTED_NAMES)
-def test_snowflake_create_namespace_round_trips_through_snowflake_parsing(
-    catalog: str, schema: str
+def test_hosted_metadata_creation_targets_the_explicit_catalog(
+    monkeypatch: pytest.MonkeyPatch, backend_name: str, catalog: str, schema: str
 ) -> None:
-    """Proves the namespace string parses back to the same catalog and schema under installed Snowflake parsing, not that a live account accepts it."""
+    """Execute real hosted create_table SQL in DuckDB; no cloud authentication is exercised."""
     sqlglot = pytest.importorskip("sqlglot")
-    con = _CreateNamespaceProbe("snowflake")
-    WarehouseArtifactStore(cast("Any", con), catalog=catalog, schema_name=schema)
-    assert set(con.created) == {"ud_manifest_index", "ud_manifest_dropped"}
-    for value in con.created.values():
-        assert isinstance(value, str)
-        parsed = sqlglot.parse_one(value, into=sqlglot.expressions.Table, read="snowflake")
-        assert (parsed.args["db"].name, parsed.name) == (catalog, schema)
-        assert parsed.args["db"].args["quoted"] is True
-        assert parsed.this.args["quoted"] is True
+    module = pytest.importorskip(f"ibis.backends.{backend_name}")
+    backend = module.Backend()
+    if backend_name == "bigquery":
+        backend.billing_project = "billing-project"
+        backend.data_project = "default-project"
+        backend.dataset = "default_dataset"
+    real = ibis.duckdb.connect()
+    try:
+        quoted_catalog = sqlglot.exp.to_identifier(catalog, quoted=True).sql("duckdb")
+        quoted_schema = sqlglot.exp.to_identifier(schema, quoted=True).sql("duckdb")
+        real.raw_sql(f"ATTACH ':memory:' AS {quoted_catalog}")
+        real.raw_sql(f"CREATE SCHEMA {quoted_catalog}.{quoted_schema}")
+        sentinel = {
+            "artifact_id": "default-sentinel",
+            "generation_id": "default-sentinel",
+            "dropped_at": "2025-01-01T00:00:00+00:00",
+        }
+        real.create_table("ud_manifest_dropped", ibis.memtable([sentinel]))
 
+        def execute_hosted_sql(query: str):
+            statement = sqlglot.parse_one(query, read=backend_name)
+            cursor = real.con.cursor()
+            try:
+                cursor.execute(statement.sql("duckdb"))
+            except BaseException:
+                cursor.close()
+                raise
+            if backend_name == "bigquery":
+                cursor.close()
+                return None
+            return cursor
 
-@pytest.mark.parametrize(("catalog", "schema"), _HOSTED_NAMES)
-def test_bigquery_create_namespace_round_trips_through_ibis_parsing(
-    catalog: str, schema: str
-) -> None:
-    """Proves the namespace string parses back to the same project and dataset under installed ibis parsing, not that live BigQuery accepts it."""
-    client = pytest.importorskip("ibis.backends.bigquery.client")
-    con = _CreateNamespaceProbe("bigquery")
-    WarehouseArtifactStore(cast("Any", con), catalog=catalog, schema_name=schema)
-    assert set(con.created) == {"ud_manifest_index", "ud_manifest_dropped"}
-    for value in con.created.values():
-        assert isinstance(value, str)
-        assert client.parse_project_and_dataset("billing", value) == (catalog, "billing", schema)
+        monkeypatch.setattr(backend, "raw_sql", execute_hosted_sql)
+        for operation in (
+            "table",
+            "list_tables",
+            "insert",
+            "drop_table",
+            "execute",
+            "to_pyarrow",
+        ):
+            monkeypatch.setattr(backend, operation, getattr(real, operation))
+        store = WarehouseArtifactStore(backend, catalog=catalog, schema_name=schema)
+        artifact_id, generation_id = uuid4(), uuid4()
+        store.abandon_generation(artifact_id, generation_id)
+        rows = real.table("ud_manifest_dropped", database=(catalog, schema)).execute()
+        assert rows[["artifact_id", "generation_id"]].to_dict("records") == [
+            {"artifact_id": str(artifact_id), "generation_id": str(generation_id)}
+        ]
+        assert real.table("ud_manifest_dropped", database=("memory", "main")).execute().to_dict(
+            "records"
+        ) == [sentinel]
+    finally:
+        real.disconnect()
 
 
 def test_locator_refusals_carry_the_rejected_value_in_their_context() -> None:
