@@ -290,6 +290,10 @@ Both live notebooks and static HTML exports contain the prepared **Readout**,
 relative/absolute, daily/cumulative, and maturity controls select embedded
 evidence in the browser; no Python kernel is needed after export.
 
+Explore keeps charts at their native size so axis labels and uncertainty
+bands remain legible. Narrow tables scroll horizontally instead of shrinking
+the plots.
+
 Readout and Report always retain the complete captured family, independent
 of Explore selections. Both the hero and Report primary card retain the
 captured uncertainty interval; the Report uses smaller, muted interval text.
