@@ -15,6 +15,8 @@ flags, or maintain a separate event store.
 [Quickstart](#quickstart) · [Warehouse analysis](#connect-your-warehouse) ·
 [Documentation](#explore-the-guides) · [Statistical limitations](docs/limitations.md)
 
+<!-- Temporary docs-only CI verification; close without merging. -->
+
 ## What you can do
 
 - **Analyze experiments** — estimate effects, reduce variance with CUPED, apply
