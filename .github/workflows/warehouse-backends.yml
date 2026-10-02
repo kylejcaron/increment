@@ -35,9 +35,14 @@ jobs:
         env: {MODE: "${{ inputs.backend_mode }}"}
 
   postgres:
+    name: postgres shard ${{ matrix.group }}/3
     if: ${{ inputs.backend_mode == 'all' || inputs.backend_mode == 'postgres' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3]
     services:
       postgres:
         image: postgres:16
@@ -50,7 +55,11 @@ jobs:
         with: {persist-credentials: false}
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with: {enable-cache: true, python-version: "3.12"}
-      - run: uv run --with nox nox -s tests_warehouse_postgres
+      # Weights from run36941053401; new tests remain selected with average weight.
+      - run: >-
+          uv run --with nox nox -s tests_warehouse_postgres --
+          --splits 3 --group ${{ matrix.group }} --splitting-algorithm least_duration
+          --durations-path .github/postgres-test-durations.json
         env:
           INCREMENT_TEST_POSTGRES_HOST: localhost
           INCREMENT_TEST_POSTGRES_PORT: "5432"

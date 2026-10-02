@@ -87,7 +87,26 @@ jobs:
           print(f"{len(mods)} module(s)")
           PY
 
+  postgres-changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      required: ${{ steps.changes.outputs.required }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {fetch-depth: 0, persist-credentials: false}
+      - id: changes
+        run: python scripts/postgres_ci_changes.py --event "$EVENT" --base "$BASE" --head "$HEAD" >> "$GITHUB_OUTPUT"
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+
   warehouse-postgres:
+    needs: postgres-changes
+    if: ${{ needs.postgres-changes.outputs.required == 'true' }}
     permissions:
       contents: read
     uses: ./.github/workflows/warehouse-backends.yml
@@ -98,14 +117,21 @@ jobs:
   # means editing the ruleset every time the matrix changes.
   ci-ok:
     runs-on: ubuntu-latest
-    needs: [lint, test, build, warehouse-postgres]
+    needs: [lint, test, build, postgres-changes, warehouse-postgres]
     if: always()
     steps:
-      - name: Fail if any upstream job did not succeed
+      - name: Check required jobs and the PostgreSQL decision
+        env:
+          POSTGRES_REQUIRED: ${{ needs.postgres-changes.outputs.required }}
+          POSTGRES_RESULT: ${{ needs.warehouse-postgres.result }}
         run: |
           set -euo pipefail
-          results="${{ needs.lint.result }} ${{ needs.test.result }} ${{ needs.build.result }} ${{ needs.warehouse-postgres.result }}"
-          echo "lint/test/build/postgres -> $results"
+          results="${{ needs.lint.result }} ${{ needs.test.result }} ${{ needs.build.result }} ${{ needs.postgres-changes.result }}"
+          echo "lint/test/build/postgres-changes -> $results"
           for r in $results; do
             [ "$r" = "success" ] || { echo "::error::a required job reported '$r'"; exit 1; }
           done
+          case "$POSTGRES_REQUIRED:$POSTGRES_RESULT" in
+            true:success|false:skipped) ;;
+            *) echo "::error::unexpected PostgreSQL decision/result: $POSTGRES_REQUIRED:$POSTGRES_RESULT"; exit 1 ;;
+          esac

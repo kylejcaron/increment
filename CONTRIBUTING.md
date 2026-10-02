@@ -105,7 +105,19 @@ and require dedicated scratch resources and credentials. Contributors do not
 need those services for ordinary changes.
 
 CI requires lint, fast tests on Python 3.12–3.14, package builds, and live
-PostgreSQL 16 probes through `ci-ok`. The
+PostgreSQL 16 probes through `ci-ok`. PostgreSQL may skip a PR only when all
+changes are known prose or static documentation assets. Library, test,
+fixture, dependency, CI, unknown, deletion, and rename changes require it;
+an unavailable diff also requires it. Main pushes never use this filter.
+
+The complete PostgreSQL suite runs across three isolated PostgreSQL services,
+balanced with `pytest-split` and `.github/postgres-test-durations.json`.
+The weights come from hosted run 36941053401; new cases still run using the
+average weight. To refresh weights, run the complete suite with
+`--store-durations --durations-path .github/postgres-test-durations.json`.
+Do not run workers against a shared warehouse namespace.
+
+The
 [weekly workflow](.github/workflows/weekly.yml) runs Sundays at 08:00 UTC or
 on manual dispatch: full slow/examples suites at locked dependencies and
 floors on all three Python versions, four Monte-Carlo shards on Python 3.12,
@@ -149,6 +161,10 @@ PostgreSQL probes or `all` to run all three backends.
 BigQuery prints each live probe's result and has a 45-minute workflow hang
 guard; PostgreSQL and Snowflake retain 30-minute guards. These are job
 deadlines, not performance targets or reduced test coverage.
+If BigQuery returns `QueryUsagePerDay`, its project-level daily query quota
+is exhausted. Keep the run failed and wait for the
+[midnight Pacific quota reset](https://docs.cloud.google.com/bigquery/docs/custom-quotas)
+before repeating the full cloud workflow; do not convert the failure to a skip.
 
 Probe coverage is not blanket support for every metric, design, or artifact
 extension. Use the [compatibility matrix](docs/guides/compatibility.md) and
