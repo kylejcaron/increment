@@ -590,6 +590,37 @@ def test_unbounded_retention_daily_hazard_raises_the_same_code_from_every_source
     assert set(codes.values()) == {"breakout.retention.unbounded"}, codes
 
 
+@pytest.mark.slow
+@pytest.mark.parametrize("method", ["run_daily", "run_daily_lift"])
+def test_unbounded_retention_dimensioned_artifact_analysis_refuses_before_any_artifact_read(
+    method: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dimensioned day-axis read on an adopted artifact reaches the source through
+    ``breakout_moments`` rather than the readout gate, so the facade's day-axis
+    validation must raise the same code before that read."""
+    import ibis
+
+    from increment.errors import CodedError
+    from tests.parity_harness.cases import _publish_and_adopt
+    from tests.test_analysis_breakout import _analysis_with_country_breakout
+
+    con = ibis.duckdb.connect()
+    analysis = _publish_and_adopt(
+        con,
+        _analysis_with_country_breakout(con, unbounded_retention=True),
+        kinds=("breakout_dimension",),
+    )
+    try:
+        _trap_source_reads(monkeypatch, _moment_source(analysis))
+        dimension = analysis.experiment.breakouts[0].property
+        with pytest.raises(CodedError) as raised:
+            getattr(analysis, method)(dimension=dimension, metrics=["unbounded"])
+        assert raised.value.code == "breakout.retention.unbounded"
+    finally:
+        analysis.close()
+        con.disconnect()
+
+
 def test_unbounded_retention_hazard_covers_every_adapter_that_serves_the_daily_axis(
     tmp_path,
 ) -> None:

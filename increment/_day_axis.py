@@ -29,7 +29,6 @@ from increment.breakout.estimates import (
     _slice_reference_kind,
     reject_contradictory_completed_windows,
     reject_quantile_metrics,
-    reject_retention_metrics,
     reject_retention_under_encouragement,
     reject_winsorized_day_axis,
 )
@@ -42,7 +41,11 @@ from increment.errors import (
     refuse,
 )
 from increment.estimation.encouragement import ESTIMANDS, estimate_compliance
-from increment.estimation.engine import _validate_methods
+from increment.estimation.engine import (
+    UNBOUNDED_RETENTION_DAILY_REMEDY,
+    _validate_methods,
+    reject_unbounded_retention,
+)
 from increment.estimation.inference import validate_readout_inference
 from increment.query.native_contract import NativeViewSource
 from increment.readouts._common import (
@@ -222,17 +225,22 @@ def validate_day_axis(
         refuse(_NO_DEFINITIONS, method=req.caller)
     reject_winsorized_day_axis(list(req.metrics), req.caller)
     if route == "native":
-        # Native routes reject quantiles and daily retention; moments/artifacts
-        # retain the broader metric set.
+        # Native routes reject quantiles; moments/artifacts retain the broader metric set.
         moments_reason = "per-day moments" if req.grain == "daily" else "as-of moments"
         reject_quantile_metrics(
             list(req.metrics),
             f"{req.caller}()",
             reason=f"quantiles do not decompose into {moments_reason}",
         )
-        if req.grain == "daily":
-            reject_retention_metrics(list(req.metrics), req.caller, view="cohort")
-        # As-of retention rejection is a no-op for this helper.
+    if req.grain == "daily":
+        # Route-independent: dimensioned artifact reads reach the source through
+        # `breakout_moments`, bypassing the readout gate, so the facade enforces it too.
+        reject_unbounded_retention(
+            list(req.metrics),
+            req.caller,
+            remedy=UNBOUNDED_RETENTION_DAILY_REMEDY,
+            supported_view="asof",
+        )
     if req.caller == "run_asof_lift" and isinstance(design, Encouragement):
         reject_retention_under_encouragement(list(req.metrics), req.caller)
     if req.grain == "asof" and req.completed_windows_only:
