@@ -1,0 +1,21 @@
+{% extends "_base/pydantic_model.html.jinja" %}
+{# PrivateAttr values are not public Pydantic model fields. #}
+{% block fields scoped %}
+  {% set public_fields = {} %}
+  {% for name, field in class.extra.griffe_pydantic.fields().items() if not name.startswith("_") %}
+    {% set _ = public_fields.update({name: field}) %}
+  {% endfor %}
+  {% if public_fields %}
+    <p>Fields:</p>
+    <ul>
+      {% for name, field in public_fields.items() %}
+        <li>
+          <code><autoref optional hover identifier="{{ field.path }}">{{ name }}</autoref></code>
+          {% with expression = field.annotation %}
+            (<code>{% include "expression.html.jinja" with context %}</code>)
+          {% endwith %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+{% endblock fields %}

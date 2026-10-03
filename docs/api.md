@@ -439,6 +439,14 @@ for method assumptions, finalization, and the qualified asymptotic guarantee.
 
 ::: increment.AlwaysValid
 
+::: increment.AsymptoticMean
+
+::: increment.ScalarMeanModel
+
+::: increment.AsymptoticSequentialEvidence
+
+::: increment.AsymptoticSequentialResult
+
 ::: increment.SequentialRegistration
 
 ::: increment.PredeclaredAdjustment
@@ -452,6 +460,8 @@ for method assumptions, finalization, and the qualified asymptotic guarantee.
 ::: increment.SequentialCompliancePolicy
 
 ::: increment.SequentialSnapshot
+
+::: increment.snapshot_from_json
 
 ::: increment.capture_sequential_snapshot
 
@@ -483,6 +493,16 @@ the package-root and ordinary power-planning exports.
 
 ::: increment.Baseline
 
+::: increment.SwitchbackBaseline
+
+::: increment.ProspectiveAssumptionProvenance
+
+::: increment.UnitCycleReference
+
+::: increment.UnitCycleTApproximation
+
+::: increment.UnitCycleVarianceEnvelope
+
 ::: increment.PowerDesign
 
 ::: increment.required_sample_size
@@ -492,6 +512,14 @@ the package-root and ordinary power-planning exports.
 ::: increment.minimum_detectable_effect
 
 ::: increment.power_curve
+
+::: increment.switchback_required_blocks_or_units
+
+::: increment.switchback_achieved_power
+
+::: increment.switchback_minimum_detectable_effect
+
+::: increment.unit_cycle_power_lower_bound
 
 ## Diagnostics and robustness
 

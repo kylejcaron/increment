@@ -4,7 +4,8 @@ name: release
 # tag IS the version bump -- nothing writes a version string into a file.
 #
 #   .github/workflows/bump.yml  -> creates the vX.Y.Z tag and dispatches this workflow
-#   this workflow               -> build, verify, publish to PyPI, GitHub Release
+#   this workflow               -> build, verify, publish to PyPI, GitHub Release,
+#                                  then (opt-in, stable only) notify the docs website
 #
 # Publishing uses PyPI Trusted Publishing (OIDC). No API token is stored.
 # One-time setup on PyPI (Account -> Publishing, as a "pending publisher" if the
@@ -189,3 +190,32 @@ jobs:
           args=(--verify-tag --generate-notes --title "$TAG")
           [ "$PRERELEASE" = "true" ] && args+=(--prerelease)
           gh release create "$TAG" "${args[@]}" dist/*
+
+  # Post-publication notification is opt-in; publishing never depends on it.
+  website-notify:
+    needs: [build, github-release]
+    if: needs.build.outputs.prerelease == 'false' && vars.DOCS_SYNC_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Mint website dispatch token
+        id: docs-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ vars.DOCS_APP_ID }}
+          private-key: ${{ secrets.DOCS_APP_PRIVATE_KEY }}
+          owner: kylejcaron
+          repositories: getincrement.io
+          permission-contents: write
+
+      - name: Notify website of the published release
+        env:
+          GH_TOKEN: ${{ steps.docs-token.outputs.token }}
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          jq -n --arg tag "$TAG" --arg sha "$SHA" \
+            '{event_type:"increment_release",client_payload:{tag:$tag,sha:$sha}}' \
+            | gh api --method POST repos/kylejcaron/getincrement.io/dispatches --input -
