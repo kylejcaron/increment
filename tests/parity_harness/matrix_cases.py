@@ -299,7 +299,7 @@ class _Ingress:
         self.rows = md.event_rows(positive=self.positive)
         self.plan = plan_for(cell, frame=True)
 
-    def _con(self) -> Any:
+    def connection(self) -> Any:
         return md.duckdb_connection(self.rows)
 
     def _native(self, con: Any) -> Analysis:
@@ -323,7 +323,7 @@ class _Ingress:
         return analysis
 
     def definitions(self) -> Analysis:
-        con = self._con()
+        con = self.connection()
         try:
             analysis = self._native(con)
         except BaseException:
@@ -332,7 +332,7 @@ class _Ingress:
         return _track_connection(analysis, con)
 
     def artifact(self) -> Analysis:
-        con = self._con()
+        con = self.connection()
         try:
             native = self._native(con)
         except BaseException:
