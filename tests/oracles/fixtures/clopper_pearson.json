@@ -1,0 +1,114 @@
+{
+  "generator": "tests/oracles/generate/gen_clopper_pearson_oracle.R",
+  "package_versions": {
+    "r": "R version 4.4.2 (2024-10-31)",
+    "jsonlite": "1.8.9"
+  },
+  "generated_on": "2026-10-03",
+  "increment_commit": "37b9b346ca26e41a509cddcf7307212a86b3454b",
+  "estimand": "Exact two-sided single-arm Clopper-Pearson (1 - beta) interval for a binomial rate.",
+  "tolerance": {
+    "slack_rel": 1e-06,
+    "headroom": 1.01,
+    "enclosure_abs": 1e-15,
+    "note": "Production rounds outward by a documented relative slack (_CP_RELATIVE_SLACK = 1e-6) applied to the lower bound and to one minus the upper bound, so the permitted outward gap is slack_rel * lower below and slack_rel * (1 - upper) above, times headroom. Measured on this fixture: every gap equals the slack to within 5e-6 of itself, so enclosure plus the slack band is the contract rather than a numerical-agreement tolerance."
+  },
+  "cases": [
+    {
+      "id": "x0_n20_beta0.05",
+      "x": 0,
+      "n": 20,
+      "beta": 0.05,
+      "lower": 0,
+      "upper": 0.1684334709830854
+    },
+    {
+      "id": "x0_n20_beta0.001",
+      "x": 0,
+      "n": 20,
+      "beta": 0.001,
+      "lower": 0,
+      "upper": 0.3161694479541693
+    },
+    {
+      "id": "x1_n20_beta0.05",
+      "x": 1,
+      "n": 20,
+      "beta": 0.05,
+      "lower": 0.001265089497949805,
+      "upper": 0.2487327627720277
+    },
+    {
+      "id": "x1_n20_beta0.001",
+      "x": 1,
+      "n": 20,
+      "beta": 0.001,
+      "lower": 2.500593943039939e-05,
+      "upper": 0.4015922881981181
+    },
+    {
+      "id": "x7_n40_beta0.05",
+      "x": 7,
+      "n": 40,
+      "beta": 0.05,
+      "lower": 0.0733827293520852,
+      "upper": 0.3277901333615859
+    },
+    {
+      "id": "x7_n40_beta0.001",
+      "x": 7,
+      "n": 40,
+      "beta": 0.001,
+      "lower": 0.03584644209071104,
+      "upper": 0.4342325142696466
+    },
+    {
+      "id": "x39_n40_beta0.05",
+      "x": 39,
+      "n": 40,
+      "beta": 0.05,
+      "lower": 0.8684141415172343,
+      "upper": 0.9993672550679505
+    },
+    {
+      "id": "x39_n40_beta0.001",
+      "x": 39,
+      "n": 40,
+      "beta": 0.001,
+      "lower": 0.776297897807754,
+      "upper": 0.9999874969521217
+    },
+    {
+      "id": "x40_n40_beta0.05",
+      "x": 40,
+      "n": 40,
+      "beta": 0.05,
+      "lower": 0.9119026971211976,
+      "upper": 1
+    },
+    {
+      "id": "x40_n40_beta0.001",
+      "x": 40,
+      "n": 40,
+      "beta": 0.001,
+      "lower": 0.826940476724797,
+      "upper": 1
+    },
+    {
+      "id": "x500_n1000_beta0.05",
+      "x": 500,
+      "n": 1000,
+      "beta": 0.05,
+      "lower": 0.4685491729717919,
+      "upper": 0.5314508270282081
+    },
+    {
+      "id": "x500_n1000_beta0.001",
+      "x": 500,
+      "n": 1000,
+      "beta": 0.001,
+      "lower": 0.4476294198586042,
+      "upper": 0.5523705801413963
+    }
+  ]
+}
