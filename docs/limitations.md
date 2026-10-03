@@ -325,9 +325,12 @@ It also has two further boundaries, both refusals rather than silent degradation
   (two-sided, `alpha=0.05`, cold, a 5% control rate), roughly 0.4s at
   100,000 per arm, 1.6s at 1,000,000 and 2.7s at 4,000,000 (`MAX_ARM_SIZE`);
   a 1e-4 rate at 1,000,000 per arm takes about 0.05s, because the
-  control-count window follows the nuisance rate. That is down from an
-  unoptimized ~13s and ~60s at 100,000 and 1,000,000 per arm: a measured
-  7-8x reduction from tightening the boundary-search iteration budget, then
+  control-count window follows the nuisance rate. The window is widest at a
+  50% control rate, which costs roughly 1.2s, 3s and 5s of CPU at the same
+  three sizes (measured on a loaded machine; read it as an upper-side
+  estimate). The 5% figures are down from an unoptimized ~13s and ~60s at
+  100,000 and 1,000,000 per arm: a measured 7-8x reduction from tightening
+  the boundary-search iteration budget, then
   about 3x from reusing treatment tail vectors and the rate-aware window,
   without weakening the certified interval in any tested regime, including
   rare events. A readout multiplies this across metrics, arms, and breakout

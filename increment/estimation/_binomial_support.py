@@ -34,6 +34,10 @@ _MIN_NORMAL = sys.float_info.min
 #: tightness against exact decimal arithmetic.
 _LIBM_ULPS = 4.0
 
+#: One unit of the smallest subnormal, ``2**-1074``, times ``2 * _LIBM_ULPS + 2``: the absolute
+#: error of the summands per unit of ``n`` when they underflow (see ``exponent_lower_bound``).
+_SUBNORMAL_ALLOWANCE = (2.0 * _LIBM_ULPS + 2.0) * 2.0**-1074
+
 
 def _log_ratio(x: float, q: float) -> tuple[float, float]:
     """``ln(x/q)`` for ``x > 0`` and ``q > 0``, with the absolute error of ``x * ln(x/q)`` per
@@ -70,17 +74,22 @@ def exponent_lower_bound(n: int, x: float, q: float) -> float:
       neither is below ``2**-1074``, so the sum is ``2 max(|ln x|, |ln q|) - |ln(x/q)|``, at
       most ``2 * 744.5 - |ln(x/q)|``, which is at most ``1.11 |ln(x/q)|``: this bound is as
       tight as the quotient form's. Near ``x = q`` the form would cancel down to its own
-      error, which is why the quotient form is kept wherever it holds. A subnormal quotient
-      means a subnormal ``x`` and ``q > 2**-52``; the product then rounds by an absolute
-      ``2**-1075`` rather than ``u`` of itself, which the next bullet's allowance, at least
-      ``6 * _EPS * q``, exceeds by hundreds of orders of magnitude.
+      error, which is why the quotient form is kept wherever it holds.
     * ``(1-x)(log1p(-x) - log1p(-q))``: ``(1-x) (L + 3.1u) (|ln(1-x)| + |ln(1-q)|)``. The
       difference rounds against the logarithms' magnitudes, not against their difference.
 
     The code rounds these coefficients up to ``_LIBM_ULPS + 1`` and ``1``, ``_LIBM_ULPS + 2``,
     and ``_LIBM_ULPS + 2`` in units of ``_EPS``, which also covers evaluating the bound itself in
     float64. The sum and the product by ``n`` each round by at most ``u`` of their value;
-    ``2 * _EPS`` of it is allowed. The result is rounded down.
+    ``2 * _EPS`` of it is allowed.
+
+    Below ``2**-1022`` a result rounds by an absolute ``2**-1075`` instead, and a libm result
+    is off by up to ``_LIBM_ULPS`` units of ``2**-1074``. That reaches the sum only through
+    operands below about ``2**-969``: the two summand products (each scaled by ``n``), the two
+    ``log1p`` values that enter ``second``, the product by ``n``, and the underflow of the
+    allowance itself. They total at most ``(2 * _LIBM_ULPS + 1) * n + 2`` units of ``2**-1074``;
+    ``_SUBNORMAL_ALLOWANCE * (n + 1)`` is added to the error, which is rounded up from that.
+    The result is rounded down.
     """
     if q == 0.0:
         return math.inf if x > 0.0 else 0.0
@@ -97,7 +106,7 @@ def exponent_lower_bound(n: int, x: float, q: float) -> float:
         second = (1.0 - x) * (log_x - log_q)
         second_error = (_LIBM_ULPS + 2.0) * (1.0 - x) * (abs(log_x) + abs(log_q))
     value = n * (first + second)
-    error = _EPS * (n * (first_error + second_error) + 2.0 * value)
+    error = _EPS * (n * (first_error + second_error) + 2.0 * value) + _SUBNORMAL_ALLOWANCE * (n + 1)
     return math.nextafter(value - error, -math.inf)
 
 
@@ -152,6 +161,7 @@ def chernoff_support(n: int, q_lo: float, q_hi: float, tail: float) -> tuple[int
     keeps ``X = n``, and so does any end whose rate leaves every count above ``-ln(tail)``
     short of the exponent.
     """
-    # ``ln(tail)`` is within ``_LIBM_ULPS`` units of its true value; round the target up.
-    target = math.nextafter(-math.log(tail) * (1.0 + _LIBM_ULPS * _EPS), math.inf)
+    # ``ln(tail)`` is within ``L = _LIBM_ULPS * _EPS`` (relative) of its true value, so its true
+    # magnitude is at most the computed one over ``1 - L``, which is below ``1 + 2L`` times it.
+    target = math.nextafter(-math.log(tail) * (1.0 + 2.0 * _LIBM_ULPS * _EPS), math.inf)
     return _below(n, q_lo, target), _above(n, q_hi, target)

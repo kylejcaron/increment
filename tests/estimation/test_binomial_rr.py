@@ -486,10 +486,14 @@ class TestSupportWindowTruncation:
         assert wide_budget_window[2] > default_window[2]
 
 
-def _dec_exponent(n: int, x: float, q: float) -> Decimal:
-    """Exact ``n * D(x || q)`` for the Bernoulli relative entropy ``D``, ``0 < q < 1``."""
+def _dec_exponent(n: int, x: float, q: float, prec: int = 50) -> Decimal:
+    """Exact ``n * D(x || q)`` for the Bernoulli relative entropy ``D``, ``0 < q < 1``.
+
+    ``prec`` must exceed the decimal digits that ``1 - x`` and ``1 - q`` need to stay distinct
+    from 1: about 330 for subnormal operands.
+    """
     with localcontext() as context:
-        context.prec = 50
+        context.prec = prec
         xd, qd = Decimal(x), Decimal(q)
         first = xd * (xd / qd).ln() if x > 0.0 else Decimal(0)
         second = (1 - xd) * ((1 - xd) / (1 - qd)).ln() if x < 1.0 else Decimal(0)
@@ -586,6 +590,24 @@ class TestChernoffSupportCut:
         assert Decimal(lower) <= exact
         assert exact - Decimal(lower) <= exact * Decimal("1e-13")
 
+    @pytest.mark.parametrize(
+        ("n", "x", "q"),
+        [
+            pytest.param(257, 2.898604e-318, 7.2465e-319, id="both-subnormal-ratio-4"),
+            pytest.param(1_000_000, 1.1004230257e-314, 1.100423e-317, id="ratio-1000"),
+            pytest.param(4_000_000, 1.5481265395e-314, 1.5481265e-317, id="wide-arm"),
+            pytest.param(1_000_000, 3.95e-322, 1.86269744e-316, id="x-near-the-smallest-subnormal"),
+            pytest.param(257, 2.916e-320, 2.8864495387e-314, id="q-above-x"),
+            pytest.param(4_000_000, 4e-310, 4e-310, id="equal-rates"),
+        ],
+    )
+    def test_certified_exponent_holds_where_the_result_is_subnormal(self, n, x, q):
+        """A product in the subnormal range rounds by an absolute ``2**-1075``, not a relative
+        ``2**-53``; the exponent must stay a lower bound there as well."""
+        lower = exponent_lower_bound(n, x, q)
+        assert math.isfinite(lower)
+        assert Decimal(lower) <= _dec_exponent(n, x, q, prec=700)
+
     def test_a_tiny_rate_window_reports_the_mass_it_omits(self):
         """At a subnormal upper rate the window is the count 0 and ``P(X >= 1) <= n q``
         stays within the mass it reports as omitted."""
@@ -600,6 +622,40 @@ class TestChernoffSupportCut:
         n, tail = 100_000, 5e-13
         assert chernoff_support(n, 0.0, 0.0, tail) == (0, 0)
         assert chernoff_support(n, 1.0, 1.0, tail) == (n, n)
+
+    @staticmethod
+    def _ulps_from(value: float, steps: int) -> float:
+        for _ in range(abs(steps)):
+            value = math.nextafter(value, math.inf if steps > 0 else -math.inf)
+        return value
+
+    @pytest.mark.parametrize("tail", [5e-13, 5e-4])
+    @pytest.mark.parametrize("n", [257, 4_096, 100_000, 1_000_000, 4_000_000])
+    def test_an_end_count_is_cut_only_where_its_exact_probability_is_within_tail(self, n, tail):
+        """The counts 0 and ``n`` are the cut's tightest case: ``P(X = 0) = (1-q)^n`` and
+        ``P(X = n) = q^n`` are known exactly, so nothing but the float evaluation separates the
+        cut from the exact edge ``q`` where they equal ``tail``. Around that edge, one ulp at a
+        time, a cut must imply the exact probability is within ``tail``; the sweep must cross
+        from uncut to cut so the check is not vacuous."""
+        with localcontext() as context:
+            context.prec = 60
+            exponent = -Decimal(tail).ln() / n
+            zero_edge = float(1 - (-exponent).exp())  # (1 - q)^n = tail
+            full_edge = float((-exponent).exp())  # q^n = tail
+            cut_zero, cut_full = [], []
+            for steps in range(-64, 65):
+                q = self._ulps_from(zero_edge, steps)
+                i_lo = chernoff_support(n, q, q, tail)[0]
+                cut_zero.append(i_lo >= 1)
+                if i_lo >= 1:
+                    assert (1 - Decimal(q)) ** n <= Decimal(tail), (n, steps)
+                q = self._ulps_from(full_edge, steps)
+                i_hi = chernoff_support(n, q, q, tail)[1]
+                cut_full.append(i_hi < n)
+                if i_hi < n:
+                    assert Decimal(q) ** n <= Decimal(tail), (n, steps)
+        assert not all(cut_zero) and any(cut_zero)
+        assert not all(cut_full) and any(cut_full)
 
 
 def _clear_every_cache() -> None:
