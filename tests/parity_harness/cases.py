@@ -114,6 +114,15 @@ class ParityCase:
     ``waived_refusal_codes`` without a matching ``build`` entry, or a name
     in ``build`` with a reason-only ``waive`` entry and no code, is a
     contract error the runner also rejects.
+
+    ``view`` reads ``"daily"`` (``run_daily`` + ``run_daily_lift``) or
+    ``"asof"`` (``run_asof`` + ``run_asof_lift``) instead of ``run``/
+    ``run_breakout``; ``breakout_dimension`` then names the day-axis
+    ``dimension``. ``refusal_only`` lets a case in which EVERY attempted
+    ingress raises its recorded code pass (no ingress is compared). A name in
+    ``expected_absence`` is attempted and MUST raise exactly that exception
+    type: the constructor signature cannot express the request (an unsupported
+    keyword is a ``TypeError``), so no refusal code exists to record.
     """
 
     id: str
@@ -137,6 +146,9 @@ class ParityCase:
     readout_probe: Callable[[Any], None] | None = None
     source_probe: Callable[[str, Analysis], None] | None = None
     expected_warning_codes: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    view: Literal["daily", "asof"] | None = None
+    refusal_only: bool = False
+    expected_absence: Mapping[str, type[Exception]] = field(default_factory=dict)
 
 
 class _Warehouse(NamedTuple):

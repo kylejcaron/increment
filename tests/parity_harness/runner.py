@@ -151,7 +151,8 @@ _NESTED_FIELDS = ("relative_confidence_set",)
 
 def _row_identity(row: Any) -> tuple:
     # `BreakoutEstimate` has no `analysis_population`; getattr yields None for
-    # every breakout row, so breakout rows still compare consistently.
+    # every breakout row, so breakout rows still compare consistently. `ds` and
+    # `ds_basis` name a day-axis row's day; they are None on every other row.
     return (
         row.metric,
         row.group_id,
@@ -159,6 +160,8 @@ def _row_identity(row: Any) -> tuple:
         row.value_scale,
         getattr(row, "dimension_value", None),
         getattr(row, "analysis_population", None),
+        getattr(row, "ds", None),
+        getattr(row, "ds_basis", None),
     )
 
 
@@ -234,13 +237,38 @@ def _normalize(estimates: Any) -> dict[tuple, dict[str, dict[str, Any]]]:
     sensitivity method) nests under identity rather than joining it, so a
     missing sensitivity row is a missing dict key, caught the same way a
     missing top-level row is."""
+    from increment.breakout.estimates import DailyMetricValue
     from increment.estimation.contrast_results import ContrastResult
 
     out: dict[tuple, dict[str, dict[str, Any]]] = {}
     for row in estimates:
         if isinstance(row, ContrastResult):
-            key = (row.metric, row.treatment_group, row.estimand, "absolute", None, None)
+            key = (
+                row.metric,
+                row.treatment_group,
+                row.estimand,
+                "absolute",
+                None,
+                None,
+                None,
+                None,
+            )
             out.setdefault(key, {})[row.method] = {"contrast": row.model_dump(mode="json")}
+            continue
+        if isinstance(row, DailyMetricValue):
+            # A per-day absolute value has no method, estimand or lift; `source`
+            # names the resolved fact source, which only warehouse paths know.
+            key = (
+                row.metric,
+                row.group_id,
+                "value",
+                "absolute",
+                row.dimension_value,
+                None,
+                row.ds,
+                row.ds_basis,
+            )
+            out.setdefault(key, {})["value"] = {"daily_value": row.model_dump(exclude={"source"})}
             continue
         out.setdefault(_row_identity(row), {})[row.method] = _row_payload(row)
     return out
@@ -286,6 +314,32 @@ class CaseResult:
     rows: dict[str, dict[tuple, dict[str, dict[str, Any]]]]
     refusals: dict[str, str]
     sequential_state: dict[str, SequentialCapture] = field(default_factory=dict)
+    # Ingresses whose constructor signature cannot express the request: name ->
+    # the exception type the attempt raised (a `TypeError` for an unsupported
+    # keyword). They have no refusal code and are never row-compared.
+    absences: dict[str, type[Exception]] = field(default_factory=dict)
+
+
+def _read(analysis: Any, case: ParityCase) -> Any:
+    """Read the view `case` names: `run`/`run_breakout`, or the day-axis pair
+    (`run_daily`+`run_daily_lift`, `run_asof`+`run_asof_lift`) concatenated."""
+    estimand_kwargs = {"estimands": case.estimands} if case.estimands else {}
+    prior_kwargs = {"prior": case.prior} if case.prior is not UNSET else {}
+    metric_kwargs = {"metrics": list(case.metrics)} if case.metrics is not None else {}
+    if case.view is None:
+        if case.breakout_dimension:
+            return analysis.run_breakout(**estimand_kwargs, **prior_kwargs, **metric_kwargs)
+        return analysis.run(**estimand_kwargs, **prior_kwargs, **metric_kwargs)
+    dimension = {"dimension": case.breakout_dimension} if case.breakout_dimension else {}
+    if case.view == "daily":
+        return [
+            *analysis.run_daily(**metric_kwargs, **dimension),
+            *analysis.run_daily_lift(**prior_kwargs, **metric_kwargs, **dimension),
+        ]
+    return [
+        *analysis.run_asof(**metric_kwargs, **dimension),
+        *analysis.run_asof_lift(**estimand_kwargs, **prior_kwargs, **metric_kwargs, **dimension),
+    ]
 
 
 def run_case(case: ParityCase) -> CaseResult:
@@ -309,14 +363,12 @@ def run_case(case: ParityCase) -> CaseResult:
     """
     rows: dict[str, dict[tuple, dict[str, dict[str, Any]]]] = {}
     refusals: dict[str, str] = {}
+    absences: dict[str, type[Exception]] = {}
     sequential_state: dict[str, SequentialCapture] = {}
     for name, build in case.build.items():
         analysis = None
         try:
             analysis = build()
-            estimand_kwargs = {"estimands": case.estimands} if case.estimands else {}
-            prior_kwargs = {"prior": case.prior} if case.prior is not UNSET else {}
-            metric_kwargs = {"metrics": list(case.metrics)} if case.metrics is not None else {}
             if case.sequential:
                 as_of = getattr(analysis, "_sequential_as_of", None)
                 snapshot_kwargs = {"as_of": as_of} if as_of is not None else {}
@@ -345,11 +397,7 @@ def run_case(case: ParityCase) -> CaseResult:
             with warning_context as caught:
                 if expected_warnings:
                     warnings.simplefilter("always", IncrementWarning)
-                results = (
-                    analysis.run_breakout(**estimand_kwargs, **prior_kwargs, **metric_kwargs)
-                    if case.breakout_dimension
-                    else analysis.run(**estimand_kwargs, **prior_kwargs, **metric_kwargs)
-                )
+                results = _read(analysis, case)
                 if case.readout_probe is not None:
                     case.readout_probe(results)
                 if case.source_probe is not None:
@@ -358,7 +406,18 @@ def run_case(case: ParityCase) -> CaseResult:
                 assert caught is not None
                 assert set(warning_codes(caught)) == set(expected_warnings)
             rows[name] = _normalize(results)
-        except CodedError as exc:
+        except Exception as exc:
+            absent = case.expected_absence.get(name)
+            if absent is not None:
+                if type(exc) is not absent:
+                    raise AssertionError(
+                        f"{case.id}: {name} was declared absent via {absent.__name__} "
+                        f"but raised {type(exc).__name__}: {exc}"
+                    ) from exc
+                absences[name] = absent
+                continue
+            if not isinstance(exc, CodedError):
+                raise
             expected = case.waived_refusal_codes.get(name)
             if expected is None:
                 raise AssertionError(
@@ -376,16 +435,21 @@ def run_case(case: ParityCase) -> CaseResult:
                 _close_parity_analysis(analysis)
     if case.sequential_probe is not None:
         case.sequential_probe()
-    return CaseResult(rows=rows, refusals=refusals, sequential_state=sequential_state)
+    return CaseResult(
+        rows=rows, refusals=refusals, sequential_state=sequential_state, absences=absences
+    )
 
 
 def _assert_payload_equal(
     case_id: str, name: str, oracle_name: str, key: tuple, method: str, expected: dict, actual: dict
 ) -> None:
-    if "contrast" in expected:
+    special = next(
+        (key_name for key_name in ("contrast", "daily_value") if key_name in expected), None
+    )
+    if special is not None:
         assert actual.keys() == expected.keys()
-        assert nested_close(expected["contrast"], actual["contrast"]), (
-            f"{case_id}: {name}/{oracle_name} disagree on contrast {key}/{method}"
+        assert nested_close(expected[special], actual[special]), (
+            f"{case_id}: {name}/{oracle_name} disagree on {special} {key}/{method}"
         )
         return
     for field_name in _NUMERIC_FIELDS:
@@ -429,12 +493,19 @@ def _assert_no_silent_skip(case: ParityCase) -> None:
                 f"{case.id}: {name} has a waived_refusal_codes entry but is not in "
                 "build -- a coded waiver requires actually attempting the constructor"
             )
+        elif name in case.expected_absence:
+            assert name in case.build, (
+                f"{case.id}: {name} has an expected_absence entry but is not in "
+                "build -- a declared absence requires actually attempting the constructor"
+            )
         else:
             assert name not in case.build, (
                 f"{case.id}: {name} is in build but only reason-waived (no "
                 "waived_refusal_codes entry) -- either attempt it for real "
                 "comparison or add the code it is expected to raise"
             )
+    for name in case.expected_absence:
+        assert name in case.waive, f"{case.id}: {name} is declared absent but has no waive reason"
 
 
 def assert_parity(case: ParityCase, result: CaseResult) -> None:
@@ -452,8 +523,19 @@ def assert_parity(case: ParityCase, result: CaseResult) -> None:
             f"{case.waived_refusal_codes[name]!r} but produced rows instead "
             "of refusing -- the waiver is stale, the capability now works"
         )
+    for name, absent in case.expected_absence.items():
+        assert result.absences.get(name) is absent, (
+            f"{case.id}: {name} was declared absent via {absent.__name__} but the "
+            "attempt did not raise it -- the signature now expresses the request"
+        )
     live = {name: r for name, r in result.rows.items() if name not in case.waived_refusal_codes}
     if not live:
+        if case.refusal_only:
+            assert set(case.build) == set(result.refusals) | set(result.absences), (
+                f"{case.id}: every attempted ingress must refuse or be absent, but "
+                f"{sorted(set(case.build) - set(result.refusals) - set(result.absences))} did neither"
+            )
+            return
         pytest.fail(f"{case.id}: every constructor was waived -- nothing to compare")
     oracle_name, oracle_rows = next(iter(live.items()))
     if case.require_selection:
