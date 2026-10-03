@@ -36,10 +36,11 @@ change without notice.
   Ibis, Arrow, DuckDB, pandas/Polars as used) for any decision you need to
   reproduce.
 - Breaking changes are permitted between 0.x prereleases. Each is listed in the
-  changelog with the affected paths and a migration route. Nothing here implies
-  1.0 stability or a deprecation window.
+  release notes (the `Breaking changes` section, from pull requests labelled
+  `breaking`) with the affected paths and a migration route. Nothing here
+  implies 1.0 stability or a deprecation window.
 - A released bug fix may change a numerical answer that was wrong. The
-  changelog names the correction; the incorrect value is not preserved for
+  release notes name the correction; the incorrect value is not preserved for
   compatibility.
 
 ### Machine-readable contracts
@@ -50,7 +51,7 @@ change without notice.
   `increment.errors.RETIRED_CODES`, which maps it to its replacement code, a
   tuple of replacements when it split, or `None` when it was removed with no
   replacement. Retiring a code is a contract change and is listed in the
-  changelog.
+  release notes.
 - Consumers of results must preserve numeric nulls and the reason, guarantee
   and reference metadata that accompany a number. Dropping a null reason or
   reading a value without its reference label changes what the number claims.
@@ -662,8 +663,8 @@ constraints on the other definition models.
 ```python
 from pydantic import TypeAdapter, ValidationError
 
-from increment.errors import DefinitionError, unwrap_coded
-from increment.semantics.models import Definitions
+from increment import DefinitionError, Definitions
+from increment.errors import unwrap_coded
 
 try:
     TypeAdapter(Definitions).validate_python({"day_boundary": "EST"})
@@ -710,7 +711,7 @@ Filter or assert on `.code` rather than message text:
 ```python
 import warnings
 
-from increment.errors import IncrementWarning
+from increment import IncrementWarning
 
 with warnings.catch_warnings(record=True) as caught:
     warnings.simplefilter("always")

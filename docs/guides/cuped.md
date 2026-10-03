@@ -253,8 +253,7 @@ their shared covariate mean.
 
 <!-- skip: next "requires a prepared unit frame" -->
 ```python
-from increment import Analysis, Method, MetricSpec
-from increment.semantics.models import AnalysisPlan, InferenceSpec
+from increment import Analysis, AnalysisPlan, InferenceSpec, Method, MetricSpec
 
 plan = AnalysisPlan(primary="revenue", inference=InferenceSpec(kind="asymptotic_mean"))
 spec = MetricSpec(
@@ -313,8 +312,14 @@ per unit. The exact Bernoulli method does not accept this adjustment.
 
 <!-- skip: next "requires a prepared pre-period frame" -->
 ```python
-from increment import Analysis, Method, MetricSpec, fit_predeclared_adjustment
-from increment.semantics.models import AnalysisPlan, InferenceSpec
+from increment import (
+    Analysis,
+    AnalysisPlan,
+    InferenceSpec,
+    Method,
+    MetricSpec,
+    fit_predeclared_adjustment,
+)
 
 adjustment = fit_predeclared_adjustment(
     pre_period,

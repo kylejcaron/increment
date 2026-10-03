@@ -10,8 +10,15 @@ def _():
     import numpy as np
     import pandas as pd
 
-    from increment import Analysis, AnalysisPlan, InferenceSpec, MetricSpec
-    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+    from increment import (
+        Analysis,
+        AnalysisPlan,
+        Encouragement,
+        ExclusionRestriction,
+        InferenceSpec,
+        MetricSpec,
+        UptakeSpec,
+    )
     from increment.tables import estimates_to_readout, readout_table
 
     return (
@@ -351,9 +358,10 @@ def _(
         SequentialCompliancePolicy,
         SequentialModel,
         SequentialRegistration,
+        sequential_definition_id,
     )
     from increment.frame import synthesise_metric
-    from increment.sequential_source import frame_observation_mapping, sequential_definition_id
+    from increment.sequential_source import frame_observation_mapping
 
     _window_days = 7
     _design = Encouragement(

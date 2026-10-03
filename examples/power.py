@@ -12,6 +12,7 @@ def _():
     from increment import (
         Baseline,
         InferenceSpec,
+        ParallelAssignment,
         PowerDesign,
         achieved_power,
         minimum_detectable_effect,
@@ -21,13 +22,12 @@ def _():
     from increment.decision import FixedInference
     from increment.estimation.arm_contract import (
         AnalysisAxes,
-        ArmPlanningProcedure,
         FamilyPolicy,
         MetricCapabilities,
         PlanningFamilyExpansion,
         RelativeDecisionPolicy,
     )
-    from increment.semantics.assignment import ParallelAssignment
+    from increment.power import ArmPlanningProcedure
     from increment.semantics.models import MethodSpec
 
     return (
