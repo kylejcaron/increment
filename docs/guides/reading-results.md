@@ -138,8 +138,7 @@ negative = pl.DataFrame(
     {
         "user_id": [f"u{i:03d}" for i in range(2 * k)],
         "variant": ["control"] * k + ["treatment"] * k,
-        "delta": [-3.0 + (i * 7) % 5 for i in range(k)]
-        + [-1.0 + (i * 7) % 5 for i in range(k)],
+        "delta": [-3.0 + (i * 7) % 5 for i in range(k)] + [-1.0 + (i * 7) % 5 for i in range(k)],
     }
 )
 flat_mean = Analysis.from_unit_summary(
