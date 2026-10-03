@@ -53,13 +53,15 @@ jq -n --arg tag "$TAG" --arg sha "$SHA" \
 
 ## Task 2: Cross-repository verification and draft PR delivery
 
-**Files:** No unrelated package changes. This task reviews both branches and uses the website companion's completed code.
+**Files:** Review both branches and the website companion's completed code. Include `docs/api.md`, `mkdocs.yml`, and `docs/templates/python/material/pydantic_model.html.jinja` for the documentation prerequisites discovered by the real source-to-site smoke; no statistical/runtime changes.
 
 **Consumes:** Task 1 sender, website exact-release validator, version-aware docs surfaces, credential-isolated CI, and security setup documentation.
 
 **Produces:** Two linked draft PRs, complete local evidence, and explicit setup prerequisites.
 
 - [ ] Validate the sender/receiver event contract, stable-only policy, published-release tag/SHA matching, duplicate notification behavior, controlled generated-file paths, and absence of automatic merging.
+- [ ] Repair the current-main API index's 14 missing exported-symbol reference directives in existing groups. Preserve the original checkout's dirty API document and retain strict sync coverage checks. Repeat the real package export/sync/artifact/publisher smoke.
+- [ ] Keep existing public Pydantic fields renderable by excluding underscore-prefixed private attributes from the field list. Register the template override and exclude its sources from published pages. Preserve public annotation errors and verify the strict documentation build.
 - [ ] Run website Python/Node regressions and a production build. Run actual release preparation against public release metadata without credentials; if no stable release exists, verify the refusal and exercise accepted stable data locally without dispatching.
 - [ ] Smoke both development and release modes on the actual built site: homepage install command, docs banner, Markdown notice, and `llms.txt` must agree with version metadata. No UI design change is intended.
 - [ ] Review both workflows for untrusted-PR credential exposure, shell injection, artifact content, token lifetime, and production branch/environment checks.
