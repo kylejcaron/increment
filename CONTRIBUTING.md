@@ -378,6 +378,13 @@ Every public capability declares its behavior for every metric type in
    gap.
 3. Back the classification with an executable probe.
 4. Update the path-by-capability documentation in `docs/limitations.md`.
+5. Decide where the refusal lives. A rule that does not depend on the data
+   source goes in the shared readout gate (`validate_request` and its owners)
+   and is declared in `GATE_REFUSALS` in `tests/test_source_capabilities.py`;
+   add a same-code-from-every-source test to
+   `tests/test_refusal_uniqueness.py`. A rule about what one source can supply
+   is raised by that source under its `source.*` code and is recorded in the
+   enumerated parity harness (`tests/parity_harness/`).
 
 Compatibility probes establish composition behavior. Statistical calibration
 belongs in the capability's dedicated tests.
