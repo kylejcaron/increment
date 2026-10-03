@@ -230,7 +230,8 @@ checkpoint.
 "cumulative_values" | "segments"`. An unknown metric/view, a daily-values or
 segments request carrying the cumulative-only `completed_windows_only` gate, or an
 undeclared breakout selection is refused with `InvalidRequestError`
-(`dashboard.invalid_view`); the refusal names the requested metric and view.
+(`dashboard.invalid_view`); the refusal context names the rejected metric, view,
+or breakout.
 
 Explore selects a metric and a declared breakout, then switches between
 **Relative lift** and **Absolute values**. Relative lift is cumulative;

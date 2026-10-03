@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from increment._canonical import canonical_json_bytes
 from increment._source_operations import (
     BreakoutChoice,
+    DashboardBreakoutReads,
     DashboardExploreCapture,
     DashboardGroupData,
     DashboardSnapshotPayload,
@@ -50,7 +51,7 @@ if TYPE_CHECKING:
 
     from increment.analysis import Analysis
     from increment.estimation.results import LiftEstimate
-    from increment.semantics.models import Breakout, Experiment, Metric
+    from increment.semantics.models import Experiment, Metric
 
 ExploreView = Literal["cumulative_lift", "daily_values", "cumulative_values", "segments"]
 
@@ -187,9 +188,11 @@ class DashboardSnapshot:
 
     Read-only by construction. It holds no connection and is not a portable
     analysis format; reprepare from the source instead of persisting it.
-    ``explore`` maps ``(view, metric or None, completed windows only, dimension)`` to the
-    capture taken inside the same pinned read as the headline; ``load_explore`` only looks
-    these up. A hand-built snapshot with no captures refuses every Explore request.
+    ``explore`` maps ``(view, metric or None, completed windows only, breakout)`` to the
+    capture taken inside the same pinned read as the headline, where ``breakout`` is a
+    declared ``(source, property)`` choice or ``None`` for the whole experiment;
+    ``load_explore`` only looks these up. A hand-built snapshot with no captures refuses
+    every Explore request.
     """
 
     experiment_name: str
@@ -462,9 +465,7 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
             _INVALID_CONFIG, reason=f"metric_units names are undeclared: {sorted(unknown_units)!r}"
         )
 
-    def _read(
-        pinned: Analysis, scopes: Sequence[tuple[Breakout, Analysis]]
-    ) -> DashboardSnapshotPayload:
+    def _read(pinned: Analysis) -> DashboardSnapshotPayload:
         allocation, allocation_refusal = _allocation_check(pinned, config)
         allocation_history, allocation_history_refusal = _allocation_history(
             pinned, allocation_refusal
@@ -485,7 +486,10 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
         explore = _capture_explore(
             pinned,
             names=tuple(metric.name for metric in metrics),
-            scopes=tuple(((b.source, b.property), scoped) for b, scoped in scopes),
+            scopes=tuple(
+                ((b.source, b.property), pinned.dashboard_breakout_reads(b))
+                for b in experiment.breakouts
+            ),
         )
         return DashboardSnapshotPayload(
             allocation=allocation,
@@ -727,7 +731,7 @@ def _capture_explore(
     pinned: Analysis,
     *,
     names: tuple[str, ...],
-    scopes: tuple[tuple[BreakoutChoice, Analysis], ...],
+    scopes: tuple[tuple[BreakoutChoice, DashboardBreakoutReads], ...],
 ) -> tuple[DashboardExploreCapture, ...]:
     """Every Explore request ``load_explore`` can serve, answered from the pinned analysis.
 
@@ -736,13 +740,13 @@ def _capture_explore(
     independent per metric, so one call over every metric serves them all; only when that call
     is refused is each metric asked alone, so one metric's refusal never hides another's series.
     Temporal views are read for the whole experiment and through each declared breakout's own
-    scoped analysis, as are segments, so one breakout's refusal never hides another source of
-    the same property. Source refusals are kept as the original coded errors.
+    reads, as are segments, so one breakout's refusal never hides another source of the same
+    property. Source refusals are kept as the original coded errors.
     """
     captures: dict[ExploreKey, DashboardExploreCapture] = {}
 
     def ask(
-        analysis: Analysis,
+        reader: Analysis | DashboardBreakoutReads,
         view: str,
         metric: str | None,
         *,
@@ -751,19 +755,20 @@ def _capture_explore(
     ) -> DashboardExploreCapture:
         key = (view, metric, complete, breakout)
         selected = list(names) if metric is None else [metric]
-        dimension = None if breakout is None else breakout[1]
         try:
-            data = _read_view(analysis, view, selected, complete=complete, dimension=dimension)
+            data = _read_view(reader, view, selected, complete=complete)
         except CodedError as exc:
             captures[key] = DashboardExploreCapture.refused(key, exc)
         else:
             captures[key] = DashboardExploreCapture.answered(key, data, collection=type(data))
         return captures[key]
 
-    whole: tuple[tuple[BreakoutChoice | None, Analysis], ...] = ((None, pinned),)
+    whole: tuple[tuple[BreakoutChoice | None, Analysis | DashboardBreakoutReads], ...] = (
+        (None, pinned),
+    )
     for view, complete in _CAPTURED_STATES:
-        for breakout, analysis in scopes if view == "segments" else (*whole, *scopes):
-            joint = ask(analysis, view, None, complete=complete, breakout=breakout)
+        for breakout, reader in scopes if view == "segments" else (*whole, *scopes):
+            joint = ask(reader, view, None, complete=complete, breakout=breakout)
             independent = view in _INDEPENDENT_VIEWS and joint.refusal is None
             for name in names:
                 key = (view, name, complete, breakout)
@@ -777,29 +782,24 @@ def _capture_explore(
                         collection=joint.collection,
                     )
                 else:
-                    ask(analysis, view, name, complete=complete, breakout=breakout)
+                    ask(reader, view, name, complete=complete, breakout=breakout)
     return tuple(captures.values())
 
 
 def _read_view(
-    analysis: Analysis,
+    reader: Analysis | DashboardBreakoutReads,
     view: str,
     selected: list[str],
     *,
     complete: bool,
-    dimension: str | None,
 ) -> Any:
     if view == "cumulative_lift":
-        return analysis.run_asof_lift(
-            metrics=selected, completed_windows_only=complete, dimension=dimension
-        )
+        return reader.run_asof_lift(metrics=selected, completed_windows_only=complete)
     if view == "daily_values":
-        return analysis.run_daily(metrics=selected, dimension=dimension)
+        return reader.run_daily(metrics=selected)
     if view == "cumulative_values":
-        return analysis.run_asof(
-            metrics=selected, completed_windows_only=complete, dimension=dimension
-        )
-    return analysis.run_breakout(metrics=selected)
+        return reader.run_asof(metrics=selected, completed_windows_only=complete)
+    return reader.run_breakout(metrics=selected)
 
 
 def _captured(snapshot: DashboardSnapshot, key: ExploreKey, *, metric: str | None) -> Any:

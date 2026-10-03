@@ -815,6 +815,57 @@ def _breakout_case(*, boolean: bool = False) -> ParityCase:
     return case
 
 
+def _dashboard_breakout_reads_case() -> ParityCase:
+    from increment.semantics.models import Breakout
+
+    def outcome(read: Callable[[], Any]) -> Any:
+        try:
+            rows = read()
+        except CodedError as exc:
+            return exc.code
+        return sorted(row.model_dump_json() for row in rows)
+
+    def probe(path: str, analysis: Analysis) -> None:
+        if path != "from_definitions":
+            with pytest.raises(CodedError) as caught:
+                analysis.dashboard_breakout_reads(Breakout(property="store"))
+            assert caught.value.code == "facade.analysis.operation"
+            return
+        (declared,) = analysis.experiment.breakouts
+        with pytest.raises(CodedError) as caught:
+            analysis.dashboard_breakout_reads(declared.model_copy(update={"property": "nope"}))
+        assert caught.value.code == "facade.analysis.undeclared_breakout"
+        reads = analysis.dashboard_breakout_reads(declared)
+        names = [metric.name for metric in analysis.metrics]
+        dimension = declared.property
+        observed = []
+        for scoped, whole in (
+            (
+                lambda: reads.run_asof_lift(metrics=names),
+                lambda: analysis.run_asof_lift(metrics=names, dimension=dimension),
+            ),
+            (
+                lambda: reads.run_asof(metrics=names, completed_windows_only=True),
+                lambda: analysis.run_asof(
+                    metrics=names, completed_windows_only=True, dimension=dimension
+                ),
+            ),
+            (
+                lambda: reads.run_daily(metrics=names),
+                lambda: analysis.run_daily(metrics=names, dimension=dimension),
+            ),
+            (
+                lambda: reads.run_breakout(metrics=names),
+                lambda: analysis.run_breakout(metrics=names),
+            ),
+        ):
+            observed.append(outcome(scoped))
+            assert observed[-1] == outcome(whole)
+        assert all(isinstance(rows, list) and rows for rows in observed), observed
+
+    return replace(_breakout_case(), id="dashboard-breakout-reads", source_probe=probe)
+
+
 def _window_edge_rows() -> list[dict[str, Any]]:
     """Units exposed just inside each edge of the declared window, in the
     UTC-05:00 day the window names: 2025-01-10T03:00Z is 2025-01-09 22:00 local
@@ -6139,6 +6190,7 @@ PARITY_CASES: tuple[ParityCase, ...] = (
     _lift_prior_case("mixture"),
     _breakout_case(),
     _breakout_case(boolean=True),
+    _dashboard_breakout_reads_case(),
     _window_spelling_case(native_spelling="zulu"),
     _window_spelling_case(native_spelling="offset"),
     _sequential_missing_zero_mean_ratio_case(),

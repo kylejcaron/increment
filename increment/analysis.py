@@ -46,6 +46,7 @@ from increment._literals import ValueScale
 from increment._sitewide import SitewideReadouts, SitewideRequest
 from increment._source_operations import (
     AllocationHistoryOperation,
+    DashboardBreakoutReads,
     DashboardGroupData,
     DashboardGroupDataOperation,
     DashboardSnapshotHandler,
@@ -152,6 +153,12 @@ _INVALID_POPULATION = RefusalSpec(
     "facade.analysis.invalid_population",
     InvalidRequestError,
     template="population must be 'assigned' or 'triggered'; got {population!r}",
+)
+
+_UNDECLARED_BREAKOUT = RefusalSpec(
+    "facade.analysis.undeclared_breakout",
+    InvalidRequestError,
+    template="breakout {requested!r} is not declared by this experiment; declared: {declared!r}",
 )
 
 
@@ -1023,13 +1030,7 @@ class Analysis:
     def dashboard_snapshot(
         self, operation: DashboardSnapshotHandler, *, metrics: Sequence[Metric]
     ) -> DashboardSnapshotPayload:
-        """Prepare one complete dashboard payload against an isolated, pinned source.
-
-        Alongside the isolated analysis, ``operation`` receives one analysis per declared
-        breakout that reads only that breakout from the same pin. Breakout families are
-        already computed per breakout, so each scoped read returns exactly that breakout's
-        rows, while a refusal from one breakout cannot hide a sibling of the same property.
-        """
+        """Prepare one complete dashboard payload against an isolated, pinned source."""
         self._require_arm_state("dashboard_snapshot")
         src = _require_analysis_operation(
             self._src,
@@ -1045,19 +1046,48 @@ class Analysis:
         ) as pinned:
             isolated = copy.copy(self)
             isolated._state = replace(self._state, source=pinned)
-            return operation(isolated, isolated._breakout_scopes())
+            return operation(isolated)
 
-    def _breakout_scopes(self) -> tuple[tuple[Breakout, Analysis], ...]:
-        state = self._state
+    def dashboard_breakout_reads(self, breakout: Breakout) -> DashboardBreakoutReads:
+        """The dashboard's Explore reads through one declared breakout alone.
+
+        A dimension-wide read covers every declared breakout of that property, so one
+        source's refusal would refuse its siblings. These reads hand the source only
+        *breakout*; families are computed per breakout, so their rows equal this breakout's
+        rows from the dimension-wide reads. Only native ``Analysis.from_definitions``
+        instances support it (``facade.analysis.operation`` otherwise); an undeclared
+        *breakout* is refused with ``facade.analysis.undeclared_breakout``.
+
+        Parameters
+        ----------
+        breakout : Breakout
+            One of this experiment's declared breakouts.
+
+        Returns
+        -------
+        DashboardBreakoutReads
+            The cumulative-lift, cumulative-value, daily-value and segment reads.
+        """
+        state = self._require_arm_state("dashboard_breakout_reads")
         if not isinstance(state, DefinitionsArmAnalysisState):
-            return ()
-        scopes: list[tuple[Breakout, Analysis]] = []
-        for breakout in state.experiment.breakouts:
-            scoped = copy.copy(self)
-            experiment = state.experiment.model_copy(update={"breakouts": (breakout,)})
-            scoped._state = replace(state, experiment=experiment)
-            scopes.append((breakout, scoped))
-        return tuple(scopes)
+            _refuse(
+                _ANALYSIS_OPERATION,
+                message=(
+                    "dashboard_breakout_reads() needs a native Analysis.from_definitions instance."
+                ),
+                operation="dashboard_breakout_reads",
+            )
+        declared = state.experiment.breakouts
+        if breakout not in declared:
+            _refuse(
+                _UNDECLARED_BREAKOUT,
+                requested=(breakout.source, breakout.property),
+                declared=tuple((item.source, item.property) for item in declared),
+            )
+        scoped = copy.copy(self)
+        experiment = state.experiment.model_copy(update={"breakouts": (breakout,)})
+        scoped._state = replace(state, experiment=experiment)
+        return DashboardBreakoutReads(breakout, scoped)
 
     def dashboard_group_data(
         self,

@@ -11,7 +11,7 @@ import copy
 import datetime as dt
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
@@ -21,6 +21,11 @@ if TYPE_CHECKING:
     import pyarrow as pa
 
     from increment.analysis import Analysis
+    from increment.breakout.estimates import (
+        BreakoutEstimates,
+        DailyLiftEstimates,
+        DailyMetricValues,
+    )
     from increment.estimation.diagnostics import SRMResult
     from increment.estimation.results import LiftEstimate
     from increment.query.native_source import DayEvidenceSource
@@ -110,6 +115,43 @@ class DashboardExploreCapture:
 
 
 @dataclass(frozen=True, slots=True)
+class DashboardBreakoutReads:
+    """The Explore reads of one declared breakout, and nothing else.
+
+    Every read hands the source this breakout alone, so another source of the same property,
+    or its refusal, never enters it. Families are computed per breakout, so the rows equal
+    this breakout's rows from the dimension-wide reads.
+    """
+
+    breakout: Breakout
+    _scoped: Analysis = field(repr=False)
+
+    def run_asof_lift(
+        self, *, metrics: Sequence[str], completed_windows_only: bool = False
+    ) -> DailyLiftEstimates:
+        return self._scoped.run_asof_lift(
+            metrics=metrics,
+            completed_windows_only=completed_windows_only,
+            dimension=self.breakout.property,
+        )
+
+    def run_asof(
+        self, *, metrics: Sequence[str], completed_windows_only: bool = False
+    ) -> DailyMetricValues:
+        return self._scoped.run_asof(
+            metrics=metrics,
+            completed_windows_only=completed_windows_only,
+            dimension=self.breakout.property,
+        )
+
+    def run_daily(self, *, metrics: Sequence[str]) -> DailyMetricValues:
+        return self._scoped.run_daily(metrics=metrics, dimension=self.breakout.property)
+
+    def run_breakout(self, *, metrics: Sequence[str]) -> BreakoutEstimates:
+        return self._scoped.run_breakout(metrics=metrics)
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardSnapshotPayload:
     """Complete dashboard evidence from one pinned source read."""
 
@@ -128,12 +170,7 @@ class DashboardSnapshotPayload:
 
 
 class DashboardSnapshotHandler(Protocol):
-    def __call__(
-        self, analysis: Analysis, breakouts: Sequence[tuple[Breakout, Analysis]], /
-    ) -> DashboardSnapshotPayload:
-        """Read the payload from ``analysis``; each breakout pairs with an analysis reading
-        only that declared breakout, so one breakout's refusal cannot hide another's."""
-        ...
+    def __call__(self, analysis: Analysis, /) -> DashboardSnapshotPayload: ...
 
 
 @runtime_checkable
@@ -256,6 +293,7 @@ class DaySourceOperation(Protocol):
 __all__ = [
     "BreakoutChoice",
     "ExploreKey",
+    "DashboardBreakoutReads",
     "DashboardExploreCapture",
     "DashboardGroupData",
     "DashboardGroupDataOperation",
