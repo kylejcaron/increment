@@ -34,7 +34,7 @@ from increment.frame import (
     synthesise_metric,
 )
 from increment.semantics.design import Randomized
-from increment.semantics.models import MeanMetric, Metric, RatioMetric
+from increment.semantics.models import MeanMetric, Metric, RatioMetric, RetentionMetric
 
 _DESIGN = Randomized(
     control_group="control",
@@ -176,6 +176,12 @@ def test_summary_refuses_time_dependent_metrics_with_structured_context(
     assert restored.context == exc.value.context
 
 
+# Constructs (``MetricSpec`` does not bound a mean's ``window_days``) but fails
+# in metric synthesis (``MeanMetric.window_days`` is ``ge=1``): a witness that
+# the capability guards run before any synthesis.
+_SYNTHESIS_ONLY_FAILURE = MetricSpec(name="bad_window", window_days=0)
+
+
 def test_from_unit_summary_retention_capability_error_beats_synthesis_validation_error() -> None:
     """``_reject_windowed_specs`` must run before any metric synthesis, so a
     valid retention ``MetricSpec`` that is simply unsupported on this shape
@@ -188,9 +194,13 @@ def test_from_unit_summary_retention_capability_error_beats_synthesis_validation
             unit="user_id",
             group="variant",
             control="control",
-            metrics=[MetricSpec(name="d7", type="retention", threshold_days=(1, 3))],
+            metrics=[
+                MetricSpec(name="d7", type="retention", threshold_days=(1, 3)),
+                _SYNTHESIS_ONLY_FAILURE,
+            ],
         )
     assert exc.value.code == "source.frame.constructor"
+    assert exc.value.context["metric"] == "d7"
 
 
 def test_from_unit_panel_covariate_refusal_beats_synthesis_validation_error() -> None:
@@ -210,6 +220,7 @@ def test_from_unit_panel_covariate_refusal_beats_synthesis_validation_error() ->
             metrics=[
                 MetricSpec(name="revenue", covariate="pre_revenue", window_days=7),
                 MetricSpec(name="d7", type="retention", threshold_days=(1, 3)),
+                _SYNTHESIS_ONLY_FAILURE,
             ],
         )
     assert exc_info.value.code == "frame.validation.from_unit_panel"
@@ -397,6 +408,15 @@ def test_threshold_days_requires_retention_type() -> None:
         MetricSpec(name="revenue", threshold_days=7)
     assert exc_info.value.code == "frame.metric.sets_threshold_days"
     assert exc_info.value.context["name"] == "revenue"
+
+
+@pytest.mark.parametrize("window_days", [0, -1])
+def test_retention_window_days_refusal_code_matches_across_constructors(window_days: int) -> None:
+    with pytest.raises(DefinitionError) as spec_exc:
+        MetricSpec(name="d7", type="retention", threshold_days=7, window_days=window_days)
+    with pytest.raises(DefinitionError) as metric_exc:
+        RetentionMetric(name="d7", entity="u", fact="f", threshold_days=7, window_days=window_days)
+    assert spec_exc.value.code == metric_exc.value.code == "definition.retention.metric_window_days"
 
 
 def test_window_days_rejected_on_retention_and_quantile() -> None:

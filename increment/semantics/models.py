@@ -1362,6 +1362,10 @@ class RetentionMetric(MetricBase, FactRef):
 
     type: Literal["retention"] = "retention"
     threshold_days: int | tuple[int, int]
+    # Not bounded (``FactRef`` requires ``ge=1``): any declared value, zero or
+    # negative included, reaches ``_validate_retention_declaration`` and its
+    # coded refusal, the same one ``MetricSpec`` raises.
+    window_days: int | None = None
 
     @field_validator("threshold_days", mode="before")
     @classmethod
