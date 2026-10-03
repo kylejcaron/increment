@@ -3,7 +3,7 @@
 Counts and trackers only. Every per-ingress outcome, reason and authority lives in
 `tests/parity_harness/matrix.py` (`RULES`, `_SPECS`); `tests/test_parity_matrix.py` runs every cell.
 
-Last verified at commit e2a0b6b.
+Last verified at commit 08e9df4.
 
 ## Axes
 
