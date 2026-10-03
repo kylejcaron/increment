@@ -5,33 +5,17 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>Experiment dashboard</title>
+<style id="dashboard-theme"><!-- DASHBOARD_THEME --></style>
+<style id="dashboard-styles"><!-- DASHBOARD_STYLES --></style>
 <style>
 /* ===== Tokens and base ===================================================== */
 :root {
-  /* Canonical Midnight · Daylight palette. Native renderers consume --inc-dashboard-theme-<role>
-     (with Daylight literal fallbacks), so every surface inside the shell follows the mode. */
-  --inc-dashboard-theme-text: #1b2a43;
-  --inc-dashboard-theme-muted: #586b84;
-  --inc-dashboard-theme-accent: #386ba8;
-  --inc-dashboard-theme-canvas: #f4f6fa;
-  --inc-dashboard-theme-panel: #ffffff;
-  --inc-dashboard-theme-rule: #dbe3ef;
-  --inc-dashboard-theme-column: #e7edf7;
-  --inc-dashboard-theme-band: #f8fafe;
-  --inc-dashboard-theme-header: #dbe5f3;
-  --inc-dashboard-theme-header-text: #244060;
-  --inc-dashboard-theme-control: #8170b1;
-  --inc-dashboard-theme-treatment: #3776b9;
-  --inc-dashboard-theme-weak: #3c5f95;
-  --inc-dashboard-theme-favorable: #087f52;
-  --inc-dashboard-theme-favorable-bg: #eafbf2;
-  --inc-dashboard-theme-favorable-line: #a7ddc1;
-  --inc-dashboard-theme-unfavorable: #be3547;
-  --inc-dashboard-theme-unfavorable-bg: #fff0f2;
-  --inc-dashboard-theme-inconclusive: #906527;
-  --inc-dashboard-theme-inconclusive-bg: #fff7e9;
-  --on-accent: #ffffff;
-
+  /* The palette (--inc-dashboard-theme-<role>, light by default and dark under
+     :root[data-theme="dark"] outside print), typography, layout, chart and print-floor variables
+     are generated from the configured DashboardTheme into the blocks above. Print media never
+     applies the dark values, so the selected mode is untouched by printing. The aliases below
+     keep the shell's rules short. */
+  --on-accent: var(--inc-dashboard-theme-on-accent);
   --ink: var(--inc-dashboard-theme-text);
   --muted: var(--inc-dashboard-theme-muted);
   --accent: var(--inc-dashboard-theme-accent);
@@ -46,39 +30,11 @@
   --unfavorable-bg: var(--inc-dashboard-theme-unfavorable-bg);
   --inconclusive: var(--inc-dashboard-theme-inconclusive);
   --inconclusive-bg: var(--inc-dashboard-theme-inconclusive-bg);
-  color-scheme: light;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--inc-dashboard-body-font);
+  font-size: var(--inc-dashboard-body-size);
   color: var(--ink);
   background: var(--bg);
   font-synthesis: none;
-}
-/* Midnight. Never applies in print media, which always uses the Daylight values above, so the
-   selected mode is untouched by printing. */
-@media not print {
-  :root[data-theme="dark"] {
-    --inc-dashboard-theme-text: #eef3ff;
-    --inc-dashboard-theme-muted: #aabbd5;
-    --inc-dashboard-theme-accent: #78b6ff;
-    --inc-dashboard-theme-canvas: #0c1322;
-    --inc-dashboard-theme-panel: #151f32;
-    --inc-dashboard-theme-rule: #2d3c55;
-    --inc-dashboard-theme-column: #20304b;
-    --inc-dashboard-theme-band: #18243a;
-    --inc-dashboard-theme-header: #253b5c;
-    --inc-dashboard-theme-header-text: #f3f7ff;
-    --inc-dashboard-theme-control: #60a5fa;
-    --inc-dashboard-theme-treatment: #c4a3ff;
-    --inc-dashboard-theme-weak: #8fa7cf;
-    --inc-dashboard-theme-favorable: #5ae0a0;
-    --inc-dashboard-theme-favorable-bg: #173b2d;
-    --inc-dashboard-theme-favorable-line: #27664a;
-    --inc-dashboard-theme-unfavorable: #ff899a;
-    --inc-dashboard-theme-unfavorable-bg: #412432;
-    --inc-dashboard-theme-inconclusive: #b68b50;
-    --inc-dashboard-theme-inconclusive-bg: #30271c;
-    --on-accent: var(--inc-dashboard-theme-canvas);
-    color-scheme: dark;
-  }
 }
 * { box-sizing: border-box; }
 body { margin: 0; }
@@ -88,7 +44,7 @@ button {
   cursor: pointer;
   border: 1px solid var(--line);
   background: var(--surface);
-  border-radius: 5px;
+  border-radius: max(0px, calc(var(--inc-dashboard-radius) - 1px));
   padding: 9px 13px;
   color: var(--ink);
 }
@@ -96,9 +52,9 @@ button:hover { background: var(--tint); }
 button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible,
 [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 h1, h2, h3, p { margin-top: 0; }
-h1, h2, h3 { font-family: Georgia, "Times New Roman", serif; font-weight: 400; }
+h1, h2, h3 { font-family: var(--inc-dashboard-heading-font); font-weight: 400; }
 a { color: inherit; }
-code, .number { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
+code, .number { font-family: var(--inc-dashboard-mono-font); font-variant-numeric: tabular-nums; }
 .eyebrow { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; font-weight: 650; color: var(--muted); }
 .muted { color: var(--muted); }
 .sr-only {
@@ -107,13 +63,13 @@ code, .number { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fon
 }
 [hidden] { display: none !important; }
 
-.shell { max-width: 1368px; margin: 0 auto; padding: 0 36px 36px; }
+.shell { max-width: var(--inc-dashboard-dashboard-width); margin: 0 auto; padding: 0 var(--inc-dashboard-page-padding) var(--inc-dashboard-page-padding); }
 .shell, .view, .view > * { min-width: 0; }
 .fatal { margin: 40px auto; max-width: 560px; padding: 16px 20px; border: 1px solid var(--unfavorable); border-left: 3px solid var(--unfavorable); background: var(--unfavorable-bg); color: var(--unfavorable); }
 
 /* ===== Masthead and shared hero =========================================== */
 .masthead { display: flex; align-items: center; justify-content: space-between; height: 76px; }
-.brand { font-family: Georgia, serif; font-size: 29px; letter-spacing: -1.4px; text-decoration: none; }
+.brand { font-family: var(--inc-dashboard-heading-font); font-size: 29px; letter-spacing: -1.4px; text-decoration: none; }
 .theme-toggle {
   display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; line-height: 1.2;
   padding: 7px 13px; border-radius: 99px; background: var(--surface); color: var(--ink); white-space: nowrap;
@@ -139,15 +95,15 @@ code, .number { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fon
 .health-mark { font-size: 13px; margin-right: 4px; }
 
 .primary-box {
-  border-radius: 6px; padding: 18px 21px; border: 1px solid var(--line); border-left: 3px solid var(--inconclusive);
+  border-radius: var(--inc-dashboard-radius); padding: 18px 21px; border: 1px solid var(--line); border-left: 3px solid var(--inconclusive);
   background: var(--surface); color: var(--inconclusive);
 }
 .primary-box.tone-favorable { color: var(--favorable); border-color: var(--favorable-line); border-left-color: var(--favorable); }
 .primary-box.tone-unfavorable { color: var(--unfavorable); border-color: var(--unfavorable); border-left-color: var(--unfavorable); }
 .primary-box.tone-neutral { color: var(--muted); border-color: var(--line); border-left-color: var(--muted); }
 .primary-label { font-size: 10px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; line-height: 1.5; margin: 0 0 8px; overflow-wrap: anywhere; color: var(--muted); }
-.primary-value { font: 38px/1.1 Georgia, serif; font-variant-numeric: tabular-nums; margin: 0 0 8px; overflow-wrap: anywhere; }
-.primary-interval, .primary-method { font-size: 12px; line-height: 1.5; font-variant-numeric: tabular-nums; margin: 0; overflow-wrap: anywhere; }
+.primary-value { font: 38px/1.1 var(--inc-dashboard-heading-font); font-variant-numeric: tabular-nums; margin: 0 0 8px; overflow-wrap: anywhere; }
+.primary-interval, .primary-method { font-size: var(--inc-dashboard-interval-size); line-height: 1.5; font-variant-numeric: tabular-nums; margin: 0; overflow-wrap: anywhere; }
 .primary-method { margin-top: 4px; opacity: .85; }
 .primary-interval:empty, .primary-method:empty { display: none; }
 
@@ -166,15 +122,15 @@ code, .number { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fon
 .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 18px; margin: 0 0 17px; }
 .section-head h2 { font-size: 26px; letter-spacing: -.5px; margin: 0; }
 .section-head p { font-size: 12px; color: var(--muted); margin: 0; line-height: 1.5; }
-.table-surface { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px 18px; overflow-x: auto; }
+.table-surface { background: var(--surface); border: 1px solid var(--line); border-radius: var(--inc-dashboard-radius); padding: 12px 18px; overflow-x: auto; }
 .csv-link { font-size: 11px; color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
 
 /* Native Python-rendered HTML (CoefTable, health, provenance, metric detail). */
 .native-output { min-width: 0; }
-.native-output .inc-dashboard-root { max-width: none; width: 100%; margin: 0; padding: 0; background: transparent; font-size: 13px; }
+.native-output .inc-dashboard-root { max-width: none; width: 100%; margin: 0; padding: 0; background: transparent; font-size: var(--inc-dashboard-table-size); }
 .native-output .inc-dashboard-section { border-bottom: 0; }
 .native-output .inc-dashboard-heading { display: none; }
-.native-output .inc-dashboard-root th, .native-output .inc-dashboard-root td { font-size: 12px; }
+.native-output .inc-dashboard-root th, .native-output .inc-dashboard-root td { font-size: var(--inc-dashboard-table-size); }
 .native-output svg { max-width: 100%; }
 .native-output .inc-dashboard-table-wrap { margin: 0; }
 .native-output .inc-dashboard-kv { grid-template-columns: 145px minmax(0, 1fr); }
@@ -183,11 +139,11 @@ code, .number { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fon
 /* Metric cells in native result tables. */
 .metric-select {
   display: block; text-align: left; border: 0; background: none !important; padding: 0;
-  min-width: 130px; font-size: 12px; line-height: 1.5; color: var(--ink);
+  min-width: 130px; font-size: var(--inc-dashboard-table-size); line-height: 1.5; color: var(--ink);
 }
 button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 .metric-select strong { font-weight: 600; }
-.metric-select small { display: block; font: 9px ui-monospace, monospace; color: var(--muted); text-decoration: none; overflow-wrap: anywhere; }
+.metric-select small { display: block; font: calc(var(--inc-dashboard-interval-size) * .75) var(--inc-dashboard-mono-font); color: var(--muted); text-decoration: none; overflow-wrap: anywhere; }
 .metric-row { cursor: pointer; }
 .metric-row[data-selected] .metric-select strong { color: var(--accent); text-decoration: underline; }
 
@@ -197,8 +153,8 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 /* The Readout table uses the card's full width with compact rows. */
 #readout-table > .inc-dashboard-root { max-width: none !important; margin: 0 !important; }
 #readout-table > .inc-dashboard-root table { width: 100% !important; }
-#readout-table .gt_row { padding-top: 7px !important; padding-bottom: 7px !important; }
-#readout-table .gt_col_heading { padding-top: 9px !important; padding-bottom: 9px !important; }
+#readout-table .gt_row { padding: var(--inc-dashboard-cell-padding-y) var(--inc-dashboard-cell-padding-x) !important; }
+#readout-table .gt_col_heading { padding: calc(var(--inc-dashboard-cell-padding-y) + 1px) var(--inc-dashboard-cell-padding-x) !important; }
 .inspector {
   position: sticky; top: 16px; background: var(--surface);
   border: 1px solid var(--line); border-top: 2px solid var(--accent); padding: 18px; min-width: 0;
@@ -219,7 +175,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 /* ===== Explore ============================================================= */
 .scope-bar {
   display: flex; align-items: center; justify-content: space-between; gap: 20px; border: 1px solid var(--line);
-  border-radius: 6px; background: var(--surface); padding: 15px 20px; margin-bottom: 25px;
+  border-radius: var(--inc-dashboard-radius); background: var(--surface); padding: 15px 20px; margin-bottom: 25px;
 }
 .scope-label { font-size: 12px; font-weight: 600; white-space: nowrap; }
 .scope-controls { display: flex; flex-wrap: wrap; gap: 5px; }
@@ -239,11 +195,11 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 .metric-tab[aria-pressed="true"] { border-left-color: var(--accent); background: var(--tint); }
 .metric-tab:hover { background: var(--tint); }
 
-.explore-workspace { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 24px; }
+.explore-workspace { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--inc-dashboard-radius); padding: 24px; }
 .explore-workspace h3 { font-size: 26px; letter-spacing: -.5px; margin: 0 0 8px; overflow-wrap: anywhere; }
 .explore-workspace .context { font-size: 12px; color: var(--muted); margin: 0 0 16px; line-height: 1.65; overflow-wrap: anywhere; }
 .view-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin: 0 0 18px; }
-.segmented { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 6px; padding: 2px; background: var(--tint); gap: 2px; }
+.segmented { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--line); border-radius: var(--inc-dashboard-radius); padding: 2px; background: var(--tint); gap: 2px; }
 .segmented button { font-size: 12px; border: 1px solid transparent; background: transparent; padding: 6px 12px; }
 .segmented button[aria-pressed="true"] { background: var(--surface); border-color: var(--line); color: var(--accent); font-weight: 600; }
 .complete-toggle { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; cursor: pointer; }
@@ -263,18 +219,18 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 .health-status strong { display: block; font-weight: 650; }
 .health-status[data-kind="healthy"] { border-left-color: var(--favorable); background: var(--favorable-bg); }
 .health-status[data-kind="warning"] { border-left-color: var(--inconclusive); background: var(--inconclusive-bg); }
-.health-surface { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 22px 27px; }
+.health-surface { background: var(--surface); border: 1px solid var(--line); border-radius: var(--inc-dashboard-radius); padding: 22px 27px; }
 .health-surface .inc-dashboard-status { font-size: 15px; }
 
 /* Provenance disclosure under the Readout. */
 .provenance-disclosure { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
 .provenance-disclosure > summary { font-size: 12px; cursor: pointer; color: var(--muted); }
-.provenance-disclosure > .native-output { margin-top: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 14px 20px; }
+.provenance-disclosure > .native-output { margin-top: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--inc-dashboard-radius); padding: 14px 20px; }
 
 .page-footer { font-size: 10px; color: var(--muted); line-height: 1.7; border-top: 1px solid var(--line); margin-top: 28px; padding-top: 14px; }
 
 /* ===== Report (scoped to .rpt) ============================================ */
-/* One compact sheet: the same typography on screen and on paper, so the off-screen print fit
+/* One compact sheet: the same typography on screen and on paper, so the off-screen print
    measurement sees the layout that prints. Only chrome (card, toolbar) differs in print. */
 .rpt { padding: 4px 0 40px; }
 .rpt *, .rpt *::before, .rpt *::after { box-sizing: border-box; }
@@ -285,9 +241,9 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 .rpt-toolbar-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-left: auto; }
 .rpt-back { font-size: 13px; color: var(--muted); background: none; border: 0; padding: 6px 2px; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line); }
 .rpt-back:hover, .rpt-back:focus-visible { color: var(--ink); background: none; text-decoration-color: currentColor; }
-.rpt-download { font-size: 13px; font-weight: 600; color: var(--accent); background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 8px 14px; text-decoration: none; white-space: nowrap; }
+.rpt-download { font-size: 13px; font-weight: 600; color: var(--accent); background: var(--surface); border: 1px solid var(--line); border-radius: max(0px, calc(var(--inc-dashboard-radius) - 2px)); padding: 8px 14px; text-decoration: none; white-space: nowrap; }
 .rpt-download:hover { background: var(--tint); }
-.rpt-print { font-size: 13px; font-weight: 600; color: var(--on-accent); background: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 8px 16px; }
+.rpt-print { font-size: 13px; font-weight: 600; color: var(--on-accent); background: var(--accent); border: 1px solid var(--accent); border-radius: max(0px, calc(var(--inc-dashboard-radius) - 2px)); padding: 8px 16px; }
 .rpt-print:hover { background: var(--ink); border-color: var(--ink); color: var(--surface); }
 
 .rpt-card { max-width: 900px; margin: 0 auto; background: var(--surface); border: 1px solid var(--line); box-shadow: 0 2px 24px rgba(0,0,0,.07); padding: 32px 44px 26px; }
@@ -305,7 +261,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 .rpt-primary-label { margin: 0 0 4px; font-size: 10px; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; overflow-wrap: anywhere; }
 .rpt-primary-label span { font-weight: 500; letter-spacing: .03em; text-transform: none; font-size: 12px; margin-left: 6px; }
 .rpt-primary-value { margin: 0; font-size: 30px; line-height: 1.05; overflow-wrap: anywhere; }
-.rpt-primary-interval { margin: 5px 0 0; font-size: 11px; line-height: 1.4; font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.rpt-primary-interval { margin: 5px 0 0; font-size: var(--inc-dashboard-interval-size); line-height: 1.4; font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .rpt-primary-interval:empty { display: none; }
 /* Narrow screens only: print and the off-screen print measurement always use the wide layout. */
 @media screen and (max-width: 700px) {
@@ -326,22 +282,27 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 .rpt-slot-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .rpt-empty { font-size: 12px; color: var(--muted); margin: 0; }
 
-/* Native full-family results table, folded by role; four columns: metric, arm, lift, interval plot. */
-.rpt #report-table { font-variant-numeric: tabular-nums; }
-.rpt #report-table .inc-dashboard-table-wrap, .rpt #report-table .inc-dashboard-table-wrap > div { overflow: visible !important; width: auto !important; height: auto !important; }
-.rpt #report-table table { width: 100% !important; min-width: 560px; border-collapse: collapse; }
-.rpt #report-table .gt_col_heading, .rpt #report-table .gt_row { font-size: 11.5px !important; padding: 5px 6px !important; }
-.rpt #report-table .gt_col_heading { white-space: normal !important; overflow-wrap: normal; word-break: normal; hyphens: none; vertical-align: bottom; }
-.rpt #report-table td { overflow-wrap: anywhere; }
-.rpt #report-table svg { width: 100% !important; height: auto !important; }
-.rpt #report-table tr, .rpt #report-table svg { break-inside: avoid; }
-.rpt #report-table .metric-select { min-width: 0; }
-.rpt #report-table .metric-select small { font-size: 8.5px; }
-.rpt #report-table table[data-cols="4"] { table-layout: fixed !important; }
-.rpt #report-table table[data-cols="4"] .gt_col_heading:nth-child(1) { width: 30%; }
-.rpt #report-table table[data-cols="4"] .gt_col_heading:nth-child(2) { width: 14%; }
-.rpt #report-table table[data-cols="4"] .gt_col_heading:nth-child(3) { width: 16%; }
-.rpt #report-table table[data-cols="4"] .gt_col_heading:nth-child(4) { width: 40%; }
+/* The native full-family results table, folded by role. It lives in #report-table and, only while
+   a table too wide for one page is measured or printed, in the .rpt-band hosts that carry its
+   column sections. Four plain columns (metric, arm, lift, interval plot) use fixed proportions. */
+.rpt .rpt-results { font-variant-numeric: tabular-nums; }
+.rpt .rpt-results .inc-dashboard-table-wrap, .rpt .rpt-results .inc-dashboard-table-wrap > div { overflow: visible !important; width: auto !important; height: auto !important; }
+.rpt .rpt-results table { width: 100% !important; min-width: 560px; border-collapse: collapse; }
+.rpt .rpt-results .gt_col_heading, .rpt .rpt-results .gt_row {
+  font-size: calc(var(--inc-dashboard-table-size) * .82) !important;
+  padding: min(calc(var(--inc-dashboard-cell-padding-y) * .6), .5em) min(calc(var(--inc-dashboard-cell-padding-x) * .5), .75em) !important;
+}
+.rpt .rpt-results .gt_col_heading { white-space: normal !important; overflow-wrap: normal; word-break: normal; hyphens: none; vertical-align: bottom; }
+.rpt .rpt-results td { overflow-wrap: break-word; }
+.rpt .rpt-results svg { width: 100% !important; height: auto !important; }
+.rpt .rpt-results tr, .rpt .rpt-results svg { break-inside: avoid; }
+.rpt .rpt-results .metric-select { min-width: 0; }
+.rpt .rpt-results .metric-select small { font-size: calc(var(--inc-dashboard-interval-size) * .72); }
+.rpt .rpt-paper:not(.rpt-natural) .rpt-results table[data-cols="4"]:not([data-spanned]) { table-layout: fixed !important; }
+.rpt .rpt-paper:not(.rpt-natural) .rpt-results table[data-cols="4"]:not([data-spanned]) .gt_col_heading:nth-child(1) { width: 30%; }
+.rpt .rpt-paper:not(.rpt-natural) .rpt-results table[data-cols="4"]:not([data-spanned]) .gt_col_heading:nth-child(2) { width: 14%; }
+.rpt .rpt-paper:not(.rpt-natural) .rpt-results table[data-cols="4"]:not([data-spanned]) .gt_col_heading:nth-child(3) { width: 16%; }
+.rpt .rpt-paper:not(.rpt-natural) .rpt-results table[data-cols="4"]:not([data-spanned]) .gt_col_heading:nth-child(4) { width: 40%; }
 
 /* Allocation health: the qualified status only, never a ship recommendation. */
 .rpt-health-status { font-size: 12px; line-height: 1.5; margin: 0 0 8px; padding: 8px 12px; border-left: 3px solid var(--line); background: var(--tint); overflow-wrap: anywhere; }
@@ -360,6 +321,21 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   display: block !important; position: fixed; left: 0; top: 0; visibility: hidden; pointer-events: none;
 }
 .rpt-measuring .rpt-slot-scroll { overflow: visible !important; }
+/* Natural column widths: the planner measures a too-wide table unconstrained by the page. */
+.rpt .rpt-paper.rpt-natural .rpt-results { width: max-content; max-width: none; }
+.rpt .rpt-paper.rpt-natural .rpt-results table, .rpt .rpt-paper.rpt-natural .rpt-results table[data-cols] { width: auto !important; min-width: 0 !important; table-layout: auto !important; }
+.rpt .rpt-paper.rpt-natural .rpt-results svg { width: auto !important; height: auto !important; max-width: none !important; }
+/* Column bands carry a too-wide table across the page. They stay hidden on screen; the off-screen
+   measurement and the print stylesheet swap them in for #report-table (paper[data-banded]). */
+.rpt-bands { display: none; }
+.rpt-measuring .rpt-paper[data-banded] #report-table { display: none !important; }
+.rpt-measuring .rpt-paper[data-banded] .rpt-bands { display: block; }
+.rpt-band { margin: 0 0 14px; }
+.rpt-band .gt_row:first-child, .rpt-band .gt_col_heading:first-child { min-width: 26%; }
+.rpt-band table { table-layout: fixed !important; }
+/* The font floor: the script marks report text measured below the configured print minimum, and
+   only the measurement and print raise marked elements to it (the screen layout is untouched). */
+.rpt-measuring .rpt-paper [data-inc-floor] { font-size: var(--inc-dashboard-print-min-font-size) !important; }
 
 /* ===== Responsive ========================================================== */
 @media (max-width: 1100px) {
@@ -415,31 +391,46 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   .rpt-toolbar-actions { margin-left: 0; width: 100%; }
 }
 
-/* ===== Print: the Report only, ONE A4 portrait page ======================= */
+/* ===== Print: the Report only ============================================== */
 /* The printable area is the A4 page minus this margin: 186mm x 273mm. The script measures the
-   sheet at exactly that size (SHEET_MM below) and, only when the real report is taller or wider,
-   sets --rpt-fit-w / --rpt-fit-scale so the whole paper is zoomed uniformly onto the page.
-   Keep @page margin in sync with PAGE_MARGIN_MM in the script. */
+   sheet at exactly that size (SHEET_MM below). When the whole report fits one page without its
+   reader text dropping below the configured floor, it sets --rpt-fit-w / --rpt-fit-scale so the
+   paper is zoomed uniformly onto that page (data-print-mode="single"). Otherwise the paper keeps
+   readable type and flows over as many pages as it needs (data-print-mode="multi"). Keep @page
+   margin in sync with PAGE_MARGIN_MM in the script. */
 @page { size: A4 portrait; margin: 12mm; }
 @media print {
-  html, body { background: #fff !important; color: #000; height: auto; }
+  html, body { background: var(--inc-dashboard-theme-panel) !important; color: var(--inc-dashboard-theme-text); height: auto; }
   .shell { max-width: none; padding: 0; }
   .masthead, .experiment-hero, .navigation, .page-footer, .rpt-toolbar,
   .view:not([data-view="report"]) { display: none !important; }
   .view[data-view="report"], .view[data-view="report"][hidden] { display: block !important; }
-  .rpt { padding: 0; color: #000; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .rpt-card { max-width: none; margin: 0; padding: 0; border: 0; box-shadow: none !important; background: #fff !important; }
-  .rpt-paper { width: var(--rpt-fit-w, 100%); zoom: var(--rpt-fit-scale, 1); margin: 0 auto; break-inside: avoid; }
+  .rpt { padding: 0; color: var(--ink); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .rpt-card { max-width: none; margin: 0; padding: 0; border: 0; box-shadow: none !important; background: var(--surface) !important; }
+  .rpt-paper { width: var(--rpt-fit-w, 100%); zoom: var(--rpt-fit-scale, 1); margin: 0 auto; }
+  .rpt-paper[data-print-mode="single"] { break-inside: avoid; }
+  .rpt-paper [data-inc-floor] { font-size: var(--inc-dashboard-print-min-font-size) !important; }
+  /* Static floors for the known small classes, so the minimum holds even before any measurement. */
+  .rpt-brand, .rpt-kind { font-size: max(11px, var(--inc-dashboard-print-min-font-size)); }
+  .rpt-primary-label { font-size: max(10px, var(--inc-dashboard-print-min-font-size)); }
+  .rpt-notes { font-size: max(11px, var(--inc-dashboard-print-min-font-size)); }
+  .rpt-footer { font-size: max(10.5px, var(--inc-dashboard-print-min-font-size)); }
+  .rpt .rpt-results .metric-select small { font-size: max(calc(var(--inc-dashboard-interval-size) * .72), var(--inc-dashboard-print-min-font-size)); }
+  .rpt-paper[data-banded] #report-table { display: none !important; }
+  .rpt-paper[data-banded] .rpt-bands { display: block; }
   .rpt-meta, .rpt-notes, .rpt-footer { color: var(--muted); }
-  .rpt-primary { break-inside: avoid; }
-  .rpt-masthead, .rpt-summary, .rpt-health-status, .rpt-footer { break-inside: avoid; }
+  .rpt-primary, .rpt-masthead, .rpt-summary, .rpt-health-status, .rpt-footer { break-inside: avoid; }
+  .rpt-h2 { break-after: avoid; }
+  .rpt-notes li { break-inside: avoid; }
   .rpt-slot, .rpt-slot-scroll { overflow: visible !important; }
   .rpt-slot * { box-shadow: none !important; text-shadow: none !important; }
   .rpt-slot a { color: inherit; text-decoration: none; }
+  /* Table headers repeat on every page; rows are never split. */
   .rpt-slot thead { display: table-header-group; }
+  .rpt .rpt-results tr.gt_group_heading_row { break-after: avoid; }
   /* Every group stays expanded on paper, whatever the screen fold state. */
-  .rpt #report-table tr[data-ct-group-member] { display: table-row !important; }
-  .rpt #report-table .ct-caret { display: none; }
+  .rpt .rpt-results tr[data-ct-group-member] { display: table-row !important; }
+  .rpt .rpt-results .ct-caret { display: none !important; }
   .rpt .rpt-slot details::details-content { content-visibility: visible !important; height: auto !important; }
 }
 </style>
@@ -464,12 +455,22 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     try { return window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null; } catch (error) { return null; }
   }
   function current() { return root.getAttribute('data-theme') === 'dark' ? 'dark' : 'light'; }
-  // Same-origin embeds expose the mode on their <iframe> so the embedding page can style around it;
-  // cross-origin frames deny access and simply skip this.
+  // Same-origin embeds expose the mode on their <iframe> and, when a notebook host (#App)
+  // contains it, the active canvas and text colors on that host, so the embedding page can style
+  // around the dashboard; cross-origin frames deny access and simply skip this.
   function publish() {
     try {
-      var frame = window.frameElement;
-      if (frame) frame.setAttribute('data-inc-dashboard-theme', current());
+      const frame = window.frameElement;
+      if (!frame) return;
+      frame.setAttribute('data-inc-dashboard-theme', current());
+      const host = frame.closest('#App');
+      if (host) {
+        const style = window.getComputedStyle(root);
+        for (const role of ['canvas', 'text']) {
+          const value = style.getPropertyValue('--inc-dashboard-theme-' + role).trim();
+          if (value) host.style.setProperty('--inc-dashboard-notebook-' + role, value);
+        }
+      }
     } catch (error) { /* cross-origin embedding stays usable */ }
   }
   function syncButton() {
@@ -642,7 +643,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
       <article class="rpt" aria-labelledby="report-title">
         <div class="rpt-toolbar" role="region" aria-label="Report actions">
           <h2 class="rpt-toolbar-title">Snapshot report</h2>
-          <p class="rpt-toolbar-scope">One-page summary · independent of Explore selections</p>
+          <p class="rpt-toolbar-scope"><span id="report-print-note">One-page summary</span> · independent of Explore selections</p>
           <div class="rpt-toolbar-actions">
             <button type="button" class="rpt-back" id="report-back">Back to Readout</button>
             <a class="rpt-download" id="report-download" hidden>Download full readout ↓</a>
@@ -672,7 +673,8 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 
             <section class="rpt-section" aria-labelledby="rpt-h-results">
               <h2 class="rpt-h2" id="rpt-h-results">Results</h2>
-              <div class="rpt-slot rpt-slot-scroll native-output" id="report-table" role="region" aria-label="Full experiment results table" tabindex="0"></div>
+              <div class="rpt-slot rpt-slot-scroll rpt-results native-output" id="report-table" role="region" aria-label="Full experiment results table" tabindex="0"></div>
+              <div class="rpt-bands" id="report-bands"></div>
             </section>
 
             <section class="rpt-section" id="report-health-section" aria-labelledby="rpt-h-health" hidden>
@@ -696,6 +698,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 </div>
 
 <script type="application/json" id="dashboard-data"><!-- DASHBOARD_DATA --></script>
+<script><!-- DASHBOARD_NATIVE --></script>
 <script>
 (function () {
   'use strict';
@@ -734,8 +737,6 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   }
   const metrics = Array.isArray(data.metrics) ? data.metrics : [];
   const metricByKey = new Map(metrics.map((metric) => [metric.key, metric]));
-  const metricByLabel = new Map();
-  for (const metric of metrics) if (!metricByLabel.has(metric.label)) metricByLabel.set(metric.label, metric);
   const scopes = data.scopes && typeof data.scopes === 'object' ? data.scopes : {};
   const scopeKeys = Object.keys(scopes).sort((a, b) => (a === 'overall' ? -1 : b === 'overall' ? 1 : 0));
   const explore = data.explore && typeof data.explore === 'object' ? data.explore : {};
@@ -745,186 +746,11 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   })();
   const fileBase = slug(data.title);
 
-  /* ---------- Native HTML mounting ------------------------------------------ */
-  // Native tables and charts ship with their own ids (random table ids, group checkboxes,
-  // chart clip paths) and their own <style> rules. Mounting rewrites every id to be unique
-  // per mount, rewrites every reference to it, and scopes loose style rules to the mount.
-  const REF_LISTS = ['headers', 'aria-labelledby', 'aria-describedby', 'aria-controls', 'aria-owns', 'aria-flowto', 'aria-details'];
-  const REF_SINGLE = ['for', 'list', 'form', 'aria-activedescendant', 'aria-errormessage'];
-  const URL_REF = /url\(\s*(["']?)#([^"')\s]+)\1\s*\)/g;
-
-  function topSvg(node) {
-    let found = null;
-    for (let n = node; n; n = n.parentElement) if (n.localName === 'svg') found = n;
-    return found;
-  }
-
-  /** Make every id in `root` unique to `prefix`, remap references, return old-id -> new-id. */
-  function remapIds(root, prefix) {
-    const elements = [...root.querySelectorAll('*')];
-    const svgNumbers = new Map();
-    const scopeMaps = new Map();
-    const globalMap = new Map();
-    const assigned = new Map();
-    const used = new Set();
-    for (const node of elements) {
-      const old = node.getAttribute('id');
-      if (!old) continue;
-      const svg = topSvg(node);
-      let scope = '';
-      if (svg) {
-        if (!svgNumbers.has(svg)) svgNumbers.set(svg, svgNumbers.size);
-        scope = 's' + svgNumbers.get(svg) + '_';
-      }
-      const base = prefix + '__' + scope + old;
-      let candidate = base;
-      for (let n = 1; used.has(candidate); ) candidate = base + '_' + ++n;
-      used.add(candidate);
-      assigned.set(node, candidate);
-      if (svg) {
-        if (!scopeMaps.has(svg)) scopeMaps.set(svg, new Map());
-        if (!scopeMaps.get(svg).has(old)) scopeMaps.get(svg).set(old, candidate);
-      }
-      if (!globalMap.has(old)) globalMap.set(old, candidate);
-    }
-    const resolve = (node, old) => {
-      const svg = topSvg(node);
-      const local = svg && scopeMaps.get(svg);
-      return (local && local.get(old)) || globalMap.get(old);
-    };
-    for (const node of elements) {
-      if (assigned.has(node)) node.setAttribute('id', assigned.get(node));
-      for (const attribute of [...node.attributes]) {
-        const name = attribute.name;
-        const value = attribute.value;
-        let next = value;
-        if (name === 'id') continue;
-        if (REF_LISTS.includes(name)) {
-          next = value.split(/\s+/).filter(Boolean).map((token) => resolve(node, token) || token).join(' ');
-        } else if (REF_SINGLE.includes(name)) {
-          next = resolve(node, value.trim()) || value;
-        } else if ((name === 'href' || name === 'xlink:href') && value.charAt(0) === '#') {
-          const target = resolve(node, value.slice(1));
-          if (target) next = '#' + target;
-        } else if (value.indexOf('url(') !== -1) {
-          next = value.replace(URL_REF, (match, quote, id) => {
-            const target = resolve(node, id);
-            return target ? 'url(#' + target + ')' : match;
-          });
-        }
-        if (next !== value) node.setAttribute(name, next);
-      }
-    }
-    return globalMap;
-  }
-
-  function rewriteUrls(text, context) {
-    return text.replace(URL_REF, (match, quote, id) => {
-      const target = context.mapId(id);
-      return target ? 'url(#' + target + ')' : match;
-    });
-  }
-  /** Prefix every selector with the mount host and remap #id / [for=id] to the mount's ids. */
-  function scopeSelectors(text, context) {
-    const host = '#' + context.hostId;
-    // The native stylesheets only use top-level commas, so a plain split is exact.
-    return text.split(',').map((selector) => {
-      const next = selector.trim()
-        .replace(/#((?:\\.|[\w-])+)/g, (match, id) => {
-          const target = context.mapId(id);
-          return target ? '#' + target : match;
-        })
-        .replace(/\[\s*(for|id)\s*=\s*(["']?)([^"'\]\s]+)\2\s*\]/g, (match, name, quote, id) => {
-          const target = context.mapId(id);
-          return target ? '[' + name + '=' + (quote || '"') + target + (quote || '"') + ']' : match;
-        });
-      if (next.startsWith(host + '__')) return next;
-      const root = /^(:root|html|body)(?![\w-])/.exec(next);
-      return root ? host + next.slice(root[0].length) : host + ' ' + next;
-    }).join(', ');
-  }
-  /** Scope style rules in place, descending into @media/@supports/etc. */
-  function scopeRules(rules, context) {
-    for (const rule of rules) {
-      if (typeof rule.selectorText === 'string') rule.selectorText = scopeSelectors(rule.selectorText, context);
-      else if (rule.cssRules) scopeRules(rule.cssRules, context);
-    }
-  }
-  /** Parse with the browser's CSS engine; replaceSync ignores @import, so nothing external loads. */
-  function rewriteCss(css, context) {
-    const sheet = new CSSStyleSheet();
-    sheet.replaceSync(css);
-    scopeRules(sheet.cssRules, context);
-    return rewriteUrls([...sheet.cssRules].map((rule) => rule.cssText).join('\n'), context);
-  }
-
-  // Idempotent display aliases for native column and disclosure titles.
-  const HEADER_ALIASES = { metric: 'Metric', group_id: 'Arm', segment: 'Segment', 'Lift %': 'Relative lift', 'Lift Plot': 'Effect interval' };
-  const SUMMARY_ALIASES = { 'Evidence geometry': 'How to read these intervals', 'Statistical interpretation': 'Methods & assumptions' };
-
-  function lookupMetric(text) {
-    return metricByKey.get(text) || metricByLabel.get(text);
-  }
-
-  /** Replace metric-name cells with labelled controls (interactive) or labels. */
-  function labelMetricCells(host, interactive) {
-    for (const table of host.querySelectorAll('table')) {
-      const headRow = table.querySelector('thead tr:last-child');
-      const columns = [];
-      if (headRow) [...headRow.children].forEach((th, index) => { if (/^metrics?$/i.test(th.textContent.trim())) columns.push(index); });
-      if (!columns.length) columns.push(0);
-      for (const row of table.querySelectorAll('tbody > tr')) {
-        for (const index of columns) {
-          const cell = row.children[index];
-          if (!cell) continue;
-          const metric = lookupMetric(cell.textContent.trim());
-          if (!metric) continue;
-          const control = el(interactive ? 'button' : 'span', { className: 'metric-select' },
-            el('strong', { text: metric.label }),
-            metric.label !== metric.key ? el('small', { text: metric.key }) : null);
-          if (interactive) {
-            control.type = 'button';
-            control.dataset.metric = metric.key;
-            control.setAttribute('aria-pressed', 'false');
-            control.setAttribute('aria-controls', 'inspector');
-            row.dataset.metric = metric.key;
-            row.classList.add('metric-row');
-          }
-          cell.replaceChildren(control);
-        }
-      }
-    }
-  }
-
-  /**
-   * Mount Python-rendered HTML into `host` (its id is the id prefix, so it must be unique).
-   * options.metrics: false | 'label' | 'select' controls how metric-name cells render.
-   */
-  function mountNative(host, html, options) {
-    const settings = options || {};
-    const template = document.createElement('template');
-    template.innerHTML = str(html);
-    const fragment = template.content;
-    for (const script of fragment.querySelectorAll('script')) script.remove();
-    const ids = remapIds(fragment, host.id);
-    const context = { hostId: host.id, mapId: (id) => ids.get(id) };
-    for (const style of fragment.querySelectorAll('style')) style.textContent = rewriteCss(style.textContent, context);
-    host.replaceChildren(fragment);
-    for (const th of host.querySelectorAll('thead th')) {
-      const alias = own(HEADER_ALIASES, th.textContent.trim());
-      if (alias) th.textContent = alias;
-    }
-    for (const summary of host.querySelectorAll('summary')) {
-      const alias = own(SUMMARY_ALIASES, summary.textContent.trim());
-      if (alias) summary.textContent = alias;
-    }
-    for (const table of host.querySelectorAll('table')) {
-      const headRow = table.querySelector('thead tr:last-child');
-      if (headRow) table.dataset.cols = String(headRow.children.length);
-    }
-    if (settings.metrics) labelMetricCells(host, settings.metrics === 'select');
-    return host;
-  }
+  /* ---------- Native HTML mounting ------------------------------------------- */
+  // Id rewriting, CSS scoping, title aliases and metric controls live in the native adapter
+  // (_native.js, embedded above). Metric cells are recognised only by the renderer's explicit
+  // data-inc-metric marks, never by their text.
+  const { mountNative, planBands, keepColumns } = createNativeAdapter({ metricByKey, el, str, own });
 
   /* ---------- CSV downloads (object URLs, released when replaced or on unload) */
   const downloads = [];
@@ -1259,19 +1085,34 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     if (VIEWS.includes(view) && view !== currentView) showView(view);
   });
 
-  /* ---------- Print (Report only, exactly one A4 page) ----------------------- */
+  /* ---------- Print (Report: one A4 page while readable, else multi-page) ---- */
   // The browser lays out print pages only after `beforeprint`, and scripts cannot measure that
-  // layout, so the fit is measured here instead: the report is laid out invisibly at the exact
-  // A4 content width (same typography as on paper) with every group and disclosure expanded.
-  // If the real report is taller or wider than the page, `--rpt-fit-w` / `--rpt-fit-scale` make the
-  // print stylesheet zoom the whole paper uniformly onto the page; nothing is clipped or hidden.
+  // layout, so the layout is measured here instead: the report is laid out invisibly at the exact
+  // A4 content width (same typography as on paper) with every group and disclosure expanded and
+  // every text element raised to the configured font floor (--inc-dashboard-print-min-font-size).
+  //   single: the whole paper fits one page by a uniform zoom that keeps its smallest reader text
+  //           at or above the floor. --rpt-fit-w / --rpt-fit-scale make the print stylesheet apply it.
+  //   multi:  fitting would shrink text below the floor, so the paper keeps readable type and
+  //           flows over several pages (headers repeat, rows never split).
+  // A table too wide to shrink readably is split into column bands (identity columns repeated)
+  // so no column is clipped. Bands, raised text and expansion exist only while measuring or
+  // printing and are undone afterwards; the theme, tab and the reader's own folds are untouched.
   // PAGE_MARGIN_MM must match `@page { margin }` in the stylesheet.
   const PAGE_MARGIN_MM = 12;
   const SHEET_MM = { width: 210 - 2 * PAGE_MARGIN_MM, height: 297 - 2 * PAGE_MARGIN_MM };
   // A little slack below the page so print-engine rounding can never spill onto a second sheet.
   const FIT_HEADROOM = 0.985;
+  const DEFAULT_MIN_FONT_PX = (8 * 4) / 3;
   let printing = false;
   let releaseExpanded = null;
+  let fitTimer = 0;
+
+  /** The generated print font floor in CSS pixels (8pt when the theme variable is absent). */
+  function minFontPx() {
+    const raw = window.getComputedStyle(document.documentElement).getPropertyValue('--inc-dashboard-print-min-font-size');
+    const value = parseFloat(raw);
+    return value > 0 ? value : DEFAULT_MIN_FONT_PX;
+  }
 
   /** Expand every closed disclosure and role group in the Report; returns the undo function. */
   function expandReport() {
@@ -1296,49 +1137,136 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     return rect;
   }
 
-  /** Measure the expanded report at A4 width and publish the uniform fit for the print stylesheet. */
+  /** Laid-out HTML elements of the paper that directly hold text (SVG labels scale with their chart). */
+  function reportText(paper) {
+    const found = [];
+    for (const node of paper.querySelectorAll('*')) {
+      if (node.closest('svg, .sr-only, .ct-caret')) continue;
+      if (![...node.childNodes].some((child) => child.nodeType === 3 && child.nodeValue.trim())) continue;
+      if (node.getClientRects().length) found.push(node);
+    }
+    return found;
+  }
+
+  function smallestFont(nodes) {
+    let smallest = Infinity;
+    for (const node of nodes) smallest = Math.min(smallest, parseFloat(window.getComputedStyle(node).fontSize) || Infinity);
+    return smallest;
+  }
+
+  /** Mark every report text element below the floor; the print/measuring CSS raises marked ones. */
+  function markFloor(paper, minPx) {
+    for (const node of paper.querySelectorAll('[data-inc-floor]')) node.removeAttribute('data-inc-floor');
+    for (const node of reportText(paper)) {
+      if (parseFloat(window.getComputedStyle(node).fontSize) < minPx - 0.01) node.setAttribute('data-inc-floor', '');
+    }
+  }
+
+  /** Plan column bands for the report table, measured at its natural width, or null. */
+  function planReportBands(paper, available) {
+    if (typeof report.results !== 'string' || report.results === '') return null;
+    paper.classList.add('rpt-natural');
+    try {
+      return planBands($('report-table'), available);
+    } finally {
+      paper.classList.remove('rpt-natural');
+    }
+  }
+
+  function clearBands(paper) {
+    paper.removeAttribute('data-banded');
+    $('report-bands').replaceChildren();
+  }
+
+  /**
+   * Mount one fully expanded copy of the results table per band. They stay hidden on screen; only
+   * the measurement and the print stylesheet swap them in for #report-table (data-banded).
+   */
+  function installBands(paper, plan) {
+    const container = $('report-bands');
+    plan.forEach((columns, index) => {
+      const host = el('div', { id: 'report-table-band-' + (index + 1), className: 'rpt-slot rpt-results rpt-band native-output' });
+      container.append(host);
+      mountNative(host, report.results, { metrics: 'label' });
+      keepColumns(host, columns);
+      for (const box of host.querySelectorAll('.ct-group-state')) box.checked = false;
+    });
+    paper.setAttribute('data-banded', '');
+  }
+
+  /** Measure the expanded report at A4 width and publish the fit, mode and bands for printing. */
   function fitSheet() {
+    if (!mounted.has('report')) return;
     const sheet = sheetSize();
     if (!(sheet.width > 0 && sheet.height > 0)) return;
     const panel = $('panel-report');
     const paper = $('report-paper');
     const release = printing ? null : expandReport();
-    let width = sheet.width;
-    let height = 0;
-    let scale = 1;
+    const minPx = minFontPx();
+    let outcome = null;
+    clearBands(paper);
     panel.classList.add('rpt-measuring');
     paper.style.zoom = '1';
+    paper.style.width = sheet.width + 'px';
     try {
-      paper.style.width = width + 'px';
-      height = paper.getBoundingClientRect().height;
-      const needed = Math.ceil(paper.scrollWidth);
-      if (needed > Math.ceil(width)) {
-        width = needed;
-        paper.style.width = width + 'px';
-        height = paper.getBoundingClientRect().height;
-      }
-      if (height > 0) {
-        const targetHeight = sheet.height * FIT_HEADROOM;
-        scale = Math.min(1, sheet.width / width, targetHeight / height);
-        // Zoom snaps table borders and fonts to device pixels, so its height is not linear.
-        // Measure the scaled layout too; a ratio from the unscaled height can spill a footer.
-        for (let attempt = 0; attempt < 6; attempt++) {
-          paper.style.zoom = String(scale);
-          const rect = paper.getBoundingClientRect();
-          const correction = Math.min(1, sheet.width / rect.width, targetHeight / rect.height);
-          if (correction >= 1) break;
-          scale *= correction;
+      const measure = () => ({ needed: Math.ceil(paper.scrollWidth), height: paper.getBoundingClientRect().height });
+      // The least the smallest reader text may be scaled to without dropping below the floor.
+      const readableScale = () => Math.min(1, minPx / (smallestFont(reportText(paper)) || minPx));
+      markFloor(paper, minPx);
+      let size = measure();
+      let banded = false;
+      if ($('report-table').querySelector('table')) {
+        const plan = planReportBands(paper, sheet.width);
+        if (plan) {
+          installBands(paper, plan);
+          markFloor(paper, minPx);
+          size = measure();
+          banded = true;
         }
+      }
+      const floorScale = readableScale();
+      if (size.height > 0) {
+        const width = Math.max(sheet.width, size.needed);
+        paper.style.width = width + 'px';
+        const height = paper.getBoundingClientRect().height;
+        const targetHeight = sheet.height * FIT_HEADROOM;
+        let scale = Math.min(1, sheet.width / width, targetHeight / height);
+        let single = scale >= floorScale - 0.001;
+        if (single) {
+          // Zoom snaps table borders and fonts to device pixels, so its height is not linear.
+          // Measure the scaled layout too; a ratio from the unscaled height can spill a footer.
+          for (let attempt = 0; attempt < 6; attempt++) {
+            paper.style.zoom = String(scale);
+            const rect = paper.getBoundingClientRect();
+            const correction = Math.min(1, sheet.width / rect.width, targetHeight / rect.height);
+            if (correction >= 1) break;
+            scale *= correction;
+          }
+          single = scale >= floorScale - 0.001;
+        }
+        // Pagination preserves readable type even when the screen theme requests oversized spacing.
+        scale = Math.max(floorScale, single ? scale : Math.min(1, sheet.width / width));
+        outcome = { width, scale, single, banded, pages: single ? 1 : Math.max(2, Math.ceil((height * scale) / sheet.height)) };
       }
     } finally {
       paper.style.width = '';
       paper.style.zoom = '';
+      paper.classList.remove('rpt-natural');
       panel.classList.remove('rpt-measuring');
       if (release) release();
     }
-    if (!(height > 0)) return;
-    paper.style.setProperty('--rpt-fit-w', width + 'px');
-    paper.style.setProperty('--rpt-fit-scale', String(scale));
+    if (!outcome) return;
+    paper.style.setProperty('--rpt-fit-w', outcome.width + 'px');
+    paper.style.setProperty('--rpt-fit-scale', String(outcome.scale));
+    paper.dataset.printMode = outcome.single ? 'single' : 'multi';
+    $('report-print-note').textContent = outcome.single
+      ? 'One-page summary'
+      : 'Multi-page print (about ' + outcome.pages + ' pages)' + (outcome.banded ? ', wide table split' : '');
+  }
+
+  function scheduleFit() {
+    window.clearTimeout(fitTimer);
+    fitTimer = window.setTimeout(() => { if (!printing) fitSheet(); }, 120);
   }
 
   function preparePrint() {
@@ -1363,6 +1291,13 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     const onChange = (event) => (event.matches ? preparePrint() : endPrint());
     if (query.addEventListener) query.addEventListener('change', onChange);
     else if (query.addListener) query.addListener(onChange);
+  }
+  // The fit depends on glyph metrics and on the device pixel grid, so measure again once web fonts
+  // arrive and whenever the viewport (and with it zoom or pixel ratio) changes.
+  window.addEventListener('resize', scheduleFit);
+  if (document.fonts) {
+    if (document.fonts.ready) document.fonts.ready.then(scheduleFit);
+    if (document.fonts.addEventListener) document.fonts.addEventListener('loadingdone', scheduleFit);
   }
 
   /* ---------- Fit the embedding iframe to the content ------------------------ */

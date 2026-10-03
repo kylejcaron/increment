@@ -2,14 +2,8 @@
 :root {
   --marimo-text-font: system-ui, -apple-system, "Segoe UI", sans-serif;
   --marimo-heading-font: Georgia, "Iowan Old Style", serif;
-  --inc-dashboard-notebook-canvas: #f4f6fa;
-  --inc-dashboard-notebook-text: #1b2a43;
 }
 
-:root:has(iframe[data-inc-dashboard-theme="dark"]) {
-  --inc-dashboard-notebook-canvas: #0c1322;
-  --inc-dashboard-notebook-text: #eef3ff;
-}
 
 #App {
   background: var(--inc-dashboard-notebook-canvas);

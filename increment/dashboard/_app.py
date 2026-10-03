@@ -17,6 +17,7 @@ import json
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping
+from dataclasses import asdict
 from importlib import resources
 from typing import TYPE_CHECKING, Any
 
@@ -31,37 +32,39 @@ from increment.dashboard._data import (
     readout_csv,
     row_for_metric,
 )
-from increment.dashboard._html import (
-    _allocation_evidence,
-    _allocation_grain_label,
-    _confidence_set_text,
-    _count,
-    _date,
-    _effect,
-    _esc,
-    _headline_interval,
-    _inference_word,
-    _is_missing,
-    _levels_by_metric,
-    _missing,
-    _monitoring_sentence,
-    _null_text,
-    _population_label,
-    _primary_method,
-    _primary_tone,
-    _result_caveats,
-    _tail_word,
-    _timestamp,
-    dashboard_styles,
+from increment.dashboard._format import (
+    allocation_evidence,
+    allocation_grain_label,
+    confidence_set_text,
+    count_text,
+    date_label,
+    effect_html,
+    esc,
     has_open_side,
+    headline_interval,
+    inference_word,
+    is_missing,
+    levels_by_metric,
+    missing_html,
+    monitoring_sentence,
+    null_text,
+    population_label,
+    primary_method,
+    primary_tone,
+    result_caveats,
+    robust_fence,
+    tail_word,
+    timestamp_label,
+)
+from increment.dashboard._html import (
     render_details,
     render_health,
     render_metric_details,
     results_notes,
     results_table,
-    robust_fence,
     temporal_figure,
 )
+from increment.dashboard._theme import theme_css, theme_from_payload
 from increment.errors import CodedError
 
 if TYPE_CHECKING:
@@ -114,7 +117,18 @@ def document(payload: Mapping[str, Any]) -> str:
         ("\u2029", "\\u2029"),
     ):
         text = text.replace(raw, escaped)
-    return template.replace(_MARKER, text, 1)
+    replacements = {
+        _MARKER: text,
+        "<!-- DASHBOARD_THEME -->": theme_css(theme_from_payload(payload.get("theme"))),
+        "<!-- DASHBOARD_STYLES -->": _stylesheet(),
+        "<!-- DASHBOARD_NATIVE -->": resources.files(__package__)
+        .joinpath("_native.js")
+        .read_text(encoding="utf-8"),
+    }
+    for marker, value in replacements.items():
+        assert template.count(marker) == 1, f"the packaged dashboard shell requires one {marker}"
+        template = template.replace(marker, value, 1)
+    return template
 
 
 def build_payload(analysis: Analysis, *, snapshot: DashboardSnapshot) -> dict[str, Any]:
@@ -132,6 +146,7 @@ def build_payload(analysis: Analysis, *, snapshot: DashboardSnapshot) -> dict[st
     table = results_table(snapshot)
     return {
         "title": snapshot.title,
+        "theme": asdict(snapshot.config.theme),
         "description": snapshot.description or "",
         "meta": _meta(snapshot),
         "primary": _primary(snapshot),
@@ -188,21 +203,21 @@ def _primary(snapshot: DashboardSnapshot) -> dict[str, Any]:
     return {
         "key": key,
         "label": _label(key),
-        "effect": _plain(_effect(row)),
-        "interval": _plain(_headline_interval(row)),
-        "levelLabel": None if level is None or _is_missing(level) else _percent(float(level)),
-        "method": _plain(_primary_method(row)),
-        "tone": _primary_tone(row),
+        "effect": _plain(effect_html(row)),
+        "interval": _plain(headline_interval(row)),
+        "levelLabel": None if level is None or is_missing(level) else _percent(float(level)),
+        "method": _plain(primary_method(row)),
+        "tone": primary_tone(row),
     }
 
 
 def _meta(snapshot: DashboardSnapshot) -> str:
-    parts = [f"{_date(snapshot.start)} → {_date(snapshot.end)}"]
+    parts = [f"{date_label(snapshot.start)} → {date_label(snapshot.end)}"]
     if snapshot.allocation is not None:
         units = sum(snapshot.allocation.observed.values())
-        parts.append(f"{_count(units)} assigned {_allocation_grain_label(snapshot.allocation)}")
+        parts.append(f"{count_text(units)} assigned {allocation_grain_label(snapshot.allocation)}")
     kinds = sorted({str(row.get("inference", "fixed")) for row in snapshot.readout_rows})
-    parts.append(", ".join(_inference_word(kind) for kind in kinds) or "fixed-horizon")
+    parts.append(", ".join(inference_word(kind) for kind in kinds) or "fixed-horizon")
     if snapshot.config.source_label:
         parts.append(snapshot.config.source_label)
     return " · ".join(parts)
@@ -224,9 +239,11 @@ def health_status(snapshot: DashboardSnapshot) -> dict[str, str]:
         }
     weights = snapshot.config.expected_allocation
     total = sum(weights.values())
-    observed = " / ".join(f"{arm} {_count(units)}" for arm, units in allocation.observed.items())
+    observed = " / ".join(
+        f"{arm} {count_text(units)}" for arm, units in allocation.observed.items()
+    )
     target = " / ".join(f"{arm} {weight / total:.0%}" for arm, weight in weights.items())
-    summary = f"Assigned {observed} (target {target}). {_allocation_evidence(allocation)}"
+    summary = f"Assigned {observed} (target {target}). {allocation_evidence(allocation)}"
     warnings = _allocation_warnings(snapshot, allocation)
     if allocation.is_srm:
         label = "Sample ratio mismatch"
@@ -237,7 +254,7 @@ def health_status(snapshot: DashboardSnapshot) -> dict[str, str]:
             "kind": "healthy",
             "label": "Allocation check passed",
             "detail": (
-                f"No allocation issue detected among {_count(sum(allocation.observed.values()))} "
+                f"No allocation issue detected among {count_text(sum(allocation.observed.values()))} "
                 f"assigned units. {summary} This checks assignment balance only; it does not "
                 "validate any other experiment assumption."
             ),
@@ -250,10 +267,12 @@ def _allocation_warnings(snapshot: DashboardSnapshot, allocation: SRMResult) -> 
     if allocation.is_srm:
         warnings.append("Sample ratio mismatch detected in assigned units.")
     if allocation.unassigned_units:
-        warnings.append(f"{_count(allocation.unassigned_units)} units are not assigned to any arm.")
+        warnings.append(
+            f"{count_text(allocation.unassigned_units)} units are not assigned to any arm."
+        )
     if allocation.mixed_assignment_units:
         warnings.append(
-            f"{_count(allocation.mixed_assignment_units)} units appear in more than one arm."
+            f"{count_text(allocation.mixed_assignment_units)} units appear in more than one arm."
         )
     if allocation.low_expected_count:
         warnings.append("A small expected arm count limits the allocation check.")
@@ -261,7 +280,7 @@ def _allocation_warnings(snapshot: DashboardSnapshot, allocation: SRMResult) -> 
         warnings.append("Allocation history is unavailable.")
     elif not snapshot.allocation_history:
         warnings.append("No enrollment history was captured.")
-    caveats = len(_result_caveats(snapshot.readout_rows))
+    caveats = len(result_caveats(snapshot.readout_rows))
     if caveats:
         warnings.append(f"{caveats} result caveat{'s' if caveats != 1 else ''} listed in Health.")
     return warnings
@@ -285,8 +304,8 @@ def _report_context(snapshot: DashboardSnapshot) -> str:
     """Comparison, population, capture time and source for the printed report."""
     parts = [
         f"{snapshot.treatment_group} vs {snapshot.control_group}",
-        _plain(_population_label(snapshot)),
-        f"captured {_plain(_timestamp(snapshot.computed_at))}",
+        _plain(population_label(snapshot)),
+        f"captured {_plain(timestamp_label(snapshot.computed_at))}",
     ]
     if snapshot.config.source_label:
         parts.append(snapshot.config.source_label)
@@ -326,9 +345,9 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
     groups: dict[str, list[str]] = {}
     for row in rows:
         level = row.get("level")
-        prefix = "" if level is None or _is_missing(level) else f"{_percent(float(level))} "
-        kind = _inference_word(str(row.get("inference", "fixed")))
-        names = groups.setdefault(f"{prefix}{kind} intervals, {_tail_word(row)}", [])
+        prefix = "" if level is None or is_missing(level) else f"{_percent(float(level))} "
+        kind = inference_word(str(row.get("inference", "fixed")))
+        names = groups.setdefault(f"{prefix}{kind} intervals, {tail_word(row)}", [])
         if name(row) not in names:
             names.append(name(row))
     if len(groups) == 1:
@@ -339,12 +358,12 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
             + "; ".join(f"{label} ({', '.join(names)})" for label, names in groups.items())
             + "."
         ]
-    levels = {float(row["level"]) for row in rows if not _is_missing(row.get("level"))}
+    levels = {float(row["level"]) for row in rows if not is_missing(row.get("level"))}
     if len(levels) > 1:
         notes.append("Interval levels differ; compare each interval only with its own level.")
     kinds = dict.fromkeys(str(row.get("inference", "fixed")) for row in rows)
     notes.extend(
-        _INFERENCE_STATEMENTS.get(kind, f"Inference: {_inference_word(kind)}.") for kind in kinds
+        _INFERENCE_STATEMENTS.get(kind, f"Inference: {inference_word(kind)}.") for kind in kinds
     )
     if any(row.get("alternative") in ("greater", "less") for row in rows):
         notes.append(
@@ -354,10 +373,10 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
     if any(row.get("role") == "guardrail" for row in rows):
         notes.append("A guardrail that does not reject is not evidence of no harm.")
     shifted = [
-        f"{name(row)} {_null_text(row)}"
+        f"{name(row)} {null_text(row)}"
         for row in rows
-        if not _is_missing(row.get("null_abs"))
-        or not (_is_missing(row.get("null_lift")) or row.get("null_lift") == 0)
+        if not is_missing(row.get("null_abs"))
+        or not (is_missing(row.get("null_lift")) or row.get("null_lift") == 0)
     ]
     if shifted:
         notes.append(f"Non-zero null boundaries: {'; '.join(shifted)}.")
@@ -374,11 +393,11 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
     if any(row.get("family_guarantee") == "asymptotic_sequential" for row in rows):
         notes.append("The sequential family guarantee is asymptotic, not finite-sample.")
     for row in rows:
-        confidence_set = _confidence_set_text(row)
+        confidence_set = confidence_set_text(row)
         retained = _plain(confidence_set) if confidence_set else ""
         if retained:
             notes.append(f"{name(row)}: {retained}")
-        for caveat in _result_caveats([row]):
+        for caveat in result_caveats([row]):
             reason = _plain(caveat).partition(": ")[2]
             if reason and reason not in retained:
                 notes.append(f"{name(row)}: {reason}")
@@ -391,14 +410,14 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
 @functools.cache
 def _stylesheet() -> str:
     """The dashboard stylesheet, comments and indentation removed to keep payloads small."""
-    css = dashboard_styles().text
+    css = resources.files(__package__).joinpath("_dashboard.css").read_text(encoding="utf-8")
     css = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
     return re.sub(r"\s*([{};])\s*", r"\1", re.sub(r"\s+", " ", css))
 
 
 def _styled(fragment: str) -> str:
-    """A production HTML fragment carrying its own scoped styles."""
-    return f'<div class="inc-dashboard-root">{_stylesheet()}{fragment}</div>'
+    """Wrap a native fragment; the document owns shared section styles."""
+    return f'<div class="inc-dashboard-root">{fragment}</div>'
 
 
 # Explore
@@ -523,8 +542,8 @@ def _refusal_entry(
     )
     return {
         "html": _styled(
-            f'<p class="inc-dashboard-note">{_missing(reason)}</p>'
-            f'<p class="inc-dashboard-note">{_esc(substitute)}</p>'
+            f'<p class="inc-dashboard-note">{missing_html(reason)}</p>'
+            f'<p class="inc-dashboard-note">{esc(substitute)}</p>'
         ),
         "caption": reason,
         "notes": [reason, substitute],
@@ -552,7 +571,7 @@ def _render_entry(
     if not rows:
         reason = "The engine returned no points for this state."
         return {
-            "html": _styled(f'<p class="inc-dashboard-note">{_missing(reason)}</p>'),
+            "html": _styled(f'<p class="inc-dashboard-note">{missing_html(reason)}</p>'),
             "caption": f"{subject} · {title} · no points",
             "notes": [reason],
             "pointCount": 0,
@@ -563,7 +582,7 @@ def _render_entry(
     series = len({(row.dimension_value, row.group_id) for row in rows})
     caption = (
         f"{subject} · {title} · {_day(first)} → {_day(last)} · "
-        f"{series} series · {_monitoring_sentence(rows, view=view)}"
+        f"{series} series · {monitoring_sentence(rows, view=view)}"
     )
     return {
         "html": _styled(figure + gaps),
@@ -594,7 +613,7 @@ def _notes(
     ]
     level_text = ", ".join(_percent(level) for level in sorted({level for _, level in levelled}))
     segments = sorted({str(row.dimension_value) for row in rows}) if segmented else []
-    notes = [_monitoring_sentence(rows, view=view)]
+    notes = [monitoring_sentence(rows, view=view)]
     if view != "daily_values":
         notes.append(
             "Completed windows only: a unit joins once its whole outcome window has closed, so "
@@ -614,7 +633,7 @@ def _notes(
         )
     if level_text:
         notes.append(
-            f"Intervals are at level {_levels_by_metric(levelled, _percent)}. "
+            f"Intervals are at level {levels_by_metric(levelled, _percent)}. "
             + (
                 "They describe the lift of each point, one look at a time."
                 if lift
@@ -622,9 +641,7 @@ def _notes(
             )
         )
     if segmented:
-        notes.append(
-            _segment_note(snapshot, rows, metric, segments, level_text, correction, lift=lift)
-        )
+        notes.append(_segment_note(snapshot, metric, segments, level_text, correction, lift=lift))
     if lift:
         notes.extend(_lift_notes(snapshot, rows, metric, segmented=segmented))
     return notes
@@ -632,7 +649,6 @@ def _notes(
 
 def _segment_note(
     snapshot: DashboardSnapshot,
-    rows: list[Any],
     metric: str,
     segments: list[str],
     level_text: str,
@@ -655,7 +671,7 @@ def _segment_note(
     level = None if headline is None else headline.get("level")
     versus = (
         ""
-        if level is None or _is_missing(level)
+        if level is None or is_missing(level)
         else f" (the headline uses {_percent(float(level))})"
     )
     declared = f" ({correction})" if correction else ""
@@ -694,7 +710,7 @@ def _lift_notes(
             "drawn, as its own labelled line."
         )
     headline = row_for_metric(snapshot, metric)
-    if not segmented and headline is not None and not _is_missing(headline.get("lift")):
+    if not segmented and headline is not None and not is_missing(headline.get("lift")):
         latest = max(
             (row for row in rows if row.group_id == headline["group_id"]),
             key=lambda row: row.ds,

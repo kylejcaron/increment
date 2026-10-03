@@ -27,6 +27,7 @@ from increment.breakout.estimates import (
     DailyMetricValues,
     LiftEstimates,
 )
+from increment.dashboard._theme import MIDNIGHT, DashboardTheme, require_theme
 from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec, _freeze, refuse
 from increment.estimation.diagnostics import SRMResult
 from increment.tables import estimates_to_readout
@@ -154,6 +155,7 @@ class DashboardConfig:
     source_label: str = ""
     provenance: Mapping[str, str] = field(default_factory=dict)
     metric_units: Mapping[str, str] = field(default_factory=dict)
+    theme: DashboardTheme = MIDNIGHT
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -161,6 +163,7 @@ class DashboardConfig:
         )
         object.__setattr__(self, "provenance", _validated_provenance(self.provenance))
         object.__setattr__(self, "metric_units", _validated_units(self.metric_units))
+        require_theme(self.theme)
         if self.title is not None and not self.title.strip():
             refuse(_INVALID_CONFIG, reason="title must be a non-empty string when supplied")
 

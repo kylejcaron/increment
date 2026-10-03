@@ -59,10 +59,10 @@ render_dashboard(analysis, snapshot=snapshot)
 Put preparation and rendering in separate notebook cells.
 Install your warehouse's Ibis backend separately.
 
-The Paper & Ink styling uses warm paper surfaces, serif headings, muted
-charts, and light section rules. The complete dashboard embeds its HTML,
-styles, and browser controls; no external browser packages or Studio server
-are required. The example's small host stylesheet stays beside the notebook.
+The default preset pairs **Midnight · Daylight** with **Midnight**. The
+complete dashboard embeds its theme, shared section stylesheet, native-table
+adapter, and browser controls; no external browser packages or Studio server
+are required. The example's host stylesheet stays beside the notebook.
 
 `prepare_dashboard` is the headline computation boundary. It validates the
 experiment and config, then invokes one source-owned snapshot operation.
@@ -118,12 +118,56 @@ metric names and empty labels are refused before source reads. Conversion and
 retention values use percentages; other metrics use explicit units or the
 generic label `value`. Currency is never inferred from a metric's name.
 
+## Theme presets
+
+`DashboardConfig.theme` accepts an immutable `DashboardTheme`. Start from
+`MIDNIGHT` and replace only the categories you want to change:
+
+```python
+from dataclasses import replace
+from increment.dashboard import MIDNIGHT, DashboardConfig
+
+editorial = replace(
+    MIDNIGHT,
+    name="Editorial",
+    light=replace(MIDNIGHT.light, accent="#9b4d18", canvas="#fff7ed"),
+    dark=replace(MIDNIGHT.dark, accent="#ffb66b", canvas="#152923"),
+    typography=replace(MIDNIGHT.typography, heading_font="Arial, sans-serif"),
+    layout=replace(MIDNIGHT.layout, page_padding=28, radius=10),
+    charts=replace(MIDNIGHT.charts, forest_width=333),
+    printing=replace(MIDNIGHT.printing, min_font_size_pt=9),
+)
+config = DashboardConfig(
+    expected_allocation={"control": 1, "treatment": 1},
+    theme=editorial,
+)
+```
+
+| Category | Controls |
+|---|---|
+| `light`, `dark` (`DashboardPalette`) | Semantic colors for surfaces, text, arms, and evidence direction. |
+| `typography` (`DashboardTypography`) | Body, heading, and monospace font stacks; body, table, estimate, and interval text sizes. |
+| `layout` (`DashboardLayout`) | Dashboard and standalone-section widths, page padding, corner radius, and native-table cell padding. |
+| `charts` (`DashboardCharts`) | Headline and segment forests, lift trajectories, absolute trajectories, and allocation-chart dimensions. |
+| `printing` (`DashboardPrint`) | Report prose and numeric-evidence font floor, in points. |
+
+Dimensions and screen text sizes use CSS pixels. Colors must be hexadecimal;
+font stacks cannot contain CSS rules. Invalid categories or values use
+`InvalidRequestError` (`dashboard.invalid_theme`) before source reads.
+Replacing a preset never mutates `MIDNIGHT` or changes captured evidence.
+The same categories drive native plots and the browser shell; exported
+dashboards carry their configuration and need no separate theme files.
+
+For standalone sections, emit `dashboard_styles(theme=config.theme)` once
+alongside the section outputs. Its tokens are scoped to `.inc-dashboard-root`
+and do not restyle the notebook canvas.
+
 ## Sections
 
 | Call | Renders |
 |---|---|
-| `render_dashboard(analysis, snapshot=...)` | The complete interactive four-tab dashboard. Prepares declared temporal choices once; embeds native plots, scoped controls, metric inspectors, health, provenance, and a one-page Report with the full captured metric family. |
-| `dashboard_styles()` | The packaged, scoped stylesheet as one style block. Reads `_dashboard.css` with `importlib.resources`, so it needs no repository-relative path. |
+| `render_dashboard(analysis, snapshot=...)` | The complete interactive four-tab dashboard. Prepares declared temporal choices once; embeds native plots, scoped controls, metric inspectors, health, provenance, and a readable Report with the full captured metric family. |
+| `dashboard_styles(theme=MIDNIGHT)` | The configured theme and scoped stylesheet as one style block. Reads packaged resources, so it needs no repository-relative path. |
 | `render_header(snapshot)` | Experiment identity, window, population, inference, arms, and three summary cards: enrolled units, observed arm split, and a compact primary lift with its bracketed interval and direction-aware significance status. |
 | `render_health(snapshot)` | Visual allocation bars with target markers, the SRM verdict, and visible assignment warnings and result caveats. Allocation over time and evidence expands to a CoefTable with one row per variant, cumulative enrolled share, and the check statistics. |
 | `render_results(snapshot)` | The whole declared family through CoefTable, grouped by role, with forest plots and an explicit adverse-guardrail callout. Redundant confidence, significance, and confidence-set display columns are omitted; levels and interpretation remain in notes and CSV. |
@@ -290,8 +334,9 @@ Both live notebooks and static HTML exports contain the prepared **Readout**,
 relative/absolute, daily/cumulative, and maturity controls select embedded
 evidence in the browser; no Python kernel is needed after export.
 
-The dashboard uses **Midnight · Daylight** in light mode and **Midnight** in
-dark mode. The masthead toggle changes tables, charts, and surrounding
+By default, the dashboard uses **Midnight · Daylight** in light mode and
+**Midnight** in dark mode; custom presets supply their own paired palettes.
+The masthead toggle changes tables, charts, and surrounding
 surfaces without changing the captured analysis or current selections.
 It follows the operating-system preference until you choose a mode, then
 remembers that choice in browser storage when available. The same toggle
@@ -308,11 +353,17 @@ captured uncertainty interval; the Report uses smaller, muted interval text.
 Tables omit the repeated **Confidence** column without changing statistical
 metadata or interval levels.
 
-Report is a one-page summary: every metric result and interval, compact
-allocation health, essential inference notes, and source/capture context.
-**Print / Save PDF** fits the summary to one A4 page without clipping metric
-rows. Large families may require smaller print type. Detailed policies,
-observed arm data, allocation history, and provenance remain in
+Report retains every metric result and interval, compact allocation health,
+essential inference notes, and source/capture context. **Print / Save PDF**
+uses one A4 page when the report fits without taking prose or numeric
+evidence below `theme.printing.min_font_size_pt` (8pt by default). Larger
+families flow across pages with repeated table headers instead of shrinking
+the evidence. Over-wide tables split into column bands that repeat metric
+and arm identity; report whitespace is bounded for the page. Plot axes
+retain their native chart styling.
+
+Printing expands folded groups and restores them afterwards. Detailed
+policies, observed arm data, allocation history, and provenance remain in
 Readout, metric inspection, Explore, and Health rather than filling the PDF.
 
 The full-readout CSV download belongs to Report, not Readout. Explore retains

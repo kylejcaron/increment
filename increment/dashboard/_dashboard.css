@@ -2,38 +2,35 @@
    Every rule is prefixed inc-dashboard- so a notebook's other output and
    marimo's own chrome are untouched. */
 
-/* Section properties alias the shell's canonical --inc-dashboard-theme-<role>
-   palette, so Daylight/Midnight govern every native surface. Each alias carries
-   the Daylight value as fallback so a section rendered outside the shell stays
-   usable. Keep these fallbacks identical to _THEME_FALLBACKS in _html.py. */
+/* Section aliases inherit the preset generated at the document or notebook boundary. */
 .inc-dashboard-root {
-  --inc-dashboard-canvas: var(--inc-dashboard-theme-canvas, #f4f6fa);
-  --inc-dashboard-panel: var(--inc-dashboard-theme-panel, #ffffff);
-  --inc-dashboard-text: var(--inc-dashboard-theme-text, #1b2a43);
-  --inc-dashboard-muted: var(--inc-dashboard-theme-muted, #586b84);
-  --inc-dashboard-accent: var(--inc-dashboard-theme-accent, #386ba8);
-  --inc-dashboard-control: var(--inc-dashboard-theme-control, #8170b1);
-  --inc-dashboard-treatment: var(--inc-dashboard-theme-treatment, #3776b9);
-  --inc-dashboard-favorable: var(--inc-dashboard-theme-favorable, #087f52);
-  --inc-dashboard-warning: var(--inc-dashboard-theme-inconclusive, #906527);
-  --inc-dashboard-unfavorable: var(--inc-dashboard-theme-unfavorable, #be3547);
-  --inc-dashboard-inconclusive: var(--inc-dashboard-theme-inconclusive, #906527);
-  --inc-dashboard-inconclusive-bg: var(--inc-dashboard-theme-inconclusive-bg, #fff7e9);
-  --inc-dashboard-favorable-bg: var(--inc-dashboard-theme-favorable-bg, #eafbf2);
-  --inc-dashboard-unfavorable-bg: var(--inc-dashboard-theme-unfavorable-bg, #fff0f2);
-  --inc-dashboard-rule: var(--inc-dashboard-theme-rule, #dbe3ef);
-  --inc-dashboard-band: var(--inc-dashboard-theme-band, #f8fafe);
-  --inc-dashboard-column: var(--inc-dashboard-theme-column, #e7edf7);
-  --inc-dashboard-header: var(--inc-dashboard-theme-header, #dbe5f3);
-  --inc-dashboard-header-text: var(--inc-dashboard-theme-header-text, #244060);
+  --inc-dashboard-canvas: var(--inc-dashboard-theme-canvas);
+  --inc-dashboard-panel: var(--inc-dashboard-theme-panel);
+  --inc-dashboard-text: var(--inc-dashboard-theme-text);
+  --inc-dashboard-muted: var(--inc-dashboard-theme-muted);
+  --inc-dashboard-accent: var(--inc-dashboard-theme-accent);
+  --inc-dashboard-control: var(--inc-dashboard-theme-control);
+  --inc-dashboard-treatment: var(--inc-dashboard-theme-treatment);
+  --inc-dashboard-favorable: var(--inc-dashboard-theme-favorable);
+  --inc-dashboard-warning: var(--inc-dashboard-theme-inconclusive);
+  --inc-dashboard-unfavorable: var(--inc-dashboard-theme-unfavorable);
+  --inc-dashboard-inconclusive: var(--inc-dashboard-theme-inconclusive);
+  --inc-dashboard-inconclusive-bg: var(--inc-dashboard-theme-inconclusive-bg);
+  --inc-dashboard-favorable-bg: var(--inc-dashboard-theme-favorable-bg);
+  --inc-dashboard-unfavorable-bg: var(--inc-dashboard-theme-unfavorable-bg);
+  --inc-dashboard-rule: var(--inc-dashboard-theme-rule);
+  --inc-dashboard-band: var(--inc-dashboard-theme-band);
+  --inc-dashboard-column: var(--inc-dashboard-theme-column);
+  --inc-dashboard-header: var(--inc-dashboard-theme-header);
+  --inc-dashboard-header-text: var(--inc-dashboard-theme-header-text);
 
   box-sizing: border-box;
   width: 100%;
-  max-width: 1180px;
+  max-width: var(--inc-dashboard-section-width);
   margin: 0 auto;
   color: var(--inc-dashboard-text);
-  font-family: var(--marimo-text-font, system-ui, -apple-system, "Segoe UI", sans-serif);
-  font-size: 14px;
+  font-family: var(--inc-dashboard-body-font);
+  font-size: var(--inc-dashboard-table-size);
   line-height: 1.5;
   font-variant-numeric: tabular-nums;
 }
@@ -55,7 +52,7 @@
 
 .inc-dashboard-title {
   margin: 0;
-  font-family: Georgia, "Iowan Old Style", serif;
+  font-family: var(--inc-dashboard-heading-font);
   font-size: 43px;
   font-weight: 500;
   letter-spacing: -0.045em;
@@ -63,7 +60,7 @@
 
 .inc-dashboard-heading {
   margin: 0 0 4px;
-  font-family: Georgia, "Iowan Old Style", serif;
+  font-family: var(--inc-dashboard-heading-font);
   font-size: 26px;
   font-weight: 500;
   letter-spacing: -0.02em;
@@ -123,7 +120,7 @@
 }
 
 .inc-dashboard-arm {
-  font-family: var(--marimo-monospace-font, ui-monospace, SFMono-Regular, monospace);
+  font-family: var(--inc-dashboard-mono-font);
 }
 
 /* Summary cards */
@@ -162,7 +159,7 @@
 
 .inc-dashboard-card-value {
   margin: 0;
-  font-family: Georgia, "Iowan Old Style", serif;
+  font-family: var(--inc-dashboard-heading-font);
   font-size: 31px;
   font-weight: 500;
   overflow-wrap: break-word;
@@ -186,7 +183,7 @@
   align-items: baseline;
   gap: 4px 10px;
   margin: 0 0 7px;
-  font-family: Georgia, "Iowan Old Style", serif;
+  font-family: var(--inc-dashboard-heading-font);
   letter-spacing: -0.025em;
 }
 
@@ -308,7 +305,7 @@
 
 .inc-dashboard-code,
 .inc-dashboard-root code {
-  font-family: var(--marimo-monospace-font, ui-monospace, SFMono-Regular, monospace);
+  font-family: var(--inc-dashboard-mono-font);
   font-size: 13px;
   color: var(--inc-dashboard-muted);
 }
@@ -347,10 +344,19 @@
 .inc-dashboard-root table {
   background: var(--inc-dashboard-panel) !important;
   color: var(--inc-dashboard-text) !important;
+  font-family: var(--inc-dashboard-body-font) !important;
 }
 
 .inc-dashboard-root table td {
   color: var(--inc-dashboard-text) !important;
+}
+
+.inc-dashboard-root .gt_row {
+  padding: var(--inc-dashboard-cell-padding-y) var(--inc-dashboard-cell-padding-x) !important;
+}
+
+.inc-dashboard-root .gt_col_heading {
+  padding: calc(var(--inc-dashboard-cell-padding-y) + 1px) var(--inc-dashboard-cell-padding-x) !important;
 }
 
 /* great_tables' own row rule is a literal grey; cells CoefTable did not style
@@ -371,12 +377,12 @@
 .inc-dashboard-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 14px;
+  font-size: var(--inc-dashboard-table-size);
 }
 
 .inc-dashboard-table th,
 .inc-dashboard-table td {
-  padding: 8px 12px;
+  padding: var(--inc-dashboard-cell-padding-y) var(--inc-dashboard-cell-padding-x);
   text-align: right;
   border-bottom: 1px solid var(--inc-dashboard-rule);
   white-space: nowrap;
@@ -488,7 +494,7 @@
 }
 
 .inc-dashboard-brand {
-  font-family: Georgia, "Iowan Old Style", serif;
+  font-family: var(--inc-dashboard-heading-font);
   font-size: 28px;
   letter-spacing: -0.055em;
   color: var(--inc-dashboard-text);

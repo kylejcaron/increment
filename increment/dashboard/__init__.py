@@ -32,8 +32,24 @@ from increment.dashboard._html import (
     render_metric_details,
     render_results,
 )
+from increment.dashboard._theme import (
+    MIDNIGHT,
+    DashboardCharts,
+    DashboardLayout,
+    DashboardPalette,
+    DashboardPrint,
+    DashboardTheme,
+    DashboardTypography,
+)
 
 __all__ = [
+    "MIDNIGHT",
+    "DashboardCharts",
+    "DashboardLayout",
+    "DashboardPalette",
+    "DashboardPrint",
+    "DashboardTheme",
+    "DashboardTypography",
     "DashboardConfig",
     "DashboardSnapshot",
     "ExploreView",
