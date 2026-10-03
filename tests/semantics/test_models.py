@@ -2346,6 +2346,65 @@ def test_exposure_empty_sql_alone_refused():
     assert exc_info.value.code == "definition.exposure.sql_set_but"
 
 
+def _fact_source_with_sql(sql: str) -> FactSource:
+    return FactSource(
+        name="events",
+        sql=sql,
+        timestamp_column="ts",
+        entities=("u",),
+        facts=(Fact(name="f", column=None),),
+    )
+
+
+def _dim_source_with_sql(sql: str) -> DimSource:
+    return DimSource(
+        name="users",
+        sql=sql,
+        entity="u",
+        properties=(Property(name="country", column="country", dtype="string", as_of="static"),),
+    )
+
+
+_SOURCE_BUILDERS = [
+    pytest.param(_fact_source_with_sql, "fact", "events", id="fact"),
+    pytest.param(_dim_source_with_sql, "dimension", "users", id="dimension"),
+]
+
+
+@pytest.mark.parametrize("build, kind, name", _SOURCE_BUILDERS)
+@pytest.mark.parametrize("blank", ["", "   ", "\n\t"])
+def test_blank_source_sql_refused(build, kind, name, blank):
+    """Blank fact/dimension SQL is a template/codegen bug; it must refuse at construction
+    with its own code, not load and fail later at the warehouse."""
+    with pytest.raises(DefinitionError) as exc_info:
+        build(blank)
+    assert exc_info.value.code == "definition.source.sql_empty"
+    assert exc_info.value.context["source_kind"] == kind
+    assert exc_info.value.context["source_name"] == name
+
+
+@pytest.mark.parametrize("build, kind, name", _SOURCE_BUILDERS)
+@pytest.mark.parametrize(
+    "sql",
+    ["  SELECT 1 AS x  ", "SELECT ''", "-- events\nSELECT 1 AS x"],
+)
+def test_nonblank_source_sql_constructs(build, kind, name, sql):
+    assert build(sql).sql == sql
+
+
+@pytest.mark.parametrize("build, kind, name", _SOURCE_BUILDERS)
+def test_blank_source_sql_refusal_survives_pickle_and_deepcopy(build, kind, name):
+    import copy
+    import pickle
+
+    with pytest.raises(DefinitionError) as exc_info:
+        build("")
+    for clone in (pickle.loads(pickle.dumps(exc_info.value)), copy.deepcopy(exc_info.value)):
+        assert clone.code == "definition.source.sql_empty"
+        assert clone.context["source_kind"] == kind
+        assert clone.context["source_name"] == name
+
+
 def test_date_dtype_filter_garbage_string_refused():
     """dtype='date' must refuse a garbage string value, not surface it later as a warehouse
     cast error or a silently empty filter."""
