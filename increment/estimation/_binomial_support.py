@@ -20,14 +20,35 @@ reaches ``-ln(tail)`` rounded up for the error of ``ln``.
 from __future__ import annotations
 
 import math
+import sys
 
 _EPS = 2.0**-52  # float64 epsilon: one unit in the last place is at most this relative error
+
+#: ``2**-1022``: a float quotient below it is subnormal and rounds by more than ``_EPS / 2``
+#: of itself.
+_MIN_NORMAL = sys.float_info.min
 
 #: Relative error assumed of ``math.log`` and ``math.log1p``, in units of ``_EPS``. glibc and
 #: Apple libm stay within one unit in the last place; four leaves headroom, and
 #: ``tests/estimation/test_binomial_rr.py::TestChernoffSupportCut`` checks the bound's
 #: tightness against exact decimal arithmetic.
 _LIBM_ULPS = 4.0
+
+
+def _log_ratio(x: float, q: float) -> tuple[float, float]:
+    """``ln(x/q)`` for ``x > 0`` and ``q > 0``, with the absolute error of ``x * ln(x/q)`` per
+    unit of ``x`` in units of ``_EPS``, as derived in ``exponent_lower_bound``.
+
+    The logarithm of the quotient is used while the float quotient is a normal number; once it
+    overflows or turns subnormal the difference of the logarithms is.
+    """
+    ratio = x / q
+    if _MIN_NORMAL <= ratio < math.inf:
+        log_ratio = math.log(ratio)
+        return log_ratio, (_LIBM_ULPS + 1.0) * abs(log_ratio) + 1.0
+    log_x = math.log(x)
+    log_q = math.log(q)
+    return log_x - log_q, (_LIBM_ULPS + 2.0) * (abs(log_x) + abs(log_q))
 
 
 def exponent_lower_bound(n: int, x: float, q: float) -> float:
@@ -38,15 +59,28 @@ def exponent_lower_bound(n: int, x: float, q: float) -> float:
     ``u = _EPS / 2`` for the rounding unit and ``L = _LIBM_ULPS * _EPS`` for the relative
     error of ``ln``/``log1p``. To first order the summands' absolute errors are
 
-    * ``x ln(x/q)``: ``x (L + 1.01u) |ln(x/q)| + 1.02u x``. The quotient's rounding is an
-      absolute error of ``ln`` that does not vanish as ``x -> q``, hence the second term.
+    * ``x ln(x/q)`` as ``x ln(fl(x/q))``, used while the float quotient is a normal number, so
+      that it rounds by at most ``1.01u`` of itself: ``x (L + 1.01u) |ln(x/q)| + 1.02u x``. The
+      quotient's rounding is an absolute error of ``ln`` that does not vanish as ``x -> q``,
+      hence the second term.
+    * ``x ln(x/q)`` as ``x (ln x - ln q)``, used once the quotient overflows or is subnormal,
+      which needs ``|ln(x/q)| >= 708``: ``x (L + 2.01u) (|ln x| + |ln q|)``. Each logarithm
+      rounds by ``L`` of itself and the difference and the product by ``u`` of themselves, so
+      every error scales with the logarithms' magnitudes. Both operands lie in ``(0, 1]`` and
+      neither is below ``2**-1074``, so the sum is ``2 max(|ln x|, |ln q|) - |ln(x/q)|``, at
+      most ``2 * 744.5 - |ln(x/q)|``, which is at most ``1.11 |ln(x/q)|``: this bound is as
+      tight as the quotient form's. Near ``x = q`` the form would cancel down to its own
+      error, which is why the quotient form is kept wherever it holds. A subnormal quotient
+      means a subnormal ``x`` and ``q > 2**-52``; the product then rounds by an absolute
+      ``2**-1075`` rather than ``u`` of itself, which the next bullet's allowance, at least
+      ``6 * _EPS * q``, exceeds by hundreds of orders of magnitude.
     * ``(1-x)(log1p(-x) - log1p(-q))``: ``(1-x) (L + 3.1u) (|ln(1-x)| + |ln(1-q)|)``. The
       difference rounds against the logarithms' magnitudes, not against their difference.
 
-    The code rounds these coefficients up to ``_LIBM_ULPS + 1``, ``1`` and ``_LIBM_ULPS + 2``
-    in units of ``_EPS``, which also covers evaluating the bound itself in float64. The sum
-    and the product by ``n`` each round by at most ``u`` of their value; ``2 * _EPS`` of it
-    is allowed. The result is rounded down.
+    The code rounds these coefficients up to ``_LIBM_ULPS + 1`` and ``1``, ``_LIBM_ULPS + 2``,
+    and ``_LIBM_ULPS + 2`` in units of ``_EPS``, which also covers evaluating the bound itself in
+    float64. The sum and the product by ``n`` each round by at most ``u`` of their value;
+    ``2 * _EPS`` of it is allowed. The result is rounded down.
     """
     if q == 0.0:
         return math.inf if x > 0.0 else 0.0
@@ -54,9 +88,9 @@ def exponent_lower_bound(n: int, x: float, q: float) -> float:
         return math.inf if x < 1.0 else 0.0
     first = first_error = second = second_error = 0.0
     if x > 0.0:
-        log_ratio = math.log(x / q)
+        log_ratio, log_ratio_error = _log_ratio(x, q)
         first = x * log_ratio
-        first_error = x * ((_LIBM_ULPS + 1.0) * abs(log_ratio) + 1.0)
+        first_error = x * log_ratio_error
     if x < 1.0:
         log_x = math.log1p(-x)
         log_q = math.log1p(-q)

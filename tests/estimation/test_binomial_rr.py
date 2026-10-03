@@ -545,6 +545,57 @@ class TestChernoffSupportCut:
         assert chernoff_support(n, 0.3, 1.0, tail)[1] == n
         assert chernoff_support(n, 0.0, 1.0, tail) == (0, n)
 
+    #: Upper rates at and around the reciprocal's overflow point ``2**-1024``, down to the
+    #: smallest subnormal, next to ordinary tiny rates.
+    TINY_RATES = [
+        pytest.param(5e-324, id="smallest-subnormal"),
+        pytest.param(1e-320, id="deep-subnormal"),
+        pytest.param(2.0**-1030, id="subnormal"),
+        pytest.param(2.0**-1024, id="reciprocal-overflows"),
+        pytest.param(math.nextafter(2.0**-1024, 1.0), id="reciprocal-just-finite"),
+        pytest.param(2.0**-1022, id="smallest-normal"),
+        pytest.param(1e-300, id="tiny-normal"),
+    ]
+
+    @pytest.mark.parametrize("q", TINY_RATES)
+    @pytest.mark.parametrize("n", [257, 4_000_000])
+    def test_a_tiny_upper_rate_leaves_only_the_zero_count(self, n, q):
+        """``P(X >= 1) <= n q`` is far below the tail, so the cut is the single count 0
+        whether or not ``1 / q`` is a finite float."""
+        tail = 5e-13
+        assert Decimal(n) * Decimal(q) <= Decimal(tail)
+        assert chernoff_support(n, 0.0, q, tail) == (0, 0)
+
+    @pytest.mark.parametrize(
+        ("x", "q"),
+        [
+            pytest.param(1.0, 2.0**-1024, id="quotient-overflows"),
+            pytest.param(1.0, 5e-324, id="quotient-overflows-smallest-subnormal"),
+            pytest.param(0.5, 1e-320, id="quotient-overflows-half"),
+            pytest.param(1e-6, 5e-324, id="quotient-finite-rate-subnormal"),
+            pytest.param(1.0, 1e-300, id="quotient-huge-but-finite"),
+            pytest.param(5e-324, 0.5, id="quotient-underflows"),
+            pytest.param(1e-310, 0.999, id="quotient-subnormal"),
+        ],
+    )
+    def test_certified_exponent_holds_where_the_quotient_leaves_the_float_range(self, x, q):
+        n = 4_000_000
+        lower = exponent_lower_bound(n, x, q)
+        exact = _dec_exponent(n, x, q)
+        assert math.isfinite(lower)
+        assert Decimal(lower) <= exact
+        assert exact - Decimal(lower) <= exact * Decimal("1e-13")
+
+    def test_a_tiny_rate_window_reports_the_mass_it_omits(self):
+        """At a subnormal upper rate the window is the count 0 and ``P(X >= 1) <= n q``
+        stays within the mass it reports as omitted."""
+        n_c, q = 4_000_000, 2.0**-1024
+        i_lo, i_hi, omitted = brr._support_window(n_c, 0.0, q)
+        assert (i_lo, i_hi) == (0, 0)
+        assert (
+            Decimal(n_c) * Decimal(q) <= Decimal(omitted) <= Decimal(brr._SUPPORT_TRUNCATION_BUDGET)
+        )
+
     def test_point_masses_at_the_unit_interval_ends_keep_one_count(self):
         n, tail = 100_000, 5e-13
         assert chernoff_support(n, 0.0, 0.0, tail) == (0, 0)
