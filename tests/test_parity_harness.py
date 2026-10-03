@@ -121,6 +121,12 @@ def _summary_builder(metrics):
     return build
 
 
+def _mean_summary_builder():
+    from increment import MetricSpec
+
+    return _summary_builder([MetricSpec(name="y", type="mean")])
+
+
 def _retention_summary_builder():
     from increment import MetricSpec
 
@@ -131,8 +137,15 @@ def _no_design_switchback_builder():
     import pandas as pd
 
     from increment import Analysis
+    from increment.semantics.assignment import (
+        IndependentBernoulliOrder,
+        SwitchbackAssignment,
+        SwitchbackWindow,
+    )
+    from increment.semantics.design import Randomized
 
     def build():
+        # `from_switchback_panel` takes no `design=`: the unsupported keyword is the attempt.
         return Analysis.from_switchback_panel(
             pd.DataFrame(),
             unit="u",
@@ -141,81 +154,77 @@ def _no_design_switchback_builder():
             step="s",
             group="g",
             metrics={"y": "mean"},
-            identification=None,
-            assignment=None,
-            **{"design": None},
+            identification=Randomized(control_group="control"),
+            assignment=SwitchbackAssignment(
+                sequence=IndependentBernoulliOrder(probability_ct=0.5),
+                window=SwitchbackWindow(washout_steps=0, observation_steps=1),
+            ),
+            **{"design": None},  # ty: ignore[invalid-argument-type]
         )
 
     return build
 
 
-def _refusal_only_case(**overrides):
-    from tests.parity_harness.cases import ParityCase
+def _case(build, *, waive=None, codes=None, absence=None, refusal_only=False):
+    """A runner-contract case: every constructor outside *build* is recorded as not attempted."""
+    from tests.parity_harness.cases import CONSTRUCTORS, ParityCase
 
-    fields = {
-        "id": "refusal-only",
-        "build": {"from_unit_summary": _retention_summary_builder()},
-        "waive": {"from_unit_summary": "SOURCE: the summary seam carries no dates"},
-        "waived_refusal_codes": {"from_unit_summary": "source.frame.constructor"},
-        "refusal_only": True,
-    }
-    fields.update(overrides)
-    return ParityCase(**fields)
+    waive = dict(waive or {})
+    for name in CONSTRUCTORS:
+        if name not in build and name not in waive:
+            waive[name] = "SOURCE: not attempted for this runner-contract case"
+    return ParityCase(
+        id="runner-contract",
+        build=build,
+        waive=waive,
+        waived_refusal_codes=codes or {},
+        expected_absence=absence or {},
+        refusal_only=refusal_only,
+    )
 
 
-def _unattempted(case, *names):
-    from tests.parity_harness.cases import CONSTRUCTORS
-
-    reason = "SOURCE: not attempted for this runner-contract case"
-    return {
-        **case.waive,
-        **{name: reason for name in CONSTRUCTORS if name not in case.build and name not in names},
-    }
+_RETENTION_REFUSAL = {"from_unit_summary": "SOURCE: the summary seam carries no dates"}
 
 
 def test_refusal_only_case_passes_when_every_attempted_ingress_refuses():
-    case = _refusal_only_case()
-    case = _refusal_only_case(waive=_unattempted(case))
+    case = _case(
+        {"from_unit_summary": _retention_summary_builder()},
+        waive=_RETENTION_REFUSAL,
+        codes={"from_unit_summary": "source.frame.constructor"},
+        refusal_only=True,
+    )
     assert_parity(case, run_case(case))
 
 
 def test_all_waived_case_without_refusal_only_still_fails():
-    case = _refusal_only_case()
-    case = _refusal_only_case(waive=_unattempted(case), refusal_only=False)
+    case = _case(
+        {"from_unit_summary": _retention_summary_builder()},
+        waive=_RETENTION_REFUSAL,
+        codes={"from_unit_summary": "source.frame.constructor"},
+    )
     with pytest.raises(pytest.fail.Exception, match="nothing to compare"):
         assert_parity(case, run_case(case))
 
 
 def test_refusal_only_case_fails_when_a_waived_ingress_produces_rows():
-    from increment import MetricSpec
-
-    case = _refusal_only_case(
-        build={"from_unit_summary": _summary_builder([MetricSpec(name="y", type="mean")])}
+    case = _case(
+        {"from_unit_summary": _mean_summary_builder()},
+        waive=_RETENTION_REFUSAL,
+        codes={"from_unit_summary": "source.frame.constructor"},
+        refusal_only=True,
     )
-    case = _refusal_only_case(build=case.build, waive=_unattempted(case))
     with pytest.raises(AssertionError, match="produced rows instead of refusing"):
         assert_parity(case, run_case(case))
 
 
 def test_expected_absence_is_attempted_and_accounted_for():
-    from increment import MetricSpec
-
-    case = _refusal_only_case(
-        build={
-            "from_unit_summary": _summary_builder([MetricSpec(name="y", type="mean")]),
+    case = _case(
+        {
+            "from_unit_summary": _mean_summary_builder(),
             "from_switchback_panel": _no_design_switchback_builder(),
         },
         waive={"from_switchback_panel": "SOURCE: from_switchback_panel takes no design="},
-        waived_refusal_codes={},
-        expected_absence={"from_switchback_panel": TypeError},
-        refusal_only=False,
-    )
-    case = _refusal_only_case(
-        build=case.build,
-        waive=_unattempted(case, "from_switchback_panel") | dict(case.waive),
-        waived_refusal_codes={},
-        expected_absence=case.expected_absence,
-        refusal_only=False,
+        absence={"from_switchback_panel": TypeError},
     )
     result = run_case(case)
     assert result.absences == {"from_switchback_panel": TypeError}
@@ -223,20 +232,10 @@ def test_expected_absence_is_attempted_and_accounted_for():
 
 
 def test_expected_absence_that_never_occurs_fails():
-    from increment import MetricSpec
-
-    case = _refusal_only_case(
-        build={"from_unit_summary": _summary_builder([MetricSpec(name="y", type="mean")])},
-        waived_refusal_codes={},
-        expected_absence={"from_unit_summary": TypeError},
-        refusal_only=False,
-    )
-    case = _refusal_only_case(
-        build=case.build,
-        waive=_unattempted(case, "from_unit_summary") | {"from_unit_summary": "SOURCE: absent"},
-        waived_refusal_codes={},
-        expected_absence=case.expected_absence,
-        refusal_only=False,
+    case = _case(
+        {"from_unit_summary": _mean_summary_builder()},
+        waive={"from_unit_summary": "SOURCE: declared absent"},
+        absence={"from_unit_summary": TypeError},
     )
     with pytest.raises(AssertionError, match="declared absent"):
         assert_parity(case, run_case(case))
