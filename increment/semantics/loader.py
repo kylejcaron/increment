@@ -210,9 +210,9 @@ def load(path: str | Path) -> Definitions:
         sql = ex.get("sql") or ""
         _check_sql(dialect, sql, f"exposure '{ex.get('name', '?')}'", path_obj)
 
-    # Migration guard: `metrics:`/`guardrails:` used to live directly on an
-    # experiment; both moved under `plan:`. Checked on the raw dict -- once
-    # validated, `extra="forbid"` alone would give a far less helpful message.
+    # Reject `metrics:`/`guardrails:` directly on an experiment (they belong under
+    # `plan:`). Checked on the raw dict -- once validated, `extra="forbid"` alone
+    # would give a far less helpful message.
     for exp in raw.get("experiments", []):
         if "metrics" in exp:
             refuse(
