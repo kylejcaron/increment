@@ -1509,34 +1509,15 @@ class FramePanelSource(SequentialSourceMixin):
         on_unassigned: Literal["error", "exclude"] = "error",
     ) -> FramePanelSource:
         """Build a source from a one-row-per-unit-per-day dataframe. See :func:`from_unit_panel`."""
-        raw_metrics = metrics.values() if isinstance(metrics, Mapping) else metrics
-        if isinstance(design, Encouragement):
-            retention_names = []
-            for item in raw_metrics:
-                item_type = (
-                    item.get("type") if isinstance(item, Mapping) else getattr(item, "type", None)
-                )
-                if item_type == "retention":
-                    item_name = (
-                        item.get("name") if isinstance(item, Mapping) else getattr(item, "name", "")
-                    )
-                    retention_names.append(str(item_name))
-            if retention_names:
-                from increment.semantics.design import RETENTION_UNDER_ENCOURAGEMENT
-
-                refuse(
-                    RETENTION_UNDER_ENCOURAGEMENT,
-                    names=retention_names,
-                )
         specs = _coerce_source_metrics(metrics, design=design)
-        _reject_covariates(specs)
-        synthesised_metrics = [synthesise_metric(s) for s in specs]
         if isinstance(design, Encouragement):
             retention = [spec.name for spec in specs if spec.type == "retention"]
             if retention:
                 from increment.semantics.design import RETENTION_UNDER_ENCOURAGEMENT
 
                 refuse(RETENTION_UNDER_ENCOURAGEMENT, names=retention)
+        _reject_covariates(specs)
+        synthesised_metrics = [synthesise_metric(s) for s in specs]
         from increment._analysis_config import resolve_configs
 
         frame_configs = resolve_configs(
