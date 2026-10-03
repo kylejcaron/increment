@@ -108,7 +108,7 @@ def test_require_operation_rejects_declaration_drift() -> None:
 
 
 # Capability policy at the validation seam: metric type x view x option x substrate.
-# Construction rules are raised by the shared gate (`GATE_REFUSALS`); source limits derive
+# Construction rules are raised by the shared gate (`GATE_POLICY`); source limits derive
 # from each source's declared `capabilities` and `breakouts`. Axes are read from code.
 
 _VIEW_GRAIN: dict[ReadoutView, Grain] = {
@@ -131,29 +131,70 @@ _QUANTILE_GRAIN = "readout.metric.quantile_grain"
 _SOURCE_STAGE_CONSTRUCTION_CODES = frozenset({_QUANTILE_GRAIN})
 _DAILY_WINSOR = "readout.metric.daily_winsorization"
 _PERCENTILE_WINSOR = "readout.metric.percentile_winsorization"
+_QUANTILE_BREAKOUT = "readout.metric.quantile_breakout"
+_QUANTILE_CLUSTER = "arm.metric.quantile_cluster"
+_QUANTILE_CUPED = "arm.metric.quantile_cuped"
+_UNBOUNDED_RETENTION = "breakout.retention.unbounded"
+# The gate accepts the request; an explicit decision, distinct from an undeclared cell.
+_ACCEPTED = "accepted"
 
-GATE_REFUSALS: dict[str, dict[tuple[str, str], str] | None] = {
+
+def _by_view(*, run: str, breakout: str, daily: str, asof: str) -> dict[str, str]:
+    return {"run": run, "breakout": breakout, "daily": daily, "asof": asof}
+
+
+def _accepted_everywhere() -> dict[str, str]:
+    return _by_view(run=_ACCEPTED, breakout=_ACCEPTED, daily=_ACCEPTED, asof=_ACCEPTED)
+
+
+# metric type -> option -> view -> `_ACCEPTED` or the refusal code the shared gate raises.
+# Every applicable cell is declared: `_policy_gaps` fails on a missing or stale one.
+GATE_POLICY: dict[str, dict[str, dict[str, str]] | None] = {
     "mean": {
-        ("daily", "percentile_winsorization"): _DAILY_WINSOR,
-        ("daily", "fixed_winsorization"): _DAILY_WINSOR,
-        ("asof", "percentile_winsorization"): _PERCENTILE_WINSOR,
-        ("breakout", "percentile_winsorization"): _PERCENTILE_WINSOR,
+        "none": _accepted_everywhere(),
+        "percentile_winsorization": _by_view(
+            run=_ACCEPTED, breakout=_PERCENTILE_WINSOR, daily=_DAILY_WINSOR, asof=_PERCENTILE_WINSOR
+        ),
+        "fixed_winsorization": _by_view(
+            run=_ACCEPTED, breakout=_ACCEPTED, daily=_DAILY_WINSOR, asof=_ACCEPTED
+        ),
+        "cluster": _accepted_everywhere(),
+        "cuped": _accepted_everywhere(),
     },
-    "conversion": {},
-    "ratio": {},
-    "retention": {("daily", "unbounded_band"): "breakout.retention.unbounded"},
+    "conversion": {
+        "none": _accepted_everywhere(),
+        "cluster": _accepted_everywhere(),
+        "cuped": _accepted_everywhere(),
+    },
+    "ratio": {
+        "none": _accepted_everywhere(),
+        "cluster": _accepted_everywhere(),
+        "cuped": _accepted_everywhere(),
+    },
+    "retention": {
+        "none": _accepted_everywhere(),
+        "unbounded_band": _by_view(
+            run=_ACCEPTED, breakout=_ACCEPTED, daily=_UNBOUNDED_RETENTION, asof=_ACCEPTED
+        ),
+        "cluster": _accepted_everywhere(),
+        "cuped": _accepted_everywhere(),
+    },
     "quantile": {
-        ("run", "cluster"): "arm.metric.quantile_cluster",
-        ("run", "cuped"): "arm.metric.quantile_cuped",
-        ("breakout", "none"): "readout.metric.quantile_breakout",
-        ("breakout", "cluster"): "arm.metric.quantile_cluster",
-        ("breakout", "cuped"): "readout.metric.quantile_breakout",
-        ("daily", "none"): _QUANTILE_GRAIN,
-        ("daily", "cluster"): _QUANTILE_GRAIN,
-        ("daily", "cuped"): _QUANTILE_GRAIN,
-        ("asof", "none"): _QUANTILE_GRAIN,
-        ("asof", "cluster"): "arm.metric.quantile_cluster",
-        ("asof", "cuped"): "arm.metric.quantile_cuped",
+        "none": _by_view(
+            run=_ACCEPTED, breakout=_QUANTILE_BREAKOUT, daily=_QUANTILE_GRAIN, asof=_QUANTILE_GRAIN
+        ),
+        "cluster": _by_view(
+            run=_QUANTILE_CLUSTER,
+            breakout=_QUANTILE_CLUSTER,
+            daily=_QUANTILE_GRAIN,
+            asof=_QUANTILE_CLUSTER,
+        ),
+        "cuped": _by_view(
+            run=_QUANTILE_CUPED,
+            breakout=_QUANTILE_BREAKOUT,
+            daily=_QUANTILE_GRAIN,
+            asof=_QUANTILE_CUPED,
+        ),
     },
     # Report-layer types cannot be held by a source (`MATRIX["estimate"]` is NA).
     "total": None,
@@ -161,7 +202,7 @@ GATE_REFUSALS: dict[str, dict[tuple[str, str], str] | None] = {
 }
 
 # `MATRIX` capability column -> the (view, option) cell of this seam it also declares.
-_MATRIX_SEAM_CELLS = {
+_MATRIX_SEAM_CELLS: dict[str, tuple[tuple[ReadoutView, str], ...]] = {
     "breakout": (("breakout", "none"),),
     "daily_asof": (("daily", "none"), ("asof", "none")),
 }
@@ -223,7 +264,7 @@ def _synthetic_metric(metric_type: str, option: str) -> Metric:
         )
     raise AssertionError(
         f"metric type {metric_type!r} has no synthetic builder: declare one here and "
-        "its construction refusals in GATE_REFUSALS"
+        "its policy in GATE_POLICY"
     )
 
 
@@ -281,7 +322,10 @@ def _gate_request(source, metric_type: str, view: ReadoutView, option: str):
 
 def _declared_gate_outcome(source, metric_type: str, view: ReadoutView, option: str) -> str | None:
     """The code `validate_request` must raise: construction rules, else the source's limit."""
-    construction = (GATE_REFUSALS[metric_type] or {}).get((view, option))
+    policy = GATE_POLICY[metric_type]
+    assert policy is not None
+    declared = policy[option][view]
+    construction = None if declared == _ACCEPTED else declared
     request_by = tuple(getattr(source, "breakouts", ()))
     if _VIEW_GRAIN[view] not in source.capabilities:
         source_limit = "readout.source.grain"
@@ -304,46 +348,69 @@ def _substrates(tmp_path_factory: pytest.TempPathFactory):
     }
 
 
-def test_gate_declarations_cover_the_code_derived_axes() -> None:
+def _policy_gaps() -> list[tuple[object, ...]]:
+    """Undeclared or stale cells of the metric type x option x view product."""
     from typing import get_args
 
     from increment._readout_request import ReadoutView
+
+    views = set(get_args(ReadoutView))
+    gaps: list[tuple[object, ...]] = []
+    if set(_VIEW_GRAIN) != views:
+        gaps.append(("views without a grain", views ^ set(_VIEW_GRAIN)))
+    for metric_type, options in GATE_POLICY.items():
+        if options is None:
+            continue
+        applicable = {option for option in _OPTIONS if _option_applies(metric_type, option)}
+        gaps.extend((metric_type, option, "undeclared") for option in applicable - set(options))
+        gaps.extend((metric_type, option, "stale") for option in set(options) - applicable)
+        for option, outcomes in options.items():
+            gaps.extend((metric_type, option, view, "undeclared") for view in views - set(outcomes))
+            gaps.extend((metric_type, option, view, "stale") for view in set(outcomes) - views)
+    return gaps
+
+
+def test_gate_policy_covers_the_code_derived_axes() -> None:
     from tests.compatibility_catalog import MATRIX
     from tests.test_composition_matrix import METRIC_TYPES
 
-    assert set(GATE_REFUSALS) == set(METRIC_TYPES), (
+    assert set(GATE_POLICY) == set(METRIC_TYPES), (
         "decide the validation-seam policy for every metric type: "
-        f"missing {set(METRIC_TYPES) - set(GATE_REFUSALS)}, "
-        f"stale {set(GATE_REFUSALS) - set(METRIC_TYPES)}"
+        f"missing {set(METRIC_TYPES) - set(GATE_POLICY)}, "
+        f"stale {set(GATE_POLICY) - set(METRIC_TYPES)}"
     )
-    assert set(_VIEW_GRAIN) == set(get_args(ReadoutView)), (
-        "give every readout view a grain and decide its policy: "
-        f"{set(get_args(ReadoutView)) ^ set(_VIEW_GRAIN)}"
-    )
-    for metric_type, refusals in GATE_REFUSALS.items():
+    for metric_type, options in GATE_POLICY.items():
         report_only = MATRIX["estimate"][metric_type].status == "na"
-        assert (refusals is None) == report_only, metric_type
-        for view, option in refusals or {}:
-            assert view in _VIEW_GRAIN and option in _OPTIONS, (metric_type, view, option)
-            assert _option_applies(metric_type, option), (metric_type, view, option)
+        assert (options is None) == report_only, metric_type
+    _assert_policy_complete()
 
 
-@pytest.mark.parametrize("metric_type", list(GATE_REFUSALS))
+def _assert_policy_complete() -> None:
+    gaps = _policy_gaps()
+    assert not gaps, (
+        "decide the validation-seam outcome (_ACCEPTED or a refusal code) for every "
+        f"applicable metric x option x view: {gaps}"
+    )
+
+
+@pytest.mark.parametrize("metric_type", list(GATE_POLICY))
 def test_gate_outcome_matches_declared_policy_on_every_substrate(
     metric_type: str, _substrates: dict[str, object]
 ) -> None:
     """Every registered substrate raises the declared code, or its own grain/dimension limit.
 
-    A new metric type fails on its missing builder or `GATE_REFUSALS` entry, a new view on
-    its missing grain, and a new substrate is swept with the derived rules. Options a source
-    fixes at construction (sequential inference, observational and encouragement designs)
-    are not request-level variants; the arm-contract sweeps in `test_refusal_uniqueness.py`
-    and the pair cells in `tests/compatibility_catalog.py` own them.
+    A new metric type fails on its missing builder or `GATE_POLICY` entry, a new view or
+    option on its missing declarations, and a new substrate is swept with the derived
+    rules. Options a source fixes at construction (sequential inference, observational and
+    encouragement designs) are not request-level variants; the arm-contract sweeps in
+    `test_refusal_uniqueness.py` and the pair cells in `tests/compatibility_catalog.py`
+    own them.
     """
     from increment._readout_request import validate_request
     from increment.errors import CodedError
 
-    if GATE_REFUSALS[metric_type] is None:
+    _assert_policy_complete()
+    if GATE_POLICY[metric_type] is None:
         pytest.skip("report-layer type: no source can hold it (MATRIX 'estimate' is NA)")
     mismatches = []
     for name, source in _substrates.items():
@@ -370,16 +437,16 @@ def test_gate_declarations_agree_with_the_composition_matrix() -> None:
     from tests.compatibility_catalog import MATRIX
 
     for capability, seam_cells in _MATRIX_SEAM_CELLS.items():
-        for metric_type, refusals in GATE_REFUSALS.items():
-            if refusals is None:
+        for metric_type, options in GATE_POLICY.items():
+            if options is None:
                 continue
             assert metric_type in MATRIX[capability], (
                 f"MATRIX[{capability!r}] declares no cell for {metric_type!r}: decide it"
             )
             cell = MATRIX[capability][metric_type]
-            for seam_cell in seam_cells:
-                declared = refusals.get(seam_cell)
+            for view, option in seam_cells:
+                declared = options[option][view]
                 if cell.status == "refused":
-                    assert cell.code == declared, (capability, metric_type, seam_cell)
+                    assert cell.code == declared, (capability, metric_type, view, option)
                 else:
-                    assert declared is None, (capability, metric_type, seam_cell)
+                    assert declared == _ACCEPTED, (capability, metric_type, view, option)

@@ -616,41 +616,57 @@ _WINSORIZED_DAILY_CODES = {
 }
 
 
-@pytest.mark.parametrize("substrate", ["definitions", "frame_panel"])
+_WINSORIZED_DAILY_SUBSTRATES = ("definitions", "frame_panel", "unit_day_artifact")
+
+
+@pytest.mark.parametrize("substrate", _WINSORIZED_DAILY_SUBSTRATES)
 def test_winsorized_daily_hazard_raises_one_code_per_entry_method_from_every_source(
     substrate: str, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from increment import readouts
     from increment.errors import CodedError
 
-    analysis = (
-        _native_day_axis_analysis(tmp_path, "winsorized_mean")
-        if substrate == "definitions"
-        else _frame_panel_day_axis_analysis("winsorized_mean")
-    )
-    source = _moment_source(analysis)
+    entry_points = {}
+    if substrate == "unit_day_artifact":
+        from tests.test_unit_day_artifact_adoption import _adopted_artifact_fixture
+
+        source = _adopted_artifact_fixture("winsorized_mean")["source"]
+    else:
+        analysis = (
+            _native_day_axis_analysis(tmp_path, "winsorized_mean")
+            if substrate == "definitions"
+            else _frame_panel_day_axis_analysis("winsorized_mean")
+        )
+        source = _moment_source(analysis)
+        entry_points["Analysis.run_daily"] = analysis.run_daily
+        entry_points["Analysis.run_daily_lift"] = analysis.run_daily_lift
     _trap_source_reads(monkeypatch, source)
-    entry_points = {
-        "readouts.daily": lambda: readouts.daily(source),
-        "Analysis.run_daily": analysis.run_daily,
-        "Analysis.run_daily_lift": analysis.run_daily_lift,
-    }
+    entry_points["readouts.daily"] = lambda: readouts.daily(source)
+
     codes = {}
     for name, call in entry_points.items():
         with pytest.raises(CodedError) as raised:
             call()
         codes[name] = raised.value.code
-    assert codes == _WINSORIZED_DAILY_CODES
+    assert codes == {name: _WINSORIZED_DAILY_CODES[name] for name in entry_points}
 
 
 def test_winsorized_daily_hazard_covers_every_adapter_that_can_express_it(tmp_path) -> None:
-    """Winsorization applies to mean metrics on a source that serves the day axis;
-    the unit-day artifact adapter carries only a conversion metric."""
+    """Winsorization applies to a mean metric on a source that serves the day axis. An
+    adapter's default metric does not decide that: the unit-day artifact adapter defaults
+    to a conversion metric but supports a winsorized mean (its supported-shape
+    declaration), so it belongs to the sweep above."""
     from tests.source_conformance import arm_adapters
+    from tests.test_unit_day_artifact_adoption import ARTIFACT_SUPPORTED_SHAPES
+
+    def can_express_winsorized_mean(adapter) -> bool:
+        if adapter.name == "unit_day_artifact":
+            return "winsorized_mean" in ARTIFACT_SUPPORTED_SHAPES
+        return adapter.build()[1].type == "mean"
 
     expressible = {
         adapter.name
         for adapter in arm_adapters(tmp_path)
-        if "daily" in adapter.build()[0].capabilities and adapter.build()[1].type == "mean"
+        if "daily" in adapter.build()[0].capabilities and can_express_winsorized_mean(adapter)
     }
-    assert expressible == {"definitions", "frame_panel"}
+    assert expressible == set(_WINSORIZED_DAILY_SUBSTRATES)
