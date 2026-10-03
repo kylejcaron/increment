@@ -1287,7 +1287,7 @@ def fit_cate(  # noqa: PLR0915
     basis centered at that same target - this centering makes the treatment
     coefficient the ATE rather than the effect at the origin.
 
-    Without clusters, inference uses HC2 and rank pruning as before.
+    Without clusters, inference uses HC2 and rank pruning.
     With ``cluster_ids``, inference uses grouped weighted scores, scaled by
     K/(K-1), with t(K-1) intervals. All observed clusters count, including
     singletons and clusters with constant residuals; no HC2 divisor is used.
