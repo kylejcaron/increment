@@ -1,6 +1,6 @@
 name: bump
 
-# Creates and pushes the release tag. Pushing that tag triggers release.yml.
+# Creates the release tag and explicitly dispatches release.yml on that tag.
 #
 # There is no version string to edit: hatch-vcs derives the version from the
 # tag, so "bumping" is exactly "tagging". This is why the repo does not use
@@ -15,7 +15,7 @@ on:
         required: true
         type: string
       force:
-        description: "Tag even if the commit has no successful checks"
+        description: "Explicitly bypass the CI gate (not recommended)"
         required: false
         default: false
         type: boolean
@@ -33,6 +33,8 @@ jobs:
     permissions:
       contents: write
       checks: read
+      actions: write
+      statuses: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,42 +71,47 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/
         run: |
           set -euo pipefail
 
-          # Two independent systems report status on a commit and neither
-          # subsumes the other: the Checks API (GitHub Actions, most Apps) and
-          # the legacy commit-statuses API (external CI, webhooks). Query both,
-          # or a red build on whichever one is unqueried leaves the gate green.
-          runs=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/check-runs" \
-                   --jq '[.check_runs[] | select(.status == "completed")]')
-          checks_total=$(printf '%s' "$runs" | jq 'length')
+          # Include every page, but not this bump run: its tag job is running
+          # while this gate executes. Other unfinished checks must block release.
+          runs=$(gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/commits/${SHA}/check-runs?per_page=100&filter=latest" \
+            | jq --arg run_url "$RUN_URL" \
+              '[.[].check_runs[] | select((.app.slug == "github-actions" and
+                ((.details_url // "") | startswith($run_url))) | not)]')
 
-          bad=$(printf '%s' "$runs" \
-                  | jq -r '[.[] | select(.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")] | .[].name')
-
-          # combined state is one of: success | pending | failure | error.
-          # "pending" is also what an entirely status-free commit reports, so
-          # only treat it as a failure when statuses actually exist.
-          status_json=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/status")
-          status_state=$(printf '%s' "$status_json" | jq -r '.state')
-          status_total=$(printf '%s' "$status_json" | jq '.statuses | length')
-          if [ "$status_total" -gt 0 ] && [ "$status_state" != "success" ]; then
-            bad="$bad"$'\n'$(printf '%s' "$status_json" \
-                  | jq -r '[.statuses[] | select(.state != "success")] | .[].context')
-          fi
-
-          if [ "$checks_total" -eq 0 ] && [ "$status_total" -eq 0 ]; then
-            echo "::error::no completed checks or statuses on $SHA. Wait for CI, or re-run with force=true."
+          if ! printf '%s' "$runs" | jq -e --arg sha "$SHA" \
+            'any(.[]; .name == "ci-ok" and .app.slug == "github-actions" and
+              .head_sha == $sha and .status == "completed" and .conclusion == "success")' >/dev/null; then
+            echo "::error::ci-ok must finish successfully on $SHA before release"
             exit 1
           fi
 
-          bad=$(printf '%s' "$bad" | sed '/^$/d')
+          bad=$(printf '%s' "$runs" | jq -r \
+            '.[] | select(.status != "completed" or
+              (.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")) | .name')
           if [ -n "$bad" ]; then
-            echo "::error::these checks did not pass on $SHA:"
+            echo "::error::these checks are unfinished or did not pass on $SHA:"
             printf '%s\n' "$bad"
             exit 1
           fi
+
+          # Legacy statuses are independent of check runs; an absent status is
+          # fine, but an existing pending or failed status is not.
+          status_json=$(gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/commits/${SHA}/status?per_page=100")
+          status_total=$(printf '%s' "$status_json" | jq '[.[].statuses[]] | length')
+          if [ "$status_total" -gt 0 ] && printf '%s' "$status_json" \
+            | jq -e 'any(.[]; .state != "success")' >/dev/null; then
+            echo "::error::legacy commit statuses are not all successful on $SHA"
+            printf '%s' "$status_json" | jq -r \
+              '.[].statuses[] | select(.state != "success") | .context'
+            exit 1
+          fi
+          checks_total=$(printf '%s' "$runs" | jq 'length')
           echo "$checks_total check run(s), $status_total commit status(es), all green"
 
       - name: Create and push the tag
@@ -116,4 +123,14 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "v$VERSION" -m "Release v$VERSION"
           git push origin "v$VERSION"
-          echo "Pushed v$VERSION -- release.yml will build and publish it." >> "$GITHUB_STEP_SUMMARY"
+          echo "Pushed v$VERSION." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dispatch release for the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # GITHUB_TOKEN pushes do not trigger push workflows; dispatch does.
+          gh workflow run release.yml --ref "v$VERSION"
+          echo "Dispatched release.yml for v$VERSION; PyPI publication awaits environment approval." >> "$GITHUB_STEP_SUMMARY"
