@@ -68,8 +68,7 @@ results = Analysis.from_unit_summary(
 
 for r in results:
     if r.lift is None:  # e.g. an exact conversion row with zero control events
-        reason = r.relative_unavailable_reason
-        print(f"{r.metric} / {r.group_id}: lift unavailable ({r.reference_kind}, {reason})")
+        print(repr(r))  # the repr shows the row's set or its unavailable reason
         continue
     print(
         f"{r.metric} / {r.group_id}: "
@@ -80,7 +79,7 @@ for r in results:
 
 ```text
 revenue / treatment: lift=+6.69% [+0.69%, +13.05%] significant=True
-converted / treatment: lift unavailable (binomial, None)
+LiftEstimate(metric='converted', group='treatment', estimand='itt', value=unavailable (relative), interval=(+2.059, +inf), stat_sig=True, discovery=None)
 ```
 
 `r.lift` is `None` when no finite point estimate exists. The causes, and where
@@ -96,11 +95,11 @@ each row keeps its remaining evidence, are:
   `r.relative_unavailable_reason == "nonpositive_arm_mean"`. The log-scale
   relative lift is undefined and there is **no** relative set. The additive
   difference survives in `r.abs_diff`, `r.abs_lb`, and `r.abs_ub`.
-- A row whose joint relative covariance cannot be represented as a float, as
-  with extremely large scores:
-  `r.relative_unavailable_reason == "joint_covariance_unrepresentable"`. There is
-  **no** relative set, and the additive interval stays in `r.abs_lb` and
-  `r.abs_ub`.
+- A row whose joint relative covariance is unusable: it cannot be represented as
+  a float (extremely large scores) or is not positive definite.
+  `r.relative_unavailable_reason` is `"joint_covariance_unrepresentable"` or
+  `"joint_covariance_indefinite"`. There is **no** relative set, and the
+  additive interval stays in `r.abs_lb` and `r.abs_ub`.
 - A winsorized metric with a `confidence_set`. A missing point leaves
   `r.confidence_set.relative` with a status and reason per endpoint (for
   example `unbounded` with `denominator_nonseparation`), and the additive
@@ -109,12 +108,11 @@ each row keeps its remaining evidence, are:
   `r.sequential_result.bounds`, and `r.sequential_result.point_reason` names the
   reason.
 
-Do not assume a missing point comes with a set. Read
-`r.relative_unavailable_reason` first: `nonpositive_arm_mean` and
-`joint_covariance_unrepresentable` mean no relative set, only the additive
-interval. Otherwise read whichever of `r.binomial_set`,
-`r.relative_confidence_set`, `r.confidence_set`, and `r.sequential_result` is
-present, as named above.
+Do not assume a missing point comes with a set. When `r.lift` is `None` and
+`r.relative_unavailable_reason` is set, the row has **no** relative set: read
+the additive `r.abs_diff`, `r.abs_lb`, and `r.abs_ub`. When the reason is
+`None`, read whichever of `r.binomial_set`, `r.relative_confidence_set`,
+`r.confidence_set`, and `r.sequential_result` is present, as named above.
 
 A missing point does not erase the evidence. The `converted` row is
 significant. Its interval lives on `r.binomial_set`, and the upper end is
