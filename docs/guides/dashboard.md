@@ -1,12 +1,12 @@
 # A/B Testing Dashboard
 
 `increment.dashboard` is an optional presentation layer over one bound
-experiment. It provides section-level `mo.Html` helpers and thin adapters
-around the public `Analysis` and `CoefTable` APIs. It renders allocation
-health, the role-grouped readout, optional time and segment exploration,
-definitions and provenance, and downloadable readout and group-data CSVs. The bundled
-`examples/ab_testing_dashboard.py` notebook shows one readable composition;
-use it as an example rather than a template to copy and edit.
+experiment. The bundled `examples/ab_testing_dashboard.py` notebook uses
+`render_dashboard` for a shared experiment summary and four tabs: **Readout**,
+**Explore**, **Health**, and a printable **Report**. Native CoefTable plots
+retain the engine's uncertainty; CSV downloads retain the captured readout
+and observed group data. Section-level helpers remain available for custom
+notebook compositions.
 
 Core Increment never imports this package: estimation, power, and the
 dataframe entry points stay free of marimo, CoefTable, and pandas.
@@ -39,11 +39,8 @@ import ibis
 from increment import Analysis
 from increment.dashboard import (
     DashboardConfig,
-    dashboard_styles,
     prepare_dashboard,
-    render_header,
-    render_health,
-    render_results,
+    render_dashboard,
 )
 
 con = ibis.snowflake.connect(...)
@@ -56,32 +53,31 @@ config = DashboardConfig(
 
 snapshot = prepare_dashboard(analysis, config=config)
 
-dashboard_styles()
-render_header(snapshot)
-render_health(snapshot)
-render_results(snapshot)
+render_dashboard(analysis, snapshot=snapshot)
 ```
 
-Put each rendering call in its own notebook cell, including `dashboard_styles()`.
+Put preparation and rendering in separate notebook cells.
 Install your warehouse's Ibis backend separately.
 
-The default Paper & Ink styling uses warm paper surfaces, serif headings,
-muted green charts, and light section rules. Packaged styles stay scoped to
-dashboard sections. The example's horizontal navigation and outer page frame
-use `examples/ab_testing_dashboard.css`, loaded through marimo's `css_file`
-setting; keep that stylesheet beside the notebook when copying the example.
+The default preset pairs **Midnight · Daylight** with **Midnight**. The
+complete dashboard embeds its theme, shared section stylesheet, native-table
+adapter, and browser controls; no external browser packages or Studio server
+are required. The example's host stylesheet stays beside the notebook.
 
-`prepare_dashboard` is the headline computation boundary. It validates the
-experiment and config, then invokes one source-owned snapshot operation.
-Allocation, enrollment history, headline estimates, and observed group data
-share its pinned inputs; the caller's `Analysis` is not rebound. Captured
-sequential decisions retain each displayed metric's checkpoint, including
-earlier frozen secondaries. These results form an immutable `DashboardSnapshot`.
+`prepare_dashboard` is the computation boundary. It validates the experiment and
+config, then invokes one source-owned snapshot operation. Allocation, enrollment
+history, headline estimates, observed group data, and every supported Explore
+choice share its pinned inputs, including declared breakout property sources.
+The caller's `Analysis` is not rebound. Captured sequential decisions retain
+each displayed metric's checkpoint, including earlier frozen secondaries.
+These results form an immutable `DashboardSnapshot`. Preparation computes the
+temporal and breakout views as well as the headline.
 
-Every `render_*` function below takes that snapshot and returns one complete
-`mo.Html` section; none of them queries, recomputes, or mutates it.
-Re-executing the source/prepare cell intentionally creates a new snapshot;
-changing a display control does not.
+`render_dashboard` embeds the captured evidence without querying the warehouse.
+Its browser controls select prepared evidence; they never alter the analysis
+plan or recompute confirmatory results. Section-level renderers also accept
+already-prepared data. Re-executing preparation intentionally creates a new
+snapshot that reflects subsequent source changes.
 You retain ownership of `analysis` and its connection; the package does not
 close or replace them. When deliberately rebinding to a different experiment,
 the caller must close the old connection.
@@ -123,16 +119,61 @@ metric names and empty labels are refused before source reads. Conversion and
 retention values use percentages; other metrics use explicit units or the
 generic label `value`. Currency is never inferred from a metric's name.
 
+## Theme presets
+
+`DashboardConfig.theme` accepts an immutable `DashboardTheme`. Start from
+`MIDNIGHT` and replace only the categories you want to change:
+
+```python
+from dataclasses import replace
+from increment.dashboard import MIDNIGHT, DashboardConfig
+
+editorial = replace(
+    MIDNIGHT,
+    name="Editorial",
+    light=replace(MIDNIGHT.light, accent="#9b4d18", canvas="#fff7ed"),
+    dark=replace(MIDNIGHT.dark, accent="#ffb66b", canvas="#152923"),
+    typography=replace(MIDNIGHT.typography, heading_font="Arial, sans-serif"),
+    layout=replace(MIDNIGHT.layout, page_padding=28, radius=10),
+    charts=replace(MIDNIGHT.charts, forest_width=333),
+    printing=replace(MIDNIGHT.printing, min_font_size_pt=9),
+)
+config = DashboardConfig(
+    expected_allocation={"control": 1, "treatment": 1},
+    theme=editorial,
+)
+```
+
+| Category | Controls |
+|---|---|
+| `light`, `dark` (`DashboardPalette`) | Semantic colors for surfaces, text, arms, and evidence direction. |
+| `typography` (`DashboardTypography`) | Body, heading, and monospace font stacks; body, table, estimate, and interval text sizes. |
+| `layout` (`DashboardLayout`) | Dashboard and standalone-section widths, page padding, corner radius, and native-table cell padding. |
+| `charts` (`DashboardCharts`) | Headline and segment forests, lift trajectories, absolute trajectories, and allocation-chart dimensions. |
+| `printing` (`DashboardPrint`) | Report prose and numeric-evidence font floor, in points. |
+
+Dimensions and screen text sizes use CSS pixels. Colors must be hexadecimal;
+font stacks cannot contain CSS rules. Invalid categories or values use
+`InvalidRequestError` (`dashboard.invalid_theme`) before source reads.
+Replacing a preset never mutates `MIDNIGHT` or changes captured evidence.
+The same categories drive native plots and the browser shell; exported
+dashboards carry their configuration and need no separate theme files.
+
+For standalone sections, emit `dashboard_styles(theme=config.theme)` once
+alongside the section outputs. Its tokens are scoped to `.inc-dashboard-root`
+and do not restyle the notebook canvas.
+
 ## Sections
 
 | Call | Renders |
 |---|---|
-| `dashboard_styles()` | The packaged, scoped stylesheet as one style block. Reads `_dashboard.css` with `importlib.resources`, so it needs no repository-relative path. |
+| `render_dashboard(analysis, snapshot=...)` | The complete interactive four-tab dashboard from captured evidence, without warehouse queries; native plots, scoped controls, metric inspectors, health, provenance, and a readable Report with the full captured metric family. |
+| `dashboard_styles(theme=MIDNIGHT)` | The configured theme and scoped stylesheet as one style block. Reads packaged resources, so it needs no repository-relative path. |
 | `render_header(snapshot)` | Experiment identity, window, population, inference, arms, and three summary cards: enrolled units, observed arm split, and a compact primary lift with its bracketed interval and direction-aware significance status. |
 | `render_health(snapshot)` | Visual allocation bars with target markers, the SRM verdict, and visible assignment warnings and result caveats. Allocation over time and evidence expands to a CoefTable with one row per variant, cumulative enrolled share, and the check statistics. |
-| `render_results(snapshot)` | The whole declared family through CoefTable, grouped by role, with forest plots and an explicit adverse-guardrail callout. Discovery is omitted from the visual columns; family metadata remains in details and CSV. Evidence geometry and statistical interpretation expand on demand. |
+| `render_results(snapshot)` | The whole declared family through CoefTable, grouped by role, with forest plots and an explicit adverse-guardrail callout. Redundant confidence, significance, and confidence-set display columns are omitted; levels and interpretation remain in notes and CSV. |
 | `render_metric_details(snapshot, metric=...)` | Lift, interval, and direction chips; policy and evidence-geometry details; observed data by group, including eligibility, exclusions, counts, units, and provenance. |
-| `load_explore(analysis, snapshot=..., metric=..., view=..., completed_windows_only=..., breakout=...)` | One requested advanced view (`analysis.run_asof_lift`, `run_daily`, `run_asof`, or `run_breakout`), dispatched from the public readout API. `metric=None` loads every declared metric together in any view. It never reruns the headline family, allocation check/history, or materialization. |
+| `load_explore(analysis, snapshot=..., metric=..., view=..., completed_windows_only=..., breakout=...)` | One advanced view captured during preparation. `metric=None` loads every declared metric together; a name selects its own captured series. Original coded refusals remain specific to each state. Validates experiment binding and options, without warehouse queries or materialization. |
 | `render_explore(snapshot, data, metric=..., view=..., completed_windows_only=...)` | One Explore section with a combined cumulative-lift table or separate absolute daily/cumulative tables per metric, actual date basis/range, and visible unavailable-point reasons. Applicable headline evidence geometry is labeled separately from the series. Pass the same metric selection used to load data; `metric=None` renders every declared metric together. |
 | `render_details(snapshot)` | Collapsible experiment metadata, per-metric policies, provenance, and static-snapshot limitations. |
 | `readout_csv(snapshot)` | The current headline readout as UTF-8 CSV bytes, for `mo.download`. |
@@ -142,22 +183,26 @@ Headline and metric-detail intervals retain declared one-sided bounds:
 `(−∞, upper]` or `[lower, +∞)`. Relative effects use percentages; absolute
 effects use outcome units. A declared open endpoint is not missing data.
 An ordinary, non-FCR point-backed Fieller result retains its central display
-interval: for a 5% one-sided test, that interval has 90% coverage. The separate
-confidence-set column labels the 95% directional set explicitly. FCR-selected
+interval: for a 5% one-sided test, that interval has 90% coverage. The interval
+disclosure and Report retain the 95% directional set explicitly. FCR-selected
 directional rows retain their re-estimated open display interval instead.
 
 Binomial, Fieller, and winsorized confidence sets retain their geometry even
-without a finite point estimate. The table adds a confidence-set column and
-the result's significance indicator; significance is distinct from family
-selection. Disconnected sets remain unions of intervals; their forest bars
-are omitted rather than filling the excluded gap.
+without a finite point estimate. **How to read these intervals** retains numeric
+set endpoints. **Methods & assumptions** and Report notes disclose each row's
+tested-null verdict separately from family selection, qualified by method,
+role, and arm when needed. Disconnected sets remain unions of intervals; their
+forest bars are omitted rather than filling the excluded gap. Confidence levels
+use up to two decimal places: an adjusted 98.333…% level displays as 98.33%.
 An undefined endpoint is shown with its reason and any finite opposite bound,
 never as infinity. Its numeric interval and forest bar are omitted rather
 than drawing a false open interval; an available point is still shown.
 Unavailable inference is not labeled nonsignificant. A usable absolute-null
 decision remains visible when only the relative confidence set is unavailable.
+Readout and Report both call out wholly adverse decision intervals, including
+one-sided guardrails whose declared null was not rejected.
 
-**Evidence geometry** explains captured test direction, exact binary counts,
+**How to read these intervals** explains captured test direction, exact binary counts,
 and confidence-set shape without changing the inference. In the shipped
 checkout demo, D7 retention is an increasing one-sided guardrail: its test
 constrains the lower relative-lift bound and intentionally leaves the upper
@@ -172,8 +217,8 @@ their excluded gap, whole-line sets retain both infinite ends, and a wide but
 finite interval is not reclassified by a size threshold. When relative
 evidence is unavailable, its recorded reason and any available absolute
 bounds appear separately in metric units (percentage points for rates).
-Explore's **Headline evidence geometry** describes the captured headline,
-not a new inference for each daily or cumulative point.
+Explore's interval notes distinguish captured headline evidence from the selected
+trajectory, rather than claiming a new inference for each daily value.
 
 CSV downloads neutralize formula-leading string cells with an apostrophe.
 Numeric cells remain numeric and unavailable numbers remain empty.
@@ -188,13 +233,18 @@ ambiguous breakout selection is refused with `InvalidRequestError`
 (`dashboard.invalid_view`); the refusal names the requested metric, view,
 and dimension.
 
-Every Explore view in the notebook shows all metrics together, without a
-metric selector. One readout query supplies the declared metric family;
-the table retains each result's interval and multiplicity metadata.
-Temporal plots use a separate value scale per metric. When daily metrics
-use different date bases, rows explicitly distinguish observation dates
-from exposure-cohort dates rather than overlaying incompatible series.
-Passing a metric name remains available for a single-metric API readout.
+Explore selects a metric and a declared breakout, then switches between
+**Relative lift** and **Absolute values**. Relative lift is cumulative;
+absolute values show the control and treatment arms on daily or cumulative
+scales. **Completed windows only** applies to cumulative views, not daily
+values. The breakout changes both estimates and uncertainty, not just labels.
+Unsupported engine requests display their refusal instead of substituting
+whole-experiment results.
+
+Temporal plots use a separate value scale per metric. Date-basis and
+unavailable-point disclosures distinguish observation dates from retention
+cohort dates. Missing estimates remain gaps; one-sided intervals show their
+finite bound without inventing an endpoint.
 
 Absolute daily and cumulative plots show numeric y-axis ticks. Both arms
 share a scale within each metric; unrelated metrics keep separate scales
@@ -284,15 +334,50 @@ declared breakout dimension and a single resolved segment is equally valid.
 
 ## Live notebook vs. static export
 
-The live notebook (`marimo edit` or `marimo run`) loads cumulative lift for
-every declared metric immediately. Selecting another Explore view runs only
-that requested temporal or segment computation. The metric-detail selector
-and Explore controls never recompute the headline snapshot.
+Both live notebooks and static HTML exports contain the prepared **Readout**,
+**Explore**, **Health**, and **Report** tabs. Metric, declared-breakout,
+relative/absolute, daily/cumulative, and maturity controls select embedded
+evidence in the browser; no Python kernel is needed after export.
 
-A static HTML export (`marimo export html`) includes Overview, Health,
-Results, the default cumulative-lift Explore view, Metric details, and Details.
-Changing analysis controls in a static export requires a live `marimo` session;
-the export cannot execute Python.
+By default, the dashboard uses **Midnight · Daylight** in light mode and
+**Midnight** in dark mode; custom presets supply their own paired palettes.
+The masthead toggle changes tables, charts, and surrounding
+surfaces without changing the captured analysis or current selections.
+It follows the operating-system preference until you choose a mode, then
+remembers that choice in browser storage when available. The same toggle
+works in static exports. Printing always uses the light palette and leaves
+the selected screen mode unchanged.
+
+Explore keeps charts at their native size so axis labels and uncertainty
+bands remain legible. Narrow tables scroll horizontally instead of shrinking
+the plots.
+
+Readout and Report always retain the complete captured family, independent
+of Explore selections. Both the hero and Report primary card retain the
+captured uncertainty interval; the Report uses smaller, muted interval text.
+Tables omit the repeated **Confidence** column without changing statistical
+metadata or interval levels.
+
+Report retains every metric result and interval, compact allocation health,
+essential inference notes, and source/capture context. **Print / Save PDF**
+uses one A4 page when the report fits without taking prose or numeric
+evidence below `theme.printing.min_font_size_pt` (8pt by default). Larger
+families flow across pages with repeated table headers instead of shrinking
+the evidence. Over-wide tables split into column bands that repeat metric
+and arm identity; report whitespace is bounded for the page. Plot axes
+retain their native chart styling.
+
+Printing expands folded groups and restores them afterwards. Detailed
+policies, observed arm data, allocation history, and provenance remain in
+Readout, metric inspection, Explore, and Health rather than filling the PDF.
+
+The full-readout CSV download belongs to Report, not Readout. Explore retains
+its metric-specific group-data CSV; all downloads use the captured snapshot.
+
+Preparation can be more expensive than a single-view export because it
+computes the declared temporal choices. This is a captured analysis, not a
+live data-refresh surface. Rebind and prepare in Python to update the data
+or change the analysis policy.
 
 ## Run the example
 
@@ -306,10 +391,10 @@ uv run --extra dashboard --extra demo marimo edit examples/ab_testing_dashboard.
 
 The equivalent `marimo run` serves the same notebook read-only, and
 `uv run --extra dashboard --extra demo python examples/ab_testing_dashboard.py`
-runs it as a script for a quick smoke check. The notebook pins itself to
-light mode with notebook-local `# /// script` metadata
-(`[tool.marimo.display] theme = "light"`); that metadata is also why the
-bare `uv run examples/ab_testing_dashboard.py` form is not supported here —
+runs it as a script for a quick smoke check. Notebook-local `# /// script`
+metadata keeps marimo's own chrome light; the embedded dashboard has its
+independent light/dark toggle. That metadata is also why the bare
+`uv run examples/ab_testing_dashboard.py` form is not supported here:
 without an explicit `python`/`marimo` command, `uv run` treats a directly
-executed `.py` file carrying that metadata as an isolated script
-environment and never installs the `dashboard`/`demo` extras at all.
+executed `.py` file carrying that metadata as an isolated script environment
+and never installs the `dashboard`/`demo` extras at all.

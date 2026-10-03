@@ -1034,7 +1034,9 @@ class Analysis:
                 "with a warehouse-backed source."
             ),
         )
-        with src.readout_snapshot(metrics=metrics, population="assigned") as pinned:
+        with src.readout_snapshot(
+            metrics=metrics, population="assigned", include_breakouts=True
+        ) as pinned:
             isolated = copy.copy(self)
             isolated._state = replace(self._state, source=pinned)
             return operation(isolated)

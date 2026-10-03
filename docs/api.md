@@ -854,8 +854,9 @@ points:
 ## Optional dashboard (`increment.dashboard`)
 
 `increment.dashboard` is an optional presentation layer over one bound
-experiment: section-level `mo.Html` helpers and thin adapters over the
-public `Analysis` and CoefTable APIs. Install it with `pip install
+experiment: a complete interactive four-tab dashboard, section-level
+`mo.Html` helpers, and thin adapters over the public `Analysis` and
+CoefTable APIs. Install it with `pip install
 "increment[dashboard]"`; core Increment, estimation, power, and the
 dataframe entry points never import marimo, CoefTable, or pandas
 through this package. See the [dashboard guide](guides/dashboard.md) for
@@ -871,6 +872,8 @@ shapes, and statistical disclosures.
 accepted by `load_explore` and `render_explore`.
 
 ::: increment.dashboard.prepare_dashboard
+
+::: increment.dashboard.render_dashboard
 
 ::: increment.dashboard.dashboard_styles
 

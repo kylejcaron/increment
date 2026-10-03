@@ -27,7 +27,13 @@ from increment._analysis_config import effective_methods, overlay_configs, resol
 from increment._moment_plan import COMPLIANCE_ARM_FROM_CLUSTER_ROW
 from increment._source_operations import DashboardGroupData
 from increment._window import NO_DATA_SIGNAL, resolve_window_days
-from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec, _safe_error_value
+from increment.errors import (
+    CapabilityError,
+    CodedError,
+    InvalidRequestError,
+    RefusalSpec,
+    _safe_error_value,
+)
 from increment.errors import refuse as _refuse
 from increment.estimation.armstats import ArmStats
 from increment.query.artifact_contract import ArtifactStore
@@ -1055,9 +1061,13 @@ class TriggeredPopulationSource:
         metrics: Sequence[Metric],
         population: Literal["assigned", "triggered"],
         uptake_facts: Sequence[str] = (),
+        include_breakouts: bool = False,
     ) -> Iterator[MomentSource]:
-        with self._source._pinned_source_execution(
-            metrics=metrics, uptake_facts=uptake_facts
+        with self._source.readout_snapshot(
+            metrics=metrics,
+            population="assigned",
+            uptake_facts=uptake_facts,
+            include_breakouts=include_breakouts,
         ) as pinned:
             yield self if pinned is self._source else pinned.triggered_source()
 
@@ -1731,6 +1741,21 @@ class DefinitionsMomentSource(SequentialSourceMixin):
             if pinned is not self:
                 pinned.close()
 
+    def _declared_breakout_sources(self) -> tuple[str, ...]:
+        """Fact sources backing the declared breakouts, in declaration order.
+
+        A breakout whose property cannot be resolved is skipped here: the readout that needs it
+        refuses with the resolver's own coded error, so pinning must not pre-empt that refusal.
+        """
+        names: dict[str, None] = {}
+        for breakout in self._experiment.breakouts:
+            try:
+                source = _resolve_breakout_fact_source(self._defs, self._experiment, breakout)
+                names[source.name] = None
+            except CodedError:
+                continue
+        return tuple(names)
+
     @contextmanager
     def readout_snapshot(
         self,
@@ -1738,9 +1763,19 @@ class DefinitionsMomentSource(SequentialSourceMixin):
         metrics: Sequence[Metric],
         population: Literal["assigned", "triggered"],
         uptake_facts: Sequence[str] = (),
+        include_breakouts: bool = False,
     ) -> Iterator[MomentSource]:
-        """Pin selected metrics and explicitly requested uptake streams."""
-        with self._pinned_source_execution(metrics=metrics, uptake_facts=uptake_facts) as pinned:
+        """Pin selected metrics, requested uptake streams, and optionally breakout properties.
+
+        ``include_breakouts`` also captures each declared breakout's property stream, so a
+        segment or dimensioned readout of the pinned source reads the same execution snapshot
+        as the headline instead of failing on, or silently re-reading, an unpinned stream.
+        """
+        with self._pinned_source_execution(
+            metrics=metrics,
+            uptake_facts=uptake_facts,
+            extra_sources=self._declared_breakout_sources() if include_breakouts else (),
+        ) as pinned:
             yield pinned if population == "assigned" else pinned.triggered_source()
 
     def _metric_primary_events(self, metric: Metric) -> Table:
