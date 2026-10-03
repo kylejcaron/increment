@@ -6,14 +6,16 @@ before comparing or combining rows.
 
 | Evidence | Returns | Row type | Scale |
 |---|---|---|---|
-| Arm comparisons: `from_unit_summary`, `from_unit_panel`, `from_definitions`, `from_moments` | `LiftEstimates` | `LiftEstimate` | Usually relative lift: `0.05` is 5% above control. Read each row's `value_scale`. |
+| Arm comparisons: `from_unit_summary`, `from_unit_panel`, `from_unit_day_artifact`, `from_definitions`, `from_moments` | `LiftEstimates` | `LiftEstimate` | Usually relative lift: `0.05` is 5% above control. Read each row's `value_scale`. |
 | Switchback: `from_switchback_panel` | `ContrastResults` | `ContrastResult` | Additive difference in the metric's own units. |
 
-A `LiftEstimate` can be absolute. An encouragement design's LATE and an
-observational metric reported with `run(value_scale={metric: "absolute"})` carry
-`r.value_scale == "absolute"`, and then `r.lift.value` and its interval are in
-the metric's own units. Check `r.value_scale` (and `r.estimand`) on every row,
-and never compare a relative lift with an additive value numerically.
+A `LiftEstimate` can be absolute. An encouragement design's additive LATE row
+and an observational metric reported with `run(value_scale={metric: "absolute"})`
+carry `r.value_scale == "absolute"`, and then `r.lift.value` and its interval are
+in the metric's own units. An encouragement design can also emit a relative LATE
+sibling with the same estimand, so a LATE does not imply a scale. Check
+`r.value_scale` (and `r.estimand`) on every row, and never compare a relative lift
+with an additive value numerically.
 `LiftEstimates.to_frame` and the readout rows have a `value_scale` column.
 `ContrastResults.to_frame` does not, because every contrast is additive; only
 the readout adapter below adds `value_scale="absolute"` to contrast rows.
@@ -66,7 +68,8 @@ results = Analysis.from_unit_summary(
 
 for r in results:
     if r.lift is None:  # e.g. an exact conversion row with zero control events
-        print(f"{r.metric} / {r.group_id}: lift unavailable, see r.binomial_set")
+        reason = r.relative_unavailable_reason
+        print(f"{r.metric} / {r.group_id}: lift unavailable ({r.reference_kind}, {reason})")
         continue
     print(
         f"{r.metric} / {r.group_id}: "
@@ -77,7 +80,7 @@ for r in results:
 
 ```text
 revenue / treatment: lift=+6.69% [+0.69%, +13.05%] significant=True
-converted / treatment: lift unavailable, see r.binomial_set
+converted / treatment: lift unavailable (binomial, None)
 ```
 
 `r.lift` is `None` when no finite point estimate exists. The causes, and where
@@ -93,6 +96,11 @@ each row keeps its remaining evidence, are:
   `r.relative_unavailable_reason == "nonpositive_arm_mean"`. The log-scale
   relative lift is undefined and there is **no** relative set. The additive
   difference survives in `r.abs_diff`, `r.abs_lb`, and `r.abs_ub`.
+- A row whose joint relative covariance cannot be represented as a float, as
+  with extremely large scores:
+  `r.relative_unavailable_reason == "joint_covariance_unrepresentable"`. There is
+  **no** relative set, and the additive interval stays in `r.abs_lb` and
+  `r.abs_ub`.
 - A winsorized metric with a `confidence_set`. A missing point leaves
   `r.confidence_set.relative` with a status and reason per endpoint (for
   example `unbounded` with `denominator_nonseparation`), and the additive
@@ -101,8 +109,12 @@ each row keeps its remaining evidence, are:
   `r.sequential_result.bounds`, and `r.sequential_result.point_reason` names the
   reason.
 
-Do not assume a missing point comes with a set: only the first, second,
-fourth, and fifth rows do, and the third row keeps only its additive interval.
+Do not assume a missing point comes with a set. Read
+`r.relative_unavailable_reason` first: `nonpositive_arm_mean` and
+`joint_covariance_unrepresentable` mean no relative set, only the additive
+interval. Otherwise read whichever of `r.binomial_set`,
+`r.relative_confidence_set`, `r.confidence_set`, and `r.sequential_result` is
+present, as named above.
 
 A missing point does not erase the evidence. The `converted` row is
 significant. Its interval lives on `r.binomial_set`, and the upper end is
@@ -129,7 +141,7 @@ else:
 missing point should stop the program rather than be handled.
 
 Two of the other causes are reproducible with small frames. A mean metric whose
-arms are both negative has no relative lift, no relative set, and a reported
+control mean is negative has no relative lift, no relative set, and a reported
 additive interval:
 
 ```python

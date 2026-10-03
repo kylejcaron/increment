@@ -75,7 +75,8 @@ results = Analysis.from_unit_summary(
 
 for result in results:
     if result.lift is None:  # e.g. an exact conversion row with zero control events
-        print(f"{result.metric}: lift unavailable, see result.binomial_set")
+        reason = result.relative_unavailable_reason
+        print(f"{result.metric}: lift unavailable ({result.reference_kind}, {reason})")
         continue
     print(f"{result.metric}: lift={result.lift.value:+.1%}")
 ```
