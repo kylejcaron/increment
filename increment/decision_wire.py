@@ -695,7 +695,9 @@ def _reject_duplicate_pairs(pairs: list[tuple[str, object]]) -> dict[str, object
 def compiled_plan_from_json(payload: str) -> CompiledDecisionPlan:
     """Decode one compiled plan from its JSON text.
 
-    Structural guards reject duplicate keys and legacy shapes before validation.
+    Structural guards reject duplicate keys, group-sequential inference,
+    sequential plans whose ``wire_version`` is not 3, and asymptotic
+    registrations without ``asymptotic_family`` before validation.
     The immutable context retains JSON numeric provenance without parsing twice.
     """
     try:
