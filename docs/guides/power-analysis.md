@@ -317,8 +317,8 @@ runtime registration, with `expected_decision_sample_size` set to the solved
 `n_total`, so planning and the runtime never silently disagree on N:
 
 ```python
-from increment.estimation.arm_contract import ArmPlanningProcedure
-from increment.semantics.models import InferenceSpec
+from increment import InferenceSpec
+from increment.power import ArmPlanningProcedure
 
 procedure = ArmPlanningProcedure.standard("mean", inference=InferenceSpec(kind="asymptotic_mean"))
 sized = required_sample_size(0.02, baseline, procedure, planned_looks=14)
