@@ -21,6 +21,7 @@ import pytest
 from increment import readouts
 from increment.errors import (
     CapabilityError,
+    DefinitionError,
     IncrementWarning,
     InvalidRequestError,
     UnsupportedRequestError,
@@ -1626,10 +1627,20 @@ def test_encouragement_retention_remains_refused_at_construction() -> None:
     assert exc.value.code == "readout.encouragement.retention"
 
 
-def test_encouragement_retention_invalid_band_still_refuses_encouragement_not_validation() -> None:
-    """A structurally invalid band must not let synthesis run first and mask the
-    real refusal behind a raw pydantic ValidationError (regression: the capability
-    check must fire before metric synthesis on the panel path)."""
+@pytest.mark.parametrize("with_encouragement", [True, False])
+@pytest.mark.parametrize(
+    ("band", "code"),
+    [
+        ((5, 3), "definition.retention.threshold_days_upper_exceeds_lower"),
+        ((-1, 4), "definition.retention.threshold_days_lower_bound_non_negative"),
+    ],
+)
+def test_mapping_metric_with_invalid_retention_band_refuses_with_the_definition_code(
+    with_encouragement: bool, band: tuple[int, int], code: str
+) -> None:
+    """A raw mapping metric reaches the same canonical refusal as ``MetricSpec``,
+    with or without an encouragement design (whose retention capability refusal
+    must not mask an invalid declaration)."""
     base = date(2025, 1, 1)
     table = pa.table(
         {
@@ -1641,19 +1652,23 @@ def test_encouragement_retention_invalid_band_still_refuses_encouragement_not_va
             "returned": [0.0, 1.0, 0.0, 1.0],
         }
     )
-    with pytest.raises(CapabilityError) as exc:
+    extra: dict[str, Any] = (
+        {"uptake": "clicked", "design": _encouragement_design(window_days=3)}
+        if with_encouragement
+        else {}
+    )
+    with pytest.raises(DefinitionError) as exc:
         from_unit_panel(
             table,
             unit="user_id",
             group="variant",
             date="day",
             control="control",
-            metrics=[MetricSpec(name="returned", type="retention", threshold_days=(5, 3))],
-            uptake="clicked",
-            design=_encouragement_design(window_days=3),
+            metrics=[{"name": "returned", "type": "retention", "threshold_days": band}],
             exposure_date="exposed_on",
+            **extra,
         )
-    assert exc.value.code == "readout.encouragement.retention"
+    assert exc.value.code == code
 
 
 def _windowed_encouragement_source(

@@ -120,6 +120,42 @@ def test_switchback_envelope_requires_one_treatment_arm_and_randomized_identific
     assert exc_info.value.code == "facade.study.switchback_study.identification_exactly_one"
 
 
+@pytest.mark.parametrize(
+    "allocation",
+    [
+        {"control": 0.9, "treatment": 0.1},
+        {"control": 0.4, "treatment": 0.4},
+        {"control": 0.5, "treatment": 0.5000001},
+    ],
+)
+def test_switchback_allocation_refuses_identically_at_envelope_and_panel(allocation):
+    """One hazard, one code and one context, whichever ingress meets it first."""
+    from increment.switchback import from_switchback_panel
+
+    assignment = SwitchbackAssignment(
+        sequence=IndependentBernoulliOrder(),
+        window=SwitchbackWindow(washout_steps=1, observation_steps=2),
+    )
+    identification = Randomized(control_group="control", allocation=allocation)
+    with pytest.raises(InvalidRequestError) as envelope:
+        SwitchbackStudyEnvelope(identification=identification, assignment=assignment)
+    with pytest.raises(InvalidRequestError) as panel:
+        from_switchback_panel(
+            object(),  # ty: ignore[invalid-argument-type]
+            unit="unit",
+            cycle="cycle",
+            period="period",
+            step="step",
+            group="group",
+            metrics={"outcome": "mean"},
+            identification=identification,
+            assignment=assignment,
+        )
+    assert envelope.value.code == panel.value.code == "source.frame.switchback.identification"
+    assert envelope.value.context == panel.value.context
+    assert envelope.value.context["allocation"] == allocation
+
+
 def test_switchback_window_rejects_bool_steps():
     """bool is an int subclass in Python; washout/observation steps must
     never silently become 1/0 from True/False."""

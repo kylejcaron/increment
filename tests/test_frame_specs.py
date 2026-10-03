@@ -177,14 +177,10 @@ def test_summary_refuses_time_dependent_metrics_with_structured_context(
 
 
 def test_from_unit_summary_retention_capability_error_beats_synthesis_validation_error() -> None:
-    """Finding 2 regression: ``_reject_windowed_specs`` must run before any
-    metric synthesis, so a structurally *valid* ``MetricSpec`` (band shape
-    is the models layer's job) that is simply unsupported on this shape
-    still raises the guard's own ``CapabilityError`` -- not a
-    confusing ``pydantic.ValidationError`` surfaced from deep inside
-    the decision compiler's eager metric synthesis
-    (``RetentionMetric._band_is_non_empty`` rejects ``threshold_days=[5,
-    3]`` since ``b <= a``).
+    """``_reject_windowed_specs`` must run before any metric synthesis, so a
+    valid retention ``MetricSpec`` that is simply unsupported on this shape
+    still raises the guard's own ``CapabilityError`` -- not an error surfaced
+    from deep inside the decision compiler's eager metric synthesis.
     """
     with pytest.raises(CapabilityError) as exc:
         from_unit_summary(
@@ -192,7 +188,7 @@ def test_from_unit_summary_retention_capability_error_beats_synthesis_validation
             unit="user_id",
             group="variant",
             control="control",
-            metrics=[MetricSpec(name="d7", type="retention", threshold_days=(5, 3))],
+            metrics=[MetricSpec(name="d7", type="retention", threshold_days=(1, 3))],
         )
     assert exc.value.code == "source.frame.constructor"
 
@@ -200,9 +196,9 @@ def test_from_unit_summary_retention_capability_error_beats_synthesis_validation
 def test_from_unit_panel_covariate_refusal_beats_synthesis_validation_error() -> None:
     """Same ordering guarantee on the panel path: ``_reject_covariates``
     runs before any metric synthesis, so a windowed covariate metric declared
-    alongside a structurally-invalid retention spec still raises the
-    covariate ``frame.validation.from_unit_panel`` refusal, not a
-    ``ValidationError`` from synthesising the other (unrelated) spec first.
+    alongside a retention spec still raises the covariate
+    ``frame.validation.from_unit_panel`` refusal, not an error from
+    synthesising the other (unrelated) spec first.
     """
     with pytest.raises(InvalidRequestError) as exc_info:
         from_unit_panel(
@@ -213,7 +209,7 @@ def test_from_unit_panel_covariate_refusal_beats_synthesis_validation_error() ->
             control="control",
             metrics=[
                 MetricSpec(name="revenue", covariate="pre_revenue", window_days=7),
-                MetricSpec(name="d7", type="retention", threshold_days=(5, 3)),
+                MetricSpec(name="d7", type="retention", threshold_days=(1, 3)),
             ],
         )
     assert exc_info.value.code == "frame.validation.from_unit_panel"
@@ -361,6 +357,34 @@ def test_metric_spec_retention_band_forms() -> None:
     assert banded.threshold_days == (7, 14)
 
 
+@pytest.mark.parametrize(
+    ("band", "code"),
+    [
+        ((3, 3), "definition.retention.threshold_days_upper_exceeds_lower"),
+        ((5, 3), "definition.retention.threshold_days_upper_exceeds_lower"),
+        ((-1, 4), "definition.retention.threshold_days_lower_bound_non_negative"),
+        (-1, "definition.retention.threshold_days_non_negative"),
+    ],
+)
+def test_metric_spec_refuses_an_invalid_retention_band_at_construction(
+    band: int | tuple[int, int], code: str
+) -> None:
+    with pytest.raises(DefinitionError) as exc_info:
+        MetricSpec(name="d7", type="retention", threshold_days=band)
+    assert exc_info.value.code == code
+    assert exc_info.value.context["name"] == "d7"
+
+
+@pytest.mark.parametrize("band", [True, (False, 3), (1, True)])
+def test_metric_spec_refuses_bool_day_counts(band: object) -> None:
+    with pytest.raises(DefinitionError) as exc_info:
+        MetricSpec(name="d7", type="retention", threshold_days=band)
+    assert exc_info.value.code == "definition.models.reject_bool"
+    with pytest.raises(DefinitionError) as exc_info:
+        MetricSpec(name="revenue", window_days=True)
+    assert exc_info.value.code == "definition.models.reject_bool"
+
+
 def test_retention_requires_threshold_days() -> None:
     with pytest.raises(InvalidRequestError) as exc_info:
         MetricSpec(name="d7", type="retention")
@@ -378,7 +402,7 @@ def test_threshold_days_requires_retention_type() -> None:
 def test_window_days_rejected_on_retention_and_quantile() -> None:
     # band lives in threshold_days - models-layer validation, single-sourced
     with pytest.raises(DefinitionError) as exc_info:
-        synthesise_metric(MetricSpec(name="d7", type="retention", threshold_days=7, window_days=14))
+        MetricSpec(name="d7", type="retention", threshold_days=7, window_days=14)
     assert exc_info.value.code == "definition.retention.metric_window_days"
     with pytest.raises(InvalidRequestError) as exc_info:
         MetricSpec(name="p50", type="quantile", quantile=0.5, window_days=7)
