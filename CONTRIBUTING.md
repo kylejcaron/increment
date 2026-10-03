@@ -14,6 +14,11 @@ Release notes are generated from merged PR titles. Label your PR so it lands in
 the right section: `breaking`, `feature`, `fix`, `stats`/`inference`, `docs`,
 or `internal`. Use `skip-changelog` to omit it.
 
+Increment is alpha: breaking changes between 0.x prereleases are allowed but
+must carry the `breaking` label and name the affected paths and a migration
+route. The full policy, including persisted formats and stable refusal codes,
+is in the [pre-1.0 compatibility policy](docs/api.md#pre-10-compatibility).
+
 ## License and the CLA
 
 increment is licensed under the [Apache License 2.0](LICENSE).

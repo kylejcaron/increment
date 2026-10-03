@@ -452,8 +452,7 @@ inference kind and, if you know it, the control arm's usual conversion rate:
 <!-- skip: next "requires a finalized unit summary frame" -->
 
 ```python
-from increment import Analysis, AnalysisPlan, InferenceSpec, Randomized
-from increment.frame import MetricSpec
+from increment import Analysis, AnalysisPlan, InferenceSpec, MetricSpec, Randomized
 
 plan = AnalysisPlan(
     primary="purchase",
@@ -560,8 +559,7 @@ Declare the plan and assignment before reading outcomes:
 <!-- skip: next "requires a finalized unit summary frame" -->
 
 ```python
-from increment import Analysis, AnalysisPlan, InferenceSpec, Randomized
-from increment.frame import MetricSpec
+from increment import Analysis, AnalysisPlan, InferenceSpec, MetricSpec, Randomized
 
 specs = [MetricSpec(name="revenue", type="mean")]
 design = Randomized(
