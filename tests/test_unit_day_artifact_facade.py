@@ -400,6 +400,90 @@ def test_publish_open_runs_the_same_arm_operations_and_reopens() -> None:
     assert lift_rows(adopted.run(metrics=["purchase_rate"]))
 
 
+def _add_treatment_units(con: Any) -> None:
+    """Append new treatment-arm units so live data differs from earlier readings."""
+    con.raw_sql(
+        "INSERT INTO analytics.event_log "
+        "SELECT * REPLACE (user_id || '_late' AS user_id, session_id || '_late' AS session_id) "
+        "FROM analytics.event_log "
+        "WHERE experiment_id = 'new_onboarding_v2' AND group_id <> "
+        "(SELECT min(group_id) FROM analytics.event_log WHERE experiment_id = 'new_onboarding_v2')"
+    )
+
+
+def _purchase_lift(analysis: Analysis) -> float:
+    return lift_rows(analysis.run(metrics=["purchase_rate"]))[0].require_lift().value
+
+
+def test_closed_artifact_analysis_reopens_its_pinned_generation_not_a_newer_one() -> None:
+    con, native, context, store, ref = _published()
+    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    before = _purchase_lift(adopted)
+    adopted.close()
+    _add_treatment_units(con)
+    newer = native.publish_unit_day_artifact(store, refresh_of=ref)
+    with Analysis.from_unit_day_artifact(store, newer, expected_context=context) as latest:
+        assert _purchase_lift(latest) != pytest.approx(before)
+    assert _purchase_lift(adopted) == pytest.approx(before)
+    adopted.close()
+    assert _purchase_lift(adopted) == pytest.approx(before)
+
+
+def test_dashboard_snapshot_reads_the_pinned_source_and_leaves_the_outer_analysis_live() -> None:
+    from increment._source_operations import DashboardSnapshotPayload
+
+    con, native, _context, _store = _native()
+    metrics = [m for m in load("examples/definitions").metrics if m.name == "purchase_rate"]
+    seen: dict[str, float] = {}
+
+    def operation(isolated: Analysis) -> DashboardSnapshotPayload:
+        seen["pinned_before"] = _purchase_lift(isolated)
+        _add_treatment_units(con)
+        seen["pinned_after"] = _purchase_lift(isolated)
+        return DashboardSnapshotPayload(
+            allocation=None,
+            allocation_refusal=None,
+            allocation_history=None,
+            allocation_history_refusal=None,
+            estimates=(),
+            group_data=(),
+        )
+
+    try:
+        native.dashboard_snapshot(operation, metrics=metrics)
+        assert seen["pinned_after"] == pytest.approx(seen["pinned_before"])
+        assert _purchase_lift(native) != pytest.approx(seen["pinned_before"])
+    finally:
+        native.close()
+
+
+def test_dashboard_snapshot_refuses_an_artifact_backed_analysis_and_it_stays_usable() -> None:
+    _con, _native_analysis, context, store, ref = _published()
+    metrics = [m for m in load("examples/definitions").metrics if m.name == "purchase_rate"]
+    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    before = _purchase_lift(adopted)
+
+    def operation(_isolated: Analysis) -> Any:
+        raise AssertionError("the handler must not run on an artifact-backed analysis")
+
+    with pytest.raises(CapabilityError) as raised:
+        adopted.dashboard_snapshot(operation, metrics=metrics)
+    assert raised.value.code == "facade.analysis.operation"
+    assert raised.value.context["operation"] == "readout_snapshot"
+    adopted.close()
+    assert _purchase_lift(adopted) == pytest.approx(before)
+
+
+def test_artifact_source_reports_closed_only_after_close() -> None:
+    _con, _native_analysis, context, store, ref = _published()
+    source = open_artifact(store, ref, expected_context=context)
+    assert source.closed is False
+    source.close()
+    assert source.closed is True
+    source.close()
+    assert source.closed is True
+
+
 def test_public_extension_selection_uses_the_immutable_catalog() -> None:
     _con, native, context, store = _native()
     request = next(

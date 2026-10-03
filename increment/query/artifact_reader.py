@@ -1943,6 +1943,11 @@ class ArtifactMomentSource(SequentialSourceMixin):
             route="use moments() for artifact-backed reductions",
         )
 
+    @property
+    def closed(self) -> bool:
+        """Whether :meth:`close` has released the pinned artifact snapshot."""
+        return self._closed
+
     def close(self) -> None:
         if self._closed:
             return

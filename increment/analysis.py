@@ -18,7 +18,7 @@ import copy
 import datetime as dt
 import inspect
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -248,6 +248,7 @@ if TYPE_CHECKING:
     from increment.frame import MetricsArg
     from increment.power import Baseline
     from increment.power.switchback import SwitchbackBaseline
+    from increment.query.source import ArtifactMomentSource
     from increment.semantics.assignment import SwitchbackAssignment
     from increment.semantics.design import Encouragement, Observational, Randomized
     from increment.semantics.models import AnalysisPlan, Breakout, Metric
@@ -273,6 +274,15 @@ class _LegacyOperationSource:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._src, name)
+
+
+@dataclass(frozen=True, slots=True)
+class _ArtifactOpenSpec:
+    """Immutable reopen pin for an artifact-backed analysis, fixed at construction."""
+
+    store: ArtifactStore
+    ref: UnitDayArtifactRef
+    expected_context: ArtifactContext
 
 
 # Public facade
@@ -304,8 +314,6 @@ class Analysis:
         refuses; ``"warn"``/``"exclude"`` drop them, warning once or not at
         all.
     """
-
-    _artifact_open_spec: tuple[Any, Any, Any, Any] | None = None
 
     def __init__(
         self,
@@ -386,6 +394,7 @@ class Analysis:
             store=store,
             on_mixed_assignment=on_mixed_assignment,
         )
+        self._artifact_open_spec = None
 
     @classmethod
     def _build_state(
@@ -448,15 +457,9 @@ class Analysis:
 
     def _ensure_artifact_source(self) -> MomentSource:
         source = cast("MomentSource", self._state.source)
-        spec = getattr(self, "_artifact_open_spec", None)
-        if spec is not None and getattr(source, "_closed", False):
-            store, ref, expected_context, metrics = spec
-            source = open_artifact(
-                store,
-                ref,
-                expected_context=expected_context,
-                metrics=metrics,
-            )
+        spec = self._artifact_open_spec
+        if spec is not None and cast("ArtifactMomentSource", source).closed:
+            source = open_artifact(spec.store, spec.ref, expected_context=spec.expected_context)
             self._state = replace(self._state, source=source)
         return source
 
@@ -638,9 +641,11 @@ class Analysis:
             expected_context=expected_context,
             verification=verification,
         )
-        analysis = cls._from_source(source, source.context.design)
-        analysis._artifact_open_spec = (store, ref, expected_context, None)
-        return analysis
+        return cls._from_source(
+            source,
+            source.context.design,
+            artifact_open_spec=_ArtifactOpenSpec(store, ref, expected_context),
+        )
 
     @classmethod
     def from_definitions(
@@ -680,6 +685,7 @@ class Analysis:
         backend: str | None = None,
         store: Literal["auto", "always", "none"] = "auto",
         on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
+        artifact_open_spec: _ArtifactOpenSpec | None = None,
     ) -> Analysis:
         """Build an instance from the source's immutable construction state."""
         context = src.context
@@ -694,6 +700,7 @@ class Analysis:
             if design is not None and cast("SourceContext", src.context).design != design:
                 _raise("facade.analysis.source_context_design_disagrees_arm")
         self = super().__new__(cls)
+        self._artifact_open_spec = artifact_open_spec
         self._state = cls._build_state(
             src=src,
             defs=defs,
@@ -1037,6 +1044,9 @@ class Analysis:
         with src.readout_snapshot(metrics=metrics, population="assigned") as pinned:
             isolated = copy.copy(self)
             isolated._state = replace(self._state, source=pinned)
+            # The pinned snapshot must never be reopened over: drop any reopen pin
+            # the copy would otherwise inherit.
+            isolated._artifact_open_spec = None
             return operation(isolated)
 
     def dashboard_group_data(
