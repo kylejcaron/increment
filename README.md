@@ -17,8 +17,9 @@ that already exists. Define warehouse analyses in version-controlled YAML, or
 start directly from a dataframe. Increment does not assign traffic, ship feature
 flags, or maintain a separate event store.
 
+[Website](https://incrementdocs.pages.dev/) · [Hosted documentation](https://incrementdocs.pages.dev/docs/) ·
 [Quickstart](#quickstart) · [Warehouse analysis](#connect-your-warehouse) ·
-[Documentation](#explore-the-guides) · [Statistical limitations](docs/limitations.md)
+[Guides](#explore-the-guides) · [Statistical limitations](docs/limitations.md)
 
 ## What you can do
 
