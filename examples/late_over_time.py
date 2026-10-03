@@ -13,6 +13,8 @@ def _():
     from increment import (
         Analysis,
         AnalysisPlan,
+        Encouragement,
+        ExclusionRestriction,
         InferenceSpec,
         JointReveal,
         MetricSpec,
@@ -21,10 +23,11 @@ def _():
         SequentialCompliancePolicy,
         SequentialModel,
         SequentialRegistration,
+        UptakeSpec,
+        sequential_definition_id,
     )
     from increment.frame import synthesise_metric
-    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
-    from increment.sequential_source import frame_observation_mapping, sequential_definition_id
+    from increment.sequential_source import frame_observation_mapping
     from increment.simulate.dgp import Scenario, simulate_raw_logs
 
     return (

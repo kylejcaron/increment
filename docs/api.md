@@ -739,7 +739,7 @@ Filter or assert on `.code` rather than message text:
 ```python
 import warnings
 
-from increment.errors import IncrementWarning
+from increment import IncrementWarning
 
 with warnings.catch_warnings(record=True) as caught:
     warnings.simplefilter("always")
