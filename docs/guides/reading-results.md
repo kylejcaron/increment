@@ -1,16 +1,22 @@
 # Reading results
 
-`Analysis.run()` returns one of two result families. The family decides the
-scale of every number on a row, so check which one you have before comparing or
-combining rows.
+`Analysis.run()` returns one of two result families. The family fixes the row
+type, but the scale of a value is a property of each row, so check every row
+before comparing or combining rows.
 
 | Evidence | Returns | Row type | Scale |
 |---|---|---|---|
-| Arm comparisons: `from_unit_summary`, `from_unit_panel`, `from_definitions`, `from_moments` | `LiftEstimates` | `LiftEstimate` | Relative lift: `0.05` is 5% above control. |
+| Arm comparisons: `from_unit_summary`, `from_unit_panel`, `from_definitions`, `from_moments` | `LiftEstimates` | `LiftEstimate` | Usually relative lift: `0.05` is 5% above control. Read each row's `value_scale`. |
 | Switchback: `from_switchback_panel` | `ContrastResults` | `ContrastResult` | Additive difference in the metric's own units. |
 
-Never compare a relative lift with an additive contrast numerically. Readout
-rows and frames name the scale in `value_scale`.
+A `LiftEstimate` can be absolute. An encouragement design's LATE and an
+observational metric reported with `run(value_scale={metric: "absolute"})` carry
+`r.value_scale == "absolute"`, and then `r.lift.value` and its interval are in
+the metric's own units. Check `r.value_scale` (and `r.estimand`) on every row,
+and never compare a relative lift with an additive value numerically.
+`LiftEstimates.to_frame` and the readout rows have a `value_scale` column.
+`ContrastResults.to_frame` does not, because every contrast is additive; only
+the readout adapter below adds `value_scale="absolute"` to contrast rows.
 
 ## What to read
 
@@ -20,10 +26,10 @@ For a `LiftEstimate` row `r`:
 |---|---|---|
 | How big is the effect? | `r.lift.value` | `r.lift` is `None` when no finite point exists. |
 | How uncertain is it? | `r.lift.lb`, `r.lift.ub`, `r.lift.level` | An endpoint is `None` on the side named by `r.lift.open_side`. Both are `None` when relative inference is unavailable. |
-| Where is the interval when `r.lift` is `None`? | `r.binomial_set`, `r.relative_confidence_set`, `r.confidence_set`, `r.sequential_result.bounds` | The set that owns the row's interval. A `None` upper bound on a binomial set means unbounded. |
+| Where is the interval when `r.lift` is `None`? | `r.binomial_set`, `r.relative_confidence_set`, `r.confidence_set`, `r.sequential_result.bounds`; the additive `r.abs_lb`, `r.abs_ub` | The set that owns the row's interval, if the row has one. A `None` upper bound on a binomial set means unbounded. Some rows have no relative set at all; see below. |
 | Is it significant? | `r.stat_sig()` | Honors one-sided tests, nonzero nulls, and the row's own inference. |
 | Was it selected within a family? | `r.role`, `r.discovery`, `r.family_q` | See [Multiplicity](multiplicity.md). |
-| Why is something missing? | `r.relative_unavailable_reason`, `r.relative_confidence_set.point_unavailable_reason`, `r.sequential_result.point_reason` | The exact persisted reason. |
+| Why is something missing? | `r.relative_unavailable_reason`, `r.relative_confidence_set.point_unavailable_reason`, `r.confidence_set.relative` endpoint `status` and `reason`, `r.sequential_result.point_reason` | The exact persisted reason. |
 | Which inference regime? | `r.inference` | `"fixed"` is a single-look interval. The sequential values are valid at every look. |
 
 For a `ContrastResult` row `c`, read `c.estimate.value`, `c.estimate.lb`,
@@ -74,14 +80,29 @@ revenue / treatment: lift=+6.69% [+0.69%, +13.05%] significant=True
 converted / treatment: lift unavailable, see r.binomial_set
 ```
 
-`r.lift` is `None` when no finite point estimate exists. The causes are:
+`r.lift` is `None` when no finite point estimate exists. The causes, and where
+each row keeps its remaining evidence, are:
 
 - An exact conversion row whose control arm has zero events. The ratio has a
-  zero denominator, but the exact binomial set still bounds the lift.
-- A joint ratio set with no representable point; see
-  `r.relative_confidence_set.point_unavailable_reason`.
-- A sequential row whose point is withheld; see
-  `r.sequential_result.point_reason`.
+  zero denominator, but the exact binomial set `r.binomial_set` still bounds the
+  lift.
+- A joint ratio set with no representable point. The set is
+  `r.relative_confidence_set`, and `r.relative_confidence_set.point_unavailable_reason`
+  names the reason.
+- A fixed-horizon mean row whose arm mean is not positive:
+  `r.relative_unavailable_reason == "nonpositive_arm_mean"`. The log-scale
+  relative lift is undefined and there is **no** relative set. The additive
+  difference survives in `r.abs_diff`, `r.abs_lb`, and `r.abs_ub`.
+- A winsorized metric with a `confidence_set`. A missing point leaves
+  `r.confidence_set.relative` with a status and reason per endpoint (for
+  example `unbounded` with `denominator_nonseparation`), and the additive
+  interval stays in `r.abs_lb` and `r.abs_ub`.
+- A sequential row whose point is withheld. The confidence set stays in
+  `r.sequential_result.bounds`, and `r.sequential_result.point_reason` names the
+  reason.
+
+Do not assume a missing point comes with a set: only the first, second,
+fourth, and fifth rows do, and the third row keeps only its additive interval.
 
 A missing point does not erase the evidence. The `converted` row is
 significant. Its interval lives on `r.binomial_set`, and the upper end is
@@ -106,6 +127,70 @@ else:
 
 `require_lift()` returns the point or raises a coded refusal. Use it when a
 missing point should stop the program rather than be handled.
+
+Two of the other causes are reproducible with small frames. A mean metric whose
+arms are both negative has no relative lift, no relative set, and a reported
+additive interval:
+
+```python
+k = 40
+negative = pl.DataFrame(
+    {
+        "user_id": [f"u{i:03d}" for i in range(2 * k)],
+        "variant": ["control"] * k + ["treatment"] * k,
+        "delta": [-3.0 + (i * 7) % 5 for i in range(k)]
+        + [-1.0 + (i * 7) % 5 for i in range(k)],
+    }
+)
+flat_mean = Analysis.from_unit_summary(
+    negative,
+    unit="user_id",
+    group="variant",
+    control="control",
+    metrics={"delta": "mean"},
+).run()[0]
+
+assert flat_mean.lift is None and flat_mean.relative_confidence_set is None
+assert flat_mean.relative_unavailable_reason == "nonpositive_arm_mean"
+assert flat_mean.abs_lb < flat_mean.abs_diff < flat_mean.abs_ub
+```
+
+A winsorized metric whose control arm sums to zero keeps a confidence set with a
+finite lower and an unbounded upper relative endpoint, each with its own status:
+
+```python
+from increment import MetricSpec
+
+zero_control = pl.DataFrame(
+    {
+        "user_id": [f"u{i:03d}" for i in range(2 * k)],
+        "variant": ["control"] * k + ["treatment"] * k,
+        "revenue": [0.0] * k + [float(1 + (i * 7) % 5) for i in range(k)],
+    }
+)
+winsorized = Analysis.from_unit_summary(
+    zero_control,
+    unit="user_id",
+    group="variant",
+    control="control",
+    metrics=[
+        MetricSpec(
+            name="revenue",
+            type="mean",
+            winsorization={
+                "upper_percentile": 0.9,
+                "support": {"lower": 0.0, "provenance": "Revenue is nonnegative by definition"},
+                "inference": {"method": "joint-rank-projection-v1"},
+            },
+        )
+    ],
+).run()[0]
+
+relative = winsorized.confidence_set.relative
+assert winsorized.lift is None and winsorized.reference_kind == "confidence_set"
+assert relative.lower.status == "finite" and relative.upper.status == "unbounded"
+assert winsorized.abs_lb < winsorized.abs_diff < winsorized.abs_ub
+```
 
 ### A point without an interval
 
@@ -352,8 +437,13 @@ estimand and its unit-cycle `standard_error_unavailable_reason`,
 
 Every result list converts to a frame in your preferred library. The call is
 `to_frame(backend="polars")` for `LiftEstimates` and, by keyword only, for
-`ContrastResults`. A set-only row keeps its interval in the `set_lower`,
-`set_upper`, and `set_level` columns:
+`ContrastResults`. A set-only exact binomial row keeps its interval in the
+`set_lower`, `set_upper`, and `set_level` columns. Those columns come from
+`binomial_set` only. A sequential row's set is in `sequential_lower`,
+`sequential_upper`, `sequential_status`, and `sequential_components`. A
+`relative_confidence_set` or winsor `confidence_set` appears in the frame only
+as a `repr` text column of the same name, so read the set from the result
+object, and use `abs_lb` and `abs_ub` for the additive interval:
 
 ```python
 table = results.to_frame(backend="polars")
