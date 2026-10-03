@@ -81,7 +81,10 @@ defined exposure, every metric it lists must be a defined metric, and every
 metric's entity must match the experiment's unit. Failures raise a
 `DefinitionError` naming the offending file.
 
-Every non-empty SQL value must be exactly one read-only `SELECT` query. Plain
+Fact-source and dim-source SQL must not be blank: an empty or whitespace-only
+`sql` refuses at load with `definition.source.sql_empty` (context
+`source_kind`, `source_name`), before any warehouse access. Every SQL value
+must be exactly one read-only `SELECT` query. Plain
 selects, read-only CTEs, and set operations are allowed; statement batches,
 DML, DDL, `SELECT ... INTO`, and locking reads are rejected. The loader parses
 definitions as defense in depth, but definitions remain trusted, reviewed

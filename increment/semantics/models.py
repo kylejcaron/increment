@@ -452,6 +452,9 @@ DEFINITION_REFUSALS: dict[str, RefusalSpec] = {
     "definition.site_volume.metric_names_unique": RefusalSpec(
         "definition.site_volume.metric_names_unique", DefinitionError, _render_definition_message
     ),
+    "definition.source.sql_empty": RefusalSpec(
+        "definition.source.sql_empty", DefinitionError, _render_definition_message
+    ),
     "definition.surrounding_whitespace": RefusalSpec(
         "definition.surrounding_whitespace", DefinitionError, _render_definition_message
     ),
@@ -542,6 +545,18 @@ def _definition_refusal(code: str, message: str, **context: object) -> NoReturn:
     """Raise a registered DefinitionError with its interpolated message."""
     spec = DEFINITION_REFUSALS[code]
     raise DefinitionError(spec.render(message=message), code=code, context=context)
+
+
+def _require_nonblank_source_sql(kind: str, name: str, sql: str) -> None:
+    """Refuse blank fact/dimension SQL; admission of real SQL stays in the loader."""
+    if not sql.strip():
+        _definition_refusal(
+            "definition.source.sql_empty",
+            f"{kind} source '{name}' has empty SQL -- declare a real query",
+            source_kind=kind,
+            source_name=name,
+            route="supply a read-only SELECT or WITH query",
+        )
 
 
 # Base / mixin
@@ -740,6 +755,11 @@ class DimSource(AliasMixin, _Base):
     properties: tuple[Property, ...]
 
     @model_validator(mode="after")
+    def _sql_is_nonblank(self):
+        _require_nonblank_source_sql("dimension", self.name, self.sql)
+        return self
+
+    @model_validator(mode="after")
     def _properties_match_time_axis(self):
         if not self.properties:
             _definition_refusal(
@@ -794,6 +814,11 @@ class FactSource(AliasMixin, _Base):
     #: Names of DimSources to join in. Join key is the dim's ``entity``
     #: (must appear in ``entities``); versioned dims add a range predicate.
     dims: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _sql_is_nonblank(self) -> "FactSource":
+        _require_nonblank_source_sql("fact", self.name, self.sql)
+        return self
 
     @model_validator(mode="after")
     def _properties_dont_collide_with_builder_or_fact_columns(self) -> "FactSource":
