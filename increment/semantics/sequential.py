@@ -491,9 +491,9 @@ class SequentialRegistration(_Declaration):
 def refuse_legacy_asymptotic_family(payload: object) -> None:
     """Refuse a stored registration made when asymptotic families were Bonferroni-corrected.
 
-    Such a registration has the same content as today's but no recorded
-    ``asymptotic_family``; continuing it would silently trade its familywise
-    guarantee for e-BH's false discovery rate.
+    Such a registration carries no recorded ``asymptotic_family``; continuing
+    it would silently trade its familywise guarantee for e-BH's false
+    discovery rate.
     """
     if not isinstance(payload, Mapping) or "asymptotic_family" in payload:
         return

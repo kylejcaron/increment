@@ -374,7 +374,7 @@ def ratio_abs_diff_se(
     before any division, so the quotient carries only the rounding of
     the one final division -- and it never divides by ``den_bar**3``,
     so a tiny ``den_bar`` that underflows ``den_bar**3`` to exactly
-    ``0.0`` no longer raises ``ZeroDivisionError``.
+    ``0.0`` cannot raise ``ZeroDivisionError``.
 
     Reuses :func:`~increment.estimation.armstats.clamp_negative_variance`
     for the residual's own refuse-vs-clamp boundary (the same

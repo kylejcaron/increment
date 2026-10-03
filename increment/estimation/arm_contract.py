@@ -313,7 +313,7 @@ class ArmPlanningProcedure(CodedModel, BaseModel):
         assigned population in completed windows, unadjusted, with no prior,
         no winsorization and a bounded outcome window. ``comparisons`` above
         one splits ``alpha`` across arms by Bonferroni. ``role="primary"`` is
-        behaviorally identical to today.
+        the default.
 
         ``inference=InferenceSpec(kind="asymptotic_mean")`` plans a sequential
         design against the exact boundary the runtime executes -- the same

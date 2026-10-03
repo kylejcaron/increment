@@ -2364,7 +2364,7 @@ def estimate_lift(  # noqa: PLR0913, PLR0915
 
     Percentile winsorization requires ``raw_outcomes`` with every cutoff-pool
     arm and matching inference specification. It returns a confidence set without a
-    posterior; legacy clipped summaries alone refuse before estimation.
+    posterior; percentile-clipped summaries without ``raw_outcomes`` refuse before estimation.
     Mixed percentile and ordinary requests additionally require the typed
     ``summary_population`` keyword. Ordinary summary rows identify the study
     through ``experiment_id`` but do not provide trustworthy population
