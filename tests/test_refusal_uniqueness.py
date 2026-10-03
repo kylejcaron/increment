@@ -449,7 +449,7 @@ _DAY_AXIS_HAZARD_METRICS = {
 }
 
 
-def _native_day_axis_analysis(tmp_path, hazard: str):
+def _native_day_axis_analysis(tmp_path, hazard: str, *, con=None):
     import datetime as dt
 
     import ibis
@@ -508,7 +508,7 @@ def _native_day_axis_analysis(tmp_path, hazard: str):
     }
     path = tmp_path / "defs.yaml"
     path.write_text(yaml.safe_dump(definitions, sort_keys=False))
-    con = ibis.duckdb.connect()
+    con = ibis.duckdb.connect() if con is None else con
     con.create_table("raw_events", obj=rows)
     return Analysis.from_definitions("exp", path, con)
 
@@ -657,29 +657,40 @@ def test_winsorized_daily_hazard_raises_one_code_per_entry_method_from_every_sou
     from increment import readouts
     from increment.errors import CodedError
 
-    entry_points = {}
     if substrate == "unit_day_artifact":
-        from tests.test_unit_day_artifact_adoption import _adopted_artifact_fixture
+        import ibis
 
-        source = _adopted_artifact_fixture("winsorized_mean")["source"]
+        from tests.parity_harness.cases import _publish_and_adopt
+
+        con = ibis.duckdb.connect()
+        analysis = _publish_and_adopt(
+            con, _native_day_axis_analysis(tmp_path, "winsorized_mean", con=con)
+        )
     else:
+        con = None
         analysis = (
             _native_day_axis_analysis(tmp_path, "winsorized_mean")
             if substrate == "definitions"
             else _frame_panel_day_axis_analysis("winsorized_mean")
         )
+    try:
         source = _moment_source(analysis)
-        entry_points["Analysis.run_daily"] = analysis.run_daily
-        entry_points["Analysis.run_daily_lift"] = analysis.run_daily_lift
-    _trap_source_reads(monkeypatch, source)
-    entry_points["readouts.daily"] = lambda: readouts.daily(source)
-
-    codes = {}
-    for name, call in entry_points.items():
-        with pytest.raises(CodedError) as raised:
-            call()
-        codes[name] = raised.value.code
-    assert codes == {name: _WINSORIZED_DAILY_CODES[name] for name in entry_points}
+        _trap_source_reads(monkeypatch, source)
+        entry_points = {
+            "Analysis.run_daily": analysis.run_daily,
+            "Analysis.run_daily_lift": analysis.run_daily_lift,
+            "readouts.daily": lambda: readouts.daily(source),
+        }
+        codes = {}
+        for name, call in entry_points.items():
+            with pytest.raises(CodedError) as raised:
+                call()
+            codes[name] = raised.value.code
+        assert codes == _WINSORIZED_DAILY_CODES
+    finally:
+        analysis.close()
+        if con is not None:
+            con.disconnect()
 
 
 def test_winsorized_daily_hazard_covers_every_adapter_that_can_express_it(tmp_path) -> None:
