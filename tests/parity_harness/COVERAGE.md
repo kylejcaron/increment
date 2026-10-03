@@ -3,7 +3,7 @@
 Counts and trackers only. Every per-ingress outcome, reason and authority lives in
 `tests/parity_harness/matrix.py` (`RULES`, `_SPECS`); `tests/test_parity_matrix.py` runs every cell.
 
-Last verified at commit 08e9df4.
+Last verified at commit 0da41f2.
 
 ## Axes
 
@@ -46,16 +46,16 @@ Cells where at least one ingress runs and another does not (each non-runner carr
 
 ## Unfinished cells and trackers
 
-Trackers are proposed kata issues (`kata:NEW/...`), opened from the t8tc report; each cell below carries the code now raised.
+Each tracker is a kata issue linked to t8tc; each cell below carries the code now raised.
 
 | Tracker | Cells | Code now raised, per ingress | What is unfinished |
 |---|---|---|---|
-| `kata:NEW/artifact-quantile-cuped-refusal-code` | 32 | unit_day_artifact: artifact.extension.invalid | publishing the CUPED extension for a quantile raises an artifact code instead of the arm-compatibility code the other routes raise |
-| `kata:NEW/quantile-day-axis-refusal-codes` | 64 | definitions: breakout.quantile; unit_day_artifact: query.builders.asof_group_summary_metric_type_not_implemented; unit_panel: frame.asof.quantile_unsupported | the same quantile x day-axis hazard raises the breakout code here, not the catalog's readout.metric.quantile_grain |
-| `kata:NEW/quantile-observational-route-split` | 10 | definitions: source.native.operation; unit_summary: source.frame.quantile_no_moments | an adjusted quantile reads per-unit rows on the panel and artifact routes, but the native source refuses the moments operation instead |
-| `kata:NEW/quantile-one-sided-alternative` | 10 | definitions: readout.metric.quantile_alternative; unit_day_artifact: readout.metric.quantile_alternative; unit_panel: readout.metric.quantile_alternative; unit_summary: readout.metric.quantile_alternative | a one-sided alternative (a non-inferiority margin) is not supported for quantile metrics yet |
-| `kata:NEW/sequential-unbounded-window-refusal-code` | 48 | unit_summary: sequential.source.invalid | an unbounded-window sequential request raises a source code here while the definitions and panel routes raise sequential.route.unsupported |
-| `kata:NEW/windowed-quantile-frame-and-artifact` | 160 | moments: frame.metric.window_days_supported; switchback_panel: frame.metric.window_days_supported; unit_day_artifact: frame.metric.window_days_supported; unit_panel: frame.metric.window_days_supported; unit_summary: frame.metric.window_days_supported | a windowed quantile is declared by the warehouse model and read from per-unit totals, yet refused on the frame path with no stated statistical reason |
+| `0f6d` | 64 | definitions: breakout.quantile; unit_day_artifact: query.builders.asof_group_summary_metric_type_not_implemented; unit_panel: frame.asof.quantile_unsupported | the same quantile x day-axis hazard raises the breakout code here, not the catalog's readout.metric.quantile_grain |
+| `1cr4` | 48 | unit_summary: sequential.source.invalid | an unbounded-window sequential request raises a source code here while the definitions and panel routes raise sequential.route.unsupported |
+| `66mg` | 32 | unit_day_artifact: artifact.extension.invalid | publishing the CUPED extension for a quantile raises an artifact code instead of the arm-compatibility code the other routes raise |
+| `6z2f` | 160 | moments: frame.metric.window_days_supported; switchback_panel: frame.metric.window_days_supported; unit_day_artifact: frame.metric.window_days_supported; unit_panel: frame.metric.window_days_supported; unit_summary: frame.metric.window_days_supported | a windowed quantile is declared by the warehouse model and read from per-unit totals, yet refused on the frame path with no stated statistical reason |
+| `r3bg` | 10 | definitions: readout.metric.quantile_alternative; unit_day_artifact: readout.metric.quantile_alternative; unit_panel: readout.metric.quantile_alternative; unit_summary: readout.metric.quantile_alternative | a one-sided alternative (a non-inferiority margin) is not supported for quantile metrics yet |
+| `t8ae` | 10 | definitions: source.native.operation; unit_summary: source.frame.quantile_no_moments | an adjusted quantile reads per-unit rows on the panel and artifact routes, but the native source refuses the moments operation instead |
 
 ## Tiers and cost
 

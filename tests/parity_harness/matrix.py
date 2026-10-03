@@ -265,13 +265,13 @@ _RUN_DAILY_LIFT = "Analysis.run_daily_lift docstring"
 _PMP3 = "pmp3 policy-home ledger (kata comment on pmp3, S15)"
 _RUNNER = "tests/parity_harness/runner.py::_TOLERANCE (1e-9 relative)"
 
-# Trackers name issues to be opened from the t8tc report; each carries the code now raised.
-_T_QUANTILE_DAY_AXIS = "kata:NEW/quantile-day-axis-refusal-codes"
-_T_WINDOWED_QUANTILE = "kata:NEW/windowed-quantile-frame-and-artifact"
-_T_ARTIFACT_QUANTILE_CUPED = "kata:NEW/artifact-quantile-cuped-refusal-code"
-_T_SEQUENTIAL_UNBOUNDED = "kata:NEW/sequential-unbounded-window-refusal-code"
-_T_QUANTILE_OBSERVATIONAL = "kata:NEW/quantile-observational-route-split"
-_T_QUANTILE_ONE_SIDED = "kata:NEW/quantile-one-sided-alternative"
+# Kata issues for the unfinished cells; each cell carries the code it raises now.
+_T_QUANTILE_DAY_AXIS = "0f6d"
+_T_WINDOWED_QUANTILE = "6z2f"
+_T_ARTIFACT_QUANTILE_CUPED = "66mg"
+_T_SEQUENTIAL_UNBOUNDED = "1cr4"
+_T_QUANTILE_OBSERVATIONAL = "t8ae"
+_T_QUANTILE_ONE_SIDED = "r3bg"
 
 _SPECS: dict[str, Spec] = {
     "RUNS": Spec(
