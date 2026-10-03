@@ -491,7 +491,7 @@ def test_artifact_initial_mapping_rejects_changed_saved_recipe_before_relation_a
             with pytest.raises(CapabilityError) as exc:
                 _ArtifactFacadeSource(
                     store,
-                    source._snapshot_context,
+                    source._lifecycle,
                     source._snapshot,
                     source._manifest.model_copy(update={"context": wrong}),
                     expected_context=wrong,

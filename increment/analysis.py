@@ -283,6 +283,7 @@ class _ArtifactOpenSpec:
     store: ArtifactStore
     ref: UnitDayArtifactRef
     expected_context: ArtifactContext
+    verification: Literal["lazy_digest"]
 
 
 # Public facade
@@ -459,7 +460,12 @@ class Analysis:
         source = cast("MomentSource", self._state.source)
         spec = self._artifact_open_spec
         if spec is not None and cast("ArtifactMomentSource", source).closed:
-            source = open_artifact(spec.store, spec.ref, expected_context=spec.expected_context)
+            source = open_artifact(
+                spec.store,
+                spec.ref,
+                expected_context=spec.expected_context,
+                verification=spec.verification,
+            )
             self._state = replace(self._state, source=source)
         return source
 
@@ -644,7 +650,7 @@ class Analysis:
         return cls._from_source(
             source,
             source.context.design,
-            artifact_open_spec=_ArtifactOpenSpec(store, ref, expected_context),
+            artifact_open_spec=_ArtifactOpenSpec(store, ref, expected_context, verification),
         )
 
     @classmethod

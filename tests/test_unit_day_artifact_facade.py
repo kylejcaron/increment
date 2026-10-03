@@ -484,6 +484,23 @@ def test_artifact_source_reports_closed_only_after_close() -> None:
     assert source.closed is True
 
 
+@pytest.mark.parametrize("closer", ["parent", "triggered"])
+def test_closing_either_view_of_a_snapshot_closes_both(tmp_path: Path, closer: str) -> None:
+    definitions = _definitions(tmp_path, trigger="session_start")
+    _con, native, context, store = _native(definitions=definitions)
+    ref = native.publish_unit_day_artifact(
+        store, extensions=_extensions(context, "trigger_population", "assignment_counts")
+    )
+    parent = open_artifact(store, ref, expected_context=context)
+    triggered = cast("Any", parent.triggered_source())
+    assert (parent.closed, triggered.closed) == (False, False)
+    (parent if closer == "parent" else triggered).close()
+    assert (parent.closed, triggered.closed) == (True, True)
+    parent.close()
+    triggered.close()
+    assert (parent.closed, triggered.closed) == (True, True)
+
+
 def test_public_extension_selection_uses_the_immutable_catalog() -> None:
     _con, native, context, store = _native()
     request = next(

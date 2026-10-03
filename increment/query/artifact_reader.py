@@ -748,6 +748,20 @@ def _record_binding_resolution(
             )
 
 
+class _SnapshotLifecycle:
+    """Closed-state and release of one pinned snapshot, shared by every view of it."""
+
+    def __init__(self, context: AbstractContextManager[object]) -> None:
+        self._context = context
+        self.closed = False
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        self._context.__exit__(None, None, None)
+
+
 class ArtifactMomentSource(SequentialSourceMixin):
     """Moment source backed by one immutable, lazily verified artifact handle."""
 
@@ -759,18 +773,17 @@ class ArtifactMomentSource(SequentialSourceMixin):
     def __init__(
         self,
         store: ArtifactStore,
-        snapshot_context: AbstractContextManager[object],
+        lifecycle: _SnapshotLifecycle,
         snapshot: ArtifactSnapshot,
         manifest: UnitDayArtifactManifest,
         *,
         metrics: Sequence[MetricSpec] | Mapping[str, str] | None = None,
     ) -> None:
         self._store = store
-        self._snapshot_context = snapshot_context
+        self._lifecycle = lifecycle
         self._snapshot = snapshot
         self._manifest = manifest
         self._population_units: frozenset[str] | None = None
-        self._closed = False
         self._verified_tables: dict[str, ir.Table] = {}
         self._metrics_arg = metrics
         self._aggregation_by_metric: dict[str, str] = {}
@@ -792,7 +805,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
             _raise("query.artifact_reader.artifact_moment.verification_lazy_digest")
         context = open_trusted_manifest_snapshot(store, ref, expected_context=expected_context)
         snapshot, manifest = context.__enter__()
-        return cls(store, context, snapshot, manifest, metrics=metrics)
+        return cls(store, _SnapshotLifecycle(context), snapshot, manifest, metrics=metrics)
 
     from_artifact = open
 
@@ -1945,14 +1958,11 @@ class ArtifactMomentSource(SequentialSourceMixin):
 
     @property
     def closed(self) -> bool:
-        """Whether :meth:`close` has released the pinned artifact snapshot."""
-        return self._closed
+        """Whether :meth:`close` released the snapshot this source shares with its views."""
+        return self._lifecycle.closed
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self._snapshot_context.__exit__(None, None, None)
+        self._lifecycle.close()
 
     def __enter__(self) -> Self:
         return self

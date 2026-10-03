@@ -44,6 +44,7 @@ from increment.query.artifact_extensions import read_extension, read_unit_covari
 from increment.query.artifact_reader import (
     _ARTIFACT_GRAIN,
     LAZY_DIGEST_VERIFICATION,
+    _SnapshotLifecycle,
     restrict_to_units,
 )
 from increment.query.artifact_reader import (
@@ -709,7 +710,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         try:
             return cls(
                 store,
-                snapshot_context,
+                _SnapshotLifecycle(snapshot_context),
                 snapshot,
                 manifest,
                 expected_context=expected_context,
@@ -1316,7 +1317,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         rows = self._read_extension(trigger, request=_artifact_request(trigger))
         return _ArtifactFacadeSource(
             self._store,
-            self._snapshot_context,
+            self._lifecycle,
             self._snapshot,
             self._manifest,
             expected_context=self._expected_context,
