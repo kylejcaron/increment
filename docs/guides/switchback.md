@@ -318,7 +318,7 @@ Switchback construction failures expose these stable codes:
 | Code | Refused condition |
 |---|---|
 | `source.frame.switchback.assignment` | The assignment is not a two-period `SwitchbackAssignment` with a declared `IndependentBernoulliOrder` or `SharedScheduleOrder` sequence. |
-| `source.frame.switchback.identification` | Identification is not `Randomized`, does not contain exactly one control and one treatment, or has invalid allocation weights. |
+| `source.frame.switchback.identification` | Identification is not `Randomized`, does not contain exactly one control and one treatment, or has invalid allocation weights. A non-50/50 allocation raises this same code when a `SwitchbackStudyEnvelope` is constructed. |
 | `source.frame.switchback.metric` | A metric type or option is outside mean/conversion switchback support (ratio, quantile, retention, winsorization, non-default missingness, CUPED, method/prior declarations, or a window option). |
 | `source.frame.switchback.columns` | A required column is missing, or the group labels are empty/non-string. |
 | `source.frame.switchback.domain` | Unit labels or cycle/period/step domains are invalid, including non-contiguous cycles or periods outside `{0, 1}`. |

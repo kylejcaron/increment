@@ -128,18 +128,32 @@ def test_switchback_envelope_requires_one_treatment_arm_and_randomized_identific
         {"control": 0.5, "treatment": 0.5000001},
     ],
 )
-def test_switchback_envelope_refuses_anything_but_an_exact_even_split(allocation):
+def test_switchback_allocation_refuses_identically_at_envelope_and_panel(allocation):
+    """One hazard, one code and one context, whichever ingress meets it first."""
+    from increment.switchback import from_switchback_panel
+
     assignment = SwitchbackAssignment(
         sequence=IndependentBernoulliOrder(),
         window=SwitchbackWindow(washout_steps=1, observation_steps=2),
     )
-    with pytest.raises(InvalidRequestError) as exc_info:
-        SwitchbackStudyEnvelope(
-            identification=Randomized(control_group="control", allocation=allocation),
+    identification = Randomized(control_group="control", allocation=allocation)
+    with pytest.raises(InvalidRequestError) as envelope:
+        SwitchbackStudyEnvelope(identification=identification, assignment=assignment)
+    with pytest.raises(InvalidRequestError) as panel:
+        from_switchback_panel(
+            object(),  # ty: ignore[invalid-argument-type]
+            unit="unit",
+            cycle="cycle",
+            period="period",
+            step="step",
+            group="group",
+            metrics={"outcome": "mean"},
+            identification=identification,
             assignment=assignment,
         )
-    assert exc_info.value.code == "facade.study.switchback_study.allocation_equal_split"
-    assert exc_info.value.context["allocation"] == allocation
+    assert envelope.value.code == panel.value.code == "source.frame.switchback.identification"
+    assert envelope.value.context == panel.value.context
+    assert envelope.value.context["allocation"] == allocation
 
 
 def test_switchback_window_rejects_bool_steps():

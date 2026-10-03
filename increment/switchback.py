@@ -18,7 +18,12 @@ import narwhals as nw
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from increment._study import SwitchbackStudyEnvelope, allocation_defect
+from increment._study import (
+    SWITCHBACK_IDENTIFICATION,
+    SwitchbackStudyEnvelope,
+    allocation_defect,
+    refuse_allocation_defect,
+)
 from increment._unit_cycle import (
     _refuse as _unit_refuse,
 )
@@ -75,11 +80,6 @@ _SWITCHBACK_ASSIGNMENT = RefusalSpec(
     InvalidRequestError,
     _render_message,
 )
-_SWITCHBACK_IDENTIFICATION = RefusalSpec(
-    "source.frame.switchback.identification",
-    InvalidRequestError,
-    _render_message,
-)
 _SWITCHBACK_METRIC = RefusalSpec(
     "source.frame.switchback.metric",
     CapabilityError,
@@ -131,7 +131,7 @@ def _reject_assignment(*, message: str, **context: object) -> NoReturn:
 
 
 def _reject_identification(*, message: str, **context: object) -> NoReturn:
-    _reject(_SWITCHBACK_IDENTIFICATION, message=message, **context)
+    _reject(SWITCHBACK_IDENTIFICATION, message=message, **context)
 
 
 def _reject_metric(*, message: str, **context: object) -> NoReturn:
@@ -728,25 +728,9 @@ def _switchback_groups(identification: Randomized) -> tuple[str, str]:
         )
     treatment = str(treatment_arms[0])
     defect = allocation_defect(allocation[control], allocation[treatment])
-    if defect == "not_finite_nonnegative":
-        _reject_identification(
-            message="switchback allocation weights must be finite and nonnegative",
-            allocation=allocation,
-            reason="invalid_allocation",
-        )
-    if defect == "not_normalized":
-        _reject_identification(
-            message="switchback allocation weights must sum to one",
-            allocation=allocation,
-            reason="invalid_allocation",
-        )
-    if defect == "unequal_allocation":
-        _reject_identification(
-            message="switchback allocation requires exact 0.5/0.5 control/treatment weights",
-            allocation=allocation,
-            control_group=control,
-            treatment_group=treatment,
-            reason="unequal_allocation",
+    if defect is not None:
+        refuse_allocation_defect(
+            defect, allocation=allocation, control_group=control, treatment_group=treatment
         )
     return control, treatment
 
