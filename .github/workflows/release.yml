@@ -3,7 +3,7 @@ name: release
 # Tag-driven release. `hatch-vcs` derives the version from the git tag, so the
 # tag IS the version bump -- nothing writes a version string into a file.
 #
-#   .github/workflows/bump.yml  -> creates and pushes the vX.Y.Z tag
+#   .github/workflows/bump.yml  -> creates the vX.Y.Z tag and dispatches this workflow
 #   this workflow               -> build, verify, publish to PyPI, GitHub Release
 #
 # Publishing uses PyPI Trusted Publishing (OIDC). No API token is stored.
@@ -16,6 +16,7 @@ name: release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 concurrency:
   group: release-${{ github.ref }}
@@ -33,6 +34,16 @@ jobs:
       version: ${{ steps.check.outputs.version }}
       prerelease: ${{ steps.check.outputs.prerelease }}
     steps:
+      - name: Require a version tag
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          case "$REF" in
+            refs/tags/v*) ;;
+            *) echo "::error::release requires a v* tag ref, not a branch"; exit 1 ;;
+          esac
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # hatch-vcs reads tags to compute the version; a shallow clone yields

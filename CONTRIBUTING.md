@@ -183,6 +183,34 @@ Probe coverage is not blanket support for every metric, design, or artifact
 extension. Use the [compatibility matrix](docs/guides/compatibility.md) and
 [statistical limitations](docs/limitations.md) to check the combination you need.
 
+### Releases
+
+After reviewing the release candidate, choose an unused PEP 440 version and
+dispatch `bump` on the reviewed `main` commit. For example:
+
+```bash
+gh workflow run bump.yml --ref main -f version=0.1.0a3 -f force=false
+```
+
+The default gate requires successful GitHub Actions `ci-ok` on that exact
+commit, no other unfinished or failed checks, and successful legacy commit
+statuses when present. It excludes only the running bump workflow itself.
+`force=true` explicitly bypasses this CI gate; do not use it to release an
+unverified candidate.
+
+Bump creates the version tag and explicitly dispatches `release.yml` on it.
+The job's `GITHUB_TOKEN` cannot trigger a second workflow through a tag push.
+If the dispatch fails after the tag was pushed, dispatch the release on the
+existing tag rather than creating another one:
+
+```bash
+gh workflow run release.yml --ref v0.1.0a3
+```
+
+Release accepts only `v*` tag refs, verifies the version and package artifacts,
+then waits for the protected `pypi` environment approval. Inspect the artifacts
+before approving: approval uploads to real PyPI, not a test registry.
+
 ### Calibration commands
 
 Scientific campaigns and probability probes live in `calibration/`.
