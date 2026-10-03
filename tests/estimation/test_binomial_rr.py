@@ -437,10 +437,11 @@ def _clear_every_cache() -> None:
             value.cache_clear()
 
 
-class TestCachedResultsEqualColdResults:
+class TestCachedResultsEqualUncachedResults:
     """Reusing tail vectors inside a search must never change a result: every
-    p-value and interval is ``==`` whether the module caches were cleared
-    before the call or carried over from earlier calls."""
+    p-value and interval is ``==`` between a run whose ``_treatment_tail`` is
+    the uncached function (nothing is ever reused) and a run that uses the
+    cache, including reuse inside a single search."""
 
     CELLS = [
         (6, 60, 9, 60),  # full enumeration
@@ -453,33 +454,26 @@ class TestCachedResultsEqualColdResults:
     RATIOS = (0.5, 1.0, 1.3, 2.0)
 
     @staticmethod
-    def _observe(x_c: int, n_c: int, x_t: int, n_t: int, *, cold: bool):
+    def _observe(x_c: int, n_c: int, x_t: int, n_t: int):
         beta = brr.nuisance_beta(0.05)
-
-        def fresh(call):
-            if cold:
-                _clear_every_cache()
-            return call()
-
         observed = []
-        for r in TestCachedResultsEqualColdResults.RATIOS:
-            observed.append(fresh(lambda r=r: brr.p_plus(r, x_c, n_c, x_t, n_t, beta)))
-            observed.append(fresh(lambda r=r: brr.p_minus(r, x_c, n_c, x_t, n_t, beta)))
+        for r in TestCachedResultsEqualUncachedResults.RATIOS:
+            observed.append(brr.p_plus(r, x_c, n_c, x_t, n_t, beta))
+            observed.append(brr.p_minus(r, x_c, n_c, x_t, n_t, beta))
         for alternative in ("two-sided", "greater", "less"):
-            ci = fresh(
-                lambda alternative=alternative: brr.confidence_interval(
-                    x_c, n_c, x_t, n_t, alpha=0.05, alternative=alternative
-                )
-            )
+            ci = brr.confidence_interval(x_c, n_c, x_t, n_t, alpha=0.05, alternative=alternative)
             observed.append((ci.lower, ci.upper, ci.geometry, ci.p_value_null))
         return observed
 
     @pytest.mark.parametrize("x_c,n_c,x_t,n_t", CELLS)
-    def test_warm_caches_reproduce_cold_results_exactly(self, x_c, n_c, x_t, n_t):
-        cold = self._observe(x_c, n_c, x_t, n_t, cold=True)
+    def test_cached_tails_reproduce_uncached_results_exactly(self, x_c, n_c, x_t, n_t, monkeypatch):
+        with monkeypatch.context() as patch:
+            patch.setattr(brr, "_treatment_tail", brr._treatment_tail.__wrapped__)
+            _clear_every_cache()
+            uncached = self._observe(x_c, n_c, x_t, n_t)
         _clear_every_cache()
-        warm = self._observe(x_c, n_c, x_t, n_t, cold=False)
-        assert warm == cold
+        cached = self._observe(x_c, n_c, x_t, n_t)
+        assert cached == uncached
 
 
 class TestScipyBinomErrorBudget:
