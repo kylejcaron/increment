@@ -67,6 +67,9 @@ results = inc.Analysis.from_unit_summary(
 ).run()
 
 for r in results:
+    if r.lift is None:  # e.g. an exact conversion row with zero control events
+        print(f"{r.metric} / {r.group_id}: lift unavailable, see r.binomial_set")
+        continue
     print(f"{r.metric} / {r.group_id}: lift={r.lift.value:.2%}")
 ```
 

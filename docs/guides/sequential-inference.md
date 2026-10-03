@@ -186,8 +186,10 @@ Read `row.require_sequential_result()` for the authoritative confidence set,
 certificate, and checkpoint. Confidence bounds use ratio coordinates; subtract
 one to express lift. Endpoints can be unbounded, and sets can be full or empty.
 A missing relative point estimate does not erase the confidence set. The
-`sequential_lower` and `sequential_upper` frame columns project endpoints
-outward to numeric floats or nulls. `sequential_log_e` remains available when
+`sequential_lower` and `sequential_upper` frame columns hold those endpoints on
+the lift scale (ratio minus one), rounded outward to numeric floats or nulls;
+see [Reading results](reading-results.md#sequential-inference-two-coordinate-systems).
+`sequential_log_e` remains available when
 exponentiating evidence would overflow. `row.stat_sig()` uses the registered
 null and exact allocated alpha. No equivalent-normal-score p-value is reported.
 A two-sided confidence sequence compares each tail's e-process with the same

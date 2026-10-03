@@ -68,6 +68,9 @@ analysis = Analysis.from_unit_summary(
 results = analysis.run()
 
 for r in results:
+    if r.lift is None:  # e.g. an exact conversion row with zero control events
+        print(f"{r.metric} / {r.group_id}: lift unavailable, see r.binomial_set")
+        continue
     print(
         f"{r.metric} / {r.group_id}: "
         f"lift={r.lift.value:+.2%} [{r.lift.lb:+.2%}, {r.lift.ub:+.2%}] "
@@ -93,7 +96,9 @@ treatment group in this example:
 | `r.lift.lb`, `r.lift.ub` | Confidence interval bounds; 95% by default. |
 
 For the default two-sided test, `r.lift.excludes(0.0)` checks whether the
-interval excludes zero.
+interval excludes zero. A row can have no `r.lift`, as the guard in the loop
+above handles; see [Reading results](reading-results.md) for missing points,
+open and sequential intervals, switchback contrasts, and flat readout rows.
 
 The readout's `stat_sig` column also handles one-sided tests and nonzero
 null values. For other decision statistics, see `r.chance_to_beat()`,
