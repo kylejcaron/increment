@@ -6,6 +6,7 @@ import pkgutil
 import pytest
 
 import increment
+from tests.analysis_factory import _moment_source
 
 
 def _walk_refusal_registries() -> dict[str, list[tuple[str, object]]]:
@@ -414,3 +415,242 @@ def test_every_arm_contract_unsupported_code_is_registered_in_compatibility() ->
     # which no valid ArmPlanningProcedure reaches: its own validator refuses
     # that family before the dispatcher runs. It must still be registered.
     assert {"arm.metric.unsupported", "contrast.inference"} <= set(ARM_COMPATIBILITY_REFUSALS)
+
+
+def _trap_source_reads(monkeypatch: pytest.MonkeyPatch, source: object) -> None:
+    """Fail the test if a refusal reaches the source instead of preceding it."""
+
+    def _reached(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("the source was read before the refusal")
+
+    for name in ("moments", "breakout_moments"):
+        if hasattr(type(source), name):
+            monkeypatch.setattr(type(source), name, _reached)
+
+
+_DAY_AXIS_HAZARD_METRICS = {
+    "unbounded_retention": {
+        "type": "retention",
+        "name": "m",
+        "entity": "user_id",
+        "fact": "page_view",
+        "threshold_days": 1,
+        "preferred_direction": "increase",
+    },
+    "winsorized_mean": {
+        "type": "mean",
+        "name": "m",
+        "entity": "user_id",
+        "fact": "purchase",
+        "aggregation": "sum",
+        "window_days": 3,
+        "winsorization": {"upper_value": 100.0},
+    },
+}
+
+
+def _native_day_axis_analysis(tmp_path, hazard: str):
+    import datetime as dt
+
+    import ibis
+    import yaml
+
+    from increment import Analysis
+
+    start = dt.datetime(2026, 1, 1, 9)
+    rows = []
+    for i in range(12):
+        arm = "control" if i % 2 == 0 else "treatment"
+        base = {"user_id": f"u{i:02d}", "group_id": None, "revenue": None}
+        rows.append({**base, "ts": start, "event": "page_view", "group_id": arm})
+        rows.append(
+            {**base, "ts": start + dt.timedelta(hours=1), "event": "purchase", "revenue": 5.0 + i}
+        )
+        if i % 3:
+            rows.append({**base, "ts": start + dt.timedelta(days=2), "event": "page_view"})
+    rows.append(
+        {
+            "user_id": "u00",
+            "group_id": None,
+            "revenue": None,
+            "ts": start + dt.timedelta(days=9),
+            "event": "page_view",
+        }
+    )
+    definitions = {
+        "dialect": "duckdb",
+        "fact_sources": [
+            {
+                "name": "events",
+                "sql": "SELECT * FROM raw_events",
+                "timestamp_column": "ts",
+                "entities": ["user_id"],
+                "facts": [
+                    {"name": "page_view", "column": None},
+                    {"name": "purchase", "column": "revenue"},
+                ],
+            }
+        ],
+        "exposures": [{"name": "assignment", "fact": "page_view"}],
+        "metrics": [_DAY_AXIS_HAZARD_METRICS[hazard]],
+        "experiments": [
+            {
+                "name": "exp",
+                "exposure": "assignment",
+                "unit": "user_id",
+                "start": "2026-01-01",
+                "end": "2026-01-01",
+                "observation_end": "2026-01-12",
+                "control_group": "control",
+                "plan": {"primary": "m"},
+            }
+        ],
+    }
+    path = tmp_path / "defs.yaml"
+    path.write_text(yaml.safe_dump(definitions, sort_keys=False))
+    con = ibis.duckdb.connect()
+    con.create_table("raw_events", obj=rows)
+    return Analysis.from_definitions("exp", path, con)
+
+
+def _frame_panel_day_axis_analysis(hazard: str):
+    import datetime as dt
+
+    import pandas as pd
+
+    from increment import Analysis
+    from increment.frame import MetricSpec
+
+    start = dt.date(2026, 1, 1)
+    rows = [
+        {
+            "user_id": f"u{i}",
+            "variant": "control" if i % 2 == 0 else "treatment",
+            "day": start + dt.timedelta(days=d),
+            "exposed_on": start,
+            "value": float(d > 0 and i % 3 != 0)
+            if hazard == "unbounded_retention"
+            else 5.0 + i + d,
+        }
+        for i in range(8)
+        for d in range(4)
+    ]
+    spec = (
+        MetricSpec(name="m", type="retention", value_column="value", threshold_days=1)
+        if hazard == "unbounded_retention"
+        else MetricSpec(name="m", value_column="value", winsorization={"upper_value": 100.0})
+    )
+    return Analysis.from_unit_panel(
+        pd.DataFrame(rows),
+        unit="user_id",
+        group="variant",
+        date="day",
+        control="control",
+        exposure_date="exposed_on",
+        metrics=[spec],
+    )
+
+
+_UNBOUNDED_RETENTION_SUBSTRATES = ("definitions", "frame_panel", "unit_day_artifact")
+
+
+@pytest.mark.parametrize("substrate", _UNBOUNDED_RETENTION_SUBSTRATES)
+def test_unbounded_retention_daily_hazard_raises_the_same_code_from_every_source(
+    substrate: str, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unbounded retention band never completes, so the day-axis views refuse
+    it whatever the substrate. The shared readout gate owns that rule: the
+    direct readout and the Analysis day-axis methods raise one code before any
+    source read."""
+    from increment import readouts
+    from increment.errors import CodedError
+
+    entry_points = {}
+    if substrate == "unit_day_artifact":
+        from tests.test_unit_day_artifact_adoption import _adopted_artifact_fixture
+
+        source = _adopted_artifact_fixture("retention_unbounded")["source"]
+    else:
+        analysis = (
+            _native_day_axis_analysis(tmp_path, "unbounded_retention")
+            if substrate == "definitions"
+            else _frame_panel_day_axis_analysis("unbounded_retention")
+        )
+        source = _moment_source(analysis)
+        entry_points["Analysis.run_daily"] = analysis.run_daily
+        entry_points["Analysis.run_daily_lift"] = analysis.run_daily_lift
+    _trap_source_reads(monkeypatch, source)
+    entry_points["readouts.daily"] = lambda: readouts.daily(source)
+
+    codes = {}
+    for name, call in entry_points.items():
+        with pytest.raises(CodedError) as raised:
+            call()
+        codes[name] = raised.value.code
+    assert set(codes.values()) == {"breakout.retention.unbounded"}, codes
+
+
+def test_unbounded_retention_hazard_covers_every_adapter_that_serves_the_daily_axis(
+    tmp_path,
+) -> None:
+    """A substrate that cannot serve the day axis never reaches the hazard (the
+    gate raises ``readout.source.grain`` first); every other registered adapter
+    must appear in the same-code test above."""
+    from tests.source_conformance import arm_adapters
+
+    daily_adapters = {
+        adapter.name
+        for adapter in arm_adapters(tmp_path)
+        if "daily" in adapter.build()[0].capabilities
+    }
+    assert daily_adapters == set(_UNBOUNDED_RETENTION_SUBSTRATES)
+
+
+# The facade guards every day-axis method (including run_asof, which the readouts serve
+# for checkpoint replay) and the readout gate backs it for direct callers, so one hazard
+# has one code per entry method; within an entry method it must not depend on the source.
+_WINSORIZED_DAILY_CODES = {
+    "readouts.daily": "readout.metric.daily_winsorization",
+    "Analysis.run_daily": "breakout.metric.daily_winsorization",
+    "Analysis.run_daily_lift": "breakout.metric.daily_winsorization",
+}
+
+
+@pytest.mark.parametrize("substrate", ["definitions", "frame_panel"])
+def test_winsorized_daily_hazard_raises_one_code_per_entry_method_from_every_source(
+    substrate: str, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from increment import readouts
+    from increment.errors import CodedError
+
+    analysis = (
+        _native_day_axis_analysis(tmp_path, "winsorized_mean")
+        if substrate == "definitions"
+        else _frame_panel_day_axis_analysis("winsorized_mean")
+    )
+    source = _moment_source(analysis)
+    _trap_source_reads(monkeypatch, source)
+    entry_points = {
+        "readouts.daily": lambda: readouts.daily(source),
+        "Analysis.run_daily": analysis.run_daily,
+        "Analysis.run_daily_lift": analysis.run_daily_lift,
+    }
+    codes = {}
+    for name, call in entry_points.items():
+        with pytest.raises(CodedError) as raised:
+            call()
+        codes[name] = raised.value.code
+    assert codes == _WINSORIZED_DAILY_CODES
+
+
+def test_winsorized_daily_hazard_covers_every_adapter_that_can_express_it(tmp_path) -> None:
+    """Winsorization applies to mean metrics on a source that serves the day axis;
+    the unit-day artifact adapter carries only a conversion metric."""
+    from tests.source_conformance import arm_adapters
+
+    expressible = {
+        adapter.name
+        for adapter in arm_adapters(tmp_path)
+        if "daily" in adapter.build()[0].capabilities and adapter.build()[1].type == "mean"
+    }
+    assert expressible == {"definitions", "frame_panel"}
