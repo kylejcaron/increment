@@ -253,5 +253,13 @@ This is the same unit-by-day structure used by the warehouse path; see
 
 ## Next step
 
-Read [Which experiment analysis method should I use?](choose-a-method.md)
-to choose a method for your design and data.
+- Reduce variance: [CUPED](cuped.md#on-the-dataframe-path).
+- Monitor while the experiment runs: [sequential monitoring of a conversion
+  metric](sequential-inference.md#sequential-monitoring-of-a-conversion-metric),
+  or [ordinary continuous monitoring](sequential-inference.md#ordinary-continuous-monitoring)
+  for mean and ratio metrics.
+- Run a switchback: [supported contract](switchback.md#supported-contract).
+- Estimate an opt-in or self-selected treatment: [observational
+  inference](observational.md).
+- Define warehouse data and experiments: [data model](data-model.md).
+- Anything else: [Which experiment analysis method should I use?](choose-a-method.md)

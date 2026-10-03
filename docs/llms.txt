@@ -3,7 +3,7 @@
 > Increment is an open-source Python library for warehouse-native A/B testing, causal inference, and experiment analysis.
 
 Analyze randomized experiments from dataframes or SQL warehouses, or
-observational treatments from dataframes. Increment supports CUPED, power
+observational treatments from dataframes or warehouse definitions. Increment supports CUPED, power
 analysis, MDE, sequential and always-valid inference, SRM diagnostics, IPTW,
 DML, AIPW, encouragement designs, and heterogeneous treatment effects.
 
