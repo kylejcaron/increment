@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dashboard palette comparison</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f6fa;color:#172033;font:15px -apple-system,BlinkMacSystemFont,sans-serif;padding:30px}header{max-width:1550px;margin:auto auto 24px}h1{font:36px Georgia,serif;margin:0 0 8px}p{margin:6px 0;color:#586579;line-height:1.5}.controls{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;margin-top:16px}.group{display:flex;flex-wrap:wrap;gap:6px}button,select{font:inherit;padding:9px 14px;border:1px solid #cbd4e1;background:white;color:#172033;border-radius:6px;cursor:pointer}button[aria-pressed=true]{background:#172033;color:white}.grid{display:grid;grid-template-columns:1fr 1fr;gap:24px;max-width:1550px;margin:auto}.card{border:1px solid #d5dce7;border-radius:12px;overflow:hidden;background:#fff}.heading{padding:18px 20px;display:flex;justify-content:space-between;align-items:center;gap:16px}h2{font-size:18px;margin:0 0 4px}.tag{font-size:12px;color:#627089}.heading a{white-space:nowrap;text-decoration:none;font-size:12px;border:1px solid #cbd4e1;padding:8px 10px;border-radius:5px;color:#172033}.window{position:relative;width:100%;overflow:hidden;border-top:1px solid #d5dce7}iframe{position:absolute;top:0;left:0;width:1280px;height:1040px;border:0;transform-origin:top left}.note{margin:24px auto 0;max-width:1550px;font-size:12px}.note a{color:#425e91}@media(max-width:850px){body{padding:18px}.grid{grid-template-columns:1fr}h1{font-size:29px}}
+</style>
+</head>
+<body>
+<header>
+<h1>A sharper experiment palette.</h1>
+ <p>New: Studio · Occupancy and White &amp; Orange. All previous themes retained, with the same captured results and functionality.</p>
+<p>New palettes reserve <strong>green for favorable evidence or passed checks</strong>, not decorative backgrounds or arm identities.</p>
+<div class="controls">
+ <div class="group" aria-label="Comparison mode"><button data-mode="original" aria-pressed="true">Against original</button><button data-mode="all" aria-pressed="false">All eight themes</button></div>
+ <label id="palette-label">Compare <select id="palette-choice"><option value="occupancy">Studio · Occupancy</option><option value="orange">White &amp; Orange</option><option value="daylight">Midnight · Daylight</option><option value="midnight">Midnight</option><option value="cobalt">Ink &amp; Cobalt</option><option value="newsprint">Newsprint</option><option value="glacier">Glacier</option></select></label>
+</div>
+<div class="controls group" aria-label="Preview view"><button data-view="readout" aria-pressed="true">Readout</button><button data-view="explore" aria-pressed="false">Explore charts</button><button data-view="report" aria-pressed="false">Report</button></div>
+</header>
+<main class="grid"></main>
+ <p class="note">Green allocation checks concern assignment balance only. The primary interval crosses zero, so its estimate remains inconclusive. Production styling unchanged. <a href="dashboard-colour-comparison-v4.html">Previous six-theme round ↗</a> · <a href="dashboard-colour-comparison-v3.html">Previous round (Carbon &amp; Ice) ↗</a> · <a href="dashboard-colour-comparison-v2.html">Earlier light palettes ↗</a> · <a href="dashboard-colour-comparison-v1.html">First-pass mockups ↗</a></p>
+<script>
+ const palettes={original:{name:'Original sage',tag:'Unchanged production palette — baseline.'},cobalt:{name:'Ink & Cobalt',tag:'Crisp cobalt accents, fuller tables, refined spacing.'},newsprint:{name:'Newsprint',tag:'Editorial black and white, lighter headers, square edges.'},glacier:{name:'Glacier',tag:'Bright white, sky-blue surfaces, clean modern typography.'},midnight:{name:'Midnight',tag:'Deep navy, luminous blue, muted burnished amber.'},daylight:{name:'Midnight · Daylight',tag:'Midnight’s serif character, light surfaces, restrained blue and amber.'},occupancy:{name:'Studio · Occupancy',tag:'Field-notebook paper, serif headlines, monospaced labels, fine black rules.'},orange:{name:'White & Orange',tag:'Bright white, burnt-orange accents, warm headers, clean sans-serif type.'}};
+let view='readout',mode='original';
+const grid=document.querySelector('.grid'),choice=document.querySelector('#palette-choice');
+ function fit(){for(const frame of grid.querySelectorAll('iframe')){const scale=frame.parentElement.clientWidth/1280;frame.style.transform='scale('+scale+')';frame.parentElement.style.height=(frame.clientHeight*scale)+'px';}}
+ const previewSizes=new ResizeObserver(fit);
+function render(){
+  previewSizes.disconnect();
+ grid.replaceChildren();
+  const keys=mode==='original'?['original',choice.value]:['original','cobalt','newsprint','glacier','midnight','daylight','occupancy','orange'];
+ for(const key of keys){
+  const card=document.createElement('section');card.className='card';
+  const heading=document.createElement('div');heading.className='heading';const text=document.createElement('div');
+  const title=document.createElement('h2');title.textContent=palettes[key].name;const tag=document.createElement('div');tag.className='tag';tag.textContent=palettes[key].tag;text.append(title,tag);
+  const link=document.createElement('a');link.href='dashboard-colour-prototype.html?variant='+key+'#'+view;link.textContent='Open full-size ↗';heading.append(text,link);
+  const container=document.createElement('div');container.className='window';const frame=document.createElement('iframe');frame.title=palettes[key].name+' dashboard';frame.dataset.variant=key;frame.src='dashboard-colour-prototype.html?variant='+key+'&preview=1#'+view;container.append(frame);card.append(heading,container);grid.append(card);
+  previewSizes.observe(frame);
+ }
+ document.querySelector('#palette-label').hidden=mode!=='original';fit();
+}
+new ResizeObserver(fit).observe(grid);
+for(const button of document.querySelectorAll('[data-mode]'))button.onclick=()=>{mode=button.dataset.mode;for(const item of document.querySelectorAll('[data-mode]'))item.setAttribute('aria-pressed',String(item===button));render();};
+for(const button of document.querySelectorAll('[data-view]'))button.onclick=()=>{view=button.dataset.view;for(const item of document.querySelectorAll('[data-view]'))item.setAttribute('aria-pressed',String(item===button));render();};
+choice.onchange=render;render();
+</script>
+</body></html>
