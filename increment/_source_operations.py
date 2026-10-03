@@ -58,6 +58,12 @@ class DashboardGroupData:
         object.__setattr__(self, "unavailable", _freeze(self.unavailable))
 
 
+# A declared breakout choice as (declared source or None, property).
+BreakoutChoice = tuple[str | None, str]
+# (view, metric or None for every declared metric, completed windows only, breakout choice)
+ExploreKey = tuple[str, str | None, bool, BreakoutChoice | None]
+
+
 @dataclass(frozen=True, slots=True)
 class DashboardExploreCapture:
     """One Explore request answered inside the pinned read.
@@ -70,7 +76,7 @@ class DashboardExploreCapture:
     view: str
     metric: str | None
     completed_windows_only: bool
-    dimension: str | None
+    breakout: BreakoutChoice | None
     collection: Callable[[Iterable[Any]], Sequence[Any]] | None
     rows: tuple[Any, ...]
     refusal: CodedError | None
@@ -78,24 +84,22 @@ class DashboardExploreCapture:
     @classmethod
     def answered(
         cls,
-        key: tuple[str, str | None, bool, str | None],
+        key: ExploreKey,
         rows: Sequence[Any],
         *,
         collection: Callable[[Iterable[Any]], Sequence[Any]],
     ) -> DashboardExploreCapture:
-        view, metric, completed, dimension = key
-        return cls(view, metric, completed, dimension, collection, tuple(rows), None)
+        view, metric, completed, breakout = key
+        return cls(view, metric, completed, breakout, collection, tuple(rows), None)
 
     @classmethod
-    def refused(
-        cls, key: tuple[str, str | None, bool, str | None], refusal: CodedError
-    ) -> DashboardExploreCapture:
-        view, metric, completed, dimension = key
-        return cls(view, metric, completed, dimension, None, (), copy.copy(refusal))
+    def refused(cls, key: ExploreKey, refusal: CodedError) -> DashboardExploreCapture:
+        view, metric, completed, breakout = key
+        return cls(view, metric, completed, breakout, None, (), copy.copy(refusal))
 
     @property
-    def key(self) -> tuple[str, str | None, bool, str | None]:
-        return (self.view, self.metric, self.completed_windows_only, self.dimension)
+    def key(self) -> ExploreKey:
+        return (self.view, self.metric, self.completed_windows_only, self.breakout)
 
     def load(self) -> Sequence[Any]:
         """A fresh collection of the captured rows, or a fresh copy of the captured refusal."""
@@ -124,7 +128,12 @@ class DashboardSnapshotPayload:
 
 
 class DashboardSnapshotHandler(Protocol):
-    def __call__(self, analysis: Analysis, /) -> DashboardSnapshotPayload: ...
+    def __call__(
+        self, analysis: Analysis, breakouts: Sequence[tuple[Breakout, Analysis]], /
+    ) -> DashboardSnapshotPayload:
+        """Read the payload from ``analysis``; each breakout pairs with an analysis reading
+        only that declared breakout, so one breakout's refusal cannot hide another's."""
+        ...
 
 
 @runtime_checkable
@@ -245,6 +254,8 @@ class DaySourceOperation(Protocol):
 
 
 __all__ = [
+    "BreakoutChoice",
+    "ExploreKey",
     "DashboardExploreCapture",
     "DashboardGroupData",
     "DashboardGroupDataOperation",

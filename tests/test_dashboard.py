@@ -1208,7 +1208,7 @@ def test_load_explore_segments_filter_by_dimension_source_and_method_without_lea
         wanted[0].model_copy(update={"method_role": "component"}),
         wanted[0].model_copy(update={"source": "other_source"}),
     ]
-    key = ("segments", "checkout_conversion", False, None)
+    key = ("segments", "checkout_conversion", False, ("event_log", "country"))
     captured = dataclasses.replace(
         storefront,
         explore={
@@ -1252,53 +1252,6 @@ def test_load_explore_segments_with_no_metric_returns_every_declared_metric(
     # Exactly one non-control arm x two segments (US, CA) per declared metric.
     for metric in declared:
         assert sum(1 for e in result if e.metric == metric) == 2
-
-
-def test_load_explore_segments_resolve_an_omitted_source_when_unambiguous(
-    storefront_analysis, storefront: DashboardSnapshot
-) -> None:
-    omitted = dataclasses.replace(storefront, breakouts=((None, "country"),))
-    resolved = list(
-        load_explore(
-            storefront_analysis,
-            snapshot=omitted,
-            metric="checkout_conversion",
-            view="segments",
-            breakout=(None, "country"),
-        )
-    )
-    assert len(resolved) == 2
-    assert {e.source for e in resolved} == {"event_log"}
-
-
-def test_load_explore_segments_refuse_an_ambiguously_resolved_source(
-    storefront_analysis, storefront: DashboardSnapshot
-) -> None:
-    """Two sources under one omitted-source dimension must not be silently merged."""
-    from increment._source_operations import DashboardExploreCapture
-    from increment.breakout.estimates import BreakoutEstimates
-
-    wanted = storefront_analysis.run_breakout(metrics=["checkout_conversion"])
-    ambiguous = wanted + [wanted[0].model_copy(update={"source": "other_source"})]
-    key = ("segments", "checkout_conversion", False, None)
-    omitted = dataclasses.replace(
-        storefront,
-        breakouts=((None, "country"),),
-        explore={
-            **storefront.explore,
-            key: DashboardExploreCapture.answered(key, ambiguous, collection=BreakoutEstimates),
-        },
-    )
-    with pytest.raises(InvalidRequestError) as caught:
-        load_explore(
-            storefront_analysis,
-            snapshot=omitted,
-            metric="checkout_conversion",
-            view="segments",
-            breakout=(None, "country"),
-        )
-    assert caught.value.code == "dashboard.invalid_view"
-    assert caught.value.context["sources"] == ("event_log", "other_source")
 
 
 # Explore: actual temporal date basis, gap reasons, and monitoring disclosure.
@@ -1569,57 +1522,6 @@ def test_temporal_breakouts_refuse_an_undeclared_dimension_before_any_query(
         )
     assert caught.value.code == "dashboard.invalid_view"
     assert caught.value.context["requested"] == ("event_log", "plan")
-
-
-def _shadow_source(rows, source: str):
-    return type(rows)(row.model_copy(update={"source": source}) for row in rows)
-
-
-def test_temporal_breakout_honours_the_declared_source_and_refuses_an_ambiguous_one(
-    storefront_analysis, storefront: DashboardSnapshot
-) -> None:
-    """A dimension declared on two sources never silently shows the other source's rows."""
-    from increment._source_operations import DashboardExploreCapture
-
-    key = ("cumulative_lift", "checkout_conversion", False, "country")
-    rows = load_explore(
-        storefront_analysis,
-        snapshot=storefront,
-        metric="checkout_conversion",
-        view="cumulative_lift",
-        breakout=COUNTRY,
-    )
-    both = dataclasses.replace(
-        storefront,
-        breakouts=(COUNTRY, ("other_log", "country"), (None, "country")),
-        explore={
-            **storefront.explore,
-            key: DashboardExploreCapture.answered(
-                key, [*rows, *_shadow_source(rows, "other_log")], collection=type(rows)
-            ),
-        },
-    )
-
-    for source in ("event_log", "other_log"):
-        rows = load_explore(
-            storefront_analysis,
-            snapshot=both,
-            breakout=(source, "country"),
-            metric="checkout_conversion",
-            view="cumulative_lift",
-        )
-        assert rows and {row.source for row in rows} == {source}
-
-    with pytest.raises(InvalidRequestError) as caught:
-        load_explore(
-            storefront_analysis,
-            snapshot=both,
-            breakout=(None, "country"),
-            metric="checkout_conversion",
-            view="cumulative_lift",
-        )
-    assert caught.value.code == "dashboard.invalid_view"
-    assert caught.value.context["sources"] == ("event_log", "other_log")
 
 
 @pytest.fixture(scope="module")

@@ -148,12 +148,13 @@ _PLAN = """
 """
 
 
-def _experiments(*, breakout_source: str | None) -> str:
-    breakout = (
-        ""
-        if breakout_source is None
-        else f"    breakouts:\n      - property: country\n        source: {breakout_source}\n"
+def _experiments(*, breakout_sources: tuple[str | None, ...]) -> str:
+    breakout = "".join(
+        "      - property: country\n" + ("" if source is None else f"        source: {source}\n")
+        for source in breakout_sources
     )
+    if breakout:
+        breakout = f"    breakouts:\n{breakout}"
     return f"""
 experiments:
   - name: storefront_refresh
@@ -203,7 +204,9 @@ def _event_rows(units: int) -> list[dict[str, Any]]:
 
 
 @contextmanager
-def _workspace(tmp_path, *, units: int = 30, profiles: bool = False, breakouts: bool = True):
+def _workspace(
+    tmp_path, *, units: int = 30, breakout_sources: tuple[str | None, ...] = ("event_log",)
+):
     import ibis
     import pyarrow as pa
 
@@ -225,6 +228,7 @@ def _workspace(tmp_path, *, units: int = 30, profiles: bool = False, breakouts: 
     con = ibis.duckdb.connect()
     con.raw_sql("CREATE SCHEMA analytics")
     con.create_table("event_log", pa.Table.from_pylist(rows, schema=schema), database="analytics")
+    profiles = "profiles" in breakout_sources
     if profiles:
         countries = {row["user_id"]: row["country_code"] for row in rows}
         con.create_table(
@@ -241,16 +245,13 @@ def _workspace(tmp_path, *, units: int = 30, profiles: bool = False, breakouts: 
             ),
             database="analytics",
         )
-    breakout_source = None
-    if breakouts:
-        breakout_source = "profiles" if profiles else "event_log"
     definitions = tmp_path / "definitions"
     definitions.mkdir()
     for name, body in (
         ("fact_sources.yaml", _PROFILE_SOURCES if profiles else _EVENT_LOG_SOURCE),
         ("exposures.yaml", _EXPOSURES),
         ("metrics.yaml", _METRICS),
-        ("experiments.yaml", _experiments(breakout_source=breakout_source)),
+        ("experiments.yaml", _experiments(breakout_sources=breakout_sources)),
     ):
         (definitions / name).write_text(body)
     analysis = Analysis.from_definitions("storefront_refresh", str(definitions), con)
@@ -443,7 +444,7 @@ def test_explore_reads_nothing_from_the_warehouse_after_preparation(tmp_path):
 @pytest.mark.slow
 @pytest.mark.parametrize("scope", [None, ("profiles", "country")])
 def test_breakout_property_in_its_own_source_is_part_of_the_pin(tmp_path, scope):
-    with _workspace(tmp_path, profiles=True) as (con, analysis):
+    with _workspace(tmp_path, breakout_sources=("profiles",)) as (con, analysis):
         snapshot = prepare_dashboard(analysis, config=CONFIG)
         request = {
             "view": "cumulative_values",
@@ -471,6 +472,77 @@ def test_breakout_property_in_its_own_source_is_part_of_the_pin(tmp_path, scope)
                 breakout=scope,
             )
             assert {row.dimension_value for row in moved} == {"XX"}
+
+
+_REFUSED_SOURCE = "test.profiles_unavailable"
+
+
+def _refuse_the_profiles_breakout(monkeypatch) -> None:
+    """A source that refuses every read of the `profiles` breakout, and only that breakout."""
+    from increment.errors import CapabilityError
+    from increment.query import native_source
+
+    def refuse() -> None:
+        raise CapabilityError("profiles is unavailable", code=_REFUSED_SOURCE, context={})
+
+    day_moments = native_source._DaySource.breakout_moments
+    scoped_sources = native_source.DefinitionsMomentSource.breakout_sources
+
+    def breakout_moments(self, metric, breakout, **kwargs):
+        if breakout.source == "profiles":
+            refuse()
+        return day_moments(self, metric, breakout, **kwargs)
+
+    def breakout_sources(self, breakouts, **kwargs):
+        if any(breakout.source == "profiles" for breakout in breakouts):
+            refuse()
+        return scoped_sources(self, breakouts, **kwargs)
+
+    monkeypatch.setattr(native_source._DaySource, "breakout_moments", breakout_moments)
+    monkeypatch.setattr(native_source.DefinitionsMomentSource, "breakout_sources", breakout_sources)
+
+
+@pytest.mark.slow
+def test_a_refused_breakout_never_hides_another_source_of_the_same_property(tmp_path, monkeypatch):
+    event_log, profiles = ("event_log", "country"), ("profiles", "country")
+    requests = [
+        {"view": view, "metric": metric, "complete": complete}
+        for view, complete in _STATES
+        for metric in (None, "checkout_conversion")
+    ]
+    sources = ("event_log", "profiles")
+    with _workspace(tmp_path, units=20, breakout_sources=sources) as (_, analysis):
+        healthy = prepare_dashboard(analysis, config=CONFIG)
+        baseline = [_loaded(analysis, healthy, **request, scope=event_log) for request in requests]
+        answered = [
+            isinstance(_loaded(analysis, healthy, **request, scope=profiles), list)
+            for request in requests
+        ]
+        assert any(answered)
+        assert any(isinstance(value, list) and value for value in baseline)
+        # One declared breakout per choice reads exactly what the whole dimension shows for it.
+        for request, value in zip(requests, baseline, strict=True):
+            assert value == _outcome(lambda r=request: _live(analysis, **r, scope=event_log))
+
+        _refuse_the_profiles_breakout(monkeypatch)
+        degraded = prepare_dashboard(analysis, config=CONFIG)
+        for request, value, was_answered in zip(requests, baseline, answered, strict=True):
+            assert _loaded(analysis, degraded, **request, scope=event_log) == value
+            refused = _loaded(analysis, degraded, **request, scope=profiles)
+            assert isinstance(refused, tuple)
+            if was_answered:
+                assert refused == ("refused", "CapabilityError", _REFUSED_SOURCE)
+
+
+def test_an_omitted_breakout_source_shows_the_source_it_resolves_to(tmp_path):
+    with _workspace(tmp_path, breakout_sources=(None,)) as (_, analysis):
+        snapshot = prepare_dashboard(analysis, config=CONFIG)
+        for view in ("segments", "cumulative_lift"):
+            request = {"view": view, "metric": "checkout_conversion", "complete": False}
+            shown = _loaded(analysis, snapshot, **request, scope=(None, "country"))
+            assert isinstance(shown, list) and shown
+            assert {json.loads(row)["source"] for row in shown} == {"event_log"}
+            assert shown == _live(analysis, **request, scope=("event_log", "country"))
 
 
 def test_each_state_keeps_its_own_original_refusal(tmp_path):
@@ -528,7 +600,7 @@ def test_each_state_keeps_its_own_original_refusal(tmp_path):
 
 
 def test_each_metric_series_is_independent_of_the_metric_selection(tmp_path):
-    with _workspace(tmp_path, breakouts=False) as (_, analysis):
+    with _workspace(tmp_path, breakout_sources=()) as (_, analysis):
         snapshot = prepare_dashboard(analysis, config=CONFIG)
         everyone = load_explore(analysis, snapshot=snapshot, metric=None, view="cumulative_lift")
         assert isinstance(everyone, DailyLiftEstimates)

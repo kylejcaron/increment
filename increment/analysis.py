@@ -115,7 +115,7 @@ from increment.semantics.artifact import (
     UnitDayArtifactRef,
 )
 from increment.semantics.loader import load, verify_sql_admission_matches_execution
-from increment.semantics.models import Definitions, Experiment
+from increment.semantics.models import Breakout, Definitions, Experiment
 from increment.semantics.unit_cycle import UnitCycleReference
 from increment.sequential_source import native_observation_mapping
 from increment.sources import (
@@ -1023,7 +1023,13 @@ class Analysis:
     def dashboard_snapshot(
         self, operation: DashboardSnapshotHandler, *, metrics: Sequence[Metric]
     ) -> DashboardSnapshotPayload:
-        """Prepare one complete dashboard payload against an isolated, pinned source."""
+        """Prepare one complete dashboard payload against an isolated, pinned source.
+
+        Alongside the isolated analysis, ``operation`` receives one analysis per declared
+        breakout that reads only that breakout from the same pin. Breakout families are
+        already computed per breakout, so each scoped read returns exactly that breakout's
+        rows, while a refusal from one breakout cannot hide a sibling of the same property.
+        """
         self._require_arm_state("dashboard_snapshot")
         src = _require_analysis_operation(
             self._src,
@@ -1039,7 +1045,19 @@ class Analysis:
         ) as pinned:
             isolated = copy.copy(self)
             isolated._state = replace(self._state, source=pinned)
-            return operation(isolated)
+            return operation(isolated, isolated._breakout_scopes())
+
+    def _breakout_scopes(self) -> tuple[tuple[Breakout, Analysis], ...]:
+        state = self._state
+        if not isinstance(state, DefinitionsArmAnalysisState):
+            return ()
+        scopes: list[tuple[Breakout, Analysis]] = []
+        for breakout in state.experiment.breakouts:
+            scoped = copy.copy(self)
+            experiment = state.experiment.model_copy(update={"breakouts": (breakout,)})
+            scoped._state = replace(state, experiment=experiment)
+            scopes.append((breakout, scoped))
+        return tuple(scopes)
 
     def dashboard_group_data(
         self,

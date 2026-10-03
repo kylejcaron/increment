@@ -229,17 +229,18 @@ checkpoint.
 `ExploreView` is the literal type `"cumulative_lift" | "daily_values" |
 "cumulative_values" | "segments"`. An unknown metric/view, a daily-values or
 segments request carrying the cumulative-only `completed_windows_only` gate, or an
-ambiguous breakout selection is refused with `InvalidRequestError`
-(`dashboard.invalid_view`); the refusal names the requested metric, view,
-and dimension.
+undeclared breakout selection is refused with `InvalidRequestError`
+(`dashboard.invalid_view`); the refusal names the requested metric and view.
 
 Explore selects a metric and a declared breakout, then switches between
 **Relative lift** and **Absolute values**. Relative lift is cumulative;
 absolute values show the control and treatment arms on daily or cumulative
 scales. **Completed windows only** applies to cumulative views, not daily
 values. The breakout changes both estimates and uncertainty, not just labels.
-Unsupported engine requests display their refusal instead of substituting
-whole-experiment results.
+Each declared `(source, property)` breakout is captured separately, so two
+sources of the same property never mix, and a refusal from one never hides
+the other. Unsupported engine requests display their refusal instead of
+substituting whole-experiment results.
 
 Temporal plots use a separate value scale per metric. Date-basis and
 unavailable-point disclosures distinguish observation dates from retention

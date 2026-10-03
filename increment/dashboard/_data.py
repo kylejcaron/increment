@@ -21,9 +21,11 @@ from pydantic import BaseModel
 
 from increment._canonical import canonical_json_bytes
 from increment._source_operations import (
+    BreakoutChoice,
     DashboardExploreCapture,
     DashboardGroupData,
     DashboardSnapshotPayload,
+    ExploreKey,
 )
 from increment.breakout.estimates import (
     BreakoutEstimates,
@@ -48,11 +50,9 @@ if TYPE_CHECKING:
 
     from increment.analysis import Analysis
     from increment.estimation.results import LiftEstimate
-    from increment.semantics.models import Experiment, Metric
+    from increment.semantics.models import Breakout, Experiment, Metric
 
 ExploreView = Literal["cumulative_lift", "daily_values", "cumulative_values", "segments"]
-# (view, metric or None for every declared metric, completed windows only, breakout dimension)
-ExploreKey = tuple[str, str | None, bool, str | None]
 
 __all__ = [
     "DashboardConfig",
@@ -462,7 +462,9 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
             _INVALID_CONFIG, reason=f"metric_units names are undeclared: {sorted(unknown_units)!r}"
         )
 
-    def _read(pinned: Analysis) -> DashboardSnapshotPayload:
+    def _read(
+        pinned: Analysis, scopes: Sequence[tuple[Breakout, Analysis]]
+    ) -> DashboardSnapshotPayload:
         allocation, allocation_refusal = _allocation_check(pinned, config)
         allocation_history, allocation_history_refusal = _allocation_history(
             pinned, allocation_refusal
@@ -483,7 +485,7 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
         explore = _capture_explore(
             pinned,
             names=tuple(metric.name for metric in metrics),
-            dimensions=tuple(dict.fromkeys(b.property for b in experiment.breakouts)),
+            scopes=tuple(((b.source, b.property), scoped) for b, scoped in scopes),
         )
         return DashboardSnapshotPayload(
             allocation=allocation,
@@ -722,7 +724,10 @@ _INDEPENDENT_VIEWS = frozenset({"cumulative_values", "daily_values"})
 
 
 def _capture_explore(
-    pinned: Analysis, *, names: tuple[str, ...], dimensions: tuple[str, ...]
+    pinned: Analysis,
+    *,
+    names: tuple[str, ...],
+    scopes: tuple[tuple[BreakoutChoice, Analysis], ...],
 ) -> tuple[DashboardExploreCapture, ...]:
     """Every Explore request ``load_explore`` can serve, answered from the pinned analysis.
 
@@ -730,33 +735,38 @@ def _capture_explore(
     together, because each selection carries its own multiplicity. Absolute values are
     independent per metric, so one call over every metric serves them all; only when that call
     is refused is each metric asked alone, so one metric's refusal never hides another's series.
-    Temporal views are read once for the whole experiment and once per declared breakout
-    dimension; segments are read once because the source returns every declared breakout.
-    Source refusals are kept as the original coded errors, never replaced by a live re-read.
+    Temporal views are read for the whole experiment and through each declared breakout's own
+    scoped analysis, as are segments, so one breakout's refusal never hides another source of
+    the same property. Source refusals are kept as the original coded errors.
     """
     captures: dict[ExploreKey, DashboardExploreCapture] = {}
 
     def ask(
-        view: str, metric: str | None, *, complete: bool, dimension: str | None
+        analysis: Analysis,
+        view: str,
+        metric: str | None,
+        *,
+        complete: bool,
+        breakout: BreakoutChoice | None,
     ) -> DashboardExploreCapture:
-        key = (view, metric, complete, dimension)
+        key = (view, metric, complete, breakout)
         selected = list(names) if metric is None else [metric]
+        dimension = None if breakout is None else breakout[1]
         try:
-            data = _read_view(pinned, view, selected, complete=complete, dimension=dimension)
+            data = _read_view(analysis, view, selected, complete=complete, dimension=dimension)
         except CodedError as exc:
             captures[key] = DashboardExploreCapture.refused(key, exc)
         else:
             captures[key] = DashboardExploreCapture.answered(key, data, collection=type(data))
         return captures[key]
 
+    whole: tuple[tuple[BreakoutChoice | None, Analysis], ...] = ((None, pinned),)
     for view, complete in _CAPTURED_STATES:
-        if view == "segments" and not dimensions:
-            continue
-        for dimension in (None,) if view == "segments" else (None, *dimensions):
-            joint = ask(view, None, complete=complete, dimension=dimension)
+        for breakout, analysis in scopes if view == "segments" else (*whole, *scopes):
+            joint = ask(analysis, view, None, complete=complete, breakout=breakout)
             independent = view in _INDEPENDENT_VIEWS and joint.refusal is None
             for name in names:
-                key = (view, name, complete, dimension)
+                key = (view, name, complete, breakout)
                 if len(names) == 1:
                     captures[key] = replace(joint, metric=name)
                 elif independent:
@@ -767,7 +777,7 @@ def _capture_explore(
                         collection=joint.collection,
                     )
                 else:
-                    ask(view, name, complete=complete, dimension=dimension)
+                    ask(analysis, view, name, complete=complete, breakout=breakout)
     return tuple(captures.values())
 
 
@@ -796,14 +806,14 @@ def _captured(snapshot: DashboardSnapshot, key: ExploreKey, *, metric: str | Non
     """A fresh collection of one captured view, or a fresh copy of its original refusal."""
     capture = snapshot.explore.get(key)
     if capture is None:
-        view, _, complete, dimension = key
+        view, _, complete, breakout = key
         refuse(
             _INVALID_VIEW,
             reason="this snapshot did not capture that view; prepare a new snapshot",
             view=view,
             metric=metric,
             completed_windows_only=complete,
-            dimension=dimension,
+            breakout=breakout,
         )
     return capture.load()
 
@@ -829,9 +839,9 @@ def load_explore(
 
     ``breakout`` names one declared ``(source, dimension)`` choice. Segment
     views require it when breakouts are declared; the temporal views break
-    their series out by it and keep only that source's rows, refusing a
-    dimension that resolves to several sources instead of showing another
-    source's segments. Without it a temporal view is the whole experiment.
+    their series out by it. Each choice was read through that declared
+    breakout alone, so another source of the same property, or its refusal,
+    never appears in it. Without it a temporal view is the whole experiment.
     """
     if view not in get_args(ExploreView):
         refuse(_INVALID_VIEW, reason=f"unknown view {view!r}", view=view, metric=metric)
@@ -849,21 +859,9 @@ def load_explore(
         )
     if view == "segments":
         return _load_segments(snapshot=snapshot, metric=metric, breakout=breakout)
-    declared_source: str | None = None
-    dimension: str | None = None
     if breakout is not None:
-        declared_source, dimension = _declared_breakout(
-            snapshot, breakout, view=view, metric=metric
-        )
-    data = _captured(snapshot, (view, metric, completed_windows_only, dimension), metric=metric)
-    if dimension is None:
-        return data
-    source = declared_source or _resolved_source(
-        data, dimension=dimension, metric=metric, view=view
-    )
-    if isinstance(data, DailyLiftEstimates):
-        return DailyLiftEstimates(row for row in data if row.source == source)
-    return DailyMetricValues(row for row in data if row.source == source)
+        breakout = _declared_breakout(snapshot, breakout, view=view, metric=metric)
+    return _captured(snapshot, (view, metric, completed_windows_only, breakout), metric=metric)
 
 
 def _require_same_experiment(
@@ -892,9 +890,10 @@ def _declared_breakout(
     *,
     view: str,
     metric: str | None,
-) -> tuple[str | None, str]:
+) -> BreakoutChoice:
     """The caller's choice, refused unless the experiment declares exactly it."""
-    requested = tuple(breakout)
+    source, dimension = breakout
+    requested = (source, dimension)
     if requested not in snapshot.breakouts:
         refuse(
             _INVALID_VIEW,
@@ -904,8 +903,7 @@ def _declared_breakout(
             requested=requested,
             declared=snapshot.breakouts,
         )
-    source, dimension = requested
-    return source, dimension
+    return requested
 
 
 def _load_segments(
@@ -925,35 +923,14 @@ def _load_segments(
             metric=metric,
             declared=snapshot.breakouts,
         )
-    declared_source, dimension = _declared_breakout(
-        snapshot, breakout, view="segments", metric=metric
-    )
-    estimates = _captured(snapshot, ("segments", metric, False, None), metric=metric)
-    candidates = [
+    choice = _declared_breakout(snapshot, breakout, view="segments", metric=metric)
+    source, dimension = choice
+    estimates = _captured(snapshot, ("segments", metric, False, choice), metric=metric)
+    # A registered sequential readout answers its registered dimension whatever the scope.
+    return BreakoutEstimates(
         estimate
         for estimate in estimates
-        if estimate.dimension == dimension and estimate.method_role == "decision"
-    ]
-    source = declared_source or _resolved_source(
-        candidates, dimension=dimension, metric=metric, view="segments"
+        if estimate.dimension == dimension
+        and estimate.method_role == "decision"
+        and (source is None or estimate.source == source)
     )
-    return BreakoutEstimates(estimate for estimate in candidates if estimate.source == source)
-
-
-def _resolved_source(
-    candidates: Sequence[Any], *, dimension: str, metric: str | None, view: str
-) -> str | None:
-    """The single source a dimension resolved to, or a refusal when ambiguous."""
-    sources = {estimate.source for estimate in candidates}
-    if len(sources) > 1:
-        refuse(
-            _INVALID_VIEW,
-            reason=(
-                f"dimension {dimension!r} resolved to more than one source; choose one explicitly"
-            ),
-            view=view,
-            metric=metric,
-            dimension=dimension,
-            sources=tuple(sorted(str(source) for source in sources)),
-        )
-    return next(iter(sources), None)
