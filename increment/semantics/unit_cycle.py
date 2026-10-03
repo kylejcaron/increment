@@ -117,7 +117,11 @@ class UnitCycleVarianceEnvelope(_UnitCycleModel):
 
 
 class UnitCycleTApproximation(_UnitCycleModel):
-    """Explicit historical approximation, without finite-sample calibration."""
+    """Qualified Student-t approximation on the sample variance of unit contributions.
+
+    The interval uses ``dof = n_units - 1`` and has no finite-sample calibration.
+    It is the default reference for independent unit-cycle orders when none is declared.
+    """
 
     kind: Literal["unit_t_approximation"] = "unit_t_approximation"
 
