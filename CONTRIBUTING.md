@@ -185,11 +185,73 @@ extension. Use the [compatibility matrix](docs/guides/compatibility.md) and
 
 ### Releases
 
-After reviewing the release candidate, choose an unused PEP 440 version and
-dispatch `bump` on the reviewed `main` commit. For example:
+Dispatch `bump` on the reviewed commit. It derives the baseline from the highest
+public PEP 440 `v*` tag reachable from that commit, so a backport branch does not
+inherit an unrelated newer release. Preview the calculation and CI gate first:
 
 ```bash
-gh workflow run bump.yml --ref main -f version=0.1.0a3 -f force=false
+gh workflow run bump.yml --ref main -f dry_run=true
+```
+
+The workflow summary shows the baseline and selected version. Preview creates
+no tag and dispatches no release. After reviewing the candidate, run without
+`dry_run` to tag and build it:
+
+```bash
+gh workflow run bump.yml --ref main
+```
+
+| Input | Default | Behavior |
+| --- | --- | --- |
+| `bump` | `auto` | Choose `auto`, `patch`, `minor`, or `major` |
+| `stage` | `keep-current` | Keep the stage or explicitly choose `alpha`, `beta`, `rc`, or `stable` |
+| `version` | blank | Exact canonical PEP 440 override, without `v` or a local (`+`) segment |
+| `dry_run` | `false` | Resolve the version and check CI without tagging or dispatching |
+| `force` | `false` | Explicitly bypass only the CI gate |
+
+`auto` increments the current alpha/beta/RC counter, or patch when stable.
+Explicit patch/minor/major bumps reset lower base components; a retained
+prerelease stage restarts at counter 1 on the new base. Stage promotion is
+manual: passing CI or reaching a counter never makes a release beta or stable.
+
+| Baseline | Bump / stage | Selected version |
+| --- | --- | --- |
+| `0.1.0a2` | `auto` / `keep-current` | `0.1.0a3` |
+| `0.1.0a2` | `auto` / `beta` | `0.1.0b1` |
+| `0.1.0a2` | `auto` / `rc` | `0.1.0rc1` |
+| `0.1.0a2` | `auto` / `stable` | `0.1.0` |
+| `0.1.0a2` | `patch` / `keep-current` | `0.1.1a1` |
+| `0.1.0a2` | `minor` / `keep-current` | `0.2.0a1` |
+| `0.1.0a2` | `major` / `keep-current` | `1.0.0a1` |
+| `0.1.0` | `auto` / `keep-current` | `0.1.1` |
+| `0.1.0` | `auto` / `alpha` | `0.1.1a1` |
+
+Repeating the same stage increments its counter. Moving to an earlier stage on
+the same base is refused; select a base bump to start a new prerelease line.
+Beta and RC are optional. For example, explicitly promote to beta with:
+
+```bash
+gh workflow run bump.yml --ref main -f stage=beta
+```
+
+Set `version` for exceptional targets, including first releases or backports.
+It is exclusive with nondefault `bump`/`stage`; it does not bypass validation,
+duplicate-version protection, CI, or PyPI approval:
+
+```bash
+gh workflow run bump.yml --ref main -f version=0.1.0a3 -f dry_run=true
+```
+
+Automatic calculation refuses baselines with epochs, post/dev segments, or
+other than three base components; use the exact override for those targets.
+Versions already tagged on any branch, including equivalent PEP 440
+spellings, remain reserved even if publication failed. Bump does not update
+or delete tags.
+
+For a local calculation without GitHub or any tag mutation:
+
+```bash
+uv run python scripts/next_version.py --bump auto --stage keep-current
 ```
 
 The default gate requires successful GitHub Actions `ci-ok` on that exact
