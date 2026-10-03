@@ -9,9 +9,10 @@ from __future__ import annotations
 import datetime as dt
 import statistics
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from html import escape
 from math import inf
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from increment.tables import _decision_available, _format_confidence_set
 
@@ -154,17 +155,13 @@ def headline_endpoint(value: Any, row: Mapping[str, Any]) -> str:
     return headline_number(value, row)
 
 
-def confidence_set_text(row: Mapping[str, Any]) -> str | None:
-    relative = row.get("relative_confidence_set")
-    if (
-        relative is not None
-        and not is_missing(relative)
-        and relative.geometry == "one_sided"
-        and not is_missing(row.get("lift"))
-        and interval_endpoints(row) is not None
-    ):
-        return None
+def complete_confidence_set_text(row: Mapping[str, Any]) -> str | None:
+    """Escaped full description of the retained confidence set, or None when it adds nothing.
 
+    Unlike ``confidence_set_text`` this keeps a one-sided set that has a point estimate: its
+    open direction and own coverage differ from the central interval shown beside the point.
+    Only a set the displayed interval already represents exactly is omitted.
+    """
     text = _format_confidence_set(
         row.get("confidence_set"),
         relative=row.get("relative_confidence_set"),
@@ -174,6 +171,20 @@ def confidence_set_text(row: Mapping[str, Any]) -> str | None:
         lift=row.get("lift"),
     )
     return esc(text) if text else None
+
+
+def confidence_set_text(row: Mapping[str, Any]) -> str | None:
+    """Headline set text: concise, deferring to the central interval when a point backs it."""
+    relative = row.get("relative_confidence_set")
+    if (
+        relative is not None
+        and not is_missing(relative)
+        and relative.geometry == "one_sided"
+        and not is_missing(row.get("lift"))
+        and interval_endpoints(row) is not None
+    ):
+        return None
+    return complete_confidence_set_text(row)
 
 
 def headline_interval(row: Mapping[str, Any]) -> str:
@@ -213,13 +224,14 @@ def primary_tone(row: Mapping[str, Any]) -> str:
     return "favorable" if observed == direction else "unfavorable"
 
 
+def percent_text(level: float) -> str:
+    """A coverage level as a trimmed two-decimal percentage, such as ``98.33%``."""
+    return f"{level * 100:.2f}".rstrip("0").rstrip(".") + "%"
+
+
 def primary_method(row: Mapping[str, Any]) -> str:
     level = row.get("level")
-    if level is None:
-        level_label = ""
-    else:
-        percent = f"{float(level) * 100:.2f}".rstrip("0").rstrip(".")
-        level_label = f"{percent}% "
+    level_label = "" if level is None else f"{percent_text(float(level))} "
     inference = inference_word(str(row.get("inference", "fixed")))
     return f"{level_label}{esc(inference)} interval · {esc(tail_word(row))}"
 
@@ -258,6 +270,93 @@ def null_text(row: Mapping[str, Any]) -> str:
     if null_lift is None:
         return missing_html("no null boundary reported")
     return f"{float(null_lift):+.1%} relative"
+
+
+Verdict = Literal["reject", "not_reject", "unavailable"]
+Selection = Literal["selected", "not_selected", "not_applied"]
+
+
+@dataclass(frozen=True)
+class ResultOutcome:
+    """One row's own test verdict and, separately, its family-selection state."""
+
+    verdict: Verdict
+    selection: Selection
+    unavailable_reason: str | None
+
+
+def _unavailable_reason(row: Mapping[str, Any]) -> str | None:
+    """The engine-reported reason a row has no usable inference, if it reported one."""
+    status = row.get("sequential_status")
+    if not is_missing(status):
+        return f"sequential status {status}"
+    if row.get("low_reliability"):
+        return "flagged low reliability"
+    relative = row.get("relative_confidence_set")
+    candidates = (
+        row.get("relative_unavailable_reason"),
+        None if relative is None or is_missing(relative) else relative.reason,
+        row.get("unavailable"),
+    )
+    return next((str(value) for value in candidates if value and not is_missing(value)), None)
+
+
+def result_outcome(row: Mapping[str, Any]) -> ResultOutcome:
+    """Classify a row's hypothesis verdict and family selection from emitted metadata.
+
+    The verdict is the row's own ``stat_sig``; a non-rejecting row is "not_reject" only when
+    ``_decision_available`` says the procedure produced usable inference, so a valid set with
+    no point estimate stays distinct from a row with nothing to test. Selection reads only
+    ``discovery``: it is neither inferred from the verdict nor from any point or colour.
+    """
+    significant = row.get("stat_sig")
+    if not is_missing(significant) and significant:
+        verdict: Verdict = "reject"
+    elif is_missing(significant) or not _decision_available(row):
+        verdict = "unavailable"
+    else:
+        verdict = "not_reject"
+    discovery = row.get("discovery")
+    selection: Selection = (
+        "not_applied" if is_missing(discovery) else "selected" if discovery else "not_selected"
+    )
+    return ResultOutcome(
+        verdict, selection, _unavailable_reason(row) if verdict == "unavailable" else None
+    )
+
+
+def result_outcome_text(row: Mapping[str, Any], *, arm: bool = False) -> str:
+    """Plain text of a row's verdict and selection, qualified by its method and role.
+
+    ``arm`` adds the treatment arm for tables that hold several. The metric name is left to
+    the caller.
+    """
+    outcome = result_outcome(row)
+    method, role, group = row.get("method"), row.get("method_role"), row.get("group_id")
+    who = " ".join(
+        part
+        for part in (
+            None if is_missing(method) else str(method),
+            None if is_missing(role) else f"({role})",
+        )
+        if part
+    )
+    qualifier = who or "unspecified method"
+    if arm and not is_missing(group):
+        qualifier += f" in {group}"
+    verdict = {
+        "reject": "rejects the declared null",
+        "not_reject": "does not reject the declared null",
+        "unavailable": "is unavailable"
+        + (f" ({outcome.unavailable_reason})" if outcome.unavailable_reason else ""),
+    }[outcome.verdict]
+    selection = {
+        "selected": "selected by the family procedure",
+        "not_selected": "not selected by the family procedure",
+        "not_applied": "family selection not applied"
+        + (" (sensitivity method, outside the family)" if role == "sensitivity" else ""),
+    }[outcome.selection]
+    return f"{qualifier}: {tail_word(row)} {verdict}; {selection}"
 
 
 ROLE_LABELS = {

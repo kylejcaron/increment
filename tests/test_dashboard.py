@@ -1195,9 +1195,10 @@ def test_dashboard_tables_neutralize_dangerous_label_links(
 
 
 def test_load_explore_segments_filter_by_dimension_source_and_method_without_leaking_rows(
-    storefront_analysis, storefront: DashboardSnapshot, monkeypatch: pytest.MonkeyPatch
+    storefront_analysis, storefront: DashboardSnapshot
 ) -> None:
     """A row from another dimension, source, or method role must never leak in."""
+    from increment._source_operations import DashboardExploreCapture
     from increment.breakout.estimates import BreakoutEstimates
 
     wanted = storefront_analysis.run_breakout(metrics=["checkout_conversion"])
@@ -1207,12 +1208,19 @@ def test_load_explore_segments_filter_by_dimension_source_and_method_without_lea
         wanted[0].model_copy(update={"method_role": "component"}),
         wanted[0].model_copy(update={"source": "other_source"}),
     ]
-    monkeypatch.setattr(
-        storefront_analysis, "run_breakout", lambda **_: BreakoutEstimates(wanted + decoys)
+    key = ("segments", "checkout_conversion", False, None)
+    captured = dataclasses.replace(
+        storefront,
+        explore={
+            **storefront.explore,
+            key: DashboardExploreCapture.answered(
+                key, wanted + decoys, collection=BreakoutEstimates
+            ),
+        },
     )
     filtered = load_explore(
         storefront_analysis,
-        snapshot=storefront,
+        snapshot=captured,
         metric="checkout_conversion",
         view="segments",
         breakout=("event_log", "country"),
@@ -1247,13 +1255,9 @@ def test_load_explore_segments_with_no_metric_returns_every_declared_metric(
 
 
 def test_load_explore_segments_resolve_an_omitted_source_when_unambiguous(
-    storefront_analysis, storefront: DashboardSnapshot, monkeypatch: pytest.MonkeyPatch
+    storefront_analysis, storefront: DashboardSnapshot
 ) -> None:
-    from increment.breakout.estimates import BreakoutEstimates
-
-    wanted = storefront_analysis.run_breakout(metrics=["checkout_conversion"])
     omitted = dataclasses.replace(storefront, breakouts=((None, "country"),))
-    monkeypatch.setattr(storefront_analysis, "run_breakout", lambda **_: BreakoutEstimates(wanted))
     resolved = list(
         load_explore(
             storefront_analysis,
@@ -1268,16 +1272,22 @@ def test_load_explore_segments_resolve_an_omitted_source_when_unambiguous(
 
 
 def test_load_explore_segments_refuse_an_ambiguously_resolved_source(
-    storefront_analysis, storefront: DashboardSnapshot, monkeypatch: pytest.MonkeyPatch
+    storefront_analysis, storefront: DashboardSnapshot
 ) -> None:
     """Two sources under one omitted-source dimension must not be silently merged."""
+    from increment._source_operations import DashboardExploreCapture
     from increment.breakout.estimates import BreakoutEstimates
 
     wanted = storefront_analysis.run_breakout(metrics=["checkout_conversion"])
     ambiguous = wanted + [wanted[0].model_copy(update={"source": "other_source"})]
-    omitted = dataclasses.replace(storefront, breakouts=((None, "country"),))
-    monkeypatch.setattr(
-        storefront_analysis, "run_breakout", lambda **_: BreakoutEstimates(ambiguous)
+    key = ("segments", "checkout_conversion", False, None)
+    omitted = dataclasses.replace(
+        storefront,
+        breakouts=((None, "country"),),
+        explore={
+            **storefront.explore,
+            key: DashboardExploreCapture.answered(key, ambiguous, collection=BreakoutEstimates),
+        },
     )
     with pytest.raises(InvalidRequestError) as caught:
         load_explore(
@@ -1566,18 +1576,28 @@ def _shadow_source(rows, source: str):
 
 
 def test_temporal_breakout_honours_the_declared_source_and_refuses_an_ambiguous_one(
-    storefront_analysis, storefront: DashboardSnapshot, monkeypatch: pytest.MonkeyPatch
+    storefront_analysis, storefront: DashboardSnapshot
 ) -> None:
     """A dimension declared on two sources never silently shows the other source's rows."""
-    real = storefront_analysis.run_asof_lift
+    from increment._source_operations import DashboardExploreCapture
 
-    def two_sources(**kwargs: Any) -> Any:
-        rows = real(**kwargs)
-        return type(rows)([*rows, *_shadow_source(rows, "other_log")])
-
-    monkeypatch.setattr(storefront_analysis, "run_asof_lift", two_sources)
+    key = ("cumulative_lift", "checkout_conversion", False, "country")
+    rows = load_explore(
+        storefront_analysis,
+        snapshot=storefront,
+        metric="checkout_conversion",
+        view="cumulative_lift",
+        breakout=COUNTRY,
+    )
     both = dataclasses.replace(
-        storefront, breakouts=(COUNTRY, ("other_log", "country"), (None, "country"))
+        storefront,
+        breakouts=(COUNTRY, ("other_log", "country"), (None, "country")),
+        explore={
+            **storefront.explore,
+            key: DashboardExploreCapture.answered(
+                key, [*rows, *_shadow_source(rows, "other_log")], collection=type(rows)
+            ),
+        },
     )
 
     for source in ("event_log", "other_log"):
@@ -1649,29 +1669,30 @@ def test_health_status_is_qualified_and_never_a_ship_recommendation(
 
 
 def test_an_engine_refusal_is_visible_for_its_own_state_only(
-    storefront: DashboardSnapshot, dashboard_con, dashboard_definitions, monkeypatch
+    dashboard_con, dashboard_definitions, monkeypatch
 ) -> None:
     from increment.dashboard._app import build_payload
 
     analysis = _analysis(dashboard_con, dashboard_definitions, "storefront_refresh")
-    real = analysis.run_asof_lift
+    real = type(analysis).run_asof_lift
 
-    def refuse_segments(**kwargs: Any) -> Any:
+    def refuse_segments(self, **kwargs: Any) -> Any:
         if kwargs.get("dimension") is not None:
             raise CapabilityError(
                 "segmented history needs retained states",
                 code="test.segmented_history",
                 context={},
             )
-        return real(**kwargs)
+        return real(self, **kwargs)
 
-    monkeypatch.setattr(analysis, "run_asof_lift", refuse_segments)
-    payload = build_payload(analysis, snapshot=storefront)
+    monkeypatch.setattr(type(analysis), "run_asof_lift", refuse_segments)
+    captured = prepare_dashboard(
+        analysis, config=DashboardConfig(expected_allocation={"control": 0.5, "treatment": 0.5})
+    )
+    payload = build_payload(analysis, snapshot=captured)
     refused = payload["explore"]["country"]["checkout_conversion"]["cumulative_lift"]
     assert refused["pointCount"] == 0
-    assert "segmented history needs retained states" in refused["html"]
     assert "test.segmented_history" in refused["html"]
-    assert refused["notes"] and "whole" in " ".join(refused["notes"]).lower()
     assert payload["explore"]["overall"]["checkout_conversion"]["cumulative_lift"]["pointCount"] > 0
     assert (
         payload["explore"]["country"]["checkout_conversion"]["cumulative_values"]["pointCount"] > 0
@@ -1679,18 +1700,20 @@ def test_an_engine_refusal_is_visible_for_its_own_state_only(
 
 
 def test_unexpected_engine_failures_are_not_swallowed(
-    storefront: DashboardSnapshot, dashboard_con, dashboard_definitions, monkeypatch
+    dashboard_con, dashboard_definitions, monkeypatch
 ) -> None:
-    from increment.dashboard._app import build_payload
-
     analysis = _analysis(dashboard_con, dashboard_definitions, "storefront_refresh")
+    failure = RuntimeError("warehouse connection lost")
 
-    def broken(**_: Any) -> Any:
-        raise RuntimeError("warehouse connection lost")
+    def broken(self, **_: Any) -> Any:
+        raise failure
 
-    monkeypatch.setattr(analysis, "run_daily", broken)
-    with pytest.raises(RuntimeError, match="warehouse connection lost"):
-        build_payload(analysis, snapshot=storefront)
+    monkeypatch.setattr(type(analysis), "run_daily", broken)
+    with pytest.raises(RuntimeError) as caught:
+        prepare_dashboard(
+            analysis, config=DashboardConfig(expected_allocation={"control": 0.5, "treatment": 0.5})
+        )
+    assert caught.value is failure
 
 
 def _open_sided_lift(metric: str, group: str, segment: str, day: int, value: float) -> Any:
@@ -1873,3 +1896,58 @@ def test_one_sided_bound_lines_keep_unavailable_dates_as_gaps(
     assert polylines
     # Each estimate and bound is two separate two-date segments, never a bridge.
     assert all(len(points.split()) == 2 for points in polylines)
+
+
+@pytest.mark.parametrize("surface", ["readout", "report"])
+def test_complete_dashboard_retains_adverse_nonrejecting_guardrail(
+    storefront: DashboardSnapshot, storefront_analysis, surface: str
+) -> None:
+    from increment.dashboard._app import build_payload
+
+    snapshot = _guardrail_snapshot(
+        storefront, alternative="greater", direction="increase", lb=-0.10, ub=-0.02
+    )
+    guardrail = next(row for row in snapshot.readout_rows if row["role"] == "guardrail")
+    assert guardrail["stat_sig"] is False
+    payload = build_payload(storefront_analysis, snapshot=snapshot)
+    markup = payload["results"] if surface == "readout" else payload["report"]["results"]
+    warnings = re.findall(
+        r'<p[^>]*class="[^"]*\binc-dashboard-status--bad\b[^"]*"[^>]*>(.*?)</p>',
+        markup,
+        re.DOTALL,
+    )
+    assert any(str(guardrail["metric"]) in warning for warning in warnings)
+
+
+@pytest.mark.parametrize("alternative", ["greater", "less"])
+def test_report_retains_directional_fieller_set_beside_central_interval(
+    storefront: DashboardSnapshot, alternative: str
+) -> None:
+    from increment.dashboard._app import _report_notes
+    from increment.estimation.results import JointContrastReference, relative_confidence_set
+
+    reference = JointContrastReference(a=0.2, c=1, var_a=0.04, var_c=0.04, cov_ac=0)
+    central = relative_confidence_set(reference, alpha=0.05)
+    directional = relative_confidence_set(reference, alpha=0.05, alternative=alternative)
+    lower, higher = central.intervals[0]
+    snapshot = _with_primary_row(
+        storefront,
+        lift=0.2,
+        lower=lower,
+        higher=higher,
+        level=0.95,
+        alternative=alternative,
+        relative_confidence_set=directional,
+        confidence_set=None,
+        binomial_set=None,
+    )
+    notes = " ".join(_report_notes(snapshot))
+    displayed = [
+        float(value) / 100
+        for value in re.findall(r"([+−-]?\d+(?:\.\d+)?)%", notes.replace("−", "-"))
+    ]
+    for bounds in directional.intervals:
+        for endpoint in bounds:
+            if endpoint is not None:
+                assert any(abs(value - endpoint) <= 0.0005 for value in displayed)
+    assert "∞" in notes

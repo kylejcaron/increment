@@ -49,10 +49,12 @@ from increment.dashboard._format import (
     monitoring_sentence,
     null_text,
     number_text,
+    percent_text,
     population_label,
     primary_method,
     primary_tone,
     result_caveats,
+    result_outcome_text,
     robust_fence,
     share_text,
     tail_word,
@@ -755,7 +757,7 @@ def render_results(snapshot: DashboardSnapshot) -> mo.Html:
     """The whole declared family, its readout table, and its disclosures."""
     body = (
         results_table(snapshot)
-        + _adverse_block(snapshot)
+        + results_warnings(snapshot)
         + results_notes(snapshot)
         + _caveats_list(result_caveats(snapshot.readout_rows))
     )
@@ -782,7 +784,8 @@ def _is_adverse(row: Mapping[str, Any]) -> bool:
     return False
 
 
-def _adverse_block(snapshot: DashboardSnapshot) -> str:
+def results_warnings(snapshot: DashboardSnapshot) -> str:
+    """Status markup for decision rows whose whole interval is adverse."""
     adverse = [row for row in decision_rows(snapshot) if _is_adverse(row)]
     if not adverse:
         return ""
@@ -798,18 +801,24 @@ def _role_disclosures(snapshot: DashboardSnapshot) -> list[str]:
     rows_by_role: dict[str, list[Mapping[str, Any]]] = {}
     for row in snapshot.readout_rows:
         rows_by_role.setdefault(str(row.get("role") or "unassigned"), []).append(row)
+    several_arms = len({row.get("group_id") for row in snapshot.readout_rows}) > 1
     items = []
     for role in ("primary", "secondary", "guardrail", "unassigned"):
         rows = rows_by_role.get(role)
         if rows:
-            items.append(_role_disclosure(role, rows))
+            items.append(_role_disclosure(role, rows, several_arms=several_arms))
     return items
 
 
-def _role_disclosure(role: str, rows: Sequence[Mapping[str, Any]]) -> str:
+def _role_disclosure(role: str, rows: Sequence[Mapping[str, Any]], *, several_arms: bool) -> str:
     label = ROLE_LABELS.get(role, role)
     tails = "; ".join(f"{esc(row.get('metric'))} {tail_word(row)}" for row in rows)
     sentences = [f"<strong>{esc(label)}</strong>: {tails}."]
+    outcomes = "; ".join(
+        f"{esc(row.get('metric'))}, {esc(result_outcome_text(row, arm=several_arms))}"
+        for row in rows
+    )
+    sentences.append(f"Outcomes: {outcomes}.")
     several_methods = len({(row.get("method"), row.get("method_role")) for row in rows}) > 1
     levelled = [
         (
@@ -822,7 +831,7 @@ def _role_disclosure(role: str, rows: Sequence[Mapping[str, Any]]) -> str:
         if row.get("level") is not None
     ]
     if levelled:
-        shown = esc(levels_by_metric(levelled, lambda level: f"{level:.1%}"))
+        shown = esc(levels_by_metric(levelled, percent_text))
         sentences.append(f"Interval level {shown}.")
         if any(row.get("alternative") in ("greater", "less") for row in rows):
             sentences.append(
@@ -973,7 +982,7 @@ def _metric_detail_entries(
         (
             "Interval",
             f"{interval_html(row)}"
-            + (f" at {row['level']:.1%}" if row.get("level") is not None else ""),
+            + (f" at {percent_text(row['level'])}" if row.get("level") is not None else ""),
         ),
         ("Favorable direction", direction_text),
         ("Tested alternative", f"{esc(row.get('alternative'))} ({tail_word(row)})"),

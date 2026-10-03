@@ -1,12 +1,9 @@
 """The production dashboard: one self-contained iframe from a snapshot and its analysis.
 
-``render_dashboard`` prepares every declared metric x scope x view the shell can show --
-cumulative relative lift, cumulative and daily per-arm values, whole experiment and each declared
-breakout -- through the public readout API, renders them with the native CoefTable helpers, and
-embeds the result as JSON in a packaged HTML shell. The confirmatory snapshot is never touched:
-Explore reads the caller's analysis under its original declared plan and returns separate payload
-entries. A state the engine refuses is shown with its code and reason; it is never replaced by
-another series.
+``render_dashboard`` renders captured metric, scope and view choices with native CoefTable helpers
+and embeds them as JSON in a packaged HTML shell. The confirmatory snapshot is never touched:
+Explore selects captured views of the same pinned source read. A state the engine refused is shown
+with its code and reason; it is never replaced by another series.
 """
 
 from __future__ import annotations
@@ -35,7 +32,7 @@ from increment.dashboard._data import (
 from increment.dashboard._format import (
     allocation_evidence,
     allocation_grain_label,
-    confidence_set_text,
+    complete_confidence_set_text,
     count_text,
     date_label,
     effect_html,
@@ -48,10 +45,12 @@ from increment.dashboard._format import (
     missing_html,
     monitoring_sentence,
     null_text,
+    percent_text,
     population_label,
     primary_method,
     primary_tone,
     result_caveats,
+    result_outcome_text,
     robust_fence,
     tail_word,
     timestamp_label,
@@ -62,6 +61,7 @@ from increment.dashboard._html import (
     render_metric_details,
     results_notes,
     results_table,
+    results_warnings,
     temporal_figure,
 )
 from increment.dashboard._theme import theme_css, theme_from_payload
@@ -94,8 +94,7 @@ _VIEW_TITLES = {
 def render_dashboard(analysis: Analysis, *, snapshot: DashboardSnapshot) -> mo.Html:
     """The complete interactive dashboard for one prepared snapshot.
 
-    ``analysis`` must be the source the snapshot was prepared from; Explore reads it for
-    trajectories and breakouts, while the Readout and Report stay the snapshot's own rows.
+    ``analysis`` proves the experiment binding; every tab reads only captured evidence.
     """
     return mo.iframe(document(build_payload(analysis, snapshot=snapshot)), height=_FRAME_HEIGHT)
 
@@ -143,7 +142,7 @@ def build_payload(analysis: Analysis, *, snapshot: DashboardSnapshot) -> dict[st
     for key, (source, dimension), label in _declared_scopes(snapshot):
         scopes[key] = {"label": label, "dimension": dimension, "source": source}
         breakouts[key] = (source, dimension)
-    table = results_table(snapshot)
+    table = results_table(snapshot) + results_warnings(snapshot)
     return {
         "title": snapshot.title,
         "theme": asdict(snapshot.config.theme),
@@ -182,10 +181,6 @@ def _plain(markup: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", markup))
 
 
-def _percent(level: float) -> str:
-    return f"{level * 100:.2f}".rstrip("0").rstrip(".") + "%"
-
-
 def _primary(snapshot: DashboardSnapshot) -> dict[str, Any]:
     key = snapshot.primary_metric
     row = row_for_metric(snapshot, key)
@@ -205,7 +200,7 @@ def _primary(snapshot: DashboardSnapshot) -> dict[str, Any]:
         "label": _label(key),
         "effect": _plain(effect_html(row)),
         "interval": _plain(headline_interval(row)),
-        "levelLabel": None if level is None or is_missing(level) else _percent(float(level)),
+        "levelLabel": None if level is None or is_missing(level) else percent_text(float(level)),
         "method": _plain(primary_method(row)),
         "tone": primary_tone(row),
     }
@@ -326,8 +321,8 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
     """The inference statements a reader needs beside the report table, as plain text.
 
     Levels, inference kinds and tested directions are read from the captured rows, never derived
-    from policy. Confidence sets the point estimate cannot represent keep every endpoint, and
-    each unavailability reason is kept as the engine reported it.
+    from policy. Confidence sets not represented by the central interval keep every endpoint,
+    and each unavailability reason is kept as the engine reported it.
     """
     rows = snapshot.readout_rows
     if not rows:
@@ -345,7 +340,7 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
     groups: dict[str, list[str]] = {}
     for row in rows:
         level = row.get("level")
-        prefix = "" if level is None or is_missing(level) else f"{_percent(float(level))} "
+        prefix = "" if level is None or is_missing(level) else f"{percent_text(float(level))} "
         kind = inference_word(str(row.get("inference", "fixed")))
         names = groups.setdefault(f"{prefix}{kind} intervals, {tail_word(row)}", [])
         if name(row) not in names:
@@ -393,7 +388,8 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
     if any(row.get("family_guarantee") == "asymptotic_sequential" for row in rows):
         notes.append("The sequential family guarantee is asymptotic, not finite-sample.")
     for row in rows:
-        confidence_set = confidence_set_text(row)
+        notes.append(f"{row.get('metric')}: {result_outcome_text(row, arm=several_arms)}")
+        confidence_set = complete_confidence_set_text(row)
         retained = _plain(confidence_set) if confidence_set else ""
         if retained:
             notes.append(f"{name(row)}: {retained}")
@@ -611,7 +607,9 @@ def _notes(
         for row, point in zip(rows, points, strict=True)
         if point is not None and point.level
     ]
-    level_text = ", ".join(_percent(level) for level in sorted({level for _, level in levelled}))
+    level_text = ", ".join(
+        percent_text(level) for level in sorted({level for _, level in levelled})
+    )
     segments = sorted({str(row.dimension_value) for row in rows}) if segmented else []
     notes = [monitoring_sentence(rows, view=view)]
     if view != "daily_values":
@@ -633,7 +631,7 @@ def _notes(
         )
     if level_text:
         notes.append(
-            f"Intervals are at level {levels_by_metric(levelled, _percent)}. "
+            f"Intervals are at level {levels_by_metric(levelled, percent_text)}. "
             + (
                 "They describe the lift of each point, one look at a time."
                 if lift
@@ -672,7 +670,7 @@ def _segment_note(
     versus = (
         ""
         if level is None or is_missing(level)
-        else f" (the headline uses {_percent(float(level))})"
+        else f" (the headline uses {percent_text(float(level))})"
     )
     declared = f" ({correction})" if correction else ""
     return (

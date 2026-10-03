@@ -64,19 +64,20 @@ complete dashboard embeds its theme, shared section stylesheet, native-table
 adapter, and browser controls; no external browser packages or Studio server
 are required. The example's host stylesheet stays beside the notebook.
 
-`prepare_dashboard` is the headline computation boundary. It validates the
-experiment and config, then invokes one source-owned snapshot operation.
-Allocation, enrollment history, headline estimates, and observed group data
-share its pinned inputs; the caller's `Analysis` is not rebound. Captured
-sequential decisions retain each displayed metric's checkpoint, including
-earlier frozen secondaries. These results form an immutable `DashboardSnapshot`.
+`prepare_dashboard` is the computation boundary. It validates the experiment and
+config, then invokes one source-owned snapshot operation. Allocation, enrollment
+history, headline estimates, observed group data, and every supported Explore
+choice share its pinned inputs, including declared breakout property sources.
+The caller's `Analysis` is not rebound. Captured sequential decisions retain
+each displayed metric's checkpoint, including earlier frozen secondaries.
+These results form an immutable `DashboardSnapshot`. Preparation computes the
+temporal and breakout views as well as the headline.
 
-`render_dashboard` prepares the declared Explore choices through the public
-`Analysis` APIs and embeds them alongside the immutable headline snapshot.
+`render_dashboard` embeds the captured evidence without querying the warehouse.
 Its browser controls select prepared evidence; they never alter the analysis
-plan or recompute confirmatory results. Section-level renderers accept
-already-prepared data and do not query. Re-executing preparation intentionally
-creates a new snapshot.
+plan or recompute confirmatory results. Section-level renderers also accept
+already-prepared data. Re-executing preparation intentionally creates a new
+snapshot that reflects subsequent source changes.
 You retain ownership of `analysis` and its connection; the package does not
 close or replace them. When deliberately rebinding to a different experiment,
 the caller must close the old connection.
@@ -166,13 +167,13 @@ and do not restyle the notebook canvas.
 
 | Call | Renders |
 |---|---|
-| `render_dashboard(analysis, snapshot=...)` | The complete interactive four-tab dashboard. Prepares declared temporal choices once; embeds native plots, scoped controls, metric inspectors, health, provenance, and a readable Report with the full captured metric family. |
+| `render_dashboard(analysis, snapshot=...)` | The complete interactive four-tab dashboard from captured evidence, without warehouse queries; native plots, scoped controls, metric inspectors, health, provenance, and a readable Report with the full captured metric family. |
 | `dashboard_styles(theme=MIDNIGHT)` | The configured theme and scoped stylesheet as one style block. Reads packaged resources, so it needs no repository-relative path. |
 | `render_header(snapshot)` | Experiment identity, window, population, inference, arms, and three summary cards: enrolled units, observed arm split, and a compact primary lift with its bracketed interval and direction-aware significance status. |
 | `render_health(snapshot)` | Visual allocation bars with target markers, the SRM verdict, and visible assignment warnings and result caveats. Allocation over time and evidence expands to a CoefTable with one row per variant, cumulative enrolled share, and the check statistics. |
 | `render_results(snapshot)` | The whole declared family through CoefTable, grouped by role, with forest plots and an explicit adverse-guardrail callout. Redundant confidence, significance, and confidence-set display columns are omitted; levels and interpretation remain in notes and CSV. |
 | `render_metric_details(snapshot, metric=...)` | Lift, interval, and direction chips; policy and evidence-geometry details; observed data by group, including eligibility, exclusions, counts, units, and provenance. |
-| `load_explore(analysis, snapshot=..., metric=..., view=..., completed_windows_only=..., breakout=...)` | One requested advanced view (`analysis.run_asof_lift`, `run_daily`, `run_asof`, or `run_breakout`), dispatched from the public readout API. `metric=None` loads every declared metric together in any view. It never reruns the headline family, allocation check/history, or materialization. |
+| `load_explore(analysis, snapshot=..., metric=..., view=..., completed_windows_only=..., breakout=...)` | One advanced view captured during preparation. `metric=None` loads every declared metric together; a name selects its own captured series. Original coded refusals remain specific to each state. Validates experiment binding and options, without warehouse queries or materialization. |
 | `render_explore(snapshot, data, metric=..., view=..., completed_windows_only=...)` | One Explore section with a combined cumulative-lift table or separate absolute daily/cumulative tables per metric, actual date basis/range, and visible unavailable-point reasons. Applicable headline evidence geometry is labeled separately from the series. Pass the same metric selection used to load data; `metric=None` renders every declared metric together. |
 | `render_details(snapshot)` | Collapsible experiment metadata, per-metric policies, provenance, and static-snapshot limitations. |
 | `readout_csv(snapshot)` | The current headline readout as UTF-8 CSV bytes, for `mo.download`. |
@@ -183,19 +184,23 @@ Headline and metric-detail intervals retain declared one-sided bounds:
 effects use outcome units. A declared open endpoint is not missing data.
 An ordinary, non-FCR point-backed Fieller result retains its central display
 interval: for a 5% one-sided test, that interval has 90% coverage. The interval
-disclosure retains the 95% directional set explicitly. FCR-selected directional
-rows retain their re-estimated open display interval instead.
+disclosure and Report retain the 95% directional set explicitly. FCR-selected
+directional rows retain their re-estimated open display interval instead.
 
 Binomial, Fieller, and winsorized confidence sets retain their geometry even
 without a finite point estimate. **How to read these intervals** retains numeric
-set endpoints and whether the declared null was rejected; rejection is distinct
-from family selection. Disconnected sets remain unions of intervals; their forest
-bars are omitted rather than filling the excluded gap.
+set endpoints. **Methods & assumptions** and Report notes disclose each row's
+tested-null verdict separately from family selection, qualified by method,
+role, and arm when needed. Disconnected sets remain unions of intervals; their
+forest bars are omitted rather than filling the excluded gap. Confidence levels
+use up to two decimal places: an adjusted 98.333…% level displays as 98.33%.
 An undefined endpoint is shown with its reason and any finite opposite bound,
 never as infinity. Its numeric interval and forest bar are omitted rather
 than drawing a false open interval; an available point is still shown.
 Unavailable inference is not labeled nonsignificant. A usable absolute-null
 decision remains visible when only the relative confidence set is unavailable.
+Readout and Report both call out wholly adverse decision intervals, including
+one-sided guardrails whose declared null was not rejected.
 
 **How to read these intervals** explains captured test direction, exact binary counts,
 and confidence-set shape without changing the inference. In the shipped

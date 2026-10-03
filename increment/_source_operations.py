@@ -7,14 +7,15 @@ complete native operations that a caller may opt into.
 
 from __future__ import annotations
 
+import copy
 import datetime as dt
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
-from increment.errors import _freeze
+from increment.errors import CodedError, _freeze
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -58,6 +59,53 @@ class DashboardGroupData:
 
 
 @dataclass(frozen=True, slots=True)
+class DashboardExploreCapture:
+    """One Explore request answered inside the pinned read.
+
+    Holds the rows the source returned, or the coded refusal it raised, never both. The refusal
+    is a detached copy with no traceback, so no frame keeps the pinned analysis alive, and
+    every :meth:`load` yields a fresh collection or a fresh copy of that refusal.
+    """
+
+    view: str
+    metric: str | None
+    completed_windows_only: bool
+    dimension: str | None
+    collection: Callable[[Iterable[Any]], Sequence[Any]] | None
+    rows: tuple[Any, ...]
+    refusal: CodedError | None
+
+    @classmethod
+    def answered(
+        cls,
+        key: tuple[str, str | None, bool, str | None],
+        rows: Sequence[Any],
+        *,
+        collection: Callable[[Iterable[Any]], Sequence[Any]],
+    ) -> DashboardExploreCapture:
+        view, metric, completed, dimension = key
+        return cls(view, metric, completed, dimension, collection, tuple(rows), None)
+
+    @classmethod
+    def refused(
+        cls, key: tuple[str, str | None, bool, str | None], refusal: CodedError
+    ) -> DashboardExploreCapture:
+        view, metric, completed, dimension = key
+        return cls(view, metric, completed, dimension, None, (), copy.copy(refusal))
+
+    @property
+    def key(self) -> tuple[str, str | None, bool, str | None]:
+        return (self.view, self.metric, self.completed_windows_only, self.dimension)
+
+    def load(self) -> Sequence[Any]:
+        """A fresh collection of the captured rows, or a fresh copy of the captured refusal."""
+        if self.refusal is not None:
+            raise copy.copy(self.refusal)
+        assert self.collection is not None
+        return self.collection(self.rows)
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardSnapshotPayload:
     """Complete dashboard evidence from one pinned source read."""
 
@@ -67,10 +115,12 @@ class DashboardSnapshotPayload:
     allocation_history_refusal: tuple[str, str] | None
     estimates: tuple[LiftEstimate, ...]
     group_data: tuple[DashboardGroupData, ...]
+    explore: tuple[DashboardExploreCapture, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "estimates", tuple(self.estimates))
         object.__setattr__(self, "group_data", tuple(self.group_data))
+        object.__setattr__(self, "explore", tuple(self.explore))
 
 
 class DashboardSnapshotHandler(Protocol):
@@ -180,6 +230,7 @@ class ReadoutSnapshotOperation(Protocol):
         metrics: Sequence[Metric],
         population: Literal["assigned", "triggered"],
         uptake_facts: Sequence[str] = (),
+        include_breakouts: bool = False,
     ) -> AbstractContextManager[MomentSource]: ...
 
 
@@ -194,6 +245,7 @@ class DaySourceOperation(Protocol):
 
 
 __all__ = [
+    "DashboardExploreCapture",
     "DashboardGroupData",
     "DashboardGroupDataOperation",
     "AllocationHistoryOperation",
