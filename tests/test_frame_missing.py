@@ -1626,36 +1626,6 @@ def test_encouragement_retention_remains_refused_at_construction() -> None:
     assert exc.value.code == "readout.encouragement.retention"
 
 
-def test_encouragement_retention_invalid_band_still_refuses_encouragement_not_validation() -> None:
-    """A structurally invalid band must not let synthesis run first and mask the
-    real refusal behind a raw pydantic ValidationError (regression: the capability
-    check must fire before metric synthesis on the panel path)."""
-    base = date(2025, 1, 1)
-    table = pa.table(
-        {
-            "user_id": ["c1", "c1", "t1", "t1"],
-            "variant": ["control", "control", "treatment", "treatment"],
-            "day": [base, base + timedelta(days=1)] * 2,
-            "exposed_on": [base] * 4,
-            "clicked": [0.0, 0.0, 1.0, 0.0],
-            "returned": [0.0, 1.0, 0.0, 1.0],
-        }
-    )
-    with pytest.raises(CapabilityError) as exc:
-        from_unit_panel(
-            table,
-            unit="user_id",
-            group="variant",
-            date="day",
-            control="control",
-            metrics=[MetricSpec(name="returned", type="retention", threshold_days=(5, 3))],
-            uptake="clicked",
-            design=_encouragement_design(window_days=3),
-            exposure_date="exposed_on",
-        )
-    assert exc.value.code == "readout.encouragement.retention"
-
-
 def _windowed_encouragement_source(
     *, outcome_window_days: int, uptake_window_days: int, periods: int
 ):

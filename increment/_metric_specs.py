@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from increment._literals import PreferredDirection
 from increment.errors import (
@@ -30,6 +30,8 @@ from increment.semantics.models import (
     RatioMetric,
     RetentionMetric,
     Winsorization,
+    _reject_bool_days,
+    _validate_retention_declaration,
 )
 
 __all__ = [
@@ -133,9 +135,12 @@ class MetricSpec(CodedModel, BaseModel):
 
     Notes
     -----
-    ``window_days``/``threshold_days`` never raise at construction; band
-    shape is validated once in the models layer. ``from_unit_summary``
-    carries no dates, so it refuses both instead (see ``CAPABILITY_TABLE``).
+    ``window_days``/``threshold_days`` are validated here, at construction, with
+    the models layer's own refusals (``definition.retention.*``,
+    ``definition.models.reject_bool``): a retention band that is empty or
+    negative, or ``window_days`` on a retention spec, never constructs.
+    ``from_unit_summary`` carries no dates, so it refuses both instead (see
+    ``CAPABILITY_TABLE``).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -174,15 +179,20 @@ class MetricSpec(CodedModel, BaseModel):
             _raise("frame.metric.winsorization_applies_type", name=self.name, type=self.type)
         return self
 
+    @field_validator("window_days", "threshold_days", mode="before")
+    @classmethod
+    def _no_bool_days(cls, v: Any) -> Any:
+        return _reject_bool_days(v)
+
     @model_validator(mode="after")
     def _check_windowing(self) -> MetricSpec:
-        """Structural pairing only - band SHAPE (e.g. b > a) is the
-        models layer's job (``RetentionMetric._band_is_non_empty``),
-        exercised once :func:`synthesise_metric` builds the real metric.
-        """
+        """Pairing of ``threshold_days`` with ``type="retention"``, then the
+        retention declaration itself (band shape, ``window_days``) through the
+        models layer's single validator."""
         if self.type == "retention":
             if self.threshold_days is None:
                 _raise("frame.metric.type_retention_needs", name=self.name)
+            _validate_retention_declaration(self.name, self.threshold_days, self.window_days)
         elif self.threshold_days is not None:
             _raise("frame.metric.sets_threshold_days", name=self.name, type=self.type)
         if self.type == "quantile" and self.window_days is not None:
@@ -334,10 +344,11 @@ def synthesise_metric(spec: MetricSpec) -> Metric:
     instead of a sum for every adopted-table mean or ratio metric.
 
     ``window_days``/``threshold_days`` are forwarded straight through onto
-    the real metric rather than re-validated here - band shape (e.g. a
-    retention band's ``b > a``) is the models layer's job
-    (``RetentionMetric._band_is_non_empty``), the single source of truth
-    per the plan's D3 decision.
+    the real metric: ``MetricSpec`` already refused an empty or negative
+    retention band, ``window_days`` on a retention spec, and bool day counts
+    at construction with the models layer's own refusals
+    (``_validate_retention_declaration``), and ``RetentionMetric`` runs the
+    same validator again.
 
     ``preferred_direction`` is forwarded only when *spec* explicitly set it
     to a non-``None`` value (``"preferred_direction" in spec.model_fields_set
