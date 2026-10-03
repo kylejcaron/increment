@@ -58,6 +58,7 @@ from tests.analysis_factory import (
     make_analysis_like,
     native_connection,
 )
+from tests.estimation._binomial_endpoint_reference import assert_set_contains_finer_reference
 
 from . import dataset as ds
 
@@ -5999,7 +6000,7 @@ def _binary_breakout_ancillary_uptake_case(*, include_fact_only_unit: bool = Fal
             assert row.binomial_set is not None
         zero = by_segment["zero_control"]
         assert zero.lift is None
-        assert zero.binomial_set.lower == pytest.approx(1.232421875)
+        assert_set_contains_finer_reference(zero.binomial_set)
         assert zero.binomial_set.upper is None
         positive = by_segment["positive_control"]
         assert positive.lift is not None and positive.lift.value == pytest.approx(1.5)

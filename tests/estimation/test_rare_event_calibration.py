@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import math
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import ibis
@@ -401,6 +401,25 @@ class TestNumericalStability:
         assert result.require_lift().value == pytest.approx(0.10, abs=1e-9)
         assert result.require_lift().lb is not None and result.require_lift().ub is not None
         assert -0.3 < result.require_lift().lb < 0.10 < result.require_lift().ub < 0.6
+
+    def test_endpoint_resolution_not_reached_is_disclosed_on_the_row(self, monkeypatch):
+        """A search that stops short of its resolution still reports its conservative
+        bounds, and says so on the row; a resolved row carries no such note."""
+        resolved = _estimate(3, 100, 8, 100)
+        assert resolved.note is None
+        real = binomial_rr.confidence_interval
+
+        def unresolved(*args, **kwargs):
+            return replace(
+                real(*args, **kwargs), endpoint_log_width=math.inf, resolution_reached=False
+            )
+
+        monkeypatch.setattr(binomial_rr, "confidence_interval", unresolved)
+        row = _estimate(3, 100, 8, 100)
+        assert row.note is not None and row.note.startswith(binomial_rr.PRECISION_NOTE_PREFIX)
+        assert row.binomial_set == resolved.binomial_set
+        assert row.stat_sig() == resolved.stat_sig()
+        assert row.p_value() == resolved.p_value()
 
 
 # --- Request-level refusals --------------------------------------------------

@@ -329,11 +329,18 @@ It also has two further boundaries, both refusals rather than silent degradation
   50% control rate, which costs roughly 1.2s, 3s and 5s of CPU at the same
   three sizes (measured on a loaded machine; read it as an upper-side
   estimate). The 5% figures are down from an unoptimized ~13s and ~60s at
-  100,000 and 1,000,000 per arm: a measured 7-8x reduction from tightening
-  the boundary-search iteration budget, then
-  about 3x from reusing treatment tail vectors and the rate-aware window,
-  without weakening the certified interval in any tested regime, including
-  rare events. A readout multiplies this across metrics, arms, and breakout
+  100,000 and 1,000,000 per arm: a large reduction from stopping each endpoint
+  search at a declared resolution instead of refining it to floating-point
+  precision, then about 3x from reusing treatment tail vectors and the
+  rate-aware window, without weakening the certified interval in any tested
+  regime, including rare events. Each endpoint is the outer end of a search
+  bracket no wider than 0.05% (2^-11) and no wider than 1/64 of the log risk
+  ratio's standard error, whichever is finer, so the stop is relative and the
+  search refines further as the standard error shrinks with arm size. That is
+  the resolution of the evaluated tail envelope only, not a bound on the
+  nuisance-search certification gap or on SciPy's primitive error; a search
+  that cannot reach it keeps its conservative endpoint and says so in the
+  row's `note`. A readout multiplies this across metrics, arms, and breakout
   cells. There is no opt-out: every eligible unadjusted conversion/retention
   contrast takes this route. A further large speedup would need a genuinely
   different tail-evaluation construction (a closed-form or recurrence

@@ -1971,6 +1971,7 @@ def _infer_binomial_lift_result(
         abs_alpha=alpha_eff if abs_lb is not None else None,
         reference_kind="binomial",
         binomial_set=binomial_set,
+        note=binomial_rr.precision_note(ci),
     )
     return result.model_copy(update=_winsorization_result_fields(control, treatment)), None
 

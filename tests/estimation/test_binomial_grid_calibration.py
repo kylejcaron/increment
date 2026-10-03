@@ -538,7 +538,9 @@ class TestUsefulnessAcceptance:
             monkeypatch.setattr(
                 binomial_rr,
                 "confidence_interval",
-                lambda *a, **kw: binomial_rr.BinomialInterval(0.0, None, "central", 1.0),
+                lambda *a, **kw: binomial_rr.BinomialInterval(
+                    0.0, None, "central", 1.0, endpoint_log_width=0.0, resolution_reached=True
+                ),
             )
         elif fault == "null_set":
             monkeypatch.setattr(binomial_rr, "confidence_interval", lambda *a, **kw: None)

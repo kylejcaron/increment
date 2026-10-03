@@ -65,6 +65,7 @@ RelativeUnavailableReason = Literal[
 
 
 if TYPE_CHECKING:
+    from increment.estimation.binomial_rr import BinomialInterval
     from increment.estimation.inference import LiftPosterior, Normal
 
 
@@ -1842,6 +1843,21 @@ def _open_joint_far_bound(relative: RelativeConfidenceSet) -> Estimate | None:
     return lift.model_copy(update={"lb": None, "open_side": "lower"})
 
 
+def _reinverted_binomial_note(note: str | None, ci: BinomialInterval) -> str | None:
+    """*note* with any superseded endpoint-resolution disclosure replaced by *ci*'s own."""
+    from increment.estimation.binomial_rr import PRECISION_NOTE_PREFIX, precision_note
+
+    kept = [
+        part
+        for part in (note.split(" | ") if note else [])
+        if not part.startswith(PRECISION_NOTE_PREFIX)
+    ]
+    disclosure = precision_note(ci)
+    if disclosure is not None:
+        kept.append(disclosure)
+    return " | ".join(kept) or None
+
+
 def open_bound_from_two_sided_at_target(estimate: LiftEstimate) -> LiftEstimate:
     """Convert a directional FCR parent built at total ``lift.alpha``.
 
@@ -1925,7 +1941,13 @@ def open_bound_from_two_sided_at_target(estimate: LiftEstimate) -> LiftEstimate:
                 "nuisance_beta": _nuisance_beta(bset.alpha),
             }
         )
-        return estimate.model_copy(update={"lift": new_lift, "binomial_set": new_set})
+        return estimate.model_copy(
+            update={
+                "lift": new_lift,
+                "binomial_set": new_set,
+                "note": _reinverted_binomial_note(estimate.note, ci),
+            }
+        )
     if e is None or e.lb is None or e.ub is None:
         return estimate
     lower = estimate.alternative == "greater"
