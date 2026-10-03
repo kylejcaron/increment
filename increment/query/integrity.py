@@ -119,8 +119,8 @@ def enforce_mixed_assignments(
 ) -> bool:
     """Raise/warn per policy for mixed and NULL assignment units.
 
-    The historical function name is retained because the same
-    ``on_mixed_assignment`` policy governs both invalid assignment conditions.
+    One ``on_mixed_assignment`` policy governs both invalid assignment
+    conditions: units seen in more than one arm and units with no assignment label.
     """
     findings: list[str] = []
     if count:

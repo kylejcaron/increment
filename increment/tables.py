@@ -926,8 +926,7 @@ def readout_table(  # noqa: C901, PLR0915
     table by concise role labels (coeftable's ``groups=`` +
     ``collapsible_groups=True``); see ``_group_disclosure_column``.
     A ``role`` column that is absent, or ``None`` on every
-    row (no plan ever declared, for any row), renders ungrouped exactly
-    as before this column existed.
+    row (no plan ever declared, for any row), renders ungrouped.
 
     ``nest_by`` picks which dimension stacks under each metric row vs.
     splits into side-by-side columns: ``"arm"`` (default) stacks
