@@ -1281,7 +1281,7 @@ def main() -> None:
 
 
 class SwitchbackEvalResult(_FrozenResultModel):
-    """Monte Carlo summaries for the historical unit-t switchback approximation.
+    """Monte Carlo summaries for the qualified unit-t switchback approximation.
 
     Retains one-outcome numeric dictionaries (keyed ``"outcome"``, the
     switchback panel's sole metric) for consumer compatibility, with the
@@ -1392,7 +1392,7 @@ def run_switchback_end_to_end(
     scenario: SwitchbackScenario,
     replications: int = 1,
 ) -> SwitchbackEvalResult:
-    """Evaluate the historical unit-t approximation on deterministic switchback data.
+    """Evaluate the qualified unit-t approximation on deterministic switchback data.
 
     Bias and coverage target the treatment effect over the retained steps.
     A whole-replication failure (any coded refusal building or analyzing

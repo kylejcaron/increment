@@ -59,9 +59,10 @@ two-period `SwitchbackAssignment`, exclude the declared washout (plus any
 declared `carryover_order`, supported at `0`, `1`, or `2` when enough
 observation steps remain), and report the mean-unit additive retained-window
 difference. This path assumes no residual carryover after the discarded
-steps. Unit-cycle orders require a prospective variance envelope for calibrated
-inference, or an explicit `UnitCycleTApproximation()` for historical approximate
-inference. Shared schedules use a block-level Student-t interval. It does not provide sequential/always-valid
+steps. Unit-cycle orders use a prospective variance envelope for calibrated
+inference; otherwise the qualified unit-t approximation
+(`UnitCycleTApproximation()`, the default) gives approximate inference.
+Shared schedules use a block-level Student-t interval. It does not provide sequential/always-valid
 inference, CUPED, multiplicity adjustment, or arm-method overrides.
 
 ## Choosing decision and sensitivity methods
