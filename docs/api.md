@@ -443,8 +443,6 @@ for method assumptions, finalization, and the qualified asymptotic guarantee.
 
 ::: increment.ScalarMeanModel
 
-::: increment.ProspectiveAssumptionProvenance
-
 ::: increment.AsymptoticSequentialEvidence
 
 ::: increment.AsymptoticSequentialResult
@@ -496,6 +494,8 @@ the package-root and ordinary power-planning exports.
 ::: increment.Baseline
 
 ::: increment.SwitchbackBaseline
+
+::: increment.ProspectiveAssumptionProvenance
 
 ::: increment.UnitCycleReference
 
