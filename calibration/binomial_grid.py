@@ -82,8 +82,8 @@ def _interval_mass(lo: int, hi: int, n: int, p: float) -> float:
 def exact_outer_window(n: int, p: float, budget: float) -> tuple[int, int, float]:
     """A certified `[lo, hi]` support window for `Binomial(n, p)` (a TRUE,
     fixed DGP parameter -- not a nuisance range) and a rigorous upper bound
-    on its omitted PMF mass, via exact quantiles rather than Hoeffding's
-    inequality (tighter, since there is no nuisance interval to cover
+    on its omitted PMF mass, via exact quantiles rather than a Chernoff
+    bound (tighter, since there is no nuisance interval to cover
     simultaneously here, unlike `binomial_rr._support_window`)."""
     if p <= 0.0:
         return 0, 0, 0.0

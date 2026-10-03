@@ -18,6 +18,7 @@ import pytest
 from scipy.stats import binom as _binom
 
 from increment.estimation import binomial_rr as brr
+from increment.estimation._binomial_support import chernoff_support, exponent_lower_bound
 from increment.estimation._tails import SCIPY_BINOMIAL_ULP_ALLOWANCE
 from increment.estimation.binomial_rr import _find_boundary
 
@@ -377,11 +378,31 @@ class TestExactBinomialLatency:
         assert excludes == (ci.p_value_null < 0.05)
 
 
+def _omitted_masses(n: int, i_lo: int, i_hi: int, q: float) -> tuple[Decimal, Decimal]:
+    """Exact (decimal) control mass below ``i_lo`` and above ``i_hi`` at rate ``q``."""
+    below = _dec_binom_cdf(i_lo - 1, n, q)
+    above = Decimal(1) - _dec_binom_cdf(i_hi, n, q)
+    return below, above
+
+
 class TestSupportWindowTruncation:
-    """The Hoeffding-window truncation must always be conservative (>=
-    the full O(n) enumeration), and a no-op below the enumeration
-    threshold.
+    """The support window must stay conservative: the control mass it leaves
+    out, at every nuisance rate in ``[a, b]``, is within the omitted mass it
+    reports (and so within the requested budget), and it is a no-op below the
+    enumeration threshold.
     """
+
+    #: ``(n_c, a, b)`` nuisance intervals: rare, zero-control, central, high-rate,
+    #: and intervals whose end is exactly 0 or 1.
+    NUISANCE_INTERVALS = [
+        pytest.param(1_000_000, 1e-4, 1e-4, id="rare-point"),
+        pytest.param(4_000_000, 0.0, 5e-4, id="rare-zero-lower-end"),
+        pytest.param(100_000, 0.45, 0.55, id="central"),
+        pytest.param(100_000, 0.5, 0.5, id="central-point"),
+        pytest.param(4_000_000, 0.9999, 0.9999, id="high-rate-point"),
+        pytest.param(4_000_000, 0.9995, 1.0, id="upper-end-one"),
+        pytest.param(100_000, 0.0, 1.0, id="whole-unit-interval"),
+    ]
 
     def test_full_enumeration_below_threshold(self):
         assert brr._support_window(100, 0.1, 0.2) == (0, 100, 0.0)
@@ -402,20 +423,54 @@ class TestSupportWindowTruncation:
         windowed = brr._tail_plus(q, p, n_c, n_t, k, window)
         assert windowed >= full
 
-    def test_omitted_mass_bound_is_never_exceeded(self):
-        # Hoeffding's bound must actually dominate the true omitted mass
-        # (checked against a full decimal enumeration for a moderate n
-        # where that is still tractable).
-        n_c = 20_000
-        a, b = 0.1, 0.3
-        i_lo, i_hi, omitted = brr._support_window(n_c, a, b)
-        if i_hi - i_lo >= n_c:
-            pytest.skip("n_c below the full-enumeration threshold")
-        q = 0.3  # worst case: at the window's own upper edge
-        true_omitted = float(_binom.cdf(i_lo - 1, n_c, q) if i_lo > 0 else 0.0) + float(
-            1.0 - _binom.cdf(i_hi, n_c, q) if i_hi < n_c else 0.0
-        )
-        assert omitted >= true_omitted
+    @staticmethod
+    def _assert_omitted_mass_is_reported(n_c: int, a: float, b: float, budget: float) -> None:
+        i_lo, i_hi, omitted = brr._support_window(n_c, a, b, budget)
+        assert 0 <= i_lo <= i_hi <= n_c
+        assert omitted <= budget
+        # Mass below the window falls with the rate and mass above rises, so the worst
+        # rates are the interval's ends; interior rates confirm that.
+        rates = [a + (b - a) * t for t in (0.0, 0.25, 0.5, 0.75, 1.0)]
+        below_worst = max(_omitted_masses(n_c, i_lo, i_hi, q)[0] for q in rates)
+        above_worst = max(_omitted_masses(n_c, i_lo, i_hi, q)[1] for q in rates)
+        assert below_worst == _omitted_masses(n_c, i_lo, i_hi, a)[0]
+        assert above_worst == _omitted_masses(n_c, i_lo, i_hi, b)[1]
+        assert below_worst + above_worst <= Decimal(omitted)
+
+    @pytest.mark.parametrize("budget", [1e-12, 1e-3])
+    @pytest.mark.parametrize(("n_c", "a", "b"), NUISANCE_INTERVALS)
+    def test_omitted_mass_bound_is_never_exceeded(self, n_c, a, b, budget):
+        self._assert_omitted_mass_is_reported(n_c, a, b, budget)
+
+    @pytest.mark.parametrize("budget", [1e-12, 1e-3])
+    @pytest.mark.parametrize(
+        ("x_c", "n_c"),
+        [
+            pytest.param(100, 1_000_000, id="rare-narrow"),
+            pytest.param(3, 100_000, id="rare-wide"),
+            pytest.param(1, 4_000_000, id="single-event-wide"),
+            pytest.param(50_000, 100_000, id="central"),
+            pytest.param(99_990, 100_000, id="high-rate"),
+        ],
+    )
+    def test_omitted_mass_bound_holds_on_clopper_pearson_intervals(self, x_c, n_c, budget):
+        a, b = brr.clopper_pearson(x_c, n_c, brr.nuisance_beta(0.05))
+        self._assert_omitted_mass_is_reported(n_c, a, b, budget)
+
+    def test_a_rare_rate_scans_only_the_counts_it_can_reach(self):
+        """The window follows the nuisance rate, not the arm size: control counts at a
+        1e-4 rate in a million units spread over tens of counts, so the scan is hundreds
+        of terms rather than the thousands a rate-blind bound would keep."""
+        i_lo, i_hi, _ = brr._support_window(1_000_000, 1e-4, 1e-4)
+        assert i_lo <= 100 <= i_hi
+        assert i_hi - i_lo + 1 <= 400
+
+    def test_a_side_that_cannot_be_cut_keeps_its_whole_range(self):
+        # A zero lower nuisance end keeps X = 0 reachable; an upper end of one keeps X = n.
+        n_c = 100_000
+        assert brr._support_window(n_c, 0.0, 0.3)[0] == 0
+        assert brr._support_window(n_c, 0.3, 1.0)[1] == n_c
+        assert brr._support_window(n_c, 0.0, 1.0) == (0, n_c, 0.0)
 
     def test_budget_parameter_is_honored_not_the_module_constant(self):
         """A caller passing a wider `budget` must get a NARROWER window
@@ -429,6 +484,71 @@ class TestSupportWindowTruncation:
         assert wide_budget_window != default_window
         assert wide_budget_window[1] - wide_budget_window[0] < default_window[1] - default_window[0]
         assert wide_budget_window[2] > default_window[2]
+
+
+def _dec_exponent(n: int, x: float, q: float) -> Decimal:
+    """Exact ``n * D(x || q)`` for the Bernoulli relative entropy ``D``, ``0 < q < 1``."""
+    with localcontext() as context:
+        context.prec = 50
+        xd, qd = Decimal(x), Decimal(q)
+        first = xd * (xd / qd).ln() if x > 0.0 else Decimal(0)
+        second = (1 - xd) * ((1 - xd) / (1 - qd)).ln() if x < 1.0 else Decimal(0)
+        return n * (first + second)
+
+
+class TestChernoffSupportCut:
+    """``chernoff_support`` cuts a control-count window from the Chernoff bound
+    ``P(X <= m) <= exp(-n D(m/n || q))`` below the nuisance interval and its mirror above.
+    Evaluating ``D`` in float64 is bounded by a derived allowance; here it is checked
+    against exact decimal arithmetic.
+    """
+
+    @pytest.mark.parametrize("n", [257, 4_096, 100_000, 1_000_000, 4_000_000])
+    def test_certified_exponent_is_a_tight_lower_bound_of_the_exact_one(self, n):
+        factors = (0.0, 0.1, 0.5, 0.9, 1.0 - 1e-6, 1.0, 1.0 + 1e-6, 1.1, 2.0, 10.0, math.inf)
+        for q in (1e-6, 1e-4, 1e-2, 0.3, 0.5, 0.9, 0.9999):
+            for factor in factors:
+                x = min(1.0, q * factor)
+                lower = exponent_lower_bound(n, x, q)
+                exact = _dec_exponent(n, x, q)
+                assert Decimal(lower) <= exact, (n, x, q)
+                assert exact - Decimal(lower) <= Decimal("1e-6"), (n, x, q)
+
+    CELLS = [
+        pytest.param(1_000_000, 1e-4, 1e-4, id="rare-point"),
+        pytest.param(4_000_000, 1e-6, 5e-4, id="rare-wide"),
+        pytest.param(100_000, 0.45, 0.55, id="central"),
+        pytest.param(4_000_000, 0.9999, 0.9999, id="high-rate-point"),
+        pytest.param(4_000_000, 0.9995, 0.99999, id="high-rate-wide"),
+        pytest.param(257, 0.2, 0.4, id="just-above-the-enumeration-threshold"),
+    ]
+
+    @pytest.mark.parametrize("tail", [5e-13, 5e-4])
+    @pytest.mark.parametrize(("n", "q_lo", "q_hi"), CELLS)
+    def test_cut_is_certified_and_maximal_up_to_the_rounding_allowance(self, n, q_lo, q_hi, tail):
+        i_lo, i_hi = chernoff_support(n, q_lo, q_hi, tail)
+        target = -Decimal(tail).ln()
+        slack = Decimal("1e-6")
+        assert 0 <= i_lo <= i_hi <= n
+        if i_lo > 0:  # counts below i_lo carry at most `tail`: the last one cut is certified
+            assert _dec_exponent(n, (i_lo - 1) / n, q_lo) >= target
+        if i_lo / n <= q_lo:  # the first one kept could not be cut
+            assert _dec_exponent(n, i_lo / n, q_lo) < target + slack
+        if i_hi < n:  # counts above i_hi carry at most `tail`
+            assert _dec_exponent(n, (i_hi + 1) / n, q_hi) >= target
+        if i_hi / n >= q_hi:
+            assert _dec_exponent(n, i_hi / n, q_hi) < target + slack
+
+    def test_a_rate_end_that_keeps_an_extreme_count_reachable_cannot_be_cut(self):
+        n, tail = 100_000, 5e-13
+        assert chernoff_support(n, 0.0, 0.3, tail)[0] == 0
+        assert chernoff_support(n, 0.3, 1.0, tail)[1] == n
+        assert chernoff_support(n, 0.0, 1.0, tail) == (0, n)
+
+    def test_point_masses_at_the_unit_interval_ends_keep_one_count(self):
+        n, tail = 100_000, 5e-13
+        assert chernoff_support(n, 0.0, 0.0, tail) == (0, 0)
+        assert chernoff_support(n, 1.0, 1.0, tail) == (n, n)
 
 
 def _clear_every_cache() -> None:

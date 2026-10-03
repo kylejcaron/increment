@@ -111,6 +111,37 @@ class TestExactRouteMatchesRuntime:
                 assert plus_cells[x_c, x_t] == ("plus" in decision.kinds and plus)
                 assert minus_cells[x_c, x_t] == ("minus" in decision.kinds and minus)
 
+    @pytest.mark.parametrize(
+        ("n_c", "n_t", "null_ratio", "tail", "alternative", "controls"),
+        [
+            (300, 300, 1.0, 0.025, "two-sided", (12, 30, 75)),
+            (400, 250, 1.3, 0.05, "greater", (40, 80)),
+            (350, 350, 0.7, 0.05, "less", (3, 90)),
+        ],
+    )
+    def test_decisions_with_a_windowed_control_support_equal_the_runtime(
+        self, n_c, n_t, null_ratio, tail, alternative, controls
+    ):
+        """Above the enumeration threshold the runtime sums only a Chernoff window of control
+        counts and the replay sums that same window: the counts on each side of every
+        rejection boundary, and the ends of each row, are decided as the runtime decides them."""
+        beta = binomial_rr.nuisance_beta(0.05)
+        decision = BinomialDecision(n_c, n_t, null_ratio, beta, tail, alternative)
+        first, last = controls[0], controls[-1]
+        cells = RejectionGeometry(decision, "exact").cells(first, last, 0, n_t)
+        for kind, mask in zip(("plus", "minus"), cells, strict=True):
+            runtime = binomial_rr.p_plus if kind == "plus" else binomial_rr.p_minus
+            for x_c in controls:
+                row = mask[x_c - first]
+                steps = np.flatnonzero(np.diff(row.astype(int)))
+                probes = {0, n_t, *steps.tolist(), *(steps + 1).tolist()}
+                for x_t in sorted(probes):
+                    decided = (
+                        kind in decision.kinds
+                        and runtime(null_ratio, x_c, n_c, x_t, n_t, beta) < tail
+                    )
+                    assert row[x_t] == decided, (kind, x_c, x_t)
+
 
 class TestConversionExample:
     """(b) At 701 per arm, 10% baseline and a 50% lift the Wald model

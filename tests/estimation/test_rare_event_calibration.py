@@ -199,6 +199,42 @@ def test_p_minus_matches_independent_grid_oracle_as_a_lower_bound(x_c, n_c, x_t,
     assert production <= oracle + 5e-3
 
 
+@pytest.mark.slow
+def test_rare_event_large_arm_matches_full_support_grid_oracle_in_both_tails():
+    """The same lower-bound gate at ``x_c = 10`` in 100,000 control units, where production
+    scans only a Chernoff window of the control support: a 2001-point grid over the
+    Clopper-Pearson interval that enumerates EVERY control count (counts with zero float
+    mass add nothing) is at most the certified p-value and within the small-table tolerance."""
+    x_c, n_c, n_t = 10, 100_000, 100_000
+    beta = binomial_rr.nuisance_beta(0.05)
+    a, b = binomial_rr.clopper_pearson(x_c, n_c, beta)
+    cells = [(x_t, r) for x_t in (10, 20) for r in (1.0, 2.0)]
+    assert b <= 1.0 / max(r for _, r in cells)  # the feasible nuisance domain is all of [a, b]
+    best_plus = dict.fromkeys(cells, 0.0)
+    best_minus = dict.fromkeys(cells, 0.0)
+    counts = np.arange(n_c + 1)
+    for q in np.linspace(a, b, 2001):
+        full_pmf = _binom.pmf(counts, n_c, q)
+        reachable = np.flatnonzero(full_pmf > 0.0)
+        pmf = full_pmf[reachable]
+        for x_t, r in cells:
+            k = n_c * x_t - n_t * x_c
+            plus = np.ceil((k + n_t * reachable) / n_c).astype(np.int64) - 1
+            minus = np.floor((k + n_t * reachable) / n_c).astype(np.int64)
+            sf = _binom.sf(plus, n_t, min(r * q, 1.0))
+            cdf = _binom.cdf(minus, n_t, r * q)
+            best_plus[x_t, r] = max(best_plus[x_t, r], float(np.dot(pmf, sf)))
+            best_minus[x_t, r] = max(best_minus[x_t, r], float(np.dot(pmf, cdf)))
+    for x_t, r in cells:
+        for production, best in (
+            (binomial_rr.p_plus(r, x_c, n_c, x_t, n_t, beta), best_plus[x_t, r]),
+            (binomial_rr.p_minus(r, x_c, n_c, x_t, n_t, beta), best_minus[x_t, r]),
+        ):
+            oracle = min(1.0, beta + best)
+            assert production >= oracle - 1e-9, (x_t, r)
+            assert production <= oracle + 5e-3, (x_t, r)
+
+
 # --- Independent oracle #2: Bonferroni joint Clopper-Pearson rectangle -----
 
 
