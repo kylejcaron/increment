@@ -275,50 +275,26 @@ before approving: approval uploads to real PyPI, not a test registry.
 
 #### Website documentation sync
 
-After PyPI publication and the GitHub Release both succeed, the optional
-`website-notify` job in `release.yml` tells the
-[documentation website](https://incrementdocs.pages.dev/) that a new release
-exists. It is not a dependency of publishing: a skipped, failed, or unavailable
-notification never blocks, delays, or undoes the package release.
+After a stable release is on PyPI and GitHub, `release.yml` tells the
+[documentation website](https://incrementdocs.pages.dev/) the release tag and
+commit. The website then opens a draft PR with that release's docs for someone
+to review and merge. Prereleases never notify the website. If the notification
+fails, the package release is unaffected.
 
-- **Stable only.** The job runs for stable releases. Prereleases (`a`, `b`, `rc`,
-  `.dev`) never notify the website, so they cannot replace the stable docs.
-- **Opt-in.** It runs only when the repository variable `DOCS_SYNC_ENABLED` is
-  `true`. Leave it unset to publish packages without touching the website.
-- **Exact release.** The event is `repository_dispatch` type `increment_release`
-  sent to `kylejcaron/getincrement.io` with exactly two payload fields: `tag`
-  (the released `v*` tag) and `sha` (the commit that tag points to). The website
-  validates the published release and checks out that exact commit; it never
-  follows a branch.
-- **Credentials.** The job mints a short-lived GitHub App installation token
-  from the variable `DOCS_APP_ID` and the secret `DOCS_APP_PRIVATE_KEY`. Install
-  the App on `kylejcaron/getincrement.io` only; the workflow requests just
-  contents write on that repository. The job has no permissions on this
-  repository, and the package repository holds no Cloudflare credentials:
-  production deployment belongs entirely to the website repository's `main` CI.
-- **Companion dependency.** The website repository must contain the receiver
-  (`sync-release-docs.yml`) and its protected production deployment before this
-  job is enabled; the receiver opens a draft docs-update PR that a maintainer
-  reviews and merges.
+It is off by default. To turn it on, after the website side is set up (see its
+`CONTRIBUTING.md`):
 
-To enable it, install the App, set `DOCS_APP_ID` and `DOCS_SYNC_ENABLED=true` as
-repository variables, and store the private key as the `DOCS_APP_PRIVATE_KEY`
-repository secret in repository settings. Never commit or paste key or token
-values.
+- Install the docs GitHub App on `kylejcaron/getincrement.io` only.
+- Here, set variables `DOCS_APP_ID` and `DOCS_SYNC_ENABLED=true`, and secret
+  `DOCS_APP_PRIVATE_KEY`.
 
-If the notification fails or was disabled during a release, the package is
-already published. Recover on the website repository by running its receiver
-manually from `main` with the same release values:
-
-Set `RELEASE_TAG` to the published version tag and `RELEASE_SHA` to its full
-40-character commit SHA before running the recovery command.
+If a notification was missed, run the sync from the website instead of
+re-running `release.yml`:
 
 ```bash
 gh workflow run sync-release-docs.yml --repo kylejcaron/getincrement.io \
-  --ref main -f tag="$RELEASE_TAG" -f sha="$RELEASE_SHA"
+  --ref main -f tag=v1.2.3 -f sha="$(git rev-parse 'v1.2.3^{commit}')"
 ```
-
-Do not re-run `release.yml` on a published tag to retry the notification.
 
 ### Calibration commands
 
