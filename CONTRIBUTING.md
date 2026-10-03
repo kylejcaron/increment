@@ -273,6 +273,29 @@ Release accepts only `v*` tag refs, verifies the version and package artifacts,
 then waits for the protected `pypi` environment approval. Inspect the artifacts
 before approving: approval uploads to real PyPI, not a test registry.
 
+#### Website documentation sync
+
+After a stable release is on PyPI and GitHub, `release.yml` tells the
+[documentation website](https://incrementdocs.pages.dev/) the release tag and
+commit. The website then opens a draft PR with that release's docs for someone
+to review and merge. Prereleases never notify the website. If the notification
+fails, the package release is unaffected.
+
+It is off by default. To turn it on, after the website side is set up (see its
+`CONTRIBUTING.md`):
+
+- Install the docs GitHub App on `kylejcaron/getincrement.io` only.
+- Here, set variables `DOCS_APP_ID` and `DOCS_SYNC_ENABLED=true`, and secret
+  `DOCS_APP_PRIVATE_KEY`.
+
+If a notification was missed, run the sync from the website instead of
+re-running `release.yml`:
+
+```bash
+gh workflow run sync-release-docs.yml --repo kylejcaron/getincrement.io \
+  --ref main -f tag=v1.2.3 -f sha="$(git rev-parse 'v1.2.3^{commit}')"
+```
+
 ### Calibration commands
 
 Scientific campaigns and probability probes live in `calibration/`.
