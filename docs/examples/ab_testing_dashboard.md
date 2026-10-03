@@ -6,6 +6,9 @@ one-page **Report** with every captured metric result and interval. Explore
 compares native CoefTable relative-lift or per-arm absolute trajectories across
 declared breakouts. Report provides the full-readout CSV and **Print / Save PDF**;
 browser controls and CSV downloads also work in the static export.
+The masthead toggle switches between **Midnight · Daylight** and **Midnight**,
+remembers your choice, and leaves the captured evidence unchanged. PDFs use
+the light palette regardless of the selected screen mode.
 
 [Open the notebook in a full browser tab](ab_testing_dashboard.html)
 

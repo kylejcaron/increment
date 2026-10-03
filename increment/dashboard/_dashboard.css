@@ -2,22 +2,30 @@
    Every rule is prefixed inc-dashboard- so a notebook's other output and
    marimo's own chrome are untouched. */
 
+/* Section properties alias the shell's canonical --inc-dashboard-theme-<role>
+   palette, so Daylight/Midnight govern every native surface. Each alias carries
+   the Daylight value as fallback so a section rendered outside the shell stays
+   usable. Keep these fallbacks identical to _THEME_FALLBACKS in _html.py. */
 .inc-dashboard-root {
-  --inc-dashboard-canvas: #f2f0e9;
-  --inc-dashboard-panel: #fffef9;
-  --inc-dashboard-text: #292d26;
-  --inc-dashboard-muted: #62695d;
-  --inc-dashboard-accent: #42644d;
-  --inc-dashboard-favorable: #386647;
-  --inc-dashboard-warning: #956017;
-  --inc-dashboard-unfavorable: #a23c3c;
-  --inc-dashboard-inconclusive: #80601c;
-  --inc-dashboard-inconclusive-bg: #f4ecd7;
-  --inc-dashboard-favorable-bg: #e6efe7;
-  --inc-dashboard-unfavorable-bg: #f5e5e2;
-  --inc-dashboard-rule: #dcded1;
-  --inc-dashboard-band: #f5f5ed;
-  --inc-dashboard-column: #ecefe4;
+  --inc-dashboard-canvas: var(--inc-dashboard-theme-canvas, #f4f6fa);
+  --inc-dashboard-panel: var(--inc-dashboard-theme-panel, #ffffff);
+  --inc-dashboard-text: var(--inc-dashboard-theme-text, #1b2a43);
+  --inc-dashboard-muted: var(--inc-dashboard-theme-muted, #586b84);
+  --inc-dashboard-accent: var(--inc-dashboard-theme-accent, #386ba8);
+  --inc-dashboard-control: var(--inc-dashboard-theme-control, #8170b1);
+  --inc-dashboard-treatment: var(--inc-dashboard-theme-treatment, #3776b9);
+  --inc-dashboard-favorable: var(--inc-dashboard-theme-favorable, #087f52);
+  --inc-dashboard-warning: var(--inc-dashboard-theme-inconclusive, #906527);
+  --inc-dashboard-unfavorable: var(--inc-dashboard-theme-unfavorable, #be3547);
+  --inc-dashboard-inconclusive: var(--inc-dashboard-theme-inconclusive, #906527);
+  --inc-dashboard-inconclusive-bg: var(--inc-dashboard-theme-inconclusive-bg, #fff7e9);
+  --inc-dashboard-favorable-bg: var(--inc-dashboard-theme-favorable-bg, #eafbf2);
+  --inc-dashboard-unfavorable-bg: var(--inc-dashboard-theme-unfavorable-bg, #fff0f2);
+  --inc-dashboard-rule: var(--inc-dashboard-theme-rule, #dbe3ef);
+  --inc-dashboard-band: var(--inc-dashboard-theme-band, #f8fafe);
+  --inc-dashboard-column: var(--inc-dashboard-theme-column, #e7edf7);
+  --inc-dashboard-header: var(--inc-dashboard-theme-header, #dbe5f3);
+  --inc-dashboard-header-text: var(--inc-dashboard-theme-header-text, #244060);
 
   box-sizing: border-box;
   width: 100%;
@@ -345,6 +353,21 @@
   color: var(--inc-dashboard-text) !important;
 }
 
+/* great_tables' own row rule is a literal grey; cells CoefTable did not style
+   inline would keep it in either mode. */
+.inc-dashboard-root td.gt_row:not([style*="border-top"]) {
+  border-top-color: var(--inc-dashboard-rule) !important;
+}
+
+.inc-dashboard-root .gt_column_spanner_outer {
+  background: var(--inc-dashboard-header) !important;
+  color: var(--inc-dashboard-header-text) !important;
+}
+
+.inc-dashboard-root .gt_column_spanner {
+  border-color: var(--inc-dashboard-rule) !important;
+}
+
 .inc-dashboard-table {
   width: 100%;
   border-collapse: collapse;
@@ -360,11 +383,11 @@
 }
 
 .inc-dashboard-table thead th {
-  background: var(--inc-dashboard-column);
+  background: var(--inc-dashboard-header);
   font-size: 12px;
   font-weight: 620;
   letter-spacing: 0.02em;
-  color: var(--inc-dashboard-muted);
+  color: var(--inc-dashboard-header-text);
 }
 
 .inc-dashboard-table th:first-child,
@@ -440,11 +463,11 @@
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: var(--inc-dashboard-accent);
+  background: var(--inc-dashboard-treatment);
 }
 
 .inc-dashboard-meter-fill--control {
-  background: var(--inc-dashboard-muted);
+  background: var(--inc-dashboard-control);
 }
 
 .inc-dashboard-meter-target {

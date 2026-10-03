@@ -290,6 +290,14 @@ Both live notebooks and static HTML exports contain the prepared **Readout**,
 relative/absolute, daily/cumulative, and maturity controls select embedded
 evidence in the browser; no Python kernel is needed after export.
 
+The dashboard uses **Midnight · Daylight** in light mode and **Midnight** in
+dark mode. The masthead toggle changes tables, charts, and surrounding
+surfaces without changing the captured analysis or current selections.
+It follows the operating-system preference until you choose a mode, then
+remembers that choice in browser storage when available. The same toggle
+works in static exports. Printing always uses the light palette and leaves
+the selected screen mode unchanged.
+
 Explore keeps charts at their native size so axis labels and uncertainty
 bands remain legible. Narrow tables scroll horizontally instead of shrinking
 the plots.
@@ -327,10 +335,10 @@ uv run --extra dashboard --extra demo marimo edit examples/ab_testing_dashboard.
 
 The equivalent `marimo run` serves the same notebook read-only, and
 `uv run --extra dashboard --extra demo python examples/ab_testing_dashboard.py`
-runs it as a script for a quick smoke check. The notebook pins itself to
-light mode with notebook-local `# /// script` metadata
-(`[tool.marimo.display] theme = "light"`); that metadata is also why the
-bare `uv run examples/ab_testing_dashboard.py` form is not supported here —
+runs it as a script for a quick smoke check. Notebook-local `# /// script`
+metadata keeps marimo's own chrome light; the embedded dashboard has its
+independent light/dark toggle. That metadata is also why the bare
+`uv run examples/ab_testing_dashboard.py` form is not supported here:
 without an explicit `python`/`marimo` command, `uv run` treats a directly
-executed `.py` file carrying that metadata as an isolated script
-environment and never installs the `dashboard`/`demo` extras at all.
+executed `.py` file carrying that metadata as an isolated script environment
+and never installs the `dashboard`/`demo` extras at all.

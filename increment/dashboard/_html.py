@@ -51,30 +51,51 @@ __all__ = [
     "render_results",
 ]
 
-# CoefTable's public theme, not selectors into its generated table ids.
-# series_palette follows series order, which is control then treatment, so
-# arm identity stays separate from favorable/unfavorable estimate colour.
+# Daylight fallbacks keep standalone sections usable; the shell supplies the active palette.
+_THEME_FALLBACKS = {
+    "text": "#1b2a43",
+    "muted": "#586b84",
+    "accent": "#386ba8",
+    "panel": "#ffffff",
+    "rule": "#dbe3ef",
+    "band": "#f8fafe",
+    "header": "#dbe5f3",
+    "header-text": "#244060",
+    "control": "#8170b1",
+    "treatment": "#3776b9",
+    "weak": "#3c5f95",
+    "favorable": "#087f52",
+    "unfavorable": "#be3547",
+}
+
+
+def _theme_var(role: str) -> str:
+    """A CSS colour resolving the shell's palette property, Daylight outside it."""
+    return f"var(--inc-dashboard-theme-{role}, {_THEME_FALLBACKS[role]})"
+
+
+# Forest inconclusive is weak blue, not summary gold; arm identity stays separate from evidence.
 DASHBOARD_THEME = Theme(
-    favorable="#386647",
-    unfavorable="#A23C3C",
-    inconclusive="#74816F",
-    neutral="#42644D",
-    header_bg="#FFFEF9",
-    header_fg="#292D26",
-    column_label_bg="#ECEFE4",
-    band="#F5F5ED",
-    surface="#FFFEF9",
-    rule="#DCDED1",
-    border_color="#DCDED1",
-    axis="#62695D",
-    muted="#62695D",
-    text="#292D26",
+    favorable=_theme_var("favorable"),
+    unfavorable=_theme_var("unfavorable"),
+    inconclusive=_theme_var("weak"),
+    neutral=_theme_var("accent"),
+    header_bg=_theme_var("panel"),
+    header_fg=_theme_var("header-text"),
+    column_label_bg=_theme_var("header"),
+    band=_theme_var("band"),
+    surface=_theme_var("panel"),
+    rule=_theme_var("rule"),
+    border_color=_theme_var("rule"),
+    axis=_theme_var("muted"),
+    muted=_theme_var("muted"),
+    text=_theme_var("text"),
     value_size="14px",
     ci_size="12px",
     table_font_size="14px",
     border_style="minimal",
     na_text="N/A",
-    series_palette=("#737B6D", "#42644D"),
+    series_palette=(_theme_var("control"), _theme_var("treatment")),
 )
 
 
