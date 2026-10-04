@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+import tracemalloc
 import weakref
 from typing import Any
 
@@ -29,7 +30,13 @@ from increment.power import (
     power_curve,
     required_sample_size,
 )
-from increment.power._binomial import PLANNING_CELL_CEILING, BinomialDecision, RejectionGeometry
+from increment.power._binomial import (
+    PLANNING_CELL_CEILING,
+    BinomialDecision,
+    RejectionGeometry,
+    ReplayBoundExceeded,
+    window_cells,
+)
 from tests.power._procedures import make_procedure
 
 
@@ -360,7 +367,7 @@ class TestPlanningReplayBound:
         assert context["power"] == PowerDesign().power
         assert context["cells"] <= context["max_cells"] == 12_000
         at_ceiling = achieved_power(context["n_t"], 0.05, baseline, procedure)
-        assert at_ceiling.power == context["maximum_power"] < context["power"]
+        assert at_ceiling.power == context["power_reached"] < context["power"]
         with pytest.raises(InvalidRequestError) as above:
             achieved_power(math.ceil(context["n_t"] * 1.05), 0.05, baseline, procedure)
         assert above.value.code == self._CODE
@@ -380,7 +387,7 @@ class TestPlanningReplayBound:
         context: dict[str, Any] = dict(raised.value.context)
         assert raised.value.code == self._CODE
         assert context["cells"] <= context["max_cells"] == 12_000
-        assert context["maximum_power"] < context["power"]
+        assert context["power_reached"] < context["power"]
 
     def test_the_size_ceiling_stops_where_the_runtime_starts_refusing_the_tail_level(self):
         """At an alpha of 1e-7 the float margin dominates the tail level from about 1.06e8 units
@@ -397,12 +404,120 @@ class TestPlanningReplayBound:
         assert _binomial.refused(core._binomial_key(procedure, last + 1, last + 1))
 
     def test_a_size_search_the_bound_admits_is_unchanged_by_it(self, monkeypatch):
+        """A bound twice the cells of the sized design's alternative rectangle (which, at a 15%
+        treatment rate, exceeds its null rectangle) leaves room for the size search and the
+        companion effect search, which stores the union of its windows: nothing changes."""
         from increment.power import core
 
         baseline, procedure = Baseline.from_proportion(0.1), _conversion()
         expected = required_sample_size(0.5, baseline, procedure)
-        monkeypatch.setattr(core, "PLANNING_CELL_CEILING", 16_000)
+        key = core._binomial_key(procedure, expected.n_per_arm, expected.n_per_arm)
+        cells = window_cells(key, 0.1, 0.15)
+        assert window_cells(key, 0.1) < cells
+        monkeypatch.setattr(core, "PLANNING_CELL_CEILING", 2 * cells)
         assert required_sample_size(0.5, baseline, procedure) == expected
+
+    def test_an_alternative_window_beyond_the_bound_is_refused_before_it_is_allocated(
+        self, monkeypatch
+    ):
+        """A null treatment rate of one leaves the null rectangle the control window alone (about
+        ten thousand cells at 2M units), but the alternative at a 50% treatment rate pairs it with
+        a window as wide: a hundred million cells, which the three masks would hold at
+        ~100 MiB each. It is refused before any is built or replayed."""
+        from increment.power import core
+
+        self._forbid_replay(monkeypatch)
+        n = 2_000_000
+        baseline = Baseline.from_proportion(0.5)
+        procedure = _conversion(null_lift=1.0, alternative="less")
+        key = core._binomial_key(procedure, n, n)
+        alternative = window_cells(key, 0.5, 0.5)
+        assert window_cells(key, 0.5) < PLANNING_CELL_CEILING < alternative
+        tracemalloc.start()
+        try:
+            with pytest.raises(InvalidRequestError) as raised:
+                achieved_power(n, 0.0, baseline, procedure)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        context: dict[str, Any] = dict(raised.value.context)
+        assert raised.value.code == self._CODE
+        assert (context["n_c"], context["n_t"], context["p_c"], context["p_t"]) == (n, n, 0.5, 0.5)
+        assert context["cells"] == alternative
+        assert context["max_cells"] == PLANNING_CELL_CEILING
+        assert peak < 64 * 2**20
+
+    def test_an_effect_search_that_would_store_more_than_the_bound_ends_unresolved(
+        self, monkeypatch
+    ):
+        """At 700 units per arm and a 5% rate the null rectangle is 6,561 cells, the supplied
+        effect's 8,019, and the minimum detectable effect's window with the far end the search
+        also evaluates 11,340. Under a bound of 10,000 the supplied effect keeps its power and
+        its companion effect is unavailable; asking for the effect itself is refused."""
+        from increment.power import core
+
+        baseline, procedure = Baseline.from_proportion(0.05), _conversion()
+        n, lift = 700, 0.5
+        unbounded = achieved_power(n, lift, baseline, procedure)
+        assert unbounded.mde_relative is not None
+        monkeypatch.setattr(core, "PLANNING_CELL_CEILING", 10_000)
+        key = core._binomial_key(procedure, n, n)
+        assert window_cells(key, 0.05) < 10_000 and window_cells(key, 0.05, 0.075) < 10_000
+
+        bounded = achieved_power(n, lift, baseline, procedure)
+        assert bounded.power == unbounded.power
+        assert (bounded.mde_relative, bounded.mde_unavailable_reason) == (
+            None,
+            "numerical_resolution",
+        )
+        with pytest.raises(InvalidRequestError) as raised:
+            minimum_detectable_effect(n, baseline, procedure)
+        context: dict[str, Any] = dict(raised.value.context)
+        assert raised.value.code == self._CODE
+        assert context["max_cells"] == 10_000 < context["cells"]
+        assert 0.05 < context["p_t"] < 1.0
+
+    def test_a_size_search_stops_where_the_alternative_window_leaves_the_bound(self, monkeypatch):
+        """Detecting a 100% lift on a 5% rate needs 480 units per arm: a null rectangle of
+        4,356 cells and an alternative one of 6,138. Under a bound of 5,000 the null rectangle
+        admits that size and the alternative does not, so the search stops at the largest size
+        whose alternative is plannable and refuses with the power it reached there."""
+        from increment.power import core
+
+        baseline, procedure = Baseline.from_proportion(0.05), _conversion(alternative="greater")
+        assert required_sample_size(1.0, baseline, procedure).n_per_arm == 480
+        monkeypatch.setattr(core, "PLANNING_CELL_CEILING", 5_000)
+        with pytest.raises(InvalidRequestError) as raised:
+            required_sample_size(1.0, baseline, procedure)
+        context: dict[str, Any] = dict(raised.value.context)
+        assert raised.value.code == self._CODE
+        assert context["p_t"] == pytest.approx(0.1)
+        assert context["cells"] <= context["max_cells"] == 5_000
+        assert context["power_reached"] < context["power"]
+        at_ceiling = achieved_power(context["n_t"], 1.0, baseline, procedure)
+        assert at_ceiling.power == context["power_reached"]
+        with pytest.raises(InvalidRequestError) as above:
+            achieved_power(math.ceil(context["n_t"] * 1.05), 1.0, baseline, procedure)
+        assert above.value.code == self._CODE
+
+    def test_a_geometry_never_stores_more_than_its_bound_across_evaluations(self):
+        """Each alternative's rectangle fits the bound alone; the geometry holds every row by
+        both treatment windows, which does not. The second evaluation is refused with the cells
+        it would store and leaves the first intact."""
+        beta = binomial_rr.nuisance_beta(0.05)
+        decision = BinomialDecision(300, 300, 1.0, beta, 0.025, "greater")
+        near, far = window_cells(decision, 0.05, 0.05), window_cells(decision, 0.05, 0.4)
+        bound = max(near, far) + min(near, far) // 2
+        geometry = RejectionGeometry(decision, "exact", max_cells=bound)
+        first = geometry.evaluate(0.05, 0.05)
+        before = [(s.j0, s.j1) for s in geometry.segments]
+        with pytest.raises(ReplayBoundExceeded) as raised:
+            geometry.evaluate(0.05, 0.4)
+        assert raised.value.cells == near + far > bound
+        assert raised.value.p_t == 0.4
+        assert [(s.j0, s.j1) for s in geometry.segments] == before
+        assert geometry.evaluate(0.05, 0.05) == first
+        assert RejectionGeometry(decision, "exact").evaluate(0.05, 0.4).power > 0.0
 
 
 class TestLargeArmsDecideAsTheRuntime:

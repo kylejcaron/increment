@@ -50,7 +50,11 @@ The route is a deterministic function of the geometry: ``exact`` when the
 retained (control, treatment) cell count at the null rate is within
 ``EXACT_CELL_BUDGET``, else ``approximate``. A geometry the runtime refuses in full (an arm
 above its ceiling, or a tail level its float margin dominates) has power exactly zero and
-is never replayed; one whose cell count exceeds ``PLANNING_CELL_CEILING`` is not planned.
+is never replayed. A geometry never stores more than ``PLANNING_CELL_CEILING`` cells: a
+decision whose null rectangle exceeds it is not planned, and an evaluation whose own
+rectangle (the control window at the control rate by the treatment window at the alternative
+rate), or the union the geometry would hold with it, exceeds it raises ``ReplayBoundExceeded``
+before any mask is allocated.
 """
 
 from __future__ import annotations
@@ -90,10 +94,10 @@ _SURROGATE_SLACK = 1e-12
 #: slowest measured complete `achieved_power` call near two seconds.
 EXACT_CELL_BUDGET = 16_000
 
-#: Planning bound in retained (control, treatment) cells at the null rate: the replay's work
-#: and memory grow with this count (about 10-15 CPU-microseconds per cell), so the bound is
-#: what a planning call costs. It is a property of the design, never of timing, and the
-#: runtime's own ceiling (`binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE`) is unaffected by it.
+#: Planning bound in (control, treatment) count cells a geometry may store, about 10-15
+#: CPU-microseconds each. It bounds every evaluation's rectangle (the control window by the
+#: treatment window at the null or the alternative rate) and the union a geometry holds across
+#: them; the runtime's own arm ceiling is unaffected by it.
 PLANNING_CELL_CEILING = 10_000_000
 
 
@@ -1257,13 +1261,25 @@ def refused(decision: BinomialDecision) -> bool:
     return _rr.margin_dominates_tail(decision.tail_alpha, decision.beta, decision.n_c, decision.n_t)
 
 
-def window_cells(decision: BinomialDecision, p_c: float) -> int:
-    """Retained (control, treatment) cells of the geometry at the null rate, whether or not the
-    runtime refuses the decision. It grows with the arm sizes up to the integer edges of its
-    windows; `replay_cells` drops to zero once the runtime refuses."""
+def window_cells(decision: BinomialDecision, p_c: float, p_t: float | None = None) -> int:
+    """Retained (control, treatment) cells of the windows at control rate ``p_c`` and treatment
+    rate ``p_t`` (the null rate when omitted), whether or not the runtime refuses the decision:
+    the rectangle an evaluation at those rates classifies. It grows with the arm sizes up to
+    the integer edges of its windows; `replay_cells` drops to zero once the runtime refuses."""
     lo_c, hi_c = _window_bounds(decision.n_c, p_c)
-    lo_t, hi_t = _window_bounds(decision.n_t, min(1.0, decision.null_ratio * p_c))
+    rate = min(1.0, decision.null_ratio * p_c) if p_t is None else p_t
+    lo_t, hi_t = _window_bounds(decision.n_t, rate)
     return (hi_c - lo_c + 1) * (hi_t - lo_t + 1)
+
+
+class ReplayBoundExceeded(Exception):
+    """An evaluation would leave a geometry storing ``cells`` count cells, beyond its bound.
+    ``p_t`` is the evaluation's treatment rate, when it has one."""
+
+    def __init__(self, cells: int, p_t: float | None = None) -> None:
+        super().__init__(cells)
+        self.cells = cells
+        self.p_t = p_t
 
 
 def replay_cells(decision: BinomialDecision, p_c: float) -> int:
@@ -1317,12 +1333,17 @@ class RejectionGeometry:
     Control counts ``[x0, x0 + rows)`` index every block; treatment counts
     are stored in disjoint column segments, merged whenever a request
     overlaps or touches them, so distant windows (a rate near one, say)
-    never force the counts between them to be classified.
+    never force the counts between them to be classified. The stored cells
+    (every row by every segment's columns) never exceed ``max_cells``: a request
+    that would exceed it raises `ReplayBoundExceeded` before anything is allocated.
     """
 
-    def __init__(self, decision: BinomialDecision, route: Route) -> None:
+    def __init__(
+        self, decision: BinomialDecision, route: Route, max_cells: int = PLANNING_CELL_CEILING
+    ) -> None:
         self.decision = decision
         self.route = route
+        self.max_cells = max_cells
         self.refused = refused(decision)
         self.x0 = 0
         self.rows = 0
@@ -1331,9 +1352,27 @@ class RejectionGeometry:
         # control rate, compliance, and target: a curve's companion effects.
         self.effects: dict[tuple[float, float, float], object] = {}
 
+    def _row_span(self, x_lo: int, x_hi: int) -> tuple[int, int]:
+        """First and last control count of the stored rows extended to ``[x_lo, x_hi]``."""
+        if not self.rows:
+            return x_lo, x_hi
+        return min(self.x0, x_lo), max(self.x0 + self.rows - 1, x_hi)
+
+    def _touching(self, j_lo: int, j_hi: int) -> list[_Segment]:
+        """The segments that overlap or touch ``[j_lo, j_hi]``."""
+        return [s for s in self.segments if s.j0 <= j_hi + 1 and s.j1 >= j_lo - 1]
+
+    def _stored_after(self, x_lo: int, x_hi: int, j_lo: int, j_hi: int) -> int:
+        """Cells stored once ``[x_lo, x_hi] x [j_lo, j_hi]`` is covered: every segment spans all
+        rows, and the one covering the request absorbs the segments it touches."""
+        x0, x1 = self._row_span(x_lo, x_hi)
+        touching = self._touching(j_lo, j_hi)
+        merged = max([j_hi, *(s.j1 for s in touching)]) - min([j_lo, *(s.j0 for s in touching)]) + 1
+        apart = sum(s.j1 - s.j0 + 1 for s in self.segments if all(s is not t for t in touching))
+        return (x1 - x0 + 1) * (apart + merged)
+
     def _cover_rows(self, x_lo: int, x_hi: int) -> None:
-        x0 = min(self.x0, x_lo) if self.rows else x_lo
-        x1 = max(self.x0 + self.rows - 1, x_hi) if self.rows else x_hi
+        x0, x1 = self._row_span(x_lo, x_hi)
         if (x0, x1 - x0 + 1) == (self.x0, self.rows):
             return
         top = self.x0 - x0
@@ -1348,7 +1387,7 @@ class RejectionGeometry:
     def _merged(self, j_lo: int, j_hi: int) -> _Segment:
         """The one segment covering ``[j_lo, j_hi]``, absorbing every
         segment that overlaps or touches it."""
-        touching = [s for s in self.segments if s.j0 <= j_hi + 1 and s.j1 >= j_lo - 1]
+        touching = self._touching(j_lo, j_hi)
         if len(touching) == 1 and touching[0].j0 <= j_lo and touching[0].j1 >= j_hi:
             return touching[0]
         j0 = min([j_lo, *(s.j0 for s in touching)])
@@ -1376,6 +1415,9 @@ class RejectionGeometry:
         """Classify every cell of ``[x_lo, x_hi] x [j_lo, j_hi]`` not yet known."""
         if self.refused:
             return
+        stored = self._stored_after(x_lo, x_hi, j_lo, j_hi)
+        if stored > self.max_cells:
+            raise ReplayBoundExceeded(stored)
         self._cover_rows(x_lo, x_hi)
         segment = self._merged(j_lo, j_hi)
         rows = slice(x_lo - self.x0, x_hi - self.x0 + 1)
@@ -1417,7 +1459,10 @@ class RejectionGeometry:
             return BinomialPower(0.0, 0.0, 0.0)
         wc = _window(decision.n_c, p_c)
         wt = _window(decision.n_t, p_t)
-        plus, minus = self.cells(wc.lo, wc.hi, wt.lo, wt.hi)
+        try:
+            plus, minus = self.cells(wc.lo, wc.hi, wt.lo, wt.hi)
+        except ReplayBoundExceeded as exceeded:
+            raise ReplayBoundExceeded(exceeded.cells, p_t) from None
         return BinomialPower(
             float(wc.weights @ plus @ wt.weights),
             float(wc.weights @ (minus & ~plus) @ wt.weights),

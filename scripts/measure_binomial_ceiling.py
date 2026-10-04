@@ -32,9 +32,9 @@ versions on every line) and are meant to run serially, one at a time::
 ``planning``
     Runs ``achieved_power``, ``minimum_detectable_effect`` or ``required_sample_size`` cold in a
     fresh subprocess per cell at a conversion baseline, recording CPU time, the child's peak
-    resident set, the retained count cells the replay spans and the power basis -- or the coded
-    refusal a design beyond the replay bound raises. ``--rungs`` does not apply: each cell fixes
-    its own design.
+    resident set, the retained count cells the replay spans (at the null rate and, for a supplied
+    effect, at its alternative) and the power basis -- or the coded refusal a design beyond the
+    replay bound raises. ``--rungs`` does not apply: each cell fixes its own design.
 """
 
 from __future__ import annotations
@@ -784,7 +784,7 @@ def _planning_cell(planner: str, rate: float, n: int | None, lift: float | None)
         minimum_detectable_effect,
         required_sample_size,
     )
-    from increment.power._binomial import replay_cells
+    from increment.power._binomial import replay_cells, window_cells
     from increment.power.core import _binomial_key
 
     baseline = Baseline.from_proportion(rate)
@@ -814,7 +814,12 @@ def _planning_cell(planner: str, rate: float, n: int | None, lift: float | None)
         outcome = {"refused": refusal.code, "refusal_context": dict(refusal.context)}
     cpu = time.process_time() - cpu
     wall = time.perf_counter() - wall
-    cells = replay_cells(_binomial_key(procedure, units, units), rate) if units else None
+    key = _binomial_key(procedure, units, units) if units else None
+    cells = replay_cells(key, rate) if key else None
+    # The rectangle of the supplied effect's alternative, which the replay classifies as well.
+    alternative = (
+        window_cells(key, rate, min(1.0, rate * (1.0 + lift))) if key and lift is not None else None
+    )
     return {
         "kind": "planning",
         "planner": planner,
@@ -822,6 +827,7 @@ def _planning_cell(planner: str, rate: float, n: int | None, lift: float | None)
         "n": n,
         "lift": lift,
         "replay_cells": cells,
+        "alternative_cells": alternative,
         "call_wall_s": round(wall, 3),
         "call_cpu_s": round(cpu, 3),
         **outcome,
