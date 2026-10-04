@@ -1251,6 +1251,12 @@ def solver_refuses(decision: BinomialDecision) -> bool:
     return decision.beta < solver_floor() and decision.n_c > 1
 
 
+def tail_margin(decision: BinomialDecision) -> float:
+    """The float margin every certified tail of this decision carries (`binomial_rr._eps_margin`
+    at one summation term), which `refused` compares with what the tail level leaves."""
+    return _rr._eps_margin(1, decision.n_c, decision.n_t)
+
+
 def refused(decision: BinomialDecision) -> bool:
     """Whether the runtime refuses every count pair of this decision, so none rejects: an arm
     above the finite-sample ceiling, a nuisance budget below the solver's floor, or a tail
@@ -1336,6 +1342,10 @@ class RejectionGeometry:
     never force the counts between them to be classified. The stored cells
     (every row by every segment's columns) never exceed ``max_cells``: a request
     that would exceed it raises `ReplayBoundExceeded` before anything is allocated.
+    A geometry shared by several solves (a power curve's rows) holds the cells of the earlier
+    ones only as a cache: `begin_solve` marks them, and the first request one of its own
+    solves could not otherwise fit drops them and classifies afresh, so the bound limits each
+    solve's storage, never what earlier solves left behind.
     """
 
     def __init__(
@@ -1351,6 +1361,14 @@ class RejectionGeometry:
         # Effect searches already solved on this geometry, keyed by their
         # control rate, compliance, and target: a curve's companion effects.
         self.effects: dict[tuple[float, float, float], object] = {}
+        self._carried = False
+
+    def begin_solve(self) -> None:
+        """Mark the stored cells as carried over from earlier solves."""
+        self._carried = bool(self.segments)
+
+    def _drop_carried(self) -> None:
+        self.x0, self.rows, self.segments, self._carried = 0, 0, [], False
 
     def _row_span(self, x_lo: int, x_hi: int) -> tuple[int, int]:
         """First and last control count of the stored rows extended to ``[x_lo, x_hi]``."""
@@ -1416,6 +1434,9 @@ class RejectionGeometry:
         if self.refused:
             return
         stored = self._stored_after(x_lo, x_hi, j_lo, j_hi)
+        if stored > self.max_cells and self._carried:
+            self._drop_carried()
+            stored = self._stored_after(x_lo, x_hi, j_lo, j_hi)
         if stored > self.max_cells:
             raise ReplayBoundExceeded(stored)
         self._cover_rows(x_lo, x_hi)

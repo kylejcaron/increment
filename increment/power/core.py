@@ -101,6 +101,7 @@ from increment.power._binomial import (
     route_for,
     solver_floor,
     solver_refuses,
+    tail_margin,
     window_cells,
 )
 from increment.power._noncentral_t import _scalar_power_from_nc
@@ -2338,6 +2339,7 @@ def _binomial_plan(
     geometry = cache.get((key, route))
     if geometry is None:
         geometry = cache[key, route] = RejectionGeometry(key, route, PLANNING_CELL_CEILING)
+    geometry.begin_solve()
     return _BinomialPlan(geometry, baseline.mean, math.log(baseline.mean))
 
 
@@ -2519,6 +2521,9 @@ def _search_binomial_mde(
     search = _BinomialMdeSearch.of(
         plan, model, target=target, null_lift=null_lift, alternative=alternative
     )
+    # The effect search is a solve of its own: the cells a supplied effect left on the geometry
+    # are a cache it may drop, so its answer never depends on the effect it accompanies.
+    model.geometry.begin_solve()
     try:
         return _ordered_exclusion(search)
     except ReplayBoundExceeded as exceeded:
@@ -2609,13 +2614,45 @@ _BINOMIAL_SIZE_LIMIT = RefusalSpec(
 )
 
 
+def _render_tail_level(
+    *,
+    alpha: float,
+    beta: float,
+    tail_alpha: float,
+    margin: float,
+    n_c: int,
+    n_t: int,
+    solver_floor: float,
+    cause: str,
+) -> str:
+    if cause == "solver_floor":
+        why = (
+            f"its nuisance budget {beta:.3g} (alpha / 32) is below the {solver_floor:g} floor of "
+            "the Clopper-Pearson endpoint solver"
+        )
+    else:
+        why = (
+            f"its float margin {margin:.3g} at the smallest plannable design (n_c={n_c}, "
+            f"n_t={n_t} analyzed units) reaches what the tail level {tail_alpha:.3g} leaves "
+            f"after the nuisance budget {beta:.3g}"
+        )
+    return (
+        f"the runtime's exact binomial decision refuses every count pair at alpha={alpha}: "
+        f"{why}, so no arm size has power -- plan a larger alpha"
+    )
+
+
 _BINOMIAL_TAIL_LEVEL = RefusalSpec(
-    "power.binomial_tail_level_unrepresentable",
+    "power.binomial_tail_level_unrepresentable", InvalidRequestError, _render_tail_level
+)
+
+_BINOMIAL_ARM_AT_FLOOR = RefusalSpec(
+    "power.binomial_arm_ceiling_below_smallest_design",
     InvalidRequestError,
     template=(
-        "the runtime's exact binomial decision refuses every count pair at alpha={alpha}: its "
-        "nuisance budget {beta:.3g} (alpha / 32) is below the {solver_floor:g} floor of the "
-        "Clopper-Pearson endpoint solver, so no arm size has power -- plan a larger alpha"
+        "the smallest plannable design (n_t={n_t}, n_c={n_c} analyzed units at allocation "
+        "{allocation}) already has an arm above the runtime's ceiling of {max_arm_size} analyzed "
+        "units, so no size can be planned -- use a less lopsided allocation"
     ),
 )
 
@@ -2818,13 +2855,24 @@ def _binomial_admitted_ceiling(
 
     if not admitted(floor):
         smallest = key_at(floor)
-        # The margin at two units is far below the tail level of any alpha the solver admits.
-        assert solver_refuses(smallest)
+        if max(smallest.n_c, smallest.n_t) > FINITE_SAMPLE_MAX_ARM_SIZE:
+            refuse(
+                _BINOMIAL_ARM_AT_FLOOR,
+                n_t=smallest.n_t,
+                n_c=smallest.n_c,
+                allocation=design.allocation,
+                max_arm_size=FINITE_SAMPLE_MAX_ARM_SIZE,
+            )
         refuse(
             _BINOMIAL_TAIL_LEVEL,
             alpha=procedure.compiled_alpha,
             beta=smallest.beta,
+            tail_alpha=smallest.tail_alpha,
+            margin=tail_margin(smallest),
+            n_c=smallest.n_c,
+            n_t=smallest.n_t,
             solver_floor=solver_floor(),
+            cause="solver_floor" if solver_refuses(smallest) else "float_margin",
         )
     if admitted(upper):
         return upper

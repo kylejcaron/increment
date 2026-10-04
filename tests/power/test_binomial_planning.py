@@ -301,6 +301,45 @@ class TestATailLevelTheSolverRefuses:
         sized = required_sample_size(0.5, Baseline.from_proportion(0.05), _conversion(alpha=alpha))
         assert sized.power >= PowerDesign().power
 
+    def test_an_extreme_allocation_is_refused_by_arm_size_not_by_an_assertion(self):
+        """At an allocation of 1e-10 the smallest treatment arm of two units pairs with a control
+        arm of 2e10, above the runtime's billion-unit ceiling at every size: no size can be
+        planned, which is not a statement about alpha."""
+        with pytest.raises(InvalidRequestError) as raised:
+            required_sample_size(
+                0.5,
+                Baseline.from_proportion(0.05),
+                _conversion(),
+                PowerDesign(allocation=1e-10),
+            )
+        context: dict[str, Any] = dict(raised.value.context)
+        assert raised.value.code == "power.binomial_arm_ceiling_below_smallest_design"
+        assert context["n_t"] == 2
+        assert context["n_c"] > context["max_arm_size"] == binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE
+        assert context["allocation"] == 1e-10
+
+    def test_a_float_margin_that_dominates_the_smallest_design_is_a_tail_level_refusal(self):
+        """A control arm just under the ceiling at the smallest treatment arm carries a float
+        margin of 2e-7, above what a two-sided alpha of 4e-7 leaves after its nuisance budget
+        (1.9e-7), though the solver admits the alpha (it is above 3.2e-8): the runtime refuses
+        every count pair at these arms, so no larger size can have power."""
+        alpha, allocation = 4e-7, 2.2e-9
+        design = PowerDesign(allocation=allocation)
+        with pytest.raises(binomial_rr.BinomialDataError) as runtime:
+            binomial_rr.confidence_interval(
+                5, 900_000_000, 1, 2, alpha=alpha, alternative="two-sided"
+            )
+        assert runtime.value.code == "estimation.binomial.tail_unrepresentable"
+        with pytest.raises(InvalidRequestError) as raised:
+            required_sample_size(
+                0.5, Baseline.from_proportion(0.05), _conversion(alpha=alpha), design
+            )
+        context: dict[str, Any] = dict(raised.value.context)
+        assert raised.value.code == "power.binomial_tail_level_unrepresentable"
+        assert context["cause"] == "float_margin"
+        assert context["beta"] >= context["solver_floor"]
+        assert context["margin"] >= context["tail_alpha"] - context["beta"]
+
 
 class TestPlanningReplayBound:
     """Planning replays the runtime decision over every retained (control, treatment) count cell
@@ -518,6 +557,35 @@ class TestPlanningReplayBound:
         assert [(s.j0, s.j1) for s in geometry.segments] == before
         assert geometry.evaluate(0.05, 0.05) == first
         assert RejectionGeometry(decision, "exact").evaluate(0.05, 0.4).power > 0.0
+
+    def test_a_curve_row_is_not_refused_for_the_cells_earlier_rows_stored(self, monkeypatch):
+        """Each lift's alternative rectangle fits a bound its neighbour's union with it does
+        not. The curve shares one geometry across its rows, but every row answers as its own
+        scalar call does: the cells earlier rows left are a cache, dropped when a row needs room."""
+        from increment.power import _binomial, core
+
+        baseline, procedure, n = Baseline.from_proportion(0.05), _conversion(), 700
+        lifts = [0.0, 4.0]
+        key = core._binomial_key(procedure, n, n)
+        rates = [0.05 * (1.0 + lift) for lift in lifts]
+        rectangles = [window_cells(key, 0.05, rate) for rate in rates]
+        near, far = (_binomial._window_bounds(n, rate) for rate in rates)
+        assert near[1] + 1 < far[0], "the windows are disjoint, so the geometry stores both"
+        bound = math.ceil(1.3 * max(rectangles))
+        assert window_cells(key, 0.05) < max(rectangles) < bound < sum(rectangles)
+        monkeypatch.setattr(core, "PLANNING_CELL_CEILING", bound)
+
+        curve = power_curve(
+            n_per_arm=n, relative_lift=lifts, baseline=baseline, procedure=procedure, max_workers=1
+        )
+        for point, lift in zip(curve, lifts, strict=True):
+            direct = achieved_power(n, lift, baseline, procedure)
+            assert (point.power, point.mde_relative, point.mde_unavailable_reason) == (
+                direct.power,
+                direct.mde_relative,
+                direct.mde_unavailable_reason,
+            )
+            assert direct.power > 0.0
 
 
 class TestLargeArmsDecideAsTheRuntime:
