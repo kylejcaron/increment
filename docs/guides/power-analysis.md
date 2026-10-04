@@ -197,8 +197,10 @@ rate alone; `var` does not enter.
   design whose replay would span more than 10,000,000 cells is refused with
   `power.binomial_replay_bound_exceeded` before any replay (the error's
   context names the analyzed counts, the control rate, `cells` and
-  `max_cells`). `required_sample_size` searches only the sizes the bound
-  admits and refuses with the power it reached at the largest of them. A 5%
+  `max_cells`). `required_sample_size` searches only sizes at most 1/128
+  under the largest the bound admits (or under the size where the runtime starts
+  refusing the tail level) and refuses with the power it reached at that
+  ceiling, which skipped sizes just above it may exceed. A 5%
   baseline with equal arms reaches the bound at about one million units per
   arm and a 50% baseline at about 190,000; a rare baseline stays far inside
   it at any arm size (100 million units per arm at a rate of 2e-7 expect

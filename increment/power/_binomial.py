@@ -1246,7 +1246,8 @@ def refused(decision: BinomialDecision) -> bool:
 
 def window_cells(decision: BinomialDecision, p_c: float) -> int:
     """Retained (control, treatment) cells of the geometry at the null rate, whether or not the
-    runtime refuses the decision: monotone in the arm sizes, unlike `replay_cells`."""
+    runtime refuses the decision. It grows with the arm sizes up to the integer edges of its
+    windows; `replay_cells` drops to zero once the runtime refuses."""
     lo_c, hi_c = _window_bounds(decision.n_c, p_c)
     lo_t, hi_t = _window_bounds(decision.n_t, min(1.0, decision.null_ratio * p_c))
     return (hi_c - lo_c + 1) * (hi_t - lo_t + 1)

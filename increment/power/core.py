@@ -95,6 +95,7 @@ from increment.power._binomial import (
     BinomialDecision,
     RejectionGeometry,
     Route,
+    refused,
     replay_cells,
     route_for,
     window_cells,
@@ -2255,16 +2256,14 @@ _BINOMIAL_REPLAY_BOUND = RefusalSpec(
 )
 
 
-def _refuse_replay_bound(
-    baseline: Baseline, n_T: int, n_C: int, cells: int, **sizing: float
-) -> NoReturn:
+def _refuse_replay_bound(p_c: float, n_T: int, n_C: int, cells: int, **sizing: float) -> NoReturn:
     """Refuse a decision whose replay spans ``cells`` count cells at analyzed counts
     ``(n_T, n_C)``; a size search adds its target ``power`` and the ``maximum_power`` it reached."""
     refuse(
         _BINOMIAL_REPLAY_BOUND,
         n_c=n_C,
         n_t=n_T,
-        p_c=baseline.mean,
+        p_c=p_c,
         cells=cells,
         max_cells=PLANNING_CELL_CEILING,
         max_arm_size=FINITE_SAMPLE_MAX_ARM_SIZE,
@@ -2302,7 +2301,7 @@ def _binomial_plan(
     key = _binomial_key(procedure, n_T, n_C)
     cells = replay_cells(key, baseline.mean)
     if cells > PLANNING_CELL_CEILING:
-        _refuse_replay_bound(baseline, n_T, n_C, cells)
+        _refuse_replay_bound(baseline.mean, n_T, n_C, cells)
     route = route_for(cells) if route is None else route
     geometry = cache.get((key, route))
     if geometry is None:
@@ -2590,7 +2589,9 @@ def _binomial_size(  # noqa: PLR0915
     floor = _assigned_minimum_per_arm(procedure, baseline)
     z_target = float(_ndtri(target))
     z_alpha = float(_norm.isf(procedure.compiled_tail_alpha))
-    arm_ceiling = _binomial_arm_ceiling(design, floor, baseline)
+    arm_ceiling = _binomial_admitted_ceiling(
+        procedure, baseline, design, floor, _binomial_arm_ceiling(design, floor, baseline)
+    )
     ceiling = _binomial_replay_ceiling(procedure, baseline, design, floor, arm_ceiling)
     powers: dict[int, float] = {}
 
@@ -2653,7 +2654,7 @@ def _binomial_size(  # noqa: PLR0915
                             *_compute_arms(lo, design, minimum_per_arm=floor), baseline
                         )
                         _refuse_replay_bound(
-                            baseline,
+                            baseline.mean,
                             n_T,
                             n_C,
                             window_cells(_binomial_key(procedure, n_T, n_C), baseline.mean),
@@ -2663,7 +2664,11 @@ def _binomial_size(  # noqa: PLR0915
                     refuse(
                         _BINOMIAL_SIZE_LIMIT,
                         power=target,
-                        max_arm_size=FINITE_SAMPLE_MAX_ARM_SIZE,
+                        max_arm_size=max(
+                            _analyzed_counts(
+                                *_compute_arms(arm_ceiling, design, minimum_per_arm=floor), baseline
+                            )
+                        ),
                         maximum_power=values[lo],
                         n_per_arm=_compute_arms(lo, design, minimum_per_arm=floor)[0],
                     )
@@ -2718,6 +2723,32 @@ def _binomial_arm_ceiling(design: PowerDesign, floor: int, baseline: Baseline) -
 # `_binomial_plan` never refuses a proposed size. The predicate is `window_cells`: `replay_cells`
 # is zero where the runtime refuses the tail level, which would make it jump back to true.
 _REPLAY_CEILING_JITTER = 128
+
+
+def _binomial_admitted_ceiling(
+    procedure: ArmPlanningProcedure,
+    baseline: Baseline,
+    design: PowerDesign,
+    floor: int,
+    upper: int,
+) -> int:
+    """Largest assigned treatment size at most ``upper`` whose decision the runtime does not
+    refuse in full: from the size where the float margin dominates the tail level, power is zero."""
+
+    def admitted(n: int) -> bool:
+        n_T, n_C = _analyzed_counts(*_compute_arms(n, design, minimum_per_arm=floor), baseline)
+        return not refused(_binomial_key(procedure, n_T, n_C))
+
+    if admitted(upper):
+        return upper
+    lo, hi = floor, upper - 1
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if admitted(mid):
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
 
 
 def _binomial_replay_ceiling(

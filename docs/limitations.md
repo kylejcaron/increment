@@ -343,13 +343,14 @@ It also has two further boundaries, both refusals rather than silent degradation
   after 2,048 splits. The reported directional p-value is therefore a certified upper
   bound that exceeds the supremum-based p-value by no more than that gap: 2^-14 of the
   p-value above the tail level and 2^-14 of the tail level below it (1.5e-6 at a 0.025
-  tail, 6.1e-7 at a 0.01 tail). A two-sided p-value is twice the smaller directional
-  one, so it exceeds its ideal by at most twice that. The target is never tighter than
-  a fixed 1e-6 stop at a tail level of 0.0164 or more. A certificate whose bounds still
-  straddle the tail level is conservatively non-rejecting; a certified upper bound below
-  the tail rejects even within the declared gap. The endpoint search only compares
-  p-values with the tail level, so each probe also stops once that comparison is certified
-  either way. A search the cap ends is not an error: its p-value stays a valid,
+  tail, 6.1e-7 at a 0.01 tail, each before the certification noise above). A two-sided
+  p-value is twice the smaller directional one, so it exceeds its ideal by at most
+  twice that. The target is never tighter than a fixed 1e-6 stop at a tail level of
+  0.0164 or more. A certificate whose bounds still straddle the tail level is
+  conservatively non-rejecting; a certified upper bound below the tail rejects even
+  within the declared gap. The endpoint search only compares p-values with the tail
+  level, so each probe also stops once that comparison is certified either way.
+  A search the cap ends is not an error: its p-value stays a valid,
   conservative bound, and the row's `note` says how many probes ended so and the largest
   gap they left, in units of the p-value the row reports (twice a directional gap on a
   two-sided row). No tolerance beyond that disclosure is promised. The stop rule is part of
@@ -664,7 +665,7 @@ not guarantee that a future data-generating process has either variance shape.
 Unadjusted, unclustered, fixed-horizon conversion and retention plans report
 the rejection probability of the runtime's exact binomial risk-ratio decision.
 With at most 16,000 retained (control, treatment) cells at the null rate the
-decision set is replayed exactly (`power_basis="exact"`); beyond that the
+decision set is replayed exactly (`power_basis="exact"`); up to 10,000,000 cells the
 replay uses Normal conditional tails (`power_basis="approximate"`), measured
 at up to 0.8 percentage points below the runtime's power (unequal allocation,
 shifted null) and able to misclassify rare-event count pairs near the tail
@@ -686,8 +687,8 @@ rounded analyzed counts.
 A decision's replay is bounded: planning refuses, before any replay, a decision whose
 replay would span more than 10,000,000 retained (control, treatment) count cells at the
 null rate (`power.binomial_replay_bound_exceeded`), and `required_sample_size` searches
-only the sizes within about 1/128 of the largest the bound admits, refusing there with
-the power reached. The work follows that cell count, not the arm size, which the runtime
+only sizes about 1/128 under the largest the bound admits (or under the size where the
+runtime starts refusing the tail level), refusing at that ceiling with the power reached. The work follows that cell count, not the arm size, which the runtime
 decides up to a billion units: about a million units per arm at a 5% baseline, 195,000 at
 50%, and any arm the runtime admits at a rate expecting up to about 48,000 events per arm. Measured
 on an Apple M3 Pro under a shared load (CPU seconds, peak resident set), `achieved_power`

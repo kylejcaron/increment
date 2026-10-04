@@ -307,7 +307,8 @@ class TestPlanningReplayBound:
     ):
         """A (constructed) bound of 12,000 cells holds ~1,250 units per arm at a 5% rate, far
         below the ~120,000 the lift needs. The search stops at the largest size the bound admits,
-        which ``achieved_power`` plans, and refuses with the power reached there."""
+        which ``achieved_power`` plans, and refuses with the power reached at that ceiling (kept 1/128
+        under the largest size, so skipped sizes may reach more)."""
         from increment.power import core
 
         monkeypatch.setattr(core, "PLANNING_CELL_CEILING", 12_000)
@@ -340,6 +341,20 @@ class TestPlanningReplayBound:
         assert raised.value.code == self._CODE
         assert context["cells"] <= context["max_cells"] == 12_000
         assert context["maximum_power"] < context["power"]
+
+    def test_the_size_ceiling_stops_where_the_runtime_starts_refusing_the_tail_level(self):
+        """At an alpha of 1e-7 the float margin dominates the tail level from about 1.06e8 units
+        per arm: the last admitted size is not refused and its successor is."""
+        from increment.power import _binomial, core
+
+        procedure, baseline = _conversion(alpha=1e-7), Baseline.from_proportion(1e-4)
+        floor = core._assigned_minimum_per_arm(procedure, baseline)
+        last = core._binomial_admitted_ceiling(
+            procedure, baseline, PowerDesign(), floor, binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE
+        )
+        assert 10**8 < last < 2 * 10**8
+        assert not _binomial.refused(core._binomial_key(procedure, last, last))
+        assert _binomial.refused(core._binomial_key(procedure, last + 1, last + 1))
 
     def test_a_size_search_the_bound_admits_is_unchanged_by_it(self, monkeypatch):
         from increment.power import core
