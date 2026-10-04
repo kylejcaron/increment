@@ -603,7 +603,8 @@ def calibrate_cell(
     beta = nuisance_beta(alpha)
     n_c, n_t, p_c, p_t = cell.n_c, cell.n_t, cell.p_c, cell.p_t
     true_rr = cell.risk_ratio
-    lo_c, hi_c, omitted_c = exact_outer_window(n_c, p_c, _attainable_budget(n_c, _XC_TAIL_BUDGET))
+    xc_budget, xt_budget = _XC_TAIL_BUDGET, _XT_TAIL_BUDGET
+    lo_c, hi_c, omitted_c = exact_outer_window(n_c, p_c, _attainable_budget(n_c, xc_budget))
     accumulation_error = binomial_rr._eps_margin(hi_c - lo_c + 1, n_c, n_t)
 
     acc = dict.fromkeys(METRIC_NAMES, 0.0)
@@ -625,8 +626,12 @@ def calibrate_cell(
                 point_cp_miss_mass += w
             continue
 
-        rp_true = resolve_plus_tail(x_c_obs, n_c, n_t, beta, true_rr, p_c, p_t, alpha / 2.0)
-        rm_true = resolve_minus_tail(x_c_obs, n_c, n_t, beta, true_rr, p_c, p_t, alpha / 2.0)
+        rp_true = resolve_plus_tail(
+            x_c_obs, n_c, n_t, beta, true_rr, p_c, p_t, alpha / 2.0, xt_tail_budget=xt_budget
+        )
+        rm_true = resolve_minus_tail(
+            x_c_obs, n_c, n_t, beta, true_rr, p_c, p_t, alpha / 2.0, xt_tail_budget=xt_budget
+        )
         miss_bound = _interval_miss_bound(rp_true, rm_true, n_t, p_t, zero_control=x_c_obs == 0)
         interval_miss += w * miss_bound
         if x_c_obs > 0:
@@ -641,20 +646,28 @@ def calibrate_cell(
             cond_true_rr_noncov_numer += w * (1.0 - covered_true)
 
         if true_rr != 1.0:
-            rp_null = resolve_plus_tail(x_c_obs, n_c, n_t, beta, 1.0, p_c, p_t, alpha / 2.0)
-            rm_null = resolve_minus_tail(x_c_obs, n_c, n_t, beta, 1.0, p_c, p_t, alpha / 2.0)
+            rp_null = resolve_plus_tail(
+                x_c_obs, n_c, n_t, beta, 1.0, p_c, p_t, alpha / 2.0, xt_tail_budget=xt_budget
+            )
+            rm_null = resolve_minus_tail(
+                x_c_obs, n_c, n_t, beta, 1.0, p_c, p_t, alpha / 2.0, xt_tail_budget=xt_budget
+            )
             covered_null, unres_null = two_sided_covered_mass(rp_null, rm_null, n_t, p_t)
             resolved_unresolved += w * unres_null
         else:
             covered_null = covered_true
         acc["two_sided_reject_null"] += w * (1.0 - covered_null)
 
-        rp_greater = resolve_plus_tail(x_c_obs, n_c, n_t, beta, 1.0, p_c, p_t, alpha)
+        rp_greater = resolve_plus_tail(
+            x_c_obs, n_c, n_t, beta, 1.0, p_c, p_t, alpha, xt_tail_budget=xt_budget
+        )
         accept_g, unres_g = single_tail_accept_mass("plus", rp_greater, n_t, p_t)
         acc["greater_reject_null"] += w * (1.0 - accept_g)
         resolved_unresolved += w * unres_g
 
-        rm_less = resolve_minus_tail(x_c_obs, n_c, n_t, beta, 1.0, p_c, p_t, alpha)
+        rm_less = resolve_minus_tail(
+            x_c_obs, n_c, n_t, beta, 1.0, p_c, p_t, alpha, xt_tail_budget=xt_budget
+        )
         accept_l, unres_l = single_tail_accept_mass("minus", rm_less, n_t, p_t)
         acc["less_reject_null"] += w * (1.0 - accept_l)
         resolved_unresolved += w * unres_l
@@ -736,10 +749,10 @@ def calibrate_cell(
         },
         "metrics": metrics,
         "truncation_budget": {
-            "xc_tail_budget": _XC_TAIL_BUDGET,
-            "xt_tail_budget": _XT_TAIL_BUDGET,
-            "effective_xc_tail_budget": _attainable_budget(n_c, _XC_TAIL_BUDGET),
-            "effective_xt_tail_budget": _attainable_budget(n_t, _XT_TAIL_BUDGET),
+            "xc_tail_budget": xc_budget,
+            "xt_tail_budget": xt_budget,
+            "effective_xc_tail_budget": _attainable_budget(n_c, xc_budget),
+            "effective_xt_tail_budget": _attainable_budget(n_t, xt_budget),
             "omitted_xc_tail_mass": omitted_c,
             "cp_miss_mass": cp_miss_mass,
             "resolved_unresolved_xt_mass": resolved_unresolved,

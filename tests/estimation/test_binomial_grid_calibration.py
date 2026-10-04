@@ -424,12 +424,22 @@ class TestOutwardIntegrationAllowances:
         assert cbg.exact_outer_window(1000, 0.5, 1e-13) == (0, 1000, 0.0)
 
     @pytest.mark.parametrize(("requested", "widened"), [(1e-12, False), (1e-14, True)])
-    def test_the_truncation_record_states_the_budget_the_window_was_built_with(
+    def test_the_truncation_record_states_the_budgets_the_windows_were_built_with(
         self, monkeypatch, requested, widened
     ):
         """A request below what the float margin can certify is widened; the record carries the
-        request and the budget that bounds the omitted mass reported beside it."""
+        request and the budget that bounds the omitted mass reported beside it, for the
+        control window and for every treatment window the resolvers built."""
         monkeypatch.setattr(cbg, "_XC_TAIL_BUDGET", requested)
+        monkeypatch.setattr(cbg, "_XT_TAIL_BUDGET", requested)
+        built = []
+        window = cbg.exact_outer_window
+
+        def spy(n, p, budget):
+            built.append((n, budget))
+            return window(n, p, budget)
+
+        monkeypatch.setattr(cbg, "exact_outer_window", spy)
         cell = next(
             c
             for c in cbg.MANIFEST
@@ -439,13 +449,14 @@ class TestOutwardIntegrationAllowances:
             and c.risk_ratio == 1.0
         )
         record = cbg.calibrate_cell(cell, interval_only=True)["truncation_budget"]
-        assert record["xc_tail_budget"] == requested
+        assert (record["xc_tail_budget"], record["xt_tail_budget"]) == (requested, requested)
         assert record["effective_xc_tail_budget"] == cbg._attainable_budget(cell.n_c, requested)
-        assert (record["effective_xc_tail_budget"] > requested) is widened
+        assert record["effective_xt_tail_budget"] == cbg._attainable_budget(cell.n_t, requested)
+        assert (record["effective_xt_tail_budget"] > requested) is widened
         assert record["omitted_xc_tail_mass"] <= record["effective_xc_tail_budget"]
-        assert record["effective_xt_tail_budget"] == cbg._attainable_budget(
-            cell.n_t, record["xt_tail_budget"]
-        )
+        control, *treatment = [budget for _, budget in built]  # the control window is built first
+        assert control == record["effective_xc_tail_budget"]
+        assert treatment and set(treatment) == {record["effective_xt_tail_budget"]}
 
     @pytest.mark.parametrize("direction", ["plus", "minus"])
     def test_unresolved_points_charge_the_inflated_window(self, monkeypatch, direction):
