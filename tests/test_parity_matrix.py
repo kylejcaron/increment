@@ -182,3 +182,29 @@ def test_cell(cell: matrix.Cell) -> None:
     for method in disposition.legs:
         _matched(cell, method, disposition)
         _switchback(cell, method, disposition)
+
+
+@pytest.mark.slow
+def test_bounded_retention_asymptotic_sequential_agrees_across_matched_ingresses(monkeypatch):
+    """The matrix drives retention under exact Bernoulli monitoring; the asymptotic
+    scalar-mean route carries the same bounded band and must agree across the matched
+    ingresses too, with the dateless unit summary refusing at its constructor. The cell's
+    own recorded outcomes are asserted, and the run bypasses the per-process memo, whose key
+    does not name the inference route."""
+    from increment.semantics.models import InferenceSpec
+
+    monkeypatch.setattr(
+        matrix_cases,
+        "_sequential_inference",
+        lambda cell: InferenceSpec(kind="asymptotic_mean", expected_decision_sample_size=100),
+    )
+    cell = matrix.Cell("retention", "run", "sequential", "utc", "error")
+    assert matrix_cases.plan_for(cell, frame=True).inference.kind == "asymptotic_mean"
+    disposition = matrix.classify(cell)
+    for method in disposition.legs:
+        outcomes = disposition.outcomes(method)
+        case = matrix_cases.build_case(cell, method, outcomes)
+        result = run_case(case)
+        _assert_runners_produced_rows(case, outcomes, result)
+        assert result.refusals == {"from_unit_summary": "source.frame.constructor"}
+        assert_parity(case, result)
