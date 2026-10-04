@@ -1475,17 +1475,25 @@ class Analysis:
 
     @property
     def available_metrics(self) -> list[Metric]:
-        """Saved metrics the experiment does not declare, in definitions order.
+        """Saved metrics the experiment does not declare and could estimate, in definitions order.
 
-        These are the names ``exploratory_metrics=`` accepts. Only
-        ``Analysis.from_definitions`` carries saved definitions to add from; every other
-        source refuses with ``facade.analysis.exploratory_metrics_source_limited``.
+        These are the names ``exploratory_metrics=`` accepts: per-unit metrics on the
+        experiment's own unit. Report-only ``total``/``active`` metrics (no per-unit variance)
+        and metrics of another entity are not offered. Only ``Analysis.from_definitions``
+        carries saved definitions to add from; every other source refuses with
+        ``facade.analysis.exploratory_metrics_source_limited``.
         """
         state = self._state
         if not isinstance(state, DefinitionsArmAnalysisState):
             _refuse(_EXPLORATORY_SOURCE_LIMITED, method="available_metrics")
         declared = {*state.experiment.metric_names, *(metric.name for metric in self._metrics)}
-        return [metric for metric in state.definitions.metrics if metric.name not in declared]
+        return [
+            metric
+            for metric in state.definitions.metrics
+            if metric.name not in declared
+            and metric.type not in ("total", "active")
+            and getattr(metric, "entity", None) == state.experiment.unit
+        ]
 
     def _exploratory_metrics(self, names: Sequence[str] | None, *, caller: str) -> list[Metric]:
         """Resolve ``exploratory_metrics=`` before any query; ``[]`` when none were named."""

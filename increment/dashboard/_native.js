@@ -408,7 +408,7 @@ function createNativeAdapter(dependencies) {
       style.textContent = rewriteCss(style.textContent, { hostId: host.id, mapId: resolve });
     }
     host.replaceChildren(fragment);
-    for (const th of host.querySelectorAll('thead th')) {
+    for (const th of host.querySelectorAll('thead th:not([data-inc-literal])')) {
       const original = th.textContent.trim();
       const alias = own(HEADER_ALIASES, original);
       if (alias) retitle(th, original, alias);
@@ -453,7 +453,7 @@ function createNativeAdapter(dependencies) {
     let fixed = 0;
     while (fixed < columns - 1) {
       const head = headTop(fixed);
-      if (head && head.colspan === 1 && IDENTITY_HEADER.test(head.cell.textContent.trim())) fixed += 1;
+      if (head && head.colspan === 1 && !head.cell.hasAttribute('data-inc-literal') && IDENTITY_HEADER.test(head.cell.textContent.trim())) fixed += 1;
       else break;
     }
     fixed = Math.max(1, fixed);

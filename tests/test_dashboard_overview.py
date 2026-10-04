@@ -6,6 +6,8 @@ captured estimates and the rendered overview rows, never their wording.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 pytest.importorskip("coeftable")
@@ -216,3 +218,70 @@ def test_the_dashboard_widget_reprepares_for_added_metrics_and_keeps_a_refusal(t
         assert "dashboard.invalid_config" in widget.status
         assert widget.exploratory_metrics == [ADDED]
         assert widget.document == page
+
+        # Removing a metric hides it but keeps it in this session's family.
+        widget.exploratory_metrics = []
+        assert widget.status == ""
+        snapshot = widget._snapshot
+        assert snapshot.overview is not None
+        assert snapshot.overview.hidden == (ADDED,)
+        assert ADDED not in {row.metric for row in snapshot.overview.exploratory}
+        assert all(
+            row.metric != ADDED for rows in snapshot.overview.segments.values() for row in rows
+        )
+        with_added = prepare_dashboard(analysis, config=_config(ADDED)).overview
+        assert with_added is not None
+        assert snapshot.overview.family_size == with_added.family_size
+
+
+def test_an_unexpected_preparation_failure_rolls_the_widget_back(tmp_path, monkeypatch):
+    from increment.dashboard import _app
+
+    with _workspace(tmp_path, metrics=_SAVED) as (_, analysis):
+        widget = _app.DashboardWidget(
+            analysis, snapshot=prepare_dashboard(analysis, config=_config())
+        )
+        page = widget.document
+        failure = RuntimeError("warehouse connection lost")
+
+        def lost(*_: object, **__: object) -> None:
+            raise failure
+
+        monkeypatch.setattr(_app, "prepare_dashboard", lost)
+        with pytest.raises(RuntimeError) as caught:
+            widget.exploratory_metrics = [ADDED]
+        assert caught.value is failure
+        assert widget.status.startswith("RuntimeError")
+        assert widget.exploratory_metrics == []
+        assert widget.document == page
+
+
+_REPORT_ONLY = (
+    _SAVED
+    + """
+  - type: total
+    name: total_revenue
+    fact: purchase
+    aggregation: sum
+  - type: active
+    name: active_users
+    entity: user_id
+    fact: page_view
+"""
+)
+
+
+def test_only_estimable_saved_metrics_are_offered(tmp_path):
+    with _workspace(tmp_path, metrics=_REPORT_ONLY) as (con, analysis):
+        assert [metric.name for metric in analysis.available_metrics] == [ADDED]
+        con.disconnect()
+        with pytest.raises(InvalidRequestError) as caught:
+            prepare_dashboard(analysis, config=_config("total_revenue"))
+        assert caught.value.code == "dashboard.invalid_config"
+
+
+def test_display_units_may_name_a_shown_added_metric(tmp_path):
+    with _workspace(tmp_path, metrics=_SAVED) as (_, analysis):
+        config = dataclasses.replace(_config(ADDED), metric_units={ADDED: "orders"})
+        snapshot = prepare_dashboard(analysis, config=config)
+        assert [model.name for model in snapshot.exploratory_metrics] == [ADDED]

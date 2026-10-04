@@ -30,9 +30,10 @@ The work lands in three ordered parts. Each part is independently testable.
 
 ### 1. Library: added metrics in the estimators
 
-- `Analysis.available_metrics` (definitions-backed only) returns the metrics
-  in the loaded `Definitions` that the experiment plan does not declare, in
-  definitions order.
+- `Analysis.available_metrics` (definitions-backed only) returns the saved
+  per-unit metrics on the experiment's unit that the plan does not declare, in
+  definitions order. Report-only `total`/`active` metrics and metrics of
+  another entity are not offered.
 - `run`, `run_breakout`, `run_asof_lift`, `run_asof`, and `run_daily` accept
   an `exploratory_metrics` argument naming metrics from `available_metrics`.
   Their rows carry `role="exploratory"`, compile the same unassigned default
@@ -54,54 +55,77 @@ The work lands in three ordered parts. Each part is independently testable.
 
 ### 2. Library: one exploratory family
 
-- A public function in `increment.estimation.family` takes whole-window
-  `LiftEstimate` and segment `BreakoutEstimate` decision rows and a `q`, and
-  returns the same rows with BH discovery flags over the whole set and
-  FCR-adjusted intervals (Benjamini-Yekutieli) on selected cells, reusing
-  `select_family` and the existing FCR re-estimation.
-- Each returned row records `family_axes`, `family_q`, the family size, and
+- `select_exploratory_family(rows, *, q)` in `increment.estimation.family`
+  takes whole-window `LiftEstimate` and segment `BreakoutEstimate` decision
+  rows and returns them with BH discovery flags over the whole set and
+  FCR-adjusted intervals (Benjamini-Yekutieli) on selected cells. It rebuilds
+  each row's decision evidence from the row's persisted sufficient statistics
+  and reference, and reuses `bh_select` and the existing FCR re-estimation;
+  selected intervals equal `run_breakout(correction="bh")` for the same inputs.
+- A row whose interval cannot be reissued exactly from persisted state
+  (quantile, percentile-winsorized set, additive-scale, non-ITT, missing
+  statistics) is excluded. `exploratory_family_exclusion(row)` names the reason,
+  so a caller can leave such cells out instead of refusing the family.
+- Segment hypotheses are keyed by dimension, segment value and source, so two
+  breakouts of one property from different sources are separate hypotheses.
+- Each returned row records `family_axes`, `family_q`, `family_size`, and
   `discovery`, so a row read alone states which family corrected it.
-- Inputs must be uncorrected; a row already carrying a family correction is
-  refused, as is a row whose inference is not a fixed-horizon p-value.
-- `q` defaults to the plan's `q`.
+- Inputs must be uncorrected decision rows: pre-corrected, sensitivity,
+  sequential and informative-prior rows are refused. The uncorrected segment
+  rows come from `DashboardBreakoutReads.uncorrected_segments`, a breakout read
+  with no view-multiplicity correction.
 
 ### 3. Dashboard
 
-- `DashboardConfig(exploratory_metrics=(...))`, validated against
-  `available_metrics` before preparation.
+- `DashboardConfig(exploratory_metrics=(...), exploratory_family=(...))`,
+  validated against `available_metrics` before preparation.
+  `exploratory_metrics` are shown; `exploratory_family` (always including the
+  shown ones) are counted in the exploratory family.
 - `prepare_dashboard` reads the added metrics inside the same pinned read and
   captures, once per snapshot:
   - the declared whole-window rows (the existing headline rows, unchanged);
   - uncorrected whole-window rows for added metrics;
-  - uncorrected segment rows for every metric, every declared breakout, and
-    every non-control arm, through `DashboardBreakoutReads`;
-  - the exploratory family over the added whole-window rows and all segment
-    rows, computed by part 2.
+  - uncorrected segment rows for every declared and counted metric, every
+    declared breakout, and every non-control arm, through
+    `DashboardBreakoutReads.uncorrected_segments`;
+  - the exploratory family over the counted added metrics' whole-window rows
+    and all segment rows, computed by part 2; counted-but-hidden metrics
+    contribute cells but no displayed rows.
 - The Explore tab gains a mode switch, **Overview** (default) and
   **Time series** (the current view). **Compare by** applies to both.
 - The overview is one native CoefTable, matching the Readout: groups Primary,
   Secondaries, Guardrails, Added; each metric's whole-experiment row first,
   its segments nested beneath when **Compare by** is not Whole experiment; a
   shared forest axis; the existing interval and data inspector.
-  - Declared whole-experiment rows render the Readout rows verbatim and are
-    labelled confirmatory.
-  - All other rows are labelled exploratory and show their family-corrected
-    interval; discoveries are marked.
-  - A header states "Exploratory · BH across N comparisons, q = …".
+  - Declared whole-experiment rows render the Readout rows verbatim, labelled
+    "as in Readout": their declared roles and corrections stand, including the
+    secondaries' own discovery family.
+  - All other rows are exploratory and show their family-corrected interval.
+    Only discoveries are coloured; other intervals are unadjusted and drawn
+    neutral even when they exclude zero.
+  - Notes state the family: BH at the plan's `q` across N comparisons.
 - Because the family is fixed per snapshot, switching **Compare by** never
   changes a cell's interval or discovery flag.
 - Added metrics also appear in Time series wherever the engine supports them;
   unsupported states show their coded refusal, as today.
-- The example notebook adds a cell above the dashboard: a searchable
-  multiselect over `analysis.available_metrics`. Changing it re-runs
-  `prepare_dashboard`.
+- Added metrics are chosen inside Explore. `render_dashboard` returns a marimo
+  anywidget hosting the dashboard page; the page's **Added metrics** control
+  sends a new selection to Python, which prepares a new snapshot and replaces
+  the page, reopening Explore. A refused or failed preparation keeps the
+  current snapshot and restores the selection.
+- Post-hoc selection: an added metric is chosen after outcomes are visible.
+  The widget counts every metric added during its life in the family, even
+  after it is removed, so the only way to look at a metric (adding it) also
+  commits it to the correction. Hiding an unpromising metric never shrinks the
+  family. A new notebook session starts a new family, and a static export
+  cannot change the selection.
 
 ## Method interactions
 
 | Combination | Classification |
 |---|---|
 | CUPED, ratio, winsorized added metrics | Supported; the same estimators as declared metrics. |
-| Clustering | Supported for whole-window and segment cells; day-axis states keep the existing clustered refusal. |
+| Clustering | Supported for whole-window cells. Segment cells are source-limited: definitions refuse clustered experiments with breakouts (`definition.validate_experiment.declares_cluster_alongside`), so no clustered segment cell exists. Day-axis states keep the existing clustered refusal. |
 | Breakouts | Supported for every declared breakout; added metrics use the same breakout definitions. |
 | Informative prior on a cell | Mathematically unsound for BH (no frequentist p-value); that cell is refused with the existing `breakout.run_breakout_bh_excludes_prior` code and excluded from the family. |
 | Sequential inference (always-valid or registered) | Unfinished: the exploratory family refuses with a new coded refusal and a kata issue; declared rows still render. e-BH over arbitrary segment cells needs its own validity argument. |
@@ -112,7 +136,8 @@ The work lands in three ordered parts. Each part is independently testable.
 
 ```mermaid
 flowchart LR
-  P[Notebook multiselect] --> C[DashboardConfig.exploratory_metrics]
+  P[Explore Added metrics] --> W[Dashboard widget: session family]
+  W --> C[DashboardConfig shown + counted metrics]
   C --> S[prepare_dashboard: one pinned read]
   S --> D[Declared whole-window rows]
   S --> E[Added whole-window rows + all segment rows]
@@ -144,8 +169,9 @@ Unit tests use real DuckDB fixtures, never mocked estimators.
   - adding a metric increases N and the extended warehouse-mutation test shows
     added metrics come from the pinned read;
   - prior and sequential refusals render per row;
-  - a browser smoke of the multiselect, both modes, and the Report remaining
-    unchanged.
+  - the widget re-prepares for an added metric, keeps a refusal's snapshot and
+    selection; a browser smoke of the Explore picker, the static-export
+    message, both modes, and the Report remaining unchanged.
 
 ## Documentation
 

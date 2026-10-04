@@ -168,7 +168,12 @@ def _validated_units(raw: object) -> Mapping[str, str]:
 
 @dataclass(frozen=True, slots=True)
 class DashboardConfig:
-    """Display configuration a caller supplies alongside their ``Analysis``."""
+    """Display configuration a caller supplies alongside their ``Analysis``.
+
+    ``exploratory_metrics`` are the added metrics shown. ``exploratory_family`` names every added
+    metric counted in the overview's exploratory family; it always includes the shown ones, so a
+    metric looked at earlier and then hidden still counts against the correction.
+    """
 
     expected_allocation: Mapping[str, float]
     title: str | None = None
@@ -177,6 +182,7 @@ class DashboardConfig:
     metric_units: Mapping[str, str] = field(default_factory=dict)
     theme: DashboardTheme = MIDNIGHT
     exploratory_metrics: tuple[str, ...] = ()
+    exploratory_family: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -187,12 +193,18 @@ class DashboardConfig:
         require_theme(self.theme)
         if self.title is not None and not self.title.strip():
             refuse(_INVALID_CONFIG, reason="title must be a non-empty string when supplied")
-        names = self.exploratory_metrics
-        if isinstance(names, str) or not all(isinstance(n, str) and n.strip() for n in names):
-            refuse(_INVALID_CONFIG, reason="exploratory_metrics must be a sequence of metric names")
-        if len(set(names)) != len(tuple(names)):
-            refuse(_INVALID_CONFIG, reason="exploratory_metrics repeats a metric name")
-        object.__setattr__(self, "exploratory_metrics", tuple(names))
+        for name in ("exploratory_metrics", "exploratory_family"):
+            names = getattr(self, name)
+            if isinstance(names, str) or not all(isinstance(n, str) and n.strip() for n in names):
+                refuse(_INVALID_CONFIG, reason=f"{name} must be a sequence of metric names")
+            if len(set(names)) != len(tuple(names)):
+                refuse(_INVALID_CONFIG, reason=f"{name} repeats a metric name")
+        object.__setattr__(self, "exploratory_metrics", tuple(self.exploratory_metrics))
+        object.__setattr__(
+            self,
+            "exploratory_family",
+            tuple(dict.fromkeys((*self.exploratory_family, *self.exploratory_metrics))),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,7 +217,7 @@ class DashboardOverview:
     holds that refusal and no exploratory cell is shown. ``refusals`` names each metric whose
     read was refused as ``(metric, place, refusal)``. ``exclusions`` names each cell left out
     of the family as ``(metric, place, reason)``; such a cell is shown uncorrected and never
-    marked as a discovery.
+    marked as a discovery. ``hidden`` names added metrics counted in the family but not shown.
     """
 
     exploratory: tuple[LiftEstimate, ...]
@@ -215,6 +227,7 @@ class DashboardOverview:
     family_refusal: CodedError | None = None
     refusals: tuple[tuple[str, str, CodedError], ...] = ()
     exclusions: tuple[tuple[str, str, str], ...] = ()
+    hidden: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "exploratory", tuple(self.exploratory))
@@ -505,13 +518,16 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
     primary_metric = _declared_primary(experiment)
     control_group, treatment_group = _declared_arms(experiment, config)
     metrics = _declared_metrics(analysis, experiment)
-    unknown_units = set(config.metric_units) - {metric.name for metric in metrics}
+    shown_models, counted_models = _added_metrics(analysis, config)
+    shown = tuple(model.name for model in shown_models)
+    counted = tuple(model.name for model in counted_models)
+    known = {metric.name for metric in metrics} | set(shown)
+    unknown_units = set(config.metric_units) - known
     if unknown_units:
         refuse(
-            _INVALID_CONFIG, reason=f"metric_units names are undeclared: {sorted(unknown_units)!r}"
+            _INVALID_CONFIG,
+            reason=f"metric_units names metrics not shown: {sorted(unknown_units)!r}",
         )
-    added_models = _added_metrics(analysis, config)
-    added = tuple(model.name for model in added_models)
 
     def _read(pinned: Analysis) -> DashboardSnapshotPayload:
         allocation, allocation_refusal = _allocation_check(pinned, config)
@@ -534,7 +550,8 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
         explore = _capture_explore(
             pinned,
             names=tuple(metric.name for metric in metrics),
-            added=added,
+            added=shown,
+            counted=counted,
             scopes=tuple(
                 ((b.source, b.property), pinned.dashboard_breakout_reads(b))
                 for b in experiment.breakouts
@@ -550,7 +567,7 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
             explore=explore,
         )
 
-    payload = analysis.dashboard_snapshot(_read, metrics=(*metrics, *added_models))
+    payload = analysis.dashboard_snapshot(_read, metrics=(*metrics, *counted_models))
     allocation = payload.allocation
     allocation_refusal = payload.allocation_refusal
     allocation_history = (
@@ -579,6 +596,7 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
         },
         refusals=refusals,
         q=experiment.plan.q,
+        hidden=frozenset(counted) - frozenset(shown),
     )
     return DashboardSnapshot(
         experiment_name=experiment.name,
@@ -601,7 +619,7 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
         group_data=payload.group_data,
         explore=captures,
         overview=overview,
-        exploratory_metrics=added_models,
+        exploratory_metrics=shown_models,
         config=config,
         computed_at=dt.datetime.now(dt.UTC),
     )
@@ -812,23 +830,28 @@ _OVERVIEW_WHOLE = "overview_whole"
 _OVERVIEW_SEGMENTS = "overview_segments"
 
 
-def _added_metrics(analysis: Analysis, config: DashboardConfig) -> tuple[Metric, ...]:
-    """The configured exploratory metrics, refused unless the definitions offer each one."""
-    if not config.exploratory_metrics:
-        return ()
+def _added_metrics(
+    analysis: Analysis, config: DashboardConfig
+) -> tuple[tuple[Metric, ...], tuple[Metric, ...]]:
+    """The shown and the family-counted exploratory metrics, refused unless each is offered."""
+    if not config.exploratory_family:
+        return (), ()
     available = {metric.name: metric for metric in analysis.available_metrics}
-    unknown = [name for name in config.exploratory_metrics if name not in available]
+    unknown = [name for name in config.exploratory_family if name not in available]
     if unknown:
         refuse(
             _INVALID_CONFIG,
             reason=(
-                f"exploratory_metrics names metrics the definitions do not offer beyond the "
+                f"exploratory metrics name metrics the definitions do not offer beyond the "
                 f"experiment's own: {unknown!r}"
             ),
             unknown=tuple(unknown),
             available=tuple(available),
         )
-    return tuple(available[name] for name in config.exploratory_metrics)
+    return (
+        tuple(available[name] for name in config.exploratory_metrics),
+        tuple(available[name] for name in config.exploratory_family),
+    )
 
 
 def _decisions(capture: DashboardExploreCapture | None) -> list[Any]:
@@ -843,11 +866,13 @@ def _overview(
     *,
     refusals: tuple[tuple[str, str, CodedError], ...],
     q: float,
+    hidden: frozenset[str],
 ) -> DashboardOverview:
     """Correct the added whole-window rows and every answered segment row as one BH family.
 
     A metric whose read was refused keeps its own refusal and adds no cells. A cell the family
-    cannot take is left out with its reason rather than refusing every other cell.
+    cannot take is left out with its reason rather than refusing every other cell. ``hidden``
+    metrics count in the family but none of their rows, refusals or exclusions are shown.
     """
     exploratory = _decisions(whole)
     scoped = {breakout: _decisions(capture) for breakout, capture in segments.items()}
@@ -856,8 +881,9 @@ def _overview(
     exclusions = tuple(
         (str(cell.metric), _cell_place(cell), reason)
         for cell, reason in zip(cells, reasons, strict=True)
-        if reason is not None
+        if reason is not None and cell.metric not in hidden
     )
+    refusals = tuple(entry for entry in refusals if entry[0] not in hidden)
     admitted = [cell for cell, reason in zip(cells, reasons, strict=True) if reason is None]
     try:
         corrected = iter(select_exploratory_family(admitted, q=q))
@@ -877,9 +903,17 @@ def _overview(
     ]
     sizes = {row.family_size for row in results if row.family_size is not None}
     rows = iter(results)
-    added = tuple(cast("LiftEstimate", next(rows)) for _ in exploratory)
+    added = tuple(
+        row
+        for row in (cast("LiftEstimate", next(rows)) for _ in exploratory)
+        if row.metric not in hidden
+    )
     captured = {
-        breakout: tuple(cast("BreakoutEstimate", next(rows)) for _ in scoped[breakout])
+        breakout: tuple(
+            row
+            for row in (cast("BreakoutEstimate", next(rows)) for _ in scoped[breakout])
+            if row.metric not in hidden
+        )
         for breakout in segments
     }
     return DashboardOverview(
@@ -889,6 +923,7 @@ def _overview(
         family_q=q,
         refusals=refusals,
         exclusions=exclusions,
+        hidden=tuple(sorted(hidden)),
     )
 
 
@@ -904,6 +939,7 @@ def _capture_explore(
     *,
     names: tuple[str, ...],
     added: tuple[str, ...] = (),
+    counted: tuple[str, ...] = (),
     scopes: tuple[tuple[BreakoutChoice, DashboardBreakoutReads], ...],
 ) -> tuple[DashboardExploreCapture, ...]:
     """Every Explore request ``load_explore`` can serve, answered from the pinned analysis.
@@ -915,8 +951,9 @@ def _capture_explore(
     Temporal views are read for the whole experiment and through each declared breakout's own
     reads, as are segments, so one breakout's refusal never hides another source of the same
     property. Source refusals are kept as the original coded errors. ``added`` metrics are read
-    one at a time, never inside the declared metrics' joint family, and each declared breakout
-    also captures every metric's uncorrected segment rows for the overview's exploratory family.
+    one at a time, never inside the declared metrics' joint family. Each declared breakout also
+    captures uncorrected segment rows for every declared and ``counted`` metric, the overview's
+    exploratory family.
     """
     captures: dict[ExploreKey, DashboardExploreCapture] = {}
 
@@ -972,16 +1009,16 @@ def _capture_explore(
         key = (view, None, False, breakout)
         try:
             captures[key] = DashboardExploreCapture.answered(
-                key, read(list(declared), list(added)), collection=collection
+                key, read(list(declared), list(counted)), collection=collection
             )
             return
         except CodedError:
             pass
         rows: list[Any] = []
-        for name in (*declared, *added):
+        for name in (*declared, *counted):
             one = (view, name, False, breakout)
             try:
-                part = read([name] if name in declared else [], [name] if name in added else [])
+                part = read([name] if name in declared else [], [name] if name in counted else [])
             except CodedError as exc:
                 captures[one] = DashboardExploreCapture.refused(one, exc)
             else:
@@ -991,7 +1028,7 @@ def _capture_explore(
     def extra(added_names: list[str]) -> dict[str, Any]:
         return {"exploratory_metrics": added_names} if added_names else {}
 
-    if added:
+    if counted:
         overview_read(
             _OVERVIEW_WHOLE,
             None,

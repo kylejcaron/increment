@@ -204,8 +204,9 @@ metric maturity, respecting the experiment's day boundary and mixed-assignment
 policy. This unit-level history requires a native definitions-backed
 analysis; non-native and clustered sources raise a coded `CapabilityError`.
 
-`Analysis.available_metrics` lists the saved metrics the experiment does not declare, in
-definitions order. `run`, `run_breakout`, `run_asof_lift`, `run_asof` and `run_daily` accept
+`Analysis.available_metrics` lists the saved per-unit metrics on the experiment's unit that the
+experiment does not declare, in definitions order; report-only `total`/`active` metrics and other
+entities' metrics are not offered. `run`, `run_breakout`, `run_asof_lift`, `run_asof` and `run_daily` accept
 `exploratory_metrics=` naming some of them: their rows carry `role="exploratory"`, join no
 plan family, and leave every declared row unchanged. `metrics=[]` with
 `exploratory_metrics=` reads only the added metrics. An unknown or already-declared name

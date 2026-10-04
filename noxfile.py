@@ -61,9 +61,9 @@ TABLE_FLOORS: dict[str, tuple[str, ...]] = {
     "3.14": ("coeftable==0.13.1",),
 }
 DASHBOARD_FLOORS: dict[str, tuple[str, ...]] = {
-    "3.12": ("marimo==0.25.0",),
-    "3.13": ("marimo==0.25.0",),
-    "3.14": ("marimo==0.25.0",),
+    "3.12": ("marimo==0.25.0", "anywidget==0.9.0"),
+    "3.13": ("marimo==0.25.0", "anywidget==0.9.0"),
+    "3.14": ("marimo==0.25.0", "anywidget==0.9.0"),
 }
 DUCKDB_FLOORS: dict[str, str] = {
     "3.12": "duckdb==1.3.2",

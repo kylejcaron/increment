@@ -17,7 +17,7 @@ dataframe entry points stay free of marimo, CoefTable, and pandas.
 pip install "increment[dashboard]"
 ```
 
-The extra adds `marimo`, `coeftable>=0.13.1`, and `pandas`. Running the
+The extra adds `marimo`, `anywidget`, `coeftable>=0.13.1`, and `pandas`. Running the
 bundled notebook against its synthetic fixture also needs the local `demo`
 extra (DuckDB):
 
@@ -241,12 +241,16 @@ Explore opens on **Overview**: one CoefTable of every metric's relative lift.
 With **Compare by** set to a declared breakout, each metric's segments nest
 beneath its whole-experiment row. Selecting a metric opens its **Time series**.
 
-- The experiment's own metrics on the whole experiment are the Readout's
-  confirmatory rows, never re-corrected.
+- The experiment's own metrics on the whole experiment are the Readout's rows,
+  labelled "as in Readout", with their declared roles and corrections; they
+  are never re-corrected here.
 - Every other cell is exploratory: the whole-experiment rows of added
   metrics, and every segment cell of every metric and declared breakout.
   These cells form one Benjamini-Hochberg family at the plan's `q`, fixed
-  for the snapshot, so switching **Compare by** never changes a cell. Only a
+  for the snapshot, so switching **Compare by** never changes a cell. Every
+  metric added during a notebook session stays in the family after it is
+  removed, so hiding a metric that looked unpromising never shrinks the
+  correction; a new session starts a new family. Only a
   discovery is coloured as a finding, with its FCR-adjusted interval; other
   exploratory intervals are unadjusted and drawn neutral even when they
   exclude zero.
@@ -258,8 +262,11 @@ beneath its whole-experiment row. Selecting a metric opens its **Time series**.
 ### Added exploratory metrics
 
 `DashboardConfig(exploratory_metrics=(...))` names metrics from
-`analysis.available_metrics`: saved definitions the experiment does not
-declare. They are read in the same pinned snapshot as everything else, appear
+`analysis.available_metrics`: saved per-unit metrics on the experiment's unit
+that the experiment does not declare (report-only `total`/`active` metrics and
+other entities' metrics are not offered).
+`DashboardConfig(exploratory_family=(...))` names further added metrics that
+count in the exploratory family without being shown. They are read in the same pinned snapshot as everything else, appear
 in the Overview's Exploratory group and in Time series, and never enter the
 Readout or the Report. A name the definitions do not offer is refused with
 `dashboard.invalid_config` before any read. In Explore, **Added metrics** lists

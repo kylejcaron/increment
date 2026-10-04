@@ -154,7 +154,8 @@ def _list(items: Sequence[str], *, css_class: str) -> str:
 
 
 def _table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
-    head = "".join(f"<th scope='col'>{esc(header)}</th>" for header in headers)
+    # Headers here are data (arm IDs), so the native mount never aliases or pins them.
+    head = "".join(f"<th scope='col' data-inc-literal>{esc(header)}</th>" for header in headers)
     body = "".join(
         "<tr>"
         + "".join(
@@ -776,7 +777,7 @@ def overview_rows(
     by_metric: dict[str, list[dict[str, Any]]] = {}
     for row in decision_rows(snapshot):
         by_metric.setdefault(str(row["metric"]), []).append(
-            {**row, "segment": f"{_WHOLE} · confirmatory"}
+            {**row, "segment": f"{_WHOLE} · as in Readout"}
         )
     if overview is not None and overview.family_refusal is None:
         for row in exploratory(enriched_rows(overview.exploratory)):
@@ -874,8 +875,9 @@ def overview_notes(
     """Plain-text statements a reader needs beside the overview table."""
     overview = snapshot.overview
     notes = [
-        "Whole-experiment rows of the experiment's own metrics are the Readout's confirmatory "
-        "results, never re-corrected here."
+        "Whole-experiment rows of the experiment's own metrics are the Readout's results, with "
+        "their declared roles and corrections (the secondaries are their own discovery family), "
+        "never re-corrected here."
     ]
     if overview is None:
         return notes
@@ -888,10 +890,18 @@ def overview_notes(
             "exploratory estimates are not substituted."
         )
         return notes
+    hidden = (
+        f", including {count_text(len(overview.hidden))} added metric"
+        f"{'s' if len(overview.hidden) != 1 else ''} looked at earlier this session and since "
+        f"hidden ({', '.join(overview.hidden)})"
+        if overview.hidden
+        else ""
+    )
     notes.append(
         f"Exploratory family: Benjamini-Hochberg at q = {overview.family_q:.3g} across "
-        f"{count_text(overview.family_size)} comparisons (added metrics and every segment cell "
-        "of every declared breakout), fixed for this snapshot."
+        f"{count_text(overview.family_size)} comparisons: added metrics and every segment cell "
+        f"of every declared breakout{hidden}. Every metric added in this session stays counted, "
+        "so hiding one never shrinks the correction; a new notebook session starts a new family."
     )
     notes.append(
         "Only BH discoveries are coloured as findings, with FCR-adjusted intervals. Other "
