@@ -314,17 +314,21 @@ subject to the registered sampling and finalized-window contract.
 
 It also has two further boundaries, both refusals rather than silent degradation:
 
-* **Arm size.** Each arm is capped at `binomial_rr.MAX_ARM_SIZE` (4,000,000). This is a
-  compute-resource applicability boundary, not a statistical one: per-call cost keeps
-  growing with arm size past it, so a call with either arm above the cap refuses
-  immediately (`estimation.binomial.arm_too_large_for_exact_enumeration`) rather than
-  running an increasingly expensive search. The cap is sized to admit every arm size this
-  method is asked to support today; a workload with a genuinely larger arm would need a
-  higher cap or a closed-form/recurrence tail evaluation (out of scope here).
+* **Arm size.** Each arm is capped at `binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE`
+  (1,000,000,000). This is a compute-resource applicability boundary, not a statistical
+  one: a call with either arm above the cap refuses immediately
+  (`estimation.binomial.arm_too_large_for_exact_enumeration`, the cap in `max_arm_size`)
+  rather than running a search whose cost keeps growing with the arm. The cap is the
+  largest arm the numerical safeguards were validated at against an independent decimal
+  oracle (`calibration/binomial_oracle.py`, run by `scripts/measure_binomial_ceiling.py`):
+  the SciPy binomial primitives' error allowance, the Clopper-Pearson enclosure, the
+  support window's omitted mass and count recovery from the producer's float moments (whose
+  Bernoulli second-moment check scales with `n`). Count thresholds are computed in exact
+  integers, which a float quotient cannot keep above about 67,000,000 per arm.
 * **Latency.** Cost grows with arm size: measured on commodity hardware
   (two-sided, `alpha=0.05`, cold, CPU seconds on a shared machine, so read them as
   upper-side estimates), a 5% control rate takes roughly 0.5s at 100,000 per arm,
-  2s at 1,000,000 and 4s at 4,000,000 (`MAX_ARM_SIZE`); a 1e-4 rate at
+  2s at 1,000,000 and 4s at 4,000,000; a 1e-4 rate at
   1,000,000 per arm takes about 0.03s, because the control-count window follows
   the nuisance rate. The window is widest at a 50% control rate, which costs
   roughly 1.3s at 100,000 per arm and 3.3s at 1,000,000. These are about
@@ -334,7 +338,8 @@ It also has two further boundaries, both refusals rather than silent degradation
   interval. The search splits that interval until the bound's distance above a
   witnessed lower end of the supremum is within 2^-14 of the larger of the p-value
   and the tail level it is compared with, plus the certificate's own float noise
-  (2e-12 to 1.4e-11 from 1,000 to 4,000,000 per arm, which no search narrows), or
+  (2.9e-12 at 1,000 per arm, 8.9e-10 at 1,000,000, 3.6e-9 at 4,000,000, 8.9e-8 at
+  100,000,000 and 8.9e-7 at 1,000,000,000, which no search narrows), or
   after 2,048 splits. The reported directional p-value is therefore a certified upper
   bound that exceeds the supremum-based p-value by no more than that gap: 2^-14 of the
   p-value above the tail level and 2^-14 of the tail level below it (1.5e-6 at a 0.025
@@ -370,12 +375,26 @@ It also has two further boundaries, both refusals rather than silent degradation
   matters more than exactness at your arm sizes.
   FCR-selected rows refresh this disclosure for the returned interval; an
   obsolete nominal disclosure is removed while unrelated notes are retained.
-* **Extreme alpha.** The frozen nuisance tail budget passed to the Clopper-Pearson
-  endpoint solver is `min(1e-6, alpha / 32)`. Below `1e-9` (i.e. `alpha < 3.2e-8`), SciPy's
-  iterative beta-quantile solver has demonstrated large relative error against an exact
-  oracle for small `n` in the validated regime, so the endpoint is refused
-  (`estimation.binomial.tail_unrepresentable`) rather than certified outside that regime.
-  Ordinary use (including FCR-adjusted alpha) is far above this floor.
+* **Extreme alpha.** Two floors bound the tail level. The frozen nuisance tail budget passed
+  to the Clopper-Pearson endpoint solver is `min(1e-6, alpha / 32)`; below `1e-9` (i.e.
+  `alpha < 3.2e-8`), SciPy's iterative beta-quantile solver has demonstrated large relative
+  error against an exact oracle for small `n` in the validated regime, so the endpoint is
+  refused (`estimation.binomial.tail_unrepresentable`) rather than certified outside that
+  regime. And every certified tail carries a float margin that grows with the arms,
+  `(A(n_c) + A(n_t) + m) * 2^-52` with `A(n) = max(2048, n)` (SciPy's binomial primitives
+  were measured against an exact decimal oracle to a billion trials, where their relative
+  error stays within a quarter of `n` units of `2^-52`): once it reaches what the tail
+  level leaves after the nuisance budget (`alpha / 2 - min(1e-6, alpha / 32)` two-sided,
+  `alpha - min(1e-6, alpha / 32)` one-sided) no p-value can be certified below the tail,
+  and the call refuses with the same code (context `alpha`, `margin`, `n_c`, `n_t`)
+  instead of returning the degenerate set `[0, 2/a]`. For equal arms the two-sided
+  threshold is about `3.8e-9` at 4,000,000 per arm, `9.5e-8` at 100,000,000 and `9.5e-7` at
+  1,000,000,000 (one-sided, about half of that); it passes the `3.2e-8` solver floor at
+  about 34,000,000 per arm, so below that size the solver floor binds. The margin is
+  absent from ordinary levels: at a billion units per arm, measured on the production
+  search, it does not move an interval at `alpha >= 1e-4`, widens it by about 1% at `1e-5`
+  and degrades it from about `3e-6`. Planning gives such a decision power zero. There is
+  no exact route at a smaller alpha on arms that large; use a larger alpha.
 
 CUPED and unit-grain ratio-denominator conversion/retention retain their log-scale
 guards; their sufficient statistics are not raw Bernoulli count pairs. A clustered
@@ -658,11 +677,25 @@ for achieved power and 6.3 / 15.5 / 22 s for sizing, and at 20,000 per arm
 with a 50% baseline 6.4 s and 67 s. Every count pair's decision comes from its
 own replay, except counts the replay's first step would settle: those are
 inferred from a neighbouring count's margin through the step's monotonicity
-in the treatment count, which assumes each computed tail lies within
-`5e-11` of its exact-arithmetic value. Sizing returns a verified bracket
-crossing, not a proven global minimum; effect searches exclude earlier
+in the treatment count, which assumes each computed tail lies within the larger of
+`5e-11` and the decision's float margin (see **Extreme alpha**) of its exact-arithmetic
+value. Sizing returns a verified bracket crossing, not a proven global minimum; effect searches exclude earlier
 effects to within `2e-12` of the target power. Triggered plans use the
 rounded analyzed counts.
+
+A decision's replay is bounded: planning refuses, before any replay, a decision whose
+replay would span more than 10,000,000 retained (control, treatment) count cells at the
+null rate (`power.binomial_replay_bound_exceeded`), and `required_sample_size` searches
+only the sizes within about 1/128 of the largest the bound admits, refusing there with
+the power reached. The work follows that cell count, not the arm size, which the runtime
+decides up to a billion units: about a million units per arm at a 5% baseline, 195,000 at
+50%, and any arm the runtime admits at a rate expecting up to about 48,000 events per arm. Measured
+on an Apple M3 Pro under a shared load (CPU seconds, peak resident set), `achieved_power`
+with its companion effect at a 5% baseline took 13.5 s and 1.1 GiB at 100,000 per arm
+(0.97 million cells), 37 s and 1.5 GiB at 250,000 (2.4 million) and 84 s and 1.6 GiB at
+500,000 (4.8 million); before the bound existed it took 574 s and 3.4 GiB at 4,000,000
+per arm (39 million cells). Planning a design above the bound has no exact route: the
+replay is the only construction that reproduces the runtime's decision.
 
 Bounded-metric baselines and implied null/alternative rates must stay strictly
 positive and at most 1. A requested rate above 1 is refused rather than treated

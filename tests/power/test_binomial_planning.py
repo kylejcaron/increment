@@ -285,7 +285,7 @@ class TestPlanningReplayBound:
                 achieved_power(n, 0.02, baseline, procedure)
             else:
                 minimum_detectable_effect(n, baseline, procedure)
-        context = raised.value.context
+        context: dict[str, Any] = dict(raised.value.context)
         assert raised.value.code == self._CODE
         assert (context["n_c"], context["n_t"]) == (n, n)
         assert context["p_c"] == 0.05
@@ -314,14 +314,14 @@ class TestPlanningReplayBound:
         baseline, procedure = Baseline.from_proportion(0.05), _conversion()
         with pytest.raises(InvalidRequestError) as raised:
             required_sample_size(0.05, baseline, procedure)
-        context = raised.value.context
+        context: dict[str, Any] = dict(raised.value.context)
         assert raised.value.code == self._CODE
         assert context["power"] == PowerDesign().power
         assert context["cells"] <= context["max_cells"] == 12_000
         at_ceiling = achieved_power(context["n_t"], 0.05, baseline, procedure)
         assert at_ceiling.power == context["maximum_power"] < context["power"]
         with pytest.raises(InvalidRequestError) as above:
-            achieved_power(math.ceil(float(context["n_t"]) * 1.05), 0.05, baseline, procedure)
+            achieved_power(math.ceil(context["n_t"] * 1.05), 0.05, baseline, procedure)
         assert above.value.code == self._CODE
 
     def test_a_tail_level_the_runtime_refuses_at_huge_arms_does_not_lift_the_bound(
@@ -336,7 +336,7 @@ class TestPlanningReplayBound:
         monkeypatch.setattr(core, "PLANNING_CELL_CEILING", 12_000)
         with pytest.raises(InvalidRequestError) as raised:
             required_sample_size(0.05, Baseline.from_proportion(0.05), _conversion(alpha=1e-7))
-        context = raised.value.context
+        context: dict[str, Any] = dict(raised.value.context)
         assert raised.value.code == self._CODE
         assert context["cells"] <= context["max_cells"] == 12_000
         assert context["maximum_power"] < context["power"]
