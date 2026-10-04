@@ -199,7 +199,7 @@ verified size whose power reaches the target while the size one below does
 not -- not a proof that no smaller size reaches it. `minimum_detectable_effect`
 returns the first admissible effect whose power reaches the target; earlier
 effects are excluded by their own power or by a bound on the rejection set,
-to within `2e-12` of the target. Designs beyond the runtime's four-million
+to within `2e-12` of the target. Designs beyond the runtime's one-billion
 unit arm ceiling are refused by the runtime and have power 0.
 
 The `segment_pairwise_*` solvers are separate: they retain a baseline-only

@@ -1317,8 +1317,8 @@ class ArmStats(CodedModel, BaseModel):
 
 
 #: `arm.cy2` chains window `AVG` and residual `SUM` passes, but `variance_slack` bounds one
-#: accumulation. On the real DuckDB producer path up to `binomial_rr.MAX_ARM_SIZE`, error peaked
-#: near 240x that bound (n=4,000,000, ~0.2% successes; TestBinaryCountsBernoulliConsistency);
+#: accumulation. On the real DuckDB producer path up to `binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE`,
+#: error peaked near 240x that bound (n=4,000,000, ~0.2% successes; TestBinaryCountsBernoulliConsistency);
 #: 1024 keeps >4x headroom, while corrupt or non-binary data misses by orders of magnitude.
 _BERNOULLI_CONSISTENCY_SLACK = 1024.0
 

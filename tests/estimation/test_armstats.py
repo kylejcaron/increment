@@ -1401,11 +1401,43 @@ class TestBinaryCountsBernoulliConsistency:
         assert binary_counts(arm, "conversion") == (successes, n)
 
 
+def _producer_arm(n: int, successes: int | None) -> ArmStats:
+    """The ``ArmStats`` the production producer (``group_summary``) emits for an arm built
+    inside DuckDB from ``range()``: ``successes`` ones scattered by a bijection of the row index
+    (``None``: every unit's outcome is the constant 0.5). No row is materialized outside DuckDB."""
+    import ibis
+
+    from increment.query.builders import group_summary
+
+    if successes is None:
+        outcome = "CAST(0.5 AS DOUBLE)"
+    else:
+        multiplier = next(m for m in range(2654435761, 2654435761 + 1000, 2) if math.gcd(m, n) == 1)
+        outcome = (
+            f"CAST(CASE WHEN ((range::HUGEINT * {multiplier} + 12345) % {n}) < {successes} "
+            "THEN 1 ELSE 0 END AS DOUBLE)"
+        )
+    totals = ibis.duckdb.connect().sql(
+        "SELECT 'u' AS unit_id, 'e' AS experiment_id, 'control' AS group_id, 'conv' AS metric, "
+        f"{outcome} AS y, CAST(NULL AS DOUBLE) AS x, CAST(NULL AS DOUBLE) AS y_den "
+        f"FROM range({n})"
+    )
+    row = group_summary(totals).execute().iloc[0]
+    return ArmStats(
+        study_id="e",
+        metric="conv",
+        group_id="control",
+        n=int(row["n"]),
+        ref_y=float(row["ref_y"]),
+        cy1=float(row["cy1"]),
+        cy2=float(row["cy2"]),
+    )
+
+
 @pytest.mark.slow
 @pytest.mark.parameter_recovery
 class TestBinaryCountsProducerPathTolerance:
-    """`_BERNOULLI_CONSISTENCY_SLACK`'s own citation: this measures
-    `binary_counts` against the REAL two-phase producer path --
+    """`binary_counts` against the REAL two-phase producer path --
     `increment.query.builders.group_summary`'s DuckDB
     window(``AVG``)-then-``SUM((y-ref_y)**2)`` aggregation, the exact SQL
     shape that produces a conversion arm's ``ref_y``/``cy1``/``cy2`` in
@@ -1413,97 +1445,36 @@ class TestBinaryCountsProducerPathTolerance:
     from_raw_sums`` uses near-exact ``Fraction`` arithmetic and so never
     exercises this two-phase floating error).
 
-    ``binary_counts`` must accept every genuinely Bernoulli cell this
-    real path produces up to ``binomial_rr.MAX_ARM_SIZE``, and must still
-    refuse a genuinely corrupted cell at the same scale.
+    ``binary_counts`` must accept every genuinely Bernoulli cell this real path produces and
+    must still refuse a genuinely corrupted cell at the same scale. The cells below are the
+    measured sizes up to 16M units; 64M, 100M and 1B units, where one DuckDB aggregation takes
+    minutes, are measured by ``scripts/measure_binomial_ceiling.py recovery``.
     """
 
-    @staticmethod
-    def _group_summary_arm(n: int, successes: int, *, seed: int) -> ArmStats:
-        import ibis
-
-        from increment.query.builders import group_summary
-
-        rng = np.random.default_rng(seed)
-        y = np.zeros(n, dtype="float64")
-        y[:successes] = 1.0
-        rng.shuffle(y)
-        totals = ibis.memtable(
-            {
-                "unit_id": np.arange(n).astype(str),
-                "experiment_id": ["e"] * n,
-                "group_id": ["control"] * n,
-                "metric": ["conv"] * n,
-                "y": y,
-                "x": np.full(n, np.nan),
-                "y_den": np.full(n, np.nan),
-            }
-        )
-        row = group_summary(totals).execute().iloc[0]
-        return ArmStats(
-            study_id="e",
-            metric="conv",
-            group_id="control",
-            n=int(row["n"]),
-            ref_y=float(row["ref_y"]),
-            cy1=float(row["cy1"]),
-            cy2=float(row["cy2"]),
-        )
-
     @pytest.mark.parametrize(
-        ("n_frac", "success_frac"),
+        ("n", "success_frac"),
         [
-            (0.05, 0.3),
-            (0.25, 0.3),
-            (0.25, 0.0001),
-            (0.5, 0.001),
-            # The measured worst cell: ~240x the base variance_slack bound
-            # -- this and the constant's headroom over it are what sets
-            # _BERNOULLI_CONSISTENCY_SLACK.
-            (1.0, 0.002),
-            (1.0, 0.5),
+            (200_000, 0.3),
+            (1_000_000, 0.3),
+            (1_000_000, 0.0001),
+            (2_000_000, 0.001),
+            (4_000_000, 0.002),
+            (4_000_000, 0.5),
+            # The measured worst cells at 16M and 100M units sat near 335x and 275x the base
+            # `variance_slack`: the cells that set `_BERNOULLI_CONSISTENCY_SLACK`.
+            (16_000_000, 0.002),
+            (16_000_000, 0.0001),
+            (16_000_000, 0.5),
         ],
     )
-    def test_producer_path_tolerance_grid_up_to_max_arm_size(self, n_frac, success_frac):
-        from increment.estimation.binomial_rr import MAX_ARM_SIZE
-
-        n = max(1_000, int(MAX_ARM_SIZE * n_frac))
+    def test_producer_path_tolerance_grid(self, n, success_frac):
         successes = max(1, round(n * success_frac))
-        arm = self._group_summary_arm(n, successes, seed=0)
-        assert binary_counts(arm, "conversion") == (successes, n)
+        assert binary_counts(_producer_arm(n, successes), "conversion") == (successes, n)
 
-    def test_producer_path_corrupted_input_still_refuses_at_scale(self):
-        """The widened tolerance must not swallow real corruption: a
-        constant y=0.5 arm at MAX_ARM_SIZE scale shares a genuine 50%
-        conversion rate's mean but has zero actual spread (cy2 == 0
-        instead of the Bernoulli-consistent n/4) -- must still refuse."""
-        import ibis
-
-        from increment.estimation.binomial_rr import MAX_ARM_SIZE
-        from increment.query.builders import group_summary
-
-        n = MAX_ARM_SIZE
-        totals = ibis.memtable(
-            {
-                "unit_id": np.arange(n).astype(str),
-                "experiment_id": ["e"] * n,
-                "group_id": ["control"] * n,
-                "metric": ["conv"] * n,
-                "y": np.full(n, 0.5),
-                "x": np.full(n, np.nan),
-                "y_den": np.full(n, np.nan),
-            }
-        )
-        row = group_summary(totals).execute().iloc[0]
-        arm = ArmStats(
-            study_id="e",
-            metric="conv",
-            group_id="control",
-            n=int(row["n"]),
-            ref_y=float(row["ref_y"]),
-            cy1=float(row["cy1"]),
-            cy2=float(row["cy2"]),
-        )
+    @pytest.mark.parametrize("n", [4_000_000, 16_000_000])
+    def test_producer_path_corrupted_input_still_refuses_at_scale(self, n):
+        """A constant y=0.5 arm shares a genuine 50% conversion rate's mean but has zero actual
+        spread (cy2 == 0 instead of the Bernoulli-consistent n/4) -- must still refuse."""
         with pytest.raises(BinomialDataError) as exc_info:
-            binary_counts(arm, "conversion")
+            binary_counts(_producer_arm(n, None), "conversion")
         assert exc_info.value.code == "estimation.binomial.inconsistent_bernoulli_variance"

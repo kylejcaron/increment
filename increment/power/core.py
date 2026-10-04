@@ -78,7 +78,7 @@ from increment.estimation.arm_contract import (
     arm_planning_support,
 )
 from increment.estimation.armstats import SummaryStats
-from increment.estimation.binomial_rr import MAX_ARM_SIZE, nuisance_beta
+from increment.estimation.binomial_rr import FINITE_SAMPLE_MAX_ARM_SIZE, nuisance_beta
 from increment.estimation.diagnostics import ESTIMATION_DIAGNOSTICS_ALPHA
 from increment.estimation.meta import ESTIMATION_META_VAR_FINITE_STRICTLY
 from increment.estimation.quantile import (
@@ -2580,7 +2580,7 @@ def _binomial_size(  # noqa: PLR0915
                     refuse(
                         _BINOMIAL_SIZE_LIMIT,
                         power=target,
-                        max_arm_size=MAX_ARM_SIZE,
+                        max_arm_size=FINITE_SAMPLE_MAX_ARM_SIZE,
                         maximum_power=values[lo],
                         n_per_arm=_compute_arms(lo, design, minimum_per_arm=floor)[0],
                     )
@@ -2619,11 +2619,11 @@ def _binomial_size(  # noqa: PLR0915
 def _binomial_arm_ceiling(design: PowerDesign, floor: int, baseline: Baseline) -> int:
     """Largest assigned treatment size whose analyzed arms both stay within
     the runtime's arm ceiling (beyond it every count pair is refused)."""
-    lo, hi = floor, math.ceil(MAX_ARM_SIZE / baseline.trigger_rate) + 1
+    lo, hi = floor, math.ceil(FINITE_SAMPLE_MAX_ARM_SIZE / baseline.trigger_rate) + 1
     while lo < hi:
         mid = (lo + hi + 1) // 2
         arms = _compute_arms(mid, design, minimum_per_arm=floor)
-        if max(_analyzed_counts(*arms, baseline)) <= MAX_ARM_SIZE:
+        if max(_analyzed_counts(*arms, baseline)) <= FINITE_SAMPLE_MAX_ARM_SIZE:
             lo = mid
         else:
             hi = mid - 1

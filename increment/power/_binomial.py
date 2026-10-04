@@ -136,17 +136,12 @@ class _Groups:
 def _threshold_offsets(kind: Kind, n_c: int, n_t: int, x_c: int, s: np.ndarray) -> np.ndarray:
     """Treatment thresholds of the runtime tails minus the treatment count.
 
-    The runtime forms ``ceil((k + n_t s) / n_c) - 1`` (plus) and ``floor((k +
-    n_t s) / n_c)`` (minus) in float64 with ``k = n_c j - n_t x_c``; that
-    quotient is ``j + n_t (s - x_c) / n_c`` and its rounding error (below
-    ``2 max(n_c, n_t) * 2**-53`` for admitted arms) never crosses an integer,
-    since a non-integer quotient sits at least ``1 / n_c`` from one. The
-    thresholds are therefore ``j`` plus these exact integer offsets.
+    The runtime's threshold for control count ``s`` and ``k = n_c j - n_t x_c`` is
+    `binomial_rr._count_threshold` of ``k + n_t s = n_c j + n_t (s - x_c)``, which is ``j`` plus
+    the same threshold of ``n_t (s - x_c)``: the shift by a multiple of ``n_c`` is exact in
+    integers. The offsets are therefore exact at every admitted arm size.
     """
-    num = n_t * (s - x_c)
-    if kind == "plus":
-        return -((-num) // n_c) - 1
-    return num // n_c
+    return _rr._count_threshold(kind, n_c, n_t * (s - x_c))
 
 
 # --- Replay engine ----------------------------------------------------------
@@ -1235,12 +1230,17 @@ def null_cells(decision: BinomialDecision, p_c: float) -> int:
     return _window(decision.n_c, p_c).size * _window(decision.n_t, p_null).size
 
 
+def _above_ceiling(decision: BinomialDecision) -> bool:
+    """Whether an arm exceeds the runtime's finite-sample ceiling."""
+    return max(decision.n_c, decision.n_t) > _rr.FINITE_SAMPLE_MAX_ARM_SIZE
+
+
 def route_for(decision: BinomialDecision, p_c: float) -> Route:
     """Deterministic route: exact within the cell budget, else approximate.
 
     Arms above the runtime's ceiling refuse every count pair, so their power
     is exactly zero whatever the budget."""
-    if decision.n_c > _rr.MAX_ARM_SIZE or decision.n_t > _rr.MAX_ARM_SIZE:
+    if _above_ceiling(decision):
         return "exact"
     return "exact" if null_cells(decision, p_c) <= EXACT_CELL_BUDGET else "approximate"
 
@@ -1290,7 +1290,7 @@ class RejectionGeometry:
     def __init__(self, decision: BinomialDecision, route: Route) -> None:
         self.decision = decision
         self.route = route
-        self.refused = decision.n_c > _rr.MAX_ARM_SIZE or decision.n_t > _rr.MAX_ARM_SIZE
+        self.refused = _above_ceiling(decision)
         self.x0 = 0
         self.rows = 0
         self.segments: list[_Segment] = []

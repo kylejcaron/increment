@@ -31,7 +31,7 @@ search rather than population size (measured on the machine this suite
 was authored on, 2026-09-16: a full single-draw pass over ALL 336 grid
 cells -- including the largest, n_c=1,000,000/n_t=4,000,000 -- took
 321s total, mean 0.96s/cell, max 5.11s/cell). Every one of the 336
-cells sits at or below ``binomial_rr.MAX_ARM_SIZE`` (the one enforced
+cells sits at or below ``binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE`` (the one enforced
 production arm-size ceiling; see ``test_manifest_is_the_full_336_cell_
 grid_with_declared_truth_and_support_status``), so every cell is
 admitted and receives production and independent-reference geometry checks
@@ -519,7 +519,7 @@ _EXPECTED_EVENTS_GRID = (0.5, 1, 2, 5, 10, 30, 100)
 _RATIO_GRID = ((1, 1), (1, 4), (4, 1))
 _RISK_RATIO_GRID = (0.5, 1.0, 1.5, 2.0)
 
-# `binomial_rr.MAX_ARM_SIZE` is the one enforced production applicability
+# `binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE` is the one enforced production applicability
 # boundary for this method (checked below against the manifest's largest
 # cell); no separate test-runtime boundary exists or is needed here -- see
 # the module docstring for the measured real full-grid single-draw cost.
@@ -564,7 +564,7 @@ MANIFEST: tuple[ManifestCell, ...] = _build_manifest()
 def test_manifest_is_the_full_336_cell_grid_with_declared_truth_and_support_status():
     """The complete, unsubsetted prespecified grid -- every cell
     carries its declared truth (n_c, n_t, p_t, true_lift) and is admitted
-    under production's actual, enforced `binomial_rr.MAX_ARM_SIZE` ceiling;
+    under production's actual, enforced `binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE` ceiling;
     nothing is silently dropped and no admitted cell is mislabeled
     infeasible.
     """
@@ -581,9 +581,9 @@ def test_manifest_is_the_full_336_cell_grid_with_declared_truth_and_support_stat
     # The enforced arm-size ceiling admits all 336 cells, including the largest
     # (p_c=1e-4, expected_events=100, ratio=(1, 4): n_c=1,000,000,
     # n_t=4,000,000), so no cell here is infeasible.
-    assert binomial_rr.MAX_ARM_SIZE >= 4_000_000
-    assert all(max(c.n_c, c.n_t) <= binomial_rr.MAX_ARM_SIZE for c in MANIFEST)
-    assert max(max(c.n_c, c.n_t) for c in MANIFEST) == 4_000_000
+    largest = max(max(c.n_c, c.n_t) for c in MANIFEST)
+    assert largest == 4_000_000
+    assert binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE >= largest
 
 
 @pytest.mark.slow

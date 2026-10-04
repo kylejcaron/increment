@@ -13,6 +13,7 @@ import math
 import re
 import sys
 from decimal import Decimal, localcontext
+from fractions import Fraction
 from math import comb
 
 import numpy as np
@@ -625,15 +626,100 @@ class TestFastBinomMatchesScipy:
         assert np.array_equal(brr._fast_binom_pmf(k, n, p), _binom.pmf(k, n, p))
 
 
+class TestExactThresholds:
+    """The treatment count thresholds are exact integer quotients of ``k + n_t * i`` for every
+    admitted arm size, including where that numerator exceeds float64's exact range.
+
+    The reference is ``Fraction`` arithmetic. An adversarial numerator sits one count of
+    ``n_t * (i - x_c)`` from a multiple of ``n_c``, where a float quotient (which rounds the
+    numerator, then the division) lands on the wrong side of the integer.
+    """
+
+    ARM_SIZES = (10**8 + 7, 999_999_937, 2**29 - 1, 2**29 + 1, 10**9)
+
+    @staticmethod
+    def _adversarial_cells(n_c: int, n_t: int):
+        """``(x_c, x_t, i_lo, i_hi)`` whose window holds a control count ``i`` with
+        ``n_t * (i - x_c)`` congruent to ``0`` and to ``+-1`` modulo ``n_c``."""
+        residues = {0}
+        if math.gcd(n_t, n_c) == 1:
+            inverse = pow(n_t, -1, n_c)
+            residues |= {inverse, n_c - inverse}
+        for shift in sorted(residues):
+            for x_c in sorted({0, n_c - shift, n_c // 2 - shift // 2}):
+                i = x_c + shift
+                if not 0 <= x_c <= n_c or not 0 <= i <= n_c:
+                    continue
+                for x_t in (0, 1, n_t // 2, n_t - 1, n_t):
+                    yield x_c, x_t, max(0, i - 3), min(n_c, i + 3)
+
+    @pytest.mark.parametrize("n_t", ARM_SIZES)
+    @pytest.mark.parametrize("n_c", ARM_SIZES)
+    def test_thresholds_equal_the_exact_quotients_at_adversarial_counts(self, n_c, n_t):
+        checked = 0
+        for x_c, x_t, i_lo, i_hi in self._adversarial_cells(n_c, n_t):
+            k = n_c * x_t - n_t * x_c
+            plus = brr._plus_threshold(n_c, n_t, k, i_lo, i_hi)
+            minus = brr._minus_threshold(n_c, n_t, k, i_lo, i_hi)
+            for offset, i in enumerate(range(i_lo, i_hi + 1)):
+                exact = Fraction(k + n_t * i, n_c)
+                assert plus[offset] == math.ceil(exact) - 1, (x_c, x_t, i)
+                assert minus[offset] == math.floor(exact), (x_c, x_t, i)
+            checked += 1
+        assert checked >= 5
+
+    @pytest.mark.parametrize("n", ARM_SIZES)
+    def test_thresholds_at_the_edges_of_the_support_are_exact(self, n):
+        for x_c, x_t in ((0, 0), (0, n), (n, 0), (n, n), (1, n - 1), (n - 1, 1)):
+            k = n * x_t - n * x_c
+            for i_lo, i_hi in ((0, 4), (n - 4, n)):
+                plus = brr._plus_threshold(n, n, k, i_lo, i_hi)
+                minus = brr._minus_threshold(n, n, k, i_lo, i_hi)
+                for offset, i in enumerate(range(i_lo, i_hi + 1)):
+                    exact = Fraction(k + n * i, n)
+                    assert plus[offset] == math.ceil(exact) - 1
+                    assert minus[offset] == math.floor(exact)
+
+    def test_random_numerators_up_to_the_ceiling_are_exact(self):
+        rng = np.random.default_rng(20261004)
+        for _ in range(200):
+            n_c, n_t = (int(v) for v in rng.integers(1, brr.FINITE_SAMPLE_MAX_ARM_SIZE + 1, 2))
+            x_c, x_t = int(rng.integers(0, n_c + 1)), int(rng.integers(0, n_t + 1))
+            k = n_c * x_t - n_t * x_c
+            i_lo = int(rng.integers(0, n_c + 1))
+            i_hi = min(n_c, i_lo + 5)
+            plus = brr._plus_threshold(n_c, n_t, k, i_lo, i_hi)
+            minus = brr._minus_threshold(n_c, n_t, k, i_lo, i_hi)
+            for offset, i in enumerate(range(i_lo, i_hi + 1)):
+                exact = Fraction(k + n_t * i, n_c)
+                assert plus[offset] == math.ceil(exact) - 1
+                assert minus[offset] == math.floor(exact)
+
+    @pytest.mark.parametrize(("n_c", "n_t"), [(10**9, 10**9), (999_999_937, 10**8 + 7)])
+    def test_planning_offsets_give_the_runtime_thresholds(self, n_c, n_t):
+        from increment.power import _binomial
+
+        for x_c, x_t, i_lo, i_hi in self._adversarial_cells(n_c, n_t):
+            k = n_c * x_t - n_t * x_c
+            s = np.arange(i_lo, i_hi + 1, dtype=np.int64)
+            plus = brr._plus_threshold(n_c, n_t, k, i_lo, i_hi)
+            minus = brr._minus_threshold(n_c, n_t, k, i_lo, i_hi)
+            assert np.array_equal(
+                x_t + _binomial._threshold_offsets("plus", n_c, n_t, x_c, s), plus
+            )
+            assert np.array_equal(
+                x_t + _binomial._threshold_offsets("minus", n_c, n_t, x_c, s), minus
+            )
+
+
 class TestApplicabilityBoundaryCalibration:
-    """``MAX_ARM_SIZE`` is a compute-resource applicability boundary, not a
-    scientific one: ordinary sizes up to it succeed (spot-checked below),
-    sizes far beyond it -- and exactly one arm-count above it -- are
-    refused immediately (without attempting the expensive search), and
-    the largest arm size in the full 336-cell rare-event calibration
-    manifest is admitted, which is checked structurally rather than by
-    actually calling ``confidence_interval`` at that size (too slow to run
-    as a routine regression).
+    """``FINITE_SAMPLE_MAX_ARM_SIZE`` is a compute-resource applicability boundary, not a
+    scientific one: ordinary sizes up to it succeed (spot-checked below, and a rare count pair
+    exactly at it), sizes far beyond it -- and exactly one arm-count above it -- are refused
+    immediately (without attempting the expensive search), and the largest arm size in the full
+    336-cell rare-event calibration manifest is admitted, which is checked structurally rather
+    than by actually calling ``confidence_interval`` at that size (too slow to run as a routine
+    regression).
     """
 
     def _record_searches(self, monkeypatch) -> list[str]:
@@ -656,23 +742,35 @@ class TestApplicabilityBoundaryCalibration:
         with pytest.raises(brr.BinomialDataError) as exc_info:
             brr.confidence_interval(
                 1,
-                brr.MAX_ARM_SIZE * 10,
+                brr.FINITE_SAMPLE_MAX_ARM_SIZE * 10,
                 1,
-                brr.MAX_ARM_SIZE * 10,
+                brr.FINITE_SAMPLE_MAX_ARM_SIZE * 10,
                 alpha=0.05,
                 alternative="two-sided",
             )
         assert calls == []
         assert exc_info.value.code == "estimation.binomial.arm_too_large_for_exact_enumeration"
+        assert exc_info.value.context["max_arm_size"] == 1_000_000_000
 
-    def test_refuses_at_one_above_the_ceiling(self, monkeypatch):
+    @pytest.mark.parametrize("above", ["control", "treatment"])
+    def test_refuses_at_one_above_the_ceiling(self, monkeypatch, above):
         calls = self._record_searches(monkeypatch)
+        n_c, n_t = (brr.FINITE_SAMPLE_MAX_ARM_SIZE + 1, 10)
+        if above == "treatment":
+            n_c, n_t = n_t, n_c
         with pytest.raises(brr.BinomialDataError) as exc_info:
-            brr.confidence_interval(
-                1, brr.MAX_ARM_SIZE + 1, 1, 10, alpha=0.05, alternative="two-sided"
-            )
+            brr.confidence_interval(1, n_c, 1, n_t, alpha=0.05, alternative="two-sided")
         assert calls == []
         assert exc_info.value.code == "estimation.binomial.arm_too_large_for_exact_enumeration"
+
+    @pytest.mark.parametrize("alternative", ["two-sided", "greater", "less"])
+    def test_a_rare_count_pair_exactly_at_the_ceiling_is_admitted(self, alternative):
+        n = brr.FINITE_SAMPLE_MAX_ARM_SIZE
+        ci = brr.confidence_interval(3, n, 5, n, alpha=0.05, alternative=alternative)
+        assert math.isfinite(ci.lower) and 0.0 < ci.p_value_null <= 1.0
+        if ci.upper is not None:
+            assert ci.lower < 5 / 3 < ci.upper
+        assert ci.lower <= 5 / 3
 
     def test_full_grid_maximum_is_admitted_by_the_ceiling(self):
         """The 336-cell rare-event calibration manifest computes ``n_c``
@@ -686,8 +784,8 @@ class TestApplicabilityBoundaryCalibration:
         n_c = max(1, math.floor(expected_events / p_c + 0.5))
         n_t = max(1, math.floor(n_c * t / c + 0.5))
         assert (n_c, n_t) == (1_000_000, 4_000_000)
-        assert n_c <= brr.MAX_ARM_SIZE
-        assert n_t <= brr.MAX_ARM_SIZE
+        assert n_c <= brr.FINITE_SAMPLE_MAX_ARM_SIZE
+        assert n_t <= brr.FINITE_SAMPLE_MAX_ARM_SIZE
 
     def test_moderate_arm_sizes_succeed(self):
         for n in (100, 10_000, 200_000):

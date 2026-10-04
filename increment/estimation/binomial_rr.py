@@ -438,16 +438,32 @@ def _control_pmf(n_c: int, q: float, i_lo: int, i_hi: int) -> np.ndarray:
     return _read_only(_fast_binom_pmf(np.arange(i_lo, i_hi + 1), n_c, q))
 
 
+def _count_threshold(kind: Literal["plus", "minus"], n_c: int, numerator: np.ndarray) -> np.ndarray:
+    """Treatment-count threshold of an integer *numerator* over *n_c*: ``ceil(numerator / n_c) -
+    1`` for the plus tail (``P(X_t >= x) = sf(x - 1)``) and ``floor(numerator / n_c)`` for the
+    minus tail, by int64 floor division.
+
+    A float quotient rounds the numerator, then the division, and a non-integer quotient sits
+    only ``1 / n_c`` from an integer, so it misplaces a threshold once ``n_c * n_t`` outgrows
+    float64's exact range (about 6.7e7 per arm). Floor division is exact while the numerator
+    fits int64, which `FINITE_SAMPLE_MAX_ARM_SIZE` guarantees: ``k + n_t * i`` lies within
+    ``[-n_c * n_t, 2 * n_c * n_t]``.
+    """
+    if kind == "plus":
+        return -((-numerator) // n_c) - 1
+    return numerator // n_c
+
+
 @lru_cache(maxsize=32)
 def _plus_threshold(n_c: int, n_t: int, k: int, i_lo: int, i_hi: int) -> np.ndarray:
-    i = np.arange(i_lo, i_hi + 1)
-    return _read_only(np.ceil((k + n_t * i) / n_c).astype(np.int64) - 1)
+    i = np.arange(i_lo, i_hi + 1, dtype=np.int64)
+    return _read_only(_count_threshold("plus", n_c, k + n_t * i))
 
 
 @lru_cache(maxsize=32)
 def _minus_threshold(n_c: int, n_t: int, k: int, i_lo: int, i_hi: int) -> np.ndarray:
-    i = np.arange(i_lo, i_hi + 1)
-    return _read_only(np.floor((k + n_t * i) / n_c).astype(np.int64))
+    i = np.arange(i_lo, i_hi + 1, dtype=np.int64)
+    return _read_only(_count_threshold("minus", n_c, k + n_t * i))
 
 
 # A search asks for each treatment vector (a function of `p` alone; the control PMF carries `q`)
@@ -1201,10 +1217,13 @@ def _bound_upper(
     return result
 
 
-#: Compute-resource ceiling, not a statistical limit, sized for the largest supported design:
-#: a two-sided `confidence_interval` call up to it fits the per-request budget, and larger
-#: arms refuse before searching. Unbounded sizes need a closed-form or recurrence tail evaluator.
-MAX_ARM_SIZE = 4_000_000
+#: Largest arm the finite-sample route admits: a compute-resource ceiling, not a statistical
+#: limit. `scripts/measure_binomial_ceiling.py` measures latency and memory at every rung up to
+#: it, and validates the SciPy error allowance, the Clopper-Pearson enclosure, the window's
+#: omitted mass and count recovery there against a Decimal oracle (`calibration/binomial_oracle.py`).
+#: Larger arms refuse before searching.
+FINITE_SAMPLE_MAX_ARM_SIZE = 1_000_000_000
+assert 2 * FINITE_SAMPLE_MAX_ARM_SIZE**2 < 2**63, "threshold numerators must fit int64"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1318,12 +1337,12 @@ def confidence_interval(
         _raise("estimation.binomial.tail_unrepresentable", alpha=alpha)
     if null_r < 0.0 or not math.isfinite(null_r):
         _raise("estimation.binomial.tail_unrepresentable", null_r=null_r)
-    if n_c > MAX_ARM_SIZE or n_t > MAX_ARM_SIZE:
+    if n_c > FINITE_SAMPLE_MAX_ARM_SIZE or n_t > FINITE_SAMPLE_MAX_ARM_SIZE:
         _raise(
             "estimation.binomial.arm_too_large_for_exact_enumeration",
             n_c=n_c,
             n_t=n_t,
-            max_arm_size=MAX_ARM_SIZE,
+            max_arm_size=FINITE_SAMPLE_MAX_ARM_SIZE,
         )
     validated_alternative = validate_alternative(alternative)
     arguments = (x_c, n_c, x_t, n_t, alpha, validated_alternative, null_r, NUISANCE_STOP)
