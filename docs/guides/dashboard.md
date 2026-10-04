@@ -247,11 +247,11 @@ beneath its whole-experiment row. Selecting a metric opens its **Time series**.
   are never re-corrected here.
 - Every other cell is exploratory: the whole-experiment rows of every saved
   metric the definitions offer, and every segment cell of every metric and
-  declared breakout. These cells form one Benjamini-Hochberg family at the
-  plan's `q`, fixed for the snapshot, so switching **Compare by** never
-  changes a cell. Saved metrics count whether or not they are shown, so
-  choosing what to display, before or after seeing results, never changes the
-  correction. Changing the selection reads nothing; only re-running
+  declared breakout. The eligible cells form one Benjamini-Hochberg family at
+  the plan's `q`, fixed for the snapshot, so switching **Compare by** never
+  changes a cell. Eligible cells count whether or not their metric is shown,
+  so choosing what to display, before or after seeing results, never changes
+  the correction. Changing the selection reads nothing; only re-running
   preparation reads the warehouse, and a read on more data is a new look, not
   a continuation of this family. Only a
   discovery is coloured as a finding, with its FCR-adjusted interval; other
@@ -260,9 +260,10 @@ beneath its whole-experiment row. Selecting a metric opens its **Time series**.
   positive dependence; these cells share units and the control arm, and
   [that condition is not checked](../limitations.md#fixed-horizon-fdr-control-assumes-a-dependence-condition-that-is-not-checked).
 - A cell the family cannot take (for example a quantile metric or an
-  informative prior) is left out with its reason in **Overview notes**; it
-  never blocks the other cells. Under a registered sequential plan the added
-  metrics and uncorrected segments are refused with their coded reasons.
+  informative prior) is left out with its reason in **Overview notes**, shown
+  or not; it is never marked as a discovery and never blocks the other cells.
+  Under a registered sequential plan the added metrics and uncorrected
+  segments are refused with their coded reasons.
 
 ### Added exploratory metrics
 
@@ -270,11 +271,15 @@ beneath its whole-experiment row. Selecting a metric opens its **Time series**.
 `analysis.available_metrics` to show: saved per-unit metrics on the
 experiment's unit that the experiment does not declare (report-only
 `total`/`active` metrics and other entities' metrics are not offered). Every
-offered metric is read in the same pinned snapshot and counted in the
-exploratory family; the shown ones also appear in the Overview's Exploratory
-group and in Time series. None enters the Readout or the Report. Reading the
-whole catalog costs one whole-experiment read plus one read per declared
-breakout, each covering every offered metric. `metric_units` may name any
+offered metric is read in the same pinned snapshot and its eligible cells are
+counted in the exploratory family; the shown ones also appear in the
+Overview's Exploratory group and in Time series. None enters the Readout or the
+Report. Offered metrics are read together: one read per Explore state and scope
+(five states for the whole experiment and for each declared breakout, plus
+segments per breakout) and one overview read for the whole experiment and per
+breakout, however many metrics are offered. A read the source refuses is
+repeated one metric at a time, so each metric keeps its own refusal.
+`metric_units` may name any
 offered metric. A name the definitions do not offer is refused with
 `dashboard.invalid_config` before any read. In Explore, **Added metrics** lists
 the selection; **+ Add metrics** searches the saved definitions. Applying a

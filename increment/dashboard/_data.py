@@ -964,10 +964,11 @@ def _capture_explore(
     is refused is each metric asked alone, so one metric's refusal never hides another's series.
     Temporal views are read for the whole experiment and through each declared breakout's own
     reads, as are segments, so one breakout's refusal never hides another source of the same
-    property. Source refusals are kept as the original coded errors. ``added`` metrics are read
-    one at a time, never inside the declared metrics' joint family. Each declared breakout also
-    captures uncorrected segment rows for every declared and ``added`` metric, the overview's
-    exploratory family.
+    property. Source refusals are kept as the original coded errors. ``added`` metrics join no
+    family, so one read per view and scope serves them all, never inside the declared metrics'
+    joint family; a refused read, or a metric it returns nothing for, is asked alone. Each
+    declared breakout also captures uncorrected segment rows for every declared and ``added``
+    metric, the overview's exploratory family.
     """
     captures: dict[ExploreKey, DashboardExploreCapture] = {}
 
@@ -996,11 +997,9 @@ def _capture_explore(
         for breakout, reader in scopes if view == "segments" else (*whole, *scopes):
             joint = ask(reader, view, None, complete=complete, breakout=breakout)
             independent = view in _INDEPENDENT_VIEWS and joint.refusal is None
-            for name in (*names, *added):
+            for name in names:
                 key = (view, name, complete, breakout)
-                if name in added:
-                    ask(reader, view, name, complete=complete, breakout=breakout)
-                elif len(names) == 1:
+                if len(names) == 1:
                     captures[key] = replace(joint, metric=name)
                 elif independent:
                     assert joint.collection is not None
@@ -1011,6 +1010,23 @@ def _capture_explore(
                     )
                 else:
                     ask(reader, view, name, complete=complete, breakout=breakout)
+            if not added:
+                continue
+            # Added metrics join no family, so one read serves them all; a refused read, or a
+            # metric it returns nothing for, is asked alone to keep that metric's own answer.
+            try:
+                batch = _read_view(reader, view, list(added), complete=complete, added=added)
+            except CodedError:
+                batch = None
+            for name in added:
+                rows = [] if batch is None else [row for row in batch if row.metric == name]
+                if batch is None or not rows:
+                    ask(reader, view, name, complete=complete, breakout=breakout)
+                else:
+                    key = (view, name, complete, breakout)
+                    captures[key] = DashboardExploreCapture.answered(
+                        key, rows, collection=type(batch)
+                    )
 
     def overview_read(
         view: str,

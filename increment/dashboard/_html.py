@@ -898,8 +898,8 @@ def overview_notes(
         f"{count_text(overview.family_size)} comparisons: every eligible whole-experiment cell of "
         f"every saved metric the definitions offer{not_shown}, and every eligible segment cell of "
         "every metric and declared breakout; cells it cannot take are listed with their reasons. "
-        "Shown or not, every "
-        "offered metric is counted, so choosing what to display never changes the correction. "
+        "Every eligible comparison counts whether or not its metric is shown, so choosing what "
+        "to display never changes the correction. "
         "BH controls the false discovery rate under independence or positive dependence; these "
         "comparisons share units and the control arm, and that condition is not checked."
     )
@@ -913,7 +913,8 @@ def overview_notes(
             f"{metric} ({place}): {reason}" for metric, place, reason in overview.exclusions
         )
         notes.append(
-            f"Not in the exploratory family, so shown unadjusted and never marked: {cells}."
+            "Not in the exploratory family, so never marked as discoveries (shown unadjusted "
+            f"when their metric is shown): {cells}."
         )
     return notes
 

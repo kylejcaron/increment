@@ -7,6 +7,7 @@ captured estimates and the rendered overview rows, never their wording.
 from __future__ import annotations
 
 import dataclasses
+from typing import Any
 
 import pytest
 
@@ -44,6 +45,19 @@ _WITH_QUANTILE = (
     entity: user_id
     fact: purchase
     aggregation: sum
+"""
+)
+SECOND = "page_views_per_user"
+_TWO_SAVED = (
+    _SAVED
+    + f"""
+  - type: mean
+    name: {SECOND}
+    entity: user_id
+    preferred_direction: increase
+    fact: page_view
+    aggregation: count
+    window_days: 14
 """
 )
 COUNTRY = ("event_log", "country")
@@ -321,3 +335,50 @@ def test_a_non_randomized_design_is_refused_before_any_read(tmp_path, monkeypatc
             prepare_dashboard(analysis, config=_config())
         assert caught.value.code == "dashboard.unsupported_experiment"
         assert caught.value.context["mechanism"] == "observational"
+
+
+def _flat(value: object, prefix: str = "") -> dict[str, object]:
+    if isinstance(value, dict):
+        return {
+            k: v for key, item in value.items() for k, v in _flat(item, f"{prefix}{key}.").items()
+        }
+    return {prefix.rstrip("."): value}
+
+
+def _rows(collection) -> list[dict[str, object]]:
+    rows = [_flat(row.model_dump(mode="json")) for row in collection]
+    return sorted(
+        rows, key=lambda row: tuple(str(row.get(k)) for k in ("ds", "group_id", "dimension_value"))
+    )
+
+
+@pytest.mark.slow
+def test_offered_metrics_read_together_match_each_metric_read_alone(tmp_path):
+    from increment.dashboard import load_explore
+    from increment.dashboard._data import ExploreView
+
+    with _workspace(tmp_path, metrics=_TWO_SAVED) as (_, analysis):
+        snapshot = prepare_dashboard(analysis, config=_config(ADDED, SECOND))
+        (declared,) = analysis.experiment.breakouts
+        segments = analysis.dashboard_breakout_reads(declared)
+        for name in (ADDED, SECOND):
+            alone: dict[tuple[ExploreView, tuple[str, str] | None], Any] = {
+                ("cumulative_lift", None): analysis.run_asof_lift(
+                    metrics=[], exploratory_metrics=[name]
+                ),
+                ("cumulative_values", None): analysis.run_asof(
+                    metrics=[], exploratory_metrics=[name]
+                ),
+                ("daily_values", None): analysis.run_daily(metrics=[], exploratory_metrics=[name]),
+                ("segments", COUNTRY): segments.run_breakout(
+                    metrics=[], exploratory_metrics=[name]
+                ),
+            }
+            for (view, breakout), expected in alone.items():
+                captured = load_explore(
+                    analysis, snapshot=snapshot, metric=name, view=view, breakout=breakout
+                )
+                want, got = _rows(expected), _rows(captured)
+                assert len(got) == len(want) > 0
+                for row, reference in zip(got, want, strict=True):
+                    assert row == pytest.approx(reference, rel=1e-9, abs=1e-12)
