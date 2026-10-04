@@ -97,6 +97,7 @@ from increment.power._binomial import (
     Route,
     replay_cells,
     route_for,
+    window_cells,
 )
 from increment.power._noncentral_t import _scalar_power_from_nc
 from increment.power._search import (
@@ -2655,7 +2656,7 @@ def _binomial_size(  # noqa: PLR0915
                             baseline,
                             n_T,
                             n_C,
-                            replay_cells(_binomial_key(procedure, n_T, n_C), baseline.mean),
+                            window_cells(_binomial_key(procedure, n_T, n_C), baseline.mean),
                             power=target,
                             maximum_power=values[lo],
                         )
@@ -2713,8 +2714,9 @@ def _binomial_arm_ceiling(design: PowerDesign, floor: int, baseline: Baseline) -
 
 
 # The retained-cell count is not monotone in the size (each window's integer edges move
-# independently), so the replay ceiling stays a fraction under the crossing found by bisection:
-# `_binomial_plan` never refuses a size the search is allowed to propose.
+# independently), so the ceiling stays a fraction under the bisection's crossing and
+# `_binomial_plan` never refuses a proposed size. The predicate is `window_cells`: `replay_cells`
+# is zero where the runtime refuses the tail level, which would make it jump back to true.
 _REPLAY_CEILING_JITTER = 128
 
 
@@ -2725,12 +2727,12 @@ def _binomial_replay_ceiling(
     floor: int,
     upper: int,
 ) -> int:
-    """Largest assigned treatment size at most ``upper`` whose analyzed arms replay within
+    """Largest assigned treatment size at most ``upper`` whose analyzed arms span at most
     ``PLANNING_CELL_CEILING`` count cells (``upper`` itself when none is excluded)."""
 
     def within(n: int) -> bool:
         n_T, n_C = _analyzed_counts(*_compute_arms(n, design, minimum_per_arm=floor), baseline)
-        cells = replay_cells(_binomial_key(procedure, n_T, n_C), baseline.mean)
+        cells = window_cells(_binomial_key(procedure, n_T, n_C), baseline.mean)
         return cells <= PLANNING_CELL_CEILING
 
     if within(upper):

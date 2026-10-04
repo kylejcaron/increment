@@ -1244,14 +1244,18 @@ def refused(decision: BinomialDecision) -> bool:
     return _rr.margin_dominates_tail(decision.tail_alpha, decision.beta, decision.n_c, decision.n_t)
 
 
-def replay_cells(decision: BinomialDecision, p_c: float) -> int:
-    """Retained (control, treatment) cells of the geometry at the null rate; zero for a decision
-    the runtime refuses in full, which is not replayed."""
-    if refused(decision):
-        return 0
+def window_cells(decision: BinomialDecision, p_c: float) -> int:
+    """Retained (control, treatment) cells of the geometry at the null rate, whether or not the
+    runtime refuses the decision: monotone in the arm sizes, unlike `replay_cells`."""
     lo_c, hi_c = _window_bounds(decision.n_c, p_c)
     lo_t, hi_t = _window_bounds(decision.n_t, min(1.0, decision.null_ratio * p_c))
     return (hi_c - lo_c + 1) * (hi_t - lo_t + 1)
+
+
+def replay_cells(decision: BinomialDecision, p_c: float) -> int:
+    """Cells the planner replays: `window_cells`, or zero for a decision the runtime refuses in
+    full, which is not replayed."""
+    return 0 if refused(decision) else window_cells(decision, p_c)
 
 
 def route_for(cells: int) -> Route:
