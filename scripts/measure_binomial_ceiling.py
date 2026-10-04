@@ -34,7 +34,10 @@ versions on every line) and are meant to run serially, one at a time::
     fresh subprocess per cell at a conversion baseline, recording CPU time, the child's peak
     resident set, the retained count cells the replay spans (at the null rate and, for a supplied
     effect, at its alternative) and the power basis -- or the coded refusal a design beyond the
-    replay bound raises. ``--rungs`` does not apply: each cell fixes its own design.
+    replay bound raises. ``--conversion-inference`` selects the decision method planned
+    (``finite_sample``, the default, replays the finite-sample decision at every size; ``auto``
+    plans the runtime's count-routed decision, closed form where its counts are dense).
+    ``--rungs`` does not apply: each cell fixes its own design.
 
 The commands read each child's resource usage with ``os.wait4`` and the machine's load and
 memory with ``os.getloadavg`` and ``os.sysconf``, which exist on POSIX only: ``main`` refuses
@@ -761,7 +764,8 @@ def _recovery(args: argparse.Namespace) -> None:
 #: ``(cell, planner, control rate, units per arm, relative lift)``. Planning costs the cells its
 #: geometry stores, not the arm size: a supplied effect reaches `PLANNING_CELL_CEILING` near a
 #: million units per arm at 5% and an effect search (the union of its windows) sooner; the rare
-#: cells expect a hundred events per arm; the last dense cell is beyond the bound and is refused.
+#: and sparse cells expect about a hundred events per arm; the dense cells from 5e6 units per arm
+#: are beyond the bound, which the finite-sample replay refuses and the count-routed plan does not.
 PLANNING_CELLS = (
     ("dense-1e5", "power", 0.05, 100_000, 0.05),
     ("dense-2.5e5", "power", 0.05, 250_000, 0.03),
@@ -776,13 +780,27 @@ PLANNING_CELLS = (
     ("rare-1e6", "power", 1e-4, 1_000_000, 0.5),
     ("rare-1e8", "power", 1e-6, 100_000_000, 0.5),
     ("rare-1e9", "power", 1e-7, 1_000_000_000, 0.5),
-    ("dense-5e6-refused", "power", 0.05, 5_000_000, 0.01),
+    ("dense-5e6", "power", 0.05, 5_000_000, 0.01),
+    ("dense-5e6-mde", "mde", 0.05, 5_000_000, None),
+    ("dense-5e7", "power", 0.05, 50_000_000, 0.003),
+    ("dense-5e7-mde", "mde", 0.05, 50_000_000, None),
+    # About a hundred events per arm at 1e5, 1e6, 5e6 and 5e7 units: sparse for any dense-count rule.
+    ("sparse-1e5", "power", 1e-3, 100_000, 0.5),
+    ("sparse-1e5-mde", "mde", 1e-3, 100_000, None),
+    ("sparse-1e6-mde", "mde", 1e-4, 1_000_000, None),
+    ("sparse-5e6", "power", 2e-5, 5_000_000, 0.5),
+    ("sparse-5e6-mde", "mde", 2e-5, 5_000_000, None),
+    ("sparse-5e7", "power", 2e-6, 50_000_000, 0.5),
+    ("sparse-5e7-mde", "mde", 2e-6, 50_000_000, None),
 )
 
 
-def _planning_cell(planner: str, rate: float, n: int | None, lift: float | None) -> dict[str, Any]:
+def _planning_cell(
+    planner: str, rate: float, n: int | None, lift: float | None, conversion_inference: str
+) -> dict[str, Any]:
     """One cold planning call: ``achieved_power``, ``minimum_detectable_effect`` or
-    ``required_sample_size`` at a conversion baseline, or the coded refusal it raised."""
+    ``required_sample_size`` at a conversion baseline under ``conversion_inference``, or the
+    coded refusal it raised."""
     from increment.errors import CodedError
     from increment.estimation.arm_contract import ArmPlanningProcedure
     from increment.power import (
@@ -795,7 +813,9 @@ def _planning_cell(planner: str, rate: float, n: int | None, lift: float | None)
     from increment.power.core import _binomial_key
 
     baseline = Baseline.from_proportion(rate)
-    procedure = ArmPlanningProcedure.standard("conversion")
+    procedure = ArmPlanningProcedure.standard(
+        "conversion", conversion_inference=conversion_inference
+    )
     wall = time.perf_counter()
     cpu = time.process_time()
     outcome: dict[str, Any]
@@ -830,6 +850,7 @@ def _planning_cell(planner: str, rate: float, n: int | None, lift: float | None)
     )
     return {
         "kind": "planning",
+        "conversion_inference": conversion_inference,
         "planner": planner,
         "rate": rate,
         "n": n,
@@ -847,7 +868,15 @@ def _planning(args: argparse.Namespace) -> None:
     for cell, planner, rate, n, lift in PLANNING_CELLS:
         if args.cells and cell not in args.cells.split(","):
             continue
-        arguments = ["_planning_cell", "--planner", planner, "--rate", repr(rate)]
+        arguments = [
+            "_planning_cell",
+            "--planner",
+            planner,
+            "--rate",
+            repr(rate),
+            "--conversion-inference",
+            args.conversion_inference,
+        ]
         if n is not None:
             arguments += ["--n", str(n)]
         if lift is not None:
@@ -876,6 +905,10 @@ def _parser() -> argparse.ArgumentParser:
         if name != "ulp":
             command.add_argument("--cells", help="comma-separated cell names to run")
             command.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
+        if name == "planning":
+            command.add_argument(
+                "--conversion-inference", choices=("finite_sample", "auto"), default="finite_sample"
+            )
         if name == "recovery":
             _duckdb_options(command)
     planning = sub.add_parser("_planning_cell")
@@ -883,6 +916,9 @@ def _parser() -> argparse.ArgumentParser:
     planning.add_argument("--rate", type=float, required=True)
     planning.add_argument("--n", type=int)
     planning.add_argument("--lift", type=float)
+    planning.add_argument(
+        "--conversion-inference", choices=("finite_sample", "auto"), required=True
+    )
     latency = sub.add_parser("_latency_cell")
     latency.add_argument("--n", type=int, required=True)
     latency.add_argument("--rate", type=float, required=True)
@@ -922,7 +958,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     elif args.command == "planning":
         _planning(args)
     elif args.command == "_planning_cell":
-        print(json.dumps(_planning_cell(args.planner, args.rate, args.n, args.lift), default=repr))
+        cell = _planning_cell(args.planner, args.rate, args.n, args.lift, args.conversion_inference)
+        print(json.dumps(cell, default=repr))
     elif args.command == "_latency_cell":
         print(json.dumps(_latency_cell(args.n, args.rate, args.ratio), default=repr))
     elif args.command == "_recovery_cell":

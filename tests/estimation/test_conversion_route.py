@@ -22,7 +22,7 @@ from increment.estimation.conversion_route import (
     planning_route,
     route_for_counts,
 )
-from increment.estimation.engine import Method, estimate_lift
+from increment.estimation.engine import Method, _estimate_lift, estimate_lift
 from increment.estimation.inference import Normal
 from increment.semantics.models import MeanMetric
 from tests.estimation._conversion_counts import (
@@ -479,7 +479,7 @@ class TestMultiplicityRoutesAtTheSmallestFamilyLevel:
             == "t"
         )
         for route_alpha, kind in ((0.05, "t"), (0.05 / 4, "binomial"), (1e-9, "binomial")):
-            row = estimate_lift(
+            row = _estimate_lift(
                 metrics=[CONVERSION_METRIC],
                 summary=count_summary(*counts),
                 control_group="control",
@@ -492,7 +492,7 @@ class TestMultiplicityRoutesAtTheSmallestFamilyLevel:
         low = dense_min_count(0.05)
         counts = (low, 20 * low, 3 * low, 20 * low)
         for route_alpha, kind in ((0.05, "t"), (0.0125, "binomial")):
-            row = estimate_lift(
+            row = _estimate_lift(
                 metrics=[CONVERSION_METRIC],
                 summary=count_summary(*counts),
                 control_group="control",
@@ -502,6 +502,45 @@ class TestMultiplicityRoutesAtTheSmallestFamilyLevel:
             ).results[0]
             assert row.reference_kind == kind
 
+    def test_only_the_decision_row_is_routed_at_the_family_level(self):
+        """A sensitivity method's p-value never enters a family's selection, so it keeps its
+        own level: the family level must not move its label or cost it the finite-sample route."""
+        nominal = dense_min_count(0.025)
+        counts = (nominal, 20 * nominal, 3 * nominal, 20 * nominal)
+        computation = _estimate_lift(
+            metrics=[CONVERSION_METRIC],
+            summary=count_summary(*counts),
+            control_group="control",
+            methods=[Method(name="unadjusted"), Method(name="unadjusted_b")],
+            alpha=0.05,
+            route_alpha=0.05 / 4,
+            method_roles={"unadjusted": "decision", "unadjusted_b": "sensitivity"},
+        )
+        assert {row.method_role: row.reference_kind for row in computation.results} == {
+            "decision": "binomial",
+            "sensitivity": "t",
+        }
+
+    @pytest.mark.parametrize("route_alpha", [0.0, -0.1, 1.5, float("nan")])
+    def test_a_route_level_outside_zero_to_one_is_refused(self, route_alpha):
+        with pytest.raises(CodedError) as raised:
+            _estimate_lift(
+                metrics=[CONVERSION_METRIC],
+                summary=count_summary(300, 10_000, 330, 10_000),
+                control_group="control",
+                route_alpha=route_alpha,
+            )
+        assert raised.value.code == "estimation.engine.route_alpha"
+
+    def test_the_public_estimator_takes_no_route_level(self):
+        with pytest.raises(TypeError):
+            estimate_lift(  # ty: ignore[unknown-argument]
+                metrics=[CONVERSION_METRIC],
+                summary=count_summary(300, 10_000, 330, 10_000),
+                control_group="control",
+                route_alpha=0.05,
+            )
+
 
 # Dense at a 0.1 tail, not at a 0.05 tail: a BH family of two hypotheses at q = 0.2 reads p-values
 # at q / 2 = 0.1, a 0.05 tail, which `_CLEAR` clears and `_BETWEEN` does not.
@@ -509,9 +548,9 @@ _BETWEEN = (dense_min_count(0.1) + dense_min_count(0.05)) // 2
 _CLEAR = 2 * dense_min_count(0.05)
 
 
-def _two_metric_frame():
-    """Two conversion metrics with `_BETWEEN` and `_CLEAR` successes in the control arm and one
-    more in the treatment arm, over covariates and an uptake column the designs below read."""
+def _conversion_frame(successes: dict[str, int]):
+    """One conversion metric per entry, with that many successes in the control arm and one more
+    in the treatment arm, over covariates and an uptake column the designs below read."""
     import pandas as pd
 
     rng = np.random.default_rng(20261004)
@@ -523,8 +562,7 @@ def _two_metric_frame():
                 {
                     "unit_id": f"{group}{i}",
                     "group_id": group,
-                    "a": int(i < _BETWEEN + shift),
-                    "b": int(i < _CLEAR + shift),
+                    **{name: int(i < count + shift) for name, count in successes.items()},
                     "clicked": int(group == "treatment" and i % 2 == 0),
                     "x1": float(rng.normal()),
                     "x2": float(rng.normal()),
@@ -533,18 +571,24 @@ def _two_metric_frame():
     return pd.DataFrame(rows)
 
 
-def _two_metric_analysis(plan, *, design=None, decision_method=None):
+def _two_metric_analysis(plan, *, design=None, decision_method=None, successes=None, priors=None):
     from increment import Analysis
     from increment.frame import MetricSpec
 
+    successes = successes or {"a": _BETWEEN, "b": _CLEAR}
     return Analysis.from_unit_summary(
-        _two_metric_frame(),
+        _conversion_frame(successes),
         unit="unit_id",
         group="group_id",
         **({"control": "control"} if design is None else {"design": design}),
         metrics=[
-            MetricSpec(name=name, type="conversion", decision_method=decision_method)
-            for name in ("a", "b")
+            MetricSpec(
+                name=name,
+                type="conversion",
+                decision_method=decision_method,
+                prior=(priors or {}).get(name),
+            )
+            for name in successes
         ],
         plan=plan,
     )
@@ -567,6 +611,25 @@ class TestBenjaminiHochbergFamilyRoutesAtItsSmallestLevel:
         alone = _two_metric_analysis(AnalysisPlan(alpha=0.2, primary="a")).run()
         (row,) = [row for row in alone if row.metric == "a"]
         assert row.reference_kind == "t"
+
+    def test_a_prior_bound_secondary_is_not_a_hypothesis_of_the_family(self):
+        """``c`` carries an informative prior, so it never enters selection: the family is ``a`` and
+        ``d`` (``q / 2``, a 0.05 tail), not three cells (``q / 3``, a tail whose threshold ``d``
+        misses)."""
+        from increment import AnalysisPlan
+        from increment.estimation.inference import Normal
+
+        deeper = dense_min_count(1.0 / 30.0)
+        between_levels = (dense_min_count(0.05) + deeper) // 2
+        assert dense_min_count(0.05) < between_levels < deeper
+        family = _two_metric_analysis(
+            AnalysisPlan(alpha=0.2, q=0.2, secondaries=("a", "c", "d")),
+            successes={"a": _BETWEEN, "c": _CLEAR, "d": between_levels},
+            priors={"c": Normal(mu=0.0, sigma=0.5)},
+        ).run()
+        kinds = _kinds(family)
+        assert kinds["a"] == "binomial"
+        assert kinds["d"] == "t"
 
     def test_an_encouragement_family_member_is_routed_at_q_over_its_hypotheses(self):
         from increment import AnalysisPlan

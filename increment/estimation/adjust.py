@@ -30,9 +30,9 @@ from increment.estimation._readout_refusals import refuse_observational_quantile
 from increment.estimation.engine import (
     Method,
     _df_to_arms,
+    _estimate_lift,
     _validate_unique_method_names,
     _winsorization_result_fields,
-    estimate_lift,
 )
 from increment.estimation.inference import (
     Prior,
@@ -791,7 +791,7 @@ def estimate_ate(  # noqa: PLR0913, PLR0915
                         null_abs=(null_abs or {}).get(metric.name),
                     )
                 else:
-                    unadj = estimate_lift(
+                    unadj = _estimate_lift(
                         [metric],
                         cast("list[Mapping[str, Any]]", src.moments(metric)),
                         design.control_group,

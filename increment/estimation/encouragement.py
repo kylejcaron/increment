@@ -62,6 +62,7 @@ from increment.estimation.cuped import fit_cuped
 from increment.estimation.engine import (
     Method,
     _df_to_arms,
+    _estimate_lift,
     _validate_methods,
     _warn_if_open_ended_sequential,
     _winsorization_result_fields,
@@ -1012,7 +1013,7 @@ def _prepare_encouragement_estimation(  # noqa: PLR0913
     itt_bundle: DecisionComputation[LiftEstimate] | None = None
     results: tuple[LiftEstimate, ...] = ()
     if "itt" in estimands:
-        itt_bundle = estimate_lift(
+        itt_bundle = _estimate_lift(
             metrics,
             summary,
             control_group=design.control_group,

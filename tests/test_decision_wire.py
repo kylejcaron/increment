@@ -264,14 +264,16 @@ def dto_samples() -> tuple[BaseModel, ...]:
         name="family", correction="bonferroni", axes=("date", "metric"), guarantee="fwer"
     )
     membership = WireFamilyMembership(family=family, member=True)
-    method = WireMethod(name="unadjusted", variance_reduction="none")
+    method = WireMethod(name="unadjusted", variance_reduction="none", conversion_inference="auto")
     from tests.sequential_cases import registration
 
     common: dict[str, Any] = {
         "metric": _METRIC_A,
         "role": "primary",
         "decision_method": method,
-        "sensitivity_methods": (WireMethod(name="cuped", variance_reduction="cuped"),),
+        "sensitivity_methods": (
+            WireMethod(name="cuped", variance_reduction="cuped", conversion_inference="auto"),
+        ),
         "alternative": "greater",
         "prior": NormalPriorSpec(mu=0.02, sigma=0.15),
         "prior_is_global": False,
@@ -283,7 +285,7 @@ def dto_samples() -> tuple[BaseModel, ...]:
         asof=family, randomized_breakout=family, encouragement_breakout=family
     )
     return (
-        WireMethod(name="unadjusted"),
+        WireMethod(name="unadjusted", conversion_inference="auto"),
         WireFixedInference(),
         WireAlwaysValid(registration=registration()),
         WireNoFamily(),
@@ -399,46 +401,152 @@ def _legacy_payload(plan: CompiledDecisionPlan) -> dict[str, Any]:
     return payload
 
 
-def test_a_payload_without_conversion_inference_keeps_its_finite_sample_meaning():
-    """Before the field existed every unadjusted conversion row ran the finite-sample route:
-    a stored plan decodes to that, never silently to ``auto``; a CUPED method had no such
-    route and stays ``auto``."""
+def _legacy_unadjusted_plan(metric_type: str | None = None) -> dict[str, Any]:
+    """A legacy payload of one prior-free, fixed-horizon, relative-scale unadjusted procedure."""
+    plan = _arm_plan()
+    procedure = cast(RelativeArmDecisionProcedure, plan.procedures[_METRIC_A]).model_copy(
+        update={"prior": None, "sensitivity_methods": ()}
+    )
+    return _legacy_payload(plan.model_copy(update={"procedures": {_METRIC_A: procedure}}))
+
+
+def _decision_method(restored: CompiledDecisionPlan) -> Method:
+    return cast(RelativeArmDecisionProcedure, restored.procedures[_METRIC_A]).decision_method
+
+
+def test_a_legacy_unadjusted_method_decodes_to_the_route_it_ran():
+    """Before the field existed every unadjusted conversion row of a fixed-horizon, prior-free,
+    relative-scale procedure ran the finite-sample route: a stored plan decodes to that, never
+    silently to ``auto``."""
+    restored = compiled_plan_from_dict(_legacy_unadjusted_plan())
+    assert _decision_method(restored) == Method(
+        name="unadjusted", conversion_inference="finite_sample"
+    )
+
+
+@pytest.mark.parametrize("metric_type", ["conversion", "retention"])
+def test_a_legacy_conversion_or_retention_metric_decodes_to_finite_sample(metric_type):
+    restored = compiled_plan_from_dict(
+        _legacy_unadjusted_plan(), metric_types={_METRIC_A: metric_type}
+    )
+    assert _decision_method(restored).conversion_inference == "finite_sample"
+
+
+@pytest.mark.parametrize("metric_type", ["mean", "ratio", "quantile", "total"])
+def test_a_legacy_method_on_a_metric_without_that_route_decodes_to_auto(metric_type):
+    """A mean, ratio, quantile or total metric never had the finite-sample route, and an
+    explicit ``finite_sample`` on it is refused at runtime: the stored plan must not acquire it."""
+    restored = compiled_plan_from_dict(
+        _legacy_unadjusted_plan(), metric_types={_METRIC_A: metric_type}
+    )
+    assert _decision_method(restored).conversion_inference == "auto"
+
+
+def test_a_legacy_plan_with_a_prior_or_an_adjustment_decodes_to_auto():
+    """Each of these never took the binomial route, and explicit ``finite_sample`` refuses them."""
     restored = compiled_plan_from_dict(_legacy_payload(_arm_plan()))
     first = cast(RelativeArmDecisionProcedure, restored.procedures[_METRIC_A])
-    assert first.decision_method == Method(name="unadjusted", conversion_inference="finite_sample")
+    assert first.prior is not None
+    assert first.decision_method.conversion_inference == "auto"
+    # A CUPED sensitivity method is variance reduction, never the binomial route.
     assert first.sensitivity_methods == (Method(name="cuped", variance_reduction="cuped"),)
+    # An absolute-scale procedure is not a relative binomial decision.
     second = cast(AbsoluteArmDecisionProcedure, restored.procedures[_METRIC_B])
-    assert second.decision_method.conversion_inference == "finite_sample"
+    assert second.decision_method.conversion_inference == "auto"
 
 
-def test_a_legacy_plan_decides_a_dense_conversion_row_by_the_finite_sample_route():
+def test_a_wire_method_must_state_its_route():
+    with pytest.raises(InvalidRequestError) as raised:
+        WireMethod.model_validate({"name": "unadjusted"})
+    assert raised.value.code == "model.field.missing"
+
+
+def _executed_row_kinds(restored: CompiledDecisionPlan, metric_type: str) -> list[str | None]:
+    """The ``reference_kind`` of the decoded decision method run through ``estimate_lift`` on a
+    dense contrast of a metric of ``metric_type``."""
+    from increment.estimation.engine import estimate_lift
+    from increment.semantics.models import ConversionMetric, MeanMetric
+    from tests.estimation._conversion_counts import count_summary
+
+    metric = (
+        ConversionMetric(name="conv", entity="user", fact="conv")
+        if metric_type == "conversion"
+        else MeanMetric(name="conv", entity="user", fact="conv")
+    )
+    computation = estimate_lift(
+        metrics=[metric],
+        summary=count_summary(50_000, 1_000_000, 51_500, 1_000_000),
+        control_group="control",
+        methods=[_decision_method(restored)],
+    )
+    return [row.reference_kind for row in computation.results]
+
+
+def test_a_legacy_plan_replays_on_every_metric_type_it_could_be_stored_for():
+    """The decoded plan runs: a conversion metric on the finite-sample route it always took (not
+    on ``auto``'s delta method), and a mean metric on its ordinary route without the refusal an
+    explicit ``finite_sample`` would raise."""
+    types = {_METRIC_A: "conversion"}
+    conversion = compiled_plan_from_dict(_legacy_unadjusted_plan(), metric_types=types)
+    assert _executed_row_kinds(conversion, "conversion") == ["binomial"]
+    mean = compiled_plan_from_dict(_legacy_unadjusted_plan(), metric_types={_METRIC_A: "mean"})
+    assert _executed_row_kinds(mean, "mean") == ["t"]
+
+
+def test_a_cube_exported_before_the_field_existed_replays_on_every_metric_type(tmp_path):
+    """The stored-plan seam end to end: an exported moments cube whose embedded plan lacks
+    ``conversion_inference`` rehydrates and runs. Its conversion metric keeps the finite-sample
+    route its plan was written under (a new default plan would take the delta method on these
+    dense counts), and its mean metric runs on its ordinary route instead of being refused as an
+    explicit ``finite_sample`` on a metric that has none."""
+    import json
+
+    import pandas as pd
+    import pyarrow.parquet as pq
+
+    from increment import Analysis
+    from increment.frame import MetricSpec
+
+    n = 10_000
+    frame = pd.DataFrame(
+        {
+            "unit_id": [f"{group}{i}" for group in ("control", "treatment") for i in range(n)],
+            "group_id": ["control"] * n + ["treatment"] * n,
+            "conv": [int(i < 3_000) for i in range(n)] + [int(i < 3_150) for i in range(n)],
+            "rev": [float(1 + i % 7) for i in range(n)]
+            + [float(1 + (i + 1) % 7) for i in range(n)],
+        }
+    )
+    metrics = [MetricSpec(name="conv", type="conversion"), MetricSpec(name="rev", type="mean")]
+    current = Analysis.from_unit_summary(
+        frame, unit="unit_id", group="group_id", control="control", metrics=metrics
+    )
+    path = tmp_path / "cube.parquet"
+    current.export(path)
+    rows = pq.read_table(path).to_pylist()
+    for row in rows:
+        stored = json.loads(row["decision_plan"])
+        for procedure in stored["procedures"].values():
+            for method in (procedure["decision_method"], *procedure["sensitivity_methods"]):
+                del method["conversion_inference"]
+        row["decision_plan"] = json.dumps(stored)
+    replay = Analysis.from_moments(rows, metrics=metrics, control="control")
+    kinds = {row.metric: row.reference_kind for row in replay.run()}
+    assert kinds == {"conv": "binomial", "rev": "t"}
+    assert {row.metric: row.reference_kind for row in current.run()} == {"conv": "t", "rev": "t"}
+
+
+def test_the_same_counts_under_a_new_default_method_take_the_delta_method_route():
     from increment.estimation.engine import estimate_lift
     from tests.estimation._conversion_counts import CONVERSION_METRIC, count_summary
 
-    restored = compiled_plan_from_dict(_legacy_payload(_arm_plan()))
-    method = cast(RelativeArmDecisionProcedure, restored.procedures[_METRIC_A]).decision_method
-    counts = (50_000, 1_000_000, 51_500, 1_000_000)
-    legacy = estimate_lift(
-        metrics=[CONVERSION_METRIC],
-        summary=count_summary(*counts),
-        control_group="control",
-        methods=[method],
-    )
-    assert [row.reference_kind for row in legacy.results] == ["binomial"]
     current = estimate_lift(
         metrics=[CONVERSION_METRIC],
-        summary=count_summary(*counts),
+        summary=count_summary(50_000, 1_000_000, 51_500, 1_000_000),
         control_group="control",
         methods=[Method(name="unadjusted")],
     )
     assert [row.reference_kind for row in current.results] == ["t"]
-
-
-def test_an_observational_method_without_the_field_decodes_as_auto():
-    assert WireMethod.model_validate({"name": "iptw"}).conversion_inference == "auto"
-    assert WireMethod.model_validate({"name": "unadjusted"}).conversion_inference == (
-        "finite_sample"
-    )
 
 
 def test_an_unknown_conversion_inference_is_rejected():

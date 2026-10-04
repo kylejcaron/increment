@@ -68,6 +68,7 @@ from increment.estimation.encouragement import ESTIMANDS, estimate_encouragement
 from increment.estimation.engine import (
     UNBOUNDED_RETENTION_DAILY_REMEDY,
     Method,
+    _estimate_lift,
     _validate_methods,
     estimate_lift,
     reject_unbounded_retention,
@@ -1879,7 +1880,7 @@ def _estimate_lift_computation_or_reason(
     route_alpha: float | None = None,
 ) -> tuple[DecisionComputation[LiftEstimate] | None, str | None]:
     try:
-        computation = estimate_lift(
+        computation = _estimate_lift(
             metrics=[metric],
             summary=summary,
             control_group=control_group,

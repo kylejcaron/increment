@@ -121,6 +121,7 @@ _REFUSALS = refusals(
         "estimation.engine.method_name_observational": "Method(name={m!r}) is an observational adjustment (estimate_ate / Observational design); this randomized path would label an unadjusted randomized estimate with it.",
         "estimation.engine.metric_found_group": "Metric(s) {unknown} found in group_summary but not in the metrics list. Declared metrics: {metric_types}",
         "estimation.engine.control_group_found": "control_group '{control_group}' not found in arms. Available groups: {known_groups}",
+        "estimation.engine.route_alpha": "route_alpha must lie in (0, 1], got {route_alpha!r}",
     },
 )
 _refuse = raiser(_REFUSALS)
@@ -2634,7 +2635,7 @@ def _lift_for_method(  # noqa: PLR0913
     # (``route_alpha``, in ``alpha``'s convention): the route is the one valid at the smallest
     # level the row can be decided at, never a looser one.
     route_level = alpha_eff
-    if route_alpha is not None:
+    if route_alpha is not None and method_role == "decision":
         floor = route_alpha if valid_alternative == "two-sided" else 2.0 * route_alpha
         route_level = min(alpha_eff, floor)
     route = route_for_counts(
@@ -2687,14 +2688,8 @@ def estimate_lift(  # noqa: PLR0913
     winsor_references: Mapping[tuple[str, str], BootstrapReference] | None = None,
     *,
     summary_population: Literal["assigned", "triggered"] | None = None,
-    route_alpha: float | None = None,
 ) -> DecisionComputation[LiftEstimate]:
     """Estimate relative lift for every (metric x method x non-control arm).
-
-    ``route_alpha`` is the smallest level (in ``alpha``'s convention) a multiplicity
-    procedure can later decide a row's p-value at; a conversion row takes the delta-method
-    route only if its counts are dense at that level too, so an approximate p-value is never
-    read at a tail it was not validated at. Omitted, the row's own ``alpha`` decides.
 
     Percentile winsorization requires ``raw_outcomes`` with every cutoff-pool
     arm and matching inference specification. It returns a confidence set without a
@@ -2749,6 +2744,59 @@ def estimate_lift(  # noqa: PLR0913
     total clusters emits the qualified-reference warning (see
     ``check_total_clusters``).
     """
+    return _estimate_lift(
+        metrics,
+        summary,
+        control_group,
+        methods,
+        prior,
+        alpha,
+        alternative,
+        inference,
+        null_lift,
+        null_abs,
+        preferred_direction,
+        cluster,
+        method_roles,
+        raw_outcomes,
+        winsor_references,
+        summary_population=summary_population,
+    )
+
+
+def _estimate_lift(  # noqa: PLR0913
+    metrics: Sequence[Metric],
+    summary: SequentialSnapshot
+    | IntoDataFrame
+    | Iterable[Mapping[str, Any]],  # group_summary rows for ONE experiment
+    control_group: str,  # REQUIRED explicit control
+    methods: list[Method] | None = None,
+    prior: Prior | None = None,
+    alpha: float | None = None,
+    alternative: str | None = None,
+    inference: AsymptoticMean | AlwaysValid | MixedFamily | None = None,
+    null_lift: float | None = None,
+    null_abs: float | None = None,
+    preferred_direction: PreferredDirection | None = None,
+    cluster: str | None = None,
+    method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
+    raw_outcomes: Mapping[str, WinsorRawState] | None = None,
+    winsor_references: Mapping[tuple[str, str], BootstrapReference] | None = None,
+    *,
+    summary_population: Literal["assigned", "triggered"] | None = None,
+    route_alpha: float | None = None,
+) -> DecisionComputation[LiftEstimate]:
+    """``estimate_lift`` with the multiplicity routing level its families pass.
+
+    ``route_alpha`` is the smallest level (in ``alpha``'s convention) a multiplicity procedure
+    can later decide a decision row's p-value at, in ``(0, 1]``: a conversion decision row
+    takes the delta-method route only if its counts are dense at that level too, so an
+    approximate p-value is never read at a tail it was not validated at. Omitted, the row's
+    own ``alpha`` decides. Only the package's own families set it; the public function
+    never does, so a caller cannot move a row's ``reference_kind`` apart from a family.
+    """
+    if route_alpha is not None and not 0.0 < route_alpha <= 1.0:
+        _refuse("estimation.engine.route_alpha", route_alpha=route_alpha)
     percentile_metrics = [
         m for m in metrics if getattr(getattr(m, "winsorization", None), "has_percentile", False)
     ]
@@ -2824,7 +2872,7 @@ def estimate_lift(  # noqa: PLR0913
             preferred_direction,
         )
         if ordinary:
-            remaining = estimate_lift(
+            remaining = _estimate_lift(
                 metrics=ordinary,
                 summary=summary,
                 control_group=control_group,
@@ -2838,6 +2886,7 @@ def estimate_lift(  # noqa: PLR0913
                 preferred_direction=preferred_direction,
                 cluster=cluster,
                 method_roles=method_roles,
+                route_alpha=route_alpha,
             )
             from increment.estimation.decision_types import DecisionComputation
 

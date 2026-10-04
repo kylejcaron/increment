@@ -7309,15 +7309,18 @@ def _conversion_route_case() -> ParityCase:
 
 def _route_segment_counts() -> dict[str, tuple[int, int, int, Literal["t", "binomial"]]]:
     """Per store segment: units per arm, control and treatment successes, and the route label.
-    One conversion metric spans dense, sparse and threshold-straddling segments."""
-    m = _route_threshold()
+    One conversion metric spans dense, sparse and threshold-straddling segments. The breakout
+    is a BH family of its four segments, so every row is routed at ``q / 4``, the family's
+    smallest level, and the straddling counts are offsets from that threshold."""
+    m = dense_min_count(_ROUTE_ALPHA / (2 * 4))
     n = 3 * m
-    treatment = m + m // 2
+    # The arms differ by one unit, so no row is a BH discovery and every row keeps its nominal
+    # pass, the one routed at the family's level (a discovery is re-estimated at its own FCR level).
     return {
-        "dense_store": (n, n // 2, n // 2 + n // 10, "t"),
-        "edge_below_store": (n, m - 1, treatment, "binomial"),
-        "edge_at_store": (n, m, treatment, "t"),
-        "sparse_store": (80, 10, 20, "binomial"),
+        "dense_store": (n, n // 2, n // 2 + 1, "t"),
+        "edge_below_store": (n, m - 1, m, "binomial"),
+        "edge_at_store": (n, m, m + 1, "t"),
+        "sparse_store": (80, 10, 11, "binomial"),
     }
 
 

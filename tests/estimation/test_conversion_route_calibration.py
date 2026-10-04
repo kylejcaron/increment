@@ -37,6 +37,27 @@ def _noncoverage(cell: cr.Cell, *, alpha: float, reps: int, seed: int):
     return cr.simulate_hybrid(cell, alpha=alpha, alternative="two-sided", reps=reps, seed=seed)
 
 
+class TestRouteLabelSmoke:
+    """The fast tier's deterministic check of the route each count pair takes."""
+
+    @pytest.mark.parametrize(
+        ("counts", "kind"),
+        [
+            ((3_000, 10_000, 3_150, 10_000), "t"),
+            ((60, 10_000, 90, 10_000), "binomial"),
+            ((0, 10_000, 12, 10_000), "binomial"),
+        ],
+        ids=["dense", "sparse", "zero_control"],
+    )
+    def test_a_count_pair_is_labelled_by_the_route_it_took(self, counts, kind):
+        assert lift_row(counts).reference_kind == kind
+        assert route_for_counts(*counts, tail_alpha=0.025, mode="auto") == (
+            "asymptotic" if kind == "t" else "finite_sample"
+        )
+
+
+@pytest.mark.slow
+@pytest.mark.parameter_recovery
 class TestSmoke:
     """Three dense cells and a sparse one, 2,000 seeded replicates each, at ``alpha = 0.05``."""
 
@@ -122,25 +143,33 @@ class TestShippedThreshold:
 @pytest.mark.slow
 @pytest.mark.parameter_recovery
 class TestHybridPipelineAcrossTheThreshold:
-    """The production pipeline (``estimate_lift`` routing each draw by its counts, then the delta
-    method or the finite-sample inversion) keeps its unconditional per-tail noncoverage within
-    ``scientific_delta`` of the tail at counts straddling the threshold, at the largest tail the
-    reduced grid affords."""
+    """The pipeline (each count pair routed by its counts, then decided by the delta method or
+    the finite-sample inversion) keeps its unconditional per-tail noncoverage within
+    ``scientific_delta`` of the tail at counts straddling the threshold. The noncoverage is an
+    exact sum over the count lattice, so no draw count limits its resolution."""
 
-    REPS = 6_000
-
-    @pytest.mark.parametrize("offset", [-2, -1, 0, 1, 2])
-    def test_noncoverage_stays_within_the_tolerance_at_the_threshold(self, offset):
-        tail = 0.1
-        alpha = 2.0 * tail
-        m = dense_min_count(tail) + offset
-        cell = cr.cells(m)[0]
-        result = cr.simulate_hybrid(
-            cell, alpha=alpha, alternative="two-sided", reps=self.REPS, seed=20261004 + offset
+    @pytest.mark.parametrize("tail", [0.1, 0.05])
+    @pytest.mark.parametrize("offset", cr.OFFSETS)
+    def test_noncoverage_stays_within_the_tolerance_at_the_threshold(self, tail, offset):
+        shipped = dense_min_count(tail)
+        cell = next(c for c in cr.cells(shipped + offset) if c.family == "central")
+        result = cr.hybrid_noncoverage(cell, alpha=2.0 * tail, threshold=shipped)
+        assert max(result.lower, result.upper) <= tail + scientific_delta(tail) + result.omitted
+        assert result.lower + result.upper <= (
+            2.0 * tail + scientific_delta(2.0 * tail) + result.omitted
         )
-        lower, upper = cr.hybrid_upper_bounds(result, family_size=5 * 2)
-        assert max(lower, upper) <= tail + scientific_delta(tail)
+        # The cell straddles the rule: some draws are routed each way.
         assert 0.0 < result.asymptotic_share < 1.0
+
+    def test_the_production_pipeline_reproduces_the_exact_noncoverage(self):
+        """``estimate_lift`` on ``replicates(tail)`` seeded draws agrees with the sum within
+        four Monte Carlo standard errors."""
+        assert cr.replicate_check(0.1, workers=1)
+
+    def test_the_replayed_finite_sample_set_is_the_production_set_at_its_edge(self):
+        compared, _edge, hard = cr.finite_conformance(per_tail=3, tails=(0.1, 0.05))
+        assert compared > 0
+        assert hard == 0
 
     def test_every_draw_of_the_hybrid_is_routed_by_its_counts(self):
         """A seeded sweep of the production rows: the label is the count rule's route."""
@@ -155,3 +184,29 @@ class TestHybridPipelineAcrossTheThreshold:
             route = route_for_counts(*counts, tail_alpha=tail, mode="auto")
             kind = lift_row(counts, alpha=2.0 * tail).reference_kind
             assert kind == ("t" if route == "asymptotic" else "binomial")
+
+
+@pytest.mark.slow
+@pytest.mark.parameter_recovery
+class TestPlanningBound:
+    """Planned power against the pipeline's exact rejection probability, summed over the count
+    lattice: a borderline plan is a bound (no larger), a sparse plan is the replay, and a dense
+    plan is within the closed form's tolerance."""
+
+    @pytest.mark.parametrize("factor", [0.5, 0.9, 1.04, 1.25, 1.5, 3.0])
+    @pytest.mark.parametrize(
+        ("alpha", "alternative"), [(0.2, "two-sided"), (0.1, "greater")], ids=["two", "greater"]
+    )
+    def test_planned_power_never_exceeds_the_pipelines_rejection_probability(
+        self, factor, alpha, alternative
+    ):
+        tail = alpha / 2.0 if alternative == "two-sided" else alpha
+        n = math.ceil(factor * dense_min_count(tail) / 0.3)
+        power = cr.enumerated_power(cr.MirrorCell("bound", n, 0.3, 0.1, alpha, alternative))
+        slack = 1e-9 + power.omitted
+        if power.route == "dense":
+            assert abs(power.margin) <= cr.DENSE_AGREEMENT + slack
+        elif power.route == "sparse":
+            assert abs(power.margin) <= slack
+        else:
+            assert power.margin >= -slack

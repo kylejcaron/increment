@@ -952,7 +952,10 @@ class MomentsSource(SequentialSourceMixin):
         if plan_payload is not None and (plan is None or envelope_identity is not None):
             from increment.decision_wire import compiled_plan_from_json
 
-            stored_plan = compiled_plan_from_json(plan_payload)
+            stored_plan = compiled_plan_from_json(
+                plan_payload,
+                metric_types={metric.name: metric.type for metric in metric_catalog},
+            )
         if plan is None and stored_plan is not None:
             compiled = stored_plan
             missing = [
