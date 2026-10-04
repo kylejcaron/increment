@@ -33,12 +33,11 @@ _MEMO: dict[tuple, CaseResult] = {}
 def _reads_data(disposition: matrix.Disposition) -> bool:
     """A warehouse route that runs, or refuses only once a request is read."""
     return any(
-        isinstance(disposition.verdicts[name].outcome, matrix.Runs)
-        or (
-            isinstance(disposition.verdicts[name].outcome, matrix.Refuses)
-            and disposition.verdicts[name].stage == "request"
-        )
-        for name in _WAREHOUSE
+        isinstance(v.outcome, matrix.Runs)
+        or (isinstance(v.outcome, matrix.Refuses) and v.stage == "request")
+        for verdicts in disposition.legs.values()
+        for name, v in verdicts.items()
+        if name in _WAREHOUSE
     )
 
 
@@ -57,7 +56,7 @@ def _params() -> list:
     return params
 
 
-def _run_one(cell: matrix.Cell, case: ParityCase, name: str) -> CaseResult:
+def _run_one(cell: matrix.Cell, method: str, case: ParityCase, name: str) -> CaseResult:
     single = replace(
         case,
         build={name: case.build[name]},
@@ -65,7 +64,7 @@ def _run_one(cell: matrix.Cell, case: ParityCase, name: str) -> CaseResult:
         waived_refusal_codes={n: c for n, c in case.waived_refusal_codes.items() if n == name},
         expected_absence={n: e for n, e in case.expected_absence.items() if n == name},
     )
-    inputs = matrix_cases.memo_key(cell, name)
+    inputs = matrix_cases.memo_key(cell, method, name)
     if inputs is None:
         return run_case(single)
     key = (*inputs, case.waived_refusal_codes.get(name), case.expected_absence.get(name))
@@ -74,9 +73,9 @@ def _run_one(cell: matrix.Cell, case: ParityCase, name: str) -> CaseResult:
     return _MEMO[key]
 
 
-def _matched(cell: matrix.Cell, disposition: matrix.Disposition) -> None:
-    case = matrix_cases.build_case(cell, disposition.outcomes)
-    parts = [_run_one(cell, case, name) for name in case.build]
+def _matched(cell: matrix.Cell, method: str, disposition: matrix.Disposition) -> None:
+    case = matrix_cases.build_case(cell, method, disposition.outcomes(method))
+    parts = [_run_one(cell, method, case, name) for name in case.build]
     merged = CaseResult(
         rows={n: r for part in parts for n, r in part.rows.items()},
         refusals={n: c for part in parts for n, c in part.refusals.items()},
@@ -86,8 +85,8 @@ def _matched(cell: matrix.Cell, disposition: matrix.Disposition) -> None:
     assert_parity(case, merged)
 
 
-def _switchback(cell: matrix.Cell, disposition: matrix.Disposition) -> None:
-    case = matrix_cases.build_switchback_case(cell, disposition.outcomes)
+def _switchback(cell: matrix.Cell, method: str, disposition: matrix.Disposition) -> None:
+    case = matrix_cases.build_switchback_case(cell, method, disposition.outcomes(method))
     assert_parity(case, run_case(case))
 
 
@@ -110,6 +109,9 @@ def test_every_cell_is_dispositioned_and_its_split_explained():
 
 @pytest.mark.parametrize("cell", _params())
 def test_cell(cell: matrix.Cell) -> None:
+    """Each leg of the cell (a day-axis view has a value leg and a lift leg) runs on its own,
+    so one leg refusing never hides the other's rows."""
     disposition = matrix.classify(cell)
-    _matched(cell, disposition)
-    _switchback(cell, disposition)
+    for method in disposition.legs:
+        _matched(cell, method, disposition)
+        _switchback(cell, method, disposition)

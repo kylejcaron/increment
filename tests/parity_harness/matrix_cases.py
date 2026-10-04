@@ -500,11 +500,11 @@ def _switchback_builder(cell: Cell) -> Callable[[], Analysis]:
     return build
 
 
-def _case_fields(cell: Cell) -> dict[str, Any]:
-    return {
-        "breakout_dimension": "store" if cell.view == "breakout" else None,
-        "view": cell.view if cell.view in ("daily", "asof") else None,
-    }
+def _case_fields(cell: Cell, method: str) -> dict[str, Any]:
+    """The view a leg reads: `rows` is run/run_breakout; a day-axis cell has a `values`
+    leg (`run_daily`/`run_asof`) and a `lift` leg (`run_daily_lift`/`run_asof_lift`)."""
+    view = {"rows": None, "values": cell.view, "lift": f"{cell.view}_lift"}[method]
+    return {"breakout_dimension": "store" if cell.view == "breakout" else None, "view": view}
 
 
 _NOT_ATTEMPTED = "SOURCE: not attempted for this request; the other ingress cases carry it"
@@ -543,7 +543,7 @@ MATCHED = (
 )
 
 
-def build_case(cell: Cell, outcomes: Mapping[str, Outcome]) -> ParityCase:
+def build_case(cell: Cell, method: str, outcomes: Mapping[str, Outcome]) -> ParityCase:
     """The matched-arm `ParityCase` for *cell*: the five ingresses compared with each other.
 
     *outcomes* are the recorded outcomes; the runner asserts each one, so a stale
@@ -558,25 +558,25 @@ def build_case(cell: Cell, outcomes: Mapping[str, Outcome]) -> ParityCase:
         "from_moments": ingress.moments,
     }
     return ParityCase(
-        id=cell.id,
+        id=f"{cell.id}-{method}",
         build=builders,
         sequential=cell.option == "sequential",
         **_expectations(outcomes, MATCHED),
-        **_case_fields(cell),
+        **_case_fields(cell, method),
     )
 
 
-def build_switchback_case(cell: Cell, outcomes: Mapping[str, Outcome]) -> ParityCase:
+def build_switchback_case(cell: Cell, method: str, outcomes: Mapping[str, Outcome]) -> ParityCase:
     """`from_switchback_panel` on its own: a different estimand, never row-compared."""
     return ParityCase(
-        id=f"{cell.id}-switchback",
+        id=f"{cell.id}-{method}-switchback",
         build={"from_switchback_panel": _switchback_builder(cell)},
         **_expectations(outcomes, ("from_switchback_panel",)),
-        **_case_fields(cell),
+        **_case_fields(cell, method),
     )
 
 
-def memo_key(cell: Cell, name: str) -> tuple[Any, ...] | None:
+def memo_key(cell: Cell, method: str, name: str) -> tuple[Any, ...] | None:
     """Identical warehouse inputs: the digest of what the builder will read.
 
     ``missing`` error and zero declare the same Definitions payload, so a cell that
@@ -592,6 +592,7 @@ def memo_key(cell: Cell, name: str) -> tuple[Any, ...] | None:
         name,
         json.dumps(payload, sort_keys=True),
         cell.view,
+        method,
         cell.option,
         cell.option in ("winsor_fixed", "winsor_percentile"),
         _extension_kinds(cell),

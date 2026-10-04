@@ -127,6 +127,7 @@ _EXACT_FIELDS = (
     "inference",
     "abs_reference_kind",
     "relative_unavailable_reason",
+    "unavailable",
     "prior_shrunk",
     "prior_spec",
     # `BreakoutEstimate`-only; `getattr(..., None)` on a `LiftEstimate` row
@@ -188,6 +189,9 @@ def _row_payload(row: Any) -> dict[str, Any]:
         "family_threshold": row.family_threshold,
         "alternative": row.alternative,
         "reference_kind": row.reference_kind,
+        # A day-axis row with no lift names why; two paths dropping a row for different
+        # reasons must not compare equal. Absent (None) on every other row.
+        "unavailable": getattr(row, "unavailable", None),
         "note": row.note,
         # `family_guarantee` lands in a follow-up; `getattr` keeps this
         # harness runnable against a LiftEstimate that does not carry the
@@ -321,8 +325,9 @@ class CaseResult:
 
 
 def _read(analysis: Any, case: ParityCase) -> Any:
-    """Read the view `case` names: `run`/`run_breakout`, or the day-axis pair
-    (`run_daily`+`run_daily_lift`, `run_asof`+`run_asof_lift`) concatenated."""
+    """Read the one method `case` names: `run`/`run_breakout`, or a single day-axis method
+    (`run_daily`, `run_daily_lift`, `run_asof`, `run_asof_lift`). A day-axis value series and
+    its lift are separate cases, so one refusing never hides the other's rows."""
     estimand_kwargs = {"estimands": case.estimands} if case.estimands else {}
     prior_kwargs = {"prior": case.prior} if case.prior is not UNSET else {}
     metric_kwargs = {"metrics": list(case.metrics)} if case.metrics is not None else {}
@@ -331,15 +336,17 @@ def _read(analysis: Any, case: ParityCase) -> Any:
             return analysis.run_breakout(**estimand_kwargs, **prior_kwargs, **metric_kwargs)
         return analysis.run(**estimand_kwargs, **prior_kwargs, **metric_kwargs)
     dimension = {"dimension": case.breakout_dimension} if case.breakout_dimension else {}
-    if case.view == "daily":
-        return [
-            *analysis.run_daily(**metric_kwargs, **dimension),
-            *analysis.run_daily_lift(**prior_kwargs, **metric_kwargs, **dimension),
-        ]
-    return [
-        *analysis.run_asof(**metric_kwargs, **dimension),
-        *analysis.run_asof_lift(**estimand_kwargs, **prior_kwargs, **metric_kwargs, **dimension),
-    ]
+    match case.view:
+        case "daily":
+            return analysis.run_daily(**metric_kwargs, **dimension)
+        case "daily_lift":
+            return analysis.run_daily_lift(**prior_kwargs, **metric_kwargs, **dimension)
+        case "asof":
+            return analysis.run_asof(**metric_kwargs, **dimension)
+        case _:
+            return analysis.run_asof_lift(
+                **estimand_kwargs, **prior_kwargs, **metric_kwargs, **dimension
+            )
 
 
 def run_case(case: ParityCase) -> CaseResult:

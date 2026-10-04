@@ -239,3 +239,56 @@ def test_expected_absence_that_never_occurs_fails():
     )
     with pytest.raises(AssertionError):
         assert_parity(case, run_case(case))
+
+
+def _unavailable_lift_row(reason):
+    from increment.breakout.estimates import DailyLiftEstimate
+
+    return DailyLiftEstimate(
+        metric="m",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        ds="2025-01-10",
+        lift=None,
+        unavailable=reason,
+    )
+
+
+def test_unavailable_day_axis_rows_with_different_reasons_do_not_compare_equal():
+    from tests.parity_harness.runner import _normalize
+
+    few = _normalize([_unavailable_lift_row("few_units")])
+    zero = _normalize([_unavailable_lift_row("zero_variance")])
+    (key,) = few
+    assert few.keys() == zero.keys()
+    with pytest.raises(AssertionError):
+        _assert_equal(few, zero, key)
+
+
+def _assert_equal(left, right, key):
+    from tests.parity_harness.runner import _assert_payload_equal
+
+    for method, payload in left[key].items():
+        _assert_payload_equal("case", "left", "right", key, method, payload, right[key][method])
+
+
+def test_a_refusing_day_axis_method_does_not_hide_its_sibling_rows():
+    """`daily` reads `run_daily` and `daily_lift` reads `run_daily_lift` as separate
+    legs, so one refusing leaves the other's rows compared."""
+    from tests.parity_harness.cases import CONSTRUCTORS, ParityCase
+
+    def values_case(view):
+        return ParityCase(
+            id=f"leg-{view}",
+            build={"from_unit_summary": _mean_summary_builder()},
+            waive={n: "SOURCE: not attempted" for n in CONSTRUCTORS if n != "from_unit_summary"}
+            | {"from_unit_summary": "SOURCE: a summary carries no day axis"},
+            waived_refusal_codes={"from_unit_summary": "facade.analysis.no_definitions"},
+            refusal_only=True,
+            view=view,
+        )
+
+    for view in ("daily", "daily_lift", "asof", "asof_lift"):
+        case = values_case(view)
+        assert_parity(case, run_case(case))
