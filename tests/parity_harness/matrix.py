@@ -741,7 +741,7 @@ _OVERRIDES: dict[tuple[str, str], Spec] = {
         "a cube is exported by a producer; under a drop policy the only producer of a windowed "
         "or retention metric is the dataframe panel, which refuses a pre-period covariate (the "
         "warehouse producer that carries one declares no missing policy)",
-        f"{_LIMITATIONS}: panel covariate paragraph (CONSTRUCTION)",
+        f"{_CAPABILITIES}: panel covariate paragraph (CONSTRUCTION)",
         "declaration",
     ),
     ("from_unit_day_artifact", "REF:frame.metric.window_days_supported"): Spec(
