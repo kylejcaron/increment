@@ -33,7 +33,8 @@ from increment.query.artifact_extensions import (
     validate_observational_extension,
 )
 from increment.query.artifact_publish import artifact_context
-from increment.query.native_source import SitewideEvidence, TriggeredPopulationSource
+from increment.query.native_contract import SitewideEvidence
+from increment.query.native_source import TriggeredPopulationSource
 from increment.query.schemas import ARTIFACT_RELATION_PRIMARY_KEYS, ARTIFACT_RELATION_SCHEMAS
 from increment.semantics.artifact import (
     ArtifactContext,

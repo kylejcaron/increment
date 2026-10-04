@@ -102,11 +102,8 @@ from increment.query.artifact_contract import (
 from increment.query.artifact_digest import canonical_json
 from increment.query.fact_resolution import _require_design
 from increment.query.integrity import validate_trigger_fires_in_every_arm
-from increment.query.native_source import (
-    DefinitionsMomentSource,
-    NativeCoreSource,
-    NativeViewSource,
-)
+from increment.query.native_contract import NativeCoreSource, NativeViewSource
+from increment.query.native_source import DefinitionsMomentSource
 from increment.query.session import WarehouseSession
 from increment.query.source import open_artifact
 from increment.semantics.artifact import (

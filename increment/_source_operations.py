@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from increment.analysis import Analysis
     from increment.estimation.diagnostics import SRMResult
     from increment.estimation.results import LiftEstimate
-    from increment.query.native_source import DayEvidenceSource
+    from increment.query.native_contract import DayEvidenceSource
     from increment.semantics.models import Breakout, Metric
     from increment.sequential_state import SequentialCheckpoint
     from increment.sources import BreakoutMomentsSource, MomentSource

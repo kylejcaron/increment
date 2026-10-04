@@ -12,11 +12,11 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from fractions import Fraction
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NoReturn, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 import ibis
 import ibis.expr.types as ir
@@ -83,6 +83,12 @@ from increment.query.integrity import (
     validate_cluster_labels,
     validate_cluster_uniqueness,
 )
+from increment.query.native_contract import (
+    _NATIVE_COVARIATE_RESERVED,
+    DayEvidenceSource,
+    DimensionedDayEvidence,
+    SitewideEvidence,
+)
 from increment.query.session import SourceScope, WarehouseSession
 from increment.semantics.artifact import UnitDayArtifactRef
 from increment.semantics.design import Encouragement
@@ -112,143 +118,6 @@ from increment.sources import (
     SourceContext,
     SourceOperation,
 )
-
-
-@dataclass(frozen=True, slots=True)
-class SitewideEvidence:
-    """Typed evidence needed by the sitewide estimator."""
-
-    metric: Metric
-    site_total: float
-    arm_stats: tuple[ArmStats, ...]
-    control_group: str
-    cluster: str | None
-    site_total_denominator: float | None = None
-    cluster_counts: dict[str, int] | None = None
-    unit_counts: dict[str, int] | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _LegacyBreakoutSource:
-    """Source-name shim for the private pre-Task8 day-axis adapter."""
-
-    name: str
-
-
-@dataclass(frozen=True, slots=True)
-class DimensionedDayEvidence:
-    """Named day-axis result for one breakout and metric."""
-
-    source_name: str
-    rows: list[dict[str, Any]]
-
-    def __iter__(self):
-        """Keep the private ``_day_axis_source`` tuple contract readable."""
-        yield _LegacyBreakoutSource(self.source_name)
-        yield self.rows
-
-
-@runtime_checkable
-class DayEvidenceSource(MomentSource, Protocol):
-    """Typed day-axis evidence source owned by the native warehouse path."""
-
-    capabilities: frozenset[Grain]
-    operations: frozenset[SourceOperation]
-    breakouts: tuple[str, ...]
-
-    @property
-    def context(self) -> SourceContext: ...
-
-    def moments(
-        self,
-        metric: Metric,
-        *,
-        grain: Grain = "daily",
-        by: Sequence[str] = (),
-        completed_windows_only: bool = False,
-        include_covariate: bool = False,
-    ) -> list[dict[str, Any]]: ...
-
-    def breakout_moments(
-        self,
-        metric: Metric,
-        breakout: Breakout,
-        *,
-        grain: Grain = "daily",
-        completed_windows_only: bool = False,
-        include_covariate: bool = False,
-    ) -> DimensionedDayEvidence: ...
-
-    def close(self) -> None: ...
-
-
-@runtime_checkable
-class NativeCoreSource(MomentSource, Protocol):
-    """Source-owned native core workflows."""
-
-    operations: frozenset[SourceOperation]
-
-    def materialize(self) -> None: ...
-
-    def triggered_counts(
-        self,
-    ) -> tuple[Literal["unit", "cluster"], dict[str, int], dict[str, int]]: ...
-
-    def triggered_source(self) -> MomentSource: ...
-
-    def trigger_rates(self) -> dict[str, float]: ...
-
-    def export_moments(self, path: str | Path) -> None: ...
-
-    def moments_source(
-        self,
-        *,
-        metrics: Sequence[Metric],
-        methods: list[Any] | None = None,
-        prior: Any | None = None,
-        population: Literal["assigned", "triggered"] = "assigned",
-        narrow_cuped: bool = False,
-    ) -> MomentSource: ...
-
-    def panel_sql(self, *, breakouts: Sequence[Breakout] = ()) -> dict[str, str]: ...
-
-    def summary_sql(self, *, breakouts: Sequence[Breakout] = ()) -> dict[str, str]: ...
-    def build_panel_for_metric(
-        self,
-        exposures: Table,
-        metric: Metric,
-        *,
-        population: Literal["assigned", "triggered"] = "assigned",
-        horizon_metrics: Sequence[Metric] | None = None,
-    ) -> Any: ...
-
-
-@runtime_checkable
-class NativeViewSource(Protocol):
-    """Source-owned native view workflows."""
-
-    operations: frozenset[SourceOperation]
-
-    def sitewide_evidence(
-        self, metric: Metric, *, include_ratio: bool = False
-    ) -> SitewideEvidence: ...
-
-    def breakout_summaries(
-        self, *, metrics: Sequence[Metric]
-    ) -> dict[str, dict[str, pa.Table]]: ...
-
-    def factor_summaries(self, *, metrics: Sequence[Metric]) -> dict[str, pa.Table]: ...
-
-    def breakout_source(
-        self, breakout: Breakout, *, metrics: Sequence[Metric]
-    ) -> BreakoutMomentsSource: ...
-
-    def breakout_sources(
-        self, breakouts: Sequence[Breakout], *, metrics: Sequence[Metric]
-    ) -> Sequence[BreakoutMomentsSource]: ...
-
-    def day_source(self, *, metrics: Sequence[Metric]) -> DayEvidenceSource: ...
-
 
 _NATIVE_GRAIN = RefusalSpec(
     "source.native.grain",
@@ -291,15 +160,6 @@ _NATIVE_COVARIATE_DTYPE = RefusalSpec(
     "source.native.covariate_dtype",
     CapabilityError,
     template="unit_frame: covariate {covariate!r} (source {source!r}) has dtype {dtype!r}; covariate adjustment needs a numeric (int/float/bool) or categorical (string) column -- a date carries no adjustment meaning. Derive a numeric or categorical pre-exposure property.",
-)
-_NATIVE_COVARIATE_RESERVED = RefusalSpec(
-    "source.native.covariate_reserved",
-    CapabilityError,
-    lambda *, covariate, cluster: (
-        f"unit_frame: {covariate!r} is a reserved metadata column name"
-        + (f" carrying the identity of declared cluster {cluster!r}" if cluster is not None else "")
-        + " -- rename the property to request it as a covariate."
-    ),
 )
 _NATIVE_UNIT_GRAIN = RefusalSpec(
     "source.native.unit_grain",
