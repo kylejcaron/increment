@@ -503,13 +503,19 @@ class TestMultiplicityRoutesAtTheSmallestFamilyLevel:
             assert row.reference_kind == kind
 
 
-def _two_metric_analysis(plan):
+# Dense at a 0.1 tail, not at a 0.05 tail: a BH family of two hypotheses at q = 0.2 reads p-values
+# at q / 2 = 0.1, a 0.05 tail, which `_CLEAR` clears and `_BETWEEN` does not.
+_BETWEEN = (dense_min_count(0.1) + dense_min_count(0.05)) // 2
+_CLEAR = 2 * dense_min_count(0.05)
+
+
+def _two_metric_frame():
+    """Two conversion metrics with `_BETWEEN` and `_CLEAR` successes in the control arm and one
+    more in the treatment arm, over covariates and an uptake column the designs below read."""
     import pandas as pd
 
-    from increment import Analysis
-    from increment.frame import MetricSpec
-
-    n = 1500
+    rng = np.random.default_rng(20261004)
+    n = 4 * _CLEAR
     rows = []
     for i in range(n):
         for group, shift in (("control", 0), ("treatment", 1)):
@@ -517,19 +523,35 @@ def _two_metric_analysis(plan):
                 {
                     "unit_id": f"{group}{i}",
                     "group_id": group,
-                    # 450 successes: dense at a 0.1 tail (threshold 400), not at a 0.05 tail (659)
-                    "a": int(i < 450 + shift),
-                    "b": int(i < 700 + shift),
+                    "a": int(i < _BETWEEN + shift),
+                    "b": int(i < _CLEAR + shift),
+                    "clicked": int(group == "treatment" and i % 2 == 0),
+                    "x1": float(rng.normal()),
+                    "x2": float(rng.normal()),
                 }
             )
+    return pd.DataFrame(rows)
+
+
+def _two_metric_analysis(plan, *, design=None, decision_method=None):
+    from increment import Analysis
+    from increment.frame import MetricSpec
+
     return Analysis.from_unit_summary(
-        pd.DataFrame(rows),
+        _two_metric_frame(),
         unit="unit_id",
         group="group_id",
-        control="control",
-        metrics=[MetricSpec(name=name, type="conversion") for name in ("a", "b")],
+        **({"control": "control"} if design is None else {"design": design}),
+        metrics=[
+            MetricSpec(name=name, type="conversion", decision_method=decision_method)
+            for name in ("a", "b")
+        ],
         plan=plan,
     )
+
+
+def _kinds(rows) -> dict[str, str | None]:
+    return {row.metric: row.reference_kind for row in rows if row.estimand in (None, "itt")}
 
 
 class TestBenjaminiHochbergFamilyRoutesAtItsSmallestLevel:
@@ -537,9 +559,7 @@ class TestBenjaminiHochbergFamilyRoutesAtItsSmallestLevel:
         from increment import AnalysisPlan
 
         family = _two_metric_analysis(AnalysisPlan(alpha=0.2, q=0.2, secondaries=("a", "b"))).run()
-        kinds = {row.metric: row.reference_kind for row in family}
-        # q / 2 = 0.1: a 0.05 tail, threshold 659 > 450 for `a`; `b` clears it at 700.
-        assert kinds == {"a": "binomial", "b": "t"}
+        assert _kinds(family) == {"a": "binomial", "b": "t"}
 
     def test_the_same_counts_as_a_sole_primary_are_routed_at_their_own_level(self):
         from increment import AnalysisPlan
@@ -547,3 +567,45 @@ class TestBenjaminiHochbergFamilyRoutesAtItsSmallestLevel:
         alone = _two_metric_analysis(AnalysisPlan(alpha=0.2, primary="a")).run()
         (row,) = [row for row in alone if row.metric == "a"]
         assert row.reference_kind == "t"
+
+    def test_an_encouragement_family_member_is_routed_at_q_over_its_hypotheses(self):
+        from increment import AnalysisPlan
+        from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+        design = Encouragement(
+            control_group="control",
+            uptake=UptakeSpec(fact="clicked"),
+            exclusion_restriction=ExclusionRestriction(
+                acknowledged=True, justification="assignment only moves conversion via uptake"
+            ),
+            one_sided=True,
+            min_first_stage_z=0.001,
+        )
+        family = _two_metric_analysis(
+            AnalysisPlan(alpha=0.2, q=0.2, secondaries=("a", "b")), design=design
+        ).run(estimands=("itt",))
+        assert _kinds(family) == {"a": "binomial", "b": "t"}
+        alone = _two_metric_analysis(AnalysisPlan(alpha=0.2, primary="a"), design=design).run(
+            estimands=("itt",)
+        )
+        assert _kinds(alone)["a"] == "t"
+
+    def test_an_observational_family_member_is_routed_at_q_over_its_hypotheses(self):
+        from increment import AdjustmentSet, AnalysisPlan, IdentificationGate, Method, Observational
+
+        design = Observational(
+            control_group="control",
+            adjustment=AdjustmentSet(covariates=("x1", "x2")),
+            gate=IdentificationGate(overlap="trim"),
+        )
+        unadjusted = Method(name="unadjusted")
+        family = _two_metric_analysis(
+            AnalysisPlan(alpha=0.2, q=0.2, secondaries=("a", "b")),
+            design=design,
+            decision_method=unadjusted,
+        ).run()
+        assert _kinds(family) == {"a": "binomial", "b": "t"}
+        alone = _two_metric_analysis(
+            AnalysisPlan(alpha=0.2, primary="a"), design=design, decision_method=unadjusted
+        ).run()
+        assert _kinds(alone)["a"] == "t"

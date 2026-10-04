@@ -1876,6 +1876,7 @@ def _estimate_lift_computation_or_reason(
     alternative: str,
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None,
+    route_alpha: float | None = None,
 ) -> tuple[DecisionComputation[LiftEstimate] | None, str | None]:
     try:
         computation = estimate_lift(
@@ -1888,6 +1889,7 @@ def _estimate_lift_computation_or_reason(
             alternative=alternative,
             inference=inference,
             method_roles=method_roles,
+            route_alpha=route_alpha,
         )
         from increment.decision import DecisionComputation
 
@@ -2239,6 +2241,9 @@ class _BreakoutContext(NamedTuple):
     all_pairs: set[tuple[str, str]]
     reliability_floor: int
     resolved_methods: list[Method]
+    # The smallest level a ``correction="bh"`` family decides a p-value at (``q`` over its
+    # hypothesis count), in ``alpha``'s convention; ``None`` outside a BH family.
+    route_alpha: float | None
 
 
 class _BreakoutRowsPass(NamedTuple):
@@ -2602,6 +2607,7 @@ def _estimate_breakout_slice_metrics(  # noqa: PLR0915
                     methods=method_group,
                     inference=context.inference,
                     method_roles=resolved_roles,
+                    route_alpha=context.route_alpha,
                 )
                 if computation is not None and computation.failures:
                     _keep_non_guard_failures(computation.failures, original_failures)
@@ -2729,6 +2735,19 @@ class _BreakoutFamilyContext(NamedTuple):
     method_roles_by_metric: Mapping[str, Mapping[str, Literal["decision", "sensitivity"]]] | None
 
 
+def _breakout_family_cells(
+    segments: Mapping[str, Sequence[Mapping[str, Any]]], all_pairs: set[tuple[str, str]]
+) -> list[tuple[str, str, str]]:
+    """``(segment value, metric, arm)`` of every hypothesis a ``correction="bh"`` family
+    tests: each treatment arm of each metric, in each segment that carries the metric."""
+    return [
+        (segment_value, metric_name, group_id)
+        for segment_value in sorted(segments)
+        for metric_name, group_id in sorted(all_pairs)
+        if metric_name in {str(row["metric"]) for row in segments[segment_value]}
+    ]
+
+
 def _apply_breakout_family_correction(
     results: list[BreakoutEstimate],
     context: _BreakoutFamilyContext,
@@ -2756,9 +2775,7 @@ def _apply_breakout_family_correction(
 
     family_keys = [
         SegmentHypothesisKey(metric_name, group_id, "itt", dimension, segment_value)
-        for segment_value in sorted(segments)
-        for metric_name, group_id in sorted(all_pairs)
-        if metric_name in {str(row["metric"]) for row in segments[segment_value]}
+        for segment_value, metric_name, group_id in _breakout_family_cells(segments, all_pairs)
     ]
     if correction != "bh" or not family_keys:
         return results
@@ -3104,6 +3121,10 @@ def run_breakout(  # noqa: PLR0913
     segment_count = len(segments)
     k = max(segment_count, 1) if correction == "bonferroni" else 1
     alpha_seg = _conservative_divide(alpha, k)
+    # A BH family reads each nominal p-value at a threshold as small as ``q / m``: route each
+    # conversion cell at that level, never at the looser per-segment one.
+    family_size = len(_breakout_family_cells(segments, all_pairs)) if correction == "bh" else 0
+    route_alpha = q / family_size if family_size else None
     results: list[BreakoutEstimate] = []
     segment_computations: dict[tuple[str, str], DecisionComputation[LiftEstimate]] = {}
     warned_open_ended: set[str] = set()
@@ -3132,6 +3153,7 @@ def run_breakout(  # noqa: PLR0913
             all_pairs,
             reliability_floor,
             resolved_methods,
+            route_alpha,
         )
         prepared = _prepare_lift_slice(
             segment_rows,

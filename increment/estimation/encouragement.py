@@ -964,6 +964,7 @@ def _prepare_encouragement_estimation(  # noqa: PLR0913
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
     cluster: str | None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None,
+    route_alpha: float | None,
 ) -> _PreparedEncouragementEstimation | DecisionComputation[LiftEstimate]:
     """Resolve request policy, index arms, and delegate ITT construction."""
     if isinstance(prior, (StudentTPrior, MixturePrior)):
@@ -1024,6 +1025,7 @@ def _prepare_encouragement_estimation(  # noqa: PLR0913
             inference=inference,
             cluster=cluster,
             method_roles=resolved_method_roles,
+            route_alpha=route_alpha,
         )
         results = tuple(
             r.model_copy(
@@ -1545,6 +1547,7 @@ def estimate_encouragement(  # noqa: PLR0913
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None = None,
     cluster: str | None = None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
+    route_alpha: float | None = None,
 ) -> DecisionComputation[LiftEstimate]:
     """Estimate ITT, compliance (first stage), and LATE for an encouragement design.
 
@@ -1591,6 +1594,10 @@ def estimate_encouragement(  # noqa: PLR0913
     Refuses a CUPED method, an informative ``prior`` or sequential
     ``inference``, and any ratio metric on any estimand; withholds the
     complier-relative ``late`` row (unbuilt moment family).
+
+    ``route_alpha`` is the smallest level (in ``alpha``'s convention) a multiplicity procedure
+    can later read an ``itt`` p-value at; ``itt`` rows of a conversion metric are routed as
+    ``estimate_lift`` routes them at that level (see its ``route_alpha``).
     """
     _require_exclusion_for_late(design, estimands)
     if inference is not None:
@@ -1659,6 +1666,7 @@ def estimate_encouragement(  # noqa: PLR0913
         inference,
         cluster,
         method_roles,
+        route_alpha,
     )
     if not isinstance(prepared, _PreparedEncouragementEstimation):
         return prepared
