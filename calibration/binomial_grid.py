@@ -719,8 +719,7 @@ def calibrate_cell(
     metrics["point_conditional_bias"] = {"value": bias, "p_point_available": p_xc_pos}
     evidence = production_evidence(cell, alpha)
     error_limit = alpha + scientific_delta(alpha)
-    passed = metrics["true_rr_noncoverage"]["unconditional"]["bound"][1] <= error_limit
-    passed = passed and all(
+    passed = metrics["true_rr_noncoverage"]["unconditional"]["bound"][1] <= error_limit and all(
         record["bound"][1] <= error_limit
         for name, record in metrics.items()
         if name.startswith("type_I_")
