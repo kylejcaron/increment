@@ -434,22 +434,29 @@ already ships. A new method needs all of the following:
    `unfinished` and is tracked in an issue, not in the limitations page.
 4. **Planning matches runtime.** Where the planner and the runtime derive the
    same quantity, an equivalence test at matched inputs.
-5. **Ingress parity.** A row or axis value in the enumerated
-   [parity matrix](tests/parity_harness/COVERAGE.md) with a stated disposition
-   for each of the six `Analysis` entry points. Path presence alone is not
-   evidence of parity.
+5. **Ingress parity.** For a capability reachable through `Analysis`, a row or
+   axis value in the enumerated [parity matrix](tests/parity_harness/COVERAGE.md)
+   with a stated disposition for each of the six `Analysis` entry points. A
+   standalone family (for example `estimate_policy_contrast` over a
+   `LoggedTrace`, or a power solver) does not belong in that matrix; it
+   enumerates parity across its own public ingresses instead. Path presence
+   alone is not evidence of parity.
 6. **An independent reference.** Either a frozen comparison against a
    third-party tool or independent primitive under `tests/oracles/`, or a
    justified independent construction check (an enumeration or an exact
    derivation that shares no code with the implementation). Record it in the
    [reference inventory](docs/validation.md#reference-inventory) with its
    tolerance and the regimes it does not cover. If no matched reference
-   exists, list the method under
-   [unvalidated regimes](docs/validation.md#unvalidated-regimes) rather than
-   leaving the gap unstated.
+   exists, add a row to
+   [methods without an independent reference](docs/validation.md#methods-without-an-independent-reference)
+   with its status, guarantee, basis, and ingress coverage, and add an
+   [unvalidated regimes](docs/validation.md#unvalidated-regimes) entry where a
+   specific regime remains unstated, rather than leaving the gap unstated.
 7. **Stable refusals and bounds.** A coded refusal for each unsupported
-   variant, raised before data is loaded and identical across ingress paths,
-   plus measured, enforced operational bounds (input size, latency, memory)
+   variant, raised before data is loaded. A hazard that does not depend on the
+   source gets the same code on every ingress path; a limitation specific to
+   one adapter (`source_limited`) keeps that adapter's own `source.*` code.
+   Add measured, enforced operational bounds (input size, latency, memory)
    with a refusal at the bound.
 8. **A complete change.** Examples, guides, the
    [compatibility reference](docs/guides/compatibility.md), the path-by-capability
