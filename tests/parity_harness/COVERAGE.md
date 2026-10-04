@@ -25,9 +25,9 @@ A cell's status is its most significant per-ingress verdict (`Disposition.status
 |---|---|
 | supported | 522 |
 | source_limited | 512 |
-| construction_limited | 1,310 |
+| construction_limited | 1,316 |
 | not_expressible | 960 |
-| unfinished | 280 |
+| unfinished | 274 |
 | unsound | 0 |
 | total | 3,584 |
 
@@ -37,14 +37,14 @@ Verdicts are per leg: a day-axis view has a value leg and a lift leg that refuse
 
 | Ingress | supported | source_limited | construction_limited | not_expressible | unfinished | unsound |
 |---|---|---|---|---|---|---|
-| from_definitions | 676 | 0 | 496 | 3,976 | 228 | 0 |
-| from_unit_day_artifact | 676 | 0 | 492 | 3,976 | 232 | 0 |
-| from_unit_summary | 102 | 1,536 | 1,538 | 1,824 | 376 | 0 |
-| from_unit_panel | 484 | 920 | 1,936 | 1,632 | 404 | 0 |
+| from_definitions | 676 | 0 | 504 | 3,976 | 220 | 0 |
+| from_unit_day_artifact | 672 | 0 | 504 | 3,976 | 224 | 0 |
+| from_unit_summary | 102 | 1,536 | 1,544 | 1,824 | 370 | 0 |
+| from_unit_panel | 480 | 920 | 1,940 | 1,632 | 404 | 0 |
 | from_switchback_panel | 4 | 2,216 | 1,428 | 1,440 | 288 | 0 |
 | from_moments | 144 | 1,558 | 1,654 | 1,728 | 292 | 0 |
 
-Cells where, in at least one leg, an ingress runs and another does not (each non-runner carries a status, reason and authority): 526.
+Cells where, in at least one leg, an ingress runs and another does not (each non-runner carries a status, reason and authority): 522.
 
 ## Unfinished cells and trackers
 
@@ -57,9 +57,10 @@ Each tracker is a kata issue linked to t8tc; each cell below carries the code no
 | `66mg` | 36 | definitions: arm.metric.quantile_cluster, arm.metric.quantile_cuped; moments: frame.metric.cuped_does_apply, source.frame.cluster_capability; switchback_panel: frame.metric.cuped_does_apply; unit_day_artifact: arm.metric.quantile_cluster, artifact.extension.invalid; unit_panel: frame.metric.cuped_does_apply; unit_summary: frame.metric.cuped_does_apply, source.frame.cluster_capability | a quantile has no mean to adjust |
 | `6z2f` | 160 | moments: frame.metric.window_days_supported; switchback_panel: frame.metric.window_days_supported; unit_day_artifact: frame.metric.window_days_supported; unit_panel: frame.metric.window_days_supported; unit_summary: frame.metric.window_days_supported | the artifact route reads a windowed quantile through the frame declaration and refuses it, while the definitions route that published it runs |
 | `r3bg` | 10 | definitions: readout.metric.quantile_alternative; unit_day_artifact: readout.metric.quantile_alternative; unit_panel: readout.metric.quantile_alternative; unit_summary: readout.metric.quantile_alternative | a one-sided alternative (a non-inferiority margin) is not supported for quantile metrics yet |
-| `t8ae` | 10 | definitions: source.native.operation; unit_summary: source.frame.quantile_no_moments | an adjusted quantile reads per-unit rows on the panel and artifact routes, but the native source refuses the moments operation instead |
 
 A hazard that several routes refuse with different codes is unfinished on every route that raises it (`matrix._reconcile_hazards`); `check_disposition` rejects a diverging hazard with no tracker. Tracker `66mg` covers both quantile x CUPED (`arm.metric.quantile_cuped`, `frame.metric.cuped_does_apply`, `artifact.extension.invalid`) and quantile x cluster (`arm.metric.quantile_cluster`, `source.frame.cluster_capability`); `0f6d` and `1cr4` cover the quantile day-axis and unbounded-sequential hazards the same way.
+
+An observational design has no quantile estimator, so an observational quantile run is not a tracked hazard: the readout seam (`increment/estimation/_readout_refusals.py::refuse_quantile_moments`) refuses it with `source.frame.quantile_no_moments` on every ingress that reads it, and `test_observational_quantile_is_refused_with_one_code_on_every_ingress_that_reads_it` pins the one code. A windowed quantile reaches that seam on the warehouse routes only; the frame routes refuse its window declaration first (`6z2f`). On the day axis only the unwindowed as-of value leg on the artifact reaches the seam; the other day-axis legs keep their quantile x day-axis codes (`0f6d`).
 
 ## Tiers and cost
 

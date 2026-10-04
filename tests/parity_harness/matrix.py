@@ -290,7 +290,6 @@ _T_QUANTILE_DAY_AXIS = "0f6d"
 _T_WINDOWED_QUANTILE = "6z2f"
 _T_ARTIFACT_QUANTILE_CUPED = "66mg"
 _T_SEQUENTIAL_UNBOUNDED = "1cr4"
-_T_QUANTILE_OBSERVATIONAL = "t8ae"
 _T_QUANTILE_ONE_SIDED = "r3bg"
 
 _SPECS: dict[str, Spec] = {
@@ -617,20 +616,13 @@ _SPECS: dict[str, Spec] = {
         "increment/estimation/engine.py::validate_readout_engine (message: 'yet')",
         tracker=_T_QUANTILE_ONE_SIDED,
     ),
-    "REF:source.native.operation": Spec(
-        "unfinished",
-        "an adjusted quantile reads per-unit rows on the panel and artifact routes, but the "
-        "native source refuses the moments operation instead",
-        "increment/query/native_source.py (quantile is served through unit_frame)",
-        tracker=_T_QUANTILE_OBSERVATIONAL,
-    ),
-    "REF:source.frame.quantile_no_moments": Spec(
-        "unfinished",
-        "a quantile has no moments representation, yet the panel and artifact routes serve "
-        "an adjusted quantile through a unit frame",
-        "increment/frame.py (quantile is served through unit_frame); "
-        f"{_CATALOG}['from_moments']['quantile']",
-        tracker=_T_QUANTILE_OBSERVATIONAL,
+    "REF:source.frame.quantile_no_moments#observational": Spec(
+        "construction_limited",
+        "an observational design has no quantile estimator: the readout seam refuses a quantile "
+        "metric before any source read, with one code on every ingress",
+        "increment/estimation/_readout_refusals.py::refuse_quantile_moments (called from "
+        "estimation/adjust.py::validate_readout_adjustment and estimate_ate); "
+        f"{_CATALOG}['observational']['quantile']",
     ),
     # -- switchback: a different estimand, fixed-horizon contrasts only ------------------
     "REF:source.frame.switchback.identification": Spec(
@@ -761,6 +753,7 @@ _HAZARDS: dict[str, str] = {
     "REF:readout.view.observational": "observational-breakout",
     "REF:readout.margin.breakout": "margin-breakout",
     "REF:readout.metric.quantile_breakout": "quantile-breakout",
+    "REF:source.frame.quantile_no_moments#observational": "quantile-observational",
     "REF:facade.analysis.clustered_day_axis": "cluster-day-axis",
     "REF:definition.invalid#cluster": "cluster-breakout",
     "REF:breakout.metric.daily_winsorization": "winsorization-day-axis",
@@ -835,8 +828,6 @@ _CATALOG_SUPERSEDED: dict[tuple[str, str], str] = {
     "registers asymptotic_mean (the catalog's own advisory names this route)",
     ("observational", "retention"): "the catalog probes the frame summary seam; the warehouse "
     "routes read retention through the native unit frame",
-    ("observational", "quantile"): "the catalog probes a frame/native route; the unit-day "
-    "artifact and the panel serve an adjusted quantile through a unit frame (tracker t8ae)",
     ("cluster", "quantile"): "the catalog probes the frame; see the quantile-cluster hazard",
 }
 
@@ -912,7 +903,7 @@ RULES: dict[str, tuple[Box, ...]] = {
         box("REF:sequential.route.unsupported#breakout", "retention windowed_mean windowed_conversion windowed_ratio", "breakout", "sequential", "error zero", "rows"),
         box("REF:sequential.route.unsupported#metric_type", "quantile windowed_quantile", "run breakout", "sequential", "error zero", "rows"),
         box("REF:sequential.route.unsupported#unbounded", "mean conversion ratio", "run breakout", "sequential", "error zero", "rows"),
-        box("REF:source.native.operation", "quantile windowed_quantile", "run", "observational", "error zero", "rows"),
+        box("REF:source.frame.quantile_no_moments#observational", "quantile windowed_quantile", "run", "observational", "error zero", "rows"),
         box("EXC:ValidationError#missing", "*", "run breakout", "*", "drop impute", "rows"),
         box("REF:definition.invalid#report_only", "total active", "run breakout", "none cuped cluster sequential observational ni_margin", "error zero", "rows"),
         box("RUNS", "mean conversion ratio retention quantile windowed_mean windowed_conversion windowed_ratio windowed_quantile", "run breakout", "*", "error zero", "rows"),
@@ -962,7 +953,9 @@ RULES: dict[str, tuple[Box, ...]] = {
         box("REF:sequential.route.unsupported#unbounded", "mean conversion ratio", "run breakout", "sequential", "error zero", "rows"),
         box("EXC:ValidationError#missing", "*", "run breakout", "*", "drop impute", "rows"),
         box("REF:definition.invalid#report_only", "total active", "run breakout", "none cuped cluster sequential observational ni_margin", "error zero", "rows"),
-        box("REF:frame.metric.window_days_supported", "windowed_quantile", "run breakout", "none observational ni_margin", "error zero", "rows"),
+        box("REF:frame.metric.window_days_supported", "windowed_quantile", "run breakout", "none ni_margin", "error zero", "rows"),
+        box("REF:frame.metric.window_days_supported", "windowed_quantile", "breakout", "observational", "error zero", "rows"),
+        box("REF:source.frame.quantile_no_moments#observational", "quantile windowed_quantile", "run", "observational", "error zero", "rows"),
         box("RUNS", "mean conversion ratio retention quantile windowed_mean windowed_conversion windowed_ratio", "run breakout", "*", "error zero", "rows"),
         box("EXC:ValidationError#winsorization", "conversion ratio retention quantile total active windowed_conversion windowed_ratio windowed_retention windowed_quantile windowed_total windowed_active", "daily asof", "winsor_fixed winsor_percentile", "*", "values"),
         box("REF:artifact.extension.invalid", "quantile windowed_quantile", "daily asof", "cuped", "error zero", "values"),
@@ -973,7 +966,8 @@ RULES: dict[str, tuple[Box, ...]] = {
         box("REF:definition.total.metric_window_days", "windowed_total", "daily asof", "none cuped cluster sequential observational ni_margin", "error zero", "values"),
         box("REF:facade.analysis.clustered_day_axis", "mean conversion ratio retention quantile windowed_mean windowed_conversion windowed_ratio windowed_quantile", "daily asof", "cluster", "error zero", "values"),
         box("REF:frame.metric.window_days_supported", "windowed_quantile", "asof", "none observational ni_margin", "error zero", "values"),
-        box("REF:query.builders.asof_group_summary_metric_type_not_implemented", "quantile", "asof", "none observational ni_margin", "error zero", "values"),
+        box("REF:query.builders.asof_group_summary_metric_type_not_implemented", "quantile", "asof", "none ni_margin", "error zero", "values"),
+        box("REF:source.frame.quantile_no_moments#observational", "quantile", "asof", "observational", "error zero", "values"),
         box("REF:readout.metric.quantile_grain", "quantile windowed_quantile", "daily", "none observational ni_margin", "error zero", "values"),
         box("REF:sequential.route.unsupported#metric_type", "quantile windowed_quantile", "daily asof", "sequential", "error zero", "values"),
         box("REF:sequential.route.unsupported#unbounded", "mean conversion ratio", "daily asof", "sequential", "error zero", "values"),
@@ -1010,7 +1004,7 @@ RULES: dict[str, tuple[Box, ...]] = {
         box("REF:sequential.source.invalid", "mean conversion ratio", "run breakout", "sequential", "error zero", "rows"),
         box("REF:source.frame.cluster_capability", "quantile", "run breakout", "cluster", "error zero drop", "rows"),
         box("REF:source.frame.constructor#retention", "retention", "run breakout", "none cuped cluster sequential observational ni_margin", "error zero drop", "rows"),
-        box("REF:source.frame.quantile_no_moments", "quantile", "run", "observational", "error zero drop", "rows"),
+        box("REF:source.frame.quantile_no_moments#observational", "quantile", "run", "observational", "error zero drop", "rows"),
         box("REF:facade.analysis.operation", "mean conversion ratio quantile", "breakout", "none cuped winsor_fixed winsor_percentile cluster observational ni_margin", "error zero drop", "rows"),
         box("REF:frame.metric.missing_impute", "mean conversion ratio retention quantile windowed_mean windowed_conversion windowed_ratio", "run breakout", "*", "impute", "rows"),
         box("REF:source.frame.constructor#window", "windowed_mean windowed_conversion windowed_ratio", "run breakout", "*", "error zero drop", "rows"),
@@ -1063,6 +1057,7 @@ RULES: dict[str, tuple[Box, ...]] = {
         box("REF:source.frame.unit_frame_panel", "retention windowed_mean windowed_conversion", "run", "observational", "error zero", "rows"),
         box("REF:frame.metric.missing_impute", "mean conversion ratio retention quantile windowed_mean windowed_conversion windowed_ratio", "run breakout", "*", "impute", "rows"),
         box("REF:frame.missing_policy.panel_drop", "mean conversion ratio retention quantile windowed_mean windowed_conversion windowed_ratio", "run breakout", "none cuped winsor_fixed winsor_percentile observational ni_margin", "drop", "rows"),
+        box("REF:source.frame.quantile_no_moments#observational", "quantile", "run", "observational", "error zero", "rows"),
         box("RUNS", "mean conversion ratio retention quantile windowed_mean windowed_conversion windowed_ratio", "run breakout", "none cuped winsor_fixed sequential observational ni_margin", "error zero", "rows"),
         box("REF:source.frame_panel.cluster_grain", "mean conversion ratio retention quantile total active windowed_mean windowed_conversion windowed_ratio windowed_total windowed_active", "run breakout", "cluster", "*", "rows"),
         box("REF:breakout.metric.daily_winsorization", "mean windowed_mean", "daily asof", "winsor_fixed winsor_percentile", "error zero", "values"),

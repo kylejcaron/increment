@@ -125,6 +125,30 @@ def test_every_cell_is_dispositioned_and_its_split_explained():
     )
 
 
+def test_observational_quantile_is_refused_with_one_code_on_every_ingress_that_reads_it():
+    """An observational design has no quantile estimator, so every matched-arm ingress that
+    can declare the request refuses it with the shared readout-seam code, never a number and
+    never a route-specific code. A windowed quantile reaches that seam on the warehouse
+    routes only; the frame routes refuse its window declaration first."""
+    seam = "source.frame.quantile_no_moments"
+    warehouse = ("from_definitions", "from_unit_day_artifact")
+    for cell in matrix.iter_cells():
+        if not (
+            cell.base == "quantile"
+            and cell.option == "observational"
+            and cell.view == "run"
+            and cell.missing in ("error", "zero")
+        ):
+            continue
+        verdicts = matrix.classify(cell).legs["rows"]
+        reaching = warehouse if cell.windowed else matrix_cases.MATCHED
+        for name in reaching:
+            assert verdicts[name].outcome == matrix.Refuses(seam), (
+                f"{cell.id}: {name} -> {verdicts[name].outcome}"
+            )
+            assert verdicts[name].tracker is None, f"{cell.id}: {name} is tracked as unfinished"
+
+
 @pytest.mark.parametrize("cell", _params())
 def test_cell(cell: matrix.Cell) -> None:
     """Each leg of the cell (a day-axis view has a value leg and a lift leg) runs on its own,
