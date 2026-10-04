@@ -239,8 +239,9 @@ under its iid positive smooth-density model, not a universal finite-sample or
 heterogeneous-effect claim.
 The full historical calibration manifest remains unresolved. It records 12
 known alternative variance failures plus contamination width-failure evidence;
-bounded normal/binomial diagnostics do not turn these into passes. Adaptive-winsor
-variants remain experimental and excluded from stable admission. The rank
+bounded normal/binomial diagnostics do not turn these into passes. An experimental
+inference specification reports its descriptive confidence set and withholds decision
+evidence (`evidence.experimental_reference`). The rank
 method's qualification is `uniform_support_conditioned_v1`; it permits zeros
 and requires externally justified support. Bootstrap requires strictly positive
 outcomes. Percentile cutoffs are pooled across all eligible arms before the
