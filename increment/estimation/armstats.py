@@ -1316,13 +1316,14 @@ class ArmStats(CodedModel, BaseModel):
         return SummaryStats(n=self.n, mean=self.mean_y(), var=self.var_y())
 
 
+# prose: allow-long Bernoulli second-moment tolerance derives from the producer's summation error
 #: `arm.cy2` chains window `AVG` and residual `SUM` passes, but `variance_slack` bounds one
 #: accumulation at its typical `sqrt(n)` drift. A sum of `n` nonnegative terms errs by at most
 #: `(n - 1) * u` of itself in any summation order (`u = 2**-53`), and about `7 * u` more rounds
 #: each term and the expected `successes * (n - successes) / n`: `(n + 8) * u`. Producers
 #: approach it, adding millions of equal tiny residuals onto a growing total that rounds the same
 #: way every time. On the real DuckDB producer path (`scripts/measure_binomial_ceiling.py
-#: recovery`) the error reached 1355x `variance_slack` at 1e9 units and stayed within a tenth of
+#: recovery`) the error reached 1355x `variance_slack` at 1e9 units and stayed within a fifth of
 #: the bound at every size. `1024 * variance_slack` keeps >4x headroom up to 4e6 units and exceeds
 #: the bound there; above, the bound is the tolerance. Corrupt or non-binary data misses either
 #: by orders of magnitude.
