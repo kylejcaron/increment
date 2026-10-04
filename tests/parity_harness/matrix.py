@@ -595,6 +595,15 @@ _SPECS: dict[str, Spec] = {
         f"{_CATALOG}['daily_asof']['quantile'] declares readout.metric.quantile_grain",
         tracker=_T_QUANTILE_DAY_AXIS,
     ),
+    "REF:source.frame.quantile_no_moments#asof_source": Spec(
+        "unfinished",
+        "the artifact's descriptive as-of value path never reaches the observational readout "
+        "seam; the source's own observational-quantile guard raises the quantile-no-moments "
+        "code instead of the catalog's readout.metric.quantile_grain",
+        f"{_CATALOG}['daily_asof']['quantile'] declares readout.metric.quantile_grain; "
+        "increment/query/source.py::_ArtifactFacadeSource._refuse_observational_quantile",
+        tracker=_T_QUANTILE_DAY_AXIS,
+    ),
     "REF:artifact.extension.invalid": Spec(
         "unfinished",
         "publishing the CUPED extension for a quantile raises an artifact code instead of the "
@@ -754,6 +763,7 @@ _HAZARDS: dict[str, str] = {
     "REF:readout.margin.breakout": "margin-breakout",
     "REF:readout.metric.quantile_breakout": "quantile-breakout",
     "REF:source.frame.quantile_no_moments#observational": "quantile-observational",
+    "REF:source.frame.quantile_no_moments#asof_source": "quantile-day-axis",
     "REF:facade.analysis.clustered_day_axis": "cluster-day-axis",
     "REF:definition.invalid#cluster": "cluster-breakout",
     "REF:breakout.metric.daily_winsorization": "winsorization-day-axis",
@@ -967,7 +977,7 @@ RULES: dict[str, tuple[Box, ...]] = {
         box("REF:facade.analysis.clustered_day_axis", "mean conversion ratio retention quantile windowed_mean windowed_conversion windowed_ratio windowed_quantile", "daily asof", "cluster", "error zero", "values"),
         box("REF:frame.metric.window_days_supported", "windowed_quantile", "asof", "none observational ni_margin", "error zero", "values"),
         box("REF:query.builders.asof_group_summary_metric_type_not_implemented", "quantile", "asof", "none ni_margin", "error zero", "values"),
-        box("REF:source.frame.quantile_no_moments#observational", "quantile", "asof", "observational", "error zero", "values"),
+        box("REF:source.frame.quantile_no_moments#asof_source", "quantile", "asof", "observational", "error zero", "values"),
         box("REF:readout.metric.quantile_grain", "quantile windowed_quantile", "daily", "none observational ni_margin", "error zero", "values"),
         box("REF:sequential.route.unsupported#metric_type", "quantile windowed_quantile", "daily asof", "sequential", "error zero", "values"),
         box("REF:sequential.route.unsupported#unbounded", "mean conversion ratio", "daily asof", "sequential", "error zero", "values"),
