@@ -1109,7 +1109,7 @@ def _sequential_asymptotic_mean_case() -> ParityCase:
     produces `note='zero_arm_variance'` because the declared window
     excludes the day actually carrying the value). from_switchback_panel
     has no sequential construction at all (a genuine, permanent SOURCE
-    limitation already documented in docs/limitations.md), waived, not
+    limitation already documented in docs/reference/capabilities-by-entry-point.md), waived, not
     attempted.
     """
     rows = ds.event_rows()
@@ -2222,7 +2222,7 @@ def _sequential_composed_family_ebh_case() -> ParityCase:
     (`sequential_family_size`) and `select_sequential_family` actually
     runs -- `_sequential_composed_itt_and_uptake_case`'s
     `SequentialCompliancePolicy` defaults `family=False`, so that case
-    never exercises e-BH selection at all, the gap `docs/limitations.md`
+    never exercises e-BH selection at all, the gap `docs/reference/capabilities-by-entry-point.md`
     and `docs/guides/encouragement.md` both claim is covered ("e-BH
     selected" across five constructors). `_extra_treatment_purchases(11)`
     converts 11 of the treatment arm's genuine non-purchasers into
@@ -2588,7 +2588,7 @@ def _registered_segmented_breakout_case(
     `SequentialRegistration.roster` names one segment cell per `store`
     value, so `select_sequential_family`/`validate_breakout_registration`
     treat this as the "registered segmented sequential" route
-    `docs/limitations.md` describes -- discrete (`kind="always_valid"`,
+    `docs/reference/capabilities-by-entry-point.md` describes -- discrete (`kind="always_valid"`,
     Bernoulli law) registers `correction="bh"`; continuous
     (`kind="asymptotic_mean"`, scalar-mean law) registers
     `correction="bonferroni"` -- both derived automatically by
@@ -3715,7 +3715,7 @@ def _encouragement_guardrail_late_only_case() -> ParityCase:
 
 
 def _encouragement_margin_guardrail_case() -> ParityCase:
-    """The margined-guardrail cell limitations.md actually claims: `latency`
+    """The margined-guardrail cell the capabilities-by-entry-point table actually claims: `latency`
     declares `margin_abs=5.0`, and a full-estimands request (itt, compliance,
     late) succeeds identically on every reachable path, with the margin
     verdict riding the ITT row. The late-only refusal this margin also

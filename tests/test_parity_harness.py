@@ -1,8 +1,8 @@
 """Mechanical parity: every PARITY_CASES row agrees across every
 constructor it attempts, and every waived constructor refuses with the
 exact code recorded for it. See tests/parity_harness/ for the harness
-itself and docs/limitations.md's "What runs where" table for the
-capability claims these cases back."""
+itself and docs/reference/capabilities-by-entry-point.md's "What runs where" table for
+the capability claims these cases back."""
 
 from __future__ import annotations
 

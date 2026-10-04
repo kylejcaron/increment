@@ -1,4 +1,4 @@
-"""Reproduce docs/limitations.md's "What runs where" table.
+"""Reproduce docs/reference/capabilities-by-entry-point.md's "What runs where" table.
 
 Run with `uv run --extra demo --extra tables --extra dashboard python
 scripts/probe_capability_table.py`.
@@ -17,8 +17,8 @@ disagreement), or, for the two probes that call `Analysis.planning_baseline`
 directly rather than `.run()`, one line per constructor naming the value or
 the coded refusal.
 
-Transcribe exactly what this prints into docs/limitations.md's "What runs
-where" table -- never a value carried over from a stale draft without
+Transcribe exactly what this prints into docs/reference/capabilities-by-entry-point.md's
+"What runs where" table -- never a value carried over from a stale draft without
 having been measured on this checkout.
 """
 
