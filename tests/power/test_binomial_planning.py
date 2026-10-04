@@ -293,7 +293,7 @@ class TestApproximateRoute:
 
     def test_rare_large_arm_witness_decisions(self):
         """Counts ``(1e6, 4e6, 100, j)``: the runtime rejects from ``j = 510``
-        (p+ 0.024564) where the replay rejects only from 512; neither rejects at 509."""
+        (p+ 0.024196) where the replay rejects only from 511; neither rejects at 509."""
         n_c, n_t = 1_000_000, 4_000_000
         beta = binomial_rr.nuisance_beta(0.05)
         decision = BinomialDecision(n_c, n_t, 1.0, beta, 0.025, "greater")
@@ -303,7 +303,7 @@ class TestApproximateRoute:
             for j in (509, 510, 511, 512)
         ]
         assert runtime == [False, True, True, True]
-        assert plus[0].tolist() == [False, False, False, True]
+        assert plus[0].tolist() == [False, False, True, True]
 
     def test_plans_beyond_the_cell_budget_are_approximate(self):
         result = achieved_power(2_600, 0.1, Baseline.from_proportion(0.1), _conversion())

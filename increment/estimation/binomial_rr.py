@@ -283,9 +283,30 @@ def _round_outward(x: float, *, direction: Literal["down", "up"]) -> float:
 #: endpoints on both sides; x=0 or x=n still needs one solver endpoint.
 _CP_BETA_FLOOR = 1e-9
 
-#: Empirical solver allowance, checked by decimal binomial-tail inversion
-#: regressions. Directed rounding also protects the final subtraction.
+#: Relative allowance for the SciPy beta solver's error, checked by decimal binomial-tail inversion
+#: regressions (`TestClopperPearsonOutwardRounding`). The solver is accurate in the smaller of an
+#: endpoint and its complement, so the allowance is relative to that side (an absolute one would
+#: be larger than a billion-trial arm's rare rate: `1e-6` against a rate of `1e-8`). Directed
+#: rounding also protects the final arithmetic.
 _CP_RELATIVE_SLACK = 1e-6
+
+
+def _widened_lower(raw: float) -> float:
+    """A lower endpoint moved down by `_CP_RELATIVE_SLACK` of the smaller of it and its complement."""
+    if raw < 0.5:
+        widened = raw * (1.0 - _CP_RELATIVE_SLACK)
+    else:
+        widened = 1.0 - (1.0 - raw) * (1.0 + _CP_RELATIVE_SLACK)
+    return max(0.0, _round_outward(widened, direction="down"))
+
+
+def _widened_upper(raw: float) -> float:
+    """An upper endpoint moved up by `_CP_RELATIVE_SLACK` of the smaller of it and its complement."""
+    if raw < 0.5:
+        widened = raw * (1.0 + _CP_RELATIVE_SLACK)
+    else:
+        widened = 1.0 - (1.0 - raw) * (1.0 - _CP_RELATIVE_SLACK)
+    return min(1.0, _round_outward(widened, direction="up"))
 
 
 @lru_cache(maxsize=64)
@@ -308,8 +329,7 @@ def clopper_pearson(x: int, n: int, beta: float) -> tuple[float, float]:
     else:
         if beta < _CP_BETA_FLOOR:
             _raise("estimation.binomial.tail_unrepresentable", beta=beta, x=x, n=n)
-        a_raw = float(_beta_dist.ppf(half, x, n - x + 1))
-        a = max(0.0, _round_outward(a_raw * (1.0 - _CP_RELATIVE_SLACK), direction="down"))
+        a = _widened_lower(float(_beta_dist.ppf(half, x, n - x + 1)))
     if x == n:
         b = 1.0
     elif (x, n) == (0, 1):
@@ -317,11 +337,7 @@ def clopper_pearson(x: int, n: int, beta: float) -> tuple[float, float]:
     else:
         if beta < _CP_BETA_FLOOR:
             _raise("estimation.binomial.tail_unrepresentable", beta=beta, x=x, n=n)
-        b_raw = float(_beta_dist.isf(half, x + 1, n - x))
-        b = min(
-            1.0,
-            _round_outward(1.0 - (1.0 - b_raw) * (1.0 - _CP_RELATIVE_SLACK), direction="up"),
-        )
+        b = _widened_upper(float(_beta_dist.isf(half, x + 1, n - x)))
     return a, b
 
 

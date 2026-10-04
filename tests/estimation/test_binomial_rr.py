@@ -1944,3 +1944,60 @@ class TestClopperPearsonOutwardRounding:
                 assert _dec_binom_cdf(x - 1, n, lower) >= Decimal(1) - half
             if x < n:
                 assert _dec_binom_cdf(x, n, upper) <= half
+
+    @pytest.mark.parametrize(
+        "n",
+        [
+            1_000_000,
+            10_000_000,
+            100_000_000,
+            pytest.param(1_000_000_000, marks=pytest.mark.slow),
+        ],
+    )
+    @pytest.mark.parametrize("beta", [brr.nuisance_beta(0.05), 1e-9])
+    def test_endpoints_enclose_and_nearly_reach_their_exact_tails_at_large_arms(self, n, beta):
+        """Against the decimal oracle at one million to one billion trials, for small counts
+        (0..5), rare and dense rates, and counts a few short of the arm (where the complement
+        of the endpoint is the small quantity): the outward-rounded endpoint leaves its tail at
+        most ``beta / 2``, and no endpoint is left wider than a tenth of that tail unless it
+        is clamped to the end of the unit interval or within a billionth of it. An allowance absolute in the rate fails the
+        second check at a rare count on a large arm: ``1e-6`` against a rate of ``1e-8`` leaves
+        a tail of ``1e-1000`` of its target."""
+        half = Decimal(beta) / 2
+
+        def resolvable(endpoint: float) -> bool:
+            """Neither clamped to an end of the unit interval nor so near one that the float
+            spacing there is a visible share of the endpoint's complement."""
+            return 0.0 < endpoint < 1.0 and 1.0 - endpoint > 1e-9
+
+        counts = sorted(
+            {0, 1, 2, 3, 4, 5, 10, 100, round(n * 1e-4), round(n * 0.05)}
+            | {n - 100, n - 10, n - 5, n - 4, n - 3, n - 2, n - 1, n}
+        )
+        for x in counts:
+            lower, upper = brr.clopper_pearson(x, n, beta)
+            if x > 0:
+                tail = Binomial(n, lower).sf(x - 1)
+                assert tail <= half, (n, x, "lower")
+                assert not resolvable(lower) or tail >= Decimal("0.9") * half, (n, x, "lower")
+            if x < n:
+                tail = Binomial(n, upper).cdf(x)
+                assert tail <= half, (n, x, "upper")
+                assert not resolvable(upper) or tail >= Decimal("0.9") * half, (n, x, "upper")
+
+    def test_a_rare_count_is_decided_alike_at_every_arm_size(self):
+        """The smallest treatment count the runtime rejects at against four control events
+        does not move with the arm size: nineteen from a million trials to a billion. With the
+        allowance absolute in the rate it grew to 21, 36 and 94 at 1e7, 1e8 and 1e9."""
+        beta = brr.nuisance_beta(0.05)
+        first = {}
+        for n in (10**6, 10**7, 10**8, 10**9):
+            lo, hi = 4, 200
+            while lo < hi:
+                mid = (lo + hi) // 2
+                if brr.p_plus(1.0, 4, n, mid, n, beta, tail=0.025) < 0.025:
+                    hi = mid
+                else:
+                    lo = mid + 1
+            first[n] = lo
+        assert set(first.values()) == {19}
