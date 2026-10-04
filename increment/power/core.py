@@ -98,6 +98,8 @@ from increment.power._binomial import (
     refused,
     replay_cells,
     route_for,
+    solver_floor,
+    solver_refuses,
     window_cells,
 )
 from increment.power._noncentral_t import _scalar_power_from_nc
@@ -2562,6 +2564,17 @@ _BINOMIAL_SIZE_LIMIT = RefusalSpec(
 )
 
 
+_BINOMIAL_TAIL_LEVEL = RefusalSpec(
+    "power.binomial_tail_level_unrepresentable",
+    InvalidRequestError,
+    template=(
+        "the runtime's exact binomial decision refuses every count pair at alpha={alpha}: its "
+        "nuisance budget {beta:.3g} (alpha / 32) is below the {solver_floor:g} floor of the "
+        "Clopper-Pearson endpoint solver, so no arm size has power -- plan a larger alpha"
+    ),
+)
+
+
 # Proposal, verification and bracketing share one search state.
 def _binomial_size(  # noqa: PLR0915
     procedure: ArmPlanningProcedure,
@@ -2733,12 +2746,26 @@ def _binomial_admitted_ceiling(
     upper: int,
 ) -> int:
     """Largest assigned treatment size at most ``upper`` whose decision the runtime does not
-    refuse in full: from the size where the float margin dominates the tail level, power is zero."""
+    refuse in full: from the size where the float margin dominates the tail level, power is zero.
+    A decision refused even at the smallest arms has no such size and is refused."""
+
+    def key_at(n: int) -> BinomialDecision:
+        n_T, n_C = _analyzed_counts(*_compute_arms(n, design, minimum_per_arm=floor), baseline)
+        return _binomial_key(procedure, n_T, n_C)
 
     def admitted(n: int) -> bool:
-        n_T, n_C = _analyzed_counts(*_compute_arms(n, design, minimum_per_arm=floor), baseline)
-        return not refused(_binomial_key(procedure, n_T, n_C))
+        return not refused(key_at(n))
 
+    if not admitted(floor):
+        smallest = key_at(floor)
+        # The margin at two units is far below the tail level of any alpha the solver admits.
+        assert solver_refuses(smallest)
+        refuse(
+            _BINOMIAL_TAIL_LEVEL,
+            alpha=procedure.compiled_alpha,
+            beta=smallest.beta,
+            solver_floor=solver_floor(),
+        )
     if admitted(upper):
         return upper
     lo, hi = floor, upper - 1

@@ -1235,11 +1235,24 @@ def _window(n: int, p: float) -> _Window:
     return _Window(lo, hi, below + above, weights)
 
 
+def solver_floor() -> float:
+    """The nuisance budget below which the runtime's Clopper-Pearson endpoint solver refuses."""
+    return _rr._CP_BETA_FLOOR
+
+
+def solver_refuses(decision: BinomialDecision) -> bool:
+    """Whether the nuisance budget is below `solver_floor`, which refuses the control arm's
+    Clopper-Pearson interval at every count once it has two or more units (only ``n = 1`` has
+    closed-form endpoints)."""
+    return decision.beta < solver_floor() and decision.n_c > 1
+
+
 def refused(decision: BinomialDecision) -> bool:
     """Whether the runtime refuses every count pair of this decision, so none rejects: an arm
-    above the finite-sample ceiling, or a tail level the float margin dominates
-    (`binomial_rr.margin_dominates_tail`, which `confidence_interval` applies)."""
-    if max(decision.n_c, decision.n_t) > _rr.FINITE_SAMPLE_MAX_ARM_SIZE:
+    above the finite-sample ceiling, a nuisance budget below the solver's floor, or a tail
+    level the float margin dominates (`binomial_rr.margin_dominates_tail`, which
+    `confidence_interval` applies)."""
+    if max(decision.n_c, decision.n_t) > _rr.FINITE_SAMPLE_MAX_ARM_SIZE or solver_refuses(decision):
         return True
     return _rr.margin_dominates_tail(decision.tail_alpha, decision.beta, decision.n_c, decision.n_t)
 

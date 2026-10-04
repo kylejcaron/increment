@@ -255,6 +255,46 @@ def test_a_tail_level_the_float_margin_dominates_has_zero_power_as_the_runtime_r
     assert admitted.power > 0.999
 
 
+class TestATailLevelTheSolverRefuses:
+    """A nuisance budget (``alpha / 32``) below the Clopper-Pearson solver's floor is refused for
+    every count, so the runtime decides nothing at any arm size: planning gives power zero
+    without a replay, and a size search says so instead of reporting an arm ceiling."""
+
+    @pytest.mark.parametrize("alpha", [1e-12, 1e-10, 3e-8])
+    def test_sizing_names_the_tail_level_and_power_is_zero_without_a_replay(
+        self, monkeypatch, alpha
+    ):
+        from increment.power import _binomial
+
+        with pytest.raises(binomial_rr.BinomialDataError) as refused:
+            binomial_rr.confidence_interval(
+                5_000, 100_000, 7_500, 100_000, alpha=alpha, alternative="two-sided"
+            )
+        assert refused.value.code == "estimation.binomial.tail_unrepresentable"
+        baseline, procedure = Baseline.from_proportion(0.05), _conversion(alpha=alpha)
+        with pytest.raises(InvalidRequestError) as raised:
+            required_sample_size(0.5, baseline, procedure)
+        context: dict[str, Any] = dict(raised.value.context)
+        assert raised.value.code == "power.binomial_tail_level_unrepresentable"
+        assert context["alpha"] == alpha
+        assert context["beta"] < context["solver_floor"] == binomial_rr._CP_BETA_FLOOR
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("a decision the runtime refuses in full must not be replayed")
+
+        monkeypatch.setattr(_binomial, "classify", forbidden)
+        result = achieved_power(100_000, 0.5, baseline, procedure)
+        assert (result.power, result.power_basis) == (0.0, "exact")
+
+    def test_the_first_alpha_the_solver_admits_is_sized_and_decided(self):
+        alpha = 4e-8
+        binomial_rr.confidence_interval(
+            5_000, 100_000, 7_500, 100_000, alpha=alpha, alternative="two-sided"
+        )
+        sized = required_sample_size(0.5, Baseline.from_proportion(0.05), _conversion(alpha=alpha))
+        assert sized.power >= PowerDesign().power
+
+
 class TestPlanningReplayBound:
     """Planning replays the runtime decision over every retained (control, treatment) count cell
     at the null rate, and its cost grows with that count. A decision beyond
