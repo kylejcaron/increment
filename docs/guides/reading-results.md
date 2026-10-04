@@ -99,9 +99,9 @@ each row keeps its remaining evidence, are:
   a float (extremely large scores) or is not positive semidefinite (a singular
   positive semidefinite covariance is still usable).
   `r.relative_unavailable_reason` is `"joint_covariance_unrepresentable"` or
-  `"joint_covariance_indefinite"`. There is **no** relative set. The additive
-  fields `r.abs_diff` and `r.abs_se` survive, but `r.abs_lb` and `r.abs_ub` can
-  still be `None`, so check each bound before using it.
+  `"joint_covariance_indefinite"`. There is **no** relative set. Only
+  `r.abs_diff` is guaranteed to survive: `r.abs_se`, `r.abs_lb`, and `r.abs_ub`
+  can each be `None`, so check them before use.
 - A winsorized metric with a `confidence_set`. A missing point leaves
   `r.confidence_set.relative` with a status and reason per endpoint (for
   example `unbounded` with `denominator_nonseparation`), and the additive
@@ -112,9 +112,10 @@ each row keeps its remaining evidence, are:
 
 Do not assume a missing point comes with a set. When `r.lift` is `None` and
 `r.relative_unavailable_reason` is set, the row has **no** relative set: read
-the additive `r.abs_diff`, `r.abs_lb`, and `r.abs_ub`. When the reason is
-`None`, read whichever of `r.binomial_set`, `r.relative_confidence_set`,
-`r.confidence_set`, and `r.sequential_result` is present, as named above.
+the additive `r.abs_diff`, plus `r.abs_lb` and `r.abs_ub` when they are not
+`None`. When the reason is `None`, read whichever of `r.binomial_set`,
+`r.relative_confidence_set`, `r.confidence_set`, and `r.sequential_result` is
+present, as named above.
 
 A missing point does not erase the evidence. The `converted` row is
 significant. Its interval lives on `r.binomial_set`, and the upper end is
