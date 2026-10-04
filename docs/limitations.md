@@ -280,8 +280,10 @@ handles every event count directly, with no `log_se >= 0.5` admission rule and n
 continuity correction:
 
 An Encouragement design's ITT on a conversion metric keeps
-this route (a retention metric under an Encouragement design is refused with
-`readout.encouragement.retention`): the design's uptake (first-stage compliance) moments are a
+this route (ITT and LATE readouts of a retention metric under an Encouragement design are refused
+with `readout.encouragement.retention`; a compliance-only request, `estimands=("compliance",)`,
+ignores outcome configuration and succeeds where the constructor accepts the declaration): the
+design's uptake (first-stage compliance) moments are a
 different random variable over the same units and do not change the
 ITT's own sufficient statistics, so they are stripped before this route
 reads the arm rather than disqualifying it.
