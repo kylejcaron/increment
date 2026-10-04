@@ -413,10 +413,15 @@ It also has two further boundaries, both refusals rather than silent degradation
   ratio a billion-unit arm has (it was not run at a billion): at `alpha >= 1e-4` it does not
   move an interval, at `1e-5` it widens it by about 1%, and from about `3e-6` it degrades
   it (+2%, then +43% at `1.5e-6`). Planning mirrors both floors: such a decision has power
-  exactly zero without a replay, and `required_sample_size` refuses it before searching with
-  `power.binomial_tail_level_unrepresentable` (context `alpha`, `beta`, `solver_floor`)
-  rather than reporting an arm ceiling. There is no exact route at a smaller alpha; use a
-  larger alpha.
+  exactly zero without a replay. `required_sample_size` refuses a decision refused even at
+  the smallest design before searching, with `power.binomial_tail_level_unrepresentable`
+  (context `alpha`, `beta`, `tail_alpha`, `margin`, `n_c`, `n_t`, `solver_floor` and `cause`,
+  `solver_floor` or `float_margin`); a float margin that starts dominating only at larger arms
+  ends the search at that size with `power.binomial_size_search_unreachable` (context
+  `power`, `maximum_power`, `n_per_arm`, `max_arm_size`). An allocation so lopsided that the
+  smallest design has an arm above the arm ceiling is refused with
+  `power.binomial_arm_ceiling_below_smallest_design`. There is no exact route at a smaller
+  alpha; use a larger alpha.
 
 CUPED and unit-grain ratio-denominator conversion/retention retain their log-scale
 guards; their sufficient statistics are not raw Bernoulli count pairs. A clustered
@@ -705,46 +710,59 @@ value. Sizing returns a verified bracket crossing, not a proven global minimum; 
 effects to within `2e-12` of the target power. Triggered plans use the
 rounded analyzed counts.
 
-A decision's replay is bounded by the cells its geometry stores: at most 10,000,000 (control,
-treatment) count cells, the control window by the treatment windows at the null rate and at
-every alternative evaluated (their union, when an effect search or a power curve evaluates
-several). The work follows that count, not the arm size, which the runtime decides up to a
-billion units. Planning refuses a decision whose null rectangle exceeds the bound before any
-replay (`power.binomial_replay_bound_exceeded`), and with the same code (its context then
-names the alternative treatment rate `p_t`) an alternative whose window would take the
-geometry past it, before any mask is allocated. An effect search that would exceed it ends
-unresolved: the companion `mde_relative` of a supplied-effect answer is null with
-`numerical_resolution` (the supplied effect's power is unchanged), and
-`minimum_detectable_effect` is refused with the bound after the work that preceded it. An
-effect search stores more than the null rectangle, so it reaches the bound at smaller arms
-than a supplied effect does. `required_sample_size` searches only sizes about 1/128 under
-the largest whose null and supplied-effect rectangles fit (or under the size where the
-runtime starts refusing the tail level), refusing at that ceiling with the power reached
-there, `power_reached`, which a skipped size just above may exceed. A supplied effect
+A solve's replay is bounded by the cells it stores: at most 10,000,000 (control, treatment)
+count cells, the control window by the treatment windows at the null rate and at every
+alternative that solve evaluates. A supplied effect, an effect search (the union of the
+windows it evaluates) and each row of a power curve are separate solves: the cells an
+earlier row or the supplied effect left on the shared geometry are a cache, dropped when
+the next solve needs the room, so a curve row answers as its scalar call does. The work
+follows that count, not the arm size, which the runtime decides up to a billion units.
+Planning refuses a decision whose null rectangle exceeds the bound before any replay
+(`power.binomial_replay_bound_exceeded`), and with the same code (its context then names
+the alternative treatment rate `p_t`) an alternative whose window would take its solve past
+it, before any mask is allocated. An effect search that would exceed it ends unresolved:
+the companion `mde_relative` of a supplied-effect answer is null with `numerical_resolution`
+(the supplied effect's power is unchanged), and `minimum_detectable_effect` is refused with
+the bound after the work that preceded it. An effect search stores more than the null
+rectangle, so it reaches the bound at smaller arms than a supplied effect does.
+`required_sample_size` searches only sizes about 1/128 under the largest whose null and
+supplied-effect rectangles fit, and a search that reaches that ceiling refuses with
+`power.binomial_replay_bound_exceeded`, whose context adds the target `power` and
+`power_reached` there (a skipped size just above may reach more). The other ends of a size
+search have their own codes (see the sizing table in the power-analysis guide): the arm
+ceiling or a float margin that dominates the tail level at larger arms ends it with
+`power.binomial_size_search_unreachable` and `maximum_power`, and a decision refused at the
+smallest design is refused before any search (see **Extreme alpha**). A supplied effect
 reaches the bound at about a million units per arm at a 5% baseline, about 190,000 at 50%,
 and at any arm the runtime admits at a rate expecting up to about 48,000 events per arm.
-Measured with `scripts/measure_binomial_ceiling.py planning` (commit `2da355f`, an Apple
-M3 Pro; cold CPU seconds and peak resident set; null cells are the null rectangle):
+Measured with `scripts/measure_binomial_ceiling.py planning` on an Apple M3 Pro, cold CPU
+seconds and peak resident set, under a shared load that varied by a factor of about two
+between runs (null cells are the null rectangle). The cells marked † were re-measured at
+`45829f1`, after a companion effect search became a solve of its own (it no longer inherits
+the supplied effect's cells, so an unresolved companion costs what a refused
+`minimum_detectable_effect` does); the others are from `2da355f`, before it, and a
+companion effect there was cheaper to refuse:
 
 | Baseline, units per arm | Call | CPU / peak | Outcome |
 |---|---|---:|---|
 | 5%, 100,000 | `achieved_power`, lift 5% | 6.3 s / 1.3 GiB | 0.97M null cells, companion effect available |
 | 5%, 250,000 | `achieved_power`, lift 3% | 16.5 s / 1.6 GiB | 2.4M null cells, companion effect available |
-| 5%, 500,000 | `achieved_power`, lift 2% | 34.8 s / 1.8 GiB | 4.8M null cells, companion effect available |
-| 5%, 500,000 | `minimum_detectable_effect` | 36.1 s / 1.9 GiB | answered |
-| 5%, 1,000,000 | `achieved_power`, lift 1.5% | 58.1 s / 1.6 GiB | 9.7M null cells; companion effect `numerical_resolution` |
-| 5%, 1,000,000 | `minimum_detectable_effect` | refused after 59.9 s / 1.7 GiB | needs 19.7M cells |
-| 5%, lift 1.75% | `required_sample_size` | 277 s / 1.7 GiB | 993,064 per arm; companion effect `numerical_resolution` |
+| 5%, 500,000 † | `achieved_power`, lift 2% | 35.3 s / 1.8 GiB | 4.8M null cells, companion effect available |
+| 5%, 500,000 † | `minimum_detectable_effect` | 35.7 s / 1.9 GiB | answered |
+| 5%, 1,000,000 † | `achieved_power`, lift 1.5% | 119 s / 1.8 GiB | 9.7M null cells; companion effect `numerical_resolution` |
+| 5%, 1,000,000 † | `minimum_detectable_effect` | refused after 61.0 s / 1.8 GiB | needs 19.7M cells |
+| 5%, lift 1.75% | `required_sample_size` | 277 s / 1.7 GiB | 993,064 per arm; companion effect `numerical_resolution` (not re-measured) |
 | 50%, 100,000 | `minimum_detectable_effect` | refused after 57.5 s / 1.3 GiB | needs 10.6M cells (5.1M null) |
-| 50%, 190,000 | `achieved_power`, lift 3% | 26.8 s / 1.5 GiB | 9.7M null cells; companion effect `numerical_resolution` |
-| 50%, 190,000 | `minimum_detectable_effect` | refused after 100.5 s / 1.0 GiB | needs 10.8M cells |
+| 50%, 190,000 † | `achieved_power`, lift 3% | 201 s / 1.7 GiB | 9.7M null cells; companion effect `numerical_resolution` |
+| 50%, 190,000 † | `minimum_detectable_effect` | refused after 210 s / 1.1 GiB | needs 10.8M cells |
 | 1e-4 at 1e6, 1e-6 at 1e8, 1e-7 at 1e9 (100 events) | `achieved_power`, lift 50% | 0.85 s / 0.2 GiB | 20,164 null cells, answered |
 | 5%, 5,000,000 | `achieved_power`, lift 1% | refused after 0.7 s / 0.1 GiB | 48.3M null cells |
 
-Not measured: `required_sample_size` at a 50% baseline or beyond a million units per arm.
-Planning a design above the bound has no exact route: the replay is the only construction
-that reproduces the runtime's decision. Before the bound existed a call took 574 s and
-3.4 GiB at 4,000,000 per arm (39 million cells).
+Not measured: `required_sample_size` at a 50% baseline or beyond a million units per arm,
+and the 5% sizing row since a companion effect became its own solve (its time can only have
+grown). Planning a design above the bound has no exact route: the replay is the only
+construction that reproduces the runtime's decision. Before the bound existed a call took
+574 s and 3.4 GiB at 4,000,000 per arm (39 million cells).
 
 Bounded-metric baselines and implied null/alternative rates must stay strictly
 positive and at most 1. A requested rate above 1 is refused rather than treated
