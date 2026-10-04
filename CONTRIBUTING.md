@@ -411,8 +411,10 @@ belongs in the capability's dedicated tests.
 
 ### Adding a method or design
 
-Open a GitHub issue before implementing a new estimator, inference route, or
-experiment design. Whether to take on a method is a product decision for the
+Have an approved tracking issue before implementing a new estimator, inference
+route, or experiment design: a Kata issue for maintainers and automated
+contributors (search for an existing one first), a GitHub issue for external
+contributors. Whether to take on a method is a product decision for the
 code owners; the conditions below decide whether an approved addition is
 complete. They gate new methods only and do not hold up fixes to behavior that
 already ships. A new method needs all of the following:
