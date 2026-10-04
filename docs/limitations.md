@@ -325,15 +325,22 @@ It also has two further boundaries, both refusals rather than silent degradation
   support window's omitted mass and count recovery from the producer's float moments (whose
   Bernoulli second-moment check scales with `n`). Count thresholds are computed in exact
   integers, which a float quotient cannot keep above about 67,000,000 per arm.
-* **Latency.** Cost grows with arm size: measured on commodity hardware
-  (two-sided, `alpha=0.05`, cold, CPU seconds on a shared machine, so read them as
-  upper-side estimates), a 5% control rate takes roughly 0.5s at 100,000 per arm,
-  2s at 1,000,000 and 4s at 4,000,000; a 1e-4 rate at
-  1,000,000 per arm takes about 0.03s, because the control-count window follows
-  the nuisance rate. The window is widest at a 50% control rate, which costs
-  roughly 1.3s at 100,000 per arm and 3.3s at 1,000,000. These are about
-  1.5 times the cost of stopping each search after a fixed 60 splits, which could
-  leave a p-value near the tail level far looser than reported.
+* **Latency.** Cost grows with arm size. Cold CPU seconds and peak resident set of one
+  two-sided `alpha=0.05` `confidence_interval` with the treatment count at a risk ratio of
+  1.02 of the control rate, measured on an Apple M3 Pro with
+  `scripts/measure_binomial_ceiling.py latency` (commits `d9b136b` to `2cad484`, none touching
+  the estimation code; wall time depends on machine load):
+
+  | Units per arm | 5% control rate | 1e-4 | 50% |
+  |---:|---:|---:|---:|
+  | 4,000,000 | 5.16 s / 178 MiB | 0.07 s / 122 MiB | 13.7 s / 207 MiB |
+  | 16,000,000 | 10.8 s / 198 MiB | 0.227 s / 128 MiB | 44.2 s / 237 MiB |
+  | 64,000,000 | 44.5 s / 228 MiB | 0.731 s / 148 MiB | 159 s / 242 MiB |
+  | 100,000,000 | 82.3 s / 222 MiB | 1.21 s / 150 MiB | 179 s / 415 MiB |
+  | 1,000,000,000 | 234 s / 336 MiB | 2.92 s / 165 MiB | 787 s / 424 MiB |
+
+  The cost follows the control-count window, which follows the nuisance rate, so a rare rate
+  is cheap at any size and the window is widest at a 50% control rate.
   Each p-value bounds a supremum over the control rate's Clopper-Pearson
   interval. The search splits that interval until the bound's distance above a
   witnessed lower end of the supremum is within 2^-14 of the larger of the p-value
