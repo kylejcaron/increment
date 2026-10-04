@@ -561,6 +561,7 @@ def assert_parity(case: ParityCase, result: CaseResult) -> None:
     if case.refusal_only:
         # Every attempted ingress must refuse or be absent: an unwaived constructor that
         # produced rows would otherwise self-compare as `live` and pass.
+        assert case.build, f"{case.id}: refusal_only but no ingress was attempted"
         assert not result.rows, (
             f"{case.id}: refusal_only but {sorted(result.rows)} produced rows instead of refusing"
         )

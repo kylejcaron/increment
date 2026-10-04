@@ -238,6 +238,18 @@ def test_refusal_only_case_fails_when_an_unwaived_ingress_produces_rows():
         assert_parity(case, result)
 
 
+def test_refusal_only_case_that_attempts_no_ingress_fails():
+    """Both sides of the refusal set equality are empty when nothing is built, so the case
+    would pass having attempted no ingress at all."""
+    case = _case({}, refusal_only=True)
+    result = run_case(case)
+    assert result.rows == {}
+    assert result.refusals == {}
+    assert result.absences == {}
+    with pytest.raises(AssertionError):
+        assert_parity(case, result)
+
+
 def test_expected_absence_is_attempted_and_accounted_for():
     case = _case(
         {
