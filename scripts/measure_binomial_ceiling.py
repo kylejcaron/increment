@@ -753,17 +753,19 @@ def _recovery(args: argparse.Namespace) -> None:
 
 # --- planning ---------------------------------------------------------------------------------
 
-#: ``(cell, planner, control rate, units per arm, relative lift)``. Planning costs what its replay
-#: spans, not the arm size: dense cells reach the replay bound (`PLANNING_CELL_CEILING` retained
-#: cells) near a million units per arm at 5% and 190,000 at 50%; the rare cells expect a hundred
-#: events per arm at 1e6 to 1e9 units; the last dense cell is beyond the bound and is refused.
+#: ``(cell, planner, control rate, units per arm, relative lift)``. Planning costs the cells its
+#: geometry stores, not the arm size: a supplied effect reaches `PLANNING_CELL_CEILING` near a
+#: million units per arm at 5% and an effect search (the union of its windows) sooner; the rare
+#: cells expect a hundred events per arm; the last dense cell is beyond the bound and is refused.
 PLANNING_CELLS = (
     ("dense-1e5", "power", 0.05, 100_000, 0.05),
     ("dense-2.5e5", "power", 0.05, 250_000, 0.03),
     ("dense-5e5", "power", 0.05, 500_000, 0.02),
+    ("dense-5e5-mde", "mde", 0.05, 500_000, None),
     ("dense-1e6", "power", 0.05, 1_000_000, 0.015),
     ("dense-1e6-mde", "mde", 0.05, 1_000_000, None),
     ("dense-size", "size", 0.05, None, 0.0175),
+    ("wide-1e5-mde", "mde", 0.5, 100_000, None),
     ("wide-1.9e5", "power", 0.5, 190_000, 0.03),
     ("wide-1.9e5-mde", "mde", 0.5, 190_000, None),
     ("rare-1e6", "power", 1e-4, 1_000_000, 0.5),
@@ -808,6 +810,7 @@ def _planning_cell(planner: str, rate: float, n: int | None, lift: float | None)
             "n_per_arm": result.n_per_arm,
             "power": result.power,
             "mde_relative": result.mde_relative,
+            "mde_unavailable_reason": result.mde_unavailable_reason,
             "power_basis": result.power_basis,
         }
     except CodedError as refusal:
