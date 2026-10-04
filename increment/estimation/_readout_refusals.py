@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from types import MappingProxyType
+from typing import NoReturn
 
 from increment.errors import (
     CapabilityError,
@@ -15,6 +16,7 @@ from increment.errors import (
     RefusalSpec,
     UnsupportedRequestError,
     refusals,
+    refuse,
 )
 
 
@@ -151,3 +153,29 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
 )
 
 READOUT_REFUSALS: Mapping[str, RefusalSpec] = MappingProxyType(_REFUSALS)
+
+# One hazard, one code across ingress paths: frame sources, artifacts, definitions and
+# the observational readout seam all refuse a quantile metric under this spec.
+FRAME_QUANTILE_NO_MOMENTS = RefusalSpec(
+    "source.frame.quantile_no_moments",
+    CapabilityError,
+    template="quantile metric {metric!r} has no moment representation; it is served through unit_frame. {route}",
+)
+
+
+def refuse_quantile_moments(metric: object, design: object) -> NoReturn:
+    """Refuse reading a quantile metric as moments, naming the route for *design*.
+
+    An observational design has no quantile estimator: its adjusted-mean
+    machinery would otherwise report a mean effect under the quantile metric's name.
+    """
+    refuse(
+        FRAME_QUANTILE_NO_MOMENTS,
+        metric=getattr(metric, "name", None),
+        route=(
+            "an observational design has no quantile estimator; quantile metrics "
+            "run under a randomized design"
+            if getattr(design, "mechanism", None) == "observational"
+            else "use readouts.run, which routes quantiles automatically"
+        ),
+    )

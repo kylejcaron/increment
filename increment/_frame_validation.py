@@ -25,6 +25,10 @@ from increment.errors import (
     refuse,
     warn,
 )
+from increment.estimation._readout_refusals import (  # noqa: F401
+    FRAME_QUANTILE_NO_MOMENTS,
+    refuse_quantile_moments,
+)
 from increment.estimation.armstats import CENTERED_FIELDS
 from increment.plan import (
     bind_automatic_sequential_plan,
@@ -278,32 +282,6 @@ FRAME_UNIT_FRAME_PANEL = RefusalSpec(
         f"unit_frame for metric {metric!r} is unavailable on {shape}. {route}"
     ),
 )
-
-# Shared by frame sources and warehouse artifacts: one hazard, one code.
-FRAME_QUANTILE_NO_MOMENTS = RefusalSpec(
-    "source.frame.quantile_no_moments",
-    CapabilityError,
-    template="quantile metric {metric!r} has no moment representation; it is served through unit_frame. {route}",
-)
-
-
-def refuse_quantile_moments(metric: Metric, design: object) -> NoReturn:
-    """Refuse reading a quantile metric as moments, naming the route for *design*.
-
-    An observational design has no quantile estimator: its adjusted-mean
-    machinery would otherwise report a mean effect under the quantile metric's name.
-    """
-    refuse(
-        FRAME_QUANTILE_NO_MOMENTS,
-        metric=metric.name,
-        route=(
-            "an observational design has no quantile estimator; quantile metrics "
-            "run under a randomized design"
-            if getattr(design, "mechanism", None) == "observational"
-            else "use readouts.run, which routes quantiles automatically"
-        ),
-    )
-
 
 _REFUSALS = refusals(
     InvalidRequestError,

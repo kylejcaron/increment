@@ -933,7 +933,6 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         covariates: Sequence[str] = (),
         outcome_stage: Literal["transformed", "raw"] = "transformed",
     ) -> Any:
-        self._refuse_observational_quantile(metric)
         cluster = self.context.cluster
         if "cluster_id" in covariates and cluster != "cluster_id":
             from increment.query.native_source import _NATIVE_COVARIATE_RESERVED
@@ -1004,7 +1003,6 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         completed_windows_only: bool = False,
         include_covariate: bool = False,
     ) -> list[dict[str, Any]]:
-        self._refuse_observational_quantile(metric)
         self._preflight_cluster_grain(grain, operation="moments")
         if grain not in self.capabilities:
             refuse(
@@ -1015,6 +1013,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 route="request one of the source's supported grains",
             )
         metric = self._validated_metric(metric)
+        self._refuse_observational_quantile(metric)
         if not include_covariate:
             config = next(
                 (

@@ -26,6 +26,7 @@ from increment.errors import (
 )
 from increment.estimation._adjust.clustered_unadjusted import estimate_clustered_unadjusted
 from increment.estimation._readout_refusals import READOUT_REFUSALS as _READOUT_REFUSALS
+from increment.estimation._readout_refusals import refuse_quantile_moments
 from increment.estimation.engine import (
     Method,
     _df_to_arms,
@@ -471,6 +472,13 @@ def judge_shared_prior_scales(
         )
 
 
+def _refuse_observational_quantiles(metrics: Sequence[Metric], design: object) -> None:
+    """An observational design has no quantile estimator: refuse before any source read."""
+    for metric in metrics:
+        if getattr(metric, "type", None) == "quantile":
+            refuse_quantile_moments(metric, design)
+
+
 def validate_readout_adjustment(request: ReadoutRequest) -> None:
     """Validate static adjustment/value-scale compatibility at the seam."""
     from increment.estimation.inference import MixturePrior, StudentTPrior
@@ -486,6 +494,7 @@ def validate_readout_adjustment(request: ReadoutRequest) -> None:
         from increment.errors import refuse
         from increment.estimation._adjust.common import SUPPORTED_RATIO_METRIC
 
+        _refuse_observational_quantiles(metrics, design)
         configs_by_name = {config.metric.name: config for config in configs}
         decisions = [
             (metric, methods[0])
@@ -660,6 +669,7 @@ def estimate_ate(  # noqa: PLR0913, PLR0915
             methods, prefer=lambda m: m.name != "unadjusted"
         )
     selected = list(src.context.metrics) if metrics is None else list(metrics)
+    _refuse_observational_quantiles(selected, design)
     if methods == []:
         from increment.estimation.decision_types import (
             ArmHypothesisKey,

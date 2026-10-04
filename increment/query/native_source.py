@@ -4100,7 +4100,6 @@ class DefinitionsMomentSource(SequentialSourceMixin):
         population: Literal["assigned", "triggered"] = "assigned",
         outcome_stage: Literal["transformed", "raw"] = "transformed",
     ) -> pa.Table:
-        self._refuse_observational_quantile(metric)
         if outcome_stage not in ("raw", "transformed"):
             from increment.winsor import winsor_refuse
 
