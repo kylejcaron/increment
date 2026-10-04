@@ -170,7 +170,8 @@ class TestExtremeAlphaFiniteUpperBound:
         error = exc_info.value
         assert error.code == "estimation.binomial.tail_unrepresentable"
         assert error.context["n"] == 1
-        assert 0.0 < error.context["p"] < sys.float_info.min
+        rate = error.context["p"]
+        assert isinstance(rate, float) and 0.0 < rate < sys.float_info.min
 
     def test_positive_control_upper_search_never_returns_none(self):
         # Within the validated Clopper-Pearson regime (beta = alpha/32
