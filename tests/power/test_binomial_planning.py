@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 from scipy.stats import binom
 
+from increment.errors import InvalidRequestError
 from increment.estimation import binomial_rr
 from increment.estimation.arm_contract import ArmPlanningProcedure, RelativeDecisionPolicy
 from increment.power import (
@@ -28,7 +29,7 @@ from increment.power import (
     power_curve,
     required_sample_size,
 )
-from increment.power._binomial import BinomialDecision, RejectionGeometry
+from increment.power._binomial import PLANNING_CELL_CEILING, BinomialDecision, RejectionGeometry
 from tests.power._procedures import make_procedure
 
 
@@ -220,6 +221,190 @@ def test_arms_above_the_runtime_ceiling_have_zero_power_without_a_replay():
     result = achieved_power(above, 0.3, Baseline.from_proportion(0.1), _conversion())
     assert result.power == 0.0
     assert result.power_basis == "exact"
+
+
+def test_a_tail_level_the_float_margin_dominates_has_zero_power_as_the_runtime_refuses_it(
+    monkeypatch,
+):
+    """Once the margin every certified tail carries reaches what the tail level leaves after the
+    nuisance budget, the runtime refuses every count pair (a ``DecisionFailure``), so none
+    rejects and the power is exactly zero -- decided before any window or replay is built. The
+    same alpha is planned normally on an arm whose margin leaves room."""
+    from increment.power import _binomial
+
+    n, alpha = 100_000_000, 5e-8
+    with pytest.raises(binomial_rr.BinomialDataError) as refused:
+        binomial_rr.confidence_interval(100, n, 300, n, alpha=alpha, alternative="two-sided")
+    assert refused.value.code == "estimation.binomial.tail_unrepresentable"
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("a decision the runtime refuses in full must not be replayed")
+
+    monkeypatch.setattr(_binomial, "classify", forbidden)
+    monkeypatch.setattr(_binomial, "_window_bounds", forbidden)
+    monkeypatch.setattr(_binomial, "_window", forbidden)
+    procedure = _conversion(alpha=alpha)
+    result = achieved_power(n, 3.0, Baseline.from_proportion(1e-6), procedure)
+    assert (result.power, result.power_basis) == (0.0, "exact")
+    assert result.mde_relative is None
+    monkeypatch.undo()
+
+    small = 100_000
+    binomial_rr.confidence_interval(100, small, 400, small, alpha=alpha, alternative="two-sided")
+    admitted = achieved_power(small, 3.0, Baseline.from_proportion(1e-3), procedure)
+    assert admitted.power > 0.999
+
+
+class TestPlanningReplayBound:
+    """Planning replays the runtime decision over every retained (control, treatment) count cell
+    at the null rate, and its cost grows with that count. A decision beyond
+    ``PLANNING_CELL_CEILING`` cells is refused, coded, before any replay; the bound is the
+    replay's cost, so a huge arm with a rare control rate is still planned, and the runtime
+    itself decides arms up to ``FINITE_SAMPLE_MAX_ARM_SIZE``."""
+
+    _CODE = "power.binomial_replay_bound_exceeded"
+
+    @staticmethod
+    def _forbid_replay(monkeypatch) -> None:
+        from increment.power import _binomial
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("a decision beyond the planning bound must not be replayed")
+
+        monkeypatch.setattr(_binomial, "classify", forbidden)
+
+    @pytest.mark.parametrize("planner", ["achieved_power", "minimum_detectable_effect"])
+    def test_a_dense_design_above_the_bound_is_refused_before_any_replay(
+        self, monkeypatch, planner
+    ):
+        self._forbid_replay(monkeypatch)
+        n = 5_000_000
+        baseline, procedure = Baseline.from_proportion(0.05), _conversion()
+        with pytest.raises(InvalidRequestError) as raised:
+            if planner == "achieved_power":
+                achieved_power(n, 0.02, baseline, procedure)
+            else:
+                minimum_detectable_effect(n, baseline, procedure)
+        context = raised.value.context
+        assert raised.value.code == self._CODE
+        assert (context["n_c"], context["n_t"]) == (n, n)
+        assert context["p_c"] == 0.05
+        assert context["max_cells"] == PLANNING_CELL_CEILING < context["cells"]
+        assert context["max_arm_size"] == binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE
+
+    def test_the_bound_is_the_cells_the_replay_spans_not_the_arm_size(self):
+        """A hundred million units per arm at a rate of 2e-7 expect 20 events per arm: the
+        replay spans a few thousand cells, far inside the bound."""
+        result = achieved_power(100_000_000, 2.0, Baseline.from_proportion(2e-7), _conversion())
+        assert result.power_basis == "exact"
+        assert 0.0 < result.power < 1.0
+        with pytest.raises(InvalidRequestError) as raised:
+            achieved_power(100_000_000, 0.02, Baseline.from_proportion(0.05), _conversion())
+        assert raised.value.code == self._CODE
+
+    def test_a_size_search_that_meets_the_bound_refuses_at_the_largest_plannable_size(
+        self, monkeypatch
+    ):
+        """A (constructed) bound of 12,000 cells holds ~1,250 units per arm at a 5% rate, far
+        below the ~120,000 the lift needs. The search stops at the largest size the bound admits,
+        which ``achieved_power`` plans, and refuses with the power reached there."""
+        from increment.power import core
+
+        monkeypatch.setattr(core, "PLANNING_CELL_CEILING", 12_000)
+        baseline, procedure = Baseline.from_proportion(0.05), _conversion()
+        with pytest.raises(InvalidRequestError) as raised:
+            required_sample_size(0.05, baseline, procedure)
+        context = raised.value.context
+        assert raised.value.code == self._CODE
+        assert context["power"] == PowerDesign().power
+        assert context["cells"] <= context["max_cells"] == 12_000
+        at_ceiling = achieved_power(context["n_t"], 0.05, baseline, procedure)
+        assert at_ceiling.power == context["maximum_power"] < context["power"]
+        with pytest.raises(InvalidRequestError) as above:
+            achieved_power(math.ceil(context["n_t"] * 1.05), 0.05, baseline, procedure)
+        assert above.value.code == self._CODE
+
+    def test_a_size_search_the_bound_admits_is_unchanged_by_it(self, monkeypatch):
+        from increment.power import core
+
+        baseline, procedure = Baseline.from_proportion(0.1), _conversion()
+        expected = required_sample_size(0.5, baseline, procedure)
+        monkeypatch.setattr(core, "PLANNING_CELL_CEILING", 16_000)
+        assert required_sample_size(0.5, baseline, procedure) == expected
+
+
+class TestLargeArmsDecideAsTheRuntime:
+    """The replay and the runtime evaluate the same binomial tails through the same guarded SciPy
+    primitives, so at the arm sizes the ceiling admits they classify the same count pairs. The
+    point-mass cases are the ones that once read Cephes' ``bdtr``/``bdtrc``, whose error at the
+    median grows with the arm: 1e-3 absolute at 1e7 trials, 0.11 at 1e8, 0.25 at 1e9."""
+
+    _BETA = binomial_rr.nuisance_beta(0.05)
+
+    @pytest.mark.parametrize("n", [100_000_000, 1_000_000_000])
+    def test_the_exact_replay_of_rare_counts_equals_the_runtime(self, n):
+        decision = BinomialDecision(n, n, 1.0, self._BETA, 0.025, "greater")
+        geometry = RejectionGeometry(decision, "exact")
+        controls = (4, 8, 12)
+        plus, _ = geometry.cells(controls[0], controls[-1], 0, 200)
+        for x_c in controls:
+            row = plus[x_c - controls[0]]
+            first = int(np.argmax(row))
+            assert row.any() and first > x_c
+            for x_t in range(first - 3, first + 4):
+                runtime = binomial_rr.p_plus(1.0, x_c, n, x_t, n, self._BETA, tail=0.025) < 0.025
+                assert row[x_t] == runtime, (n, x_c, x_t)
+
+    @pytest.mark.parametrize(
+        ("n", "level"),
+        [
+            (10_000_000, 0.5007),
+            (100_000_000, 0.55),
+            pytest.param(1_000_000_000, 0.65, marks=pytest.mark.slow),
+        ],
+    )
+    def test_a_point_mass_treatment_tail_at_the_control_median_equals_the_runtime(self, n, level):
+        """With a null risk ratio of 1.25, the treatment rate under the null is one for every
+        control rate above ``0.8``, so at the all-success treatment count the tail is the
+        control's lower binomial tail at its observed count: at ``n / 1.25`` that is its median.
+        The one-sided ``level`` sits between the exact tail there (about one half) and the value
+        Cephes' ``bdtr`` returned for it (1.5e-3 above at 1e7 trials, 0.11 at 1e8, 0.34 at
+        1e9), so a replay that read it would fail to reject where the runtime rejects."""
+        ratio = 1.25
+        beta = binomial_rr.nuisance_beta(level)
+        decision = BinomialDecision(n, n, ratio, beta, level, "greater")
+        x_c = round(n / ratio)
+        plus, _ = RejectionGeometry(decision, "approximate").cells(x_c, x_c, n, n)
+        assert binomial_rr.p_plus(ratio, x_c, n, n, n, beta, tail=level) < level
+        assert bool(plus[0, 0]) is True
+        below = BinomialDecision(n, n, ratio, beta, 0.45, "greater")
+        plus, _ = RejectionGeometry(below, "approximate").cells(x_c, x_c, n, n)
+        assert binomial_rr.p_plus(ratio, x_c, n, n, n, beta, tail=0.45) >= 0.45
+        assert bool(plus[0, 0]) is False
+
+    @pytest.mark.slow
+    def test_achieved_power_at_a_huge_rare_arm_is_the_runtime_rejection_probability(self):
+        """Through the public path: 1e8 units per arm expecting 5 and 12.5 events. The power is
+        the sum over every retained count pair of the binomial weights where the unchanged
+        runtime decision rejects."""
+        n, p_c, lift = 100_000_000, 5e-8, 1.5
+        procedure = _conversion(alternative="greater")
+        result = achieved_power(n, lift, Baseline.from_proportion(p_c), procedure)
+        assert result.power_basis == "exact"
+        tail = procedure.compiled_tail_alpha
+        beta = binomial_rr.nuisance_beta(procedure.compiled_alpha)
+        p_t = p_c * (1.0 + lift)
+        controls = np.arange(0, 41)
+        treatments = np.arange(0, 71)
+        w_c, w_t = binom.pmf(controls, n, p_c), binom.pmf(treatments, n, p_t)
+        expected = sum(
+            w_c[x_c] * w_t[x_t]
+            for x_c in controls
+            for x_t in treatments
+            if binomial_rr.p_plus(1.0, int(x_c), n, int(x_t), n, beta, tail=tail) < tail
+        )
+        assert w_c.sum() > 1.0 - 1e-12 and w_t.sum() > 1.0 - 1e-12
+        assert result.power == pytest.approx(expected, abs=1e-9)
 
 
 @pytest.mark.parametrize(

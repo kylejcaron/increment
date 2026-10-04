@@ -48,7 +48,9 @@ Two routes classify ``D``:
 
 The route is a deterministic function of the geometry: ``exact`` when the
 retained (control, treatment) cell count at the null rate is within
-``EXACT_CELL_BUDGET``, else ``approximate``.
+``EXACT_CELL_BUDGET``, else ``approximate``. A geometry the runtime refuses in full (an arm
+above its ceiling, or a tail level its float margin dominates) has power exactly zero and
+is never replayed; one whose cell count exceeds ``PLANNING_CELL_CEILING`` is not planned.
 """
 
 from __future__ import annotations
@@ -87,6 +89,12 @@ _SURROGATE_SLACK = 1e-12
 #: Benchmarks across arm sizes, rates, and one- and two-sided tests keep the
 #: slowest measured complete `achieved_power` call near two seconds.
 EXACT_CELL_BUDGET = 16_000
+
+#: Planning bound in retained (control, treatment) cells at the null rate: the replay's work
+#: and memory grow with this count (about 10-15 CPU-microseconds per cell), so the bound is
+#: what a planning call costs. It is a property of the design, never of timing, and the
+#: runtime's own ceiling (`binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE`) is unaffected by it.
+PLANNING_CELL_CEILING = 10_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -1211,38 +1219,47 @@ class _Window:
         return self.hi - self.lo + 1
 
 
-def _window(n: int, p: float) -> _Window:
+def _window_bounds(n: int, p: float) -> tuple[int, int]:
     if p <= 0.0:
-        return _Window(0, 0, 0.0, np.ones(1))
+        return 0, 0
     if p >= 1.0:
-        return _Window(n, n, 0.0, np.ones(1))
-    lo = max(0, int(_binom.ppf(_OUTER_TAIL, n, p)))
-    hi = min(n, int(_binom.isf(_OUTER_TAIL, n, p)))
+        return n, n
+    return max(0, int(_binom.ppf(_OUTER_TAIL, n, p))), min(n, int(_binom.isf(_OUTER_TAIL, n, p)))
+
+
+def _window(n: int, p: float) -> _Window:
+    lo, hi = _window_bounds(n, p)
+    if p <= 0.0 or p >= 1.0:
+        return _Window(lo, hi, 0.0, np.ones(1))
     below = float(_rr._fast_binom_cdf(np.asarray(lo - 1), n, p)) if lo > 0 else 0.0
     above = float(_rr._fast_binom_sf(np.asarray(hi), n, p)) if hi < n else 0.0
     weights = _rr._fast_binom_pmf(np.arange(lo, hi + 1), n, p)
     return _Window(lo, hi, below + above, weights)
 
 
-def null_cells(decision: BinomialDecision, p_c: float) -> int:
-    """Retained (control, treatment) cells of the geometry at the null rate."""
-    p_null = min(1.0, decision.null_ratio * p_c)
-    return _window(decision.n_c, p_c).size * _window(decision.n_t, p_null).size
+def refused(decision: BinomialDecision) -> bool:
+    """Whether the runtime refuses every count pair of this decision, so none rejects: an arm
+    above the finite-sample ceiling, or a tail level the float margin dominates
+    (`binomial_rr.margin_dominates_tail`, which `confidence_interval` applies)."""
+    if max(decision.n_c, decision.n_t) > _rr.FINITE_SAMPLE_MAX_ARM_SIZE:
+        return True
+    return _rr.margin_dominates_tail(decision.tail_alpha, decision.beta, decision.n_c, decision.n_t)
 
 
-def _above_ceiling(decision: BinomialDecision) -> bool:
-    """Whether an arm exceeds the runtime's finite-sample ceiling."""
-    return max(decision.n_c, decision.n_t) > _rr.FINITE_SAMPLE_MAX_ARM_SIZE
+def replay_cells(decision: BinomialDecision, p_c: float) -> int:
+    """Retained (control, treatment) cells of the geometry at the null rate; zero for a decision
+    the runtime refuses in full, which is not replayed."""
+    if refused(decision):
+        return 0
+    lo_c, hi_c = _window_bounds(decision.n_c, p_c)
+    lo_t, hi_t = _window_bounds(decision.n_t, min(1.0, decision.null_ratio * p_c))
+    return (hi_c - lo_c + 1) * (hi_t - lo_t + 1)
 
 
-def route_for(decision: BinomialDecision, p_c: float) -> Route:
-    """Deterministic route: exact within the cell budget, else approximate.
-
-    Arms above the runtime's ceiling refuse every count pair, so their power
-    is exactly zero whatever the budget."""
-    if _above_ceiling(decision):
-        return "exact"
-    return "exact" if null_cells(decision, p_c) <= EXACT_CELL_BUDGET else "approximate"
+def route_for(cells: int) -> Route:
+    """Deterministic route of a geometry with ``cells`` retained cells at the null rate: exact
+    within the cell budget, else approximate."""
+    return "exact" if cells <= EXACT_CELL_BUDGET else "approximate"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1290,7 +1307,7 @@ class RejectionGeometry:
     def __init__(self, decision: BinomialDecision, route: Route) -> None:
         self.decision = decision
         self.route = route
-        self.refused = _above_ceiling(decision)
+        self.refused = refused(decision)
         self.x0 = 0
         self.rows = 0
         self.segments: list[_Segment] = []

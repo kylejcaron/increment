@@ -90,7 +90,14 @@ from increment.estimation.quantile import (
 )
 from increment.estimation.quantile import _raise as _quantile_raise
 from increment.estimation.sequential import GaussianScoreMixture
-from increment.power._binomial import BinomialDecision, RejectionGeometry, Route, route_for
+from increment.power._binomial import (
+    PLANNING_CELL_CEILING,
+    BinomialDecision,
+    RejectionGeometry,
+    Route,
+    replay_cells,
+    route_for,
+)
 from increment.power._noncentral_t import _scalar_power_from_nc
 from increment.power._search import (
     _LOG_FLOAT_MAX,
@@ -2211,6 +2218,74 @@ class _BinomialPlan:
         return self.geometry.closure_bound(self.p_c, low, high)
 
 
+def _render_replay_bound(
+    *,
+    n_c: int,
+    n_t: int,
+    p_c: float,
+    cells: int,
+    max_cells: int,
+    max_arm_size: int,
+    power: float | None = None,
+    maximum_power: float | None = None,
+) -> str:
+    where = (
+        f"n_c={n_c}/n_t={n_t} analyzed units at a {p_c:.6g} control rate, which replay "
+        f"{cells:,} (control, treatment) count cells against a bound of {max_cells:,}"
+    )
+    scope = (
+        f"The bound is the replay's cost, not a limit of the analysis: the runtime decides "
+        f"arms of up to {max_arm_size:,} analyzed units"
+    )
+    if power is None:
+        return (
+            f"planning the runtime's exact binomial decision at {where} is not supported. "
+            f"{scope} -- plan fewer analyzed units per arm (a larger relative_lift needs fewer)"
+        )
+    return (
+        f"target power {power} is not reached by the runtime's exact binomial decision "
+        f"within the planning replay bound (power {maximum_power:.6g} at {where}). {scope} "
+        "-- plan a larger relative_lift or a lower target power"
+    )
+
+
+_BINOMIAL_REPLAY_BOUND = RefusalSpec(
+    "power.binomial_replay_bound_exceeded", InvalidRequestError, _render_replay_bound
+)
+
+
+def _refuse_replay_bound(
+    baseline: Baseline, n_T: int, n_C: int, cells: int, **sizing: float
+) -> NoReturn:
+    """Refuse a decision whose replay spans ``cells`` count cells at analyzed counts
+    ``(n_T, n_C)``; a size search adds its target ``power`` and the ``maximum_power`` it reached."""
+    refuse(
+        _BINOMIAL_REPLAY_BOUND,
+        n_c=n_C,
+        n_t=n_T,
+        p_c=baseline.mean,
+        cells=cells,
+        max_cells=PLANNING_CELL_CEILING,
+        max_arm_size=FINITE_SAMPLE_MAX_ARM_SIZE,
+        **sizing,
+    )
+
+
+def _binomial_key(procedure: ArmPlanningProcedure, n_T: int, n_C: int) -> BinomialDecision:
+    """The runtime decision at analyzed counts ``(n_T, n_C)``: the compiled decision alpha
+    fixes the nuisance budget, the compiled tail allocation the rejection threshold, and
+    ``1 + null_lift`` the tested risk ratio."""
+    decision = cast("RelativeDecisionPolicy", procedure.decision)
+    return BinomialDecision(
+        n_c=n_C,
+        n_t=n_T,
+        null_ratio=1.0 + decision.null_lift,
+        beta=nuisance_beta(procedure.compiled_alpha),
+        tail_alpha=procedure.compiled_tail_alpha,
+        alternative=decision.alternative,
+    )
+
+
 def _binomial_plan(
     procedure: ArmPlanningProcedure,
     baseline: Baseline,
@@ -2220,20 +2295,14 @@ def _binomial_plan(
     *,
     route: Route | None = None,
 ) -> _BinomialPlan:
-    """The runtime decision at analyzed counts ``(n_T, n_C)``: the compiled
-    decision alpha fixes the nuisance budget, the compiled tail allocation
-    the rejection threshold, and ``1 + null_lift`` the tested risk ratio.
+    """The runtime decision at analyzed counts ``(n_T, n_C)``. A decision whose replay would
+    span more than ``PLANNING_CELL_CEILING`` count cells is refused before any is built.
     ``route`` overrides the budgeted route (sizing proposals only)."""
-    decision = cast("RelativeDecisionPolicy", procedure.decision)
-    key = BinomialDecision(
-        n_c=n_C,
-        n_t=n_T,
-        null_ratio=1.0 + decision.null_lift,
-        beta=nuisance_beta(procedure.compiled_alpha),
-        tail_alpha=procedure.compiled_tail_alpha,
-        alternative=decision.alternative,
-    )
-    route = route_for(key, baseline.mean) if route is None else route
+    key = _binomial_key(procedure, n_T, n_C)
+    cells = replay_cells(key, baseline.mean)
+    if cells > PLANNING_CELL_CEILING:
+        _refuse_replay_bound(baseline, n_T, n_C, cells)
+    route = route_for(cells) if route is None else route
     geometry = cache.get((key, route))
     if geometry is None:
         geometry = cache[key, route] = RejectionGeometry(key, route)
@@ -2520,7 +2589,8 @@ def _binomial_size(  # noqa: PLR0915
     floor = _assigned_minimum_per_arm(procedure, baseline)
     z_target = float(_ndtri(target))
     z_alpha = float(_norm.isf(procedure.compiled_tail_alpha))
-    ceiling = _binomial_arm_ceiling(design, floor, baseline)
+    arm_ceiling = _binomial_arm_ceiling(design, floor, baseline)
+    ceiling = _binomial_replay_ceiling(procedure, baseline, design, floor, arm_ceiling)
     powers: dict[int, float] = {}
 
     def plan_at(n: int, route: Route | None = None) -> _BinomialPlan:
@@ -2577,6 +2647,18 @@ def _binomial_size(  # noqa: PLR0915
                 if lo >= ceiling:
                     if not final:
                         return ceiling
+                    if ceiling < arm_ceiling:
+                        n_T, n_C = _analyzed_counts(
+                            *_compute_arms(lo, design, minimum_per_arm=floor), baseline
+                        )
+                        _refuse_replay_bound(
+                            baseline,
+                            n_T,
+                            n_C,
+                            replay_cells(_binomial_key(procedure, n_T, n_C), baseline.mean),
+                            power=target,
+                            maximum_power=values[lo],
+                        )
                     refuse(
                         _BINOMIAL_SIZE_LIMIT,
                         power=target,
@@ -2628,6 +2710,39 @@ def _binomial_arm_ceiling(design: PowerDesign, floor: int, baseline: Baseline) -
         else:
             hi = mid - 1
     return lo
+
+
+# The retained-cell count is not monotone in the size (each window's integer edges move
+# independently), so the replay ceiling stays a fraction under the crossing found by bisection:
+# `_binomial_plan` never refuses a size the search is allowed to propose.
+_REPLAY_CEILING_JITTER = 128
+
+
+def _binomial_replay_ceiling(
+    procedure: ArmPlanningProcedure,
+    baseline: Baseline,
+    design: PowerDesign,
+    floor: int,
+    upper: int,
+) -> int:
+    """Largest assigned treatment size at most ``upper`` whose analyzed arms replay within
+    ``PLANNING_CELL_CEILING`` count cells (``upper`` itself when none is excluded)."""
+
+    def within(n: int) -> bool:
+        n_T, n_C = _analyzed_counts(*_compute_arms(n, design, minimum_per_arm=floor), baseline)
+        cells = replay_cells(_binomial_key(procedure, n_T, n_C), baseline.mean)
+        return cells <= PLANNING_CELL_CEILING
+
+    if within(upper):
+        return upper
+    lo, hi = floor, upper - 1
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if within(mid):
+            lo = mid
+        else:
+            hi = mid - 1
+    return max(floor, lo - lo // _REPLAY_CEILING_JITTER)
 
 
 def _sequential_companion(

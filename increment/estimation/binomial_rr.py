@@ -264,6 +264,14 @@ def _eps_margin(term_count: int, n_c: int, n_t: int) -> float:
     return (_ulp_allowance(n_c) + _ulp_allowance(n_t) + max(1, term_count)) * _FLOAT64_EPS
 
 
+def margin_dominates_tail(tail: float, beta: float, n_c: int, n_t: int) -> bool:
+    """Whether the float margin reaches what the tail level *tail* leaves after the nuisance budget
+    *beta*. Every certified tail carries `_eps_margin`, so then no p-value can be certified below
+    *tail* and every count pair at these arm sizes is refused: the result would be the degenerate
+    set ``[0, 2/a]``. Planning shares this predicate with `confidence_interval`."""
+    return tail - beta <= _eps_margin(1, n_c, n_t)
+
+
 def _round_outward(x: float, *, direction: Literal["down", "up"]) -> float:
     """One-ULP directed rounding: nudge *x* to the adjacent float64 in the
     conservative *direction*. Used so a value already computed as a
@@ -1385,10 +1393,13 @@ def confidence_interval(
     # Every certified tail carries the float margin, so no p-value can be certified below
     # `target` once the margin reaches what `target` leaves after the nuisance budget.
     target = alpha / 2.0 if validated_alternative == "two-sided" else alpha
-    margin = _eps_margin(1, n_c, n_t)
-    if target - nuisance_beta(alpha) <= margin:
+    if margin_dominates_tail(target, nuisance_beta(alpha), n_c, n_t):
         _raise(
-            "estimation.binomial.tail_unrepresentable", alpha=alpha, margin=margin, n_c=n_c, n_t=n_t
+            "estimation.binomial.tail_unrepresentable",
+            alpha=alpha,
+            margin=_eps_margin(1, n_c, n_t),
+            n_c=n_c,
+            n_t=n_t,
         )
     arguments = (x_c, n_c, x_t, n_t, alpha, validated_alternative, null_r, NUISANCE_STOP)
     try:
