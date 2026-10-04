@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 import ibis
@@ -44,7 +45,6 @@ from increment.query.artifact_extensions import read_extension, read_unit_covari
 from increment.query.artifact_reader import (
     _ARTIFACT_GRAIN,
     LAZY_DIGEST_VERIFICATION,
-    _SnapshotLifecycle,
     restrict_to_units,
 )
 from increment.query.artifact_reader import (
@@ -598,7 +598,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
     def __init__(
         self,
         store: ArtifactStore,
-        snapshot_context: Any,
+        snapshot_context: AbstractContextManager[object],
         snapshot: Any,
         manifest: UnitDayArtifactManifest,
         *,
@@ -710,7 +710,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         try:
             return cls(
                 store,
-                _SnapshotLifecycle(snapshot_context),
+                snapshot_context,
                 snapshot,
                 manifest,
                 expected_context=expected_context,

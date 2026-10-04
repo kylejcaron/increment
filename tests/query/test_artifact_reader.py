@@ -44,3 +44,28 @@ def test_context_rejects_a_manifest_with_no_metric_bindings():
     with pytest.raises(InvalidRequestError) as exc_info:
         _ = source.context
     assert exc_info.value.code == "query.artifact_reader.artifact_moment.manifest_no_metric"
+
+
+class _CountingContext:
+    def __init__(self) -> None:
+        self.exits = 0
+
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.exits += 1
+
+
+def test_a_directly_constructed_source_releases_a_plain_snapshot_context_once():
+    context = _CountingContext()
+    source = ArtifactMomentSource(
+        None,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        context,
+        None,  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        _FakeManifest(),  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+    )
+    assert source.closed is False
+    source.close()
+    source.close()
+    assert (source.closed, context.exits) == (True, 1)

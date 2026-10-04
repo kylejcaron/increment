@@ -748,8 +748,12 @@ def _record_binding_resolution(
             )
 
 
-class _SnapshotLifecycle:
-    """Closed-state and release of one pinned snapshot, shared by every view of it."""
+class _SnapshotLifecycle(AbstractContextManager[None]):
+    """Closed-state and release of one pinned snapshot, shared by every view of it.
+
+    It is itself a context manager, so a view can be built from it exactly as from the
+    snapshot context it wraps; ``ArtifactMomentSource`` adopts it instead of re-wrapping.
+    """
 
     def __init__(self, context: AbstractContextManager[object]) -> None:
         self._context = context
@@ -760,6 +764,9 @@ class _SnapshotLifecycle:
             return
         self.closed = True
         self._context.__exit__(None, None, None)
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
 
 
 class ArtifactMomentSource(SequentialSourceMixin):
@@ -773,14 +780,18 @@ class ArtifactMomentSource(SequentialSourceMixin):
     def __init__(
         self,
         store: ArtifactStore,
-        lifecycle: _SnapshotLifecycle,
+        snapshot_context: AbstractContextManager[object],
         snapshot: ArtifactSnapshot,
         manifest: UnitDayArtifactManifest,
         *,
         metrics: Sequence[MetricSpec] | Mapping[str, str] | None = None,
     ) -> None:
         self._store = store
-        self._lifecycle = lifecycle
+        self._lifecycle = (
+            snapshot_context
+            if isinstance(snapshot_context, _SnapshotLifecycle)
+            else _SnapshotLifecycle(snapshot_context)
+        )
         self._snapshot = snapshot
         self._manifest = manifest
         self._population_units: frozenset[str] | None = None
@@ -805,7 +816,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
             _raise("query.artifact_reader.artifact_moment.verification_lazy_digest")
         context = open_trusted_manifest_snapshot(store, ref, expected_context=expected_context)
         snapshot, manifest = context.__enter__()
-        return cls(store, _SnapshotLifecycle(context), snapshot, manifest, metrics=metrics)
+        return cls(store, context, snapshot, manifest, metrics=metrics)
 
     from_artifact = open
 
