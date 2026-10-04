@@ -1055,8 +1055,10 @@ class Analysis:
         source's refusal would refuse its siblings. These reads hand the source only
         *breakout*; families are computed per breakout, so their rows equal this breakout's
         rows from the dimension-wide reads. Only native ``Analysis.from_definitions``
-        instances support it (``facade.analysis.operation`` otherwise); an undeclared
-        *breakout* is refused with ``facade.analysis.undeclared_breakout``.
+        instances support it: other arm-family sources refuse with
+        ``facade.analysis.operation`` and switchback evidence with
+        ``facade.analysis.contrast_unavailable``. An undeclared *breakout* is refused
+        with ``facade.analysis.undeclared_breakout``.
 
         Parameters
         ----------

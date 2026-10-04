@@ -544,6 +544,16 @@ def test_switchback_day_axis_and_breakout_routes_refuse(method: str) -> None:
     assert refusal.value.code == "facade.analysis.contrast_unavailable"
 
 
+def test_switchback_dashboard_breakout_reads_refuses_with_contrast_code() -> None:
+    from increment.errors import CapabilityError
+    from increment.semantics.models import Breakout
+
+    with pytest.raises(CapabilityError) as refusal:
+        _switchback_analysis().dashboard_breakout_reads(Breakout(property="geo"))
+    assert refusal.value.code == "facade.analysis.contrast_unavailable"
+    assert refusal.value.context["method"] == "dashboard_breakout_reads"
+
+
 def test_assignment_diagnostic_refuses_arm_evidence_with_its_own_code() -> None:
     from increment.errors import CapabilityError
 
