@@ -558,6 +558,70 @@ class TestPlanningReplayBound:
         assert geometry.evaluate(0.05, 0.05) == first
         assert RejectionGeometry(decision, "exact").evaluate(0.05, 0.4).power > 0.0
 
+    def test_a_solve_is_refused_for_its_own_union_whatever_an_earlier_solve_cached(self):
+        """An earlier solve cached the window at a 5% rate. This solve evaluates 20% (4,802
+        cells) and then 60% (5,880 cells, apart from it): each fits a bound of 8,000, and with
+        the cache their storage fits until the second, which a cache-only drop would clear to
+        succeed. The solve's own union is 10,682 cells, which a fresh geometry refuses too, so
+        the shared one refuses it with the same cells."""
+        beta = binomial_rr.nuisance_beta(0.05)
+        decision = BinomialDecision(300, 300, 1.0, beta, 0.025, "greater")
+        assert [window_cells(decision, 0.05, p) for p in (0.2, 0.6)] == [4_802, 5_880]
+        bound = 8_000
+
+        shared = RejectionGeometry(decision, "exact", max_cells=bound)
+        shared.evaluate(0.05, 0.05)
+        shared.begin_solve()
+        first = shared.evaluate(0.05, 0.2)
+        with pytest.raises(ReplayBoundExceeded) as raised:
+            shared.evaluate(0.05, 0.6)
+
+        fresh = RejectionGeometry(decision, "exact", max_cells=bound)
+        assert fresh.evaluate(0.05, 0.2) == first
+        with pytest.raises(ReplayBoundExceeded) as expected:
+            fresh.evaluate(0.05, 0.6)
+        assert raised.value.cells == expected.value.cells == 49 * (98 + 120) > bound
+        assert raised.value.p_t == expected.value.p_t == 0.6
+        assert shared.evaluate(0.05, 0.2) == first
+
+    def test_the_cache_of_earlier_solves_is_dropped_and_the_solves_own_cells_are_kept(
+        self, monkeypatch
+    ):
+        """An earlier solve cached 40% (columns 62..181). This solve evaluates 5% (0..48), which
+        fits beside it (8,281 cells of a bound of 8,500), and then 60% (119..238), which merges
+        with the cache into 11,074. The cache goes, the 5% cells stay (they are not classified
+        again), and the answers are a fresh geometry's."""
+        from increment.power import _binomial
+
+        beta = binomial_rr.nuisance_beta(0.05)
+        decision = BinomialDecision(300, 300, 1.0, beta, 0.025, "greater")
+        bound = 8_500
+
+        def stored(geometry: RejectionGeometry) -> int:
+            return geometry.rows * sum(s.j1 - s.j0 + 1 for s in geometry.segments)
+
+        shared = RejectionGeometry(decision, "exact", max_cells=bound)
+        shared.evaluate(0.05, 0.4)
+        shared.begin_solve()
+        first = shared.evaluate(0.05, 0.05)
+        assert stored(shared) == 49 * (49 + 120)
+
+        calls: list[int] = []
+        classify = _binomial.classify
+        monkeypatch.setattr(
+            _binomial,
+            "classify",
+            lambda *args, **kwargs: calls.append(1) or classify(*args, **kwargs),
+        )
+        second = shared.evaluate(0.05, 0.6)
+        assert stored(shared) == 49 * (49 + 120) <= bound
+        calls.clear()
+        assert shared.evaluate(0.05, 0.05) == first
+        assert not calls
+        fresh = RejectionGeometry(decision, "exact", max_cells=bound)
+        assert fresh.evaluate(0.05, 0.05) == first
+        assert fresh.evaluate(0.05, 0.6) == second
+
     def test_a_curve_row_is_not_refused_for_the_cells_earlier_rows_stored(self, monkeypatch):
         """Each lift's alternative rectangle fits a bound its neighbour's union with it does
         not. The curve shares one geometry across its rows, but every row answers as its own

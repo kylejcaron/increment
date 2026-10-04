@@ -1342,10 +1342,12 @@ class RejectionGeometry:
     never force the counts between them to be classified. The stored cells
     (every row by every segment's columns) never exceed ``max_cells``: a request
     that would exceed it raises `ReplayBoundExceeded` before anything is allocated.
-    A geometry shared by several solves (a power curve's rows) holds the cells of the earlier
-    ones only as a cache: `begin_solve` marks them, and the first request one of its own
-    solves could not otherwise fit drops them and classifies afresh, so the bound limits each
-    solve's storage, never what earlier solves left behind.
+    A geometry shared by several solves (a power curve's rows, a supplied effect and its
+    companion effect search) tracks each solve's own footprint, the rows by the treatment
+    segments its requests cover, apart from the cells earlier solves left, which are only a
+    cache. The bound is on the footprint, so a solve is refused exactly when a fresh geometry
+    would refuse it; when the stored cells (footprint and cache) would exceed it while the
+    footprint fits, the cache is dropped and the footprint kept.
     """
 
     def __init__(
@@ -1361,14 +1363,54 @@ class RejectionGeometry:
         # Effect searches already solved on this geometry, keyed by their
         # control rate, compliance, and target: a curve's companion effects.
         self.effects: dict[tuple[float, float, float], object] = {}
-        self._carried = False
+        # The current solve's rows and its treatment spans, merged as the segments are.
+        self._footprint: tuple[int, int, list[tuple[int, int]]] | None = None
 
     def begin_solve(self) -> None:
-        """Mark the stored cells as carried over from earlier solves."""
-        self._carried = bool(self.segments)
+        """Start a solve: the cells stored so far become a cache, outside its footprint."""
+        self._footprint = None
 
-    def _drop_carried(self) -> None:
-        self.x0, self.rows, self.segments, self._carried = 0, 0, [], False
+    def _footprint_after(
+        self, x_lo: int, x_hi: int, j_lo: int, j_hi: int
+    ) -> tuple[int, int, list[tuple[int, int]]]:
+        """The solve's footprint once ``[x_lo, x_hi] x [j_lo, j_hi]`` is covered."""
+        rows_lo, rows_hi, spans = self._footprint or (x_lo, x_hi, [])
+        touching = [s for s in spans if s[0] <= j_hi + 1 and s[1] >= j_lo - 1]
+        merged = (min([j_lo, *(s[0] for s in touching)]), max([j_hi, *(s[1] for s in touching)]))
+        apart = [s for s in spans if s not in touching]
+        return min(rows_lo, x_lo), max(rows_hi, x_hi), sorted([*apart, merged])
+
+    @staticmethod
+    def _footprint_cells(footprint: tuple[int, int, list[tuple[int, int]]]) -> int:
+        rows_lo, rows_hi, spans = footprint
+        return (rows_hi - rows_lo + 1) * sum(b - a + 1 for a, b in spans)
+
+    def _keep_footprint(self) -> None:
+        """Drop every stored cell outside the solve's footprint (the cache of earlier solves)."""
+        if self._footprint is None:
+            self.x0, self.rows, self.segments = 0, 0, []
+            return
+        rows_lo, rows_hi, spans = self._footprint
+        kept: list[_Segment] = []
+        for first, last in spans:
+            shape = (rows_hi - rows_lo + 1, last - first + 1)
+            segment = _Segment(
+                first, np.zeros(shape, bool), np.zeros(shape, bool), np.zeros(shape, bool)
+            )
+            top, bottom = max(rows_lo, self.x0), min(rows_hi, self.x0 + self.rows - 1)
+            for old in self.segments:
+                left, right = max(first, old.j0), min(last, old.j1)
+                if left > right or top > bottom:
+                    continue
+                new_rows = slice(top - rows_lo, bottom - rows_lo + 1)
+                new_cols = slice(left - first, right - first + 1)
+                old_rows = slice(top - self.x0, bottom - self.x0 + 1)
+                old_cols = slice(left - old.j0, right - old.j0 + 1)
+                segment.plus[new_rows, new_cols] = old.plus[old_rows, old_cols]
+                segment.minus[new_rows, new_cols] = old.minus[old_rows, old_cols]
+                segment.known[new_rows, new_cols] = old.known[old_rows, old_cols]
+            kept.append(segment)
+        self.x0, self.rows, self.segments = rows_lo, rows_hi - rows_lo + 1, kept
 
     def _row_span(self, x_lo: int, x_hi: int) -> tuple[int, int]:
         """First and last control count of the stored rows extended to ``[x_lo, x_hi]``."""
@@ -1433,12 +1475,13 @@ class RejectionGeometry:
         """Classify every cell of ``[x_lo, x_hi] x [j_lo, j_hi]`` not yet known."""
         if self.refused:
             return
-        stored = self._stored_after(x_lo, x_hi, j_lo, j_hi)
-        if stored > self.max_cells and self._carried:
-            self._drop_carried()
-            stored = self._stored_after(x_lo, x_hi, j_lo, j_hi)
-        if stored > self.max_cells:
-            raise ReplayBoundExceeded(stored)
+        footprint = self._footprint_after(x_lo, x_hi, j_lo, j_hi)
+        needed = self._footprint_cells(footprint)
+        if needed > self.max_cells:
+            raise ReplayBoundExceeded(needed)
+        if self._stored_after(x_lo, x_hi, j_lo, j_hi) > self.max_cells:
+            self._keep_footprint()
+        self._footprint = footprint
         self._cover_rows(x_lo, x_hi)
         segment = self._merged(j_lo, j_hi)
         rows = slice(x_lo - self.x0, x_hi - self.x0 + 1)
