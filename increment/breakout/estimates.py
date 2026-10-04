@@ -1609,13 +1609,17 @@ def _binomial_gate_exempt_metrics(
     prior_by_metric: Mapping[str, Prior | None] | None = None,
 ) -> frozenset[str]:
     """Conversion/retention metrics exempt from the ddof/positive-mean gate
-    below because the exact binomial risk-ratio method admits them at ``n=1``
-    and with zero treatment/control means. The log-Normal delta method still
-    needs a ddof=1 variance and ``math.log`` of a positive mean.
+    below because the finite-sample binomial risk-ratio method admits them at
+    ``n=1`` and with zero treatment/control means. The log-Normal delta method
+    still needs a ddof=1 variance and ``math.log`` of a positive mean.
 
     This mirrors ``estimation.engine._binomial_eligible`` at this
-    row-partitioning layer. Mixed requests are exempt when an unadjusted method
-    can use the exact path; adjusted methods are partitioned per method.
+    row-partitioning layer, which decides only whether the count rule may route a
+    row: ``estimate_lift`` sends every row with a zero or sparse arm to the
+    finite-sample method and only rows whose four counts are all dense, hence
+    with a positive mean and variance, to the delta method. Mixed requests are
+    exempt when an unadjusted method can use that path; adjusted methods are
+    partitioned per method.
     """
     exempt: set[str] = set()
     for metric in metrics:

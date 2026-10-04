@@ -1343,7 +1343,8 @@ def _rounding_bound(units: int) -> float:
 
 def binary_counts(arm: ArmStats, metric_type: str) -> tuple[int, int]:
     """Reconstruct exact integer ``(successes, trials)`` from a pure,
-    unadjusted y-family arm -- the sole ingress to the exact binomial
+    unadjusted y-family arm -- the sole ingress to the conversion route
+    (see ``conversion_route.py``) and its finite-sample binomial
     risk-ratio method (see ``binomial_rr.py``).
 
     ``metric_type`` MUST already be independently known (e.g. from the

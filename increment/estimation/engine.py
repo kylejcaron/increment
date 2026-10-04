@@ -647,7 +647,6 @@ def _validate_conversion_inference(
             refuse_finite_sample_unavailable(metric.name, reason)
 
 
-
 def _validate_typed_direct_compatibility(
     metrics: Sequence[Metric],
     methods: Sequence[Method],
@@ -1829,7 +1828,7 @@ def _binomial_eligible(
     asymptotic inference rather than raw Bernoulli sufficient statistics.
     Clustered conversion/retention uses the linear joint Fieller path with
     cluster-robust covariance and a fixed-t working reference, not this
-    exact binomial construction. An attached uptake moment (``arm.sum_d``) does not
+    binomial construction. An attached uptake moment (``arm.sum_d``) does not
     disqualify eligibility either: it describes a different random
     variable over the same units and is stripped before either route
     reads the arm (see ``_without_unused_binomial_uptake``).
@@ -1867,7 +1866,7 @@ def _without_unused_binomial_uptake(arm: ArmStats) -> ArmStats:
     An encouragement design's uptake facts do not change the ITT's
     sufficient statistics for a binary outcome (x_c, n_c, x_t, n_t); only
     the assignment-level y family does. Stripping them here keeps the
-    exact independent-binomial route available for the ITT, while the
+    independent-binomial counts available to the ITT, while the
     design's own uptake/compliance/LATE estimation (encouragement.py)
     reads the untouched arm from the original summary.
     """
@@ -2509,7 +2508,8 @@ def _estimate_registered_sequential(
     )
     return estimate_sequential(summary, inference)
 
-def _asymptotic_lift_outcome(  # noqa: PLR0913
+
+def _asymptotic_lift_outcome(
     contrast: tuple[ArmStats, ArmStats],
     method_strategy: _LiftMethodStrategy,
     strategy: _LiftVarianceStrategy,
@@ -2575,6 +2575,7 @@ def _lift_for_method(  # noqa: PLR0913
     null_lift: float,
     null_abs: float | None,
     preferred_direction: PreferredDirection | None,
+    route_alpha: float | None = None,
 ) -> tuple[LiftEstimate | None, DecisionFailure | None]:
     """One (contrast, method) row.
 
@@ -2629,8 +2630,15 @@ def _lift_for_method(  # noqa: PLR0913
         counts = _contrast_counts(treatment, control, metric_type)
     except binomial_rr.BinomialDataError as exc:
         return _binomial_data_failure(treatment, exc, method_role)
+    # A multiplicity procedure may read this row's p-value at a smaller family level
+    # (``route_alpha``, in ``alpha``'s convention): the route is the one valid at the smallest
+    # level the row can be decided at, never a looser one.
+    route_level = alpha_eff
+    if route_alpha is not None:
+        floor = route_alpha if valid_alternative == "two-sided" else 2.0 * route_alpha
+        route_level = min(alpha_eff, floor)
     route = route_for_counts(
-        *counts, tail_alpha=alpha_eff / 2.0, mode=method.conversion_inference
+        *counts, tail_alpha=route_level / 2.0, mode=method.conversion_inference
     )
     if route == "finite_sample":
         return _infer_binomial_lift_result(
@@ -2659,8 +2667,7 @@ def _lift_for_method(  # noqa: PLR0913
     )
 
 
-
-def estimate_lift(  # noqa: PLR0913, PLR0915
+def estimate_lift(  # noqa: PLR0913
     metrics: Sequence[Metric],
     summary: SequentialSnapshot
     | IntoDataFrame
@@ -2680,8 +2687,14 @@ def estimate_lift(  # noqa: PLR0913, PLR0915
     winsor_references: Mapping[tuple[str, str], BootstrapReference] | None = None,
     *,
     summary_population: Literal["assigned", "triggered"] | None = None,
+    route_alpha: float | None = None,
 ) -> DecisionComputation[LiftEstimate]:
     """Estimate relative lift for every (metric x method x non-control arm).
+
+    ``route_alpha`` is the smallest level (in ``alpha``'s convention) a multiplicity
+    procedure can later decide a row's p-value at; a conversion row takes the delta-method
+    route only if its counts are dense at that level too, so an approximate p-value is never
+    read at a tail it was not validated at. Omitted, the row's own ``alpha`` decides.
 
     Percentile winsorization requires ``raw_outcomes`` with every cutoff-pool
     arm and matching inference specification. It returns a confidence set without a
@@ -2914,6 +2927,7 @@ def estimate_lift(  # noqa: PLR0913, PLR0915
                 null_lift,
                 null_abs,
                 preferred_direction,
+                route_alpha,
             )
             if failure is not None:
                 guard_failures[failure.hypothesis] = failure

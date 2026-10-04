@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 from increment._policy_alpha import resolve_cell_alpha
+from increment.estimation.conversion_route import family_route_alpha
 from increment.estimation.engine import Method
 from increment.estimation.engine import merge_decision_computations as _merge_decision_computations
 from increment.estimation.family import decision_cells, family_discovery, select_family
@@ -111,6 +112,35 @@ def _partition_secondary_family(
     return family, non_family
 
 
+def _load_family_rows(
+    src: MomentSource,
+    secondary_entries: Sequence[tuple[Metric, ResolvedMetricConfig, Any, bool, list[Method]]],
+    design: Randomized,
+    plan: CompiledDecisionPlan,
+    *,
+    by: Sequence[str],
+) -> tuple[dict[str, Any], float | None]:
+    """Each secondary's rows, and the smallest level the family can decide a p-value at.
+
+    That level is the plan's ``q`` over every hypothesis the family tests (the metric x treatment
+    arm cells of its members: a prior-bound or non-member secondary is not one); a conversion
+    decision row is routed at it, so its p-value is never read at a tail it is not dense for.
+    A quantile metric is refused before any data is read."""
+    loaded: dict[str, Any] = {}
+    for metric, _config, test, is_quantile, _metric_methods in secondary_entries:
+        if is_quantile:
+            _refuse_unsupported_quantile(metric, test, cluster=src.context.cluster, by=by)
+        loaded[metric.name] = _load_metric_rows(
+            src, metric, by=by, control_group=design.control_group
+        )
+    hypotheses = sum(
+        loaded[metric.name].n_treatment_arms
+        for metric, config, test, *_ in secondary_entries
+        if getattr(test.family, "member", False) and config.prior is None
+    )
+    return loaded, family_route_alpha(plan.q, hypotheses)
+
+
 def _estimate_randomized_secondary_family(
     src: MomentSource,
     secondary_entries: Sequence[tuple[Metric, ResolvedMetricConfig, Any, bool, list[Method]]],
@@ -132,12 +162,15 @@ def _estimate_randomized_secondary_family(
     # frame), reused by the FCR pass instead of re-querying the source.
     evidence_by_metric: dict[str, Any] = {}
     refused_cells: list[tuple[str, str, str, str]] = []
+    loaded, route_alpha = _load_family_rows(src, secondary_entries, design, plan, by=by)
     for metric, config, test, is_quantile, _metric_methods in secondary_entries:
+        member_route_alpha = (
+            route_alpha if getattr(test.family, "member", False) and config.prior is None else None
+        )
         if is_quantile:
             from increment.estimation.decision_types import ArmHypothesisKey
 
-            _refuse_unsupported_quantile(metric, test, cluster=src.context.cluster, by=by)
-            metric_rows = _load_metric_rows(src, metric, by=by, control_group=design.control_group)
+            metric_rows = loaded[metric.name]
             evidence_by_metric[metric.name] = metric_rows.unit_frame
             observed_arms |= metric_rows.observed_arms
             if metric_rows.n_treatment_arms:
@@ -170,7 +203,7 @@ def _estimate_randomized_secondary_family(
                 if isinstance(key, ArmHypothesisKey)
             )
         else:
-            metric_rows = _load_metric_rows(src, metric, by=by, control_group=design.control_group)
+            metric_rows = loaded[metric.name]
             rows = list(metric_rows.rows)
             evidence_by_metric[metric.name] = rows
             observed_arms |= metric_rows.observed_arms
@@ -191,6 +224,7 @@ def _estimate_randomized_secondary_family(
                     else "cells"
                 ),
                 methods=_metric_methods,
+                route_alpha=member_route_alpha,
             )
             nominal_by_metric[metric.name] = nominal
             nominal_computation_by_metric[metric.name] = computation

@@ -57,11 +57,9 @@ PLANNING_ROUTE_CERTAINTY = 1e-6
 #: count at least this, the combined log standard error is below ``sqrt(2 / 9)``.
 _GUARD_FLOOR = 9
 
-#: ``dense_min_count(tail) = max(_DENSE_FLOOR, ceil(_DENSE_SLOPE * z ** 4))`` with
-#: ``z = Phi^{-1}(1 - tail)``: the envelope over the boundary coverage scan of the counts
-#: the delta-method interval needs per tail (``python -m calibration.conversion_route
-#: select``), with the scan's 1.25x margin. Provisional until ``verify`` and ``hybrid``
-#: have been run against it.
+#: ``dense_min_count(tail) = max(_DENSE_FLOOR, ceil(_DENSE_SLOPE * z ** 4))``, ``z = Phi^{-1}(1 - tail)``:
+#: the boundary coverage scan's counts per tail with its 1.25x margin
+#: (``python -m calibration.conversion_route select``).
 _DENSE_FLOOR = 400
 _DENSE_SLOPE = 90
 
@@ -110,7 +108,9 @@ def finite_sample_blocker(
             "could act on"
         )
     if sequential:
-        return "sequential inference is requested, and the finite-sample route is fixed-horizon only"
+        return (
+            "sequential inference is requested, and the finite-sample route is fixed-horizon only"
+        )
     return None
 
 

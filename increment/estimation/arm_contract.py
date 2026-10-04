@@ -254,6 +254,18 @@ class ArmCompatibilityRequest(CodedModel, BaseModel):
         )
 
 
+def _require_finite_sample_servable(metric_type: str, *, clustered: bool, sequential: bool) -> None:
+    """Refuse an explicit ``finite_sample`` plan the finite-sample route cannot serve."""
+    reason = finite_sample_blocker(
+        metric_type,
+        cluster="the plan's cluster" if clustered else None,
+        prior_present=False,
+        sequential=sequential,
+    )
+    if reason is not None:
+        refuse_finite_sample_unavailable(metric_type, reason)
+
+
 class ArmPlanningProcedure(CodedModel, BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", revalidate_instances="always")
 
@@ -355,14 +367,9 @@ class ArmPlanningProcedure(CodedModel, BaseModel):
         because planning must describe the analysis actually intended.
         """
         if conversion_inference == "finite_sample":
-            reason = finite_sample_blocker(
-                metric_type,
-                cluster="the plan's cluster" if clustered else None,
-                prior_present=False,
-                sequential=inference is not None,
+            _require_finite_sample_servable(
+                metric_type, clustered=clustered, sequential=inference is not None
             )
-            if reason is not None:
-                refuse_finite_sample_unavailable(metric_type, reason)
         if secondaries is not None and role != "secondary":
             _raise("arm_planning.secondaries_without_secondary_role")
         if role == "secondary" and secondaries is None:
@@ -489,7 +496,9 @@ class ArmPlanningProcedure(CodedModel, BaseModel):
             ),
             decision=decision,
             family_expansion=PlanningFamilyExpansion(family_size=family_size),
-            decision_method=MethodSpec(name="unadjusted", conversion_inference=conversion_inference),
+            decision_method=MethodSpec(
+                name="unadjusted", conversion_inference=conversion_inference
+            ),
             sensitivity_methods=(),
             prior_present=False,
         )

@@ -390,14 +390,55 @@ def test_conversion_inference_is_always_emitted_and_survives_the_wire():
         assert method.conversion_inference == "finite_sample"
 
 
-def test_a_payload_without_conversion_inference_decodes_as_auto():
-    payload = cast(dict[str, Any], compiled_plan_to_dict(_arm_plan()))
+def _legacy_payload(plan: CompiledDecisionPlan) -> dict[str, Any]:
+    """The payload an earlier version wrote: no ``conversion_inference`` on any method."""
+    payload = cast(dict[str, Any], compiled_plan_to_dict(plan))
     for procedure in payload["procedures"].values():
         for method in (procedure["decision_method"], *procedure["sensitivity_methods"]):
             del method["conversion_inference"]
-    restored = compiled_plan_from_dict(payload)
-    assert restored == _arm_plan()
-    assert WireMethod(name="unadjusted").conversion_inference == "auto"
+    return payload
+
+
+def test_a_payload_without_conversion_inference_keeps_its_finite_sample_meaning():
+    """Before the field existed every unadjusted conversion row ran the finite-sample route:
+    a stored plan decodes to that, never silently to ``auto``; a CUPED method had no such
+    route and stays ``auto``."""
+    restored = compiled_plan_from_dict(_legacy_payload(_arm_plan()))
+    first = cast(RelativeArmDecisionProcedure, restored.procedures[_METRIC_A])
+    assert first.decision_method == Method(name="unadjusted", conversion_inference="finite_sample")
+    assert first.sensitivity_methods == (Method(name="cuped", variance_reduction="cuped"),)
+    second = cast(AbsoluteArmDecisionProcedure, restored.procedures[_METRIC_B])
+    assert second.decision_method.conversion_inference == "finite_sample"
+
+
+def test_a_legacy_plan_decides_a_dense_conversion_row_by_the_finite_sample_route():
+    from increment.estimation.engine import estimate_lift
+    from tests.estimation._conversion_counts import CONVERSION_METRIC, count_summary
+
+    restored = compiled_plan_from_dict(_legacy_payload(_arm_plan()))
+    method = cast(RelativeArmDecisionProcedure, restored.procedures[_METRIC_A]).decision_method
+    counts = (50_000, 1_000_000, 51_500, 1_000_000)
+    legacy = estimate_lift(
+        metrics=[CONVERSION_METRIC],
+        summary=count_summary(*counts),
+        control_group="control",
+        methods=[method],
+    )
+    assert [row.reference_kind for row in legacy.results] == ["binomial"]
+    current = estimate_lift(
+        metrics=[CONVERSION_METRIC],
+        summary=count_summary(*counts),
+        control_group="control",
+        methods=[Method(name="unadjusted")],
+    )
+    assert [row.reference_kind for row in current.results] == ["t"]
+
+
+def test_an_observational_method_without_the_field_decodes_as_auto():
+    assert WireMethod.model_validate({"name": "iptw"}).conversion_inference == "auto"
+    assert WireMethod.model_validate({"name": "unadjusted"}).conversion_inference == (
+        "finite_sample"
+    )
 
 
 def test_an_unknown_conversion_inference_is_rejected():

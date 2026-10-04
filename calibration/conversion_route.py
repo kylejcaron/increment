@@ -33,9 +33,15 @@ The vectorised delta-method interval here is the production formula (arm moments
 Satterthwaite ``t`` reference); ``conformance`` checks it against ``estimate_lift`` on sampled
 count pairs before any table is trusted.
 
+Planning is validated against the same production route: ``mirror`` compares the planned
+power of dense, sparse and borderline designs with the simulated rejection rate of
+``estimate_lift`` (``tests.estimation._conversion_counts.runtime_rejection_rate``).
+
     python -m calibration.conversion_route select --out /tmp/rsf0-route.jsonl
     python -m calibration.conversion_route verify
+    python -m calibration.conversion_route conformance
     python -m calibration.conversion_route hybrid --reps 20000
+    python -m calibration.conversion_route mirror --reps 20000
 """
 
 from __future__ import annotations
@@ -56,7 +62,7 @@ from scipy.stats import norm as _norm
 from scipy.stats import t as _student_t
 
 from increment.estimation.conversion_route import dense_min_count
-from tests.estimation._conversion_counts import lift_row
+from tests.estimation._conversion_counts import lift_row, runtime_rejection_rate
 from tests.mc import (
     binomial_error_upper_bound,
     family_eta,
@@ -138,13 +144,13 @@ def _lattice(n: int, p: float) -> tuple[np.ndarray, np.ndarray]:
     return counts, _binom.pmf(counts, n, p)
 
 
-def delta_method_bounds(
-    x_c: np.ndarray, n_c: int, x_t: np.ndarray, n_t: int, tail: float
-) -> tuple[np.ndarray, np.ndarray]:
-    """Log risk-ratio interval bounds the production delta-method route reports at
-    one-sided ``tail``, for count arrays with ``0 < x < n``: each arm's centered moments
-    give ``mean = x / n`` and ``var = x (n - x) / (n (n - 1))``, its log standard error is
-    ``sqrt(var / (n mean ** 2))``, and the critical value is the Welch-Satterthwaite ``t``."""
+def _statistic(
+    x_c: np.ndarray, n_c: int, x_t: np.ndarray, n_t: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(log_rr, se, df)`` of the delta-method route for count arrays with ``0 < x < n``: each
+    arm's centered moments give ``mean = x / n`` and ``var = x (n - x) / (n (n - 1))``, its
+    log standard error is ``sqrt(var / (n mean ** 2))``, the combined one their hypotenuse,
+    and the reference's degrees of freedom are Welch-Satterthwaite."""
     with np.errstate(all="ignore"):
         mean_c, mean_t = x_c / n_c, x_t / n_t
         var_c = x_c * (n_c - x_c) / (n_c * (n_c - 1.0))
@@ -156,7 +162,41 @@ def delta_method_bounds(
         scale = np.maximum(se_c, se_t)
         a, b = se_t / scale, se_c / scale
         df = (a * a + b * b) ** 2 / (a**4 / (n_t - 1) + b**4 / (n_c - 1))
-        crit = _student_t.isf(tail, df)
+    return log_rr, se, df
+
+
+#: Degree-of-freedom floor and node count of the Chebyshev interpolation in ``1 / df`` that
+#: stands in for a per-point ``t`` quantile; above the floor the quantile is analytic in
+#: ``1 / df`` over a lattice's narrow range and the interpolant agrees with ``t.isf`` to
+#: ``_CRITICAL_AGREEMENT`` (checked by ``conformance``).
+_INTERPOLATION_DF_FLOOR = 30.0
+_INTERPOLATION_NODES = 24
+_CRITICAL_AGREEMENT = 1e-12
+
+
+def _critical(df: np.ndarray, tail: float) -> np.ndarray:
+    """Student ``t`` upper-tail critical values at ``df``."""
+    finite = df[np.isfinite(df)]
+    if finite.size < 4096 or finite.min() < _INTERPOLATION_DF_FLOOR:
+        return _student_t.isf(tail, df)
+    lo, hi = 1.0 / finite.max(), 1.0 / finite.min()
+    nodes = np.cos(np.pi * (np.arange(_INTERPOLATION_NODES) + 0.5) / _INTERPOLATION_NODES)
+    inverse = 0.5 * (lo + hi) + 0.5 * (hi - lo) * nodes
+    coefficients = np.polynomial.chebyshev.chebfit(
+        nodes, _student_t.isf(tail, 1.0 / inverse), _INTERPOLATION_NODES - 1
+    )
+    with np.errstate(all="ignore"):
+        position = (1.0 / df - 0.5 * (lo + hi)) * (2.0 / (hi - lo)) if hi > lo else 0.0 * df
+    return np.polynomial.chebyshev.chebval(position, coefficients)
+
+
+def delta_method_bounds(
+    x_c: np.ndarray, n_c: int, x_t: np.ndarray, n_t: int, tail: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Log risk-ratio interval bounds the production delta-method route reports at
+    one-sided ``tail``, for count arrays with ``0 < x < n``."""
+    log_rr, se, df = _statistic(x_c, n_c, x_t, n_t)
+    crit = _critical(df, tail)
     return log_rr - crit * se, log_rr + crit * se
 
 
@@ -173,13 +213,14 @@ def boundary_noncoverage(
     weight = np.outer(w_c, w_t)
     smallest = np.minimum.reduce([grid_c, cell.n_c - grid_c, grid_t, cell.n_t - grid_t])
     defined = smallest >= 1
+    log_rr, se, df = _statistic(grid_c, cell.n_c, grid_t, cell.n_t)
     out: dict[float, tuple[float, float, float, float]] = {}
     for tail in tails:
-        lower, upper = delta_method_bounds(grid_c, cell.n_c, grid_t, cell.n_t, tail)
+        crit = _critical(df, tail)
         floor = threshold[tail] if isinstance(threshold, dict) else threshold
         routed = defined & (smallest >= floor)
-        low_miss = defined & (lower > cell.truth)
-        up_miss = defined & (upper < cell.truth)
+        low_miss = defined & (log_rr - crit * se > cell.truth)
+        up_miss = defined & (log_rr + crit * se < cell.truth)
         out[tail] = (
             float((weight * low_miss).sum()),
             float((weight * up_miss).sum()),
@@ -325,27 +366,40 @@ def row_misses(row, truth_ratio: float) -> tuple[bool, bool]:
     return (lower is not None and lower > lift), (upper is not None and upper < lift)
 
 
-def conformance(samples: int = 200, seed: int = 20261004) -> float:
-    """Largest relative gap between ``delta_method_bounds`` and the production delta-method
-    row over sampled count pairs routed asymptotic at every tail."""
+def conformance(samples: int = 200, seed: int = 20261004) -> tuple[float, int, float]:
+    """``(gap, compared, interpolation_gap)``: the largest relative gap between
+    ``delta_method_bounds`` and the delta-method row ``estimate_lift`` returns over ``compared``
+    sampled count pairs the rule routes asymptotic at their tail, and the largest relative gap
+    between the interpolated and the direct ``t`` quantile over sampled degrees of freedom."""
     rng = np.random.default_rng(seed)
-    worst = 0.0
+    worst, compared = 0.0, 0
     for _ in range(samples):
-        n_c = int(rng.integers(500, 200_000))
-        n_t = int(rng.integers(500, 200_000))
-        x_c = int(rng.integers(50, max(51, n_c // 2)))
-        x_t = int(rng.integers(50, max(51, n_t // 2)))
         tail = float(rng.choice(TAILS))
+        m = dense_min_count(tail)
+        n_c = int(rng.integers(2 * m, 40 * m))
+        n_t = int(rng.integers(2 * m, 40 * m))
+        x_c = int(rng.integers(m, n_c - m + 1))
+        x_t = int(rng.integers(m, n_t - m + 1))
         row = lift_row((x_c, n_c, x_t, n_t), alpha=2.0 * tail)
-        if row.reference_kind != "t":
-            continue
+        assert row.reference_kind == "t", (x_c, n_c, x_t, n_t, tail)
         lower, upper = delta_method_bounds(np.array([x_c]), n_c, np.array([x_t]), n_t, tail)
+        compared += 1
+        lift = row.require_lift()
+        assert lift.lb is not None and lift.ub is not None
         worst = max(
             worst,
-            abs(math.expm1(float(lower[0])) - row.lift.lb) / max(1e-12, abs(row.lift.lb)),
-            abs(math.expm1(float(upper[0])) - row.lift.ub) / max(1e-12, abs(row.lift.ub)),
+            abs(math.expm1(float(lower[0])) - lift.lb) / max(1e-12, abs(lift.lb)),
+            abs(math.expm1(float(upper[0])) - lift.ub) / max(1e-12, abs(lift.ub)),
         )
-    return worst
+    interpolation = 0.0
+    for tail in TAILS:
+        for df_lo, df_hi in ((30.0, 60.0), (800.0, 1600.0), (2e4, 8e4), (5e6, 2e7)):
+            df = rng.uniform(df_lo, df_hi, size=5000)
+            interpolation = max(
+                interpolation,
+                float(np.max(np.abs(_critical(df, tail) / _student_t.isf(tail, df) - 1.0))),
+            )
+    return worst, compared, interpolation
 
 
 @dataclass(frozen=True, slots=True)
@@ -421,6 +475,78 @@ def hybrid(reps: int, seed: int, tails: Iterable[float]) -> int:
     return 1 if failed else 0
 
 
+@dataclass(frozen=True, slots=True)
+class MirrorCell:
+    """A planned design: ``n`` units per arm at control rate ``p_c`` and relative ``lift``."""
+
+    label: str
+    n: int
+    p_c: float
+    lift: float
+    alpha: float
+    alternative: Literal["two-sided", "greater", "less"]
+
+
+def mirror_cells() -> tuple[MirrorCell, ...]:
+    """Designs whose planning route is dense, sparse and borderline at the production tails."""
+    cells: list[MirrorCell] = []
+    for alpha, alternative in ((0.05, "two-sided"), (0.1, "greater"), (0.2, "two-sided")):
+        tail = alpha / 2.0 if alternative == "two-sided" else alpha
+        m = dense_min_count(tail)
+        for p_c, lift in ((0.3, 0.05), (0.15, 0.1), (0.6, 0.04)):
+            for label, factor in (("dense", 6.0), ("borderline", 1.04), ("sparse", 0.25)):
+                n = math.ceil(factor * m / min(p_c, 1.0 - p_c))
+                cells.append(MirrorCell(label, n, p_c, lift, alpha, alternative))
+    return tuple(cells)
+
+
+def mirror(reps: int, seed: int) -> int:
+    """Planned power against the simulated production rejection rate, per design: a dense plan
+    within ``4 * se + 0.003``; a sparse plan within ``4 * se`` (its replay is exact up to the
+    window mass); a borderline plan no larger than the simulated rate plus ``4 * se``."""
+    from increment.estimation.arm_contract import ArmPlanningProcedure
+    from increment.estimation.conversion_route import planning_route
+    from increment.power import Baseline, achieved_power
+
+    failed = 0
+    for cell in mirror_cells():
+        tail = cell.alpha / 2.0 if cell.alternative == "two-sided" else cell.alpha
+        route = planning_route(
+            cell.n, cell.n, cell.p_c, cell.p_c * (1.0 + cell.lift), tail_alpha=tail, mode="auto"
+        )
+        procedure = ArmPlanningProcedure.standard(
+            "conversion", alpha=cell.alpha, alternative=cell.alternative
+        )
+        planned = achieved_power(cell.n, cell.lift, Baseline.from_proportion(cell.p_c), procedure)
+        rate, se, share = runtime_rejection_rate(
+            cell.n,
+            cell.n,
+            cell.p_c,
+            cell.p_c * (1.0 + cell.lift),
+            alpha=cell.alpha,
+            alternative=cell.alternative,
+            reps=reps,
+            seed=seed,
+        )
+        gap = planned.power - rate
+        ok = (
+            abs(gap) <= 4 * se + 0.003
+            if route == "dense"
+            else abs(gap) <= 4 * se
+            if route == "sparse"
+            else gap <= 4 * se
+        )
+        failed += not ok
+        print(
+            f"{cell.label:<10} route={route:<10} n={cell.n:>8} p_c={cell.p_c:<5} "
+            f"lift={cell.lift:<5} alpha={cell.alpha:<5} {cell.alternative:<9} "
+            f"planned={planned.power:.4f} ({planned.power_basis}) simulated={rate:.4f} "
+            f"se={se:.4f} asym_share={share:.2f} {'ok' if ok else 'FAIL'}",
+            flush=True,
+        )
+    return 1 if failed else 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -435,15 +561,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     hybrid_parser = sub.add_parser("hybrid", help="production-route noncoverage at the boundary")
     hybrid_parser.add_argument("--reps", type=int, default=20_000)
     hybrid_parser.add_argument("--seed", type=int, default=20261004)
+    mirror_parser = sub.add_parser("mirror", help="planned power against the production route")
+    mirror_parser.add_argument("--reps", type=int, default=20_000)
+    mirror_parser.add_argument("--seed", type=int, default=20261004)
     args = parser.parse_args(argv)
     if args.command == "select":
         return select(args.out, workers=args.workers, start=args.start, stop=args.stop)
     if args.command == "verify":
         return verify(workers=args.workers)
     if args.command == "conformance":
-        gap = conformance()
-        print(f"largest relative gap to the production interval: {gap:.3g}")
-        return 0 if gap < 1e-9 else 1
+        gap, compared, interpolation = conformance()
+        print(
+            f"largest relative gap to the production interval over {compared} count pairs: "
+            f"{gap:.3g}; interpolated critical value: {interpolation:.3g}"
+        )
+        return 0 if gap < 1e-9 and interpolation < _CRITICAL_AGREEMENT else 1
+    if args.command == "mirror":
+        return mirror(args.reps, args.seed)
     return hybrid(args.reps, args.seed, (0.025, 0.05, 0.005))
 
 

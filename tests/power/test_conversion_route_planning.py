@@ -234,21 +234,21 @@ class TestExplicitFiniteSamplePlans:
         result = achieved_power(n, 0.5, baseline, _plan("finite_sample"))
         assert result.power_basis != "asymptotic"
 
-    @pytest.mark.parametrize(
-        "kwargs",
-        [
-            {"clustered": True},
-            {"inference": object()},
-        ],
-    )
-    def test_plans_the_finite_sample_route_cannot_serve_are_refused_at_construction(self, kwargs):
-        if "inference" in kwargs:
-            from increment.semantics.models import InferenceSpec
-
-            kwargs = {"inference": InferenceSpec(kind="asymptotic_mean")}
+    def test_a_clustered_plan_cannot_plan_finite_sample(self):
         with pytest.raises(CodedError) as raised:
             ArmPlanningProcedure.standard(
-                "conversion", conversion_inference="finite_sample", **kwargs
+                "conversion", conversion_inference="finite_sample", clustered=True
+            )
+        assert raised.value.code == "estimation.binomial.finite_sample_unavailable"
+
+    def test_a_sequential_plan_cannot_plan_finite_sample(self):
+        from increment.semantics.models import InferenceSpec
+
+        with pytest.raises(CodedError) as raised:
+            ArmPlanningProcedure.standard(
+                "conversion",
+                conversion_inference="finite_sample",
+                inference=InferenceSpec(kind="asymptotic_mean"),
             )
         assert raised.value.code == "estimation.binomial.finite_sample_unavailable"
 

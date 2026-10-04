@@ -73,9 +73,27 @@ class _WireBase(CodedModel, BaseModel):
 
 
 class WireMethod(_WireBase):
+    """A decision or sensitivity method on the wire.
+
+    The encoder always emits ``conversion_inference``. A payload without it was written before
+    the field existed, when every unadjusted conversion or retention row ran the finite-sample
+    route, so it decodes as ``"finite_sample"`` and keeps its meaning (a CUPED method and an
+    observational adjustment never had that route and decode as ``"auto"``). ``"auto"`` is the
+    default of newly constructed ``Method`` and ``MethodSpec`` objects, not of stored plans."""
+
     name: str = Field(min_length=1)
     variance_reduction: str = "none"
-    conversion_inference: ConversionInference = "auto"
+    conversion_inference: ConversionInference = "finite_sample"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_conversion_inference(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or "conversion_inference" in data:
+            return data
+        legacy_exact = (
+            data.get("name") == "unadjusted" and data.get("variance_reduction", "none") == "none"
+        )
+        return {**data, "conversion_inference": "finite_sample" if legacy_exact else "auto"}
 
 
 class WireFixedInference(_WireBase):

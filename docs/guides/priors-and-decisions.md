@@ -90,14 +90,21 @@ at 200: larger values are numerically unstable to expand and are within
 Informative priors also work on ordinary conversion data. This uses a
 Normal likelihood approximation for the observed **log risk ratio**, not
 two binomial likelihoods. Without a prior, eligible conversion/retention
-rows instead use exact binomial test inversion. Adding a prior therefore
-changes the reported reference as well as the estimate; it does not add a
-posterior to an otherwise unchanged sampling report.
+rows are routed by their counts (`Method.conversion_inference`, default
+`"auto"`): rows whose success and failure counts are all dense in both arms
+use the same delta-method log risk ratio with a Welch-Satterthwaite t
+reference (`reference_kind="t"`) that an informative prior then shrinks, and
+every other row uses exact binomial test inversion. For a sparse row, adding
+a prior therefore changes the reported reference as well as the estimate; it
+does not add a posterior to an otherwise unchanged sampling report.
+`conversion_inference="finite_sample"` is refused with a prior (the
+inversion has no posterior a prior could act on).
 
 For example, with 20 conversions among 60 control units and 40 among 60
 treatment units, `Normal(mu=0, sigma=0.1)` gives posterior median lift
 about 14.15% and `prob_favorable()` about 0.9294. `run(prior=None)` clears
-the prior and restores the exact-binomial row with observed lift 100%.
+the prior and restores the exact-binomial row with observed lift 100% (the
+counts are sparse, so the default route is the finite-sample one).
 Zero-success, all-success and sufficiently imprecise binary samples can
 fail the approximate posterior's log-mean/SE requirements even when the
 prior-free binomial route can report a confidence set.

@@ -6,6 +6,7 @@ from increment._analysis_config import UNSET, _Unset
 from increment._literals import ValueScale
 from increment._readout_request import _raise as _raise_readout_request
 from increment.breakout.estimates import reject_quantile_metrics
+from increment.estimation.adjust import observational_evidence
 from increment.estimation.engine import Method
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import (
@@ -101,7 +102,10 @@ def run(
     randomized path does: a primary's alpha is Bonferroni-split across its
     treatment arms, secondaries join a BH family at ``plan.q`` with
     Benjamini-Yekutieli FCR re-estimation for selected cells, and a
-    guardrail keeps its full compiled ``alpha`` outside any family.
+    guardrail keeps its full compiled ``alpha`` outside any family. Each
+    metric's moments are reduced once, and a source that owns a snapshot is
+    read through one: the arm gate, family size and routing level, estimates
+    and FCR re-estimates all come from that one execution.
 
     decision_method, sensitivity_methods, and prior are call-wide overrides; without one, each metric
     falls back to its own declared value, then the design default.
@@ -118,11 +122,16 @@ def run(
         value_scale=value_scale,
         population=_population,
     )
-    # Only percentile readouts need the raw source snapshot. Metadata/request
-    # validation above is intentionally complete before capture.
-    needs_snapshot = any(
-        getattr(getattr(metric, "winsorization", None), "has_percentile", False)
-        for metric in selected
+    # Percentile readouts need the raw source snapshot, and an observational readout reads
+    # unit frames and moments that must be one execution. An empty selection reads nothing, so
+    # it never opens a snapshot (a definitions-backed capture writes TEMP tables). Metadata/
+    # request validation above is intentionally complete before capture.
+    needs_snapshot = bool(selected) and (
+        design.mechanism == "observational"
+        or any(
+            getattr(getattr(metric, "winsorization", None), "has_percentile", False)
+            for metric in selected
+        )
     )
     if needs_snapshot:
         from increment._source_operations import ReadoutSnapshotOperation
@@ -214,15 +223,12 @@ def _run_prepared(
             caller="run() under an encouragement design",
         )
     if design.mechanism == "observational":
-        # estimate_ate loads its own evidence per method; the arm gate reads
-        # the total moments so a control-only source refuses with a stable code.
+        # The one moments reduction per metric: it gates on a treatment arm, and sizes every
+        # family and routing level, and every estimate and FCR re-estimate reads it.
+        evidence = observational_evidence(src, selected)
         if selected:
             _refuse_if_no_treatment_arm(
-                {
-                    str(row["group_id"])
-                    for metric in selected
-                    for row in cast("list[Mapping[str, Any]]", src.moments(metric))
-                },
+                set().union(*(evidence.arms(metric) for metric in selected)),
                 design.control_group,
             )
         return _estimate_observational(
@@ -233,6 +239,7 @@ def _run_prepared(
             plan,
             value_scale=value_scale,
             call_prior=call_prior,
+            evidence=evidence,
         )
     if value_scale:
         _raise("readout.value_scale_randomized_absolute")

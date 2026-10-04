@@ -14,6 +14,7 @@ from scipy.stats import norm
 
 from increment.errors import CodedError, InvalidRequestError
 from increment.estimation.armstats import ArmStats
+from increment.estimation.binomial_rr import FINITE_SAMPLE_MAX_ARM_SIZE
 from increment.estimation.conversion_route import (
     PLANNING_ROUTE_CERTAINTY,
     dense_extent,
@@ -147,7 +148,7 @@ class TestRowsCarryTheirRoute:
         assert (auto.reference_kind, pinned.reference_kind) == ("t", "binomial")
         assert pinned.binomial_set is not None
         # The two guarantees differ, the point estimate does not.
-        assert pinned.lift.value == pytest.approx(auto.lift.value, rel=1e-12)
+        assert pinned.require_lift().value == pytest.approx(auto.require_lift().value, rel=1e-12)
 
     @pytest.mark.parametrize("tail", [0.1, 0.05, 0.025, 0.005])
     def test_the_route_flips_exactly_at_the_threshold(self, tail):
@@ -243,6 +244,45 @@ class TestRowsCarryTheirRoute:
         assert len(codes["auto"]) == 1
 
 
+class TestAboveTheFiniteSampleCeiling:
+    """The delta-method route has no evaluator ceiling; the finite-sample route refuses above
+    ``FINITE_SAMPLE_MAX_ARM_SIZE`` by a code that names the way forward."""
+
+    CEILING = FINITE_SAMPLE_MAX_ARM_SIZE
+
+    @pytest.mark.parametrize("n", [2 * FINITE_SAMPLE_MAX_ARM_SIZE, 10 * FINITE_SAMPLE_MAX_ARM_SIZE])
+    def test_dense_arms_succeed_by_default(self, n):
+        counts = (n // 20, n, n // 20 + n // 400, n)
+        row = lift_row(counts)
+        assert row.reference_kind == "t"
+        lift = row.require_lift()
+        assert lift.lb is not None and lift.ub is not None
+        assert lift.lb < lift.value < lift.ub
+        assert lift.value == pytest.approx(0.05, rel=1e-6)
+
+    def test_pinned_finite_sample_and_sparse_arms_are_refused_by_the_ceiling_code(self):
+        n = 2 * self.CEILING
+        dense = (n // 20, n, n // 20 + n // 400, n)
+        sparse = (3, n, 7, n)
+        for counts, mode in ((dense, "finite_sample"), (sparse, "auto")):
+            computation = lift_computation(
+                counts, method=Method(name="unadjusted", conversion_inference=mode)
+            )
+            assert not computation.results
+            (failure,) = computation.failures.values()
+            assert failure.code == "estimation.binomial.finite_sample_arm_ceiling_exceeded"
+            assert failure.context["max_arm_size"] == self.CEILING
+
+    def test_the_ceiling_itself_is_admitted_to_the_finite_sample_route(self):
+        row = lift_row((3, self.CEILING, 7, self.CEILING))
+        assert row.reference_kind == "binomial"
+
+    def test_a_sparse_arm_above_the_old_four_million_cap_is_estimated(self):
+        row = lift_row((2, 5_000_000, 0, 5_000_000))
+        assert row.reference_kind == "binomial"
+        assert row.binomial_set is not None
+
+
 class TestRoutedAsymptoticCellsNeverHitAGuard:
     """Every routed-asymptotic cell has all four counts at least ``dense_min_count >= 9``, so
     the delta-method guards (``log_se >= 0.5``, zero variance, non-positive mean) cannot
@@ -265,8 +305,9 @@ class TestRoutedAsymptoticCellsNeverHitAGuard:
         assert route_for_counts(*counts, tail_alpha=tail, mode="auto") == "asymptotic"
         row = lift_row(counts, alpha=2.0 * tail)
         assert row.reference_kind == "t"
-        assert row.lift is not None and row.lift.lb is not None and row.lift.ub is not None
-        assert row.lift.lb < row.lift.value < row.lift.ub
+        lift = row.require_lift()
+        assert lift.lb is not None and lift.ub is not None
+        assert lift.lb < lift.value < lift.ub
 
     @settings(max_examples=60, deadline=None)
     @given(
@@ -304,7 +345,7 @@ class TestExplicitFiniteSample:
 
     def test_an_unknown_value_is_refused(self):
         with pytest.raises(ValueError):
-            Method(name="unadjusted", conversion_inference="asymptotic")  # type: ignore[arg-type]
+            Method(name="unadjusted", conversion_inference="asymptotic")  # ty: ignore[invalid-argument-type]
 
     def test_an_informative_prior_is_refused_by_code_instead_of_served_by_the_delta_method(self):
         with pytest.raises(InvalidRequestError) as raised:
@@ -417,3 +458,92 @@ class TestPlanningRoute:
 
     def test_the_certainty_threshold_is_a_probability_budget(self):
         assert 0.0 < PLANNING_ROUTE_CERTAINTY < 1e-3
+
+
+class TestMultiplicityRoutesAtTheSmallestFamilyLevel:
+    """A BH family reads each nominal p-value at a threshold as small as ``q / m``: a row dense
+    at the nominal level but not at that one must not take the delta-method route."""
+
+    def test_route_alpha_routes_at_the_smaller_of_the_two_levels(self):
+        nominal = dense_min_count(0.025)
+        counts = (nominal, 20 * nominal, 3 * nominal, 20 * nominal)
+        assert (
+            estimate_lift(
+                metrics=[CONVERSION_METRIC],
+                summary=count_summary(*counts),
+                control_group="control",
+                alpha=0.05,
+            )
+            .results[0]
+            .reference_kind
+            == "t"
+        )
+        for route_alpha, kind in ((0.05, "t"), (0.05 / 4, "binomial"), (1e-9, "binomial")):
+            row = estimate_lift(
+                metrics=[CONVERSION_METRIC],
+                summary=count_summary(*counts),
+                control_group="control",
+                alpha=0.05,
+                route_alpha=route_alpha,
+            ).results[0]
+            assert row.reference_kind == kind
+
+    def test_a_directional_route_alpha_is_read_in_alphas_own_convention(self):
+        low = dense_min_count(0.05)
+        counts = (low, 20 * low, 3 * low, 20 * low)
+        for route_alpha, kind in ((0.05, "t"), (0.0125, "binomial")):
+            row = estimate_lift(
+                metrics=[CONVERSION_METRIC],
+                summary=count_summary(*counts),
+                control_group="control",
+                alpha=0.05,
+                alternative="greater",
+                route_alpha=route_alpha,
+            ).results[0]
+            assert row.reference_kind == kind
+
+
+def _two_metric_analysis(plan):
+    import pandas as pd
+
+    from increment import Analysis
+    from increment.frame import MetricSpec
+
+    n = 1500
+    rows = []
+    for i in range(n):
+        for group, shift in (("control", 0), ("treatment", 1)):
+            rows.append(
+                {
+                    "unit_id": f"{group}{i}",
+                    "group_id": group,
+                    # 450 successes: dense at a 0.1 tail (threshold 400), not at a 0.05 tail (659)
+                    "a": int(i < 450 + shift),
+                    "b": int(i < 700 + shift),
+                }
+            )
+    return Analysis.from_unit_summary(
+        pd.DataFrame(rows),
+        unit="unit_id",
+        group="group_id",
+        control="control",
+        metrics=[MetricSpec(name=name, type="conversion") for name in ("a", "b")],
+        plan=plan,
+    )
+
+
+class TestBenjaminiHochbergFamilyRoutesAtItsSmallestLevel:
+    def test_a_member_of_a_two_hypothesis_bh_family_is_routed_at_q_over_two(self):
+        from increment import AnalysisPlan
+
+        family = _two_metric_analysis(AnalysisPlan(alpha=0.2, q=0.2, secondaries=("a", "b"))).run()
+        kinds = {row.metric: row.reference_kind for row in family}
+        # q / 2 = 0.1: a 0.05 tail, threshold 659 > 450 for `a`; `b` clears it at 700.
+        assert kinds == {"a": "binomial", "b": "t"}
+
+    def test_the_same_counts_as_a_sole_primary_are_routed_at_their_own_level(self):
+        from increment import AnalysisPlan
+
+        alone = _two_metric_analysis(AnalysisPlan(alpha=0.2, primary="a")).run()
+        (row,) = [row for row in alone if row.metric == "a"]
+        assert row.reference_kind == "t"

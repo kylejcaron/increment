@@ -4,7 +4,12 @@ from typing import TYPE_CHECKING, Any, cast
 
 from increment._literals import ValueScale
 from increment._policy_alpha import resolve_cell_alpha
-from increment.estimation.adjust import estimate_ate, judge_shared_prior_scales
+from increment.estimation.adjust import (
+    ObservationalEvidence,
+    _estimate_ate,
+    judge_shared_prior_scales,
+)
+from increment.estimation.conversion_route import family_route_alpha
 from increment.estimation.engine import Method
 from increment.estimation.engine import merge_decision_computations as _merge_decision_computations
 from increment.estimation.family import decision_cells, family_discovery, select_family
@@ -40,6 +45,7 @@ def _estimate_observational(
     *,
     value_scale: Mapping[str, ValueScale] | None,
     call_prior: Prior | None,
+    evidence: ObservationalEvidence,
 ) -> list[LiftEstimate]:
     """Estimate the observational phase after whole-window validation.
 
@@ -71,7 +77,6 @@ def _estimate_observational(
         selected_names={metric.name for metric in selected},
         prior=call_prior,
         value_scale=value_scale,
-        stacklevel=3,
     )
     config_by_name = {metric.name: config for metric, config in zip(selected, configs, strict=True)}
     methods_by_metric = {
@@ -86,18 +91,12 @@ def _estimate_observational(
         config = config_by_name[metric.name]
         procedure = plan.procedures[metric.name]
         n_arms = (
-            len(
-                {
-                    str(row["group_id"])
-                    for row in cast("list[Mapping[str, Any]]", src.moments(metric))
-                }
-                - {str(design.control_group)}
-            )
+            len(evidence.arms(metric) - {str(design.control_group)})
             if procedure.role == "primary"
             else 0
         )
         alpha = resolve_cell_alpha(plan, procedure, n_arms=n_arms, view=None)
-        computation = estimate_ate(
+        computation = _estimate_ate(
             src,
             design,
             methods=methods_by_metric[metric.name],
@@ -112,6 +111,7 @@ def _estimate_observational(
             alternatives=resolved_alternatives or None,
             _raise_if_empty=False,
             _prior_scale_judged=True,
+            evidence=evidence,
         )
         results.extend(
             row.model_copy(update={"role": procedure.role if plan.declared else None})
@@ -130,6 +130,7 @@ def _estimate_observational(
                 value_scale=value_scale,
                 resolved_null_abs=resolved_null_abs,
                 resolved_alternatives=resolved_alternatives,
+                evidence=evidence,
             )
         )
 
@@ -151,6 +152,7 @@ def _estimate_observational_secondary_family(
     value_scale: Mapping[str, ValueScale] | None,
     resolved_null_abs: Mapping[str, float] | None,
     resolved_alternatives: Mapping[str, str] | None,
+    evidence: ObservationalEvidence,
 ) -> list[LiftEstimate]:
     """Nominal pass at plan.alpha, BH-select at plan.q, FCR-reestimate the
     selected cells -- the observational sibling of
@@ -169,9 +171,11 @@ def _estimate_observational_secondary_family(
 
     out: list[LiftEstimate] = []
 
-    def _nominal_pass(metric: Metric, alpha: float) -> DecisionComputation[LiftEstimate]:
+    def _nominal_pass(
+        metric: Metric, alpha: float, route_alpha: float | None = None
+    ) -> DecisionComputation[LiftEstimate]:
         config = config_by_name[metric.name]
-        return estimate_ate(
+        return _estimate_ate(
             src,
             design,
             methods=methods_by_metric[metric.name],
@@ -186,6 +190,8 @@ def _estimate_observational_secondary_family(
             alternatives=resolved_alternatives or None,
             _raise_if_empty=False,
             _prior_scale_judged=True,
+            route_alpha=route_alpha,
+            evidence=evidence,
         )
 
     for metric in non_family:
@@ -198,8 +204,14 @@ def _estimate_observational_secondary_family(
 
     nominal_by_metric: dict[str, list[LiftEstimate]] = {}
     computation_by_metric: dict[str, DecisionComputation[LiftEstimate]] = {}
+    # The family reads each p-value at a threshold as small as ``q / m`` (``m`` its metric x arm
+    # hypotheses): route its members at that level, never a looser one. ``m`` counts the arms of
+    # the very evidence every estimate below is computed from.
+    control = str(design.control_group)
+    hypotheses = sum(len(evidence.arms(metric) - {control}) for metric in family)
+    route_alpha = family_route_alpha(plan.q, hypotheses)
     for metric in family:
-        computation = _nominal_pass(metric, plan.alpha)
+        computation = _nominal_pass(metric, plan.alpha, route_alpha)
         nominal_by_metric[metric.name] = list(computation.results)
         computation_by_metric[metric.name] = computation
 
@@ -264,7 +276,7 @@ def _estimate_observational_secondary_family(
         config = config_by_name[metric.name]
         procedure = plan.procedures[metric.name]
         selected_alpha = _fcr_alpha_for(procedure.alternative, fcr_alpha)
-        computation = estimate_ate(
+        computation = _estimate_ate(
             src,
             design,
             methods=methods_by_metric[metric.name][:1],
@@ -279,6 +291,7 @@ def _estimate_observational_secondary_family(
             alternatives=resolved_alternatives or None,
             _raise_if_empty=False,
             _prior_scale_judged=True,
+            evidence=evidence,
         )
         reestimated[metric.name] = [
             open_bound_from_two_sided_at_target(r) for r in computation.results

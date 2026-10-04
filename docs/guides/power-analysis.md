@@ -168,19 +168,24 @@ claims about every future data-generating process. Bounded baselines,
 nulls, and alternatives must imply rates in `(0, 1]`; a requested rate
 above 1 is refused. Every such result reports `power_basis="asymptotic"`.
 
-### Conversion and retention: the runtime's exact binomial decision
+### Conversion and retention: planning follows the runtime's route
 
-An unadjusted, unclustered, fixed-horizon conversion or retention plan (no
-CUPED, no absorbed factor, no winsorization, no prior) is analyzed at runtime
-by the exact Berger-Boos risk-ratio test on the raw counts. For these plans
-`achieved_power`, `minimum_detectable_effect`, `required_sample_size` and
-`power_curve` integrate a binomial count law over windows that leave out at
-most about `1e-12` of mass. Only `power_basis="exact"` integrates the unchanged
-runtime decision; `"approximate"` uses a Normal-conditional-tail decision
-model, whose numerical certificates are model-only. At 701 units per arm, a 10%
-baseline and a 50% lift the exact power is 0.7144 (the log-ratio model said 0.8004), and
-the planned size for 80% power is 831 per arm. Power depends on the baseline
-rate alone; `var` does not enter.
+An unadjusted, unclustered, fixed-horizon conversion or retention plan (no CUPED, no
+absorbed factor, no winsorization, no prior) is routed at runtime by its counts
+(`conversion_inference`, default `"auto"`): all four per-arm success and failure counts dense
+for the tail allocation take the delta-method route, the rest the exact Berger-Boos
+risk-ratio test on the raw counts. Planning classifies each plan from the probability that its
+random counts are dense. A `dense` plan is the closed-form model above
+(`power_basis="asymptotic"`, no replay, no cell budget, no arm ceiling); a `sparse` plan
+reports the probability that the unchanged exact decision rejects at the analyzed integer
+counts, integrating the binomial count law over windows that leave out at most about `1e-12`
+of mass; a `borderline` plan reports the smaller of the two powers with the replay's basis.
+`ArmPlanningProcedure.standard(..., conversion_inference="finite_sample")` plans the replay at
+every size (refused for a mean, clustered or sequential plan, which the finite-sample route does
+not serve). At 701 units per arm, a 10% baseline and a 50% lift the replayed power is 0.7144
+(the log-ratio model said 0.8004), and the planned size for 80% power is 831 per arm. Power
+depends on the baseline rate alone; `var` does not enter. The replay bullets below describe
+the sparse, borderline and explicit `finite_sample` plans.
 
 - `power_basis="exact"`: the decision set is built by replaying the runtime's
   own nuisance search for every count pair that matters; the reported power is
@@ -272,8 +277,8 @@ baseline rate holds smaller counts, which the runtime refuses, is refused rather
 with them as non-rejections. The margin grows with the arm, so a smaller size of
 the same alpha can be planned; the solver floor refuses every size.
 
-`required_sample_size` ends a search it cannot satisfy with one of four codes, each
-with its own context:
+`required_sample_size` ends a replayed search it cannot satisfy with one of four codes, each
+with its own context (`conversion_inference="auto"` plans the dense counts these refusals name in closed form):
 
 | Code | When | Context |
 |---|---|---|
@@ -438,7 +443,7 @@ unit-randomized sequential planning.
 | `n_per_arm` | Assigned units in the treatment arm |
 | `n_total` | Assigned units across the two-arm contrast |
 | `power` | Planned power at the returned integer size, under `power_basis` |
-| `power_basis` | `asymptotic` (log-ratio model), `exact` (runtime binomial decision), or `approximate` (Normal-conditional-tail decision model; numerical certificates are model-only) |
+| `power_basis` | `asymptotic` (log-ratio model, including counts the runtime takes the delta-method route at), `exact` (the runtime's finite-sample binomial decision), or `approximate` (that decision with Normal conditional tails) |
 | `mde_relative` | Detectable relative effect at the target power, rescaled for `compliance`; `None` when no admissible numeric answer is certified |
 | `mde_unavailable_reason` | `unattainable`, `unrepresentable`, or `numerical_resolution` when `mde_relative` is `None`; otherwise `None` |
 | `effective_var` | Per-unit control-arm variance for asymptotic planning, after decision-method reductions and cluster design effect; sensitivity-only CUPED receives no credit, so this can differ from the caller's `Baseline.effective_var`. For a `QuantileBaseline`, its pilot-implied variance. Exact/approximate binomial power uses event rates and counts, not this reported variance. |

@@ -28,6 +28,7 @@ from increment import SequentialCell
 from increment._analysis_config import UNSET, _Unset
 from increment.analysis import Analysis
 from increment.errors import CodedError, IncrementWarning
+from increment.estimation.conversion_route import dense_min_count
 from increment.estimation.inference import Normal, Prior
 from increment.estimation.priors import MixturePrior, StudentTPrior
 from increment.frame import MetricSpec
@@ -5671,7 +5672,7 @@ def _encouragement_itt_metrics() -> list[MetricSpec]:
     return [MetricSpec(name="converted", type="conversion", preferred_direction="increase")]
 
 
-def _encouragement_itt_rows() -> list[dict[str, Any]]:
+def _encouragement_itt_rows(n_per_arm: int = _ENCOURAGEMENT_ITT_N_PER_ARM) -> list[dict[str, Any]]:
     """Deterministic per-unit conversion/uptake rows. Control never takes
     up the encouragement (`uptake=0` for every control unit, matching a
     real encouragement design where only treatment is offered); treatment
@@ -5680,7 +5681,7 @@ def _encouragement_itt_rows() -> list[dict[str, Any]]:
     keeping `uptake` a genuinely different random variable over the same
     units from `converted`."""
     rows: list[dict[str, Any]] = []
-    for i in range(_ENCOURAGEMENT_ITT_N_PER_ARM):
+    for i in range(n_per_arm):
         rows.append(
             {
                 "unit_id": f"c{i}",
@@ -5700,17 +5701,19 @@ def _encouragement_itt_rows() -> list[dict[str, Any]]:
     return rows
 
 
-def _encouragement_itt_frame() -> pd.DataFrame:
-    return pd.DataFrame(_encouragement_itt_rows())
+def _encouragement_itt_frame(n_per_arm: int = _ENCOURAGEMENT_ITT_N_PER_ARM) -> pd.DataFrame:
+    return pd.DataFrame(_encouragement_itt_rows(n_per_arm))
 
 
-def _encouragement_itt_panel_frame() -> pd.DataFrame:
+def _encouragement_itt_panel_frame(
+    n_per_arm: int = _ENCOURAGEMENT_ITT_N_PER_ARM,
+) -> pd.DataFrame:
     """A two-day panel (pre-exposure day zeroed; exposure day carrying the
     same per-unit totals `_encouragement_itt_frame` computed) built FROM
     the unit-summary rows, so panel and summary agree by construction --
     mirrors `dataset.unit_panel_frame`'s shape."""
     rows: list[dict[str, Any]] = []
-    for r in _encouragement_itt_rows():
+    for r in _encouragement_itt_rows(n_per_arm):
         rows.append(
             {
                 "unit_id": r["unit_id"],
@@ -5732,7 +5735,9 @@ def _encouragement_itt_panel_frame() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _encouragement_itt_event_rows() -> list[dict[str, Any]]:
+def _encouragement_itt_event_rows(
+    n_per_arm: int = _ENCOURAGEMENT_ITT_N_PER_ARM,
+) -> list[dict[str, Any]]:
     """Event-log shape of `_encouragement_itt_rows`, on `dataset.py`'s
     shared `_row`/`duckdb_connection` convention: an exposure per unit, a
     `clicked` event for every unit with `uptake == 1`, and a `purchase`
@@ -5742,7 +5747,7 @@ def _encouragement_itt_event_rows() -> list[dict[str, Any]]:
     Freshness padding on `purchase` mirrors `_encouragement_rows_for_parity`
     so the freshness bound reaches the declared experiment `end`."""
     rows: list[dict[str, Any]] = []
-    for r in _encouragement_itt_rows():
+    for r in _encouragement_itt_rows(n_per_arm):
         rows.append(
             ds._row(
                 r["unit_id"],
@@ -5760,7 +5765,7 @@ def _encouragement_itt_event_rows() -> list[dict[str, Any]]:
     return rows
 
 
-def _encouragement_itt_defs_dict() -> dict[str, Any]:
+def _encouragement_itt_defs_dict(plan: AnalysisPlan | None = None) -> dict[str, Any]:
     return {
         "dialect": "duckdb",
         "fact_sources": [
@@ -5796,7 +5801,7 @@ def _encouragement_itt_defs_dict() -> dict[str, Any]:
                 "end": _ENCOURAGEMENT_EXPERIMENT_END.isoformat(),
                 "control_group": "control",
                 "allocation": {"control": 0.5, "treatment": 0.5},
-                "plan": AnalysisPlan(primary="converted").model_dump(mode="json"),
+                "plan": (plan or AnalysisPlan(primary="converted")).model_dump(mode="json"),
                 "design": {
                     "mechanism": "encouragement",
                     "uptake": {"fact": "clicked"},
@@ -5810,7 +5815,7 @@ def _encouragement_itt_defs_dict() -> dict[str, Any]:
     }
 
 
-def _encouragement_itt_case() -> ParityCase:
+def _encouragement_itt_case(*, dense: bool = False) -> ParityCase:
     """The capability restored by dropping `_binomial_eligible`'s
     `arm.sum_d is None` clause and stripping uptake moments before
     `_infer_binomial_lift_result` reads the arm
@@ -5818,23 +5823,38 @@ def _encouragement_itt_case() -> ParityCase:
     an Encouragement design's ITT on a conversion metric must keep the
     exact independent-binomial route, identically across every applicable
     constructor. `from_switchback_panel` has no `design=` parameter at
-    all."""
-    itt_defs = Definitions.model_validate(_encouragement_itt_defs_dict())
-    itt_plan = AnalysisPlan(primary="converted")
+    all.
+
+    ``dense`` enlarges the arms past the dense-count threshold of a 0.2 alpha, where the
+    default route is the delta-method one (`reference_kind="t"`, no `binomial_set`) on every
+    applicable constructor; the small arms stay on the finite-sample route."""
+    n_per_arm = 4 * _route_threshold() if dense else _ENCOURAGEMENT_ITT_N_PER_ARM
+    itt_plan = (
+        AnalysisPlan(primary="converted", alpha=_ROUTE_ALPHA)
+        if dense
+        else AnalysisPlan(primary="converted")
+    )
+    itt_defs = Definitions.model_validate(_encouragement_itt_defs_dict(itt_plan))
+    expected_kind = "t" if dense else "binomial"
+
+    def itt_probe(results: Any) -> None:
+        (row,) = [row for row in results if row.estimand == "itt"]
+        assert row.reference_kind == expected_kind
+        assert (row.binomial_set is None) == dense
 
     def build_definitions() -> Analysis:
-        con = ds.duckdb_connection(_encouragement_itt_event_rows())
+        con = ds.duckdb_connection(_encouragement_itt_event_rows(n_per_arm))
         analysis = make_analysis(con, itt_defs, experiment="exp")
         return _track_connection(analysis, con)
 
     def build_artifact() -> Analysis:
-        con = ds.duckdb_connection(_encouragement_itt_event_rows())
+        con = ds.duckdb_connection(_encouragement_itt_event_rows(n_per_arm))
         native = make_analysis(con, itt_defs, experiment="exp")
         return _publish_and_adopt(con, native)
 
     def build_unit_summary() -> Analysis:
         return Analysis.from_unit_summary(
-            _encouragement_itt_frame(),
+            _encouragement_itt_frame(n_per_arm),
             unit="unit_id",
             group="group_id",
             metrics=_encouragement_itt_metrics(),
@@ -5845,7 +5865,7 @@ def _encouragement_itt_case() -> ParityCase:
 
     def build_unit_panel() -> Analysis:
         return Analysis.from_unit_panel(
-            _encouragement_itt_panel_frame(),
+            _encouragement_itt_panel_frame(n_per_arm),
             unit="unit_id",
             group="group_id",
             date="date",
@@ -5871,7 +5891,11 @@ def _encouragement_itt_case() -> ParityCase:
         return replayed
 
     return ParityCase(
-        id="encouragement_itt_keeps_binomial_reference_kind",
+        id=(
+            "encouragement_itt_dense_takes_the_delta_method_route"
+            if dense
+            else "encouragement_itt_keeps_binomial_reference_kind"
+        ),
         build={
             "from_definitions": build_definitions,
             "from_unit_day_artifact": build_artifact,
@@ -5881,6 +5905,7 @@ def _encouragement_itt_case() -> ParityCase:
         },
         estimands=("itt",),
         waive=dict(_SWITCHBACK_WAIVE),
+        readout_probe=itt_probe,
         # Exports/replays moments on every run -- see _fixed_horizon_case's
         # slow=True for why.
         slow=True,
@@ -7066,6 +7091,349 @@ def _exact_binomial_beyond_the_former_arm_ceiling_case() -> ParityCase:
     )
 
 
+# A conversion plan's two-sided alpha of 0.2 puts a 0.1 tail on each side, where
+# `dense_min_count` is its smallest (the floor): the cases below straddle that threshold with
+# arms of a few hundred units instead of thousands.
+_ROUTE_ALPHA = 0.2
+
+
+def _route_threshold() -> int:
+    return dense_min_count(_ROUTE_ALPHA / 2)
+
+
+_ROUTE_FAMILY_SIZE = 8
+
+
+def _route_family_threshold() -> int:
+    """The threshold of a metric in the BH family of `_conversion_route_case`: rows are routed
+    at the family's smallest level, ``q`` over its eight one-arm hypotheses."""
+    return dense_min_count(_ROUTE_ALPHA / (2 * _ROUTE_FAMILY_SIZE))
+
+
+def _route_n_per_arm() -> int:
+    return 3 * _route_family_threshold()
+
+
+def _route_conversions() -> dict[str, tuple[int, int, Literal["t", "binomial"]]]:
+    """Per metric: control successes, treatment successes, and the route label
+    (`reference_kind`) the count rule assigns at the family's smallest level, as literal
+    offsets from that threshold ``m``: the sparsest of the four success and failure counts is
+    ``m - 1``, ``m`` or ``m + 1``, on the control success side and on its failure side, beside
+    dense and sparse neighbors. The arms differ by one unit, so no row is a BH discovery and
+    every row keeps its nominal pass, which is the one routed at that level."""
+    m, n = _route_family_threshold(), _route_n_per_arm()
+    return {
+        "dense": (n // 2, n // 2 + 1, "t"),
+        "successes_one_below": (m - 1, m, "binomial"),
+        "successes_at": (m, m + 1, "t"),
+        "successes_one_above": (m + 1, m + 2, "t"),
+        "failures_one_below": (n - (m - 1), n - m, "binomial"),
+        "failures_at": (n - m, n - (m + 1), "t"),
+        "sparse": (12, 13, "binomial"),
+        "zero_control": (0, 1, "binomial"),
+    }
+
+
+def _route_unit_rows() -> list[dict[str, Any]]:
+    n = _route_n_per_arm()
+    counts = _route_conversions()
+    rows: list[dict[str, Any]] = []
+    for i in range(n):
+        for group, column in (("control", 0), ("treatment", 1)):
+            rows.append(
+                {
+                    "unit_id": f"{group[0]}{i}",
+                    "group_id": group,
+                    **{name: int(i < spec[column]) for name, spec in counts.items()},
+                }
+            )
+    return rows
+
+
+def _route_metric_specs() -> list[MetricSpec]:
+    return [
+        MetricSpec(name=name, type="conversion", preferred_direction="increase")
+        for name in _route_conversions()
+    ]
+
+
+def _route_event_rows() -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for row in _route_unit_rows():
+        events.append(
+            ds._row(
+                row["unit_id"],
+                _ENCOURAGEMENT_EXPOSURE_AT,
+                "exposure",
+                group_id=row["group_id"],
+                experiment_id="exp",
+            )
+        )
+        for name in _route_conversions():
+            if row[name]:
+                events.append(ds._row(row["unit_id"], _ENCOURAGEMENT_PURCHASE_AT, name))
+        events.append(ds._row(row["unit_id"], _ENCOURAGEMENT_FRESHNESS_PAD_AT, "pad"))
+    return events
+
+
+def _route_defs_dict() -> dict[str, Any]:
+    names = list(_route_conversions())
+    return {
+        "dialect": "duckdb",
+        "fact_sources": [
+            {
+                "name": "events",
+                "sql": "SELECT * FROM events",
+                "timestamp_column": "event_at",
+                "entities": ["user_id"],
+                "facts": [
+                    {"name": "exposure", "column": None},
+                    {"name": "pad", "column": None},
+                    *({"name": name, "column": None} for name in names),
+                ],
+            }
+        ],
+        "exposures": [{"name": "assignment", "fact": "exposure"}],
+        "metrics": [
+            {
+                "type": "conversion",
+                "name": name,
+                "entity": "user_id",
+                "fact": name,
+                "window_days": 1,
+                "preferred_direction": "increase",
+            }
+            for name in names
+        ],
+        "experiments": [
+            {
+                "name": "exp",
+                "exposure": "assignment",
+                "unit": "user_id",
+                "start": "2025-01-10",
+                "end": _ENCOURAGEMENT_EXPERIMENT_END.isoformat(),
+                "control_group": "control",
+                "allocation": {"control": 0.5, "treatment": 0.5},
+                "plan": AnalysisPlan(
+                    alpha=_ROUTE_ALPHA, q=_ROUTE_ALPHA, secondaries=tuple(names)
+                ).model_dump(mode="json"),
+            }
+        ],
+    }
+
+
+def _conversion_route_case() -> ParityCase:
+    """Conversion counts one below, at and one above the dense threshold, on the success and
+    the failure side, plus dense and sparse neighbors: every ingress must route each metric the
+    same way and report the same interval and p-value, with the route label the count rule
+    assigns (`reference_kind="t"` dense, `"binomial"` otherwise)."""
+    assert len(_route_conversions()) == _ROUTE_FAMILY_SIZE
+    definitions = Definitions.model_validate(_route_defs_dict())
+    plan = AnalysisPlan(alpha=_ROUTE_ALPHA, q=_ROUTE_ALPHA, secondaries=tuple(_route_conversions()))
+    frame = pd.DataFrame(_route_unit_rows())
+    metrics = _route_metric_specs()
+
+    def build_definitions() -> Analysis:
+        con = ds.duckdb_connection(_route_event_rows())
+        return _track_connection(make_analysis(con, definitions, experiment="exp"), con)
+
+    def build_artifact() -> Analysis:
+        con = ds.duckdb_connection(_route_event_rows())
+        return _publish_and_adopt(con, make_analysis(con, definitions, experiment="exp"))
+
+    def build_unit_summary() -> Analysis:
+        return Analysis.from_unit_summary(
+            frame, unit="unit_id", group="group_id", control="control", metrics=metrics, plan=plan
+        )
+
+    def build_unit_panel() -> Analysis:
+        panel_rows: list[dict[str, Any]] = []
+        for record in frame.to_dict("records"):
+            panel_rows.append(
+                {
+                    **{key: record[key] for key in ("unit_id", "group_id")},
+                    "date": dt.date(2025, 1, 10),
+                    **dict.fromkeys(_route_conversions(), 0),
+                }
+            )
+            panel_rows.append(
+                {
+                    **{key: record[key] for key in ("unit_id", "group_id")},
+                    "date": dt.date(2025, 1, 11),
+                    **{name: record[name] for name in _route_conversions()},
+                }
+            )
+        return Analysis.from_unit_panel(
+            pd.DataFrame(panel_rows),
+            unit="unit_id",
+            group="group_id",
+            date="date",
+            control="control",
+            metrics=metrics,
+            plan=plan,
+        )
+
+    def build_moments() -> Analysis:
+        return _export_and_replay(
+            build_unit_summary(),
+            [
+                MetricSpec(name=name, type="conversion", preferred_direction="increase")
+                for name in _route_conversions()
+            ],
+        )
+
+    def probe(results: Any) -> None:
+        expected = {name: spec[2] for name, spec in _route_conversions().items()}
+        rows = {row.metric: row for row in results if row.group_id == "treatment"}
+        assert set(rows) == set(expected)
+        for name, kind in expected.items():
+            row = rows[name]
+            assert row.reference_kind == kind, name
+            assert (row.binomial_set is None) == (kind == "t"), name
+            assert row.scale == ("log" if kind == "t" else "linear"), name
+
+    return ParityCase(
+        id="conversion_route_straddles_the_dense_threshold",
+        build={
+            "from_definitions": build_definitions,
+            "from_unit_day_artifact": build_artifact,
+            "from_unit_summary": build_unit_summary,
+            "from_unit_panel": build_unit_panel,
+            "from_moments": build_moments,
+        },
+        waive=dict(_SWITCHBACK_WAIVE),
+        readout_probe=probe,
+        slow=True,
+    )
+
+
+def _route_segment_counts() -> dict[str, tuple[int, int, int, Literal["t", "binomial"]]]:
+    """Per store segment: units per arm, control and treatment successes, and the route label.
+    One conversion metric spans dense, sparse and threshold-straddling segments."""
+    m = _route_threshold()
+    n = 3 * m
+    treatment = m + m // 2
+    return {
+        "dense_store": (n, n // 2, n // 2 + n // 10, "t"),
+        "edge_below_store": (n, m - 1, treatment, "binomial"),
+        "edge_at_store": (n, m, treatment, "t"),
+        "sparse_store": (80, 10, 20, "binomial"),
+    }
+
+
+def _conversion_route_breakout_case() -> ParityCase:
+    """A conversion metric with dense, sparse and threshold-straddling store segments: the
+    route is chosen per segment row from that segment's own counts, identically on every
+    breakout-capable ingress, and the dense segments of the same metric are contrastable."""
+    records: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
+    for store, (n, x_c, x_t, _) in _route_segment_counts().items():
+        for group, successes in (("control", x_c), ("treatment", x_t)):
+            for i in range(n):
+                unit = f"{store}-{group}-{i}"
+                converted = i < successes
+                records.append(
+                    {
+                        "unit_id": unit,
+                        "group_id": group,
+                        "store": store,
+                        "converted": int(converted),
+                        "date": _ENCOURAGEMENT_PURCHASE_AT.date(),
+                    }
+                )
+                events.append(
+                    ds._row(
+                        unit,
+                        _ENCOURAGEMENT_EXPOSURE_AT,
+                        "exposure",
+                        group_id=group,
+                        experiment_id="exp",
+                        store_id=store,
+                    )
+                )
+                if converted:
+                    events.append(
+                        ds._row(unit, _ENCOURAGEMENT_PURCHASE_AT, "purchase", store_id=store)
+                    )
+    events.append(
+        ds._row(
+            "dense_store-treatment-0",
+            _ENCOURAGEMENT_FRESHNESS_PAD_AT,
+            "purchase",
+            store_id="dense_store",
+        )
+    )
+    definition = _encouragement_itt_defs_dict()
+    definition["fact_sources"][0]["properties"] = [
+        {"name": "store", "column": "store_id", "dtype": "string", "as_of": "static"}
+    ]
+    experiment = definition["experiments"][0]
+    experiment["breakouts"] = [{"property": "store"}]
+    experiment["plan"] = AnalysisPlan(
+        primary="converted", alpha=_ROUTE_ALPHA, q=_ROUTE_ALPHA
+    ).model_dump(mode="json")
+    del experiment["design"]
+    definitions = Definitions.model_validate(definition)
+    plan = AnalysisPlan(primary="converted", alpha=_ROUTE_ALPHA, q=_ROUTE_ALPHA)
+    specs = _encouragement_itt_metrics()
+
+    def native(*, artifact: bool = False) -> Analysis:
+        con = ds.duckdb_connection(events)
+        analysis = make_analysis(con, definitions, experiment="exp")
+        return _publish_and_adopt(con, analysis) if artifact else _track_connection(analysis, con)
+
+    def summary() -> Analysis:
+        return Analysis.from_unit_summary(
+            pd.DataFrame(records),
+            unit="unit_id",
+            group="group_id",
+            control="control",
+            metrics=specs,
+            plan=plan,
+        )
+
+    def panel() -> Analysis:
+        return Analysis.from_unit_panel(
+            pd.DataFrame(records),
+            unit="unit_id",
+            group="group_id",
+            date="date",
+            control="control",
+            metrics=specs,
+            plan=plan,
+            breakouts=["store"],
+        )
+
+    def probe(results: Any) -> None:
+        by_segment = {row.dimension_value: row for row in results}
+        expected = _route_segment_counts()
+        assert set(by_segment) == set(expected)
+        for store, (_, _, _, kind) in expected.items():
+            row = by_segment[store]
+            assert row.excluded is None, store
+            assert row.reference_kind == kind, store
+            assert (row.binomial_set is None) == (kind == "t"), store
+
+    return ParityCase(
+        id="conversion_route_breakout_segments",
+        build={
+            "from_definitions": native,
+            "from_unit_day_artifact": lambda: native(artifact=True),
+            "from_unit_summary": summary,
+            "from_unit_panel": panel,
+        },
+        breakout_dimension="store",
+        readout_probe=probe,
+        waive={
+            **_SWITCHBACK_WAIVE,
+            "from_unit_summary": "SOURCE: unit summaries declare no breakout dimension",
+            "from_moments": "SOURCE: portable moments retain no per-unit breakout dimension",
+        },
+        waived_refusal_codes={"from_unit_summary": "facade.analysis.operation"},
+        slow=True,
+    )
+
+
 PARITY_CASES: tuple[ParityCase, ...] = (
     _encouragement_multi_metric_breakout_case(),
     _inferred_null_metric_case(),
@@ -7143,6 +7511,9 @@ PARITY_CASES: tuple[ParityCase, ...] = (
     _clustered_negative_mean_case(zero_treatment=True),
     _cluster_export_refusal_case(),
     _encouragement_itt_case(),
+    _encouragement_itt_case(dense=True),
+    _conversion_route_case(),
+    _conversion_route_breakout_case(),
     _binary_breakout_ancillary_uptake_case(),
     _binary_breakout_ancillary_uptake_case(include_fact_only_unit=True),
     _encouragement_declared_definitions_case(),

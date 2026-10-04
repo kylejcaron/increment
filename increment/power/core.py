@@ -726,16 +726,19 @@ class PowerResult(CodedModel, BaseModel):
     power_basis : {"asymptotic", "exact", "approximate"}
         How ``power`` was computed. ``"asymptotic"``: the log-ratio
         Normal/noncentral-t planning model (every plan the runtime does not
-        decide with the exact binomial risk-ratio test). ``"exact"``: the
-        probability that the runtime's unchanged exact binomial decision
-        rejects, at the analyzed integer counts (up to at most about ``1e-12``
-        of omitted outer count mass, and the numerical error of its sum, about
-        ``1e-12`` of it at 1,000 units per arm and ``4e-7`` at a billion).
-        ``"approximate"``: the rejection probability of a model of that decision
-        replayed with Normal conditional tails, for binomial plans whose exact
-        geometry exceeds the planning cell budget; its numerical enclosure is of
-        the model's integral only and does not bound the model's departure from
-        the runtime (measured at up to 0.8 percentage points below it).
+        decide with the finite-sample binomial risk-ratio test, including
+        a conversion or retention plan whose counts the runtime takes the
+        delta-method route at). ``"exact"``: the probability that the
+        runtime's unchanged finite-sample decision rejects, at the analyzed
+        integer counts (up to at most about ``1e-12`` of omitted outer count
+        mass, and the numerical error of its sum, about ``1e-12`` of it at
+        1,000 units per arm and ``4e-7`` at a billion). ``"approximate"``: the
+        rejection probability of a model of that decision replayed with Normal
+        conditional tails, for binomial plans whose exact geometry exceeds the
+        planning cell budget; its numerical enclosure is of the model's integral
+        only and does not bound the model's departure from the runtime (measured
+        at up to 0.8 percentage points below it). A plan the count rule splits
+        reports the replayed decision's basis and the smaller of the two powers.
     mde_relative : float | None
         Minimum detectable relative effect on the complier scale, expressed
         RELATIVE TO the declared null: ``(exp(distance) - 1) /
@@ -3674,12 +3677,15 @@ def achieved_power(
 ) -> PowerResult:
     """Compute achieved power at a fixed arm size under a planning procedure.
 
-    ``power`` describes the supplied ``relative_lift``. For eligible binomial
-    plans, ``power_basis="exact"`` integrates the runtime decision's rejection
-    probability at the analyzed counts; ``"approximate"`` instead integrates
-    the Normal-conditional-tail decision model and certifies only that model.
-    Other plans use the log-ratio model with treatment-arm variance evaluated
-    at the alternative (``"asymptotic"``). ``mde_relative`` is the companion
+    ``power`` describes the supplied ``relative_lift``: for a plan the runtime
+    decides with the finite-sample binomial risk-ratio test (a conversion or
+    retention metric, unadjusted, unclustered, fixed horizon, whose counts
+    ``conversion_inference`` routes there) it is that decision's rejection
+    probability at the analyzed integer counts (``power_basis`` ``"exact"``
+    or ``"approximate"``); otherwise the log-ratio planning model with the
+    treatment arm's variance evaluated at that alternative (``"asymptotic"``),
+    which is also the power of counts the runtime takes the delta-method route
+    at. ``mde_relative`` is the companion
     minimum detectable effect at the same size and target under the same
     model; when none exists there it is ``None`` with
     ``mde_unavailable_reason`` set, and the supplied-effect answer stands.
