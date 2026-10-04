@@ -73,6 +73,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 from increment.estimation._certified import Interval, log_interval, log_rising
+from increment.estimation._readout_refusals import refuse_quantile_moments
 from increment.estimation.diagnostics import ESTIMATION_DIAGNOSTICS_ALPHA
 from increment.estimation.meta import ESTIMATION_META_ALPHA_TOO_SMALL
 
@@ -640,7 +641,12 @@ def estimate_quantile_lift(
 
     Sequential quantiles require a quantile-specific process. The registered
     mean and ratio likelihoods cannot use an order-statistic standard error.
+    An observational source refuses: the Woodruff interval assumes independent
+    randomized arms, so it would report a confounded contrast as a causal lift.
     """
+    design = getattr(getattr(src, "context", None), "design", None)
+    if getattr(design, "mechanism", None) == "observational":
+        refuse_quantile_moments(metric, design)
     if inference is not None:
         from increment.sequential_state import sequential_refuse
 

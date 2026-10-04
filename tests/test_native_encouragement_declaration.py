@@ -575,6 +575,68 @@ def test_observational_quantile_refuses_on_definitions_and_reopened_artifact(con
     assert exc_info.value.code == "source.frame.quantile_no_moments"
 
 
+def test_observational_quantile_refuses_before_a_leading_metric_is_read(con, tmp_path):
+    """The refusal is request preflight: the leading mean metric reads a table that does not
+    exist, so any read of it would surface a warehouse error instead of the quantile refusal."""
+    from increment.errors import CapabilityError
+
+    _seed(con)
+    defs_dict = _observational_quantile_defs()
+    defs_dict["fact_sources"].append(
+        {
+            "name": "ghost",
+            "sql": "select * from table_that_does_not_exist",
+            "timestamp_column": "ts",
+            "entities": ["user_id"],
+            "facts": [{"name": "ghost_value", "column": "v"}],
+        }
+    )
+    defs_dict["metrics"][0]["fact"] = "ghost_value"
+    native = Analysis.from_definitions(
+        "native_observational_quantile_exp",
+        _write_defs_yaml(defs_dict, tmp_path),
+        con,
+        store="none",
+    )
+    with pytest.raises(CapabilityError) as exc_info:
+        lift_rows(native.run())
+    assert exc_info.value.code == "source.frame.quantile_no_moments"
+
+
+@pytest.mark.parametrize("ingress", ["definitions", "artifact"])
+def test_estimate_quantile_lift_refuses_an_observational_source(con, tmp_path, ingress):
+    """The quantile estimator never reports a randomized Woodruff lift for observational data,
+    whichever source hands it the per-unit rows."""
+    from increment.errors import CapabilityError
+    from increment.estimation.quantile import estimate_quantile_lift
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+
+    _seed(con)
+    defs_dict = _observational_quantile_defs()
+    defs = Definitions.model_validate(defs_dict)
+    experiment = defs.experiment("native_observational_quantile_exp")
+    assert experiment is not None
+    native = Analysis.from_definitions(
+        "native_observational_quantile_exp",
+        _write_defs_yaml(defs_dict, tmp_path),
+        con,
+        store="none",
+    )
+    analysis = native
+    if ingress == "artifact":
+        store = WarehouseArtifactStore(con, schema_name="artifacts")
+        ref = native.publish_unit_day_artifact(store)
+        analysis = Analysis.from_unit_day_artifact(
+            store, ref, expected_context=artifact_context(defs, experiment, "error")
+        )
+    source = _native_source(analysis)
+    quantile = next(metric for metric in source.context.metrics if metric.name == "revenue")
+    with pytest.raises(CapabilityError) as exc_info:
+        estimate_quantile_lift(source, quantile, "control")
+    assert exc_info.value.code == "source.frame.quantile_no_moments"
+
+
 def test_observational_quantile_planning_baseline_reads_control_values(con, tmp_path):
     """Planning baselines use a quantile's per-unit control values without estimating an
     observational effect, so the observational refusal must not reach them."""
