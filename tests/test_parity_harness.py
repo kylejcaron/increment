@@ -6,7 +6,12 @@ capability claims these cases back."""
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
 import pytest
+
+if TYPE_CHECKING:
+    from increment import Analysis
 
 from tests.parity_harness.cases import PARITY_CASES
 from tests.parity_harness.runner import assert_parity, run_case
@@ -312,24 +317,24 @@ def _assert_equal(left, right, key):
         _assert_payload_equal("case", "left", "right", key, method, payload, right[key][method])
 
 
-def _binomial_set(**overrides):
+def _binomial_set(*, lower: float = 1.232421875):
+    """A zero-control-count exact-binomial set (no finite point); only `lower` varies."""
     from increment.estimation.binomial_rr import nuisance_beta
     from increment.estimation.results import BinomialConfidenceSet
 
-    fields = {
-        "lower": 1.232421875,
-        "upper": None,
-        "alpha": 0.05,
-        "level": 0.95,
-        "decision_alpha": 0.05,
-        "geometry": "central",
-        "x_c": 0,
-        "n_c": 10,
-        "x_t": 2,
-        "n_t": 10,
-        "nuisance_beta": nuisance_beta(0.05),
-    }
-    return BinomialConfidenceSet(**(fields | overrides))
+    return BinomialConfidenceSet(
+        lower=lower,
+        upper=None,
+        alpha=0.05,
+        level=0.95,
+        decision_alpha=0.05,
+        geometry="central",
+        x_c=0,
+        n_c=10,
+        x_t=2,
+        n_t=10,
+        nuisance_beta=nuisance_beta(0.05),
+    )
 
 
 @pytest.mark.parametrize(
@@ -438,7 +443,7 @@ def test_each_day_axis_view_reads_only_its_own_method_and_keeps_its_own_outcome(
         waive["from_unit_summary"] = "SOURCE: the lift leg refuses"
     case = ParityCase(
         id=f"leg-{view}",
-        build={"from_unit_summary": lambda: analysis},
+        build={"from_unit_summary": lambda: cast("Analysis", analysis)},
         waive=waive,
         waived_refusal_codes=(
             {"from_unit_summary": "facade.analysis.lift_refused"} if refuses else {}
