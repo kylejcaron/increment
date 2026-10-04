@@ -111,7 +111,7 @@ per-arm order statistic. `AnalysisPlan(inference=InferenceSpec(
 kind="always_valid"|"asymptotic_mean"))` refuses before reading outcomes
 with `sequential.route.unsupported`. A metric that reaches estimation under
 an explicit sequential registration refuses again with
-`arm.metric.quantile_sequential`. Use fixed-horizon quantile inference.
+`arm.metric.quantile_sequential`. Use fixed-horizon quantile inference (valid for one planned analysis, not repeated looks).
 
 ## Unsupported combinations
 
@@ -124,7 +124,7 @@ quantile has no mean to adjust; pass `variance_reduction="none"`).
 
 A quantile metric also refuses a one-sided `alternative` and a shifted
 null under the single code `readout.metric.quantile_alternative`
-("one-sided alternative is not supported for quantile metrics yet"):
+("one-sided alternative is not supported for quantile metrics"):
 only a two-sided test against `null_lift=0` on the relative axis is
 supported. A non-zero `null_lift` override or a non-inferiority/
 superiority `margin` refuses this way (both resolve to a non-zero

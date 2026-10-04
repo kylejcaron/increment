@@ -42,14 +42,12 @@ if TYPE_CHECKING:
 CAPABILITY_TABLE: dict[str, str] = {
     "window_days": (
         "window_days is not supported on from_unit_summary -- a one-row-per-unit "
-        "summary carries no dates to window against; use from_unit_panel for a "
-        "windowed metric."
+        "summary carries no dates to window against."
     ),
     "type=retention": (
         "type='retention' is not supported on from_unit_summary -- a retention "
         "metric needs threshold_days and a date to compute the observation band "
-        "against, and a one-row-per-unit summary has neither; use from_unit_panel "
-        "for a retention metric."
+        "against, and a one-row-per-unit summary has neither."
     ),
 }
 
@@ -556,7 +554,11 @@ def _reject_windowed_specs(specs: Sequence[MetricSpec]) -> None:
                 metric=spec.name,
                 capability="window_days",
                 value=spec.window_days,
-                route="use from_unit_panel for a windowed metric",
+                route=(
+                    "use from_unit_panel for a windowed metric in a randomized analysis; a "
+                    "panel source does not serve observational estimators or CATE for a "
+                    "windowed metric"
+                ),
             )
         if spec.type == "retention":
             refuse(
@@ -564,7 +566,12 @@ def _reject_windowed_specs(specs: Sequence[MetricSpec]) -> None:
                 metric=spec.name,
                 capability="type=retention",
                 value=spec.type,
-                route="use from_unit_panel for a retention metric",
+                route=(
+                    "use from_unit_panel for a retention metric in a randomized analysis; a "
+                    "panel source does not serve observational estimators or CATE for a "
+                    "retention metric, and retention is not supported under an encouragement "
+                    "design"
+                ),
             )
 
 

@@ -442,7 +442,12 @@ class FrameTotalsSource(SequentialSourceMixin):
             refuse(
                 _FRAME_QUANTILE_NO_MOMENTS,
                 metric=metric.name,
-                route="use readouts.run, which routes quantiles automatically",
+                route=(
+                    "an observational design has no quantile estimator; quantile metrics "
+                    "run under a randomized design"
+                    if getattr(self.design, "mechanism", None) == "observational"
+                    else "use readouts.run, which routes quantiles automatically"
+                ),
             )
         if by:
             refuse(
@@ -1169,7 +1174,10 @@ class FramePanelSource(SequentialSourceMixin):
             refuse(
                 _FRAME_WINDOWED_ENCOURAGEMENT_TOTAL,
                 metric=metric.name,
-                route="use grain='asof' or collapse to one row per unit and use from_unit_summary",
+                route=(
+                    "use grain='asof', or compute each unit's windowed value upstream and "
+                    "declare it as an unwindowed metric on from_unit_summary"
+                ),
             )
         breakout = self._breakout_key(by)
         if grain == "daily" and isinstance(metric, RetentionMetric):
@@ -1322,7 +1330,12 @@ class FramePanelSource(SequentialSourceMixin):
                 FRAME_UNIT_FRAME_PANEL,
                 metric=metric.name,
                 shape="a unit panel",
-                route="collapse to one row per unit and use from_unit_summary",
+                route=(
+                    "compute each unit's windowed value upstream and declare it as an "
+                    "unwindowed metric on from_unit_summary"
+                    if spec.window_days is not None
+                    else "no frame source serves unit-grain estimators for a retention metric"
+                ),
             )
         admitted = _admit_panel_totals(
             self._sparse_panel,
@@ -1809,7 +1822,8 @@ def from_unit_panel(  # noqa: PLR0913
                 "the panel is collapsed to one row per unit before clustering "
                 "could apply, and the collapse is ambiguous on this shape. "
                 "Aggregate to one row per unit yourself and use "
-                "from_unit_summary(cluster=...) instead"
+                "from_unit_summary(cluster=...) instead (clustered inference is "
+                "total-grain only, so the day axis is given up)"
             ),
             operation="from_unit_panel(cluster=...)",
             cluster=cluster,

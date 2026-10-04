@@ -1561,7 +1561,11 @@ class ArtifactMomentSource(SequentialSourceMixin):
                     FRAME_UNIT_FRAME_PANEL,
                     metric=metric.name,
                     shape="an artifact of a windowed or retention metric",
-                    route="Collapse to one row per unit and use from_unit_summary.",
+                    route=(
+                        "For a windowed metric, compute each unit's windowed value upstream "
+                        "and declare it as an unwindowed metric on from_unit_summary; no "
+                        "frame source serves unit-grain estimators for a retention metric."
+                    ),
                 )
         return self._unit_frame(
             trusted,

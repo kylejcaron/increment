@@ -73,12 +73,12 @@ if TYPE_CHECKING:
 
 _REFUSED_TYPES: dict[str, str] = {
     "retention": (
-        "not supported in reports (v1): retention needs a cohort anchor, "
-        "which reports don't have yet -- use the experiment path"
+        "not supported in reports: retention needs a cohort anchor, "
+        "which reports do not have -- use the experiment path"
     ),
     "quantile": (
         "quantile metrics have no moments representation and the report "
-        "path has no per-unit transport yet -- not supported in reports"
+        "path carries no per-unit rows -- not supported in reports; use the experiment path"
     ),
 }
 
@@ -332,8 +332,8 @@ class Report:
                 elif m.type not in ("total", "active"):
                     errors.append(
                         f"'{name}': rolling window= applies to total/active "
-                        f"metrics only in v1 -- an overlapping-window "
-                        f"denominator for {m.type} metrics is a separate design"
+                        f"metrics only -- {m.type} metrics have no overlapping-window "
+                        f"denominator in a report"
                     )
             if population is not None and m.type in ("total", "active"):
                 errors.append(

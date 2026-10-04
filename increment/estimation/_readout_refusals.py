@@ -92,7 +92,7 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
             "readout.metric.quantile_breakout",
             CapabilityError,
             lambda *, metric, route=None, **_: _with_route(
-                f"{_quantile_subject(metric)}: breakout dimensions are deferred -- "
+                f"{_quantile_subject(metric)}: breakout dimensions are not supported -- "
                 "quantiles do not decompose over segment moments",
                 route,
             ),
@@ -102,7 +102,7 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
             UnsupportedRequestError,
             lambda *, metric, route=None, **_: _with_route(
                 f"{_quantile_subject(metric)}: one-sided alternative is not supported "
-                "for quantile metrics yet",
+                "for quantile metrics",
                 route,
             ),
         ),

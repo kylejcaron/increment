@@ -616,7 +616,9 @@ SCENARIOS = (
         explanation=(
             "Quantile sequential inference has no matching raw likelihood and is refused before data."
         ),
-        alternative="Use fixed-horizon quantile inference.",
+        alternative=(
+            "Use fixed-horizon quantile inference (valid for one planned analysis, not repeated looks)."
+        ),
         evidence=(
             EvidenceRef(
                 kind="integration",
@@ -645,7 +647,9 @@ SCENARIOS = (
         explanation=(
             "The unsupported quantile likelihood refuses the analysis before family evidence."
         ),
-        alternative=("Use fixed-horizon quantile inference for family participation."),
+        alternative=(
+            "Use fixed-horizon quantile inference for family participation (valid for one planned analysis, not repeated looks)."
+        ),
         evidence=(
             EvidenceRef(
                 kind="unit",

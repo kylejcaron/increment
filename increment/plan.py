@@ -69,7 +69,7 @@ _REFUSALS = refusals(
     UnsupportedRequestError,
     {
         "plan.observational.relative_margin": "relative shifted nulls are not built for the observational path: metric(s) {metrics} declare a relative margin (Metric.margin, or a plan-bound ExperimentMetric.margin) -- an absolute-unit margin (Metric.margin_abs) is supported",
-        "plan.encouragement.margin": "metric {metric!r}: margins are not supported for sequential encouragement -- the sequential encouragement estimator builds no shifted null; a fixed-horizon plan applies the margin to the ITT row",
+        "plan.encouragement.margin": "metric {metric!r}: margins are not supported for sequential encouragement -- the sequential encouragement estimator builds no shifted null; a fixed-horizon plan applies the margin to the ITT row (valid for one planned analysis, not repeated looks)",
         "plan.encouragement.sequential_cuped": "metric {metric!r}: CUPED methods are not supported with {inference} inference for encouragement except compliance-only requests",
         "plan.configs_keys_match": RefusalSpec(
             "plan.configs_keys_match",
@@ -110,13 +110,13 @@ _REFUSALS = refusals(
             template="duplicate metric name(s) {duplicate_names!r} in metrics",
         ),
         "plan.frame_contrast_does": "frame/contrast does not support method or prior overrides",
-        "plan.metric_cuped_methods": "metric {metric!r}: CUPED is unavailable under {inference} inference, including predeclared coefficients. Use raw Bernoulli outcomes without CUPED, or monitor under InferenceSpec(kind='asymptotic_mean'), whose adjusted_mean and adjusted_ratio_mean laws retain the joint (Y, X) moments that construction reads (Lindon, Ham, Tingley and Bojinov 2022, arXiv:2210.08589). Pre-period coefficients are supported by its scalar_mean law through InferenceSpec.adjustments or ScalarMeanModel.adjustment",
+        "plan.metric_cuped_methods": "metric {metric!r}: CUPED is unavailable under {inference} inference, including predeclared coefficients. Use raw Bernoulli outcomes without CUPED, or monitor under InferenceSpec(kind='asymptotic_mean') (an asymptotic confidence sequence, not the exact e-process guarantee), whose adjusted_mean and adjusted_ratio_mean laws retain the joint (Y, X) moments that construction reads (Lindon, Ham, Tingley and Bojinov 2022, arXiv:2210.08589). Pre-period coefficients are supported by its scalar_mean law through InferenceSpec.adjustments or ScalarMeanModel.adjustment",
         "readout.correction.invalid": RefusalSpec(
             "readout.correction.invalid",
             InvalidRequestError,
             template="unknown correction={correction!r}; supported: 'bh', 'bonferroni', 'none'",
         ),
-        "readout.inference.observational_run": "sequential inference is not supported under an observational design",
+        "readout.inference.observational_run": "sequential inference is not supported under an observational design; use fixed-horizon inference (valid for one planned analysis, not repeated looks)",
         "readout.encouragement.correction": "multiplicity correction is not supported under an encouragement design",
     },
 )

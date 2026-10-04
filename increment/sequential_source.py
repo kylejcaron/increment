@@ -840,7 +840,13 @@ def validate_sequential_plan(plan, metrics, design):
     if design is None or getattr(design, "mechanism", None) == "observational":
         sequential_refuse(
             "route.unsupported",
-            "sequential likelihoods require a declared randomized or encouragement design",
+            "sequential likelihoods require a declared randomized or encouragement design"
+            + (
+                ""
+                if design is None
+                else "; use fixed-horizon inference for an observational design (valid for "
+                "one planned analysis, not repeated looks)"
+            ),
         )
     if str(design.control_group) != registration.control_group:
         sequential_refuse(
@@ -852,7 +858,7 @@ def validate_sequential_plan(plan, metrics, design):
             if getattr(design, "one_sided", False):
                 sequential_refuse(
                     "route.unsupported",
-                    "structural-zero control uptake is a rate target, not a positive-control relative likelihood; use fixed-horizon C03 compliance",
+                    "structural-zero control uptake is a rate target, not a positive-control relative likelihood; use fixed-horizon compliance (valid for one planned analysis, not repeated looks)",
                 )
             if getattr(design, "mechanism", None) != "encouragement":
                 sequential_refuse(
@@ -993,7 +999,10 @@ def validate_sequential_request(request):
         )
     if request.cluster is not None or getattr(request.design, "mechanism", None) == "observational":
         sequential_refuse(
-            "route.unsupported", "clustered and observational sequential inference are unsupported"
+            "route.unsupported",
+            "clustered and observational sequential inference are unsupported; use "
+            "fixed-horizon inference, which supports both (valid for one planned analysis, "
+            "not repeated looks)",
         )
     if registration.control_group != str(request.design.control_group):
         sequential_refuse("source.invalid", "registered assignment control differs from design")
@@ -1099,7 +1108,10 @@ def validate_frame_registration(
         )
     if cluster is not None or getattr(design, "mechanism", None) == "observational":
         sequential_refuse(
-            "route.unsupported", "clustered and observational sequential routes are unsupported"
+            "route.unsupported",
+            "clustered and observational sequential routes are unsupported; use "
+            "fixed-horizon inference, which supports both (valid for one planned analysis, "
+            "not repeated looks)",
         )
     if registration.control_group != str(design.control_group):
         sequential_refuse("source.invalid", "registered assignment control differs from design")
@@ -1119,7 +1131,7 @@ def validate_frame_registration(
             if getattr(design, "one_sided", False):
                 sequential_refuse(
                     "route.unsupported",
-                    "structural-zero control uptake is a rate target, not a positive-control relative likelihood; use fixed-horizon C03 compliance",
+                    "structural-zero control uptake is a rate target, not a positive-control relative likelihood; use fixed-horizon compliance (valid for one planned analysis, not repeated looks)",
                 )
             if getattr(design, "mechanism", None) != "encouragement":
                 sequential_refuse("source.invalid", "uptake requires an encouragement design")

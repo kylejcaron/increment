@@ -120,8 +120,9 @@ ABSOLUTE_NULL_ABS_REFUSAL = (
     "margins_abs/null_abs cannot target metric {name!r}: its rows are "
     "absolute-native (value_scale='absolute'), so the abs_diff/abs_se fields the "
     "absolute-margin decision reads are None by design. A shifted null for an "
-    "absolute-native row is a null_lift in the metric's own units -- deferred to "
-    "the relative/shifted-null pass; until then test against 0 with alternative=."
+    "absolute-native row is a null_lift in the metric's own units, which this row "
+    "does not support. Testing against 0 with alternative= runs but drops the "
+    "margin, so it answers a different question."
 )
 
 # A relative shifted null on an absolute-native row compares a unitless
@@ -130,8 +131,9 @@ ABSOLUTE_NULL_LIFT_REFUSAL = (
     "null_lifts/margins cannot target metric {name!r} with a nonzero value: its "
     "rows are absolute-native (value_scale='absolute'), so `lift` is in the "
     "metric's own units and a unitless relative null would be compared against "
-    "an additive interval. A shifted null in additive units is deferred to the "
-    "shifted-null pass; until then test against 0 with alternative=."
+    "an additive interval. A nonzero shifted null is not available on an "
+    "absolute-native row. Testing against 0 with alternative= runs but drops the "
+    "margin, so it answers a different question."
 )
 
 

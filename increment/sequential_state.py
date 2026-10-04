@@ -70,7 +70,8 @@ def validate_sequential_transform(metric) -> None:
     if metric.type == "quantile":
         sequential_refuse(
             "route.unsupported",
-            "quantiles need a matching sequential sampling proof; use fixed-horizon inference",
+            "quantiles need a matching sequential sampling proof; use fixed-horizon inference "
+            "(valid for one planned analysis, not repeated looks)",
         )
     winsorization = getattr(metric, "winsorization", None)
     if winsorization is not None and winsorization.has_percentile:
@@ -81,7 +82,7 @@ def validate_sequential_transform(metric) -> None:
             "and re-weights past increments with information unavailable when they were "
             "revealed. Fix the threshold from pre-period data (lower_value/upper_value), "
             "after which it is a fixed threshold applied per unit as it arrives, or use "
-            "fixed-horizon inference",
+            "fixed-horizon inference (valid for one planned analysis, not repeated looks)",
         )
 
 

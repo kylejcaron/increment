@@ -151,7 +151,7 @@ _REFUSALS = refusals(
         "readout.sequential_inference_supported": RefusalSpec(
             "readout.sequential_inference_supported",
             UnsupportedRequestError,
-            template="sequential inference is not supported on the whole-window run() entry point under an encouragement design -- for sequential monitoring of an encouragement rollout, use asof_lift() instead, which carries time-uniform intervals on every row (LATE included) -- declare inference=InferenceSpec(kind='always_valid', registration=...) on the source's AnalysisPlan (asof_lift() reads it from there, not a call kwarg)",
+            template="sequential inference is not supported on the whole-window run() entry point under an encouragement design -- for sequential monitoring of an encouragement rollout, use asof_lift() instead, which carries time-uniform intervals on its ITT and compliance rows (binary-uptake LATE has no sequential interval; request estimands=('itt',) or ('compliance',)) -- declare inference=InferenceSpec(kind='always_valid', registration=...) on the source's AnalysisPlan (asof_lift() reads it from there, not a call kwarg)",
         ),
         "readout.value_scale_randomized_absolute": RefusalSpec(
             "readout.value_scale_randomized_absolute",

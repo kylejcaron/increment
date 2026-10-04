@@ -72,7 +72,8 @@ def plan_family_compatibility(
     warning = (
         f"metric {request.metric!r}: quantile sequential inference is refused because "
         "the registered Beta/NIG/NIW likelihoods target means and ratios of means. "
-        "Use fixed-horizon quantile inference."
+        "Use fixed-horizon quantile inference (valid for one planned analysis, not "
+        "repeated looks)."
         if quantile_under_always_valid
         else None
     )

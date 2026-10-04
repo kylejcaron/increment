@@ -646,7 +646,8 @@ def estimate_quantile_lift(
 
         sequential_refuse(
             "route.unsupported",
-            "mean/ratio likelihoods do not certify quantiles; use fixed-horizon quantile inference",
+            "mean/ratio likelihoods do not certify quantiles; use fixed-horizon quantile "
+            "inference (valid for one planned analysis, not repeated looks)",
         )
     import narwhals as nw
 

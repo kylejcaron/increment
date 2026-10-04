@@ -149,7 +149,7 @@ _MOMENTS_COVARIATE_UNAVAILABLE = _RefusalSpec(
 _MOMENTS_COUNTS = _RefusalSpec(
     "source.moments.assignment_counts",
     _CapabilityError,
-    template="trustworthy source-level assignment counts; use Analysis.export() from a source or artifact containing assignment-count evidence, or provide a complete v7 cube.",
+    template="trustworthy source-level assignment counts; use Analysis.export() from a source or artifact that carries assignment-count evidence, or supply a cube whose rows carry the assignment_counts field.",
 )
 _MOMENTS_CLUSTER_GRAIN = _RefusalSpec(
     "source.moments.cluster_grain",
@@ -409,7 +409,7 @@ def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]
 
 
 def _parse_assignment_counts(payload: object) -> dict[str, int] | None:
-    """Decode a v7 source-level assignment-count payload."""
+    """Decode a source-level assignment-count payload."""
     if isinstance(payload, str):
         try:
             payload = json.loads(payload, object_pairs_hook=_reject_duplicate_keys)
@@ -1028,7 +1028,7 @@ class MomentsSource(SequentialSourceMixin):
         _refuse(_MOMENTS_UNIT_GRAIN, method="unit_frame")
 
     def unit_counts(self) -> dict[str, int]:
-        """Return source-level enrolled counts carried by v7 cubes."""
+        """Return source-level enrolled counts carried by supported cubes."""
         if self._assignment_counts is None:
             _refuse(_MOMENTS_COUNTS)
         return dict(self._assignment_counts)

@@ -171,7 +171,7 @@ percentile or fixed clip at declaration (`frame.metric.winsorization_applies_typ
 mean metric a fixed clip is supported and a percentile clip refuses
 (`sequential.transform.unpredictable`) because its threshold depends on accumulated data.
 Quantile metrics: refused on the exact route (`definition.inference.always_valid_metric_type`)
-because the Bernoulli law does not describe them; use fixed-horizon inference.
+because the Bernoulli law does not describe them; use fixed-horizon inference (valid for one planned analysis, not repeated looks).
 Breakouts: `InferenceSpec.segments` fixes one string-valued dimension and its
 allowed levels before outcomes on `from_unit_summary` and `from_unit_panel`;
 an explicit registration is optional. Empty levels stay in the roster.

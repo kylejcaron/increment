@@ -124,7 +124,12 @@ def capture_frame_totals(source):
         return
     require_public_laws(registration.models, "sequential source capture")
     if source.context.cluster is not None:
-        sequential_refuse("route.unsupported", "clustered sequential observations are unsupported")
+        sequential_refuse(
+            "route.unsupported",
+            "clustered sequential observations are unsupported; use fixed-horizon "
+            "inference on the clustered source (valid for one planned analysis, not "
+            "repeated looks)",
+        )
     specs = source._specs_by_name
     definitions = sequential_definition_id(
         source.context.metrics,
