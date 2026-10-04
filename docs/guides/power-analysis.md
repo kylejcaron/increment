@@ -192,6 +192,21 @@ rate alone; `var` does not enter.
   points but understated power by up to 0.8 points with an unequal allocation
   and a shifted null, and it can misclassify count pairs whose runtime p-value
   sits near the tail allocation in rare-event designs.
+- Replay bound: the replay's work and memory follow the number of retained
+  (control, treatment) count cells at the null rate, not the arm size. A
+  design whose replay would span more than 10,000,000 cells is refused with
+  `power.binomial_replay_bound_exceeded` before any replay (the error's
+  context names the analyzed counts, the control rate, `cells` and
+  `max_cells`). `required_sample_size` searches only the sizes the bound
+  admits and refuses with the power it reached at the largest of them. A 5%
+  baseline with equal arms reaches the bound at about one million units per
+  arm and a 50% baseline at about 190,000; a rare baseline stays far inside
+  it at any arm size (100 million units per arm at a rate of 2e-7 expect
+  twenty events and replay about four thousand cells). Measured on an Apple
+  M3 Pro, a call at the bound takes two to two and a half minutes of CPU for
+  `achieved_power` or `minimum_detectable_effect` and about four minutes for
+  `required_sample_size`, with a peak near 2.4 GiB. The bound limits the
+  planner only: the runtime decides arms of up to a billion units.
 
 The route depends only on the design, never on timing. Power is not monotone
 in the sample size under this decision, so `required_sample_size` returns a
@@ -199,8 +214,10 @@ verified size whose power reaches the target while the size one below does
 not -- not a proof that no smaller size reaches it. `minimum_detectable_effect`
 returns the first admissible effect whose power reaches the target; earlier
 effects are excluded by their own power or by a bound on the rejection set,
-to within `2e-12` of the target. Designs beyond the runtime's one-billion
-unit arm ceiling are refused by the runtime and have power 0.
+to within `2e-12` of the target. A design the runtime refuses in full has power
+0 and is never replayed: an arm beyond its one-billion unit ceiling, or a tail
+level its float margin dominates (a two-sided alpha below about `9.5e-7` at a
+billion units per arm; see the limitations page).
 
 The `segment_pairwise_*` solvers are separate: they retain a baseline-only
 four-arm variance approximation. Do not use the three arm solvers as numerical
