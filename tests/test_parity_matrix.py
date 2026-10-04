@@ -10,9 +10,11 @@ exactly that, so a stale refusal code, a refusal that became a number, a number 
 refusal and a numeric disagreement all fail.
 
 Cells in which any ingress builds and reads data (an ingress runs, or refuses only once a
-request is read) are ``slow``; the remainder refuse at declaration, before any data is read,
-and run in the fast tier. A warehouse route is memoised per process on its exact inputs, and
-the cells that share those inputs share an ``xdist_group``.
+request is read) are ``slow``. In the remaining cells no ingress runs or reaches the request
+stage: each declaration either refuses with a code or is structurally absent (a schema or
+keyword the ingress cannot express), so they run in the fast tier. A warehouse route is
+memoised per process on its exact inputs, and the cells that share those inputs share an
+``xdist_group``.
 """
 
 from __future__ import annotations
