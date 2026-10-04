@@ -67,8 +67,9 @@ results = Analysis.from_unit_summary(
 ).run()
 
 for r in results:
-    if r.lift is None:  # e.g. an exact conversion row with zero control events
-        print(repr(r))  # the repr shows the row's set or its unavailable reason
+    if r.lift is None or r.lift.lb is None or r.lift.ub is None:
+        # no point, or a withheld or open bound; the repr shows the row's set or reason
+        print(repr(r))
         continue
     print(
         f"{r.metric} / {r.group_id}: "
@@ -99,16 +100,21 @@ each row keeps its remaining evidence, are:
   a float (extremely large scores) or is not positive semidefinite (a singular
   positive semidefinite covariance is still usable).
   `r.relative_unavailable_reason` is `"joint_covariance_unrepresentable"` or
-  `"joint_covariance_indefinite"`. There is **no** relative set. Only
-  `r.abs_diff` is guaranteed to survive: `r.abs_se`, `r.abs_lb`, and `r.abs_ub`
-  can each be `None`, so check them before use.
+  `"joint_covariance_indefinite"`, and there is **no** relative set. Whether the
+  point survives depends on the producer: an adjusted estimate with extremely large
+  scores has `r.lift is None`, while other rows keep the point and withhold
+  only its bounds (see "A point without an interval"). Only `r.abs_diff` is
+  guaranteed to survive: `r.abs_se`, `r.abs_lb`, and `r.abs_ub` can each be
+  `None`, so check them before use.
 - A winsorized metric with a `confidence_set`. A missing point leaves
   `r.confidence_set.relative` with a status and reason per endpoint (for
   example `unbounded` with `denominator_nonseparation`), and the additive
   interval stays in `r.abs_lb` and `r.abs_ub`.
-- A sequential row whose point is withheld. The confidence set stays in
+- A sequential row whose point is withheld. The confidence set is in
   `r.sequential_result.bounds`, and `r.sequential_result.point_reason` names the
-  reason.
+  reason. An asymptotic set can itself be unavailable: check that
+  `r.sequential_result.bounds.status` is not `"unavailable"` before reading
+  endpoints, and read `bounds.reason` when it is.
 
 Do not assume a missing point comes with a set. When `r.lift` is `None` and
 `r.relative_unavailable_reason` is set, the row has **no** relative set: read
@@ -237,7 +243,10 @@ assert flat.abs_diff == 1.0  # the additive difference is still reported
 ```
 
 Check `lb` and `ub` against `None`, or read `r.relative_unavailable_reason`
-first, before formatting them.
+first, before formatting them. A row with `relative_unavailable_reason` set to
+`"joint_covariance_unrepresentable"` or `"joint_covariance_indefinite"` and a
+finite point is the same case: its bounds are `None`, so the loop above prints
+its `repr`.
 
 ## One-sided tests
 
@@ -271,9 +280,12 @@ assert lift.excludes(0.0) and directional.stat_sig()
 
 `excludes()` reads only the finite side of an open interval. A one-sided test
 spends all of `alpha` on its single tail, so its `level` is the central
-equivalent: `level=0.9` for the default `alpha=0.05`. Mean metrics test the same
-direction but return a closed interval at that level, so read `open_side`
-instead of assuming it is set.
+equivalent: `level=0.9` for the default `alpha=0.05`. An ordinary fixed-horizon
+mean row tests the same direction but returns a closed interval at that level.
+A secondary row selected into the discovery family is the exception: its
+interval is selection-adjusted, so it keeps its open side at a different
+`level` (for example `open_side == "upper"` at `level=0.975`). Read
+`open_side` instead of assuming it is set.
 
 ## Sequential inference: two coordinate systems
 
