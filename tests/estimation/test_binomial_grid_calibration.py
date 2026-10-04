@@ -539,7 +539,14 @@ class TestUsefulnessAcceptance:
                 binomial_rr,
                 "confidence_interval",
                 lambda *a, **kw: binomial_rr.BinomialInterval(
-                    0.0, None, "central", 1.0, endpoint_log_width=0.0, resolution_reached=True
+                    0.0,
+                    None,
+                    "central",
+                    1.0,
+                    endpoint_log_width=0.0,
+                    resolution_reached=True,
+                    nuisance_gap_max=0.0,
+                    capped_probes=0,
                 ),
             )
         elif fault == "null_set":

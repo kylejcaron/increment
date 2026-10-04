@@ -54,10 +54,50 @@ def _dec_binom_cdf(x: int, n: int, q: float | Decimal, prec: int = 60) -> Decima
         return +total
 
 
+def _dec_tail(kind: str, n_c: int, n_t: int, k: int, q: float, p: float) -> Decimal:
+    """Exact ``F_+(q, p) = P(K >= k)`` or ``F_-(q, p) = P(K <= k)`` for ``K = n_c X_t - n_t X_c``,
+    summed over the control count in decimal arithmetic."""
+    with localcontext() as context:
+        context.prec = 60
+        qd, total = Decimal(q), Decimal(0)
+        for i in range(n_c + 1):
+            pmf_i = Decimal(comb(n_c, i))
+            pmf_i *= (qd**i if i else Decimal(1)) * ((1 - qd) ** (n_c - i) if i < n_c else 1)
+            if kind == "plus":
+                threshold = -((-(k + n_t * i)) // n_c) - 1
+                treatment = Decimal(1) - _dec_binom_cdf(threshold, n_t, p)
+            else:
+                treatment = _dec_binom_cdf((k + n_t * i) // n_c, n_t, p)
+            total += pmf_i * treatment
+        return +total
+
+
+def _refined_sup(evaluate, a: float, b: float) -> float:
+    """Largest ``evaluate(q)`` over a grid of ``[a, b]`` refined around its best point until a
+    round gains less than ``1e-12``: a LOWER bound on the supremum of a smooth tail."""
+    qs = np.linspace(a, b, 129) if b > a else np.array([a])
+    values = [evaluate(float(q)) for q in qs]
+    best, at = max(values), float(qs[int(np.argmax(values))])
+    step = (b - a) / 128.0
+    while step > 1e-13:
+        lo, hi = max(a, at - 2.0 * step), min(b, at + 2.0 * step)
+        qs = np.linspace(lo, hi, 33)
+        values = [evaluate(float(q)) for q in qs]
+        gained = max(values) - best
+        if max(values) > best:
+            best, at = max(values), float(qs[int(np.argmax(values))])
+        step = (hi - lo) / 32.0
+        if gained < 1e-12:
+            break
+    return best
+
+
 class TestCertifiedSupOutwardRounding:
     """`_certified_sup`/`_tail_plus`/`_tail_minus` must never report a
     value below the true mathematical supremum, even by a single ULP.
     """
+
+    BETA = brr.nuisance_beta(0.05)
 
     def test_one_ulp_counterexample_stays_a_valid_upper_bound(self):
         # One-ulp counterexample: F_-(q,q) = 1 - q + q^2 is decreasing on this tiny
@@ -79,46 +119,256 @@ class TestCertifiedSupOutwardRounding:
         a, b = brr.clopper_pearson(12, n_c, 1e-6)
         window = brr._support_window(n_c, a, b)
         r = 1.3
-        certified = brr._certified_sup("plus", a, b, r, n_c, n_t, k, window)
+        certified = brr._certified_sup(
+            "plus", a, b, r, n_c, n_t, k, window, beta=self.BETA, rule=brr.NUISANCE_STOP
+        ).upper
         # Independent decimal re-evaluation of F_+ at a fine grid over
         # [a, b]: the certified bound must be >= every grid point's exact
         # value (a weaker, cheap sanity check on top of the analytic
         # monotone/quadratic bound's own correctness).
         for frac in (0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0):
             q = a + frac * (b - a)
-            p = min(r * q, 1.0)
-            exact = Decimal(0)
-            for i in range(n_c + 1):
-                pmf_i = (
-                    Decimal(comb(n_c, i)) * Decimal(q) ** i * (Decimal(1) - Decimal(q)) ** (n_c - i)
-                )
-                thresh = math.ceil((k + n_t * i) / n_c) - 1
-                if thresh < 0:
-                    sf = Decimal(1)
-                elif thresh >= n_t:
-                    sf = Decimal(0)
-                else:
-                    sf = Decimal(1) - _dec_binom_cdf(thresh, n_t, p)
-                exact += pmf_i * sf
+            exact = _dec_tail("plus", n_c, n_t, k, q, min(r * q, 1.0))
             assert certified >= float(exact)
 
     def test_singular_zero_endpoint_refines_an_interior_maximum(self):
         window = brr._support_window(1, 0.0, 0.75)
+        rule = brr.NUISANCE_STOP
 
-        certified = brr._certified_sup("plus", 0.0, 0.75, 1.0, 1, 1, 1, window)
+        certified = brr._certified_sup("plus", 0.0, 0.75, 1.0, 1, 1, 1, window, beta=0.0, rule=rule)
 
         # This tail is q(1 - q), whose maximum is 0.25 at q=0.5.  The
         # q=0 endpoint makes the curvature envelope singular, but refinement
         # must still tighten the initial monotone certificate of 0.75.
-        assert 0.25 <= certified <= 0.250001
+        assert certified.stopped
+        assert 0.25 <= certified.upper <= 0.25 * (1.0 + rule.gap_fraction) + 1e-9
 
     def test_singular_saturated_endpoint_refines_an_interior_maximum(self):
         window = brr._support_window(1, 0.125, 0.5)
+        rule = brr.NUISANCE_STOP
 
-        certified = brr._certified_sup("minus", 0.125, 0.5, 2.0, 1, 1, -1, window)
+        certified = brr._certified_sup(
+            "minus", 0.125, 0.5, 2.0, 1, 1, -1, window, beta=0.0, rule=rule
+        )
 
         # q(1 - 2q) peaks at q=0.25; neither endpoint attains that value.
-        assert 0.125 <= certified <= 0.125001
+        assert certified.stopped
+        assert 0.125 <= certified.upper <= 0.125 * (1.0 + rule.gap_fraction) + 1e-9
+
+
+class TestTailLowerEnclosure:
+    """A value `_tail_plus`/`_tail_minus` returns is inflated by the omitted control mass and
+    the float margin; the enclosure removes both and never exceeds the exact tail."""
+
+    @pytest.mark.parametrize(
+        ("kind", "counts", "r"),
+        [
+            ("plus", (3, 12, 5, 12), 1.0),
+            ("plus", (8, 40, 3, 25), 1.4),
+            ("minus", (3, 12, 5, 12), 0.9),
+            ("minus", (8, 40, 11, 25), 1.1),
+            ("minus", (0, 6, 2, 6), 1.0),
+        ],
+    )
+    def test_enclosure_never_exceeds_the_exact_tail(self, kind, counts, r):
+        x_c, n_c, x_t, n_t = counts
+        a, b = brr.clopper_pearson(x_c, n_c, brr.nuisance_beta(0.05))
+        b = min(b, 1.0 / r) if kind == "minus" else b
+        window = brr._support_window(n_c, a, b)
+        k = n_c * x_t - n_t * x_c
+        for frac in (0.0, 0.25, 0.6, 1.0):
+            q = a + frac * (b - a)
+            if kind == "plus":
+                p = min(r * q, 1.0)
+                value = brr._tail_plus(q, p, n_c, n_t, k, window)
+            else:
+                p = r * q
+                value = brr._tail_minus(q, p, n_c, n_t, k, window)
+            lower = brr.tail_lower_enclosure(value, window)
+            assert 0.0 <= lower <= value
+            assert Decimal(lower) <= _dec_tail(kind, n_c, n_t, k, q, p)
+
+    @pytest.mark.parametrize("kind", ["plus", "minus"])
+    def test_windowed_enclosure_is_below_the_full_enumeration(self, kind):
+        n_c = n_t = 20_000
+        x_c, x_t, r = 40, 55, 1.0
+        a, b = brr.clopper_pearson(x_c, n_c, brr.nuisance_beta(0.05))
+        window = brr._support_window(n_c, a, b)
+        assert window[2] > 0.0 and window[1] - window[0] < n_c  # genuinely truncated
+        k = n_c * x_t - n_t * x_c
+        i = np.arange(n_c + 1)
+        q = (a + b) / 2.0
+        pmf = _binom.pmf(i, n_c, q)
+        if kind == "plus":
+            thresholds = np.ceil((k + n_t * i) / n_c).astype(np.int64) - 1
+            full = float(np.dot(pmf, _binom.sf(thresholds, n_t, r * q)))
+            value = brr._tail_plus(q, r * q, n_c, n_t, k, window)
+        else:
+            thresholds = np.floor((k + n_t * i) / n_c).astype(np.int64)
+            full = float(np.dot(pmf, _binom.cdf(thresholds, n_t, r * q)))
+            value = brr._tail_minus(q, r * q, n_c, n_t, k, window)
+        assert value >= full
+        assert brr.tail_lower_enclosure(value, window) <= full
+
+
+def _sup_inputs(kind: str, counts: tuple[int, int, int, int], r: float):
+    """``(a, b, r, n_c, n_t, k, window)`` of one nuisance supremum at the 5% level."""
+    x_c, n_c, x_t, n_t = counts
+    a, b = brr.clopper_pearson(x_c, n_c, brr.nuisance_beta(0.05))
+    b = min(b, 1.0 / r) if kind == "minus" else b
+    return a, b, r, n_c, n_t, n_c * x_t - n_t * x_c, brr._support_window(n_c, a, b)
+
+
+class TestNuisanceStopContract:
+    """The nuisance supremum search stops on a gap relative to the p-value it reports, and a
+    search that runs out of iterations returns its valid bound with the gap it reached."""
+
+    BETA = brr.nuisance_beta(0.05)
+    CELLS = [
+        pytest.param("plus", (3, 40, 12, 40), 1.3, id="plus-shifted-null"),
+        pytest.param("plus", (4, 60, 14, 60), 1.0, id="plus-null"),
+        pytest.param("minus", (14, 60, 4, 60), 1.0, id="minus-null"),
+    ]
+
+    @staticmethod
+    def _decimal_sup(kind: str, inputs) -> float:
+        a, b, r, n_c, n_t, k, _window = inputs
+
+        def tail(q: float) -> float:
+            p = min(r * q, 1.0) if kind == "plus" else r * q
+            return float(_dec_tail(kind, n_c, n_t, k, q, p))
+
+        return _refined_sup(tail, a, b)
+
+    @pytest.mark.parametrize(("kind", "counts", "r"), CELLS)
+    def test_certificate_brackets_an_independent_supremum(self, kind, counts, r):
+        inputs = _sup_inputs(kind, counts, r)
+        rule = brr.NUISANCE_STOP
+        cert = brr._certified_sup(kind, *inputs, beta=self.BETA, rule=rule)
+        sup = self._decimal_sup(kind, inputs)
+        assert cert.stopped
+        assert cert.witness_lower <= cert.upper
+        assert cert.witness_lower <= sup + 1e-9
+        assert cert.upper >= sup - 1e-12
+        gap = cert.upper - cert.witness_lower
+        assert gap <= rule.gap_fraction * (self.BETA + cert.witness_lower)
+        assert cert.iterations <= rule.max_iter
+
+    @pytest.mark.parametrize(("kind", "counts", "r"), CELLS)
+    def test_upper_never_rises_as_the_cap_grows(self, kind, counts, r):
+        inputs = _sup_inputs(kind, counts, r)
+        uppers = [
+            brr._certified_sup(
+                kind, *inputs, beta=self.BETA, rule=brr._StopRule(2.0**-40, cap)
+            ).upper
+            for cap in (10, 60, 240)
+        ]
+        # Bounds of sibling leaves are computed independently, so a longer search may rise by
+        # rounding noise (far below the float margin) but never by more.
+        slack = brr._eps_margin(1)
+        assert uppers[0] >= uppers[1] - slack
+        assert uppers[1] >= uppers[2] - slack
+
+    @pytest.mark.parametrize(("kind", "counts", "r"), CELLS)
+    def test_an_exhausted_cap_returns_a_valid_bound_and_says_so(self, kind, counts, r):
+        inputs = _sup_inputs(kind, counts, r)
+        cert = brr._certified_sup(kind, *inputs, beta=self.BETA, rule=brr._StopRule(2.0**-14, 3))
+        assert not cert.stopped
+        assert cert.iterations == 3
+        assert cert.upper >= self._decimal_sup(kind, inputs) - 1e-12
+
+    @pytest.mark.parametrize(("kind", "counts", "r"), CELLS)
+    def test_a_settled_search_stops_once_the_comparison_with_the_level_is_certified(
+        self, kind, counts, r
+    ):
+        inputs = _sup_inputs(kind, counts, r)
+        rule = brr.NUISANCE_STOP
+        sup = self._decimal_sup(kind, inputs)
+        full = brr._certified_sup(kind, *inputs, beta=self.BETA, rule=rule)
+        above = brr._certified_sup(kind, *inputs, beta=self.BETA, rule=rule, settle=3.0 * sup)
+        below = brr._certified_sup(kind, *inputs, beta=self.BETA, rule=rule, settle=sup / 3.0)
+        assert above.stopped and below.stopped
+        assert self.BETA + above.upper < 3.0 * sup  # the p-value is certified under the level
+        assert self.BETA + below.witness_lower >= sup / 3.0  # and certified over it
+        assert self.BETA + sup < 3.0 * sup and self.BETA + sup >= sup / 3.0
+        assert above.iterations <= full.iterations and below.iterations <= full.iterations
+        assert min(above.iterations, below.iterations) < full.iterations
+        assert above.upper >= sup - 1e-12 and below.upper >= sup - 1e-12
+
+    @pytest.mark.parametrize(("kind", "counts", "r"), CELLS)
+    def test_a_level_inside_the_bounds_at_the_cap_is_reported_as_not_below_it(
+        self, kind, counts, r
+    ):
+        inputs = _sup_inputs(kind, counts, r)
+        sup = self._decimal_sup(kind, inputs)
+        level = self.BETA + sup
+        capped = brr._certified_sup(
+            kind, *inputs, beta=self.BETA, rule=brr._StopRule(2.0**-14, 3), settle=level
+        )
+        assert not capped.stopped
+        assert self.BETA + capped.upper >= level
+        # Given the iterations to reach the declared gap, the same level is the gap's business.
+        full = brr._certified_sup(
+            kind, *inputs, beta=self.BETA, rule=brr.NUISANCE_STOP, settle=level
+        )
+        assert full.stopped
+
+    def test_an_empty_nuisance_domain_is_a_stopped_zero(self):
+        window = brr._support_window(10, 0.5, 0.4)
+        cert = brr._certified_sup(
+            "minus", 0.5, 0.4, 1.0, 10, 10, 0, window, beta=self.BETA, rule=brr.NUISANCE_STOP
+        )
+        assert (cert.upper, cert.witness_lower, cert.stopped) == (0.0, 0.0, True)
+
+    def test_a_null_p_value_the_sixty_split_search_left_above_alpha_is_tightened_below_it(self):
+        """5,778 / 57,780 against 5,985 / 57,780 at the null: the 60-iteration search shipped
+        0.0642 (a supremum bound of 0.0321); refining to the declared gap gives 0.0487."""
+        counts = (5778, 57780, 5985, 57780)
+        a, b, r, n_c, n_t, k, window = _sup_inputs("plus", counts, 1.0)
+        rule = brr.NUISANCE_STOP
+        cert = brr._certified_sup("plus", a, b, r, n_c, n_t, k, window, beta=self.BETA, rule=rule)
+
+        def enclosed(q: float) -> float:
+            return brr.tail_lower_enclosure(brr._tail_plus(q, q, n_c, n_t, k, window), window)
+
+        sup = _refined_sup(enclosed, a, b)
+        assert cert.stopped
+        assert sup - 1e-12 <= cert.upper <= sup + rule.gap_fraction * (self.BETA + sup) + 1e-8
+        p = brr.p_two(1.0, *counts, self.BETA)
+        assert p < 0.05
+        assert p <= 0.0642288
+        assert 2.0 * (self.BETA + sup) <= p + 1e-9
+
+    @pytest.mark.parametrize(
+        "counts",
+        [
+            (5778, 57780, 5985, 57780),
+            (500, 5000, 560, 5000),
+            (100, 1000, 130, 1000),
+            (1000, 20000, 1095, 20000),
+            (1000, 20000, 1093, 20000),
+        ],
+        ids=str,
+    )
+    def test_decisions_only_move_from_not_significant_to_significant(self, counts, monkeypatch):
+        """Against the same search capped at 60 iterations the refined bound is never larger,
+        so no cell leaves significance; near the tail allocation some enter it."""
+        beta, tail = self.BETA, 0.025
+        x_c, n_c, x_t, n_t = counts
+        refined = {
+            "plus": brr.p_plus(1.0, x_c, n_c, x_t, n_t, beta),
+            "minus": brr.p_minus(1.0, x_c, n_c, x_t, n_t, beta),
+        }
+        monkeypatch.setattr(brr, "NUISANCE_STOP", brr._StopRule(brr.NUISANCE_STOP.gap_fraction, 60))
+        capped = {
+            "plus": brr.p_plus(1.0, x_c, n_c, x_t, n_t, beta),
+            "minus": brr.p_minus(1.0, x_c, n_c, x_t, n_t, beta),
+        }
+        for kind in ("plus", "minus"):
+            assert refined[kind] <= capped[kind] + brr._eps_margin(1)
+            assert not (capped[kind] < tail <= refined[kind])
+        if counts == (5778, 57780, 5985, 57780):
+            assert refined["plus"] < tail <= capped["plus"]
 
 
 class TestExtremeAlphaFiniteUpperBound:
@@ -586,10 +836,13 @@ class TestEndpointSearchOnAnalyticFunctions:
 
 
 class TestPrecisionDisclosure:
-    """An interval whose search did not reach its resolution says so; a resolved one is silent."""
+    """An interval whose search did not reach its resolution or whose nuisance search ran out
+    of iterations says so; a resolved one is silent."""
 
     @staticmethod
-    def _interval(*, reached: bool, width: float) -> brr.BinomialInterval:
+    def _interval(
+        *, reached: bool = True, width: float = 1e-4, capped: int = 0, gap: float = 0.0
+    ) -> brr.BinomialInterval:
         return brr.BinomialInterval(
             lower=0.9,
             upper=1.2,
@@ -597,15 +850,29 @@ class TestPrecisionDisclosure:
             p_value_null=0.4,
             endpoint_log_width=width,
             resolution_reached=reached,
+            nuisance_gap_max=gap,
+            capped_probes=capped,
         )
 
     def test_a_resolved_interval_has_no_note(self):
-        assert brr.precision_note(self._interval(reached=True, width=1e-4)) is None
+        assert brr.precision_note(self._interval()) is None
 
     @pytest.mark.parametrize("width", [1e-2, math.inf])
     def test_an_unresolved_interval_carries_a_note(self, width):
         note = brr.precision_note(self._interval(reached=False, width=width))
         assert isinstance(note, str) and note.startswith(brr.PRECISION_NOTE_PREFIX)
+
+    def test_a_capped_nuisance_search_discloses_its_count_and_gap(self):
+        note = brr.precision_note(self._interval(capped=2, gap=3.5e-5))
+        assert isinstance(note, str) and note.startswith(brr.NUISANCE_NOTE_PREFIX)
+        assert "2" in note and "3.50e-05" in note
+
+    def test_both_disclosures_are_kept_and_lifted_out_of_a_longer_note(self):
+        note = brr.precision_note(self._interval(reached=False, width=1e-2, capped=1, gap=1e-6))
+        assert note is not None
+        assert note.startswith(brr.PRECISION_NOTE_PREFIX) and brr.NUISANCE_NOTE_PREFIX in note
+        assert brr.without_precision_note(f"kept | {note}") == "kept"
+        assert brr.without_precision_note(f"kept; {note}") == "kept"
 
     @pytest.mark.parametrize(
         ("template", "expected"),
@@ -641,7 +908,44 @@ class TestPrecisionDisclosure:
         tau = brr._endpoint_tolerance(brr._count_scale(*counts))
         assert ci.resolution_reached
         assert 0.0 <= ci.endpoint_log_width <= tau
+        assert (ci.capped_probes, ci.nuisance_gap_max) == (0, 0.0)
         assert brr.precision_note(ci) is None
+
+
+class TestNuisanceCapOnTheInterval:
+    """An interval whose nuisance searches hit their iteration cap near a decision is still a
+    valid, conservative set, counts those probes and reports the gap they reached."""
+
+    COUNTS = (100, 1000, 130, 1000)
+
+    @pytest.mark.parametrize("alternative", ["two-sided", "greater", "less"])
+    def test_a_tight_cap_discloses_and_only_widens_the_interval(self, alternative, monkeypatch):
+        reference = brr.confidence_interval(*self.COUNTS, alpha=0.05, alternative=alternative)
+        assert reference.capped_probes == 0 and reference.nuisance_gap_max == 0.0
+
+        monkeypatch.setattr(brr, "NUISANCE_STOP", brr._StopRule(2.0**-14, 3))
+        capped = brr.confidence_interval(*self.COUNTS, alpha=0.05, alternative=alternative)
+
+        assert capped.capped_probes > 0
+        assert capped.nuisance_gap_max > 0.0
+        note = brr.precision_note(capped)
+        assert note is not None and brr.NUISANCE_NOTE_PREFIX in note
+        assert capped.lower <= reference.lower
+        if reference.upper is not None:
+            assert capped.upper is not None and capped.upper >= reference.upper
+        assert capped.p_value_null >= reference.p_value_null
+
+    def test_a_cap_hit_by_a_probe_far_from_the_decision_is_not_disclosed(self):
+        """At 100 / 1,000 versus 130 / 1,000 the search at risk ratio 0.65 (a p-value near
+        1e-6, far under the 0.025 tail) cannot reach its relative gap within the cap, yet no
+        comparison it feeds is left open."""
+        x_c, n_c, x_t, n_t = self.COUNTS
+        beta = brr.nuisance_beta(0.05)
+        rule = brr.NUISANCE_STOP
+        deep = brr._p_plus_certificate(0.65, x_c, n_c, x_t, n_t, beta, rule)
+        assert not deep.stopped and deep.p - deep.gap < 0.025 and deep.p < 0.025
+        ci = brr.confidence_interval(*self.COUNTS, alpha=0.05, alternative="two-sided")
+        assert ci.capped_probes == 0
 
 
 class TestEndpointContainment:
@@ -679,8 +983,7 @@ class TestEndpointContainment:
 @pytest.mark.slow
 class TestExactBinomialLatency:
     """The exact route's per-contrast search work must stay bounded at production arm sizes
-    while its endpoints stay outward of a finer reference, and the certified tail-probability
-    search (_certified_sup) is fully unaffected.
+    while its endpoints stay outward of a finer reference.
     """
 
     @pytest.mark.parametrize(
@@ -706,8 +1009,8 @@ class TestExactBinomialLatency:
 
             return probe
 
-        monkeypatch.setattr(brr, "p_plus", spy(brr.p_plus))
-        monkeypatch.setattr(brr, "p_minus", spy(brr.p_minus))
+        monkeypatch.setattr(brr, "_p_plus_certificate", spy(brr._p_plus_certificate))
+        monkeypatch.setattr(brr, "_p_minus_certificate", spy(brr._p_minus_certificate))
         ci = brr.confidence_interval(*counts, alpha=0.05, alternative="two-sided")
         tau = brr._endpoint_tolerance(brr._count_scale(*counts))
         bisections = math.ceil(math.log2(math.log(2.0) / tau))

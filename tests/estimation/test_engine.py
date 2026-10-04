@@ -2366,6 +2366,34 @@ class TestBinomialDirectionalAlphaConvention:
         flagged = open_bound_from_two_sided_at_target(superseded)
         assert flagged.note == " | ".join(filter(None, (kept, disclosure)))
 
+    @pytest.mark.parametrize("alternative", ["greater", "less"])
+    def test_fcr_reinversion_replaces_the_nuisance_cap_disclosure(self, alternative, monkeypatch):
+        """A first pass whose nuisance search hit its cap says so on its row; the reinverted
+        row carries its own such note once, next to whatever else the row said."""
+        from increment.estimation import binomial_rr
+        from increment.estimation.engine import estimate_lift
+        from increment.estimation.results import open_bound_from_two_sided_at_target
+
+        control, treatment = self._binomial_arms()
+        monkeypatch.setattr(binomial_rr, "NUISANCE_STOP", binomial_rr._StopRule(2.0**-14, 3))
+        [nominal] = estimate_lift(
+            metrics=[_conversion_metric()],
+            summary=_summary_df([control, treatment]),
+            control_group="control",
+            alpha=0.05,
+            alternative=alternative,
+        ).results
+        assert nominal.note is not None
+        assert nominal.note.startswith(binomial_rr.NUISANCE_NOTE_PREFIX)
+
+        reinverted = open_bound_from_two_sided_at_target(
+            nominal.model_copy(update={"note": f"kept | {nominal.note}"})
+        )
+        assert reinverted.note is not None
+        parts = reinverted.note.split(" | ")
+        assert parts[0] == "kept"
+        assert [part.startswith(binomial_rr.NUISANCE_NOTE_PREFIX) for part in parts[1:]] == [True]
+
 
 class TestEncouragementItiRetainsBinomialRoute:
     """Uptake moments (sum_d) attached to an arm alongside its conversion

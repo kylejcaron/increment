@@ -12,6 +12,7 @@ tests/estimation/test_inference.py and test_engine.py.
 
 from __future__ import annotations
 
+import json
 import math
 from typing import Any, cast
 
@@ -1274,6 +1275,67 @@ class TestLiftEstimateBinomialCrossInvariants:
         with pytest.raises(InvalidRequestError) as exc_info:
             LiftEstimate.model_validate(payload)
         assert exc_info.value.code == "estimation.results.lift.binomial_lift_availability"
+
+    def test_a_row_persisted_before_the_tighter_nuisance_stop_answers_from_its_counts(self):
+        """5,778 / 57,780 against 5,985 / 57,780 as the 60-iteration search stored it: its
+        interval still contains the null and its stored p-value exceeded 0.05. Read by the
+        current code the row validates and keeps that stored interval, and `p_value()` /
+        `stat_sig()` answer from the counts with the tighter bound; a re-run refreshes the
+        endpoints."""
+        from increment.estimation import binomial_rr
+
+        persisted = {
+            "metric": "conv",
+            "group_id": "treatment",
+            "method": "unadjusted",
+            "method_role": "decision",
+            "inference": "fixed",
+            "alternative": "two-sided",
+            "null_lift": 0.0,
+            "lift": {
+                "value": 0.03582554517133962,
+                "lb": -0.002028787151088119,
+                "ub": 0.07547967636674381,
+                "open_side": None,
+                "level": 0.95,
+                "alpha": 0.05,
+                "log_mean": None,
+                "log_se": None,
+            },
+            "estimand": "itt",
+            "analysis_population": "assigned",
+            "value_scale": "relative",
+            "abs_diff": 0.0035825545171339485,
+            "abs_se": 0.001778960407605272,
+            "abs_lb": 9.58561883049199e-05,
+            "abs_ub": 0.007069252845962977,
+            "reference_kind": "binomial",
+            "binomial_set": {
+                "lower": -0.002028787151088119,
+                "upper": 0.07547967636674381,
+                "alpha": 0.05,
+                "level": 0.95,
+                "decision_alpha": 0.05,
+                "geometry": "central",
+                "method": "binomial_bb_difference_v1",
+                "x_c": 5778,
+                "n_c": 57780,
+                "x_t": 5985,
+                "n_t": 57780,
+                "nuisance_beta": 1e-06,
+            },
+            "scale": "linear",
+        }
+        row = LiftEstimate.model_validate_json(json.dumps(persisted))
+        fresh = binomial_rr.p_two(1.0, 5778, 57780, 5985, 57780, binomial_rr.nuisance_beta(0.05))
+        assert row.p_value() == pytest.approx(fresh, abs=1e-12)
+        assert row.stat_sig() is True
+        assert row.binomial_set is not None
+        assert (row.binomial_set.lower, row.binomial_set.upper) == (
+            persisted["binomial_set"]["lower"],
+            persisted["binomial_set"]["upper"],
+        )
+        assert row.require_lift().lb == persisted["lift"]["lb"]
 
 
 def _registered_sequential_row():

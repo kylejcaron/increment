@@ -28,7 +28,7 @@ Two routes classify ``D``:
 * ``exact``: replays the runtime's own nuisance search -- the same
   Clopper-Pearson domains, support windows, endpoint and coordinate-corner
   evaluations, largest-bound-first split order with its tie order,
-  tolerance, iteration ceiling and floating-point floor -- over many count
+  relative-gap stop rule, split cap and floating-point floor -- over many count
   pairs at once. Its tails use the runtime's binomial special functions
   elementwise; only the summation order differs, within the per-row
   allowance ``delta``. Every comparison of the replay is carried out with
@@ -52,7 +52,6 @@ retained (control, treatment) cell count at the null rate is within
 
 from __future__ import annotations
 
-import inspect
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -70,11 +69,6 @@ from increment.estimation import binomial_rr as _rr
 Kind = Literal["plus", "minus"]
 Route = Literal["exact", "approximate"]
 
-_SEARCH_DEFAULTS = inspect.signature(_rr._certified_sup).parameters
-#: The runtime nuisance search's own tolerance and iteration ceiling, read from
-#: its signature so the replay cannot drift from it.
-_TOL: float = _SEARCH_DEFAULTS["tol"].default
-_MAX_ITER: int = _SEARCH_DEFAULTS["max_iter"].default
 _EPS = float(np.finfo(np.float64).eps)
 
 #: Per-side mass each outer count window may omit. The omitted mass is
@@ -169,12 +163,10 @@ class _Leaves:
     fv: np.ndarray
     bound: np.ndarray  # runtime (capped) bound
     raw: np.ndarray  # bound before the cap at one
-    mono: np.ndarray  # capped coordinate-corner tail
-    term: np.ndarray  # curvature term, inf at a singular endpoint
     reach: np.ndarray  # largest value reportable from inside the leaf
     count: np.ndarray
 
-    _FIELDS = ("u", "v", "pu", "pv", "fu", "fv", "bound", "raw", "mono", "term", "reach")
+    _FIELDS = ("u", "v", "pu", "pv", "fu", "fv", "bound", "raw", "reach")
 
     @classmethod
     def empty(cls, rows: int, capacity: int) -> _Leaves:
@@ -195,8 +187,10 @@ class _Leaves:
         return taken
 
     def grow(self, capacity: int) -> None:
-        grown = self.take(np.arange(self.u.shape[0]), capacity=capacity)
-        for name in (*self._FIELDS, "count"):
+        grown = _Leaves.empty(self.u.shape[0], capacity)
+        width = self.u.shape[1]
+        for name in self._FIELDS:
+            getattr(grown, name)[:, :width] = getattr(self, name)
             setattr(self, name, getattr(grown, name))
 
 
@@ -267,18 +261,18 @@ def _settle(
     lv: _Leaves,
     batch: _Batch,
     rows: np.ndarray,
+    leaves: int,
 ) -> None:
     """Boolean exits: an achieved endpoint at or above the tail allocation
     already fixes non-rejection (the reported value never falls below it);
-    every current leaf's reachable bound below it fixes rejection."""
+    every current leaf's reachable bound below it fixes rejection. Each row of
+    *act* holds *leaves* leaves."""
     decision = batch.decision
     beta, u_alpha = decision.beta, decision.tail_alpha
     dl = batch.delta[rows[act]]
     accept = beta + best[act] - dl >= u_alpha
     status[act[accept]] = _Outcome.ACCEPT
-    width = lv.u.shape[1]
-    valid = np.arange(width)[None, :] < lv.count[act, None]
-    reach = np.where(valid, lv.reach[act], -np.inf).max(axis=1)
+    reach = lv.reach[:, :leaves][act].max(axis=1)
     reject = ~accept & (beta + np.maximum(reach, best[act]) + dl < u_alpha)
     status[act[reject]] = _Outcome.REJECT
 
@@ -310,18 +304,147 @@ def _leaf_bounds(
     return bound, raw, mono, term
 
 
+@dataclass(slots=True)
+class _Search:
+    """The rows of one replay still being searched, with their leaves; every array is indexed
+    by position in ``rows``, the batch row each of them replays."""
+
+    rows: np.ndarray
+    lv: _Leaves
+    best: np.ndarray
+    delta: np.ndarray
+    guard: np.ndarray
+    status: np.ndarray
+    final: np.ndarray
+
+    def take(self, ids: np.ndarray) -> _Search:
+        """A copy of the search rows *ids*, so a chunk can deepen on its own."""
+        return _Search(
+            self.rows[ids],
+            self.lv.take(ids, capacity=self.lv.u.shape[1]),
+            self.best[ids],
+            self.delta[ids],
+            self.guard[ids],
+            self.status[ids],
+            self.final[ids],
+        )
+
+
+def _finish(search: _Search, done: np.ndarray, top: np.ndarray, beta: float) -> None:
+    best = search.best[done]
+    search.final[done] = np.minimum(1.0, beta + np.minimum(1.0, np.maximum(top, best)))
+    search.status[done] = _Outcome.FINISHED
+
+
+def _advance(  # noqa: PLR0915
+    batch: _Batch,
+    tails: _ExactTails | _SurrogateTails,
+    search: _Search,
+    splits: range,
+    *,
+    exact: bool,
+    rule: _rr._StopRule,
+) -> None:
+    """Runs the search iterations *splits* of every row still searching, in place."""
+    decision = batch.decision
+    beta = decision.beta
+    lv, rows, best, delta, guard = search.lv, search.rows, search.best, search.delta, search.guard
+    status = search.status
+    for iteration in splits:
+        act = np.flatnonzero(status == _Outcome.SEARCHING)
+        if act.size == 0:
+            break
+        if iteration + 2 > lv.u.shape[1]:
+            lv.grow(min(rule.max_iter + 1, 2 * lv.u.shape[1]))
+        leaves = iteration + 1  # every row still searching has split once per past iteration
+        bnd = lv.bound[:, :leaves][act]
+        top = bnd.max(axis=1)
+        # The runtime settles a probe against the tail level once its bound sits below it.
+        below = beta + np.maximum(top, best[act]) + delta[act] < decision.tail_alpha
+        if below.any():
+            status[act[below]] = _Outcome.REJECT
+            act, bnd, top = act[~below], bnd[~below], top[~below]
+            if act.size == 0:
+                continue
+        k = np.argmin(np.where(bnd == top[:, None], lv.u[:, :leaves][act], np.inf), axis=1)
+        lower = np.maximum(0.0, best[act] - guard[act])
+        gap = np.maximum(top, best[act]) - lower
+        allowed = rule.gap_fraction * (beta + lower)
+        stop = gap <= allowed
+        if exact:
+            dl = delta[act][:, None]
+            others = bnd.copy()
+            others[np.arange(act.size), k] = -np.inf
+            runner = others.max(axis=1)
+            capped_ties = np.all((bnd != 1.0) | (lv.raw[:, :leaves][act] >= 1.0 + dl), axis=1)
+            order = (top - runner <= 2.0 * dl[:, 0]) & ~(
+                (top == 1.0) & (runner == 1.0) & capped_ties
+            )
+            unsettled = (order & ~stop) | (
+                np.abs(gap - allowed) <= (2.0 + rule.gap_fraction) * dl[:, 0] + 4.0 * _EPS
+            )
+            status[act[unsettled]] = _Outcome.AMBIGUOUS
+            act, k, top, stop = act[~unsettled], k[~unsettled], top[~unsettled], stop[~unsettled]
+        _finish(search, act[stop], top[stop], beta)
+        act, k, top = act[~stop], k[~stop], top[~stop]
+        u = lv.u[act, k]
+        v = lv.v[act, k]
+        mid = (u + v) / 2.0
+        floor = (mid <= u) | (mid >= v)
+        _finish(search, act[floor], top[floor], beta)
+        act, k, u, v, mid = act[~floor], k[~floor], u[~floor], v[~floor], mid[~floor]
+        if act.size == 0:
+            continue
+        pu, pv = lv.pu[act, k], lv.pv[act, k]
+        fm_raw, left_raw, right_raw, pm = tails.split(batch, rows[act], u, mid, v, pu, pv)
+        fm = np.minimum(1.0, fm_raw)
+        fu, fv = lv.fu[act, k], lv.fv[act, k]
+        best[act] = np.maximum(best[act], fm)
+        # The left child replaces the split leaf, the right child takes the next slot.
+        owner = np.concatenate([act, act])
+        slot = np.concatenate([k, lv.count[act]])
+        cu, cv = np.concatenate([u, mid]), np.concatenate([mid, v])
+        cfu, cfv = np.concatenate([fu, fm]), np.concatenate([fm, fv])
+        lv.u[owner, slot], lv.v[owner, slot] = cu, cv
+        lv.pu[owner, slot], lv.pv[owner, slot] = np.concatenate([pu, pm]), np.concatenate([pm, pv])
+        lv.fu[owner, slot], lv.fv[owner, slot] = cfu, cfv
+        leaf = _leaf_bounds(cfu, cfv, np.concatenate([left_raw, right_raw]), cu, cv, decision)
+        lv.bound[owner, slot], lv.raw[owner, slot] = leaf[0], leaf[1]
+        lv.reach[owner, slot] = tails.reach(rows[owner], cu, cv, leaf[0], leaf[2], leaf[3])
+        lv.count[act] += 1
+        _settle(status, act, best, lv, batch, rows, leaves + 1)
+
+
+def _finish_unsettled(search: _Search, beta: float) -> None:
+    """Rows still searching after their last split report their largest remaining bound."""
+    rest = np.flatnonzero(search.status == _Outcome.SEARCHING)
+    if rest.size:
+        lv = search.lv
+        leaves = int(lv.count[rest].max())
+        _finish(search, rest, lv.bound[:, :leaves][rest].max(axis=1), beta)
+
+
 # One vectorized pass mirrors the runtime's single heap loop step for step.
-def _replay(  # noqa: PLR0915
-    batch: _Batch, tails: _ExactTails | _SurrogateTails, *, exact: bool
-) -> np.ndarray:
+def _replay(batch: _Batch, tails: _ExactTails | _SurrogateTails, *, exact: bool) -> np.ndarray:
     """Outcome per row: ACCEPT, REJECT, or (exact route) AMBIGUOUS.
 
     Replays ``binomial_rr._certified_sup`` for every row at once. Each step
     takes the leaf with the largest bound, ties to the smaller left endpoint
-    (the heap's tuple order for disjoint leaves); stops at the tolerance,
-    the floating-point floor or the iteration ceiling; and reports ``min(1,
-    beta + min(1, max(remaining bounds, best endpoint)))``. On the exact route
-    a comparison within the summation allowance marks the row AMBIGUOUS.
+    (the heap's tuple order for disjoint leaves); stops when the gap to the
+    best evaluated point, deflated as ``tail_lower_enclosure`` deflates it,
+    is within ``NUISANCE_STOP.gap_fraction`` of ``beta`` plus that deflated
+    value, at the floating-point floor or after ``NUISANCE_STOP.max_iter``
+    splits (read when the replay runs); and reports ``min(1, beta + min(1,
+    max(remaining bounds, best endpoint)))``. The runtime's test after its
+    last split only sets its ``stopped`` flag, never the reported value. On
+    the exact route a comparison within the summation allowance marks the row
+    AMBIGUOUS.
+
+    The approximate route runs the first ``_COMMON_SPLITS`` splits of every row together;
+    rows still searching then continue in chunks sized for the full split cap, so the few
+    rows that need deep searches never keep the whole batch's leaf arrays at that depth.
+    The exact route keeps one pass: its tails register each nuisance point once for the
+    treatment counts of the rows then active, so rows may leave a search but never join one.
     """
     decision = batch.decision
     beta, u_alpha = decision.beta, decision.tail_alpha
@@ -340,84 +463,44 @@ def _replay(  # noqa: PLR0915
     lv.pu[:, 0], lv.pv[:, 0] = tails.root_points(batch)
     lv.fu[:, 0], lv.fv[:, 0] = fa, fb
     bounds = _leaf_bounds(fa, fb, mono_raw, a, hi, decision)
-    lv.bound[:, 0], lv.raw[:, 0], lv.mono[:, 0], lv.term[:, 0] = bounds
+    lv.bound[:, 0], lv.raw[:, 0] = bounds[0], bounds[1]
     everyone = np.arange(n_rows)
     lv.reach[:, 0] = tails.reach(everyone, a, hi, bounds[0], bounds[2], bounds[3])
     best = np.maximum(fa, fb)
-    _settle(outcome, everyone, best, lv, batch, everyone)
+    _settle(outcome, everyone, best, lv, batch, everyone, 1)
     rows = np.flatnonzero(outcome == _Outcome.SEARCHING)
     if rows.size == 0:
         return outcome
-    lv = lv.take(rows, capacity=8)
-    best = best[rows]
-    delta = batch.delta[rows]
-    status = np.full(rows.size, _Outcome.SEARCHING, np.int64)
-    final = np.full(rows.size, np.nan)
-
-    def finish(done: np.ndarray, top: np.ndarray) -> None:
-        final[done] = np.minimum(1.0, beta + np.minimum(1.0, np.maximum(top, best[done])))
-        status[done] = _Outcome.FINISHED
-
-    for iteration in range(_MAX_ITER):
-        act = np.flatnonzero(status == _Outcome.SEARCHING)
-        if act.size == 0:
-            break
-        if iteration + 2 > lv.u.shape[1]:
-            lv.grow(min(_MAX_ITER + 1, 2 * lv.u.shape[1]))
-        width = lv.u.shape[1]
-        valid = np.arange(width)[None, :] < lv.count[act, None]
-        bnd = np.where(valid, lv.bound[act], -np.inf)
-        top = bnd.max(axis=1)
-        k = np.argmin(np.where(bnd == top[:, None], lv.u[act], np.inf), axis=1)
-        gap = top - best[act]
-        stop = gap <= _TOL
-        if exact:
-            dl = delta[act][:, None]
-            others = bnd.copy()
-            others[np.arange(act.size), k] = -np.inf
-            runner = others.max(axis=1)
-            capped_ties = np.all(~(valid & (bnd == 1.0)) | (lv.raw[act] >= 1.0 + dl), axis=1)
-            order = (top - runner <= 2.0 * dl[:, 0]) & ~(
-                (top == 1.0) & (runner == 1.0) & capped_ties
-            )
-            unsettled = (order & ~stop) | (np.abs(gap - _TOL) <= 2.0 * dl[:, 0] + 4.0 * _EPS)
-            status[act[unsettled]] = _Outcome.AMBIGUOUS
-            act, k, top, stop = act[~unsettled], k[~unsettled], top[~unsettled], stop[~unsettled]
-        finish(act[stop], top[stop])
-        act, k, top = act[~stop], k[~stop], top[~stop]
-        u = lv.u[act, k]
-        v = lv.v[act, k]
-        mid = (u + v) / 2.0
-        floor = (mid <= u) | (mid >= v)
-        finish(act[floor], top[floor])
-        act, k, u, v, mid = act[~floor], k[~floor], u[~floor], v[~floor], mid[~floor]
-        if act.size == 0:
-            continue
-        pu, pv = lv.pu[act, k], lv.pv[act, k]
-        fm_raw, left_raw, right_raw, pm = tails.split(batch, rows[act], u, mid, v, pu, pv)
-        fm = np.minimum(1.0, fm_raw)
-        fu, fv = lv.fu[act, k], lv.fv[act, k]
-        best[act] = np.maximum(best[act], fm)
-        new = lv.count[act]
-        for slot, (cu, cv, cpu, cpv, cfu, cfv, cm_raw) in (
-            (k, (u, mid, pu, pm, fu, fm, left_raw)),
-            (new, (mid, v, pm, pv, fm, fv, right_raw)),
-        ):
-            lv.u[act, slot], lv.v[act, slot] = cu, cv
-            lv.pu[act, slot], lv.pv[act, slot] = cpu, cpv
-            lv.fu[act, slot], lv.fv[act, slot] = cfu, cfv
-            leaf = _leaf_bounds(cfu, cfv, cm_raw, cu, cv, decision)
-            lv.bound[act, slot], lv.raw[act, slot], lv.mono[act, slot], lv.term[act, slot] = leaf
-            lv.reach[act, slot] = tails.reach(rows[act], cu, cv, leaf[0], leaf[2], leaf[3])
-        lv.count[act] += 1
-        _settle(status, act, best, lv, batch, rows)
-    rest = np.flatnonzero(status == _Outcome.SEARCHING)
-    if rest.size:
-        valid = np.arange(lv.u.shape[1])[None, :] < lv.count[rest, None]
-        finish(rest, np.where(valid, lv.bound[rest], -np.inf).max(axis=1))
+    rule = _rr.NUISANCE_STOP
+    search = _Search(
+        rows,
+        lv.take(rows, capacity=8),
+        best[rows],
+        batch.delta[rows],
+        batch.guard[rows],
+        np.full(rows.size, _Outcome.SEARCHING, np.int64),
+        np.full(rows.size, np.nan),
+    )
+    common = rule.max_iter if exact else min(rule.max_iter, _COMMON_SPLITS)
+    _advance(batch, tails, search, range(common), exact=exact, rule=rule)
+    if common == rule.max_iter:
+        _finish_unsettled(search, beta)
+    else:
+        survivors = np.flatnonzero(search.status == _Outcome.SEARCHING)
+        size = _rows_within_budget(rule.max_iter)
+        chunks = [survivors[start : start + size] for start in range(0, survivors.size, size)]
+        deeper: list[_Search | None] = [search.take(ids) for ids in chunks]
+        search.lv = _Leaves.empty(0, 1)  # the first stage's arrays are not needed again
+        for index, ids in enumerate(chunks):
+            rest, deeper[index] = deeper[index], None  # release each chunk once it is done
+            assert rest is not None
+            _advance(batch, tails, rest, range(common, rule.max_iter), exact=exact, rule=rule)
+            _finish_unsettled(rest, beta)
+            search.status[ids], search.final[ids] = rest.status, rest.final
+    status, final = search.status, search.final
     finished = status == _Outcome.FINISHED
     if exact:
-        close = finished & (np.abs(final - u_alpha) <= delta + 4.0 * _EPS)
+        close = finished & (np.abs(final - u_alpha) <= search.delta + 4.0 * _EPS)
         status[close] = _Outcome.AMBIGUOUS
         finished &= ~close
     status[finished] = np.where(final[finished] < u_alpha, _Outcome.REJECT, _Outcome.ACCEPT)
@@ -797,10 +880,11 @@ class _SurrogateTails:
     def split(self, batch, rows, u, mid, v, pu, pv):
         del pu, pv
         plus = batch.groups.kind[batch.group[rows]] == 0
-        pm = self._p(rows, mid)
-        fm = self._tail(rows, mid, pm)
-        left = self._tail(rows, np.where(plus, u, mid), np.where(plus, pm, self._p(rows, u)))
-        right = self._tail(rows, np.where(plus, mid, v), np.where(plus, self._p(rows, v), pm))
+        three = np.concatenate([rows, rows, rows])
+        p_mid, p_u, p_v = np.split(self._p(three, np.concatenate([mid, u, v])), 3)
+        q = np.concatenate([mid, np.where(plus, u, mid), np.where(plus, mid, v)])
+        p = np.concatenate([p_mid, np.where(plus, p_mid, p_u), np.where(plus, p_v, p_mid)])
+        fm, left, right = np.split(self._tail(three, q, p), 3)
         return fm, left, right, np.zeros(rows.size, np.int64)
 
 
@@ -825,8 +909,25 @@ def _runtime_rejects(decision: BinomialDecision, kind: Kind, x_c: int, x_t: int)
     return p < decision.tail_alpha
 
 
-#: Rows per classification batch: bounds the per-row replay arrays.
-_BATCH_ROWS = 65_536
+#: Leaf-array bytes a replay may hold at once: it stores eleven eight-byte fields per leaf slot,
+#: and a row holds ``splits + 1`` leaves after that many splits.
+_LEAF_BUDGET_BYTES = 350e6
+#: Splits the approximate route runs for every row of a batch together.
+_COMMON_SPLITS = 63
+
+
+def _rows_within_budget(splits: int) -> int:
+    """Rows whose leaf arrays fit ``_LEAF_BUDGET_BYTES`` after *splits* splits each."""
+    leaf_bytes = 8 * len(_Leaves._FIELDS)
+    return max(1024, int(_LEAF_BUDGET_BYTES // (leaf_bytes * (splits + 1))))
+
+
+def _batch_rows(*, exact: bool) -> int:
+    """Rows per classification batch, so the replay's leaf arrays stay within the budget
+    whatever the data: the exact route's rows may all run to ``NUISANCE_STOP.max_iter``, the
+    approximate route's only to ``_COMMON_SPLITS`` before they continue in chunks."""
+    max_iter = _rr.NUISANCE_STOP.max_iter
+    return _rows_within_budget(max_iter if exact else min(max_iter, _COMMON_SPLITS))
 
 
 def classify(
@@ -844,6 +945,7 @@ def classify(
     results: list[np.ndarray | None] = [None] * len(requests)
     live: list[tuple[int, _Request, float, float, tuple[int, int, float]]] = []
     pending = 0
+    batch_rows = _batch_rows(exact=route == "exact")
     for n, req in enumerate(requests):
         size = req.j1 - req.j0 + 1
         try:
@@ -859,11 +961,11 @@ def classify(
                 # Empty nuisance domain: the runtime reports beta alone.
                 results[n] = np.full(size, min(1.0, decision.beta) < decision.tail_alpha)
                 continue
-        live.append((n, req, a, hi, _rr._support_window(decision.n_c, a, hi)))
-        pending += size
-        if pending >= _BATCH_ROWS:
+        if live and pending + size > batch_rows:
             _classify_live(decision, route, live, results)
             live, pending = [], 0
+        live.append((n, req, a, hi, _rr._support_window(decision.n_c, a, hi)))
+        pending += size
     if live:
         _classify_live(decision, route, live, results)
     return [r if r is not None else np.zeros(0, bool) for r in results]

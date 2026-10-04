@@ -120,6 +120,7 @@ _support_window = binomial_rr._support_window
 _clopper_pearson = binomial_rr.clopper_pearson
 _p_of_plus = binomial_rr._p_of_plus
 _eps_margin = binomial_rr._eps_margin
+_tail_lower_enclosure = binomial_rr.tail_lower_enclosure
 nuisance_beta = binomial_rr.nuisance_beta
 
 
@@ -133,22 +134,16 @@ def _witness_lower_plus(
     is itself always `>= true_sup`, so `beta + this lower bound <=
     production's real p_plus`.
 
-    `_tail_plus`'s raw return already INFLATES the true value by its own
-    support-window's omitted mass PLUS a floating-point safety margin
-    (`_eps_margin`) -- both must be subtracted back out to recover a
-    genuine lower bound on the exact value, not `_eps_margin` alone (an
-    earlier version of this function under-subtracted here, understating
-    how much the returned value could exceed the true one)."""
+    `_tail_plus`'s raw return INFLATES the true value by its support
+    window's omitted mass and a floating-point margin;
+    `binomial_rr.tail_lower_enclosure` removes both."""
     if not (a <= true_p_c <= b):
         return None
-    omitted = window[2]
-    margin = _eps_margin(window[1] - window[0] + 1)
-    correction = omitted + 2.0 * margin  # 2x margin: extra headroom costs nothing but safety
 
     def lower(xt: int) -> float:
         k = n_c * xt - n_t * x_c_obs
         val = _tail_plus(true_p_c, _p_of_plus(true_p_c, r), n_c, n_t, k, window)
-        return max(0.0, val - correction)
+        return _tail_lower_enclosure(val, window)
 
     return lower
 
@@ -158,14 +153,11 @@ def _witness_lower_minus(
 ) -> Callable[[int], float] | None:
     if not (a <= true_p_c <= upper_q):
         return None
-    omitted = window[2]
-    margin = _eps_margin(window[1] - window[0] + 1)
-    correction = omitted + 2.0 * margin
 
     def lower(xt: int) -> float:
         k = n_c * xt - n_t * x_c_obs
         val = _tail_minus(true_p_c, r * true_p_c, n_c, n_t, k, window)
-        return max(0.0, val - correction)
+        return _tail_lower_enclosure(val, window)
 
     return lower
 

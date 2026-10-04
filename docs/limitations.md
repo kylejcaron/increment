@@ -323,26 +323,30 @@ It also has two further boundaries, both refusals rather than silent degradation
   higher cap or a closed-form/recurrence tail evaluation (out of scope here).
 * **Latency.** Cost grows with arm size: measured on commodity hardware
   (two-sided, `alpha=0.05`, cold, CPU seconds on a shared machine, so read them as
-  upper-side estimates), a 5% control rate takes roughly 0.3s at 100,000 per arm,
-  0.9s at 1,000,000 and 2.4s at 4,000,000 (`MAX_ARM_SIZE`); a 1e-4 rate at
-  1,000,000 per arm takes about 0.04s, because the control-count window follows
-  the nuisance rate. The window is widest at a 50% control rate, which costs
-  roughly 0.8s, 3s and 7s at the same three sizes; a dense 90% rate costs 0.4s,
-  1.6s and 3.6s. The 5% figures are down from an unoptimized ~13s and ~60s at
-  100,000 and 1,000,000 per arm: about 3x from reusing treatment tail vectors
-  and the rate-aware window, and the rest from locating each endpoint with
-  interpolated probes that stop at a declared resolution instead of refining
-  to floating-point precision, without weakening the certified interval in any
-  tested regime, including rare events. The resolution is relative: each
-  endpoint is the outer end of a search bracket no wider than 0.05% (2^-11) and
-  no wider than 1/128 of the log risk ratio's standard error, whichever is finer,
-  so the search works harder as arms grow and the standard error shrinks. At
-  50% and 90% control rates with 1,000,000 or more per arm that costs more than
-  the earlier fixed ten-bisection stop (1.5s to 3.6s at 90% and 4,000,000 per
-  arm), which was faster there because its bracket spanned up to two-thirds of
-  the interval's half-width. The stop is the resolution of the evaluated tail
-  envelope only, not a bound on the nuisance-search certification gap or on
-  SciPy's primitive error; a search that cannot reach it keeps its conservative
+  upper-side estimates), a 5% control rate takes roughly 1.8s at 100,000 per arm,
+  5.7s at 1,000,000 and 12.5s at 4,000,000 (`MAX_ARM_SIZE`); a 1e-4 rate at
+  1,000,000 per arm takes about 0.1s, because the control-count window follows
+  the nuisance rate. A 50% control rate at 100,000 per arm takes about 7.5s: a
+  p-value deep in the tail is refined to its full gap, up to the split cap.
+  Each p-value bounds a supremum over the control rate's Clopper-Pearson
+  interval. The endpoint search only compares those p-values with the tail
+  level, so each probe is split until that comparison is certified either way
+  or its bound is within the same 2^-14 gap (a level inside a bound that tight
+  is read as not rejecting); the p-value at the tested null is split until its
+  certified upper end is within 2^-14 of the p-value above a witnessed lower
+  end or after 2,048
+  splits. A search the cap ends is not an error: its p-value stays a valid,
+  conservative bound, and where the comparison with the tail level was still
+  open the row's `note` says how many probes ended so and the largest gap they
+  left, in p-value units. No tolerance beyond that disclosure is promised, and a
+  row persisted by an earlier version keeps its stored endpoints while
+  `p_value()` and `stat_sig()` recompute from its counts with the tighter bound;
+  re-run to refresh the endpoints. Each endpoint is the outer end of a search
+  bracket no wider than 0.05% (2^-11) and no wider than 1/128 of the log risk
+  ratio's standard error, whichever is finer, so the search works harder as
+  arms grow and the standard error shrinks. The stop is the resolution of the
+  evaluated tail envelope only, not a bound on SciPy's primitive error; a
+  search that cannot reach it keeps its conservative
   endpoint and says so in the row's `note`. A readout multiplies this across
   metrics, arms, and breakout cells. There is no opt-out: every eligible
   unadjusted conversion/retention contrast takes this route. A further large

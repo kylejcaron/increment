@@ -82,7 +82,14 @@ Branch-and-bound refines the worst (largest-bound) subinterval by
 bisection, always returning the max of every remaining certified bound --
 an anytime algorithm: the returned value is a valid conservative upper
 bound on the supremum at every iteration, tightening (never invalidating)
-with more refinement.
+with more refinement. The search stops once its gap to ``tail_lower_enclosure`` of the best
+evaluated point (a value no larger than the exact tail there) is at most
+``NUISANCE_STOP.gap_fraction`` of the p-value it reports, or after ``NUISANCE_STOP.max_iter``
+splits. An endpoint-search probe, which only compares its p-value with the tail level, also
+stops once the certified upper bound or the lower witness settles that comparison; the p-value
+at the tested null never does. Running out of splits is not an error: the bound stays valid and
+merely looser, and `confidence_interval` discloses a search it ended while a comparison was
+still open.
 
 Every intermediate value combined into that certificate (a raw
 ``scipy.stats`` PMF/CDF/SF evaluation, their dot-product summation, and the
@@ -102,9 +109,10 @@ endpoint is the bracket end OUTSIDE the set, a probed point the evaluation itsel
 it, so it lies beyond the evaluated crossing by at most the final bracket's log width
 whatever the fit predicted. A search that stops short of its tolerance is flagged on the result
 (``BinomialInterval.resolution_reached``) and disclosed by `precision_note`. That is the
-search resolution of the evaluated envelope: the nuisance supremum's certification gap and
-SciPy's primitive error are separate quantities. Probes are placed with SciPy's ``ndtri``, so an
-endpoint is reproducible to the tolerance, not bit for bit, across SciPy and libm builds.
+search resolution of the evaluated envelope: the nuisance supremum's certification gap
+(``BinomialInterval.capped_probes``) and SciPy's primitive error are separate quantities. Probes
+are placed with SciPy's ``ndtri``, so an endpoint is reproducible to the tolerance, not bit for
+bit, across SciPy and libm builds.
 
 Scalability: a full evaluation of ``F_+``/``F_-`` enumerates every
 control-success count ``i`` in ``0..n_c`` (the conditional sum over
@@ -127,7 +135,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Literal, cast
+from typing import Literal, NamedTuple, cast
 
 import numpy as np
 import scipy.special._ufuncs as _scu
@@ -425,6 +433,17 @@ def _tail_minus(
     return min(1.0, raw + _eps_margin(i_hi - i_lo + 1))
 
 
+def tail_lower_enclosure(value: float, window: tuple[int, int, float]) -> float:
+    """A lower bound on the exact tail whose `_tail_plus`/`_tail_minus` value is *value*.
+
+    That value adds the window's omitted control mass and one float margin to a computed sum
+    that is itself within one margin of the windowed sum, so removing the mass and two margins
+    leaves at most the exact tail. The value is a certified upper bound; it is not a lower one.
+    """
+    i_lo, i_hi, omitted = window
+    return max(0.0, value - (omitted + 2.0 * _eps_margin(i_hi - i_lo + 1)))
+
+
 def _p_of_plus(q: float, r: float) -> float:
     return min(r * q, 1.0) if r > 0.0 else 0.0
 
@@ -453,6 +472,41 @@ def _i_bound(u: float, v: float, r: float, n_c: int, n_t: int) -> float:
     return max(iu, iv)
 
 
+@dataclass(frozen=True, slots=True)
+class _StopRule:
+    """End of a nuisance supremum search: the gap between its certified upper bound and the
+    lower enclosure of its best evaluated point is at most *gap_fraction* of the p-value
+    ``beta + witness_lower``, or *max_iter* splits have run."""
+
+    gap_fraction: float
+    max_iter: int
+
+
+#: Measured over 454 searches (the probes of 15 intervals, sparse to large and near alpha): a
+#: gap of 2**-14 of the p-value (1.5e-6 at a 0.025 tail) is reached within 1024 splits by 98.5%
+#: and within 2048 by 99.6%; the two others sit below p = 4e-4, and every comparison with the
+#: tail level is settled within 174 splits.
+NUISANCE_STOP = _StopRule(gap_fraction=2.0**-14, max_iter=2048)
+
+
+class _SupCertificate(NamedTuple):
+    """A nuisance supremum search's outcome.
+
+    *upper* is a valid upper bound on the supremum, *witness_lower* a lower bound on it (the
+    best evaluated point, deflated), *iterations* the splits run and *stopped* whether the
+    gap met the rule's target rather than ending at the split cap or the float floor.
+    """
+
+    upper: float
+    witness_lower: float
+    iterations: int
+    stopped: bool
+
+    @property
+    def gap(self) -> float:
+        return max(0.0, self.upper - self.witness_lower)
+
+
 def _certified_sup(
     kind: Literal["plus", "minus"],
     a: float,
@@ -463,18 +517,24 @@ def _certified_sup(
     k: int,
     window: tuple[int, int, float],
     *,
-    tol: float = 1e-6,
-    max_iter: int = 60,
-) -> float:
+    beta: float,
+    rule: _StopRule,
+    settle: float | None = None,
+) -> _SupCertificate:
     """Certified (conservative) upper bound on ``sup_{q in [a,b]}`` of the
-    relevant tail evaluated along ``p(q)``. Always a valid upper bound,
-    regardless of how many iterations run; more iterations only tighten
-    it. ``tol``/``max_iter`` trade tightness for speed (a looser,
-    anytime-valid bound at fewer iterations); they do not trade away
-    validity.
+    relevant tail evaluated along ``p(q)``, with the lower bound the search reached.
+
+    ``upper`` is valid however many splits run; more splits only tighten it. The search
+    stops once ``upper - witness_lower <= rule.gap_fraction * (beta + witness_lower)``
+    -- the gap relative to the p-value ``beta + sup`` reported -- or after ``rule.max_iter``
+    splits or at the float floor, where ``stopped`` is false and the bound is still valid.
+    With *settle*, a tail level, it also stops as soon as ``beta + upper < settle`` or
+    ``beta + witness_lower >= settle``: the comparison of the p-value with that level is then
+    certified either way, which an endpoint search needs and the gap does not. A search the
+    cap ends while the level is still inside its bounds reports ``beta + upper >= settle``.
     """
     if b < a:
-        return 0.0
+        return _SupCertificate(0.0, 0.0, 0, True)
 
     if kind == "plus":
 
@@ -512,78 +572,157 @@ def _certified_sup(
     best_achieved = max(fa, fb)
     heap: list[tuple[float, float, float, float, float]] = []
     heapq.heappush(heap, (-bound(a, b, fa, fb), a, b, fa, fb))
-    for _ in range(max_iter):
-        neg_bnd, u, v, fu, fv = heap[0]
-        bnd = -neg_bnd
-        if bnd - best_achieved <= tol:
+    iterations = 0
+    while True:
+        upper = min(1.0, max(-heap[0][0], best_achieved))
+        witness = tail_lower_enclosure(best_achieved, window)
+        if upper - witness <= rule.gap_fraction * (beta + witness):
+            return _SupCertificate(upper, witness, iterations, True)
+        if settle is not None and (beta + upper < settle or beta + witness >= settle):
+            return _SupCertificate(upper, witness, iterations, True)
+        if iterations == rule.max_iter:
             break
-        heapq.heappop(heap)
+        _, u, v, fu, fv = heapq.heappop(heap)
         mid = (u + v) / 2.0
         if mid <= u or mid >= v:
             # floating-point floor: cannot bisect further; this leaf's
             # bound stands as the certified value for its sliver.
-            heapq.heappush(heap, (neg_bnd, u, v, fu, fv))
             break
         fm = eval_at(mid)
         best_achieved = max(best_achieved, fm)
         heapq.heappush(heap, (-bound(u, mid, fu, fm), u, mid, fu, fm))
         heapq.heappush(heap, (-bound(mid, v, fm, fv), mid, v, fm, fv))
-    certified = max(-item[0] for item in heap)
-    return min(1.0, max(certified, best_achieved))
+        iterations += 1
+    return _SupCertificate(upper, witness, iterations, False)
 
 
-def _p_plus_impl(r: float, x_c: int, n_c: int, x_t: int, n_t: int, beta: float) -> float:
+class _PCertificate(NamedTuple):
+    """A p-value bound with the gap its nuisance search left and whether that search met its
+    gap target."""
+
+    p: float
+    gap: float
+    stopped: bool
+
+
+def _p_plus_impl(
+    r: float,
+    x_c: int,
+    n_c: int,
+    x_t: int,
+    n_t: int,
+    beta: float,
+    rule: _StopRule,
+    settle: float | None,
+) -> _PCertificate:
     a, b = clopper_pearson(x_c, n_c, beta)
     window = _support_window(n_c, a, b)
     k = n_c * x_t - n_t * x_c
-    sup = _certified_sup("plus", a, b, r, n_c, n_t, k, window)
-    return min(1.0, beta + sup)
+    sup = _certified_sup("plus", a, b, r, n_c, n_t, k, window, beta=beta, rule=rule, settle=settle)
+    return _PCertificate(min(1.0, beta + sup.upper), sup.gap, sup.stopped)
 
 
+# *rule* and *settle* are part of every cache key, so a changed stop contract, or a bound
+# that was only settled against one tail level, is never answered for another.
 @lru_cache(maxsize=512)
-def _p_plus_cached(r: float, x_c: int, n_c: int, x_t: int, n_t: int, beta: float) -> float:
-    return _p_plus_impl(r, x_c, n_c, x_t, n_t, beta)
+def _p_plus_cached(
+    r: float,
+    x_c: int,
+    n_c: int,
+    x_t: int,
+    n_t: int,
+    beta: float,
+    rule: _StopRule,
+    settle: float | None,
+) -> _PCertificate:
+    return _p_plus_impl(r, x_c, n_c, x_t, n_t, beta, rule, settle)
 
 
-def p_plus(r: float, x_c: int, n_c: int, x_t: int, n_t: int, beta: float) -> float:
-    """``p_+(r)``: p-value for ``H0: R <= r`` (rejecting favors ``R > r``)."""
-    if r < 0.0:
-        _raise("estimation.binomial.tail_unrepresentable", r=r)
+def _p_plus_certificate(
+    r: float,
+    x_c: int,
+    n_c: int,
+    x_t: int,
+    n_t: int,
+    beta: float,
+    rule: _StopRule,
+    settle: float | None = None,
+) -> _PCertificate:
     # Keep refusal/type behavior of the uncached API for malformed,
     # unhashable arguments instead of letting functools raise while building
     # the cache key.
     try:
         hash((r, x_c, n_c, x_t, n_t, beta))
     except TypeError:
-        return _p_plus_impl(r, x_c, n_c, x_t, n_t, beta)
-    return _p_plus_cached(r, x_c, n_c, x_t, n_t, beta)
+        return _p_plus_impl(r, x_c, n_c, x_t, n_t, beta, rule, settle)
+    return _p_plus_cached(r, x_c, n_c, x_t, n_t, beta, rule, settle)
 
 
-def _p_minus_impl(r: float, x_c: int, n_c: int, x_t: int, n_t: int, beta: float) -> float:
+def p_plus(r: float, x_c: int, n_c: int, x_t: int, n_t: int, beta: float) -> float:
+    """``p_+(r)``: p-value for ``H0: R <= r`` (rejecting favors ``R > r``)."""
+    if r < 0.0:
+        _raise("estimation.binomial.tail_unrepresentable", r=r)
+    return _p_plus_certificate(r, x_c, n_c, x_t, n_t, beta, NUISANCE_STOP).p
+
+
+def _p_minus_impl(
+    r: float,
+    x_c: int,
+    n_c: int,
+    x_t: int,
+    n_t: int,
+    beta: float,
+    rule: _StopRule,
+    settle: float | None,
+) -> _PCertificate:
     a, b = clopper_pearson(x_c, n_c, beta)
     upper = b if r <= 0.0 else min(b, 1.0 / r)
     if upper < a:
-        return min(1.0, beta)
+        return _PCertificate(min(1.0, beta), 0.0, True)
     window = _support_window(n_c, a, upper)
     k = n_c * x_t - n_t * x_c
-    sup = _certified_sup("minus", a, upper, r, n_c, n_t, k, window)
-    return min(1.0, beta + sup)
+    sup = _certified_sup(
+        "minus", a, upper, r, n_c, n_t, k, window, beta=beta, rule=rule, settle=settle
+    )
+    return _PCertificate(min(1.0, beta + sup.upper), sup.gap, sup.stopped)
 
 
 @lru_cache(maxsize=512)
-def _p_minus_cached(r: float, x_c: int, n_c: int, x_t: int, n_t: int, beta: float) -> float:
-    return _p_minus_impl(r, x_c, n_c, x_t, n_t, beta)
+def _p_minus_cached(
+    r: float,
+    x_c: int,
+    n_c: int,
+    x_t: int,
+    n_t: int,
+    beta: float,
+    rule: _StopRule,
+    settle: float | None,
+) -> _PCertificate:
+    return _p_minus_impl(r, x_c, n_c, x_t, n_t, beta, rule, settle)
+
+
+def _p_minus_certificate(
+    r: float,
+    x_c: int,
+    n_c: int,
+    x_t: int,
+    n_t: int,
+    beta: float,
+    rule: _StopRule,
+    settle: float | None = None,
+) -> _PCertificate:
+    try:
+        hash((r, x_c, n_c, x_t, n_t, beta))
+    except TypeError:
+        return _p_minus_impl(r, x_c, n_c, x_t, n_t, beta, rule, settle)
+    return _p_minus_cached(r, x_c, n_c, x_t, n_t, beta, rule, settle)
 
 
 def p_minus(r: float, x_c: int, n_c: int, x_t: int, n_t: int, beta: float) -> float:
     """``p_-(r)``: p-value for ``H0: R >= r`` (rejecting favors ``R < r``)."""
     if r < 0.0:
         _raise("estimation.binomial.tail_unrepresentable", r=r)
-    try:
-        hash((r, x_c, n_c, x_t, n_t, beta))
-    except TypeError:
-        return _p_minus_impl(r, x_c, n_c, x_t, n_t, beta)
-    return _p_minus_cached(r, x_c, n_c, x_t, n_t, beta)
+    return _p_minus_certificate(r, x_c, n_c, x_t, n_t, beta, NUISANCE_STOP).p
 
 
 def p_two(r: float, x_c: int, n_c: int, x_t: int, n_t: int, beta: float) -> float:
@@ -910,6 +1049,11 @@ class BinomialInterval:
     0) and ``resolution_reached`` whether each met the resolution declared for these counts.
     Both describe the search of the evaluated p-envelope only: not a bound on displacement from
     the ideal interval, not a coverage statement.
+
+    ``capped_probes`` counts the p-value probes whose nuisance search ended short of its gap
+    target (`NUISANCE_STOP`) while the comparison with the tail level it feeds was still open,
+    and ``nuisance_gap_max`` is the largest gap in p-value they left (``0.0`` when none). The
+    bounds stay valid; at those probes they are conservative by at most that gap.
     """
 
     lower: float
@@ -918,28 +1062,40 @@ class BinomialInterval:
     p_value_null: float
     endpoint_log_width: float
     resolution_reached: bool
+    nuisance_gap_max: float
+    capped_probes: int
 
 
-#: Leading text of the note an unresolved endpoint search leaves on a row. The disclosure holds
-#: none of the separators rows join their notes with, so `without_precision_note` can lift it
-#: out of a longer note.
+#: Leading text of the notes an unresolved endpoint search and a nuisance search that ended
+#: short leave on a row. A disclosure holds none of the separators rows join their notes with,
+#: so `without_precision_note` can lift it out of a longer note.
 PRECISION_NOTE_PREFIX = "binomial endpoint resolution not reached"
+NUISANCE_NOTE_PREFIX = "binomial nuisance search stopped short of its gap target"
+_PRECISION_PREFIXES = (PRECISION_NOTE_PREFIX, NUISANCE_NOTE_PREFIX)
 _NOTE_SEPARATOR = re.compile(r"( \| |; )")
 
 
 def precision_note(ci: BinomialInterval) -> str | None:
-    """The disclosure for *ci*'s endpoint search, or ``None`` when it met its resolution."""
-    if ci.resolution_reached:
-        return None
-    achieved = (
-        f"relative log width {ci.endpoint_log_width:.3g}"
-        if math.isfinite(ci.endpoint_log_width)
-        else "a bracket that still reaches zero"
-    )
-    return (
-        f"{PRECISION_NOTE_PREFIX}: an endpoint was located only to {achieved}, "
-        "and the reported bounds remain conservative (outward-rounded)"
-    )
+    """The disclosures for *ci*'s searches, joined by `` | ``, or ``None`` when both met
+    their targets."""
+    parts = []
+    if not ci.resolution_reached:
+        achieved = (
+            f"relative log width {ci.endpoint_log_width:.3g}"
+            if math.isfinite(ci.endpoint_log_width)
+            else "a bracket that still reaches zero"
+        )
+        parts.append(
+            f"{PRECISION_NOTE_PREFIX}: an endpoint was located only to {achieved}, "
+            "and the reported bounds remain conservative (outward-rounded)"
+        )
+    if ci.capped_probes:
+        parts.append(
+            f"{NUISANCE_NOTE_PREFIX}: {ci.capped_probes} p-value probe(s) near the decision "
+            "ended at the nuisance search's iteration cap, and the reported bounds remain valid "
+            f"but are conservative by at most {ci.nuisance_gap_max:.2e} in p-value"
+        )
+    return " | ".join(parts) or None
 
 
 def without_precision_note(note: str | None) -> str | None:
@@ -949,7 +1105,7 @@ def without_precision_note(note: str | None) -> str | None:
     pieces = _NOTE_SEPARATOR.split(note)
     kept: list[str] = []
     for index in range(0, len(pieces), 2):
-        if pieces[index].startswith(PRECISION_NOTE_PREFIX):
+        if pieces[index].startswith(_PRECISION_PREFIXES):
             continue
         if kept:
             kept.append(pieces[index - 1])
@@ -971,7 +1127,8 @@ def confidence_interval(
     the p-value for ``H0: R = null_r`` under the same *alternative*.
 
     Endpoints are outward-rounded to a relative log resolution declared from the counts
-    (``BinomialInterval.endpoint_log_width``); `precision_note` discloses a search that fell short.
+    (``BinomialInterval.endpoint_log_width``); `precision_note` discloses a search that fell short
+    and a nuisance search the iteration cap ended while a comparison was still open.
     """
     validate_counts(x_c, n_c)
     validate_counts(x_t, n_t)
@@ -987,12 +1144,35 @@ def confidence_interval(
             max_arm_size=MAX_ARM_SIZE,
         )
     validated_alternative = validate_alternative(alternative)
-    arguments = (x_c, n_c, x_t, n_t, alpha, validated_alternative, null_r)
+    arguments = (x_c, n_c, x_t, n_t, alpha, validated_alternative, null_r, NUISANCE_STOP)
     try:
         hash(arguments)
     except TypeError:
         return _confidence_interval_cached.__wrapped__(*arguments)
     return _confidence_interval_cached(*arguments)
+
+
+class _OpenProbes:
+    """The p-value probes of one inversion whose nuisance search ended short of its gap target
+    while the comparison with *target*, the tail level they are tested against, was still
+    open: the bound's lower enclosure under it and the bound itself at or over it."""
+
+    def __init__(self, target: float) -> None:
+        self.target = target
+        self.gaps: dict[tuple[str, float], float] = {}
+
+    def record(self, kind: str, r: float, probe: _PCertificate) -> float:
+        if not probe.stopped and probe.p - probe.gap < self.target <= probe.p:
+            self.gaps[kind, r] = max(self.gaps.get((kind, r), 0.0), probe.gap)
+        return probe.p
+
+    @property
+    def gap_max(self) -> float:
+        return max(self.gaps.values(), default=0.0)
+
+    @property
+    def count(self) -> int:
+        return len(self.gaps)
 
 
 @lru_cache(maxsize=128)
@@ -1004,16 +1184,31 @@ def _confidence_interval_cached(
     alpha: float,
     alternative: Alternative,
     null_r: float,
+    rule: _StopRule,
 ) -> BinomialInterval:
     beta = nuisance_beta(alpha)
     seed = (n_c * x_t) / (n_t * x_c) if x_c > 0 and x_t > 0 else 1.0
     tau = _endpoint_tolerance(_count_scale(x_c, n_c, x_t, n_t))
+    target = alpha / 2.0 if alternative == "two-sided" else alpha
+    open_probes = _OpenProbes(target)
 
+    # The endpoint search only compares each p-value with the tail level, so its probes stop
+    # once that comparison is certified; the p-value at the null is refined to the full gap.
     def f_plus(r: float) -> float:
-        return p_plus(r, x_c, n_c, x_t, n_t, beta)
+        probe = _p_plus_certificate(r, x_c, n_c, x_t, n_t, beta, rule, target)
+        return open_probes.record("plus", r, probe)
 
     def f_minus(r: float) -> float:
-        return p_minus(r, x_c, n_c, x_t, n_t, beta)
+        probe = _p_minus_certificate(r, x_c, n_c, x_t, n_t, beta, rule, target)
+        return open_probes.record("minus", r, probe)
+
+    def null_plus() -> float:
+        probe = _p_plus_certificate(null_r, x_c, n_c, x_t, n_t, beta, rule)
+        return open_probes.record("plus", null_r, probe)
+
+    def null_minus() -> float:
+        probe = _p_minus_certificate(null_r, x_c, n_c, x_t, n_t, beta, rule)
+        return open_probes.record("minus", null_r, probe)
 
     a, _b = clopper_pearson(x_c, n_c, beta)
     if alternative == "two-sided":
@@ -1021,34 +1216,43 @@ def _confidence_interval_cached(
         lower = _find_boundary(f_plus, alloc, increasing=True, seed=seed, tau=tau, resolve=null_r)
         assert lower.endpoint is not None, "the lower search is always bounded (increasing=True)"
         upper = _bound_upper(f_minus, alloc, a=a, seed=seed, tau=tau, resolve=null_r)
+        p_value_null = min(1.0, 2.0 * min(null_plus(), null_minus()))
         return BinomialInterval(
             lower=lower.endpoint,
             upper=upper.endpoint,
             geometry="central",
-            p_value_null=p_two(null_r, x_c, n_c, x_t, n_t, beta),
+            p_value_null=p_value_null,
             endpoint_log_width=max(lower.log_width, upper.log_width),
             resolution_reached=lower.reached and upper.reached,
+            nuisance_gap_max=open_probes.gap_max,
+            capped_probes=open_probes.count,
         )
     if alternative == "greater":
         lower = _find_boundary(f_plus, alpha, increasing=True, seed=seed, tau=tau, resolve=null_r)
         assert lower.endpoint is not None
+        p_value_null = null_plus()
         return BinomialInterval(
             lower=lower.endpoint,
             upper=None,
             geometry="lower_bound",
-            p_value_null=f_plus(null_r),
+            p_value_null=p_value_null,
             endpoint_log_width=lower.log_width,
             resolution_reached=lower.reached,
+            nuisance_gap_max=open_probes.gap_max,
+            capped_probes=open_probes.count,
         )
     if alternative == "less":
         upper = _bound_upper(f_minus, alpha, a=a, seed=seed, tau=tau, resolve=null_r)
+        p_value_null = null_minus()
         return BinomialInterval(
             lower=0.0,
             upper=upper.endpoint,
             geometry="upper_bound",
-            p_value_null=f_minus(null_r),
+            p_value_null=p_value_null,
             endpoint_log_width=upper.log_width,
             resolution_reached=upper.reached,
+            nuisance_gap_max=open_probes.gap_max,
+            capped_probes=open_probes.count,
         )
     _raise("estimation.binomial.unknown_alternative", alternative=alternative)
 
