@@ -28,6 +28,7 @@ from increment.breakout.estimates import (
 )
 from increment.errors import CapabilityError, IncrementWarning, InvalidRequestError
 from increment.estimation.armstats import centered_row_from_raw_sums
+from increment.estimation.binomial_rr import FINITE_SAMPLE_MAX_ARM_SIZE
 from increment.estimation.engine import Method, estimate_lift
 from increment.estimation.family import bh_select, e_bh_select
 from increment.estimation.inference import Normal
@@ -2472,7 +2473,7 @@ class TestRunBreakoutBinomialGateExemption:
     def test_exact_binomial_failure_is_not_labelled_a_lift_guard_exclusion(self):
         """An arm above the exact method's size ceiling fails with a binomial
         code, not a lift guard, so its row must not claim an extreme ratio."""
-        big = 5_000_000
+        big = FINITE_SAMPLE_MAX_ARM_SIZE + 1
         rows = [
             _conversion_arm_row(big, big // 10, country="GB", group_id="control"),
             _conversion_arm_row(big, big // 9, country="GB", group_id="treatment"),
@@ -2491,7 +2492,7 @@ class TestRunBreakoutBinomialGateExemption:
     def test_one_arm_binomial_failure_beside_an_estimated_arm(self):
         """Only t2 exceeds the exact method's ceiling: t2 is an estimation
         failure, t1 still estimates, and a BH family refuses as run() does."""
-        big = 5_000_000
+        big = FINITE_SAMPLE_MAX_ARM_SIZE + 1
         rows = [
             _conversion_arm_row(1000, 100, country="US", group_id="control"),
             _conversion_arm_row(1000, 130, country="US", group_id="t1"),
@@ -2541,7 +2542,7 @@ class TestRunBreakoutBinomialGateExemption:
     def test_mixed_method_arm_with_two_exclusions_has_one_row_per_method(self):
         """t2 fails the exact method (too large) and CUPED's preparation
         (zero conversions); each method keeps exactly one row and reason."""
-        big = 5_000_000
+        big = FINITE_SAMPLE_MAX_ARM_SIZE + 1
         rows = [
             _conversion_arm_row(1000, 100, country="US", group_id="control", with_covariate=True),
             _conversion_arm_row(1000, 130, country="US", group_id="t1", with_covariate=True),
