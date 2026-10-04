@@ -199,7 +199,9 @@ def test_bounded_retention_asymptotic_sequential_agrees_across_matched_ingresses
         lambda cell: InferenceSpec(kind="asymptotic_mean", expected_decision_sample_size=100),
     )
     cell = matrix.Cell("retention", "run", "sequential", "utc", "error")
-    assert matrix_cases.plan_for(cell, frame=True).inference.kind == "asymptotic_mean"
+    plan = matrix_cases.plan_for(cell, frame=True)
+    assert plan.inference is not None
+    assert plan.inference.kind == "asymptotic_mean"
     disposition = matrix.classify(cell)
     for method in disposition.legs:
         outcomes = disposition.outcomes(method)
@@ -208,3 +210,17 @@ def test_bounded_retention_asymptotic_sequential_agrees_across_matched_ingresses
         _assert_runners_produced_rows(case, outcomes, result)
         assert result.refusals == {"from_unit_summary": "source.frame.constructor"}
         assert_parity(case, result)
+        # Agreement alone would also hold if every ingress fell back to exact Bernoulli
+        # monitoring, so each live ingress's retained state names the scalar-mean law.
+        for name in result.sequential_state:
+            analysis = case.build[name]()
+            try:
+                as_of = getattr(analysis, "_sequential_as_of", None)
+                snapshot = analysis.capture_sequential(
+                    finalized=True, **({"as_of": as_of} if as_of is not None else {})
+                )
+                assert {state.law for state in snapshot.states} == {"scalar_mean"}, name
+            finally:
+                analysis.close()
+                for connection in getattr(analysis, "_parity_connections", ()):
+                    connection.disconnect()
