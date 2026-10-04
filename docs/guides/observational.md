@@ -846,12 +846,13 @@ designs only) cannot read covariates from an artifact; use `from_definitions`.
 - **`from_unit_panel` covers unwindowed metrics only.** It collapses to a
   per-unit total for an unwindowed mean/conversion metric (the same
   collapse `moments(grain="total")` already uses) and reads a covariate
-  that is constant across each unit's own rows; a windowed, retention, or
-  quantile metric still refuses by name (`source.frame.unit_frame_panel`).
-  For a windowed metric, compute each unit's windowed value upstream and
-  declare it as an unwindowed metric on `from_unit_summary`; no frame source
-  serves unit-grain estimators for a retention metric, and an observational
-  design has no quantile estimator. A
+  that is constant across each unit's own rows; a windowed or retention
+  metric still refuses by name (`source.frame.unit_frame_panel`). For a
+  windowed metric, compute each unit's windowed value upstream and declare it
+  as an unwindowed metric on `from_unit_summary`; no frame source serves
+  unit-grain estimators for a retention metric. A quantile metric has no
+  observational estimator: both frame shapes refuse it with
+  `source.frame.quantile_no_moments`. A
   covariate that genuinely varies within a unit refuses by name too
   (`frame.frame_panel.unit_covariate_varies`), naming the offending units.
   A moments-only source (`from_moments`) raises `CapabilityError`

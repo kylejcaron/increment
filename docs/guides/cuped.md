@@ -81,9 +81,11 @@ method and reports CUPED alongside it as a sensitivity analysis.
     that is constant across each unit's rows.
     Varying values raise `frame.frame_panel.unit_covariate_varies`.
     Windowed and retention metrics still reject panel covariates
-    (`frame.validation.from_unit_panel`); for those metrics, aggregate to
-    one row per unit, taking the pre-period value once, and use
-    `from_unit_summary`.
+    (`frame.validation.from_unit_panel`). For a windowed metric, compute
+    each unit's windowed value upstream, taking the pre-period covariate
+    once, and declare it as an unwindowed metric on `from_unit_summary`.
+    No frame source serves a per-unit retention value; remove the covariate
+    to run retention without CUPED.
     For sequential CUPED, use the supported unit-summary or warehouse
     paths described [below](#cuped-under-sequential-inference).
 

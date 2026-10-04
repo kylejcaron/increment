@@ -564,6 +564,28 @@ def test_from_unit_panel_observational_missing_covariate_column():
     assert exc_info.value.code == "frame.frame_panel.unit_covariate_column"
 
 
+@pytest.mark.parametrize("shape", ["summary", "panel"])
+def test_observational_quantile_metric_refuses_on_every_frame_shape(shape):
+    """A quantile metric has no observational estimator: both frame shapes refuse it by name
+    instead of reporting an adjusted mean effect under the quantile metric's name."""
+    from increment.frame import MetricSpec
+
+    table = _confounded_table(200, seed=11)
+    metrics = [MetricSpec(name="revenue", type="quantile", quantile=0.5)]
+    if shape == "summary":
+        analysis = Analysis.from_unit_summary(
+            table, unit="user_id", group="variant", metrics=metrics, design=_OBS_TRIM
+        )
+    else:
+        panel = table.append_column("day", pa.array(["2025-01-01"] * table.num_rows))
+        analysis = Analysis.from_unit_panel(
+            panel, unit="user_id", group="variant", date="day", metrics=metrics, design=_OBS_TRIM
+        )
+    with pytest.raises(CapabilityError) as exc_info:
+        lift_rows(analysis.run())
+    assert exc_info.value.code == "source.frame.quantile_no_moments"
+
+
 def test_from_unit_panel_daily_ratio_ignores_observational_adjustment_capability():
     """Descriptive daily ratios remain available for observational sources."""
     from increment.frame import MetricSpec

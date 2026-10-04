@@ -290,13 +290,25 @@ _REFUSALS = refusals(
         "frame.validation.from_unit_panel": RefusalSpec(
             "frame.validation.from_unit_panel",
             InvalidRequestError,
-            lambda *, covered: (
+            lambda *, covered, retention: (
                 f"from_unit_panel does not support a CUPED covariate on a windowed "
                 f"or retention metric: {', '.join(map(repr, covered))}. Those "
                 f"metrics have no per-unit collapse this frame can attach a "
-                f"pre-period covariate to. Aggregate to one row per unit yourself "
-                f"(taking the pre-period value once) and use from_unit_summary "
-                f"instead."
+                f"pre-period covariate to."
+                + (
+                    " For a windowed metric, compute each unit's windowed value upstream "
+                    "(taking the pre-period covariate once) and declare it as an "
+                    "unwindowed metric on from_unit_summary."
+                    if len(retention) < len(covered)
+                    else ""
+                )
+                + (
+                    " No frame source serves a per-unit retention value "
+                    f"({', '.join(map(repr, retention))}): remove the covariate to run "
+                    "retention without CUPED."
+                    if retention
+                    else ""
+                )
             ),
         ),
         "frame.validation.duplicate_breakout_column": "duplicate breakout column(s): {duplicates!r}",
@@ -1230,8 +1242,9 @@ def _reject_covariates(specs: Sequence[MetricSpec]) -> None:
         for s in specs
         if s.covariate is not None and (s.window_days is not None or s.type == "retention")
     ]
+    retention = [s.name for s in specs if s.name in covered and s.type == "retention"]
     if covered:
-        _raise("frame.validation.from_unit_panel", covered=covered)
+        _raise("frame.validation.from_unit_panel", covered=covered, retention=retention)
 
 
 def _normalize_breakout_names(

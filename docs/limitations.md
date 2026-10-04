@@ -105,8 +105,10 @@ way observational adjustment already does: through the per-unit value
 own rows, refused by name (`frame.frame_panel.unit_covariate_varies`) when
 it genuinely varies. A windowed or retention metric still refuses a CUPED
 covariate (CONSTRUCTION, `frame.validation.from_unit_panel`): those metrics
-have no per-unit collapse for that value to attach to; the refusal names
-`from_unit_summary` as the route that does.
+have no per-unit collapse for that value to attach to. For a windowed
+metric, compute each unit's windowed value upstream and declare it as an
+unwindowed metric on `from_unit_summary`; no frame source serves a per-unit
+retention value, so remove the covariate to run retention without CUPED.
 The switchback panel supports neither sequential inference
 nor CUPED; its contrasts are fixed-horizon. "Asymptotic route" means CUPED
 is admitted under `InferenceSpec(kind="asymptotic_mean")`: fitted coefficients

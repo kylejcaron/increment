@@ -20,7 +20,7 @@ import datetime as dt
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, cast
+from typing import Any, Literal, NoReturn, cast
 
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
@@ -152,6 +152,21 @@ _FRAME_QUANTILE_NO_MOMENTS = RefusalSpec(
     CapabilityError,
     template="quantile metric {metric!r} has no moment representation; it is served through unit_frame. {route}",
 )
+
+
+def _refuse_quantile_moments(metric: Metric, design: object) -> NoReturn:
+    refuse(
+        _FRAME_QUANTILE_NO_MOMENTS,
+        metric=metric.name,
+        route=(
+            "an observational design has no quantile estimator; quantile metrics "
+            "run under a randomized design"
+            if getattr(design, "mechanism", None) == "observational"
+            else "use readouts.run, which routes quantiles automatically"
+        ),
+    )
+
+
 _FRAME_BREAKOUTS_UNSUPPORTED = RefusalSpec(
     "source.frame.breakouts_unsupported",
     CapabilityError,
@@ -439,16 +454,7 @@ class FrameTotalsSource(SequentialSourceMixin):
         if grain != "total":
             refuse(_FRAME_GRAIN, grain=grain, offered=self.capabilities)
         if getattr(metric, "type", None) == "quantile":
-            refuse(
-                _FRAME_QUANTILE_NO_MOMENTS,
-                metric=metric.name,
-                route=(
-                    "an observational design has no quantile estimator; quantile metrics "
-                    "run under a randomized design"
-                    if getattr(self.design, "mechanism", None) == "observational"
-                    else "use readouts.run, which routes quantiles automatically"
-                ),
-            )
+            _refuse_quantile_moments(metric, self.design)
         if by:
             refuse(
                 _FRAME_BREAKOUTS_UNSUPPORTED,
@@ -1187,6 +1193,12 @@ class FramePanelSource(SequentialSourceMixin):
         if grain == "asof" and isinstance(metric, QuantileMetric):
             refuse(_ASOF_QUANTILE_UNSUPPORTED, metric=metric.name)
         if (
+            grain == "total"
+            and isinstance(metric, QuantileMetric)
+            and getattr(self.design, "mechanism", None) == "observational"
+        ):
+            _refuse_quantile_moments(metric, self.design)
+        if (
             grain == "asof"
             and completed_windows_only
             and isinstance(metric, RetentionMetric)
@@ -1767,8 +1779,11 @@ def from_unit_panel(  # noqa: PLR0913
         As :func:`from_unit_summary`. An unwindowed mean, ratio or conversion
         metric may declare a CUPED covariate that is constant within each
         unit; a covariate that varies within a unit refuses. Windowed and
-        retention metrics refuse a panel covariate - use
-        :func:`from_unit_summary` for those. Sequential CUPED is not
+        retention metrics refuse a panel covariate: for a windowed metric,
+        compute each unit's windowed value upstream and declare it as an
+        unwindowed metric on :func:`from_unit_summary`; no frame source
+        serves a per-unit retention value, so remove the covariate to run
+        retention without CUPED. Sequential CUPED is not
         available from this constructor.
     breakouts : Sequence[str]
         Unit-stable reporting columns; nulls normalize to ``"__null__"``.
