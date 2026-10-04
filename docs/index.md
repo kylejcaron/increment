@@ -41,6 +41,10 @@ bite.
 Which estimators have frozen third-party references, and which regimes have none, is
 inventoried in [External validation coverage](validation.md#reference-inventory).
 
+The [Evidence status](validation.md#evidence-status) section of that page states, per capability,
+its statistical guarantee and what has been checked, kept apart from the software compatibility
+policy.
+
 <!-- invisible-code-block: python
 import random
 

@@ -177,6 +177,8 @@ an analysis for production use.
 
 The [validation coverage inventory](docs/validation.md#reference-inventory) lists which
 estimators have frozen third-party references and which regimes have none.
+How guarantee, evidence and software compatibility differ for each capability is stated in
+[Evidence status](docs/validation.md#evidence-status).
 
 ## Contributing and license
 
