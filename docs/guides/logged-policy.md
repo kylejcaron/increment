@@ -10,8 +10,9 @@ reference policy over the same horizon, without deploying either.
 
 This family has its own ingress. It does not run through any `Analysis`
 constructor, because none of them carries a decision trace; the "What runs
-where" table in [Statistical limitations](../limitations.md) records that as a
-SOURCE refusal on every path.
+where" table in
+[Capabilities by entry point](../reference/capabilities-by-entry-point.md#what-runs-where)
+records that as a SOURCE refusal on every path.
 
 ## What it estimates
 

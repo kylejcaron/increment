@@ -389,7 +389,8 @@ Every public capability declares its behavior for every metric type in
 2. Classify it as supported, refused, structurally inapplicable, or a known
    gap.
 3. Back the classification with an executable probe.
-4. Update the path-by-capability documentation in `docs/limitations.md`.
+4. Update the path-by-capability table in `docs/reference/capabilities-by-entry-point.md`
+   (and re-run `scripts/probe_capability_table.py`).
 5. Decide where the refusal lives. A rule that does not depend on the data
    source goes in the shared readout gate (`validate_request` and its owners).
    Declare it in `GATE_POLICY` in `tests/test_source_capabilities.py` when it

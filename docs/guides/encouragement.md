@@ -123,8 +123,9 @@ its BH/e-BH-selected secondaries identically; a declaration read from a
 unit-day artifact, and survives an `export()`/`from_moments()` round trip.
 `from_switchback_panel` is the one exception: it accepts only an
 `identification: Randomized` design, never `Encouragement` or
-`Observational`. See `docs/limitations.md`'s "What runs where" table for
-the measured row-by-row evidence.
+`Observational`. See the
+[capabilities by entry point](../reference/capabilities-by-entry-point.md#what-runs-where)
+table for the measured row-by-row evidence.
 
 
 ## Read the estimands
