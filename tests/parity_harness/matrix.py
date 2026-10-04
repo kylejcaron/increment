@@ -701,6 +701,14 @@ def _outcome(why: str, spec: Spec) -> Outcome:
 
 # The same observed signature is a different thing on one ingress.
 _OVERRIDES: dict[tuple[str, str], Spec] = {
+    ("from_moments", "REF:frame.validation.from_unit_panel"): Spec(
+        "construction_limited",
+        "a cube is exported by a producer; under a drop policy the only producer of a windowed "
+        "or retention metric is the dataframe panel, which refuses a pre-period covariate (the "
+        "warehouse producer that carries one declares no missing policy)",
+        f"{_LIMITATIONS}: panel covariate paragraph (CONSTRUCTION)",
+        "declaration",
+    ),
     ("from_unit_day_artifact", "REF:frame.metric.window_days_supported"): Spec(
         "unfinished",
         "the artifact route reads a windowed quantile through the frame declaration and refuses "
@@ -1092,7 +1100,7 @@ RULES: dict[str, tuple[Box, ...]] = {
         box("REF:frame.metric.cuped_does_apply", "quantile windowed_quantile", "run breakout", "cuped", "*", "rows"),
         box("REF:frame.metric.window_days_supported", "windowed_quantile", "run breakout", "none cluster sequential observational ni_margin", "*", "rows"),
         box("REF:frame.metric.winsorization_applies_type", "conversion ratio retention quantile windowed_conversion windowed_ratio windowed_retention windowed_quantile", "run breakout", "winsor_fixed winsor_percentile", "*", "rows"),
-        box("REF:frame.validation.from_unit_panel", "retention windowed_mean windowed_conversion windowed_ratio", "run breakout", "cuped", "error zero drop", "rows"),
+        box("REF:frame.validation.from_unit_panel", "retention windowed_mean windowed_conversion windowed_ratio", "run breakout", "cuped", "drop", "rows"),
         box("REF:sequential.route.unsupported#breakout", "retention windowed_mean windowed_conversion windowed_ratio", "breakout", "sequential", "error zero", "rows"),
         box("REF:sequential.route.unsupported#drop", "mean conversion ratio retention windowed_mean windowed_conversion windowed_ratio", "run breakout", "sequential", "drop", "rows"),
         box("REF:sequential.route.unsupported#metric_type", "quantile", "run breakout", "sequential", "error zero drop", "rows"),
@@ -1113,7 +1121,7 @@ RULES: dict[str, tuple[Box, ...]] = {
         box("REF:frame.metric.cuped_does_apply", "quantile windowed_quantile", "daily asof", "cuped", "*", "values"),
         box("REF:frame.metric.window_days_supported", "windowed_quantile", "daily asof", "none cluster sequential observational ni_margin", "*", "values"),
         box("REF:frame.metric.winsorization_applies_type", "conversion ratio retention quantile windowed_conversion windowed_ratio windowed_retention windowed_quantile", "daily asof", "winsor_fixed winsor_percentile", "*", "values"),
-        box("REF:frame.validation.from_unit_panel", "retention windowed_mean windowed_conversion windowed_ratio", "daily asof", "cuped", "error zero drop", "values"),
+        box("REF:frame.validation.from_unit_panel", "retention windowed_mean windowed_conversion windowed_ratio", "daily asof", "cuped", "drop", "values"),
         box("REF:sequential.route.unsupported#drop", "mean conversion ratio retention windowed_mean windowed_conversion windowed_ratio", "daily asof", "sequential", "drop", "values"),
         box("REF:sequential.route.unsupported#metric_type", "quantile", "daily asof", "sequential", "error zero drop", "values"),
         box("REF:sequential.source.invalid", "mean conversion ratio", "daily asof", "sequential", "error zero", "values"),
@@ -1130,7 +1138,7 @@ RULES: dict[str, tuple[Box, ...]] = {
         box("REF:frame.metric.cuped_does_apply", "quantile windowed_quantile", "daily asof", "cuped", "*", "lift"),
         box("REF:frame.metric.window_days_supported", "windowed_quantile", "daily asof", "none cluster sequential observational ni_margin", "*", "lift"),
         box("REF:frame.metric.winsorization_applies_type", "conversion ratio retention quantile windowed_conversion windowed_ratio windowed_retention windowed_quantile", "daily asof", "winsor_fixed winsor_percentile", "*", "lift"),
-        box("REF:frame.validation.from_unit_panel", "retention windowed_mean windowed_conversion windowed_ratio", "daily asof", "cuped", "error zero drop", "lift"),
+        box("REF:frame.validation.from_unit_panel", "retention windowed_mean windowed_conversion windowed_ratio", "daily asof", "cuped", "drop", "lift"),
         box("REF:sequential.route.unsupported#drop", "mean conversion ratio retention windowed_mean windowed_conversion windowed_ratio", "daily asof", "sequential", "drop", "lift"),
         box("REF:sequential.route.unsupported#metric_type", "quantile", "daily asof", "sequential", "error zero drop", "lift"),
         box("REF:sequential.source.invalid", "mean conversion ratio", "daily asof", "sequential", "error zero", "lift"),

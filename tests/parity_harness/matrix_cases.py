@@ -398,10 +398,30 @@ class _Ingress:
             analysis._sequential_as_of = _SEQUENTIAL_AS_OF  # ty: ignore[unresolved-attribute]
         return analysis
 
+    def _moments_producer(self) -> Callable[[], Analysis]:
+        """The route whose export the cube is replayed from.
+
+        A windowed or retention metric reads dates, so the panel produces it. The panel
+        refuses a pre-period covariate there, though the warehouse route carries one and
+        exports the same cube; that route (which declares no missing policy) is the
+        producer for a CUPED mean, conversion, ratio or retention metric, so the
+        portable ingress is classified by what `from_moments` does with that cube rather
+        than by the panel's refusal.
+        """
+        cell = self.cell
+        needs_dates = cell.windowed or cell.base == "retention"
+        if (
+            cell.option == "cuped"
+            and needs_dates
+            and cell.base in ("mean", "conversion", "ratio", "retention")
+            and cell.missing in ("error", "zero")
+        ):
+            return self.definitions
+        return self.panel if needs_dates else self.summary
+
     def moments(self) -> Analysis:
         cell = self.cell
-        source = self.panel if cell.windowed or cell.base == "retention" else self.summary
-        exported = source()
+        exported = self._moments_producer()()
         if cell.option == "sequential":
             # A cube replays a captured checkpoint; it cannot start a sequential process.
             exported.capture_sequential(finalized=True, as_of=_SEQUENTIAL_AS_OF)

@@ -202,8 +202,11 @@ def test_all_waived_case_without_refusal_only_still_fails():
         waive=_RETENTION_REFUSAL,
         codes={"from_unit_summary": "source.frame.constructor"},
     )
+    result = run_case(case)
+    assert result.rows == {}
+    assert result.refusals == {"from_unit_summary": "source.frame.constructor"}
     with pytest.raises(pytest.fail.Exception):
-        assert_parity(case, run_case(case))
+        assert_parity(case, result)
 
 
 def test_refusal_only_case_fails_when_a_waived_ingress_produces_rows():
@@ -213,8 +216,21 @@ def test_refusal_only_case_fails_when_a_waived_ingress_produces_rows():
         codes={"from_unit_summary": "source.frame.constructor"},
         refusal_only=True,
     )
+    result = run_case(case)
+    assert set(result.rows) == {"from_unit_summary"}
+    assert result.refusals == {}
     with pytest.raises(AssertionError):
-        assert_parity(case, run_case(case))
+        assert_parity(case, result)
+
+
+def test_refusal_only_case_fails_when_an_unwaived_ingress_produces_rows():
+    """`refusal_only` promises every attempted ingress refuses or is absent; an ingress
+    nobody waived that returns rows self-compares as `live` and must still fail."""
+    case = _case({"from_unit_summary": _mean_summary_builder()}, refusal_only=True)
+    result = run_case(case)
+    assert set(result.rows) == {"from_unit_summary"}
+    with pytest.raises(AssertionError):
+        assert_parity(case, result)
 
 
 def test_expected_absence_is_attempted_and_accounted_for():
@@ -237,8 +253,31 @@ def test_expected_absence_that_never_occurs_fails():
         waive={"from_unit_summary": "SOURCE: declared absent"},
         absence={"from_unit_summary": TypeError},
     )
+    result = run_case(case)
+    assert set(result.rows) == {"from_unit_summary"}
+    assert result.absences == {}
     with pytest.raises(AssertionError):
-        assert_parity(case, run_case(case))
+        assert_parity(case, result)
+
+
+def test_a_downstream_error_of_the_absent_type_is_not_recorded_as_absence():
+    """Absence is the constructor attempt failing; a `TypeError` raised after the
+    constructor accepted the request is a defect, not a structural absence."""
+    from tests.parity_harness.cases import CONSTRUCTORS, ParityCase
+
+    def failing_probe(_results):
+        raise TypeError("raised while reading, after the constructor accepted the request")
+
+    case = ParityCase(
+        id="downstream-type-error",
+        build={"from_unit_summary": _mean_summary_builder()},
+        waive={n: "SOURCE: not attempted" for n in CONSTRUCTORS if n != "from_unit_summary"}
+        | {"from_unit_summary": "SOURCE: declared absent"},
+        expected_absence={"from_unit_summary": TypeError},
+        readout_probe=failing_probe,
+    )
+    with pytest.raises(TypeError, match="raised while reading"):
+        run_case(case)
 
 
 def _unavailable_lift_row(reason):
@@ -273,22 +312,146 @@ def _assert_equal(left, right, key):
         _assert_payload_equal("case", "left", "right", key, method, payload, right[key][method])
 
 
-def test_a_refusing_day_axis_method_does_not_hide_its_sibling_rows():
-    """`daily` reads `run_daily` and `daily_lift` reads `run_daily_lift` as separate
-    legs, so one refusing leaves the other's rows compared."""
+def _binomial_set(**overrides):
+    from increment.estimation.binomial_rr import nuisance_beta
+    from increment.estimation.results import BinomialConfidenceSet
+
+    fields = {
+        "lower": 1.232421875,
+        "upper": None,
+        "alpha": 0.05,
+        "level": 0.95,
+        "decision_alpha": 0.05,
+        "geometry": "central",
+        "x_c": 0,
+        "n_c": 10,
+        "x_t": 2,
+        "n_t": 10,
+        "nuisance_beta": nuisance_beta(0.05),
+    }
+    return BinomialConfidenceSet(**(fields | overrides))
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"low_reliability": True},
+        {"n_treat": 3},
+        {"n_control": 4},
+        {"policy_name": "compiled_plan"},
+        {"binomial_set": _binomial_set()},
+    ],
+    ids=["low_reliability", "n_treat", "n_control", "policy_name", "binomial_set"],
+)
+def test_day_axis_rows_differing_in_a_consumer_visible_field_do_not_compare_equal(changed):
+    from tests.parity_harness.runner import _normalize
+
+    base = _unavailable_lift_row("few_units")
+    left = _normalize([base])
+    right = _normalize([base.model_copy(update=changed)])
+    (key,) = left
+    with pytest.raises(AssertionError):
+        _assert_equal(left, right, key)
+
+
+def test_day_axis_exact_binomial_bounds_compare_within_numeric_tolerance():
+    from tests.parity_harness.runner import _normalize
+
+    base = _unavailable_lift_row("few_units")
+    left = _normalize([base.model_copy(update={"binomial_set": _binomial_set()})])
+    ulp = _normalize(
+        [base.model_copy(update={"binomial_set": _binomial_set(lower=1.232421875 + 1e-12)})]
+    )
+    moved = _normalize([base.model_copy(update={"binomial_set": _binomial_set(lower=1.3)})])
+    (key,) = left
+    _assert_equal(left, ulp, key)
+    with pytest.raises(AssertionError):
+        _assert_equal(left, moved, key)
+
+
+class _SplitDayAxis:
+    """An analysis whose value methods return rows while its lift methods refuse, so a
+    runner that routes a view to the wrong method, or reads two methods atomically, is
+    visible in the calls it made and in the rows and refusals it kept."""
+
+    def __init__(self):
+        self.calls = []
+
+    def _values(self, name):
+        from datetime import date
+
+        from increment.breakout.estimates import DailyMetricValue
+
+        self.calls.append(name)
+        return [
+            DailyMetricValue(
+                ds=date(2025, 1, 10),
+                metric="m",
+                group_id="treatment",
+                value=None,
+                unavailable="few_units",
+                n=0,
+            )
+        ]
+
+    def _refuse(self, name):
+        from increment.errors import CapabilityError
+
+        self.calls.append(name)
+        raise CapabilityError("lift refuses", code="facade.analysis.lift_refused", context={})
+
+    def run_daily(self, **_):
+        return self._values("run_daily")
+
+    def run_asof(self, **_):
+        return self._values("run_asof")
+
+    def run_daily_lift(self, **_):
+        self._refuse("run_daily_lift")
+
+    def run_asof_lift(self, **_):
+        self._refuse("run_asof_lift")
+
+    def close(self):
+        pass
+
+
+@pytest.mark.parametrize(
+    ("view", "method", "refuses"),
+    [
+        ("daily", "run_daily", False),
+        ("daily_lift", "run_daily_lift", True),
+        ("asof", "run_asof", False),
+        ("asof_lift", "run_asof_lift", True),
+    ],
+)
+def test_each_day_axis_view_reads_only_its_own_method_and_keeps_its_own_outcome(
+    view, method, refuses
+):
+    """`daily` reads `run_daily` and `daily_lift` reads `run_daily_lift` as separate legs,
+    so a refusing lift never hides its value sibling's rows and vice versa."""
     from tests.parity_harness.cases import CONSTRUCTORS, ParityCase
 
-    def values_case(view):
-        return ParityCase(
-            id=f"leg-{view}",
-            build={"from_unit_summary": _mean_summary_builder()},
-            waive={n: "SOURCE: not attempted" for n in CONSTRUCTORS if n != "from_unit_summary"}
-            | {"from_unit_summary": "SOURCE: a summary carries no day axis"},
-            waived_refusal_codes={"from_unit_summary": "facade.analysis.no_definitions"},
-            refusal_only=True,
-            view=view,
-        )
-
-    for view in ("daily", "daily_lift", "asof", "asof_lift"):
-        case = values_case(view)
-        assert_parity(case, run_case(case))
+    analysis = _SplitDayAxis()
+    waive = {n: "SOURCE: not attempted" for n in CONSTRUCTORS if n != "from_unit_summary"}
+    if refuses:
+        waive["from_unit_summary"] = "SOURCE: the lift leg refuses"
+    case = ParityCase(
+        id=f"leg-{view}",
+        build={"from_unit_summary": lambda: analysis},
+        waive=waive,
+        waived_refusal_codes=(
+            {"from_unit_summary": "facade.analysis.lift_refused"} if refuses else {}
+        ),
+        refusal_only=refuses,
+        view=view,
+    )
+    result = run_case(case)
+    assert analysis.calls == [method]
+    if refuses:
+        assert result.rows == {}
+        assert result.refusals == {"from_unit_summary": "facade.analysis.lift_refused"}
+    else:
+        assert set(result.rows) == {"from_unit_summary"}
+        assert result.refusals == {}
+    assert_parity(case, result)

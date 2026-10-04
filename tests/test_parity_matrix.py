@@ -7,10 +7,10 @@ structurally unable to express the request. ``test_cell`` builds the cell on eac
 runs it, and asserts exactly that, so a stale refusal code, a refusal that became a number,
 a number that became a refusal and a numeric disagreement all fail.
 
-Cells in which a warehouse route builds and reads (publishes a unit-day artifact, compiles
-the readout) are ``slow``; the remainder refuse before any data is read and run in the fast
-tier. A warehouse route is memoised per process on its exact inputs, and the cells that
-share those inputs share an ``xdist_group``.
+Cells in which any ingress builds and reads data (an ingress runs, or refuses only once a
+request is read) are ``slow``; the remainder refuse at declaration, before any data is read,
+and run in the fast tier. A warehouse route is memoised per process on its exact inputs, and
+the cells that share those inputs share an ``xdist_group``.
 """
 
 from __future__ import annotations
@@ -26,18 +26,15 @@ from tests.parity_harness.runner import CaseResult, assert_parity, run_case
 # Advisories (a dropped-row count, a small-K cluster note) are not part of a cell's contract.
 pytestmark = pytest.mark.filterwarnings("ignore::increment.errors.IncrementWarning")
 
-_WAREHOUSE = ("from_definitions", "from_unit_day_artifact")
 _MEMO: dict[tuple, CaseResult] = {}
 
 
 def _reads_data(disposition: matrix.Disposition) -> bool:
-    """A warehouse route that runs, or refuses only once a request is read."""
+    """Some ingress runs, or refuses only once a request is read."""
     return any(
         isinstance(v.outcome, matrix.Runs)
         or (isinstance(v.outcome, matrix.Refuses) and v.stage == "request")
-        for verdicts in disposition.legs.values()
-        for name, v in verdicts.items()
-        if name in _WAREHOUSE
+        for v in disposition.all_verdicts
     )
 
 
@@ -73,8 +70,21 @@ def _run_one(cell: matrix.Cell, method: str, case: ParityCase, name: str) -> Cas
     return _MEMO[key]
 
 
+def _assert_runners_produced_rows(
+    case: ParityCase, outcomes: dict[str, matrix.Outcome], result: CaseResult
+) -> None:
+    """`assert_parity` treats a constructor that returned nothing as live and self-agreeing,
+    so a `Runs` verdict is held to its promise here: the ingress produced rows."""
+    for name in case.build:
+        if isinstance(outcomes[name], matrix.Runs):
+            assert result.rows.get(name), (
+                f"{case.id}: {name} is classified Runs but emitted no rows"
+            )
+
+
 def _matched(cell: matrix.Cell, method: str, disposition: matrix.Disposition) -> None:
-    case = matrix_cases.build_case(cell, method, disposition.outcomes(method))
+    outcomes = disposition.outcomes(method)
+    case = matrix_cases.build_case(cell, method, outcomes)
     parts = [_run_one(cell, method, case, name) for name in case.build]
     merged = CaseResult(
         rows={n: r for part in parts for n, r in part.rows.items()},
@@ -82,12 +92,16 @@ def _matched(cell: matrix.Cell, method: str, disposition: matrix.Disposition) ->
         sequential_state={n: s for part in parts for n, s in part.sequential_state.items()},
         absences={n: e for part in parts for n, e in part.absences.items()},
     )
+    _assert_runners_produced_rows(case, outcomes, merged)
     assert_parity(case, merged)
 
 
 def _switchback(cell: matrix.Cell, method: str, disposition: matrix.Disposition) -> None:
-    case = matrix_cases.build_switchback_case(cell, method, disposition.outcomes(method))
-    assert_parity(case, run_case(case))
+    outcomes = disposition.outcomes(method)
+    case = matrix_cases.build_switchback_case(cell, method, outcomes)
+    result = run_case(case)
+    _assert_runners_produced_rows(case, outcomes, result)
+    assert_parity(case, result)
 
 
 def test_every_cell_is_dispositioned_and_its_split_explained():

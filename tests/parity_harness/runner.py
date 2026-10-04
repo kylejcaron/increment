@@ -21,8 +21,9 @@ ub, level, role, discovery, family_q, family_threshold, family_guarantee,
 family_nominal_alpha, family_axes, alternative, reference_kind, note,
 inference, null_lift, null_abs, abs_diff, abs_se, abs_lb, abs_ub, abs_alpha,
 abs_reference_kind, abs_reference_df, reference_df, dof, quantile_p_value,
-relative_unavailable_reason, relative_confidence_set (structurally, via
-`model_dump()`), BreakoutEstimate's own `excluded`, and a sequential row's
+relative_unavailable_reason, unavailable (a day-axis row's null reason), low_reliability,
+n_treat, n_control, policy_name, relative_confidence_set and binomial_set (structurally,
+via `model_dump()`), BreakoutEstimate's own `excluded`, and a sequential row's
 own evidence (`sequential_result.log_e`/`decision_alpha` and its
 checkpoint's `status`) -- every one of these plus emitted row sets, values,
 bounds, failure/refusal codes, and retained sequential state, matching the
@@ -128,6 +129,10 @@ _EXACT_FIELDS = (
     "abs_reference_kind",
     "relative_unavailable_reason",
     "unavailable",
+    "low_reliability",
+    "n_treat",
+    "n_control",
+    "policy_name",
     "prior_shrunk",
     "prior_spec",
     # `BreakoutEstimate`-only; `getattr(..., None)` on a `LiftEstimate` row
@@ -147,7 +152,7 @@ _EXACT_FIELDS = (
 # `model_dump()` with the same numeric tolerance as every other bound,
 # because two paths reaching the same Fieller set can differ in the last
 # ULP of a bound the way `lift.value`/`lb`/`ub` already do.
-_NESTED_FIELDS = ("relative_confidence_set",)
+_NESTED_FIELDS = ("relative_confidence_set", "binomial_set")
 
 
 def _row_identity(row: Any) -> tuple:
@@ -192,6 +197,19 @@ def _row_payload(row: Any) -> dict[str, Any]:
         # A day-axis row with no lift names why; two paths dropping a row for different
         # reasons must not compare equal. Absent (None) on every other row.
         "unavailable": getattr(row, "unavailable", None),
+        # Breakout and day-axis rows (not `LiftEstimate`) carry the arm sizes behind the
+        # estimate, the reliability flag and the policy provenance; absent -> None/False.
+        "low_reliability": getattr(row, "low_reliability", None),
+        "n_treat": getattr(row, "n_treat", None),
+        "n_control": getattr(row, "n_control", None),
+        "policy_name": getattr(row, "policy_name", None),
+        # The exact-binomial set backing a row that has no finite point; structural like
+        # `relative_confidence_set` so its bounds compare within tolerance.
+        "binomial_set": (
+            row.binomial_set.model_dump()
+            if getattr(row, "binomial_set", None) is not None
+            else None
+        ),
         "note": row.note,
         # `family_guarantee` lands in a follow-up; `getattr` keeps this
         # harness runnable against a LiftEstimate that does not carry the
@@ -375,7 +393,21 @@ def run_case(case: ParityCase) -> CaseResult:
     for name, build in case.build.items():
         analysis = None
         try:
-            analysis = build()
+            try:
+                analysis = build()
+            except Exception as exc:
+                # Absence is the constructor refusing to express the request. An error of
+                # the same type raised later, once it accepted it, is a defect and propagates.
+                absent = case.expected_absence.get(name)
+                if absent is None:
+                    raise
+                if type(exc) is not absent:
+                    raise AssertionError(
+                        f"{case.id}: {name} was declared absent via {absent.__name__} "
+                        f"but raised {type(exc).__name__}: {exc}"
+                    ) from exc
+                absences[name] = absent
+                continue
             if case.sequential:
                 as_of = getattr(analysis, "_sequential_as_of", None)
                 snapshot_kwargs = {"as_of": as_of} if as_of is not None else {}
@@ -414,15 +446,6 @@ def run_case(case: ParityCase) -> CaseResult:
                 assert set(warning_codes(caught)) == set(expected_warnings)
             rows[name] = _normalize(results)
         except Exception as exc:
-            absent = case.expected_absence.get(name)
-            if absent is not None:
-                if type(exc) is not absent:
-                    raise AssertionError(
-                        f"{case.id}: {name} was declared absent via {absent.__name__} "
-                        f"but raised {type(exc).__name__}: {exc}"
-                    ) from exc
-                absences[name] = absent
-                continue
             if not isinstance(exc, CodedError):
                 raise
             expected = case.waived_refusal_codes.get(name)
@@ -535,14 +558,19 @@ def assert_parity(case: ParityCase, result: CaseResult) -> None:
             f"{case.id}: {name} was declared absent via {absent.__name__} but the "
             "attempt did not raise it -- the signature now expresses the request"
         )
+    if case.refusal_only:
+        # Every attempted ingress must refuse or be absent: an unwaived constructor that
+        # produced rows would otherwise self-compare as `live` and pass.
+        assert not result.rows, (
+            f"{case.id}: refusal_only but {sorted(result.rows)} produced rows instead of refusing"
+        )
+        assert set(case.build) == set(result.refusals) | set(result.absences), (
+            f"{case.id}: every attempted ingress must refuse or be absent, but "
+            f"{sorted(set(case.build) - set(result.refusals) - set(result.absences))} did neither"
+        )
+        return
     live = {name: r for name, r in result.rows.items() if name not in case.waived_refusal_codes}
     if not live:
-        if case.refusal_only:
-            assert set(case.build) == set(result.refusals) | set(result.absences), (
-                f"{case.id}: every attempted ingress must refuse or be absent, but "
-                f"{sorted(set(case.build) - set(result.refusals) - set(result.absences))} did neither"
-            )
-            return
         pytest.fail(f"{case.id}: every constructor was waived -- nothing to compare")
     oracle_name, oracle_rows = next(iter(live.items()))
     if case.require_selection:

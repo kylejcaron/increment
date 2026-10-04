@@ -2499,13 +2499,15 @@ class Analysis:
             Explicit role overrides; UNSET inherits the source metric bindings.
         prior : Prior | None | _Unset
             Explicit prior override; UNSET inherits and None resets. Native day-axis
-            sources support CUPED for mean and conversion metrics when their
-            fixed pre-period covariate moments are materialized, and for
-            bounded retention metrics on cohort-indexed daily paths.
+            sources support CUPED for mean, conversion and ratio metrics when their
+            fixed pre-period covariate moments are materialized (a ratio metric
+            adjusts its numerator and denominator against the numerator's
+            pre-period total), and for bounded retention metrics on
+            cohort-indexed daily paths.
             As-of retention CUPED is accepted on the calendar axis,
             including dimensioned monitoring and bounded completed-window
             reads; unbounded bands remain monitoring-only. CUPED remains
-            refused for ratio and quantile metrics, clustered day-axis
+            refused for quantile metrics, clustered day-axis
             analyses, and dataframe-panel sources.
         metrics : Sequence[str | Metric] | None
             Override the declared/constructed metric set.
