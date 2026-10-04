@@ -96,10 +96,12 @@ each row keeps its remaining evidence, are:
   relative lift is undefined and there is **no** relative set. The additive
   difference survives in `r.abs_diff`, `r.abs_lb`, and `r.abs_ub`.
 - A row whose joint relative covariance is unusable: it cannot be represented as
-  a float (extremely large scores) or is not positive definite.
+  a float (extremely large scores) or is not positive semidefinite (a singular
+  positive semidefinite covariance is still usable).
   `r.relative_unavailable_reason` is `"joint_covariance_unrepresentable"` or
-  `"joint_covariance_indefinite"`. There is **no** relative set, and the
-  additive interval stays in `r.abs_lb` and `r.abs_ub`.
+  `"joint_covariance_indefinite"`. There is **no** relative set. The additive
+  fields `r.abs_diff` and `r.abs_se` survive, but `r.abs_lb` and `r.abs_ub` can
+  still be `None`, so check each bound before using it.
 - A winsorized metric with a `confidence_set`. A missing point leaves
   `r.confidence_set.relative` with a status and reason per endpoint (for
   example `unbounded` with `denominator_nonseparation`), and the additive
