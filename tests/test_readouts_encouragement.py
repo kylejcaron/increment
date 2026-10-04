@@ -509,7 +509,7 @@ def test_asof_lift_mixed_family_requires_finalized_bounded_windows():
 
 
 def test_validate_encouragement_asof_inference_gates_mixed_family_and_spares_asymptotic_only():
-    """``_validate_encouragement_asof_inference`` (readouts.py) must gate
+    """``_validate_encouragement_asof_inference`` (``increment.readouts._common``) must gate
     MixedFamily the same way it gates AlwaysValid -- both carry an exact
     Bernoulli cell -- while leaving plain AsymptoticMean (no compliance
     cell) untouched."""
@@ -1795,7 +1795,7 @@ def test_selected_secondary_late_row_keeps_both_value_scales_at_corrected_level(
     (complier-ratio) and absolute (additive) -- sharing the same
     (metric, group_id, method, estimand="late") tuple and differing only
     in ``value_scale``. ``_select_encouragement_family``'s re-estimation
-    cache (readouts.py) must key on ``value_scale`` too: without it, the
+    cache (``increment.readouts._encouragement``) must key on ``value_scale`` too: without it, the
     second late row's ``pass_results`` entry would silently overwrite the
     first in ``reestimated``, so BOTH original late rows would look up
     and receive the SAME single re-estimated object -- one value_scale
@@ -1971,7 +1971,7 @@ def test_guardrail_estimands_narrowing_never_returns_unrequested_estimand(con):
 def _uptake_named_secondary_analysis(con):
     """Two in-family secondaries with symmetric roles, one of them
     literally named ``uptake`` -- the outcome-metric collision surface
-    for defect 1 (readouts.py identifying the design-level compliance
+    for defect 1 (``increment.readouts._encouragement`` identifying the design-level compliance
     row by ``metric == "uptake"`` instead of ``estimand == "compliance"``).
 
     The plan declares ``q=0.02`` (below the default 0.10) so that, with
@@ -2146,8 +2146,8 @@ def _uptake_named_secondary_analysis(con):
 
 
 def test_outcome_metric_named_uptake_keeps_its_own_role_and_family_verdict(con):
-    """Defect 1 regression (readouts.py): a real outcome metric legitimately
-    named ``uptake`` shares its ``LiftEstimate.metric`` string with the
+    """Defect 1 regression (``increment.readouts._encouragement``): a real outcome metric
+    legitimately named ``uptake`` shares its ``LiftEstimate.metric`` string with the
     design-level compliance diagnostic, which `encouragement_rows` and
     `_select_encouragement_family` used to identify via
     ``r.metric == "uptake"``. That collision used to (a) drop the real

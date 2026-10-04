@@ -643,7 +643,7 @@ def test_estimate_ate_unadjusted_undeclared_metric_preferred_direction_is_none()
     """The unadjusted branch's own `estimate_lift(...)` call
     used to unconditionally stamp `preferred_direction=metric.preferred_direction`,
     silently defaulting an undeclared metric to "increase" -- bypassing
-    readouts.py's fix entirely for every Observational-design run."""
+    the readouts' explicitness fix entirely for every Observational-design run."""
     ests = estimate_ate(_src(), _DESIGN, methods=[Method(name="unadjusted")]).results
     assert all(e.preferred_direction is None for e in ests)
 

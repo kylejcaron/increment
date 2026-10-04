@@ -528,8 +528,8 @@ def test_synthesise_metric_leaves_preferred_direction_untracked_when_unset(
     """An undeclared MetricSpec.preferred_direction must not land in the
     synthesised Metric's model_fields_set either, on any of the 5 branches
     -- MetricIdentity's own 'increase' default is a value only, never a
-    resolved declaration, so it must stay invisible to readouts.py's
-    ``"preferred_direction" in metric.model_fields_set`` check."""
+    resolved declaration, so it must stay invisible to the explicitness check
+    behind ``Metric.declared_preferred_direction``."""
     spec = MetricSpec(**_SYNTHESISE_SPEC_KWARGS[metric_type])
     metric = synthesise_metric(spec)
     assert "preferred_direction" not in metric.model_fields_set

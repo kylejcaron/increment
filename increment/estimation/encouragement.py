@@ -96,7 +96,7 @@ ESTIMANDS = (
     "itt",
     "compliance",
     "late",
-)  # public: the shared default estimands, reused by readouts.py
+)  # public: the shared default estimands, reused by increment.readouts
 
 _REFUSALS = refusals(
     InvalidRequestError,

@@ -245,7 +245,7 @@ def test_run_dispatches_iptw_end_to_end():
 def test_run_undeclared_metric_preferred_direction_is_none_under_observational():
     """Finding 1: `estimate_ate`'s own unconditional
     `preferred_direction=metric.preferred_direction` stamps (unadjusted
-    branch and adjust_fn branch) bypassed readouts.py's explicitness fix
+    branch and adjust_fn branch) bypassed the readouts' explicitness fix
     entirely for every Observational-design run -- an undeclared metric
     silently reported "increase" end-to-end through `Analysis.run()`."""
     (est,) = lift_rows(_obs_analysis(design=_OBS_TRIM).run())

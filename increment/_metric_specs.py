@@ -355,7 +355,8 @@ def synthesise_metric(spec: MetricSpec) -> Metric:
     and spec.preferred_direction is not None``), never as a bare value --
     passing the field unconditionally would make the synthesised
     ``Metric``'s own ``model_fields_set`` track it even when the caller
-    never declared one, defeating readouts.py's explicitness check. An
+    never declared one, defeating the explicitness check behind
+    ``Metric.declared_preferred_direction`` that ``increment.readouts`` reads. An
     explicit ``preferred_direction=None`` is treated identically to an
     unset field (both mean "undeclared") rather than forwarded, since the
     synthesised ``Metric``'s own field has no ``None`` in its type union
