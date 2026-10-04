@@ -14,7 +14,7 @@ import json
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from importlib import resources
 from typing import TYPE_CHECKING, Any
 
@@ -30,9 +30,9 @@ from increment.dashboard._data import (
     group_data_csv,
     load_explore,
     metric_names,
-    prepare_dashboard,
     readout_csv,
     row_for_metric,
+    show_exploratory_metrics,
 )
 from increment.dashboard._format import (
     allocation_evidence,
@@ -103,8 +103,8 @@ def render_dashboard(analysis: Analysis, *, snapshot: DashboardSnapshot) -> Any:
     """The complete interactive dashboard for one prepared snapshot.
 
     ``analysis`` proves the experiment binding; every tab reads only captured evidence. In a
-    running notebook, adding or removing exploratory metrics in Explore prepares a new snapshot
-    from ``analysis`` and replaces the page; a static export shows its captured selection.
+    running notebook, adding or removing exploratory metrics in Explore re-renders the same
+    snapshot showing them; nothing is read again. A static export shows its captured selection.
     """
     return mo.ui.anywidget(DashboardWidget(analysis, snapshot=snapshot))
 
@@ -112,11 +112,11 @@ def render_dashboard(analysis: Analysis, *, snapshot: DashboardSnapshot) -> Any:
 class DashboardWidget(anywidget.AnyWidget):
     """The dashboard page, plus the one request it can send back: a new set of added metrics.
 
-    ``document`` is the rendered page. Setting ``exploratory_metrics`` prepares a new snapshot
-    showing those metrics and replaces ``document``; the exploratory family already counts every
-    offered metric, so the selection changes only what is shown. A failed preparation keeps the
-    current snapshot, restores the selection, and reports the failure in ``status``; an
-    unexpected failure is re-raised after the rollback so the notebook shows it.
+    ``document`` is the rendered page. Setting ``exploratory_metrics`` re-renders the same
+    snapshot showing those metrics: every offered metric was read and corrected with the
+    headline, so nothing is read or recomputed and the results cannot change. A refused or
+    failed update keeps the current page, restores the selection, and reports the failure in
+    ``status``; an unexpected failure is re-raised after the rollback so the notebook shows it.
     """
 
     _esm = resources.files(__package__).joinpath("_bridge.js").read_text(encoding="utf-8")
@@ -132,17 +132,16 @@ class DashboardWidget(anywidget.AnyWidget):
         )
         self._analysis = analysis
         self._snapshot = snapshot
-        self.observe(self._prepare, names="exploratory_metrics")
+        self.observe(self._show, names="exploratory_metrics")
 
-    def _prepare(self, change: Mapping[str, Any]) -> None:
+    def _show(self, change: Mapping[str, Any]) -> None:
         requested = tuple(change["new"])
         current = self._snapshot.config.exploratory_metrics
         if requested == current:
             return
-        self.status = "preparing"
+        self.status = "updating"
         try:
-            config = replace(self._snapshot.config, exploratory_metrics=requested)
-            snapshot = prepare_dashboard(self._analysis, config=config)
+            snapshot = show_exploratory_metrics(self._snapshot, requested)
             page = document(build_payload(self._analysis, snapshot=snapshot))
         except CodedError as exc:
             self.status = f"{exc} ({exc.code})"
@@ -233,7 +232,7 @@ def build_payload(analysis: Analysis, *, snapshot: DashboardSnapshot) -> dict[st
                     "label": _label(model.name),
                     "description": str(getattr(model, "description", "") or ""),
                 }
-                for model in analysis.available_metrics
+                for model in snapshot.offered_metrics
             ],
             "selected": [model.name for model in snapshot.exploratory_metrics],
         },

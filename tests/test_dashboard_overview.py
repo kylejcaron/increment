@@ -15,7 +15,7 @@ pytest.importorskip("marimo")
 
 from increment.dashboard import DashboardConfig, prepare_dashboard
 from increment.dashboard._data import decision_rows
-from increment.dashboard._html import overview_rows
+from increment.dashboard._html import overview_notes, overview_rows
 from increment.errors import CapabilityError, InvalidRequestError
 from tests.test_dashboard_capture import _METRICS, _double_the_treatment_arm, _workspace
 
@@ -127,7 +127,8 @@ def test_added_metrics_keep_their_own_absolute_value_series(tmp_path):
 
 def test_a_metric_the_breakout_refuses_keeps_every_other_metrics_segments(tmp_path):
     with _workspace(tmp_path, metrics=_WITH_QUANTILE) as (_, analysis):
-        snapshot = prepare_dashboard(analysis, config=_config(ADDED, QUANTILE))
+        # The quantile metric is offered but not shown; its refusal is still reported.
+        snapshot = prepare_dashboard(analysis, config=_config(ADDED))
         overview = snapshot.overview
         assert overview is not None and overview.family_refusal is None
         shown = {cell.metric for cell in overview.segments[COUNTRY]}
@@ -136,6 +137,7 @@ def test_a_metric_the_breakout_refuses_keeps_every_other_metrics_segments(tmp_pa
         refused = {(metric, place) for metric, place, _ in overview.refusals}
         assert (QUANTILE, "country") in refused
         assert {metric for metric, _, _ in overview.refusals} == {QUANTILE}
+        assert any(QUANTILE in note for note in overview_notes(snapshot, COUNTRY))
 
 
 def test_two_sources_of_one_property_are_separate_comparisons(tmp_path):
@@ -160,16 +162,16 @@ def test_choosing_what_to_show_never_changes_the_family(tmp_path):
         hidden = prepare_dashboard(analysis, config=_config())
         shown = prepare_dashboard(analysis, config=_config(ADDED))
         assert shown.readout_rows == hidden.readout_rows
-        assert hidden.overview is not None and shown.overview is not None
-        assert hidden.overview.hidden == (ADDED,) and shown.overview.hidden == ()
+        assert [model.name for model in hidden.offered_metrics] == [ADDED]
+        assert hidden.exploratory_metrics == () and hidden.overview is not None
+        assert shown.overview is not None
         assert hidden.overview.family_size == shown.overview.family_size
-        # Every cell both snapshots show is corrected identically.
-        for scope, cells in hidden.overview.segments.items():
-            assert [row.model_dump(mode="json") for row in cells] == [
-                row.model_dump(mode="json")
-                for row in shown.overview.segments[scope]
-                if row.metric != ADDED
-            ]
+
+        def cells(overview) -> list:
+            rows = [*overview.exploratory, *(r for s in overview.segments.values() for r in s)]
+            return [row.model_dump(mode="json") for row in rows]
+
+        assert cells(hidden.overview) == cells(shown.overview)
 
 
 def test_an_undeclared_exploratory_metric_is_refused_before_preparation(tmp_path):
@@ -206,20 +208,26 @@ def _page_payload(page: str) -> dict:
 
 
 @pytest.mark.slow
-def test_the_dashboard_widget_reprepares_for_added_metrics_and_keeps_a_refusal(tmp_path):
+def test_the_dashboard_widget_shows_added_metrics_without_reading_again(tmp_path):
     from increment.dashboard._app import DashboardWidget
 
-    with _workspace(tmp_path, metrics=_SAVED) as (_, analysis):
-        widget = DashboardWidget(analysis, snapshot=prepare_dashboard(analysis, config=_config()))
+    with _workspace(tmp_path, metrics=_SAVED) as (con, analysis):
+        snapshot = prepare_dashboard(analysis, config=_config())
+        widget = DashboardWidget(analysis, snapshot=snapshot)
         offered = _page_payload(widget.document)["exploratory"]
         assert [item["key"] for item in offered["available"]] == [ADDED]
         assert offered["selected"] == []
 
+        # A later warehouse change never reaches the page: selection re-renders this snapshot.
+        _double_the_treatment_arm(con)
         widget.exploratory_metrics = [ADDED]
         assert widget.status == ""
         payload = _page_payload(widget.document)
         assert payload["exploratory"]["selected"] == [ADDED]
         assert ADDED in {metric["key"] for metric in payload["metrics"]}
+        assert widget._snapshot.readout_rows == snapshot.readout_rows
+        assert widget._snapshot.overview == snapshot.overview
+        assert widget._snapshot.computed_at == snapshot.computed_at
 
         page = widget.document
         widget.exploratory_metrics = ["not_a_saved_metric"]
@@ -227,22 +235,12 @@ def test_the_dashboard_widget_reprepares_for_added_metrics_and_keeps_a_refusal(t
         assert widget.exploratory_metrics == [ADDED]
         assert widget.document == page
 
-        # Removing a metric only hides it; the family is unchanged.
         widget.exploratory_metrics = []
         assert widget.status == ""
-        snapshot = widget._snapshot
-        assert snapshot.overview is not None
-        assert snapshot.overview.hidden == (ADDED,)
-        assert ADDED not in {row.metric for row in snapshot.overview.exploratory}
-        assert all(
-            row.metric != ADDED for rows in snapshot.overview.segments.values() for row in rows
-        )
-        with_added = prepare_dashboard(analysis, config=_config(ADDED)).overview
-        assert with_added is not None
-        assert snapshot.overview.family_size == with_added.family_size
+        assert ADDED not in {metric["key"] for metric in _page_payload(widget.document)["metrics"]}
 
 
-def test_an_unexpected_preparation_failure_rolls_the_widget_back(tmp_path, monkeypatch):
+def test_an_unexpected_update_failure_rolls_the_widget_back(tmp_path, monkeypatch):
     from increment.dashboard import _app
 
     with _workspace(tmp_path, metrics=_SAVED) as (_, analysis):
@@ -250,12 +248,12 @@ def test_an_unexpected_preparation_failure_rolls_the_widget_back(tmp_path, monke
             analysis, snapshot=prepare_dashboard(analysis, config=_config())
         )
         page = widget.document
-        failure = RuntimeError("warehouse connection lost")
+        failure = RuntimeError("render failed")
 
         def lost(*_: object, **__: object) -> None:
             raise failure
 
-        monkeypatch.setattr(_app, "prepare_dashboard", lost)
+        monkeypatch.setattr(_app, "show_exploratory_metrics", lost)
         with pytest.raises(RuntimeError) as caught:
             widget.exploratory_metrics = [ADDED]
         assert caught.value is failure
@@ -298,8 +296,6 @@ def test_an_added_metric_with_a_display_unit_can_be_removed_and_re_added(tmp_pat
         widget.exploratory_metrics = []
         assert widget.status == ""
         assert widget.exploratory_metrics == []
-        assert widget._snapshot.overview is not None
-        assert widget._snapshot.overview.hidden == (ADDED,)
         widget.exploratory_metrics = [ADDED]
         assert widget.status == ""
         assert [model.name for model in widget._snapshot.exploratory_metrics] == [ADDED]

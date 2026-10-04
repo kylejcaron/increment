@@ -890,15 +890,15 @@ def overview_notes(
             "exploratory estimates are not substituted."
         )
         return notes
-    hidden = (
-        f" ({count_text(len(overview.hidden))} not shown: {', '.join(overview.hidden)})"
-        if overview.hidden
-        else ""
-    )
+    shown = {model.name for model in snapshot.exploratory_metrics}
+    hidden = [model.name for model in snapshot.offered_metrics if model.name not in shown]
+    not_shown = f" ({count_text(len(hidden))} not shown: {', '.join(hidden)})" if hidden else ""
     notes.append(
         f"Exploratory family: Benjamini-Hochberg at q = {overview.family_q:.3g} across "
-        f"{count_text(overview.family_size)} comparisons: every saved metric the definitions "
-        f"offer{hidden} and every segment cell of every declared breakout. Shown or not, every "
+        f"{count_text(overview.family_size)} comparisons: every eligible whole-experiment cell of "
+        f"every saved metric the definitions offer{not_shown}, and every eligible segment cell of "
+        "every metric and declared breakout; cells it cannot take are listed with their reasons. "
+        "Shown or not, every "
         "offered metric is counted, so choosing what to display never changes the correction. "
         "BH controls the false discovery rate under independence or positive dependence; these "
         "comparisons share units and the control arm, and that condition is not checked."

@@ -1123,9 +1123,9 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   }
   function requestMetrics(next) {
     if (!bridged) return;
-    setStatus('Preparing a new snapshot with ' + next.length + ' added metric' + (next.length === 1 ? '' : 's') + '…');
+    setStatus('Showing ' + next.length + ' added metric' + (next.length === 1 ? '' : 's') + '…');
     clearTimeout(waiting);
-    // A live host acknowledges at once; silence means no running notebook can prepare one.
+    // A live host acknowledges at once; silence means no running notebook can re-render the page.
     waiting = setTimeout(() => setStatus('Changing added metrics needs a running notebook; this page is a static snapshot.', 'error'), 4000);
     toHost({ type: 'set-exploratory-metrics', metrics: next });
   }
@@ -1170,8 +1170,8 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     if (message.type === 'bridge') { bridged = true; renderAdded(); }
     else if (message.type === 'status') {
       const status = str(message.status);
-      if (status === 'preparing') { clearTimeout(waiting); setStatus('Preparing a new snapshot… this reads the warehouse and recomputes the exploratory family.'); }
-      else if (status) { clearTimeout(waiting); setStatus('The new snapshot was not prepared: ' + status, 'error'); }
+      if (status === 'updating') { clearTimeout(waiting); setStatus('Updating the page from this snapshot; nothing is read again.'); }
+      else if (status) { clearTimeout(waiting); setStatus('The selection was not changed: ' + status, 'error'); }
     } else if (message.type === 'restore' && VIEWS.includes(str(message.view))) navigate(str(message.view));
   });
   renderAdded();

@@ -2,8 +2,8 @@
 //
 // The page posts {source: "inc-dashboard", type: "ready" | "set-exploratory-metrics"}.
 // This widget answers {source: "inc-dashboard-host", type: "bridge" | "status" | "restore"}.
-// Python prepares a new snapshot when `exploratory_metrics` changes and replaces `document`;
-// the replacement page reopens Explore, where the change was requested.
+// Python re-renders the same snapshot when `exploratory_metrics` changes and replaces
+// `document`; the replacement page reopens Explore, where the change was requested.
 function render({ model, el }) {
   const frame = document.createElement("iframe");
   frame.className = "inc-dashboard-frame";

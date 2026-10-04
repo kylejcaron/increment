@@ -75,9 +75,9 @@ temporal and breakout views as well as the headline.
 
 `render_dashboard` embeds the captured evidence without querying the warehouse.
 Its browser controls select prepared evidence; they never alter the analysis
-plan or recompute confirmatory results. The one exception is **Added metrics**
-in Explore: in a running notebook, changing them prepares a new snapshot from
-`analysis` with those exploratory metrics and replaces the page. Section-level
+plan or recompute confirmatory results. That includes **Added metrics** in
+Explore: every offered metric is read with the headline, so changing which
+ones are shown re-renders the same snapshot. Section-level
 renderers also accept already-prepared data. Re-executing preparation
 intentionally creates a new snapshot that reflects subsequent source changes.
 You retain ownership of `analysis` and its connection; the package does not
@@ -170,7 +170,7 @@ and do not restyle the notebook canvas.
 
 | Call | Renders |
 |---|---|
-| `render_dashboard(analysis, snapshot=...)` | The complete interactive four-tab dashboard from captured evidence, as a marimo anywidget; native plots, scoped controls, metric inspectors, health, provenance, and a readable Report with the full captured metric family. Its Explore **Added metrics** control re-prepares the snapshot in a running notebook. |
+| `render_dashboard(analysis, snapshot=...)` | The complete interactive four-tab dashboard from captured evidence, as a marimo anywidget; native plots, scoped controls, metric inspectors, health, provenance, and a readable Report with the full captured metric family. Its Explore **Added metrics** control re-renders the same snapshot in a running notebook; it never reads the warehouse. |
 | `dashboard_styles(theme=MIDNIGHT)` | The configured theme and scoped stylesheet as one style block. Reads packaged resources, so it needs no repository-relative path. |
 | `render_header(snapshot)` | Experiment identity, window, population, inference, arms, and three summary cards: enrolled units, observed arm split, and a compact primary lift with its bracketed interval and direction-aware significance status. |
 | `render_health(snapshot)` | Visual allocation bars with target markers, the SRM verdict, and visible assignment warnings and result caveats. Allocation over time and evidence expands to a CoefTable with one row per variant, cumulative enrolled share, and the check statistics. |
@@ -251,8 +251,9 @@ beneath its whole-experiment row. Selecting a metric opens its **Time series**.
   plan's `q`, fixed for the snapshot, so switching **Compare by** never
   changes a cell. Saved metrics count whether or not they are shown, so
   choosing what to display, before or after seeing results, never changes the
-  correction. Each preparation reads the warehouse afresh; reading again after
-  more data arrive is a new look, not a continuation of this family. Only a
+  correction. Changing the selection reads nothing; only re-running
+  preparation reads the warehouse, and a read on more data is a new look, not
+  a continuation of this family. Only a
   discovery is coloured as a finding, with its FCR-adjusted interval; other
   exploratory intervals are unadjusted and drawn neutral even when they
   exclude zero. BH controls the false discovery rate under independence or
@@ -277,9 +278,9 @@ breakout, each covering every offered metric. `metric_units` may name any
 offered metric. A name the definitions do not offer is refused with
 `dashboard.invalid_config` before any read. In Explore, **Added metrics** lists
 the selection; **+ Add metrics** searches the saved definitions. Applying a
-change prepares a new snapshot (it reads the warehouse, so it takes a few
-seconds) and reopens Explore; the correction stays the same. A refused
-preparation keeps the current snapshot and shows the refusal.
+change re-renders the same snapshot and reopens Explore; nothing is read
+again, so the results and the correction cannot change. A name the snapshot
+did not offer is refused and the current page stays.
 
 ### Time series
 

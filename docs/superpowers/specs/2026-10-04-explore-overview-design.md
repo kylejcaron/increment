@@ -110,14 +110,17 @@ The work lands in three ordered parts. Each part is independently testable.
   unsupported states show their coded refusal, as today.
 - Added metrics are chosen inside Explore. `render_dashboard` returns a marimo
   anywidget hosting the dashboard page; the page's **Added metrics** control
-  sends a new selection to Python, which prepares a new snapshot and replaces
-  the page, reopening Explore. A refused or failed preparation keeps the
-  current snapshot and restores the selection.
+  sends a new selection to Python, which re-renders the same snapshot with
+  `show_exploratory_metrics` and replaces the page, reopening Explore. Every
+  offered metric's whole-window, segment and Time-series captures are taken
+  in the original pinned read, so a selection change reads nothing. A refused
+  or failed update keeps the current page and restores the selection.
 - Post-hoc selection: the family is the whole offered catalog, fixed before
   anything is shown, so choosing what to display (or stopping once something
-  looks significant) never changes the correction. A new preparation reads
-  the warehouse afresh; a later read on more data is a new look, not part of
-  this family. A static export cannot change the selection.
+  looks significant) never changes the correction or the declared results.
+  Only re-running preparation reads the warehouse; a later read on more data
+  is a new look, not part of this family. A static export cannot change the
+  selection.
 
 ## Method interactions
 
@@ -169,7 +172,8 @@ Unit tests use real DuckDB fixtures, never mocked estimators.
     extended warehouse-mutation test shows added metrics come from the pinned
     read;
   - prior and sequential refusals render per row;
-  - the widget re-prepares for an added metric, keeps a refusal's snapshot and
+  - the widget shows an added metric without reading again (a warehouse change
+    after preparation never reaches the page), keeps a refusal's page and
     selection; a browser smoke of the Explore picker, the static-export
     message, both modes, and the Report remaining unchanged.
 
