@@ -70,7 +70,7 @@ One row per entry on this page. Rows carry no numbers or codes; the entry is aut
 | [Clustered CATE uncertainty is cluster-asymptotic](#clustered-cate-uncertainty-is-cluster-asymptotic) | approximation | Clustered CATE with few, unbalanced, or high-leverage clusters. |
 | [Targeting validation depends on identification and overlap](#targeting-validation-depends-on-identification-and-overlap) | assumption | Validating targeting on observational data; ignorability cannot be checked. |
 | [The targeting workflow carries no joint error control](#the-targeting-workflow-carries-no-joint-error-control) | scope of guarantee | Acting on the strongest of many targeting-workflow tests. |
-| [Meta-analysis can be anticonservative at small K](#meta-analysis-can-be-anticonservative-at-small-k) | approximation | Pooling few segments; the plug-in interval is anticonservative. |
+| [Meta-analysis can be anticonservative at small K](#meta-analysis-can-be-anticonservative-at-small-k) | approximation | Pooling few segments; HKSJ can undercover in the tested design. |
 | [The read-only SQL gate is a screen, not a sandbox](#the-read-only-sql-gate-is-a-screen-not-a-sandbox) | operational | Definitions could come from anyone you do not fully trust. |
 
 ## What runs where
