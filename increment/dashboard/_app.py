@@ -113,11 +113,10 @@ class DashboardWidget(anywidget.AnyWidget):
     """The dashboard page, plus the one request it can send back: a new set of added metrics.
 
     ``document`` is the rendered page. Setting ``exploratory_metrics`` prepares a new snapshot
-    with those metrics and replaces ``document``. Every metric added during the widget's life
-    stays in the exploratory family even after it is hidden, so looking at a metric and then
-    dropping it never shrinks the correction. A failed preparation keeps the current snapshot,
-    restores the selection, and reports the failure in ``status``; an unexpected failure is
-    re-raised after the rollback so the notebook shows it.
+    showing those metrics and replaces ``document``; the exploratory family already counts every
+    offered metric, so the selection changes only what is shown. A failed preparation keeps the
+    current snapshot, restores the selection, and reports the failure in ``status``; an
+    unexpected failure is re-raised after the rollback so the notebook shows it.
     """
 
     _esm = resources.files(__package__).joinpath("_bridge.js").read_text(encoding="utf-8")
@@ -141,11 +140,8 @@ class DashboardWidget(anywidget.AnyWidget):
         if requested == current:
             return
         self.status = "preparing"
-        family = tuple(dict.fromkeys((*self._snapshot.config.exploratory_family, *requested)))
         try:
-            config = replace(
-                self._snapshot.config, exploratory_metrics=requested, exploratory_family=family
-            )
+            config = replace(self._snapshot.config, exploratory_metrics=requested)
             snapshot = prepare_dashboard(self._analysis, config=config)
             page = document(build_payload(self._analysis, snapshot=snapshot))
         except CodedError as exc:

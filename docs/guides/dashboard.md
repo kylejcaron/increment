@@ -113,8 +113,9 @@ direction, tested alternative, intervals, and the multiplicity policy are
 all inherited from your `Analysis` — there is no confidence slider or method
 selector that silently changes the analysis contract. An experiment whose
 `run()` returns contrast results rather than lift estimates (for example a
-switchback design) is refused with `CapabilityError`
-(`dashboard.unsupported_experiment`) rather than shown as an empty result.
+switchback design), or that declares an encouragement or observational
+`design`, is refused with `CapabilityError` (`dashboard.unsupported_experiment`)
+before any read, rather than shown as a randomized result.
 
 `metric_units` contains presentation labels, not statistical settings. Unknown
 metric names and empty labels are refused before source reads. Conversion and
@@ -244,16 +245,19 @@ beneath its whole-experiment row. Selecting a metric opens its **Time series**.
 - The experiment's own metrics on the whole experiment are the Readout's rows,
   labelled "as in Readout", with their declared roles and corrections; they
   are never re-corrected here.
-- Every other cell is exploratory: the whole-experiment rows of added
-  metrics, and every segment cell of every metric and declared breakout.
-  These cells form one Benjamini-Hochberg family at the plan's `q`, fixed
-  for the snapshot, so switching **Compare by** never changes a cell. Every
-  metric added during a notebook session stays in the family after it is
-  removed, so hiding a metric that looked unpromising never shrinks the
-  correction; a new session starts a new family. Only a
+- Every other cell is exploratory: the whole-experiment rows of every saved
+  metric the definitions offer, and every segment cell of every metric and
+  declared breakout. These cells form one Benjamini-Hochberg family at the
+  plan's `q`, fixed for the snapshot, so switching **Compare by** never
+  changes a cell. Saved metrics count whether or not they are shown, so
+  choosing what to display, before or after seeing results, never changes the
+  correction. Each preparation reads the warehouse afresh; reading again after
+  more data arrive is a new look, not a continuation of this family. Only a
   discovery is coloured as a finding, with its FCR-adjusted interval; other
   exploratory intervals are unadjusted and drawn neutral even when they
-  exclude zero.
+  exclude zero. BH controls the false discovery rate under independence or
+  positive dependence; these cells share units and the control arm, and
+  [that condition is not checked](../limitations.md#fixed-horizon-fdr-control-assumes-a-dependence-condition-that-is-not-checked).
 - A cell the family cannot take (for example a quantile metric or an
   informative prior) is left out with its reason in **Overview notes**; it
   never blocks the other cells. Under a registered sequential plan the added
@@ -261,19 +265,21 @@ beneath its whole-experiment row. Selecting a metric opens its **Time series**.
 
 ### Added exploratory metrics
 
-`DashboardConfig(exploratory_metrics=(...))` names metrics from
-`analysis.available_metrics`: saved per-unit metrics on the experiment's unit
-that the experiment does not declare (report-only `total`/`active` metrics and
-other entities' metrics are not offered).
-`DashboardConfig(exploratory_family=(...))` names further added metrics that
-count in the exploratory family without being shown. They are read in the same pinned snapshot as everything else, appear
-in the Overview's Exploratory group and in Time series, and never enter the
-Readout or the Report. A name the definitions do not offer is refused with
+`DashboardConfig(exploratory_metrics=(...))` names the metrics from
+`analysis.available_metrics` to show: saved per-unit metrics on the
+experiment's unit that the experiment does not declare (report-only
+`total`/`active` metrics and other entities' metrics are not offered). Every
+offered metric is read in the same pinned snapshot and counted in the
+exploratory family; the shown ones also appear in the Overview's Exploratory
+group and in Time series. None enters the Readout or the Report. Reading the
+whole catalog costs one whole-experiment read plus one read per declared
+breakout, each covering every offered metric. `metric_units` may name any
+offered metric. A name the definitions do not offer is refused with
 `dashboard.invalid_config` before any read. In Explore, **Added metrics** lists
 the selection; **+ Add metrics** searches the saved definitions. Applying a
 change prepares a new snapshot (it reads the warehouse, so it takes a few
-seconds) and reopens Explore; the exploratory family grows with each added
-metric. A refused preparation keeps the current snapshot and shows the refusal.
+seconds) and reopens Explore; the correction stays the same. A refused
+preparation keeps the current snapshot and shows the refusal.
 
 ### Time series
 

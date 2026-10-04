@@ -77,20 +77,20 @@ The work lands in three ordered parts. Each part is independently testable.
 
 ### 3. Dashboard
 
-- `DashboardConfig(exploratory_metrics=(...), exploratory_family=(...))`,
-  validated against `available_metrics` before preparation.
-  `exploratory_metrics` are shown; `exploratory_family` (always including the
-  shown ones) are counted in the exploratory family.
-- `prepare_dashboard` reads the added metrics inside the same pinned read and
-  captures, once per snapshot:
+- `DashboardConfig(exploratory_metrics=(...))` names the added metrics shown,
+  validated against `available_metrics` before preparation. The exploratory
+  family counts every offered metric whether shown or not; a source with no
+  saved definitions offers none.
+- `prepare_dashboard` reads every offered metric inside the same pinned read
+  and captures, once per snapshot:
   - the declared whole-window rows (the existing headline rows, unchanged);
-  - uncorrected whole-window rows for added metrics;
-  - uncorrected segment rows for every declared and counted metric, every
+  - uncorrected whole-window rows for every offered metric;
+  - uncorrected segment rows for every declared and offered metric, every
     declared breakout, and every non-control arm, through
     `DashboardBreakoutReads.uncorrected_segments`;
-  - the exploratory family over the counted added metrics' whole-window rows
-    and all segment rows, computed by part 2; counted-but-hidden metrics
-    contribute cells but no displayed rows.
+  - the exploratory family over the offered metrics' whole-window rows and all
+    segment rows, computed by part 2; offered-but-hidden metrics contribute
+    cells but no displayed rows.
 - The Explore tab gains a mode switch, **Overview** (default) and
   **Time series** (the current view). **Compare by** applies to both.
 - The overview is one native CoefTable, matching the Readout: groups Primary,
@@ -113,12 +113,11 @@ The work lands in three ordered parts. Each part is independently testable.
   sends a new selection to Python, which prepares a new snapshot and replaces
   the page, reopening Explore. A refused or failed preparation keeps the
   current snapshot and restores the selection.
-- Post-hoc selection: an added metric is chosen after outcomes are visible.
-  The widget counts every metric added during its life in the family, even
-  after it is removed, so the only way to look at a metric (adding it) also
-  commits it to the correction. Hiding an unpromising metric never shrinks the
-  family. A new notebook session starts a new family, and a static export
-  cannot change the selection.
+- Post-hoc selection: the family is the whole offered catalog, fixed before
+  anything is shown, so choosing what to display (or stopping once something
+  looks significant) never changes the correction. A new preparation reads
+  the warehouse afresh; a later read on more data is a new look, not part of
+  this family. A static export cannot change the selection.
 
 ## Method interactions
 
@@ -136,8 +135,8 @@ The work lands in three ordered parts. Each part is independently testable.
 
 ```mermaid
 flowchart LR
-  P[Explore Added metrics] --> W[Dashboard widget: session family]
-  W --> C[DashboardConfig shown + counted metrics]
+  P[Explore Added metrics] --> C[DashboardConfig shown metrics]
+  A[available_metrics: whole catalog] --> S
   C --> S[prepare_dashboard: one pinned read]
   S --> D[Declared whole-window rows]
   S --> E[Added whole-window rows + all segment rows]
@@ -166,8 +165,9 @@ Unit tests use real DuckDB fixtures, never mocked estimators.
   - declared whole-experiment overview rows equal the Readout rows;
   - the family size and each cell's interval are independent of
     **Compare by**;
-  - adding a metric increases N and the extended warehouse-mutation test shows
-    added metrics come from the pinned read;
+  - the family and every shared cell are identical whatever is shown, and the
+    extended warehouse-mutation test shows added metrics come from the pinned
+    read;
   - prior and sequential refusals render per row;
   - the widget re-prepares for an added metric, keeps a refusal's snapshot and
     selection; a browser smoke of the Explore picker, the static-export

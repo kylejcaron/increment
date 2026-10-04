@@ -16,7 +16,7 @@ pytest.importorskip("marimo")
 from increment.dashboard import DashboardConfig, prepare_dashboard
 from increment.dashboard._data import decision_rows
 from increment.dashboard._html import overview_rows
-from increment.errors import InvalidRequestError
+from increment.errors import CapabilityError, InvalidRequestError
 from tests.test_dashboard_capture import _METRICS, _double_the_treatment_arm, _workspace
 
 pytestmark = pytest.mark.filterwarnings("ignore::increment.errors.IncrementWarning")
@@ -155,13 +155,21 @@ def test_two_sources_of_one_property_are_separate_comparisons(tmp_path):
         assert len(tested) == overview.family_size
 
 
-def test_adding_a_metric_grows_the_family_without_moving_declared_results(tmp_path):
+def test_choosing_what_to_show_never_changes_the_family(tmp_path):
     with _workspace(tmp_path, metrics=_SAVED) as (_, analysis):
-        without = prepare_dashboard(analysis, config=_config())
-        with_added = prepare_dashboard(analysis, config=_config(ADDED))
-        assert with_added.readout_rows == without.readout_rows
-        assert without.overview is not None and with_added.overview is not None
-        assert with_added.overview.family_size > without.overview.family_size
+        hidden = prepare_dashboard(analysis, config=_config())
+        shown = prepare_dashboard(analysis, config=_config(ADDED))
+        assert shown.readout_rows == hidden.readout_rows
+        assert hidden.overview is not None and shown.overview is not None
+        assert hidden.overview.hidden == (ADDED,) and shown.overview.hidden == ()
+        assert hidden.overview.family_size == shown.overview.family_size
+        # Every cell both snapshots show is corrected identically.
+        for scope, cells in hidden.overview.segments.items():
+            assert [row.model_dump(mode="json") for row in cells] == [
+                row.model_dump(mode="json")
+                for row in shown.overview.segments[scope]
+                if row.metric != ADDED
+            ]
 
 
 def test_an_undeclared_exploratory_metric_is_refused_before_preparation(tmp_path):
@@ -219,7 +227,7 @@ def test_the_dashboard_widget_reprepares_for_added_metrics_and_keeps_a_refusal(t
         assert widget.exploratory_metrics == [ADDED]
         assert widget.document == page
 
-        # Removing a metric hides it but keeps it in this session's family.
+        # Removing a metric only hides it; the family is unchanged.
         widget.exploratory_metrics = []
         assert widget.status == ""
         snapshot = widget._snapshot
@@ -280,8 +288,40 @@ def test_only_estimable_saved_metrics_are_offered(tmp_path):
         assert caught.value.code == "dashboard.invalid_config"
 
 
-def test_display_units_may_name_a_shown_added_metric(tmp_path):
+@pytest.mark.slow
+def test_an_added_metric_with_a_display_unit_can_be_removed_and_re_added(tmp_path):
+    from increment.dashboard._app import DashboardWidget
+
     with _workspace(tmp_path, metrics=_SAVED) as (_, analysis):
         config = dataclasses.replace(_config(ADDED), metric_units={ADDED: "orders"})
-        snapshot = prepare_dashboard(analysis, config=config)
-        assert [model.name for model in snapshot.exploratory_metrics] == [ADDED]
+        widget = DashboardWidget(analysis, snapshot=prepare_dashboard(analysis, config=config))
+        widget.exploratory_metrics = []
+        assert widget.status == ""
+        assert widget.exploratory_metrics == []
+        assert widget._snapshot.overview is not None
+        assert widget._snapshot.overview.hidden == (ADDED,)
+        widget.exploratory_metrics = [ADDED]
+        assert widget.status == ""
+        assert [model.name for model in widget._snapshot.exploratory_metrics] == [ADDED]
+
+
+_OBSERVATIONAL = """    design:
+      mechanism: observational
+      covariates:
+        - {property: country, source: event_log}
+"""
+
+
+def test_a_non_randomized_design_is_refused_before_any_read(tmp_path, monkeypatch):
+    import tests.test_dashboard_capture as capture
+
+    declared = capture._experiments
+    monkeypatch.setattr(
+        capture, "_experiments", lambda **options: declared(**options) + _OBSERVATIONAL
+    )
+    with _workspace(tmp_path) as (con, analysis):
+        con.disconnect()
+        with pytest.raises(CapabilityError) as caught:
+            prepare_dashboard(analysis, config=_config())
+        assert caught.value.code == "dashboard.unsupported_experiment"
+        assert caught.value.context["mechanism"] == "observational"

@@ -891,17 +891,17 @@ def overview_notes(
         )
         return notes
     hidden = (
-        f", including {count_text(len(overview.hidden))} added metric"
-        f"{'s' if len(overview.hidden) != 1 else ''} looked at earlier this session and since "
-        f"hidden ({', '.join(overview.hidden)})"
+        f" ({count_text(len(overview.hidden))} not shown: {', '.join(overview.hidden)})"
         if overview.hidden
         else ""
     )
     notes.append(
         f"Exploratory family: Benjamini-Hochberg at q = {overview.family_q:.3g} across "
-        f"{count_text(overview.family_size)} comparisons: added metrics and every segment cell "
-        f"of every declared breakout{hidden}. Every metric added in this session stays counted, "
-        "so hiding one never shrinks the correction; a new notebook session starts a new family."
+        f"{count_text(overview.family_size)} comparisons: every saved metric the definitions "
+        f"offer{hidden} and every segment cell of every declared breakout. Shown or not, every "
+        "offered metric is counted, so choosing what to display never changes the correction. "
+        "BH controls the false discovery rate under independence or positive dependence; these "
+        "comparisons share units and the control arm, and that condition is not checked."
     )
     notes.append(
         "Only BH discoveries are coloured as findings, with FCR-adjusted intervals. Other "

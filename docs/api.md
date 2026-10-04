@@ -207,8 +207,9 @@ analysis; non-native and clustered sources raise a coded `CapabilityError`.
 `Analysis.available_metrics` lists the saved per-unit metrics on the experiment's unit that the
 experiment does not declare, in definitions order; report-only `total`/`active` metrics and other
 entities' metrics are not offered. `run`, `run_breakout`, `run_asof_lift`, `run_asof` and `run_daily` accept
-`exploratory_metrics=` naming some of them: their rows carry `role="exploratory"`, join no
-plan family, and leave every declared row unchanged. `metrics=[]` with
+`exploratory_metrics=` naming some of them. Lift rows from `run`, `run_breakout` and
+`run_asof_lift` carry `role="exploratory"` and join no plan family; the absolute values from
+`run_asof` and `run_daily` carry no role. Every declared row is unchanged. `metrics=[]` with
 `exploratory_metrics=` reads only the added metrics. An unknown or already-declared name
 (`facade.analysis_config.exploratory_metric_unavailable`) is refused before any query, as is
 any source other than `Analysis.from_definitions`

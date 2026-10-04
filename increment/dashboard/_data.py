@@ -100,6 +100,8 @@ _UNSUPPORTED_EXPERIMENT = RefusalSpec(
 # An allocation check the source declines is not a passing check; the caller
 # sees the original code and reason instead of a fabricated SRMResult.
 _ALLOCATION_NOT_APPLICABLE = "dashboard.allocation_not_applicable"
+# A source with no saved definitions offers no metrics to add.
+_EXPLORATORY_SOURCE_LIMITED = "facade.analysis.exploratory_metrics_source_limited"
 
 
 def _validated_allocation(raw: object) -> Mapping[str, float]:
@@ -170,9 +172,9 @@ def _validated_units(raw: object) -> Mapping[str, str]:
 class DashboardConfig:
     """Display configuration a caller supplies alongside their ``Analysis``.
 
-    ``exploratory_metrics`` are the added metrics shown. ``exploratory_family`` names every added
-    metric counted in the overview's exploratory family; it always includes the shown ones, so a
-    metric looked at earlier and then hidden still counts against the correction.
+    ``exploratory_metrics`` are the added metrics shown. The overview's exploratory family counts
+    every saved metric the definitions offer whether shown or not, so choosing what to display,
+    before or after seeing results, never changes the correction.
     """
 
     expected_allocation: Mapping[str, float]
@@ -182,7 +184,6 @@ class DashboardConfig:
     metric_units: Mapping[str, str] = field(default_factory=dict)
     theme: DashboardTheme = MIDNIGHT
     exploratory_metrics: tuple[str, ...] = ()
-    exploratory_family: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -193,18 +194,12 @@ class DashboardConfig:
         require_theme(self.theme)
         if self.title is not None and not self.title.strip():
             refuse(_INVALID_CONFIG, reason="title must be a non-empty string when supplied")
-        for name in ("exploratory_metrics", "exploratory_family"):
-            names = getattr(self, name)
-            if isinstance(names, str) or not all(isinstance(n, str) and n.strip() for n in names):
-                refuse(_INVALID_CONFIG, reason=f"{name} must be a sequence of metric names")
-            if len(set(names)) != len(tuple(names)):
-                refuse(_INVALID_CONFIG, reason=f"{name} repeats a metric name")
-        object.__setattr__(self, "exploratory_metrics", tuple(self.exploratory_metrics))
-        object.__setattr__(
-            self,
-            "exploratory_family",
-            tuple(dict.fromkeys((*self.exploratory_family, *self.exploratory_metrics))),
-        )
+        names = self.exploratory_metrics
+        if isinstance(names, str) or not all(isinstance(n, str) and n.strip() for n in names):
+            refuse(_INVALID_CONFIG, reason="exploratory_metrics must be a sequence of metric names")
+        if len(set(names)) != len(tuple(names)):
+            refuse(_INVALID_CONFIG, reason="exploratory_metrics repeats a metric name")
+        object.__setattr__(self, "exploratory_metrics", tuple(names))
 
 
 @dataclass(frozen=True, slots=True)
@@ -521,12 +516,13 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
     shown_models, counted_models = _added_metrics(analysis, config)
     shown = tuple(model.name for model in shown_models)
     counted = tuple(model.name for model in counted_models)
-    known = {metric.name for metric in metrics} | set(shown)
+    # Units may name any counted metric, shown or not.
+    known = {metric.name for metric in metrics} | set(counted)
     unknown_units = set(config.metric_units) - known
     if unknown_units:
         refuse(
             _INVALID_CONFIG,
-            reason=f"metric_units names metrics not shown: {sorted(unknown_units)!r}",
+            reason=f"metric_units names metrics the dashboard does not read: {sorted(unknown_units)!r}",
         )
 
     def _read(pinned: Analysis) -> DashboardSnapshotPayload:
@@ -634,6 +630,16 @@ def _supported_experiment(analysis: Analysis) -> Experiment:
         refuse(
             _UNSUPPORTED_EXPERIMENT,
             reason="the dashboard needs an Analysis with a declared experiment definition",
+        )
+    if experiment.design is not None:
+        mechanism = experiment.design.mechanism
+        refuse(
+            _UNSUPPORTED_EXPERIMENT,
+            reason=(
+                f"the experiment declares a {mechanism} design; read its estimates "
+                "with Analysis.run()"
+            ),
+            mechanism=mechanism,
         )
     return experiment
 
@@ -833,11 +839,19 @@ _OVERVIEW_SEGMENTS = "overview_segments"
 def _added_metrics(
     analysis: Analysis, config: DashboardConfig
 ) -> tuple[tuple[Metric, ...], tuple[Metric, ...]]:
-    """The shown and the family-counted exploratory metrics, refused unless each is offered."""
-    if not config.exploratory_family:
+    """The shown exploratory metrics and every offered metric the family counts.
+
+    A source with no saved definitions offers nothing to count; asking it to show a metric is
+    refused with its coded reason.
+    """
+    try:
+        offered = analysis.available_metrics
+    except CodedError as exc:
+        if config.exploratory_metrics or exc.code != _EXPLORATORY_SOURCE_LIMITED:
+            raise
         return (), ()
-    available = {metric.name: metric for metric in analysis.available_metrics}
-    unknown = [name for name in config.exploratory_family if name not in available]
+    available = {metric.name: metric for metric in offered}
+    unknown = [name for name in config.exploratory_metrics if name not in available]
     if unknown:
         refuse(
             _INVALID_CONFIG,
@@ -848,10 +862,7 @@ def _added_metrics(
             unknown=tuple(unknown),
             available=tuple(available),
         )
-    return (
-        tuple(available[name] for name in config.exploratory_metrics),
-        tuple(available[name] for name in config.exploratory_family),
-    )
+    return tuple(available[name] for name in config.exploratory_metrics), tuple(offered)
 
 
 def _decisions(capture: DashboardExploreCapture | None) -> list[Any]:
