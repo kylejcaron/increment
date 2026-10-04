@@ -738,6 +738,8 @@ def calibrate_cell(
         "truncation_budget": {
             "xc_tail_budget": _XC_TAIL_BUDGET,
             "xt_tail_budget": _XT_TAIL_BUDGET,
+            "effective_xc_tail_budget": _attainable_budget(n_c, _XC_TAIL_BUDGET),
+            "effective_xt_tail_budget": _attainable_budget(n_t, _XT_TAIL_BUDGET),
             "omitted_xc_tail_mass": omitted_c,
             "cp_miss_mass": cp_miss_mass,
             "resolved_unresolved_xt_mass": resolved_unresolved,

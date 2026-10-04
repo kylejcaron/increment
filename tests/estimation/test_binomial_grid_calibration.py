@@ -423,6 +423,30 @@ class TestOutwardIntegrationAllowances:
     def test_below_precision_budget_falls_back_to_full_support(self):
         assert cbg.exact_outer_window(1000, 0.5, 1e-13) == (0, 1000, 0.0)
 
+    @pytest.mark.parametrize(("requested", "widened"), [(1e-12, False), (1e-14, True)])
+    def test_the_truncation_record_states_the_budget_the_window_was_built_with(
+        self, monkeypatch, requested, widened
+    ):
+        """A request below what the float margin can certify is widened; the record carries the
+        request and the budget that bounds the omitted mass reported beside it."""
+        monkeypatch.setattr(cbg, "_XC_TAIL_BUDGET", requested)
+        cell = next(
+            c
+            for c in cbg.MANIFEST
+            if c.p_c == 0.1
+            and c.expected_events == 0.5
+            and c.ratio == (1, 1)
+            and c.risk_ratio == 1.0
+        )
+        record = cbg.calibrate_cell(cell, interval_only=True)["truncation_budget"]
+        assert record["xc_tail_budget"] == requested
+        assert record["effective_xc_tail_budget"] == cbg._attainable_budget(cell.n_c, requested)
+        assert (record["effective_xc_tail_budget"] > requested) is widened
+        assert record["omitted_xc_tail_mass"] <= record["effective_xc_tail_budget"]
+        assert record["effective_xt_tail_budget"] == cbg._attainable_budget(
+            cell.n_t, record["xt_tail_budget"]
+        )
+
     @pytest.mark.parametrize("direction", ["plus", "minus"])
     def test_unresolved_points_charge_the_inflated_window(self, monkeypatch, direction):
         monkeypatch.setattr(cbg, f"_witness_lower_{direction}", lambda *args: None)
