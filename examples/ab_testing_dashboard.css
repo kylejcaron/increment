@@ -20,3 +20,8 @@
 #App [data-cell-name]:has(iframe) .output-area {
   padding: 0;
 }
+
+/* marimo's full-width layout still pads the page; give the dashboard cell that width back. */
+#App .px-1:has([data-cell-name] iframe) {
+  padding-inline: 8px;
+}

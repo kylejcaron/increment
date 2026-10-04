@@ -344,9 +344,17 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   .experiment-hero { grid-template-columns: minmax(0, 1fr) 285px; gap: 24px; }
   .hero-titleline h1 { font-size: 36px; }
   .scope-description { display: none; }
-  .explore-layout { grid-template-columns: 180px minmax(0, 1fr); gap: 22px; }
   .explore-workspace { padding: 20px 16px; }
-  .metric-list { padding-right: 14px; }
+}
+/* Below this width a side metric list would push the fixed-width trajectory charts into a
+   horizontal scroll; the picker wraps above the workspace instead. */
+@media (max-width: 1260px) {
+  .explore-layout { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .metric-list { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; padding: 0; border: 0; }
+  .metric-list > .eyebrow { flex-basis: 100%; margin: 0 0 7px; }
+  .metric-group-label { display: none; }
+  .metric-tab { width: auto; padding: 8px 12px; border-left: 0; border-bottom: 2px solid transparent; }
+  .metric-tab[aria-pressed="true"] { border-bottom-color: var(--accent); }
 }
 @media (max-width: 900px) {
   .rpt-card { padding: 28px 28px 24px; }
@@ -372,11 +380,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   .scope-bar { flex-direction: column; align-items: stretch; padding: 12px 10px; gap: 8px; margin-bottom: 20px; }
   .scope-label { padding-left: 4px; font-size: 11px; }
   .scope-controls button { padding: 8px 10px; font-size: 11px; }
-  .explore-layout { grid-template-columns: 1fr; gap: 18px; }
-  .metric-list { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 6px; padding: 0; border: 0; }
-  .metric-list > .eyebrow { grid-column: 1 / -1; margin: 0 0 7px; }
-  .metric-group-label { display: none; }
-  .metric-tab { padding: 10px 9px; }
+  .metric-tab { padding: 8px 10px; }
   .explore-workspace { padding: 18px 12px; }
   .explore-workspace h3 { font-size: 23px; }
   .trajectory-wrap table { min-width: 850px; }

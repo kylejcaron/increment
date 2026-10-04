@@ -329,14 +329,9 @@
   margin: 12px 0 4px;
 }
 
-.inc-dashboard-disclosure .inc-dashboard-table {
-  min-width: 720px;
-}
-
 .inc-dashboard-unavailable-reasons {
   display: block;
-  width: 24rem;
-  max-width: 60vw;
+  max-width: 24rem;
   white-space: normal;
   text-align: left;
 }

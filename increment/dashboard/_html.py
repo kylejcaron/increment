@@ -493,13 +493,17 @@ def _format_group_value(value: Any, unit: str, *, count: bool = False) -> str:
 
 
 def _group_data_table(snapshot: DashboardSnapshot, metric: str) -> str:
-    """Render the immutable aggregate rows captured with this snapshot."""
+    """Render the immutable aggregate rows captured with this snapshot.
+
+    One row per measure and one column per arm, so the table stays as narrow as the arm count
+    however many measures a metric type adds.
+    """
     rows = group_data_rows(snapshot, metric=metric)
     if not rows:
         return missing_html("no group aggregates available")
     unit = str(rows[0].get("unit", "value"))
     model = require_metric(snapshot, metric)
-    headers = ["Arm", "Eligible units", f"Observed value ({unit})"]
+    measures = ["Eligible units", f"Observed value ({unit})"]
     keys: list[tuple[str, str, bool]] = [("Assigned units", "assigned_units", True)]
     if model.type in ("conversion", "retention"):
         keys.append(("Retained / converted units", "retained_units", True))
@@ -541,21 +545,20 @@ def _group_data_table(snapshot: DashboardSnapshot, metric: str) -> str:
     keys.append(("Evidence source", "source_kind", False))
     if any(row.get("source_kind") == "retained_checkpoint" for row in rows):
         keys.append(("Retained checkpoint", "prefix_id", False))
-    headers.extend(label for label, _, _ in keys)
+    measures.extend(label for label, _, _ in keys)
     reason_labels = {
         "eligible_units": "Eligible units",
-        "observed_value": headers[2],
+        "observed_value": measures[1],
         **{key: label for label, key, _ in keys},
     }
     has_unavailable = any(
         key in reason_labels for row in rows for key in (row.get("unavailable") or {})
     )
     if has_unavailable:
-        headers.append("Unavailable / not applicable")
-    body: list[list[str]] = []
+        measures.append("Unavailable / not applicable")
+    columns: list[list[str]] = []
     for row in rows:
         cells = [
-            str(row.get("group_id", "")),
             _format_group_value(row.get("eligible_units"), "count", count=True),
             _format_group_value(row.get("observed_value"), unit),
         ]
@@ -570,21 +573,23 @@ def _group_data_table(snapshot: DashboardSnapshot, metric: str) -> str:
                 if is_count
                 else ("" if value is None else str(value))
             )
-        if has_unavailable:
-            unavailable = row.get("unavailable") or {}
-            cells.append(
-                "; ".join(
-                    f"{reason_labels[key]}: {value}"
-                    for key, value in unavailable.items()
-                    if key in reason_labels
-                )
-            )
         escaped_cells = [esc(cell) for cell in cells]
         if has_unavailable:
-            escaped_cells[-1] = (
-                f'<span class="inc-dashboard-unavailable-reasons">{escaped_cells[-1]}</span>'
+            unavailable = row.get("unavailable") or {}
+            reasons = "; ".join(
+                f"{reason_labels[key]}: {value}"
+                for key, value in unavailable.items()
+                if key in reason_labels
             )
-        body.append(escaped_cells)
+            escaped_cells.append(
+                f'<span class="inc-dashboard-unavailable-reasons">{esc(reasons)}</span>'
+            )
+        columns.append(escaped_cells)
+    headers = ["Measure", *(str(row.get("group_id", "")) for row in rows)]
+    body = [
+        [esc(measure), *(column[index] for column in columns)]
+        for index, measure in enumerate(measures)
+    ]
     return _table(headers, body)
 
 
@@ -960,7 +965,7 @@ def _group_data_disclosure(snapshot: DashboardSnapshot, metric: str) -> str:
         "retention, assigned = eligible + not mature + no observed day + other exclusions; "
         "the observation cutoff and window endpoints are shown when captured. "
         "CUPED, a prior, or winsorization can make the reported effect differ from these raw values. "
-        "Only retained transformed inputs are shown in the separate analysis-input column; "
+        "Only retained transformed inputs are shown in the separate analysis-input row; "
         "pre-transform outcomes absent from a checkpoint remain unavailable.</p>",
     )
 
