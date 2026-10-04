@@ -20,10 +20,15 @@ A refusal is a coded early stop, not a silent fallback: branch on `.code`
 [capabilities table](reference/capabilities-by-entry-point.md#what-runs-where) say where a
 refusal comes from, not whether it is permanent.
 
+Not every unavailable capability is a refusal. Where the entry point has no parameter or
+constructor for the request, the table says **not expressible**: the call cannot be written, so
+Python raises `TypeError` (or there is nothing to call) and there is no `.code` to branch on.
+`from_switchback_panel(..., design=...)` is the example.
+
 - **SOURCE**: the entry point's input does not carry what the capability needs, as when a
   moments cube carries no per-unit rows to attach a covariate to. This is a current absence
-  unless the text says structural, as the `from_switchback_panel` refusals of encouragement,
-  observational and quantile requests do.
+  unless the text says structural, as the `from_switchback_panel` encouragement and
+  observational rows (not expressible) and quantile requests (a coded refusal) do.
 - **CONSTRUCTION**: no admissible construction exists for the request on that path. Five
   reasons are stated: filling an outcome with its pooled mean shrinks variance; the margin
   verdict is carried by `itt`; JSON object keys are strings; windowed and retention metrics
