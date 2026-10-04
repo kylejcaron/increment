@@ -3,7 +3,7 @@
 Counts and trackers only. Every per-ingress outcome, reason and authority lives in
 `tests/parity_harness/matrix.py` (`RULES`, `_SPECS`); `tests/test_parity_matrix.py` runs every cell.
 
-Last verified at commit 2a8682d.
+Last verified at commit 45feb87.
 
 ## Axes
 
@@ -42,7 +42,7 @@ Verdicts are per leg: a day-axis view has a value leg and a lift leg that refuse
 | from_unit_summary | 102 | 1,536 | 1,538 | 1,824 | 376 | 0 |
 | from_unit_panel | 484 | 920 | 1,936 | 1,632 | 404 | 0 |
 | from_switchback_panel | 4 | 2,216 | 1,428 | 1,440 | 288 | 0 |
-| from_moments | 128 | 1,478 | 1,750 | 1,728 | 292 | 0 |
+| from_moments | 144 | 1,558 | 1,654 | 1,728 | 292 | 0 |
 
 Cells where, in at least one leg, an ingress runs and another does not (each non-runner carries a status, reason and authority): 526.
 
@@ -65,8 +65,10 @@ A hazard that several routes refuse with different codes is unfinished on every 
 
 | Tier | Cells | Wall time (12 cores, `-n auto`) |
 |---|---|---|
-| fast | 2,725 | about 20 s: no warehouse route reads data |
-| slow | 860 | about 90 s: a warehouse route publishes or reads a request |
+| fast | 2,552 | about 20 s: every ingress refuses at declaration, before any data is read |
+| slow | 1,032 | about 100 s: some ingress runs, or refuses only once a request is read |
+
+The tiers count `test_cell` items, so they total the 3,584 cells; the unparameterized disposition test (`test_every_cell_is_dispositioned_and_its_split_explained`) is not a cell and is in the fast tier on its own. A cell is slow when any of its six ingresses builds data and runs or reads a request (`Disposition.all_verdicts`), not only a warehouse route.
 
 A warehouse route is memoised per process on its exact inputs (the digest of its Definitions payload, view, option and artifact extensions). Cells differing only in `missing` error versus zero declare the same payload, share an `xdist_group` and read once. This reuses identical work; it collapses no cell.
 
@@ -86,6 +88,7 @@ The 68 `PARITY_CASES` are unchanged and keep their own scenario assertions (sequ
 - Edge units are exposed at 03:00Z (22:00 the previous day under `UTC-05:00`); retention and window cells carry events whose band or window day differs by boundary, so a route bucketing in UTC fails them.
 - `observational` is declared IPTW with one numeric pre-exposure covariate; `sequential` uses `asymptotic_mean` (mean, ratio) or `always_valid` (conversion, retention) with a 50/50 allocation and no explicit registration; `ni_margin` is a relative margin on a guardrail; `cluster` is 40 clusters per arm of one or two units.
 - The switchback sub-case uses one fixed schedule (8 units, 2 cycles, 2 periods, washout 1) and a shared frame carrying every metric column.
+- A `from_moments` cube is exported by a producer and replayed. A windowed or retention metric reads dates, so the dataframe panel produces it; the panel refuses a pre-period covariate there, so a CUPED mean, conversion, ratio or retention cube under `error`/`zero` is exported from `from_definitions` instead and the cell records what `from_moments` does with that cube. Under `drop` the warehouse route cannot declare the policy, so no producer exists and the panel's refusal stands.
 
 ## Unresolved remainder
 
