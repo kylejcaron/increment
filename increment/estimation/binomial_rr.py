@@ -123,6 +123,7 @@ from __future__ import annotations
 import heapq
 import math
 import re
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
@@ -419,7 +420,9 @@ def _i_term_treatment(q: float, r: float, n_t: int) -> float:
     rq = r * q
     if q <= 0.0 or rq >= 1.0:
         return math.inf
-    return (n_t * r) / (q * (1.0 - rq))
+    room = q * (1.0 - rq)
+    # A denominator below the smallest float makes the exact quotient exceed the largest one.
+    return (n_t * r) / room if room > 0.0 else math.inf
 
 
 def _i_bound(u: float, v: float, r: float, n_c: int, n_t: int) -> float:
@@ -690,8 +693,9 @@ class _Crossing:
 
         Doubles away from *seed* while it lies below the crossing and halves toward 0 while
         it lies above, down to ``seed * _ENDPOINT_FLOOR`` (then ``lo`` is left at 0). Doubling
-        runs to *cap*, however far *seed* sits below the crossing. ``False`` means a decreasing
-        ``f`` stayed at or above its target through *cap*: unbounded.
+        runs to *cap*, however far *seed* sits below the crossing, and ends by probing *cap*
+        itself when a doubling would pass it. ``False`` means a decreasing ``f`` stayed at or
+        above its target through *cap*: unbounded.
         """
         floor = seed * _ENDPOINT_FLOOR
         if self.at_or_above(seed):
@@ -702,10 +706,9 @@ class _Crossing:
                     self.lo = 0.0
                     break
             return True
-        self.lo, self.hi = seed, seed * 2.0
+        self.lo, self.hi = seed, min(seed * 2.0, cap)
         while not self.at_or_above(self.hi):
-            self.lo, self.hi = self.hi, self.hi * 2.0
-            if self.hi > cap or math.isinf(self.hi):
+            if self.hi >= cap:
                 if self._increasing:
                     _raise(
                         "estimation.binomial.tail_unrepresentable",
@@ -713,6 +716,7 @@ class _Crossing:
                         probed=self.hi,
                     )
                 return False
+            self.lo, self.hi = self.hi, min(self.hi * 2.0, cap)
         return True
 
     def _probe_point(self, tau: float, remaining: int) -> float:
@@ -847,23 +851,23 @@ def _bound_upper(
     below *target*, since ``target >= alpha/2 > alpha/32 >=
     nuisance_beta(alpha)`` for every valid ``alpha``); a finite crossing
     is therefore GUARANTEED to exist at or before ``2/a``, and the search
-    is capped there rather than at an arbitrary numeric ceiling. A search
-    that still fails to locate it (representation genuinely prevents
-    certification, e.g. ``a`` so small that ``2/a`` overflows) raises a
-    coded numerical failure instead of silently reporting an unbounded
-    set for a case that is NOT analytically unbounded.
+    is capped there (at the largest finite float when ``2/a`` overflows)
+    rather than at an arbitrary numeric ceiling. When ``1/a`` itself
+    exceeds the largest float no representable point puts *f* below
+    *target*, and the search raises a coded numerical failure instead of
+    silently reporting an unbounded set for a case that is NOT
+    analytically unbounded.
     """
     if a <= 0.0:
         return _Boundary(None, 0.0, True)
-    cap = 2.0 / a
+    cap = min(2.0 / a, sys.float_info.max)
     result = _find_boundary(
         f, target, increasing=False, seed=seed, tau=tau, cap=cap, resolve=resolve
     )
     if result.endpoint is None:
-        # Unreachable given the derivation above (f(cap) < target always
-        # holds for a > 0); surfaced as a coded failure rather than a
-        # silently wrong unbounded claim if some future change breaks
-        # that invariant.
+        # Reached only when 1/a exceeds the largest float (f(cap) < target
+        # holds for every other a > 0); surfaced as a coded failure rather
+        # than a silently wrong unbounded claim.
         _raise("estimation.binomial.tail_unrepresentable", target=target, cap=cap)
     return result
 
