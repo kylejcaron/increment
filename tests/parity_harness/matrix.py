@@ -14,8 +14,9 @@ the value series and the lift, that refuse independently): what it does (``Runs`
 ``Refuses(code)`` or ``StructuralAbsence``), the status that explains it, a reason
 and an authority independent of the refusal itself. The statuses are
 
-``supported``            runs, and agrees with every other running ingress within the
-                         runner's 1e-9 relative tolerance
+``supported``            runs; a matched-arm ingress also agrees with every other running
+                         matched-arm ingress within the runner's 1e-9 relative tolerance, while
+                         ``from_switchback_panel`` (a different estimand) runs on its own
 ``source_limited``       the ingress cannot supply the input (``SOURCE:``)
 ``construction_limited`` the estimator or readout is not defined for the combination
                          (``CONSTRUCTION:``/``COMBINATION:``)
@@ -117,7 +118,9 @@ def iter_cells() -> Iterator[Cell]:
 
 @dataclass(frozen=True)
 class Runs:
-    """The ingress produces rows; they are compared with every other running ingress."""
+    """The ingress produces rows. A matched-arm ingress's rows are compared with every other
+    running matched-arm ingress; ``from_switchback_panel`` (a different estimand) is run on its
+    own and its rows are only required to exist."""
 
 
 @dataclass(frozen=True)
@@ -869,7 +872,12 @@ def supported_verdict(cell: Cell, ingress: str, method: str) -> Verdict:
         "" if method == "values" else _OPTION_PREREQUISITE[cell.option],
     ]
     prerequisites = "; ".join(n for n in needs if n)
-    reason = "runs and agrees with every other running ingress"
+    reason = (
+        "runs; its fixed-horizon contrast is a different estimand, exercised on its own and "
+        "never row-compared with the matched-arm ingresses"
+        if ingress == "from_switchback_panel"
+        else "runs and agrees with every other running matched-arm ingress"
+    )
     if prerequisites:
         reason += f" once the request declares {prerequisites}"
     superseded = [

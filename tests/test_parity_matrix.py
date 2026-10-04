@@ -1,11 +1,13 @@
 """Every cell of the enumerated parity matrix, on every ingress.
 
 ``tests/parity_harness/matrix.py`` names, for each cell of metric x view x option x
-day_boundary x missing, what each of the six ingress constructors must do: run (and agree
-with every other running ingress within 1e-9 relative), refuse with a recorded code, or be
-structurally unable to express the request. ``test_cell`` builds the cell on each ingress,
-runs it, and asserts exactly that, so a stale refusal code, a refusal that became a number,
-a number that became a refusal and a numeric disagreement all fail.
+day_boundary x missing, what each of the six ingress constructors must do: run, refuse with a
+recorded code, or be structurally unable to express the request. The five matched-arm
+ingresses that run are compared with each other within 1e-9 relative;
+``from_switchback_panel`` (a different estimand) is run on its own, with its rows required to
+exist but never compared. ``test_cell`` builds the cell on each ingress, runs it, and asserts
+exactly that, so a stale refusal code, a refusal that became a number, a number that became a
+refusal and a numeric disagreement all fail.
 
 Cells in which any ingress builds and reads data (an ingress runs, or refuses only once a
 request is read) are ``slow``; the remainder refuse at declaration, before any data is read,

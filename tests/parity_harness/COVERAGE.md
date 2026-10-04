@@ -65,7 +65,7 @@ A hazard that several routes refuse with different codes is unfinished on every 
 
 | Tier | Cells | Wall time (12 cores, `-n auto`) |
 |---|---|---|
-| fast | 2,552 | about 20 s: every ingress refuses at declaration, before any data is read |
+| fast | 2,552 | about 20 s: no ingress runs or reaches the request stage; each declaration either refuses with a code or is structurally absent (a schema or keyword the ingress cannot express) |
 | slow | 1,032 | about 100 s: some ingress runs, or refuses only once a request is read |
 
 The tiers count `test_cell` items, so they total the 3,584 cells; the unparameterized disposition test (`test_every_cell_is_dispositioned_and_its_split_explained`) is not a cell and is in the fast tier on its own. A cell is slow when any of its six ingresses builds data and runs or reads a request (`Disposition.all_verdicts`), not only a warehouse route.
@@ -88,7 +88,7 @@ The 68 `PARITY_CASES` are unchanged and keep their own scenario assertions (sequ
 - Edge units are exposed at 03:00Z (22:00 the previous day under `UTC-05:00`); retention and window cells carry events whose band or window day differs by boundary, so a route bucketing in UTC fails them.
 - `observational` is declared IPTW with one numeric pre-exposure covariate; `sequential` uses `asymptotic_mean` (mean, ratio) or `always_valid` (conversion, retention) with a 50/50 allocation and no explicit registration; `ni_margin` is a relative margin on a guardrail; `cluster` is 40 clusters per arm of one or two units.
 - The switchback sub-case uses one fixed schedule (8 units, 2 cycles, 2 periods, washout 1) and a shared frame carrying every metric column.
-- A `from_moments` cube is exported by a producer and replayed. A windowed or retention metric reads dates, so the dataframe panel produces it; the panel refuses a pre-period covariate there, so a CUPED mean, conversion, ratio or retention cube under `error`/`zero` is exported from `from_definitions` instead and the cell records what `from_moments` does with that cube. Under `drop` the warehouse route cannot declare the policy, so no producer exists and the panel's refusal stands.
+- A `from_moments` cube is exported by a producer and replayed. A retention or windowed mean, conversion or ratio metric reads dates, so the dataframe panel produces it; the panel refuses a pre-period covariate there, so a CUPED retention (unwindowed), windowed mean, windowed conversion or windowed ratio cube under `error`/`zero` is exported from `from_definitions` instead and the cell records what `from_moments` does with that cube. An unwindowed CUPED mean, conversion or ratio cube is exported from `from_unit_summary` as before. Windowed retention stops at declaration (`definition.retention.metric_window_days`) on every ingress before any cube exists. Under `drop` the warehouse route cannot declare the policy, so no producer exists and the panel's refusal stands.
 
 ## Unresolved remainder
 
