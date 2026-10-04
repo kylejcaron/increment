@@ -1090,6 +1090,24 @@ class TestNullPValue:
             2.0 * plus.p
         )
 
+    @pytest.mark.parametrize("alternative", ["two-sided", "greater", "less"])
+    def test_the_certificates_follow_the_rule_they_are_given_not_the_module_default(
+        self, alternative
+    ):
+        """A rule that ends every search after three splits reaches the null's certificates
+        while the module default stays as shipped: the test being refined runs out of splits
+        and reports the looser bound that leaves, where the shipped rule reaches its gap."""
+        counts, r, tail = (100, 1000, 130, 1000), 1.0, 0.025
+
+        def refined(rule: brr._StopRule) -> brr._PCertificate:
+            certificates = brr._null_certificates(r, *counts, self.BETA, rule, alternative, tail)
+            return certificates[0][1]
+
+        shipped = refined(brr.NUISANCE_STOP)
+        capped = refined(brr._StopRule(brr.NUISANCE_STOP.gap_fraction, 3))
+        assert shipped.stopped and not capped.stopped
+        assert capped.p > shipped.p and capped.gap > shipped.gap
+
     def test_an_unknown_alternative_is_refused(self):
         with pytest.raises(brr.InvalidRequestError):
             brr.null_p_value(1.0, 5, 50, 6, 50, self.BETA, alternative="both", tail=0.025)

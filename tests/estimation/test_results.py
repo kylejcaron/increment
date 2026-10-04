@@ -1327,7 +1327,8 @@ class TestLiftEstimateBinomialCrossInvariants:
             "scale": "linear",
         }
         row = LiftEstimate.model_validate_json(json.dumps(persisted))
-        fresh = binomial_rr.p_two(1.0, 5778, 57780, 5985, 57780, binomial_rr.nuisance_beta(0.05))
+        beta = binomial_rr.nuisance_beta(0.05)
+        fresh = binomial_rr.p_two(1.0, 5778, 57780, 5985, 57780, beta, tail=0.025)
         assert row.p_value() == pytest.approx(fresh, abs=1e-12)
         assert row.stat_sig() is True
         assert row.binomial_set is not None

@@ -343,7 +343,7 @@ def _finish(search: _Search, done: np.ndarray, top: np.ndarray, beta: float) -> 
     search.status[done] = _Outcome.FINISHED
 
 
-def _advance(  # noqa: PLR0915
+def _advance(
     batch: _Batch,
     tails: _ExactTails | _SurrogateTails,
     search: _Search,
@@ -366,13 +366,6 @@ def _advance(  # noqa: PLR0915
         leaves = iteration + 1  # every row still searching has split once per past iteration
         bnd = lv.bound[:, :leaves][act]
         top = bnd.max(axis=1)
-        # The runtime settles a probe against the tail level once its bound sits below it.
-        below = beta + np.maximum(top, best[act]) + delta[act] < decision.tail_alpha
-        if below.any():
-            status[act[below]] = _Outcome.REJECT
-            act, bnd, top = act[~below], bnd[~below], top[~below]
-            if act.size == 0:
-                continue
         k = np.argmin(np.where(bnd == top[:, None], lv.u[:, :leaves][act], np.inf), axis=1)
         lower = np.maximum(0.0, best[act] - guard[act])
         gap = np.maximum(top, best[act]) - lower

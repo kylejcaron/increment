@@ -547,9 +547,8 @@ class _StopRule:
 
 
 #: Chosen from 454 searches (the probes of 15 intervals) run to a gap relative to the p-value
-#: alone: 2**-14 was reached within 1024 splits by 98.5% and within 2048 by 99.6%, and every
-#: comparison with the tail level settled within 174. Flooring the scale at the tail level and
-#: allowing for the certification noise only loosen that target.
+#: alone: 2**-14 was reached within 1024 splits by 98.5% and within 2048 by 99.6%. Flooring the
+#: scale at the tail level and allowing for the certification noise only loosen that target.
 NUISANCE_STOP = _StopRule(gap_fraction=2.0**-14, max_iter=2048)
 
 
@@ -863,7 +862,7 @@ def _null_certificates(
     bound below the other's is the one a full refinement would have returned.
     """
     reading = _Reading(tail)
-    args = (r, x_c, n_c, x_t, n_t, beta, NUISANCE_STOP)
+    args = (r, x_c, n_c, x_t, n_t, beta, rule)
     if alternative == "greater":
         return [("plus", _p_plus_certificate(*args, reading))]
     if alternative == "less":
@@ -1271,8 +1270,8 @@ def precision_note(ci: BinomialInterval) -> str | None:
         )
     if ci.capped_probes:
         parts.append(
-            f"{NUISANCE_NOTE_PREFIX}: {ci.capped_probes} p-value probe(s) ended at the nuisance "
-            "search's iteration limit, and the reported bounds remain valid but are "
+            f"{NUISANCE_NOTE_PREFIX}: {ci.capped_probes} p-value probe(s) ran out of splits or "
+            "reached the floating-point floor first, and the reported bounds remain valid but are "
             f"conservative by at most {_ceiling_digits(ci.nuisance_gap_max)} in p-value"
         )
     return " | ".join(parts) or None
