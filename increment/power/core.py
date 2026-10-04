@@ -2727,6 +2727,36 @@ def _solve_binomial_mde(
     return cast("tuple[float, float] | _MdeRefusal", memo[key])
 
 
+def _dense_mde(
+    plan: _ArmPlan,
+    model: _BinomialPlan,
+    *,
+    target: float,
+    null_lift: float,
+    alternative: Alternative,
+) -> tuple[float, float] | None:
+    """The closed-form effect, when the runtime decides every effect from the null up to it
+    with the delta-method route.
+
+    The closed form is the power of each such effect, and ``_solve_arm_mde`` isolates its
+    first crossing, so that crossing is also the first the runtime decision reaches: no effect
+    before it is decided any other way, and the replay is never built. Any other plan (a
+    sparse or borderline effect on the way, or no closed-form answer) returns ``None`` and is
+    searched against the replay.
+    """
+    if model.mode != "auto":
+        return None
+    solved = _solve_arm_mde(plan, target=target, null_lift=null_lift, alternative=alternative)
+    if isinstance(solved, _MdeRefusal):
+        return None
+    search = _MdeSearch.build(plan, target=target, null_lift=null_lift, alternative=alternative)
+    point = search.candidate(solved[0])
+    if point is None:
+        return None
+    _, every = model.dense_extent(search.theta0, point[1])
+    return solved if every else None
+
+
 def _search_binomial_mde(
     plan: _ArmPlan,
     model: _BinomialPlan,
@@ -2735,11 +2765,9 @@ def _search_binomial_mde(
     null_lift: float,
     alternative: Alternative,
 ) -> tuple[float, float] | _MdeRefusal:
-    geometry = model.geometry
-    model = replace(
-        model,
-        geometry=RejectionGeometry(geometry.decision, geometry.route, geometry.max_cells),
-    )
+    dense = _dense_mde(plan, model, target=target, null_lift=null_lift, alternative=alternative)
+    if dense is not None:
+        return dense
     search = _BinomialMdeSearch.of(
         plan, model, target=target, null_lift=null_lift, alternative=alternative
     )
@@ -2850,6 +2878,7 @@ _BINOMIAL_SIZE_LIMIT = RefusalSpec(
     "power.binomial_size_search_unreachable", InvalidRequestError, _render_size_limit
 )
 
+
 def _render_tail_level(
     *,
     alpha: float,
@@ -2928,8 +2957,7 @@ def _render_arm_at_floor(
         f"the smallest plannable design (n_t={n_t}, n_c={n_c} analyzed units at allocation "
         f"{allocation}) already has an arm above the finite-sample runtime's ceiling of "
         f"{max_arm_size} analyzed units, so no size can be planned -- use a less lopsided "
-        "allocation"
-        + (_AUTO_ROUTE_HINT if conversion_inference == "finite_sample" else "")
+        "allocation" + (_AUTO_ROUTE_HINT if conversion_inference == "finite_sample" else "")
     )
 
 

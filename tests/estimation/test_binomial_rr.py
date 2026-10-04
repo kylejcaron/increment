@@ -750,7 +750,7 @@ class TestApplicabilityBoundaryCalibration:
                 alternative="two-sided",
             )
         assert calls == []
-        assert exc_info.value.code == "estimation.binomial.arm_too_large_for_exact_enumeration"
+        assert exc_info.value.code == "estimation.binomial.finite_sample_arm_ceiling_exceeded"
         assert exc_info.value.context["max_arm_size"] == 1_000_000_000
 
     @pytest.mark.parametrize("above", ["control", "treatment"])
@@ -762,7 +762,7 @@ class TestApplicabilityBoundaryCalibration:
         with pytest.raises(brr.BinomialDataError) as exc_info:
             brr.confidence_interval(1, n_c, 1, n_t, alpha=0.05, alternative="two-sided")
         assert calls == []
-        assert exc_info.value.code == "estimation.binomial.arm_too_large_for_exact_enumeration"
+        assert exc_info.value.code == "estimation.binomial.finite_sample_arm_ceiling_exceeded"
 
     @pytest.mark.parametrize("alternative", ["two-sided", "greater", "less"])
     def test_a_rare_count_pair_exactly_at_the_ceiling_is_admitted(self, alternative):

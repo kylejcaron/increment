@@ -2470,9 +2470,32 @@ class TestRunBreakoutBinomialGateExemption:
         assert row.reference_kind == "binomial"
         assert row.lift is not None
 
-    def test_exact_binomial_failure_is_not_labelled_a_lift_guard_exclusion(self):
-        """An arm above the exact method's size ceiling fails with a binomial
+    def test_finite_sample_failure_is_not_labelled_a_lift_guard_exclusion(self):
+        """An arm above the finite-sample method's size ceiling fails with a binomial
         code, not a lift guard, so its row must not claim an extreme ratio."""
+        big = FINITE_SAMPLE_MAX_ARM_SIZE + 1
+        rows = [
+            _conversion_arm_row(big, big // 10, country="GB", group_id="control"),
+            _conversion_arm_row(big, big // 9, country="GB", group_id="treatment"),
+            _conversion_arm_row(1000, 100, country="US", group_id="control"),
+            _conversion_arm_row(1000, 130, country="US", group_id="treatment"),
+        ]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = run_breakout(
+                rows,
+                [_conversion_metric()],
+                control_group="control",
+                dimension="country",
+                methods=[Method(name="unadjusted", conversion_inference="finite_sample")],
+            )
+        by_segment = {row.dimension_value: row for row in result}
+        assert by_segment["GB"].excluded == "estimation_failed"
+        assert by_segment["US"].excluded is None
+
+    def test_a_dense_segment_above_the_ceiling_is_estimated_by_default(self):
+        """Under ``auto`` a dense segment never reaches the finite-sample ceiling: it takes
+        the delta-method route beside a sparse segment on the finite-sample route."""
         big = FINITE_SAMPLE_MAX_ARM_SIZE + 1
         rows = [
             _conversion_arm_row(big, big // 10, country="GB", group_id="control"),
@@ -2486,8 +2509,10 @@ class TestRunBreakoutBinomialGateExemption:
                 rows, [_conversion_metric()], control_group="control", dimension="country"
             )
         by_segment = {row.dimension_value: row for row in result}
-        assert by_segment["GB"].excluded == "estimation_failed"
+        assert by_segment["GB"].excluded is None
+        assert by_segment["GB"].reference_kind == "t"
         assert by_segment["US"].excluded is None
+        assert by_segment["US"].reference_kind == "binomial"
 
     def test_one_arm_binomial_failure_beside_an_estimated_arm(self):
         """Only t2 exceeds the exact method's ceiling: t2 is an estimation

@@ -3,7 +3,10 @@ tests and ``calibration.conversion_route``."""
 
 from __future__ import annotations
 
+import math
 from typing import Any, Literal
+
+import numpy as np
 
 from increment.estimation.armstats import ArmStats
 from increment.estimation.engine import Method, estimate_lift
@@ -70,3 +73,32 @@ def lift_row(
     assert not computation.failures, computation.failures
     (row,) = computation.results
     return row
+
+
+def runtime_rejection_rate(
+    n_c: int,
+    n_t: int,
+    p_c: float,
+    p_t: float,
+    *,
+    alpha: float = 0.05,
+    alternative: str = "two-sided",
+    mode: Literal["auto", "finite_sample"] = "auto",
+    reps: int,
+    seed: int,
+) -> tuple[float, float, float]:
+    """``(rate, standard_error, asymptotic_share)``: the share of ``reps`` seeded binomial
+    count draws whose row ``estimate_lift`` decides against the null (``stat_sig``), and the
+    share the route sent to the delta method. ``estimate_lift`` runs once per distinct count
+    pair; every draw stays in the denominator."""
+    rng = np.random.default_rng(seed)
+    x_c = rng.binomial(n_c, p_c, size=reps)
+    x_t = rng.binomial(n_t, p_t, size=reps)
+    pairs, multiplicity = np.unique(np.stack([x_c, x_t]), axis=1, return_counts=True)
+    rejected = asymptotic = 0
+    for (c, t), times in zip(pairs.T, multiplicity, strict=True):
+        row = lift_row((int(c), n_c, int(t), n_t), alpha=alpha, alternative=alternative, mode=mode)
+        rejected += int(times) * row.stat_sig()
+        asymptotic += int(times) * (row.reference_kind == "t")
+    rate = rejected / reps
+    return rate, math.sqrt(max(rate * (1.0 - rate), 1.0 / reps) / reps), asymptotic / reps
