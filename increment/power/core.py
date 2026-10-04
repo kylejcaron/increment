@@ -16,13 +16,19 @@ every data-generating process. A bounded metric's alternative rate must
 stay at or below one; the treatment rate exactly one contributes zero
 treatment variance.
 
-A conversion or retention plan the runtime decides with the exact binomial
-risk-ratio test (unadjusted, unclustered, fixed horizon, no prior, raw counts)
-does not use this model. ``power_basis="exact"`` integrates that decision's
-rejection probability at the analyzed integer counts. ``"approximate"``
-instead integrates a Normal-conditional-tail decision model; its numerical
-certificates do not bound the model's departure from runtime inference.
-The Bernoulli shape above applies to the remaining conversion and retention plans.
+A conversion or retention plan the runtime routes by counts (unadjusted,
+unclustered, fixed horizon, no prior, raw counts; ``Method.conversion_inference``)
+is planned the way the runtime decides it. Where the effect's rates make every
+one of the four per-arm counts dense with near certainty (``increment.estimation.
+conversion_route``) the runtime takes the delta-method route and this model
+applies unchanged (``power_basis="asymptotic"``). Where they make that
+route near impossible, or the plan is explicitly ``finite_sample``, power is the
+finite-sample decision's rejection probability at the analyzed integer counts,
+exact within a cell budget and otherwise the same decision replayed with Normal
+conditional tails (``increment.power._binomial``). Between the two the smaller
+of the two powers is reported. ``PowerResult.power_basis`` names which. The
+Bernoulli shape above applies to every conversion and retention plan the
+delta-method route decides.
 
 Because the variance depends on the alternative, a decreasing direction's
 noncentrality ``d / S(theta0 - d)`` rises to a single peak and then falls:
@@ -56,7 +62,7 @@ from scipy.stats import chi2 as _chi2
 from scipy.stats import ncx2 as _ncx2
 from scipy.stats import norm as _norm
 
-from increment._literals import Alternative
+from increment._literals import Alternative, ConversionInference
 from increment.compatibility import (
     PowerDesign,
     Unsupported,
@@ -80,6 +86,14 @@ from increment.estimation.arm_contract import (
 )
 from increment.estimation.armstats import SummaryStats
 from increment.estimation.binomial_rr import FINITE_SAMPLE_MAX_ARM_SIZE, nuisance_beta
+from increment.estimation.conversion_route import (
+    PlanningRoute,
+    dense_extent,
+    dense_min_count,
+    finite_sample_blocker,
+    planning_route,
+    refuse_finite_sample_unavailable,
+)
 from increment.estimation.diagnostics import ESTIMATION_DIAGNOSTICS_ALPHA
 from increment.estimation.meta import ESTIMATION_META_VAR_FINITE_STRICTLY
 from increment.estimation.quantile import (
@@ -1390,7 +1404,26 @@ def _prepare_solver(
             metric=baseline.metric_name,
             metric_type=procedure.metric.metric_type,
         )
+    _require_finite_sample_plannable(procedure)
     return procedure, baseline
+
+
+def _require_finite_sample_plannable(procedure: ArmPlanningProcedure) -> None:
+    """Refuse an explicit ``finite_sample`` decision method on a plan the runtime would not
+    decide with the finite-sample route, as the runtime refuses the same request."""
+    if _conversion_mode(procedure) != "finite_sample" or _runtime_binomial(procedure):
+        return
+    reason = finite_sample_blocker(
+        procedure.metric.metric_type,
+        cluster="the plan's cluster" if procedure.dependence == "cluster" else None,
+        prior_present=procedure.prior_present,
+        sequential=not isinstance(procedure.inference, FixedInference),
+    )
+    refuse_finite_sample_unavailable(
+        procedure.metric.metric_type,
+        reason
+        or "the plan adjusts the outcome (variance adjustment, factor absorption or winsorization)",
+    )
 
 
 def _refuse_unanalyzable_quantile_plan(procedure: ArmPlanningProcedure, baseline: Baseline) -> None:
@@ -2179,15 +2212,16 @@ def _solve_sequential_mde(
     ).solve()
 
 
-# Runtime-binomial planning: the exact binomial risk-ratio decision the runtime
-# applies to eligible conversion and retention contrasts (see
-# ``increment.power._binomial``).
+# Runtime-binomial planning: the routed decision the runtime applies to eligible
+# conversion and retention contrasts -- the finite-sample binomial risk-ratio inversion
+# (see ``increment.power._binomial``) where the counts are sparse, the delta-method
+# contrast (``_ArmPlan``) where they are dense (see ``increment.estimation.conversion_route``).
 
 _GeometryCache = dict[tuple[BinomialDecision, Route], RejectionGeometry]
 
 
 def _runtime_binomial(procedure: ArmPlanningProcedure) -> bool:
-    """Whether the runtime decides this plan with the exact binomial test.
+    """Whether the runtime routes this plan by its counts.
 
     Mirrors ``increment.estimation.engine._binomial_eligible`` -- a declared
     conversion or retention metric, unclustered, not CUPED-adjusted, with raw
@@ -2206,44 +2240,118 @@ def _runtime_binomial(procedure: ArmPlanningProcedure) -> bool:
     )
 
 
+def _conversion_mode(procedure: ArmPlanningProcedure) -> ConversionInference:
+    """The decision method's ``conversion_inference``: the route the runtime takes."""
+    return procedure.decision_method.conversion_inference
+
+
 def _alternative_rate(log_p_c: float, theta: float) -> float:
     """Treatment rate of effect ``theta`` over the control rate ``exp(log_p_c)``."""
     return min(1.0, math.exp(log_p_c + theta))
 
 
+def _modelled(power: float) -> BinomialPower:
+    """A closed-form power as an enclosure of itself: the model has no numerical error to carry
+    beyond the value, and its basis (``asymptotic``) says it is not a replay of the decision."""
+    return BinomialPower(plus=power, minus=0.0, omitted=0.0, inflation=1.0)
+
+
 @dataclass(frozen=True, slots=True)
 class _BinomialPlan:
-    """The runtime's rejection geometry at one analyzed integer pair, with
-    the baseline's control rate; effects enter through the treatment rate
-    ``p_c * exp(theta)``."""
+    """The runtime's decision at one analyzed integer pair, with the baseline's control rate;
+    effects enter through the treatment rate ``p_c * exp(theta)``.
+
+    Under ``mode="finite_sample"`` every effect is decided by the finite-sample rejection
+    ``geometry``. Under ``"auto"`` the runtime takes the delta-method route where all four
+    counts are dense, so each effect's rates classify (``planning_route``): ``dense`` is the
+    closed-form model ``arm``, ``sparse`` the replay, and ``borderline`` the smaller of the
+    two powers -- the claim stays true where the replay happens to exceed the closed form.
+    """
 
     geometry: RejectionGeometry
+    arm: _ArmPlan
     p_c: float
     log_p_c: float
-
-    @property
-    def basis(self) -> PowerBasis:
-        return self.geometry.route
+    mode: ConversionInference
+    tail_alpha: float
 
     def rate(self, theta: float) -> float:
         return _alternative_rate(self.log_p_c, theta)
 
-    def evaluate(self, theta: float) -> BinomialPower:
-        """The rejection mass of the replayed decision set at effect ``theta`` (the runtime's
-        rejection probability on the exact route), enclosed by its numerical error; raises
-        `ReplayBoundExceeded` when the cells its alternative window adds would leave the geometry
-        storing more than the planning bound."""
-        return self.geometry.evaluate(self.p_c, self.rate(theta))
+    def route(self, theta: float) -> PlanningRoute:
+        """How the runtime routes counts drawn at effect ``theta``."""
+        decision = self.geometry.decision
+        return planning_route(
+            decision.n_c,
+            decision.n_t,
+            self.p_c,
+            self.rate(theta),
+            tail_alpha=self.tail_alpha,
+            mode=self.mode,
+        )
 
-    def supplied(self, theta: float, **sizing: float) -> BinomialPower:
+    def basis_at(self, theta: float) -> PowerBasis:
+        """``PowerResult.power_basis`` of effect ``theta``."""
+        return "asymptotic" if self.route(theta) == "dense" else self.geometry.route
+
+    def evaluate(self, theta: float, distance: float) -> BinomialPower:
+        """The rejection mass at effect ``theta``, ``distance`` from the null on the log scale,
+        as the effect's route models it, enclosed by its numerical error: the closed form where
+        the counts are dense, the replayed decision set where they are sparse, and the smaller of
+        the two between. Raises `ReplayBoundExceeded` when the cells its alternative window adds
+        would leave the geometry storing more than the planning bound."""
+        route = self.route(theta)
+        if route == "dense":
+            return _modelled(self.arm.power(distance, theta))
+        replay = self.geometry.evaluate(self.p_c, self.rate(theta))
+        if route == "sparse":
+            return replay
+        closed = _modelled(self.arm.power(distance, theta))
+        return replay if replay.power <= closed.power else closed
+
+    def routing_context(self) -> dict[str, object]:
+        """The route fields a replay-bound refusal carries."""
+        context: dict[str, object] = {"conversion_inference": self.mode}
+        if self.mode == "auto":
+            context["dense_min_count"] = dense_min_count(self.tail_alpha)
+        return context
+
+    def supplied(self, theta: float, distance: float, **sizing: float) -> BinomialPower:
         """`evaluate` of an effect the caller supplied: beyond the planning bound it is refused."""
         try:
-            return self.evaluate(theta)
+            return self.evaluate(theta, distance)
         except ReplayBoundExceeded as exceeded:
             decision = self.geometry.decision
             _refuse_replay_bound(
-                self.p_c, decision.n_t, decision.n_c, exceeded.cells, p_t=exceeded.p_t, **sizing
+                self.p_c,
+                decision.n_t,
+                decision.n_c,
+                exceeded.cells,
+                p_t=exceeded.p_t,
+                **self.routing_context(),
+                **sizing,
             )
+
+    def dense_extent(self, theta_a: float, theta_b: float) -> tuple[bool, bool]:
+        """Whether some, and whether every, effect between two is routed dense."""
+        low, high = sorted((self.rate(theta_a), self.rate(theta_b)))
+        decision = self.geometry.decision
+        return dense_extent(
+            decision.n_c,
+            decision.n_t,
+            self.p_c,
+            low,
+            high,
+            tail_alpha=self.tail_alpha,
+            mode=self.mode,
+        )
+
+    def closure(self, theta_a: float, theta_b: float) -> Closure:
+        """Closure bound on the replayed decision set's rejection mass (the runtime's rejection
+        probability on the exact route) at every alternative between two effects, numerical
+        error included, and whether the set is closed there."""
+        low, high = sorted((self.rate(theta_a), self.rate(theta_b)))
+        return self.geometry.closure(self.p_c, low, high)
 
     def bound(self, theta_a: float, theta_b: float) -> float:
         """Upper bound on every computed point power between the effects."""
@@ -2260,6 +2368,8 @@ def _render_replay_bound(
     cells: int,
     max_cells: int,
     max_arm_size: int,
+    conversion_inference: str = "finite_sample",
+    dense_min_count: int | None = None,
     p_t: float | None = None,
     power: float | None = None,
     power_reached: float | None = None,
@@ -2271,18 +2381,29 @@ def _render_replay_bound(
     replay = f"{cells:,} (control, treatment) count cells against a bound of {max_cells:,}"
     scope = (
         f"The bound is the replay's cost, not a limit of the analysis: the runtime decides "
-        f"arms of up to {max_arm_size:,} analyzed units"
+        f"arms of up to {max_arm_size:,} analyzed units on its finite-sample route"
     )
+    if conversion_inference == "auto":
+        route = (
+            f"; counts of at least {dense_min_count:,} successes and failures per arm take "
+            "the runtime's delta-method route, which is planned in closed form without a "
+            "replay, so a larger relative_lift or more units that reach them avoid it"
+        )
+    else:
+        route = (
+            "; conversion_inference='auto' (the default) plans counts the runtime takes the "
+            "delta-method route at in closed form without a replay"
+        )
     if power is None:
         return (
-            f"planning the selected binomial decision model at {where} is not supported: its "
-            f"replay spans {replay}. {scope} -- plan fewer analyzed units per arm (a larger "
-            "relative_lift needs fewer)"
+            f"planning the runtime's finite-sample binomial decision at {where} is not "
+            f"supported: its replay spans {replay}. {scope} -- plan fewer analyzed units per "
+            f"arm (a larger relative_lift needs fewer){route}"
         )
     return (
-        f"target power {power} is not reached by the selected binomial decision model within "
-        f"the planning replay bound (power {power_reached:.6g} at {where}, whose replay spans "
-        f"{replay}). {scope} -- plan a larger relative_lift or a lower target power"
+        f"target power {power} is not reached by the runtime's finite-sample binomial decision "
+        f"within the planning replay bound (power {power_reached:.6g} at {where}, whose replay "
+        f"spans {replay}). {scope} -- plan a larger relative_lift or a lower target power{route}"
     )
 
 
@@ -2292,11 +2413,12 @@ _BINOMIAL_REPLAY_BOUND = RefusalSpec(
 
 
 def _replay_bound_context(
-    p_c: float, n_T: int, n_C: int, cells: int, **extra: float | None
+    p_c: float, n_T: int, n_C: int, cells: int, **extra: object
 ) -> dict[str, object]:
     """Context of the replay-bound refusal for ``cells`` count cells at analyzed counts
-    ``(n_T, n_C)``; ``p_t`` names the alternative rate behind them, and a size search adds its
-    target ``power`` and the ``power_reached`` at its ceiling."""
+    ``(n_T, n_C)``; ``p_t`` names the alternative rate behind them, a size search adds its
+    target ``power`` and the ``power_reached`` at its ceiling, and a plan routed by counts
+    adds its ``conversion_inference`` and ``dense_min_count``."""
     return {
         "n_c": n_C,
         "n_t": n_T,
@@ -2308,9 +2430,7 @@ def _replay_bound_context(
     }
 
 
-def _refuse_replay_bound(
-    p_c: float, n_T: int, n_C: int, cells: int, **extra: float | None
-) -> NoReturn:
+def _refuse_replay_bound(p_c: float, n_T: int, n_C: int, cells: int, **extra: object) -> NoReturn:
     refuse(_BINOMIAL_REPLAY_BOUND, **_replay_bound_context(p_c, n_T, n_C, cells, **extra))
 
 
@@ -2332,31 +2452,40 @@ def _binomial_key(procedure: ArmPlanningProcedure, n_T: int, n_C: int) -> Binomi
 def _binomial_plan(
     procedure: ArmPlanningProcedure,
     baseline: Baseline,
-    n_T: int,
-    n_C: int,
+    arm: _ArmPlan,
     cache: _GeometryCache,
     *,
     route: Route | None = None,
 ) -> _BinomialPlan:
-    """The runtime decision at analyzed counts ``(n_T, n_C)``. A decision the runtime refuses in
-    full decides no count pair, so it has no power to plan and is refused (`_refuse_undecided`);
-    so is one it decides only on control counts above the control window at the baseline rate
-    (`window_decided`), since the window then holds count pairs the runtime refuses.
-    One whose replay would span more than ``PLANNING_CELL_CEILING`` count cells at the null rate
-    is refused before any is built; its geometry refuses an alternative whose window would take
-    it past the bound. ``route`` overrides the budgeted route (sizing proposals only)."""
+    """The runtime decision at the analyzed integer counts of ``arm``. A finite-sample decision
+    the runtime refuses in full decides no count pair, so it has no power to plan and is refused
+    (`_refuse_undecided`). An explicitly ``finite_sample`` decision whose replay would span more
+    than ``PLANNING_CELL_CEILING`` count cells at the null rate is refused before any is built;
+    under ``auto`` the cost is charged where the replay is used, because counts the runtime
+    takes the delta-method route at need none. The geometry refuses an alternative whose window
+    would take it past the bound. ``route`` overrides the budgeted route (sizing proposals
+    only)."""
+    n_T, n_C = int(arm.n_T), int(arm.n_C)
+    mode = _conversion_mode(procedure)
     key = _binomial_key(procedure, n_T, n_C)
-    if refused(key) or not window_decided(key, baseline.mean):
+    if mode == "finite_sample" and (refused(key) or not window_decided(key, baseline.mean)):
         _refuse_undecided(procedure, key, p_c=baseline.mean, scope="requested")
     cells = window_cells(key, baseline.mean)
-    if cells > PLANNING_CELL_CEILING:
-        _refuse_replay_bound(baseline.mean, n_T, n_C, cells)
+    if mode == "finite_sample" and cells > PLANNING_CELL_CEILING:
+        _refuse_replay_bound(baseline.mean, n_T, n_C, cells, conversion_inference=mode)
     route = route_for(cells) if route is None else route
     geometry = cache.get((key, route))
     if geometry is None:
         geometry = cache[key, route] = RejectionGeometry(key, route, PLANNING_CELL_CEILING)
     geometry.begin_solve()
-    return _BinomialPlan(geometry, baseline.mean, math.log(baseline.mean))
+    return _BinomialPlan(
+        geometry,
+        arm,
+        baseline.mean,
+        math.log(baseline.mean),
+        mode,
+        procedure.compiled_tail_alpha,
+    )
 
 
 def _analyzed_counts(n_T: int, n_C: int, baseline: Baseline) -> tuple[int, int]:
@@ -2439,6 +2568,29 @@ class _BinomialMdeSearch(_MdeSearch):
         if self.state.evaluations > _BINOMIAL_MDE_EVALUATIONS:
             raise _SearchBudgetExhausted
 
+    def interval_bound(self, theta_a: float, theta_b: float) -> float:
+        """Upper bound on the rejection mass the plan models at every alternative between two
+        effects: the replay's monotone-closure bound wherever some effect is not routed dense,
+        and the delta-method bound wherever some effect is. Borderline power is the smaller of
+        the two, so it is bounded by either."""
+        some, every = self.model.dense_extent(theta_a, theta_b)
+        bound = 0.0 if every else self.model.bound(theta_a, theta_b)
+        if some:
+            bound = max(bound, self.asymptotic_bound(theta_a, theta_b))
+        return bound
+
+    def asymptotic_bound(self, theta_a: float, theta_b: float) -> float:
+        """Upper bound on the delta-method power between two effects. The increasing
+        direction's noncentrality grows with distance, so its larger end bounds it; the
+        decreasing direction's has a single peak (``peak_distance``), so the bound is the
+        power at the peak clamped into the interval."""
+        low, high = sorted((theta_a, theta_b))
+        if self.sigma > 0.0:
+            return self.plan.power(high - self.theta0, high)
+        near, far = self.theta0 - high, self.theta0 - low
+        magnitude = min(max(self.peak_distance(), near), far)
+        return self.plan.power(-magnitude, self.theta0 - magnitude)
+
     def overflowed_null(self) -> float | _MdeRefusal:
         """Exclude an unrepresentable initial band before searching representable effects."""
         if self.sigma > 0.0:
@@ -2450,11 +2602,7 @@ class _BinomialMdeSearch(_MdeSearch):
             _first_ordinal_accepted(float_ordinal(0.0), float_ordinal(edge), self.admissible)
         )
         d_band = -math.log1p(float_from_ordinal(float_ordinal(m_min) + 1) * self.compliance)
-        self._charge()
-        left = self.model.evaluate(self.theta0)
-        self._charge()
-        right = self.model.evaluate(self.theta0 - d_band)
-        if self.detected(left) or self.detected(right):
+        if self.interval_bound(self.theta0, self.theta0 - d_band) >= self.target:
             return self.unrepresentable("float64_relative_lift")
         bound = self._theta_bound(self.theta0, self.theta0 - d_band, left, right)
         if bound >= self.target:
@@ -2468,9 +2616,14 @@ class _BinomialMdeSearch(_MdeSearch):
 
     def evaluate(self, effect: float) -> BinomialPower:
         self._charge()
-        point = self.candidate(effect)
-        assert point is not None
-        return self.model.evaluate(point[1])
+        point = self.candidate(m)
+        assert point is not None, "searched candidates lie inside the admissible interval"
+        distance, theta = point
+        power = self.model.evaluate(theta, distance)
+        bound = self.interval_bound(theta, theta)
+        standing = _Standing(power, power.lower >= self.target, bound >= self.target, bound)
+        self.obstruction.evaluated(float_ordinal(m), standing)
+        return standing
 
     def detected(self, power: BinomialPower) -> bool:
         return power.power >= self.target
@@ -2566,7 +2719,7 @@ def _solve_binomial_mde(
     Solved searches are memoized for a curve's companion effects.
     """
     memo = model.geometry.effects
-    key = (model.p_c, plan.baseline.compliance, target)
+    key = (model.p_c, plan.baseline.compliance, target, plan.baseline.effective_var, model.mode)
     if key not in memo:
         memo[key] = _search_binomial_mde(
             plan, model, target=target, null_lift=null_lift, alternative=alternative
@@ -2598,7 +2751,12 @@ def _search_binomial_mde(
         # direct request is refused with the bound.
         decision = model.geometry.decision
         context = _replay_bound_context(
-            model.p_c, decision.n_t, decision.n_c, exceeded.cells, p_t=exceeded.p_t
+            model.p_c,
+            decision.n_t,
+            decision.n_c,
+            exceeded.cells,
+            p_t=exceeded.p_t,
+            **model.routing_context(),
         )
         return _MdeRefusal("numerical_resolution", _BINOMIAL_REPLAY_BOUND, context)
 
@@ -2621,7 +2779,11 @@ def _ordered_exclusion(search: _BinomialMdeSearch) -> tuple[float, float] | _Mde
         limiting = "bounded_rate_ceiling" if search.sigma > 0.0 else "relative_lift_floor"
         return search.unattainable(last.power, limiting)
     except _SearchBudgetExhausted:
-        return search.unresolved(m_min, m_max, "the ordered interval search exhausted its budget")
+        return search.unresolved(lo, hi)
+    m = float_from_ordinal(found)
+    point = search.candidate(m)
+    assert point is not None
+    return m, search.model.evaluate(point[1], point[0]).power
 
 
 def _fixed_mde(
@@ -2661,17 +2823,32 @@ def _companion_mde(
     return mde_relative, None
 
 
-_BINOMIAL_SIZE_LIMIT = RefusalSpec(
-    "power.binomial_size_search_unreachable",
-    InvalidRequestError,
-    template=(
-        "target power {power} is not reached by the selected binomial decision model "
-        "within its arm ceiling of {max_arm_size} analyzed units per arm (power "
-        "{maximum_power:.6g} at n_per_arm={n_per_arm}) -- plan a larger relative_lift "
-        "or a lower target power"
-    ),
+_AUTO_ROUTE_HINT = (
+    "; conversion_inference='auto' (the default) takes the delta-method route at counts it "
+    "finds dense, which has no arm ceiling and no nuisance budget"
 )
 
+
+def _render_size_limit(
+    *,
+    power: float,
+    max_arm_size: int,
+    maximum_power: float,
+    n_per_arm: int,
+    conversion_inference: str = "finite_sample",
+) -> str:
+    return (
+        f"target power {power} is not reached by the runtime's finite-sample binomial decision "
+        f"within its arm ceiling of {max_arm_size} analyzed units per arm (power "
+        f"{maximum_power:.6g} at n_per_arm={n_per_arm}) -- plan a larger relative_lift "
+        "or a lower target power"
+        + (_AUTO_ROUTE_HINT if conversion_inference == "finite_sample" else "")
+    )
+
+
+_BINOMIAL_SIZE_LIMIT = RefusalSpec(
+    "power.binomial_size_search_unreachable", InvalidRequestError, _render_size_limit
+)
 
 def _render_tail_level(
     *,
@@ -2686,6 +2863,7 @@ def _render_tail_level(
     solver_floor: float,
     cause: str,
     scope: str,
+    conversion_inference: str = "finite_sample",
 ) -> str:
     if cause == "solver_floor":
         why = (
@@ -2711,8 +2889,9 @@ def _render_tail_level(
             "larger alpha"
         )
         return (
-            f"the runtime's exact binomial decision refuses every count pair at alpha={alpha}: "
-            f"{why}, {way}"
+            f"the runtime's finite-sample binomial decision refuses every count pair at "
+            f"alpha={alpha}: {why}, {way}"
+            + (_AUTO_ROUTE_HINT if conversion_inference == "finite_sample" else "")
         )
     structural = (
         f"a control count of at least {decided_from} rejects the null on its Clopper-Pearson "
@@ -2726,8 +2905,9 @@ def _render_tail_level(
         "so this size has no power to plan -- plan fewer analyzed units per arm or a larger alpha"
     )
     return (
-        f"the runtime's exact binomial decision at alpha={alpha} decides a count pair on its "
-        f"control arm alone: {why}; {structural}, {way}"
+        f"the runtime's finite-sample binomial decision at alpha={alpha} decides a count pair on "
+        f"its control arm alone: {why}; {structural}, {way}"
+        + (_AUTO_ROUTE_HINT if conversion_inference == "finite_sample" else "")
     )
 
 
@@ -2735,14 +2915,26 @@ _BINOMIAL_TAIL_LEVEL = RefusalSpec(
     "power.binomial_tail_level_unrepresentable", InvalidRequestError, _render_tail_level
 )
 
+
+def _render_arm_at_floor(
+    *,
+    n_t: int,
+    n_c: int,
+    allocation: float,
+    max_arm_size: int,
+    conversion_inference: str = "finite_sample",
+) -> str:
+    return (
+        f"the smallest plannable design (n_t={n_t}, n_c={n_c} analyzed units at allocation "
+        f"{allocation}) already has an arm above the finite-sample runtime's ceiling of "
+        f"{max_arm_size} analyzed units, so no size can be planned -- use a less lopsided "
+        "allocation"
+        + (_AUTO_ROUTE_HINT if conversion_inference == "finite_sample" else "")
+    )
+
+
 _BINOMIAL_ARM_AT_FLOOR = RefusalSpec(
-    "power.binomial_arm_ceiling_below_smallest_design",
-    InvalidRequestError,
-    template=(
-        "the smallest plannable design (n_t={n_t}, n_c={n_c} analyzed units at allocation "
-        "{allocation}) already has an arm above the runtime's ceiling of {max_arm_size} analyzed "
-        "units, so no size can be planned -- use a less lopsided allocation"
-    ),
+    "power.binomial_arm_ceiling_below_smallest_design", InvalidRequestError, _render_arm_at_floor
 )
 
 _BINOMIAL_ARM_CEILING = RefusalSpec(
@@ -2779,6 +2971,7 @@ def _refuse_undecided(
                 n_c=key.n_c,
                 allocation=allocation,
                 max_arm_size=FINITE_SAMPLE_MAX_ARM_SIZE,
+                conversion_inference=_conversion_mode(procedure),
             )
         refuse(
             _BINOMIAL_ARM_CEILING,
@@ -2799,6 +2992,7 @@ def _refuse_undecided(
         solver_floor=solver_floor(),
         cause="solver_floor" if solver_refuses(key) else "float_margin",
         scope=scope,
+        conversion_inference=_conversion_mode(procedure),
     )
 
 
@@ -2809,6 +3003,8 @@ def _binomial_size(  # noqa: PLR0915
     design: PowerDesign,
     *,
     theta: float,
+    distance: float,
+    bounded: bool,
     proposal: int,
     cache: _GeometryCache,
 ) -> tuple[int, int, _BinomialPlan, float]:
@@ -2831,19 +3027,30 @@ def _binomial_size(  # noqa: PLR0915
     z_target = float(_ndtri(target))
     z_alpha = float(_norm.isf(procedure.compiled_tail_alpha))
     rate = _alternative_rate(math.log(baseline.mean), theta)
-    arm_ceiling = _binomial_admitted_ceiling(
-        procedure, baseline, design, floor, _binomial_arm_ceiling(design, floor, baseline)
+    dense_from = (
+        _dense_size(procedure, baseline, design, floor, rate, proposal)
+        if _conversion_mode(procedure) == "auto"
+        else None
     )
-    ceiling = _binomial_replay_ceiling(procedure, baseline, design, floor, arm_ceiling, rate)
+    if dense_from is None:
+        arm_ceiling = _binomial_admitted_ceiling(
+            procedure, baseline, design, floor, _binomial_arm_ceiling(design, floor, baseline)
+        )
+        ceiling = _binomial_replay_ceiling(procedure, baseline, design, floor, arm_ceiling, rate)
+    else:
+        # From `dense_from` the runtime takes the delta-method route at this effect's
+        # rates: no replay, no arm ceiling and no nuisance budget bound the search.
+        arm_ceiling = ceiling = _MAX_PLANNED_ARM
     powers: dict[int, BinomialPower] = {}
 
     def plan_at(n: int, route: Route | None = None) -> _BinomialPlan:
         n_T, n_C = _analyzed_counts(*_compute_arms(n, design, minimum_per_arm=floor), baseline)
-        return _binomial_plan(procedure, baseline, n_T, n_C, cache, route=route)
+        arm = _ArmPlan(procedure, baseline, n_T, n_C, None, bounded)
+        return _binomial_plan(procedure, baseline, arm, cache, route=route)
 
     def power_at(n: int) -> BinomialPower:
         if n not in powers:
-            powers[n] = plan_at(n).supplied(theta)
+            powers[n] = plan_at(n).supplied(theta, distance)
         return powers[n]
 
     def crossing(evaluate: Callable[[int], BinomialPower], n: int, *, final: bool) -> int:
@@ -2906,6 +3113,7 @@ def _binomial_size(  # noqa: PLR0915
                             p_t=p_t,
                             power=target,
                             power_reached=values[lo].power,
+                            **plan_at(lo).routing_context(),
                         )
                     refuse(
                         _BINOMIAL_SIZE_LIMIT,
@@ -2917,6 +3125,7 @@ def _binomial_size(  # noqa: PLR0915
                         ),
                         maximum_power=values[lo].power,
                         n_per_arm=_compute_arms(lo, design, minimum_per_arm=floor)[0],
+                        conversion_inference=_conversion_mode(procedure),
                     )
                 guess = min(secant(lo, previous), 4.0 * lo + 4.0)
                 n = min(ceiling, max(lo + 1, math.ceil(1.05 * lo), math.ceil(guess)))
@@ -2940,14 +3149,63 @@ def _binomial_size(  # noqa: PLR0915
                     n = min(hi - 1, max(lo + 1, round(guess)))
 
     start = min(max(proposal, floor), ceiling)
-    if plan_at(start).basis == "exact":
+    if plan_at(start).basis_at(theta) == "exact":
         # The approximate replay costs a fraction of the exact one and agrees
         # with it closely; its crossing proposes the size the exact decision
         # then verifies (the proposal and its predecessor) and corrects.
-        start = crossing(lambda m: plan_at(m, "approximate").supplied(theta), start, final=False)
+        start = crossing(
+            lambda m: plan_at(m, "approximate").supplied(theta, distance), start, final=False
+        )
     hi = crossing(power_at, start, final=True)
     n_T, n_C = _compute_arms(hi, design, minimum_per_arm=floor)
     return n_T, n_C, plan_at(hi), powers[hi].power
+
+
+# Largest assigned treatment size a planning search considers, far past any real arm.
+_MAX_PLANNED_ARM = 2**62
+
+
+def _dense_size(
+    procedure: ArmPlanningProcedure,
+    baseline: Baseline,
+    design: PowerDesign,
+    floor: int,
+    rate: float,
+    start: int,
+) -> int | None:
+    """Smallest assigned treatment size from which the runtime takes the delta-method
+    route with certainty (``planning_route`` is ``dense``) at treatment rate ``rate``, or
+    ``None`` when no size does (a rate of exactly one has no failures to count). Growing
+    arms only raise each expected count against the fixed dense threshold, so the
+    classification flips once."""
+
+    def dense(n: int) -> bool:
+        n_T, n_C = _analyzed_counts(*_compute_arms(n, design, minimum_per_arm=floor), baseline)
+        return (
+            planning_route(
+                n_C,
+                n_T,
+                baseline.mean,
+                rate,
+                tail_alpha=procedure.compiled_tail_alpha,
+                mode="auto",
+            )
+            == "dense"
+        )
+
+    hi = max(start, floor)
+    lo = floor - 1
+    while not dense(hi):
+        lo, hi = hi, hi * 2
+        if hi > _MAX_PLANNED_ARM:
+            return None
+    while hi - lo > 1:
+        mid = lo + (hi - lo) // 2
+        if dense(mid):
+            hi = mid
+        else:
+            lo = mid
+    return hi
 
 
 def _binomial_arm_ceiling(design: PowerDesign, floor: int, baseline: Baseline) -> int:
@@ -3215,6 +3473,8 @@ def required_sample_size(  # noqa: PLR0915
                 baseline,
                 design,
                 theta=theta,
+                distance=distance,
+                bounded=bounded,
                 proposal=math.ceil(n_T / baseline.trigger_rate),
                 cache={},
             )
@@ -3354,7 +3614,7 @@ def required_sample_size(  # noqa: PLR0915
         n_per_arm=assigned_T,
         n_total=n_total,
         power=min(power, 1.0),
-        power_basis="asymptotic" if model is None else model.basis,
+        power_basis="asymptotic" if model is None else model.basis_at(theta),
         mde_relative=mde_relative,
         mde_unavailable_reason=mde_unavailable_reason,
         effective_var=baseline.effective_var,
@@ -3436,13 +3696,15 @@ def _achieved_power(
     alpha_seq, exit_side, e_value_dual = _sequential_side(procedure)
     theta_dir = _sequential_drift(procedure, distance)
 
-    model: _BinomialPlan | None = None
-    if _runtime_binomial(procedure):
+    runtime_binomial = _runtime_binomial(procedure)
+    if runtime_binomial:
         analyzed_T, analyzed_C = _analyzed_counts(n_T, n_C, baseline)
-        model = _binomial_plan(procedure, baseline, analyzed_T, analyzed_C, cache)
     clustered = baseline.avg_cluster_size > 1.0 and looks is None
     cluster_dof = _cluster_dof(n_T, n_C, baseline) if clustered else None
     plan = _ArmPlan(procedure, baseline, analyzed_T, analyzed_C, cluster_dof, bounded)
+    model: _BinomialPlan | None = (
+        _binomial_plan(procedure, baseline, plan, cache) if runtime_binomial else None
+    )
     if looks is not None:
         power, expected_t = _sequential_estimates_from_log_se(
             looks,
@@ -3453,7 +3715,7 @@ def _achieved_power(
             e_value_dual=e_value_dual,
         )
     elif model is not None:
-        power = model.supplied(theta).power
+        power = model.supplied(theta, distance).power
         expected_t = None
     else:
         power = plan.power(distance, theta)
@@ -3479,7 +3741,7 @@ def _achieved_power(
         n_per_arm=n_T,
         n_total=n_total,
         power=min(power, 1.0),
-        power_basis="asymptotic" if model is None else model.basis,
+        power_basis="asymptotic" if model is None else model.basis_at(theta),
         mde_relative=mde_relative,
         mde_unavailable_reason=mde_unavailable_reason,
         effective_var=baseline.effective_var,
@@ -3558,13 +3820,16 @@ def _minimum_detectable_effect(
     )
     analyzed_T = n_T * baseline.trigger_rate
     analyzed_C = n_C * baseline.trigger_rate
-    model: _BinomialPlan | None = None
-    if _runtime_binomial(procedure):
+    runtime_binomial = _runtime_binomial(procedure)
+    if runtime_binomial:
         analyzed_T, analyzed_C = _analyzed_counts(n_T, n_C, baseline)
-        model = _binomial_plan(procedure, baseline, analyzed_T, analyzed_C, cache)
     clustered = baseline.avg_cluster_size > 1.0 and looks is None
     cluster_dof = _cluster_dof(n_T, n_C, baseline) if clustered else None
     plan = _ArmPlan(procedure, baseline, analyzed_T, analyzed_C, cluster_dof, bounded)
+    model: _BinomialPlan | None = (
+        _binomial_plan(procedure, baseline, plan, cache) if runtime_binomial else None
+    )
+    power_basis: PowerBasis = "asymptotic"
 
     if looks is not None:
         alpha_seq, exit_side, e_value_dual = _sequential_side(procedure)
@@ -3588,6 +3853,11 @@ def _minimum_detectable_effect(
         if isinstance(solved, _MdeRefusal):
             refuse(solved.spec, **solved.context)
         mde_relative, power = solved
+        if model is not None:
+            # The answer's own alternative decides which route its power was computed on.
+            power_basis = model.basis_at(
+                math.log1p(decision.null_lift) + math.log1p(mde_relative * baseline.compliance)
+            )
         if mde_relative == 0.0:
             _raise(
                 "power.minimum_detectable_effect.design_search_minimum",
@@ -3604,7 +3874,7 @@ def _minimum_detectable_effect(
         n_per_arm=n_T,
         n_total=n_total,
         power=min(power, 1.0),
-        power_basis="asymptotic" if model is None else model.basis,
+        power_basis=power_basis,
         mde_relative=mde_relative,
         effective_var=baseline.effective_var,
         n_clusters_per_arm=k_per_arm,

@@ -11,7 +11,7 @@ from pydantic import (
     model_validator,
 )
 
-from increment._literals import Alternative, PreferredDirection, ValueScale
+from increment._literals import Alternative, ConversionInference, PreferredDirection, ValueScale
 from increment.compatibility import (
     ARM_COMPATIBILITY_REFUSALS,
     ClusterFloor,
@@ -32,6 +32,10 @@ from increment.errors import (
     RefusalSpec,
     raiser,
     refusals,
+)
+from increment.estimation.conversion_route import (
+    finite_sample_blocker,
+    refuse_finite_sample_unavailable,
 )
 from increment.estimation.decision_types import FixedInference
 from increment.estimation.sequential import (
@@ -304,6 +308,7 @@ class ArmPlanningProcedure(CodedModel, BaseModel):
         q: float = 0.10,
         preferred_direction: PreferredDirection | None = None,
         compliance: SequentialCompliancePolicy | None = None,
+        conversion_inference: ConversionInference = "auto",
     ) -> ArmPlanningProcedure:
         """A fixed-horizon plan for an ordinary parallel A/B test.
 
@@ -336,12 +341,28 @@ class ArmPlanningProcedure(CodedModel, BaseModel):
         it) and a one-sided ``alternative``, derived from
         ``preferred_direction`` when given.
 
+        ``conversion_inference`` is the decision method's ``Method.conversion_inference``:
+        the default ``"auto"`` plans a conversion or retention metric the way the runtime
+        routes it by counts (closed form where the counts are dense, the replayed
+        finite-sample decision where they are sparse), and ``"finite_sample"`` plans the
+        replayed finite-sample decision at every size. It is refused for a metric that is
+        not a conversion or retention rate, a clustered plan, or a sequential one.
+
         The power solvers derive CUPED, encouragement compliance, triggered
         populations and factor absorption from the ``Baseline`` they receive,
         and a quantile metric from a ``QuantileBaseline``, so ``standard()``
         plans those designs too. Segmented views need the full constructor,
         because planning must describe the analysis actually intended.
         """
+        if conversion_inference == "finite_sample":
+            reason = finite_sample_blocker(
+                metric_type,
+                cluster="the plan's cluster" if clustered else None,
+                prior_present=False,
+                sequential=inference is not None,
+            )
+            if reason is not None:
+                refuse_finite_sample_unavailable(metric_type, reason)
         if secondaries is not None and role != "secondary":
             _raise("arm_planning.secondaries_without_secondary_role")
         if role == "secondary" and secondaries is None:
@@ -468,7 +489,7 @@ class ArmPlanningProcedure(CodedModel, BaseModel):
             ),
             decision=decision,
             family_expansion=PlanningFamilyExpansion(family_size=family_size),
-            decision_method=MethodSpec(name="unadjusted"),
+            decision_method=MethodSpec(name="unadjusted", conversion_inference=conversion_inference),
             sensitivity_methods=(),
             prior_present=False,
         )

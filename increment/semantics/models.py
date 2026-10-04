@@ -27,7 +27,13 @@ from pydantic import (
 )
 
 from increment._immutable import _FrozenMapping
-from increment._literals import ALTERNATIVE_VALUES, Alternative, Correction, PreferredDirection
+from increment._literals import (
+    ALTERNATIVE_VALUES,
+    Alternative,
+    ConversionInference,
+    Correction,
+    PreferredDirection,
+)
 from increment.errors import CodedModel, CodedValidationMixin, DefinitionError, RefusalSpec
 from increment.semantics.design import (
     ExclusionRestriction,
@@ -320,6 +326,9 @@ DEFINITION_REFUSALS: dict[str, RefusalSpec] = {
     ),
     "definition.method.methodspec_name_cuped": RefusalSpec(
         "definition.method.methodspec_name_cuped", DefinitionError, _render_definition_message
+    ),
+    "definition.method.finite_sample_cuped": RefusalSpec(
+        "definition.method.finite_sample_cuped", DefinitionError, _render_definition_message
     ),
     "definition.metric_base.margin_margin_abs": RefusalSpec(
         "definition.metric_base.margin_margin_abs", DefinitionError, _render_definition_message
@@ -1732,10 +1741,17 @@ def _validate_day_boundary(v: str) -> str:
 class MethodSpec(_Base):
     """Serializable estimation-method declaration - the YAML-safe subset
     of ``increment.estimation.engine.Method`` (learners/folds are
-    call-time-only, never declared here)."""
+    call-time-only, never declared here).
+
+    ``conversion_inference`` mirrors ``Method.conversion_inference``:
+    ``"auto"`` (the default) routes an unadjusted conversion or retention
+    contrast by its counts, and ``"finite_sample"`` always uses the
+    finite-sample binomial route. It is refused with CUPED and, on a
+    metric that is not a conversion or retention rate, at definition load."""
 
     name: str
     variance_reduction: Literal["none", "cuped"] = "none"
+    conversion_inference: ConversionInference = "auto"
 
     @model_validator(mode="after")
     def _no_mislabel(self) -> "MethodSpec":
@@ -1744,6 +1760,14 @@ class MethodSpec(_Base):
                 "definition.method.methodspec_name_cuped",
                 "MethodSpec(name='cuped') without variance_reduction='cuped' "
                 "would label an unadjusted estimate as CUPED-adjusted",
+            )
+        if self.conversion_inference == "finite_sample" and self.variance_reduction == "cuped":
+            _definition_refusal(
+                "definition.method.finite_sample_cuped",
+                f"MethodSpec(name={self.name!r}) combines variance_reduction='cuped' with "
+                "conversion_inference='finite_sample': CUPED adjusts by a fitted covariate "
+                "slope, so the contrast is no longer a pair of raw binomial counts. Use "
+                "conversion_inference='auto' or drop variance_reduction='cuped'",
             )
         return self
 
@@ -1790,6 +1814,13 @@ class ExperimentMetric(_Base):
             () if self.decision_method is None else (self.decision_method,)
         ) + self.sensitivity_methods
         return any(method.variance_reduction == "cuped" for method in methods)
+
+    @property
+    def wants_finite_sample(self) -> bool:
+        methods = (
+            () if self.decision_method is None else (self.decision_method,)
+        ) + self.sensitivity_methods
+        return any(method.conversion_inference == "finite_sample" for method in methods)
 
 
 def _plan_entry_name(entry: "PlanEntry") -> str:
@@ -2980,6 +3011,22 @@ class Definitions(CodedModel, _Base):
                 index,
                 errors,
             )
+        for name, binding in experiment.bindings.items():
+            metric = index.metric_by_name.get(name)
+            if (
+                binding.wants_finite_sample
+                and metric is not None
+                and metric.type not in ("conversion", "retention")
+            ):
+                errors.append(
+                    (
+                        "definition.validate_experiment.finite_sample_metric_type",
+                        f"experiment '{experiment.name}': metric '{name}' (type "
+                        f"'{metric.type}') declares conversion_inference='finite_sample', "
+                        "which applies only to conversion and retention metrics -- drop it "
+                        "or use conversion_inference='auto'",
+                    )
+                )
 
     @staticmethod
     def _validate_experiment_metric(

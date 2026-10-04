@@ -183,7 +183,7 @@ _REFUSALS = refusals(
             InvalidRequestError,
             template='Unknown alternative={alternative!r}: must be one of "two-sided", "greater", "less"',
         ),
-        "estimation.binomial.arm_too_large_for_exact_enumeration": "n_c={n_c!r}/n_t={n_t!r} exceed this method's validated arm-size ceiling ({max_arm_size!r}): this is a compute-resource applicability boundary, not a scientific one -- per-call cost keeps growing with arm size beyond it, and this method refuses rather than spend unbounded per-request compute on a single estimate",
+        "estimation.binomial.finite_sample_arm_ceiling_exceeded": "n_c={n_c!r}/n_t={n_t!r} exceed the {max_arm_size!r} units per arm the finite-sample conversion route is validated to: this is a compute-resource boundary, not a scientific one -- per-call cost keeps growing with arm size, and this route refuses rather than spend unbounded compute on one estimate. A dense cell runs at any size with conversion_inference='auto' (the default), which takes the delta-method interval; a sparse cell above this ceiling has no supported route",
     },
 )
 _raise = raiser(_REFUSALS)
@@ -1445,7 +1445,7 @@ def confidence_interval(
         _raise("estimation.binomial.tail_unrepresentable", null_r=null_r)
     if n_c > FINITE_SAMPLE_MAX_ARM_SIZE or n_t > FINITE_SAMPLE_MAX_ARM_SIZE:
         _raise(
-            "estimation.binomial.arm_too_large_for_exact_enumeration",
+            "estimation.binomial.finite_sample_arm_ceiling_exceeded",
             n_c=n_c,
             n_t=n_t,
             max_arm_size=FINITE_SAMPLE_MAX_ARM_SIZE,

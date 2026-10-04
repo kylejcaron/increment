@@ -135,7 +135,11 @@ def _declared_roles(
 
 def method_from_spec(spec: MethodSpec) -> Method:
     """Convert a declaration-layer method spec to a runtime method."""
-    return Method(name=spec.name, variance_reduction=spec.variance_reduction)
+    return Method(
+        name=spec.name,
+        variance_reduction=spec.variance_reduction,
+        conversion_inference=spec.conversion_inference,
+    )
 
 
 def normal_from_spec(spec: NormalPriorSpec) -> Normal:

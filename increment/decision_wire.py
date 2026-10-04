@@ -28,6 +28,7 @@ from pydantic import (
 from increment._immutable import _FrozenMapping
 from increment._literals import (
     Alternative,
+    ConversionInference,
     MultiplicityCorrection,
     PreferredDirection,
     Role,
@@ -74,6 +75,7 @@ class _WireBase(CodedModel, BaseModel):
 class WireMethod(_WireBase):
     name: str = Field(min_length=1)
     variance_reduction: str = "none"
+    conversion_inference: ConversionInference = "auto"
 
 
 class WireFixedInference(_WireBase):
@@ -363,12 +365,20 @@ def _method_to_wire(method: Method, *, metric: str, role: str) -> WireMethod:
             role=role,
             method=method.name,
         )
-    return WireMethod(name=method.name, variance_reduction=method.variance_reduction)
+    return WireMethod(
+        name=method.name,
+        variance_reduction=method.variance_reduction,
+        conversion_inference=method.conversion_inference,
+    )
 
 
 def _method_from_wire(method: WireMethod, *, metric: str, role: str) -> Method:
     try:
-        return Method(name=method.name, variance_reduction=method.variance_reduction)
+        return Method(
+            name=method.name,
+            variance_reduction=method.variance_reduction,
+            conversion_inference=method.conversion_inference,
+        )
     except (TypeError, ValueError) as exc:
         _raise(
             "wire.procedure.invalid_method",

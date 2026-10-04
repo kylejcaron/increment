@@ -1504,9 +1504,9 @@ class RejectionGeometry:
         self.x0 = 0
         self.rows = 0
         self.segments: list[_Segment] = []
-        # Effect searches already solved on this geometry, keyed by their
-        # control rate, compliance, and target: a curve's companion effects.
-        self.effects: dict[tuple[float, float, float], object] = {}
+        # Effect searches already solved on this geometry, keyed by their control rate,
+        # compliance, target, baseline variance and route mode: a curve's companion effects.
+        self.effects: dict[tuple[float | str, ...], object] = {}
         # The current solve's rows and its treatment spans, merged as the segments are.
         self._footprint: tuple[int, int, list[tuple[int, int]]] | None = None
 
