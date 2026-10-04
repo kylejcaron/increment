@@ -293,9 +293,8 @@ _CP_BETA_FLOOR = 1e-9
 
 #: Relative allowance for the SciPy beta solver's error, checked by decimal binomial-tail inversion
 #: regressions (`TestClopperPearsonOutwardRounding`). The solver is accurate in the smaller of an
-#: endpoint and its complement, so the allowance is relative to that side (an absolute one would
-#: be larger than a billion-trial arm's rare rate: `1e-6` against a rate of `1e-8`). Directed
-#: rounding also protects the final arithmetic.
+#: endpoint and its complement, so the allowance is relative to that side: an absolute `1e-6`
+#: would exceed a billion-trial arm's rare rate of `1e-8`. Directed rounding covers the arithmetic.
 _CP_RELATIVE_SLACK = 1e-6
 
 
@@ -1262,11 +1261,10 @@ def _bound_upper(
     return result
 
 
-#: Largest arm the finite-sample route admits: a compute-resource ceiling, not a statistical
-#: limit. `scripts/measure_binomial_ceiling.py` measures latency and memory at every rung up to
-#: it, and validates the SciPy error allowance, the Clopper-Pearson enclosure, the window's
-#: omitted mass and count recovery there against a Decimal oracle (`calibration/binomial_oracle.py`).
-#: Larger arms refuse before searching.
+#: Largest arm the finite-sample route admits: a compute-resource ceiling, not a statistical limit.
+#: `scripts/measure_binomial_ceiling.py` measures latency and memory at every rung up to it and
+#: validates the SciPy error allowance, the Clopper-Pearson enclosure, the window's omitted mass
+#: and count recovery there against the Decimal oracle. Larger arms refuse before searching.
 FINITE_SAMPLE_MAX_ARM_SIZE = 1_000_000_000
 assert 2 * FINITE_SAMPLE_MAX_ARM_SIZE**2 < 2**63, "threshold numerators must fit int64"
 

@@ -1113,12 +1113,10 @@ def _classify_live(decision, route, live, results) -> None:
         results[index] = reject[bounds[n] : bounds[n + 1]]
 
 
-#: Floor of the gap between the surrogate replay's computed root tails and reachable bound and
-#: their exact-arithmetic values: a few roundings of arguments below 1e3 through ``ndtr``
-#: (derivative at most one). The binomial tails of a point-mass arm go through the runtime's own
-#: Boost-backed primitives, whose relative error grows with the arm (`binomial_rr._ulp_allowance`),
-#: so `_root_settled` raises it to the decision's own margin for arms past a few hundred
-#: thousand units. It infers a count's root exit only where a neighbour's margin exceeds twice it.
+#: Floor of the gap between the replay's computed root tails and reachable bound and their exact
+#: values: a few roundings of arguments below 1e3 through ``ndtr`` (derivative at most one). A
+#: point-mass arm's tails use the guarded primitives, whose error grows with the arm, so
+#: `_root_settled` raises this to the decision's margin and infers a root exit only beyond twice it.
 _ROOT_ROUNDING = 5e-11
 
 

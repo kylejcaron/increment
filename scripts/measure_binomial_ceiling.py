@@ -753,11 +753,10 @@ def _recovery(args: argparse.Namespace) -> None:
 
 # --- planning ---------------------------------------------------------------------------------
 
-#: ``(cell, planner, control rate, units per arm, relative lift)``: planning the runtime decision
-#: costs what its replay spans, not the arm size. Dense cells reach the replay bound
-#: (`power._binomial.PLANNING_CELL_CEILING` retained cells) near a million units per arm at 5% and
-#: 190,000 at 50%; the rare cells expect a hundred events per arm at 1e6 to 1e9 units; one dense
-#: cell sits beyond the bound and is refused.
+#: ``(cell, planner, control rate, units per arm, relative lift)``. Planning costs what its replay
+#: spans, not the arm size: dense cells reach the replay bound (`PLANNING_CELL_CEILING` retained
+#: cells) near a million units per arm at 5% and 190,000 at 50%; the rare cells expect a hundred
+#: events per arm at 1e6 to 1e9 units; the last dense cell is beyond the bound and is refused.
 PLANNING_CELLS = (
     ("dense-1e5", "power", 0.05, 100_000, 0.05),
     ("dense-2.5e5", "power", 0.05, 250_000, 0.03),
