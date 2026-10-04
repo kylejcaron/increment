@@ -192,23 +192,36 @@ rate alone; `var` does not enter.
   points but understated power by up to 0.8 points with an unequal allocation
   and a shifted null, and it can misclassify count pairs whose runtime p-value
   sits near the tail allocation in rare-event designs.
-- Replay bound: the replay's work and memory follow the number of retained
-  (control, treatment) count cells at the null rate, not the arm size. A
-  design whose replay would span more than 10,000,000 cells is refused with
-  `power.binomial_replay_bound_exceeded` before any replay (the error's
-  context names the analyzed counts, the control rate, `cells` and
-  `max_cells`). `required_sample_size` searches only sizes at most 1/128
-  under the largest the bound admits (or under the size where the runtime starts
-  refusing the tail level) and refuses with the power it reached at that
-  ceiling, which skipped sizes just above it may exceed. A 5%
-  baseline with equal arms reaches the bound at about one million units per
-  arm and a 50% baseline at about 190,000; a rare baseline stays far inside
-  it at any arm size (100 million units per arm at a rate of 2e-7 expect
-  twenty events and replay about four thousand cells). Measured on an Apple
-  M3 Pro, a call at the bound takes two to two and a half minutes of CPU for
-  `achieved_power` or `minimum_detectable_effect` and about four minutes for
-  `required_sample_size`, with a peak near 2.4 GiB. The bound limits the
-  planner only: the runtime decides arms of up to a billion units.
+- Replay bound: the replay's work and memory follow the number of (control,
+  treatment) count cells the geometry stores, not the arm size: the control
+  window by the treatment windows at the null rate and at every alternative
+  evaluated (their union, for an effect search or a power curve). A design
+  whose null rectangle exceeds 10,000,000 cells, or an alternative whose window
+  would take the geometry past it, is refused with
+  `power.binomial_replay_bound_exceeded` before any replay or allocation (the
+  error's context names the analyzed counts, the control rate, the
+  alternative treatment rate `p_t` when it is the alternative that exceeds,
+  `cells` and `max_cells`). An effect search that would exceed it ends
+  unresolved: a companion `mde_relative` is `None` with `numerical_resolution`,
+  and `minimum_detectable_effect` is refused with the bound, after the work
+  that preceded it (about one to two minutes of CPU in the designs measured). An effect
+  search stores more than the null rectangle, so it reaches the bound at
+  smaller arms than a supplied effect: at a 5% baseline `achieved_power` is
+  answered at 1,000,000 units per arm (but its companion effect is not) and
+  `minimum_detectable_effect` at 500,000 but not at 1,000,000.
+  `required_sample_size` searches only sizes at most 1/128 under the largest
+  whose null and supplied-effect rectangles fit (or under the size where the
+  runtime starts refusing the tail level) and refuses with the power it reached
+  at that ceiling (`power_reached`), which skipped sizes just above it may
+  exceed. A 5% baseline with equal arms reaches the bound at about one million
+  units per arm and a 50% baseline at about 190,000; a rare baseline stays far
+  inside it at any arm size (100 million units per arm at a rate of 2e-7 expect
+  twenty events and replay about four thousand cells). Measured on an Apple M3
+  Pro, a call within the bound takes up to a minute of CPU for `achieved_power`
+  or `minimum_detectable_effect` and about 4.5 minutes for `required_sample_size`
+  near a million units per arm at 5%, with a peak under 2 GiB (the
+  [limitations page](../limitations.md) lists the cells measured). The bound
+  limits the planner only: the runtime decides arms of up to a billion units.
 
 The route depends only on the design, never on timing. Power is not monotone
 in the sample size under this decision, so `required_sample_size` returns a
@@ -217,9 +230,12 @@ not -- not a proof that no smaller size reaches it. `minimum_detectable_effect`
 returns the first admissible effect whose power reaches the target; earlier
 effects are excluded by their own power or by a bound on the rejection set,
 to within `2e-12` of the target. A design the runtime refuses in full has power
-0 and is never replayed: an arm beyond its one-billion unit ceiling, or a tail
-level its float margin dominates (a two-sided alpha below about `9.5e-7` at a
-billion units per arm; see the limitations page).
+0 and is never replayed: an arm beyond its one-billion unit ceiling, a nuisance
+budget (`alpha / 32`) below the endpoint solver's floor (an alpha under `3.2e-8`),
+or a tail level its float margin dominates (a two-sided alpha below about `9.5e-7`
+at a billion units per arm; see the limitations page). `required_sample_size`
+refuses a decision refused even at the smallest arms with
+`power.binomial_tail_level_unrepresentable` and asks for a larger alpha.
 
 The `segment_pairwise_*` solvers are separate: they retain a baseline-only
 four-arm variance approximation. Do not use the three arm solvers as numerical
@@ -486,7 +502,8 @@ both the returned public float and its predecessor through achieved power.
 (including equality with an excluded asymptote); `unrepresentable` means a
 mathematical solution lies outside the representable planning domain;
 `numerical_resolution` means the numerical reference could not resolve the
-answer. `degenerate_zero_variance` identifies deterministic effects, and
+answer (for a runtime-binomial plan, also that the effect search would have stored
+more cells than the replay bound allows). `degenerate_zero_variance` identifies deterministic effects, and
 `non_favorable_effect` refuses required-N queries at or inside the null.
 
 
