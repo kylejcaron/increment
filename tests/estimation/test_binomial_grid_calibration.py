@@ -148,7 +148,7 @@ class TestMonotoneSurrogate:
         assert prod == pytest.approx(beta)
         expect_accept = beta >= 0.025
         accept_mass, unresolved = cbg.single_tail_accept_mass("minus", res, n_t, 0.5)
-        assert unresolved <= binomial_rr._eps_margin(2)
+        assert unresolved <= binomial_rr._eps_margin(2, n_t, n_t)
         assert (accept_mass > 0.5) == expect_accept
 
 
@@ -418,7 +418,7 @@ def test_reported_error_bounds_enclose_full_joint_enumeration(risk_ratio):
 class TestOutwardIntegrationAllowances:
     def test_tail_allowance_includes_production_absolute_error(self):
         for p in (0.0, 1e-300, 1e-20, 0.25):
-            assert cbg._inflate_tail(p) >= p + binomial_rr._eps_margin(1)
+            assert cbg._inflate_tail(p, 1, 1) >= p + binomial_rr._eps_margin(1, 1, 1)
 
     def test_below_precision_budget_falls_back_to_full_support(self):
         assert cbg.exact_outer_window(1000, 0.5, 1e-13) == (0, 1000, 0.0)
@@ -450,7 +450,7 @@ class TestOutwardIntegrationAllowances:
 
     def test_window_encloses_tails_with_downward_special_function_error(self, monkeypatch):
         cdf, sf = _binom.cdf, _binom.sf
-        error = binomial_rr._eps_margin(1) / 4
+        error = binomial_rr._eps_margin(1, 1000, 1000) / 4
         monkeypatch.setattr(_binom, "cdf", lambda *a: max(0.0, float(cdf(*a)) - error))
         monkeypatch.setattr(_binom, "sf", lambda *a: max(0.0, float(sf(*a)) - error))
         lo, hi, omitted = cbg.exact_outer_window(1000, 0.5, 1e-12)

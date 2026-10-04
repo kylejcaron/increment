@@ -226,21 +226,32 @@ def validate_alternative(alternative: str) -> Alternative:
 # 1. Higham's bound for summing `m` nonnegative terms in [0, 1]: the absolute error is about
 #    `m * eps`, since the true sum is a sub-probability. This covers the `np.dot` step in
 #    `_tail_plus`/`_tail_minus`.
-# 2. SciPy's per-call `binom.pmf/cdf/sf` error, which is not assumed negligible.
-#    `SCIPY_BINOMIAL_ULP_ALLOWANCE` is checked against a `decimal` exact oracle (the incomplete-beta
-#    identity for the binomial CDF at integer shapes) in
-#    `tests/estimation/test_binomial_rr.py::TestScipyBinomErrorBudget`. The worst grid value
-#    that did not underflow to 0 was under 500 ULPs; 2048 keeps about 4x headroom.
+# 2. SciPy's per-call `binom.pmf/cdf/sf` error, which is not assumed negligible. Boost evaluates
+#    them through powers such as `(x c / a)**a`, so the rounding of a base is amplified by its
+#    exponent: the relative error reaches `n * 2**-53`, at most `n` ULPs, and grows linearly with
+#    the trials `n`. Against a `decimal` oracle (`calibration/binomial_oracle.py`, measured by
+#    `scripts/measure_binomial_ceiling.py ulp`) the worst error of all three functions was 0.23 to
+#    0.26 `n` ULPs from 4e6 to 1e8 trials, and under 500 ULPs at `n <= 1000`
+#    (`TestScipyBinomErrorBudget`). `_ulp_allowance` is `n` ULPs, never below
+#    `SCIPY_BINOMIAL_ULP_ALLOWANCE`: about 4x the measured worst and twice the derived bound.
+#    Weighted by a pmf that sums to at most one, the control pmf over `n_c` trials and the
+#    treatment tail over `n_t` trials together move the sum by at most
+#    `(_ulp_allowance(n_c) + _ulp_allowance(n_t)) * eps`.
 _FLOAT64_EPS = float(np.finfo(np.float64).eps)
 
 
-def _eps_margin(term_count: int) -> float:
-    """Additive safety margin bounding accumulated float64 rounding error
-    across a probability computed as a dot product of *term_count* many
-    nonnegative sub-probabilities, each a SciPy special-function
+def _ulp_allowance(trials: int) -> int:
+    """ULPs of relative error assumed of a SciPy binomial pmf, cdf or sf with *trials* trials."""
+    return max(SCIPY_BINOMIAL_ULP_ALLOWANCE, trials)
+
+
+def _eps_margin(term_count: int, n_c: int, n_t: int) -> float:
+    """Additive safety margin bounding accumulated float64 rounding error across a probability
+    computed as a dot product of *term_count* many nonnegative sub-probabilities: a control pmf
+    over *n_c* trials times a treatment tail over *n_t* trials, each a SciPy special-function
     evaluation. See the module-level comment above for the derivation.
     """
-    return (2 * SCIPY_BINOMIAL_ULP_ALLOWANCE + max(1, term_count)) * _FLOAT64_EPS
+    return (_ulp_allowance(n_c) + _ulp_allowance(n_t) + max(1, term_count)) * _FLOAT64_EPS
 
 
 def _round_outward(x: float, *, direction: Literal["down", "up"]) -> float:
@@ -490,7 +501,7 @@ def _tail_plus(
     pmf_i = _control_pmf(n_c, q, i_lo, i_hi)
     sf = _treatment_tail("plus", n_c, n_t, k, i_lo, i_hi, p)
     raw = float(np.dot(pmf_i, sf)) + omitted
-    return min(1.0, raw + _eps_margin(i_hi - i_lo + 1))
+    return min(1.0, raw + _eps_margin(i_hi - i_lo + 1, n_c, n_t))
 
 
 def _tail_minus(
@@ -501,18 +512,18 @@ def _tail_minus(
     pmf_i = _control_pmf(n_c, q, i_lo, i_hi)
     cdf = _treatment_tail("minus", n_c, n_t, k, i_lo, i_hi, p)
     raw = float(np.dot(pmf_i, cdf)) + omitted
-    return min(1.0, raw + _eps_margin(i_hi - i_lo + 1))
+    return min(1.0, raw + _eps_margin(i_hi - i_lo + 1, n_c, n_t))
 
 
-def _certification_noise(window: tuple[int, int, float]) -> float:
+def _certification_noise(window: tuple[int, int, float], n_c: int, n_t: int) -> float:
     """How far a `_tail_plus`/`_tail_minus` value can sit above the exact tail it bounds: the
     window's omitted control mass, one float margin it adds, and the margin of the computed sum
     itself. No amount of searching narrows this, so a stop target below it is unreachable."""
     i_lo, i_hi, omitted = window
-    return omitted + 2.0 * _eps_margin(i_hi - i_lo + 1)
+    return omitted + 2.0 * _eps_margin(i_hi - i_lo + 1, n_c, n_t)
 
 
-def tail_lower_enclosure(value: float, window: tuple[int, int, float]) -> float:
+def tail_lower_enclosure(value: float, window: tuple[int, int, float], n_c: int, n_t: int) -> float:
     """A lower bound on the exact tail whose `_tail_plus`/`_tail_minus` value is *value*.
 
     That value adds the window's omitted control mass and one float margin to a computed sum
@@ -520,7 +531,7 @@ def tail_lower_enclosure(value: float, window: tuple[int, int, float]) -> float:
     (`_certification_noise`) leaves at most the exact tail. The value is a certified upper
     bound; it is not a lower one.
     """
-    return max(0.0, value - _certification_noise(window))
+    return max(0.0, value - _certification_noise(window, n_c, n_t))
 
 
 def _p_of_plus(q: float, r: float) -> float:
@@ -625,7 +636,7 @@ def _certified_sup(
     relevant tail evaluated along ``p(q)``, with the lower bound the search reached.
 
     ``upper`` is valid however many splits run; more splits only tighten it. With ``noise =
-    _certification_noise(window)`` the search stops once ``upper - witness_lower <=
+    _certification_noise(window, n_c, n_t)`` the search stops once ``upper - witness_lower <=
     rule.gap_fraction * max(beta + witness_lower, reading.tail) + noise`` -- the gap relative
     to the p-value ``beta + sup`` reported, or to the tail level it will be compared with when
     that is larger -- or after ``rule.max_iter`` splits or at the float floor, where
@@ -675,10 +686,10 @@ def _certified_sup(
     heap: list[tuple[float, float, float, float, float]] = []
     heapq.heappush(heap, (-bound(a, b, fa, fb), a, b, fa, fb))
     iterations = 0
-    noise = _certification_noise(window)
+    noise = _certification_noise(window, n_c, n_t)
     while True:
         upper = min(1.0, max(-heap[0][0], best_achieved))
-        witness = tail_lower_enclosure(best_achieved, window)
+        witness = tail_lower_enclosure(best_achieved, window, n_c, n_t)
         scale = max(beta + witness, reading.tail)
         if upper - witness <= rule.gap_fraction * scale + noise:
             return _SupCertificate(upper, witness, iterations, True)

@@ -43,7 +43,8 @@ __all__ = [
     "wald_bounds",
 ]
 
-# Empirical small-count allowance, not a universal special-function error bound.
+# Floor of the SciPy binomial pmf/cdf/sf relative-error allowance, in ULPs. Measured at `n <= 1000`
+# trials; `binomial_rr._ulp_allowance` raises it to `n` ULPs above that (error grows with `n`).
 SCIPY_BINOMIAL_ULP_ALLOWANCE = 2048
 
 

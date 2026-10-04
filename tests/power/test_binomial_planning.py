@@ -212,6 +212,16 @@ def test_sizing_is_refused_only_by_the_selected_route(monkeypatch):
     assert achieved_power(sized.n_per_arm - 1, 2.5, baseline, procedure, design).power < target
 
 
+def test_arms_above_the_runtime_ceiling_have_zero_power_without_a_replay():
+    """The runtime refuses every count pair above its ceiling, so a plan's rejection probability
+    is exactly zero; the count windows at these sizes hold ~1e5 counts each, so a replay (or a
+    zero mask over their product) would not fit in memory."""
+    above = binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE + 1
+    result = achieved_power(above, 0.3, Baseline.from_proportion(0.1), _conversion())
+    assert result.power == 0.0
+    assert result.power_basis == "exact"
+
+
 @pytest.mark.parametrize(
     ("reject_margin", "inferred"),
     [(2.0 * 5e-11, False), (math.nextafter(2.0 * 5e-11, 1.0), True)],

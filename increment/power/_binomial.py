@@ -1071,7 +1071,7 @@ def _classify_live(decision, route, live, results) -> None:
         wlo=wlo,
         width=widths,
         omitted=np.array([w[2] for *_, w in live]),
-        margin=np.array([_rr._eps_margin(int(w)) for w in widths]),
+        margin=np.array([_rr._eps_margin(int(w), n_c, n_t) for w in widths]),
         j0=np.array([item[1].j0 for item in live], np.int64),
         j1=np.array([item[1].j1 for item in live], np.int64),
         dmin=dmin,
@@ -1382,6 +1382,8 @@ class RejectionGeometry:
         decision = self.decision
         wc = _window(decision.n_c, p_c)
         wt = _window(decision.n_t, p_t)
+        if self.refused:
+            return BinomialPower(0.0, 0.0, wc.omitted + wt.omitted)
         plus, minus = self.cells(wc.lo, wc.hi, wt.lo, wt.hi)
         return BinomialPower(
             float(wc.weights @ plus @ wt.weights),

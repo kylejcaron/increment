@@ -21,11 +21,13 @@ import pytest
 from scipy.special import ndtr, ndtri
 from scipy.stats import binom as _binom
 
+from calibration.binomial_oracle import Binomial, ulp_distance
 from increment.estimation import binomial_rr as brr
 from increment.estimation._binomial_support import chernoff_support, exponent_lower_bound
 from increment.estimation._tails import SCIPY_BINOMIAL_ULP_ALLOWANCE
 from increment.estimation.binomial_rr import _find_boundary
 from increment.estimation.results import BINOMIAL_METHOD, BinomialConfidenceSet
+from scripts import measure_binomial_ceiling as measure
 from tests.estimation._binomial_endpoint_reference import assert_endpoints_contain_finer_reference
 
 # --- Independent decimal oracle for scipy.stats.binom --------------------
@@ -186,7 +188,7 @@ class TestTailLowerEnclosure:
             else:
                 p = r * q
                 value = brr._tail_minus(q, p, n_c, n_t, k, window)
-            lower = brr.tail_lower_enclosure(value, window)
+            lower = brr.tail_lower_enclosure(value, window, n_c, n_t)
             assert 0.0 <= lower <= value
             assert Decimal(lower) <= _dec_tail(kind, n_c, n_t, k, q, p)
 
@@ -210,7 +212,7 @@ class TestTailLowerEnclosure:
             full = float(np.dot(pmf, _binom.cdf(thresholds, n_t, r * q)))
             value = brr._tail_minus(q, r * q, n_c, n_t, k, window)
         assert value >= full
-        assert brr.tail_lower_enclosure(value, window) <= full
+        assert brr.tail_lower_enclosure(value, window, n_c, n_t) <= full
 
 
 def _sup_inputs(kind: str, counts: tuple[int, int, int, int], r: float):
@@ -257,9 +259,10 @@ class TestNuisanceStopContract:
         assert cert.upper >= sup - 1e-12
         gap = cert.upper - cert.witness_lower
         scale = max(self.BETA + cert.witness_lower, tail)
-        assert gap <= rule.gap_fraction * scale + brr._certification_noise(inputs[-1])
+        window, n_c, n_t = inputs[-1], inputs[3], inputs[4]
+        assert gap <= rule.gap_fraction * scale + brr._certification_noise(window, n_c, n_t)
         # The reported bound exceeds the supremum by no more than the declared gap.
-        noise = brr._certification_noise(inputs[-1])
+        noise = brr._certification_noise(window, n_c, n_t)
         assert cert.upper <= sup + rule.gap_fraction * scale + noise + 1e-9
         assert cert.iterations <= rule.max_iter
 
@@ -274,7 +277,7 @@ class TestNuisanceStopContract:
         ]
         # Bounds of sibling leaves are computed independently, so a longer search may rise by
         # rounding noise (far below the float margin) but never by more.
-        slack = brr._eps_margin(1)
+        slack = brr._eps_margin(1, inputs[3], inputs[4])
         assert uppers[0] >= uppers[1] - slack
         assert uppers[1] >= uppers[2] - slack
 
@@ -356,13 +359,16 @@ class TestNuisanceStopContract:
         )
 
         def enclosed(q: float) -> float:
-            return brr.tail_lower_enclosure(brr._tail_plus(q, r * q, n_c, n_t, k, window), window)
+            tail = brr._tail_plus(q, r * q, n_c, n_t, k, window)
+            return brr.tail_lower_enclosure(tail, window, n_c, n_t)
 
         sup = _refined_sup(enclosed, a, b)
         assert not relative.stopped and relative.iterations == rule.max_iter
         assert floored.stopped and floored.iterations < relative.iterations // 8
         assert floored.upper >= sup - 1e-12
-        assert floored.upper <= sup + rule.gap_fraction * tail + brr._certification_noise(window)
+        assert floored.upper <= sup + rule.gap_fraction * tail + brr._certification_noise(
+            window, n_c, n_t
+        )
 
     def test_a_gap_target_below_the_certification_noise_is_not_chased(self):
         """At alpha = 1e-20 the nuisance budget is 3e-22 and a tail over a domain this small is
@@ -376,7 +382,7 @@ class TestNuisanceStopContract:
         cert = brr._certified_sup(
             "minus", a, 1.0 / r, r, 1, 1000, -999, window, beta=beta, rule=brr.NUISANCE_STOP
         )
-        noise = brr._certification_noise(window)
+        noise = brr._certification_noise(window, 1, 1000)
         assert cert.stopped and cert.iterations == 0
         assert 0.0 <= cert.upper <= noise
 
@@ -405,7 +411,8 @@ class TestNuisanceStopContract:
         )
 
         def enclosed(q: float) -> float:
-            return brr.tail_lower_enclosure(brr._tail_plus(q, q, n_c, n_t, k, window), window)
+            tail = brr._tail_plus(q, q, n_c, n_t, k, window)
+            return brr.tail_lower_enclosure(tail, window, n_c, n_t)
 
         sup = _refined_sup(enclosed, a, b)
         assert cert.stopped
@@ -445,7 +452,7 @@ class TestNuisanceStopContract:
             "minus": brr.p_minus(1.0, x_c, n_c, x_t, n_t, beta, tail=tail_read),
         }
         for kind in ("plus", "minus"):
-            assert refined[kind] <= capped[kind] + brr._eps_margin(1)
+            assert refined[kind] <= capped[kind] + brr._eps_margin(1, n_c, n_t)
             assert not (capped[kind] < tail <= refined[kind])
         if counts == (5778, 57780, 5985, 57780):
             assert refined["plus"] < tail <= capped["plus"]
@@ -1775,6 +1782,78 @@ class TestScipyBinomErrorBudget:
             f"observed {worst_ulps} ULPs exceeds half the stated allowance "
             f"{SCIPY_BINOMIAL_ULP_ALLOWANCE} -- re-derive the margin"
         )
+
+    @pytest.mark.parametrize("n", [1_000, 10_000, 100_000, 1_000_000])
+    @pytest.mark.parametrize("p", [0.05, 0.3, 0.4999, 1e-4])
+    def test_every_primitive_stays_within_the_size_dependent_allowance(self, n, p):
+        """SciPy's pmf, cdf and sf lose up to about a quarter of ``n`` ULPs (a base rounded once
+        and raised to a power of order ``n``); the allowance the margin assumes grows with ``n``
+        and must stay at least twice the worst error measured against the decimal oracle."""
+        oracle = Binomial(n, p)
+        sigma = math.sqrt(n * p * (1.0 - p))
+        counts = {0, 1, n - 1, n}
+        counts |= {min(n, max(0, round(n * p + z * sigma))) for z in range(-12, 13)}
+        ordered = sorted(counts)
+        array = np.array(ordered, dtype=np.int64)
+        for primitive, exact in (
+            (brr._fast_binom_pmf, oracle.pmf_many(ordered)),
+            (brr._fast_binom_cdf, oracle.cdf_many(ordered)),
+            (brr._fast_binom_sf, oracle.sf_many(ordered)),
+        ):
+            worst = max(
+                ulp_distance(float(value), reference)
+                for value, reference in zip(primitive(array, n, p), exact, strict=True)
+                if reference >= Decimal("1e-280")
+            )
+            assert worst < brr._ulp_allowance(n) / 2.0, (primitive.__name__, n, p, worst)
+
+    def test_the_allowance_is_the_floor_for_small_arms_and_grows_with_the_trials(self):
+        assert brr._ulp_allowance(1) == SCIPY_BINOMIAL_ULP_ALLOWANCE
+        assert brr._ulp_allowance(SCIPY_BINOMIAL_ULP_ALLOWANCE) == SCIPY_BINOMIAL_ULP_ALLOWANCE
+        assert brr._ulp_allowance(1_000_000_000) == 1_000_000_000
+        assert brr._eps_margin(7, 50, 60) == (2 * SCIPY_BINOMIAL_ULP_ALLOWANCE + 7) * 2.0**-52
+        assert (
+            brr._eps_margin(7, 4_000_000, 1_000)
+            == (4_000_000 + SCIPY_BINOMIAL_ULP_ALLOWANCE + 7) * 2.0**-52
+        )
+
+
+@pytest.mark.slow
+class TestLargeArmValidation:
+    """The finite-sample ceiling's validation at 4M, 16M and 64M trials on a reduced grid, against
+    the decimal oracle (``scripts/measure_binomial_ceiling.py ulp`` runs the full grid up to the
+    ceiling): primitive errors inside the allowance, certified tails above the exact tail plus
+    the exact omitted mass, Clopper-Pearson endpoints enclosing their tails, and the support
+    window's omitted mass inside its reported bound."""
+
+    SIZES = (4_000_000, 16_000_000, 64_000_000)
+
+    @pytest.mark.parametrize("n", SIZES)
+    @pytest.mark.parametrize("rate", [0.05, 1e-4])
+    def test_certified_tails_dominate_the_exact_tail(self, n, rate):
+        allowance = brr._ulp_allowance(n)
+        for kind, tail in (("plus", "treatment_sf"), ("minus", "treatment_cdf")):
+            entry = measure._window_check(n, rate, kind, "upper", 1.02)
+            assert entry["certificate_dominates"], entry
+            assert entry["exact_omitted_mass"] <= entry["window_omitted_mass"]
+            assert entry["control_pmf"]["worst_ulps"] < allowance / 2.0
+            assert entry[tail]["worst_ulps"] < allowance / 2.0
+
+    @pytest.mark.parametrize("n", SIZES)
+    def test_primitives_stay_within_the_allowance_across_the_distribution(self, n):
+        entry = measure._sampled_check(n, 0.05)
+        for name in ("pmf", "cdf", "sf"):
+            assert entry[name]["worst_ulps"] < brr._ulp_allowance(n) / 2.0, (name, entry[name])
+
+    @pytest.mark.parametrize("n", SIZES)
+    def test_clopper_pearson_endpoints_enclose_their_tails(self, n):
+        entries = measure._enclosure_checks(n)
+        assert entries and all(entry["encloses"] for entry in entries)
+
+    @pytest.mark.parametrize("n", SIZES)
+    def test_window_omitted_mass_stays_within_the_reported_bound(self, n):
+        entries = measure._omitted_mass_checks(n)
+        assert entries and all(entry["bounded"] for entry in entries)
 
 
 class TestClopperPearsonOutwardRounding:

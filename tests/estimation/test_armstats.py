@@ -1400,6 +1400,50 @@ class TestBinaryCountsBernoulliConsistency:
         )
         assert binary_counts(arm, "conversion") == (successes, n)
 
+    @pytest.mark.parametrize(
+        ("n", "successes"),
+        [
+            (10_000_000, 20_000),
+            (100_000_000, 200_000),
+            (1_000_000_000, 2_000_000),
+            (1_000_000_000, 500_000_000),
+        ],
+    )
+    def test_a_summation_drift_within_the_rounding_bound_of_n_terms_is_accepted(self, n, successes):
+        """A centered sum of squares adds ``n`` nonnegative terms, which any summation order
+        evaluates within ``(n + 8) * 2**-53`` of itself. Sequential accumulation of equal tiny
+        residuals onto a growing total drifts that far at the largest arm sizes, so a genuine
+        arm whose second moment errs by 90% of the bound is not corrupt."""
+        expected = successes * (n - successes) / n
+        drift = 0.9 * (n + 8) * 2.0**-53 * expected
+        arm = ArmStats(
+            study_id="e",
+            metric="conv",
+            group_id="control",
+            n=n,
+            ref_y=successes / n,
+            cy1=0.0,
+            cy2=expected + drift,
+        )
+        assert binary_counts(arm, "conversion") == (successes, n)
+
+    @pytest.mark.parametrize("n", [10_000_000, 100_000_000, 1_000_000_000])
+    def test_a_second_moment_beyond_the_rounding_bound_is_refused(self, n):
+        successes = n // 500
+        expected = successes * (n - successes) / n
+        arm = ArmStats(
+            study_id="e",
+            metric="conv",
+            group_id="control",
+            n=n,
+            ref_y=successes / n,
+            cy1=0.0,
+            cy2=expected * (1.0 + 4.0 * (n + 8) * 2.0**-53),
+        )
+        with pytest.raises(BinomialDataError) as exc_info:
+            binary_counts(arm, "conversion")
+        assert exc_info.value.code == "estimation.binomial.inconsistent_bernoulli_variance"
+
 
 def _producer_arm(n: int, successes: int | None) -> ArmStats:
     """The ``ArmStats`` the production producer (``group_summary``) emits for an arm built

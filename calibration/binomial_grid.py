@@ -65,9 +65,9 @@ _WINDOW_PAD = 8
 _WINDOW_WIDEN_STEP = 16
 
 
-def _inflate_tail(p: float, term_count: int = 1) -> float:
+def _inflate_tail(p: float, n_c: int, n_t: int, term_count: int = 1) -> float:
     """Round up using production's absolute SciPy and summation allowance."""
-    return min(1.0, math.nextafter(p + binomial_rr._eps_margin(term_count), math.inf))
+    return min(1.0, math.nextafter(p + binomial_rr._eps_margin(term_count, n_c, n_t), math.inf))
 
 
 def _interval_mass(lo: int, hi: int, n: int, p: float) -> float:
@@ -98,7 +98,7 @@ def exact_outer_window(n: int, p: float, budget: float) -> tuple[int, int, float
             return 0.0
         # Two special-function errors plus addition, under production's assumptions.
         raw = float(_binom.cdf(lo - 1, n, p)) + float(_binom.sf(hi, n, p))
-        return _inflate_tail(raw, 2)
+        return _inflate_tail(raw, n, n, 2)
 
     omitted = omitted_of(lo, hi)
     widen = _WINDOW_WIDEN_STEP
@@ -143,7 +143,7 @@ def _witness_lower_plus(
     def lower(xt: int) -> float:
         k = n_c * xt - n_t * x_c_obs
         val = _tail_plus(true_p_c, _p_of_plus(true_p_c, r), n_c, n_t, k, window)
-        return _tail_lower_enclosure(val, window)
+        return _tail_lower_enclosure(val, window, n_c, n_t)
 
     return lower
 
@@ -157,7 +157,7 @@ def _witness_lower_minus(
     def lower(xt: int) -> float:
         k = n_c * xt - n_t * x_c_obs
         val = _tail_minus(true_p_c, r * true_p_c, n_c, n_t, k, window)
-        return _tail_lower_enclosure(val, window)
+        return _tail_lower_enclosure(val, window, n_c, n_t)
 
     return lower
 
@@ -309,7 +309,7 @@ def single_tail_accept_mass(
     else:
         core = float(_binom.sf(res.T_accept - 1, n_t, p_t)) if res.T_accept <= n_t else 0.0
     band_mass = sum(float(_binom.pmf(xt, n_t, p_t)) for xt in res.band_points if res.resolve_at(xt))
-    return core + band_mass, res.unresolved_mass + _eps_margin(len(res.band_points) + 2)
+    return core + band_mass, res.unresolved_mass + _eps_margin(len(res.band_points) + 2, n_t, n_t)
 
 
 def two_sided_covered_mass(
@@ -339,7 +339,7 @@ def two_sided_covered_mass(
     unresolved_mass = (
         res_plus.unresolved_mass
         + res_minus.unresolved_mass
-        + 3 * _eps_margin(2 * len(band_pts) + 2)
+        + 3 * _eps_margin(2 * len(band_pts) + 2, n_t, n_t)
     )
     return max(0.0, core_mass) + resolved_mass, unresolved_mass
 
@@ -358,8 +358,8 @@ def _interval_miss_bound(
         return 1.0
     return min(
         1.0,
-        _inflate_tail(float(_binom.cdf(lower - 1, n_t, p_t)))
-        + _inflate_tail(float(_binom.sf(upper, n_t, p_t))),
+        _inflate_tail(float(_binom.cdf(lower - 1, n_t, p_t)), n_t, n_t)
+        + _inflate_tail(float(_binom.sf(upper, n_t, p_t)), n_t, n_t),
     )
 
 
@@ -402,6 +402,7 @@ def _test_error_metrics(
     p_xc_pos: float,
     point_mass_lower: float,
     total_uncertain: float,
+    arms: tuple[int, int],
 ) -> dict[str, dict]:
     metrics: dict[str, dict] = {}
     for name, label in (
@@ -434,7 +435,7 @@ def _test_error_metrics(
                     max(
                         0.0,
                         (cond_true_rr_noncov_numer - total_uncertain)
-                        / min(1.0, _inflate_tail(p_xc_pos)),
+                        / min(1.0, _inflate_tail(p_xc_pos, *arms)),
                     ),
                     min(1.0, (cond_true_rr_noncov_numer + total_uncertain) / point_mass_lower),
                 ],
@@ -519,7 +520,8 @@ def _trajectory_acceptance(rows: dict[float, dict], alpha: float) -> dict:
         rows[level]["production_evidence"]["mean_compact_diameter"] for level in _CONTRACTION_LEVELS
     ]
     contraction = all(w is not None and math.isfinite(w) for w in widths) and (
-        widths[0] > widths[1] + _eps_margin(1) and widths[1] > widths[2] + _eps_margin(1)
+        widths[0] > widths[1] + _eps_margin(1, 1, 1)
+        and widths[1] > widths[2] + _eps_margin(1, 1, 1)
     )
     rr = rows[100]["cell"]["risk_ratio"]
     power = {}
@@ -589,7 +591,7 @@ def calibrate_cell(
     n_c, n_t, p_c, p_t = cell.n_c, cell.n_t, cell.p_c, cell.p_t
     true_rr = cell.risk_ratio
     lo_c, hi_c, omitted_c = exact_outer_window(n_c, p_c, _XC_TAIL_BUDGET)
-    accumulation_error = binomial_rr._eps_margin(hi_c - lo_c + 1)
+    accumulation_error = binomial_rr._eps_margin(hi_c - lo_c + 1, n_c, n_t)
 
     acc = dict.fromkeys(METRIC_NAMES, 0.0)
     uncond_true_rr_noncov = cond_true_rr_noncov_numer = 0.0
@@ -645,7 +647,7 @@ def calibrate_cell(
         resolved_unresolved += w * unres_l
 
     bias, p_xc_pos = conditional_bias_exact(n_c, p_c, p_t, cell.true_lift)
-    point_mass_lower = max(0.0, math.nextafter(p_xc_pos - _eps_margin(1), -math.inf))
+    point_mass_lower = max(0.0, math.nextafter(p_xc_pos - _eps_margin(1, n_c, n_t), -math.inf))
     total_uncertain = omitted_c + cp_miss_mass + resolved_unresolved + accumulation_error
     metrics = (
         {}
@@ -658,6 +660,7 @@ def calibrate_cell(
             p_xc_pos,
             point_mass_lower,
             total_uncertain,
+            (n_c, n_t),
         )
     )
 
