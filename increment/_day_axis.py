@@ -25,6 +25,7 @@ from increment.breakout.estimates import (
     DailyMetricValue,
     DailyMetricValues,
     DayAxisView,
+    _asof_monitoring_note,
     _slice_reference_kind,
     reject_contradictory_completed_windows,
     reject_quantile_metrics,
@@ -44,6 +45,11 @@ from increment.estimation.encouragement import ESTIMANDS, estimate_compliance
 from increment.estimation.engine import _validate_methods
 from increment.estimation.inference import validate_readout_inference
 from increment.query.native_contract import NativeViewSource
+from increment.readouts._common import (
+    _sequential_inference,
+    _validate_encouragement_asof_inference,
+)
+from increment.readouts._daily import _validate_daily_inference
 from increment.semantics.design import Encouragement, Observational, Randomized
 from increment.semantics.models import RetentionMetric
 from increment.sources import MomentSource, require_operation
@@ -602,8 +608,8 @@ class DayAxisReadouts:
                 segmented=req.dimension is not None,
             )
             correction = normalize_display_correction(policy.correction)
-            inference = readouts._sequential_inference(self._plan)
-            readouts._validate_encouragement_asof_inference(
+            inference = _sequential_inference(self._plan)
+            _validate_encouragement_asof_inference(
                 list(req.metrics),
                 cast(Any, self._design),
                 inference=inference,
@@ -617,9 +623,7 @@ class DayAxisReadouts:
                 "correction": correction,
             }
         else:
-            readouts._validate_daily_inference(
-                readouts._sequential_inference(self._plan), method=req.caller
-            )
+            _validate_daily_inference(_sequential_inference(self._plan), method=req.caller)
         design_compliance = (
             encouragement_design is not None and req.grain == "asof" and req.dimension is None
         )
@@ -669,7 +673,7 @@ class DayAxisReadouts:
                     summary,
                     encouragement_design,
                     alpha=self._plan.alpha,
-                    inference=readouts._sequential_inference(self._plan),
+                    inference=_sequential_inference(self._plan),
                     compliance_requested="compliance" in requested_estimands,
                 ).results:
                     results.append(
@@ -693,10 +697,10 @@ class DayAxisReadouts:
                                 for arm in summary.arms
                                 if arm.group_id in (row.group_id, control_group)
                             ),
-                            note=readouts._asof_monitoring_note(
+                            note=_asof_monitoring_note(
                                 row.note,
                                 estimand="compliance",
-                                inference=readouts._sequential_inference(self._plan),
+                                inference=_sequential_inference(self._plan),
                                 design=encouragement_design,
                             ),
                         )

@@ -5,7 +5,7 @@
 _maturity_days
 exc_type
 tb
-RawOutcomeSource  # increment/estimation/winsor.py:59, increment/readouts.py:90 —
+RawOutcomeSource  # increment/estimation/winsor.py:59, increment/readouts/_metric_rows.py:12 —
 # imported only under TYPE_CHECKING and consumed exclusively inside
 # cast("RawOutcomeSource", ...), which vulture's static scan can't see.
 # Parameter names of ibis builtin SQL function stubs in

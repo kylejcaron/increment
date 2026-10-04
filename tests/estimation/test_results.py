@@ -1438,7 +1438,7 @@ class TestNonpositiveArmMeanUnavailableReason:
 
 
 class TestJointRelativeRowsExcludesNonpositiveArmMean:
-    """readouts._joint_relative_rows decides whether a metric's FCR
+    """readouts._common._joint_relative_rows decides whether a metric's FCR
     re-estimation forces two-sided (a genuine joint/Fieller construction
     is inherently two-sided) or keeps the declared one-sided alternative.
     A nonpositive_arm_mean row is an ordinary additive Wald result, not
@@ -1472,12 +1472,12 @@ class TestJointRelativeRowsExcludesNonpositiveArmMean:
         return LiftEstimate(**fields)
 
     def test_a_nonpositive_arm_mean_row_alone_is_not_joint(self):
-        from increment.readouts import _joint_relative_rows
+        from increment.readouts._common import _joint_relative_rows
 
         assert _joint_relative_rows([self._row()], metric="refunds") is False
 
     def test_a_genuine_joint_covariance_row_is_still_joint(self):
-        from increment.readouts import _joint_relative_rows
+        from increment.readouts._common import _joint_relative_rows
 
         row = self._row(relative_unavailable_reason="joint_covariance_indefinite")
         assert _joint_relative_rows([row], metric="refunds") is True
