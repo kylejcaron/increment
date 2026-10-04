@@ -1,0 +1,419 @@
+"""The ``conversion_inference`` route: a count-only rule picks the delta-method route for dense
+unadjusted conversion contrasts and the finite-sample route for the rest, and every row labels
+which one produced it."""
+
+from __future__ import annotations
+
+import math
+
+import numpy as np
+import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
+from scipy.stats import norm
+
+from increment.errors import CodedError, InvalidRequestError
+from increment.estimation.armstats import ArmStats
+from increment.estimation.conversion_route import (
+    PLANNING_ROUTE_CERTAINTY,
+    dense_extent,
+    dense_min_count,
+    planning_route,
+    route_for_counts,
+)
+from increment.estimation.engine import Method, estimate_lift
+from increment.estimation.inference import Normal
+from increment.semantics.models import MeanMetric
+from tests.estimation._conversion_counts import (
+    CONVERSION_METRIC,
+    count_summary,
+    lift_computation,
+    lift_row,
+)
+
+PRODUCTION_TAILS = (0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1)
+# alpha=0.05 two-sided and directional: the two allocations the default plan produces.
+TWO_SIDED_TAIL = 0.025
+DIRECTIONAL_TAIL = 0.05
+
+
+def _smallest(x_c: int, n_c: int, x_t: int, n_t: int) -> int:
+    return min(x_c, n_c - x_c, x_t, n_t - x_t)
+
+
+class TestDenseMinCount:
+    def test_the_shipped_law_at_the_production_tails(self):
+        # tail: the least per-arm success and failure count at which `auto` is asymptotic.
+        shipped = {tail: dense_min_count(tail) for tail in PRODUCTION_TAILS}
+        assert shipped == {
+            0.0005: 10552,
+            0.001: 8208,
+            0.005: 3962,
+            0.01: 2636,
+            0.025: 1329,
+            0.05: 659,
+            0.1: 400,
+        }
+
+    @given(st.floats(min_value=1e-300, max_value=0.5, exclude_max=True))
+    def test_every_tail_clears_the_guard_floor(self, tail):
+        """Every routed-asymptotic cell has all four counts at least the floor, so the
+        combined log-scale standard error is below ``sqrt(2 / 9) < 0.5`` and no
+        ``infer_lift`` guard can fire."""
+        assert dense_min_count(tail) >= 9
+
+    @given(
+        st.floats(min_value=1e-300, max_value=0.5, exclude_max=True),
+        st.floats(min_value=1e-300, max_value=0.5, exclude_max=True),
+    )
+    def test_a_more_extreme_tail_never_needs_fewer_counts(self, tail, other):
+        low, high = sorted((tail, other))
+        assert dense_min_count(low) >= dense_min_count(high)
+
+    @pytest.mark.parametrize("tail", PRODUCTION_TAILS)
+    def test_the_threshold_reaches_the_tail_quantile_through_the_survival_form(self, tail):
+        # `norm.isf(tail)`, never a quantile of `1 - tail`: a 1e-300 tail stays finite.
+        assert math.isfinite(norm.isf(1e-300))
+        assert dense_min_count(1e-300) >= dense_min_count(tail)
+
+
+class TestRouteForCounts:
+    def test_finite_sample_mode_never_leaves_the_finite_route(self):
+        counts = (10**6, 10**7, 10**6, 10**7)
+        assert route_for_counts(*counts, tail_alpha=0.025, mode="finite_sample") == "finite_sample"
+        assert route_for_counts(*counts, tail_alpha=0.025, mode="auto") == "asymptotic"
+
+    @pytest.mark.parametrize("tail", PRODUCTION_TAILS)
+    @pytest.mark.parametrize("offset", [-1, 0, 1])
+    def test_the_smallest_of_four_counts_decides_at_the_threshold(self, tail, offset):
+        m = dense_min_count(tail)
+        n = 20 * m
+        for counts in (
+            (m + offset, n, 3 * m, n),  # sparsest: control successes
+            (3 * m, n, m + offset, n),  # treatment successes
+            (n - (m + offset), n, 3 * m, n),  # control failures
+            (3 * m, n, n - (m + offset), n),  # treatment failures
+        ):
+            expected = "asymptotic" if offset >= 0 else "finite_sample"
+            assert route_for_counts(*counts, tail_alpha=tail, mode="auto") == expected
+
+    @pytest.mark.parametrize("tail", [0.0, -0.1, float("nan")])
+    def test_a_tail_the_delta_method_cannot_resolve_takes_the_finite_route(self, tail):
+        assert (
+            route_for_counts(10**6, 10**7, 10**6, 10**7, tail_alpha=tail, mode="auto")
+            == "finite_sample"
+        )
+
+    @settings(max_examples=300, deadline=None)
+    @given(
+        n_c=st.integers(min_value=1, max_value=10**9),
+        n_t=st.integers(min_value=1, max_value=10**9),
+        frac_c=st.floats(min_value=0.0, max_value=1.0),
+        frac_t=st.floats(min_value=0.0, max_value=1.0),
+        tail=st.sampled_from(PRODUCTION_TAILS),
+    )
+    def test_the_route_is_a_symmetric_pure_function_of_the_four_counts(
+        self, n_c, n_t, frac_c, frac_t, tail
+    ):
+        x_c, x_t = round(frac_c * n_c), round(frac_t * n_t)
+        route = route_for_counts(x_c, n_c, x_t, n_t, tail_alpha=tail, mode="auto")
+        assert route == route_for_counts(x_c, n_c, x_t, n_t, tail_alpha=tail, mode="auto")
+        # Neither the arm order nor swapping successes for failures changes it.
+        assert route == route_for_counts(x_t, n_t, x_c, n_c, tail_alpha=tail, mode="auto")
+        assert route == route_for_counts(
+            n_c - x_c, n_c, n_t - x_t, n_t, tail_alpha=tail, mode="auto"
+        )
+        assert (route == "asymptotic") == (_smallest(x_c, n_c, x_t, n_t) >= dense_min_count(tail))
+
+
+class TestRowsCarryTheirRoute:
+    def test_dense_counts_take_the_delta_method_route_and_say_so(self):
+        row = lift_row((50_000, 1_000_000, 51_500, 1_000_000))
+        assert row.reference_kind == "t"
+        assert row.scale == "log"
+        assert row.binomial_set is None
+        assert row.lift is not None and row.lift.lb is not None and row.lift.ub is not None
+
+    def test_sparse_counts_take_the_finite_sample_route_and_say_so(self):
+        row = lift_row((300, 10_000, 330, 10_000))
+        assert row.reference_kind == "binomial"
+        assert row.scale == "linear"
+        assert row.binomial_set is not None
+
+    def test_finite_sample_mode_labels_a_dense_row_binomial(self):
+        counts = (50_000, 1_000_000, 51_500, 1_000_000)
+        auto = lift_row(counts)
+        pinned = lift_row(counts, mode="finite_sample")
+        assert (auto.reference_kind, pinned.reference_kind) == ("t", "binomial")
+        assert pinned.binomial_set is not None
+        # The two guarantees differ, the point estimate does not.
+        assert pinned.lift.value == pytest.approx(auto.lift.value, rel=1e-12)
+
+    @pytest.mark.parametrize("tail", [0.1, 0.05, 0.025, 0.005])
+    def test_the_route_flips_exactly_at_the_threshold(self, tail):
+        alpha = 2.0 * tail
+        m = dense_min_count(tail)
+        n = 5 * m
+        kinds = {
+            offset: lift_row((m + offset, n, 2 * m, n), alpha=alpha).reference_kind
+            for offset in (-1, 0, 1)
+        }
+        assert kinds == {-1: "binomial", 0: "t", 1: "t"}
+
+    def test_a_directional_alpha_spends_its_whole_tail_on_the_route(self):
+        """Two-sided ``alpha`` puts ``alpha / 2`` in each tail and a directional one puts
+        all of it in one, so the same counts can be dense for the second and sparse for the
+        first."""
+        low = dense_min_count(DIRECTIONAL_TAIL)
+        high = dense_min_count(TWO_SIDED_TAIL)
+        assert low < high
+        counts = (low, 20 * low, 3 * low, 20 * low)
+        assert lift_row(counts, alpha=0.05, alternative="two-sided").reference_kind == "binomial"
+        assert lift_row(counts, alpha=0.05, alternative="greater").reference_kind == "t"
+        assert lift_row(counts, alpha=0.05, alternative="less").reference_kind == "t"
+
+    @pytest.mark.parametrize("treatment_successes", [2_000, 4_000, 8_000, 16_000, 30_000])
+    def test_the_route_does_not_follow_the_effect_or_the_p_value(self, treatment_successes):
+        # Control and treatment failures stay far above the threshold; only the effect moves.
+        row = lift_row((8_000, 100_000, treatment_successes, 100_000))
+        assert row.reference_kind == "t"
+        spec = lift_row((8_000, 100_000, treatment_successes, 100_000), mode="finite_sample")
+        assert spec.reference_kind == "binomial"
+
+    @pytest.mark.parametrize(
+        "counts",
+        [
+            (0, 5_000_000, 2, 5_000_000),
+            (5_000_000, 5_000_000, 4_999_998, 5_000_000),
+            (0, 20_000, 0, 20_000),
+            (12, 10_000_000, 9, 10_000_000),
+        ],
+    )
+    def test_boundary_events_stay_on_the_finite_sample_route_with_their_typed_set(self, counts):
+        """Zero and all-conversion arms are never dense: they keep the typed
+        ``binomial_set`` (a set with no point estimate where the control rate is zero and the
+        ratio is undefined), even above the previous four-million cap."""
+        row = lift_row(counts)
+        assert row.reference_kind == "binomial"
+        assert row.binomial_set is not None
+        assert (row.lift is None) == (counts[0] == 0)
+
+    def test_a_corrupted_arm_refuses_identically_under_both_modes(self):
+        """Counts are reconstructed from the moments before any route is chosen, so a
+        non-binary second moment refuses by the same code whichever route would have run."""
+        bad = ArmStats.from_raw_sums(
+            study_id="e",
+            metric="conv",
+            group_id="control",
+            n=100_000,
+            sum_y=40_000.0,
+            sum_y2=55_000.0,
+        )
+        good = ArmStats.from_raw_sums(
+            study_id="e",
+            metric="conv",
+            group_id="treatment",
+            n=100_000,
+            sum_y=41_000.0,
+            sum_y2=41_000.0,
+        )
+        rows = [
+            {
+                "experiment_id": "e",
+                "metric": "conv",
+                "group_id": arm.group_id,
+                "n": float(arm.n),
+                "ref_y": arm.ref_y,
+                "cy1": arm.cy1,
+                "cy2": arm.cy2,
+            }
+            for arm in (bad, good)
+        ]
+        codes = {}
+        for mode in ("auto", "finite_sample"):
+            computation = estimate_lift(
+                metrics=[CONVERSION_METRIC],
+                summary=rows,
+                control_group="control",
+                methods=[Method(name="unadjusted", conversion_inference=mode)],
+            )
+            assert not computation.results
+            codes[mode] = {failure.code for failure in computation.failures.values()}
+        assert codes["auto"] == codes["finite_sample"]
+        assert len(codes["auto"]) == 1
+
+
+class TestRoutedAsymptoticCellsNeverHitAGuard:
+    """Every routed-asymptotic cell has all four counts at least ``dense_min_count >= 9``, so
+    the delta-method guards (``log_se >= 0.5``, zero variance, non-positive mean) cannot
+    fire: a dense request always yields an interval, at any size."""
+
+    @pytest.mark.parametrize("tail", PRODUCTION_TAILS)
+    @pytest.mark.parametrize(
+        "shape",
+        ["balanced_half", "rare_success", "rare_failure", "lopsided_arms", "huge_arms"],
+    )
+    def test_the_sparsest_dense_cell_yields_an_interval(self, tail, shape):
+        m = dense_min_count(tail)
+        counts = {
+            "balanced_half": (m, 2 * m, m, 2 * m),
+            "rare_success": (m, 10**9, m, 10**9),
+            "rare_failure": (10**9 - m, 10**9, 10**9 - m, 10**9),
+            "lopsided_arms": (m, 3 * m, 4 * m, 10 * m),
+            "huge_arms": (m, 10**9, 5 * m, 10**9),
+        }[shape]
+        assert route_for_counts(*counts, tail_alpha=tail, mode="auto") == "asymptotic"
+        row = lift_row(counts, alpha=2.0 * tail)
+        assert row.reference_kind == "t"
+        assert row.lift is not None and row.lift.lb is not None and row.lift.ub is not None
+        assert row.lift.lb < row.lift.value < row.lift.ub
+
+    @settings(max_examples=60, deadline=None)
+    @given(
+        n_c=st.integers(min_value=2, max_value=10**7),
+        n_t=st.integers(min_value=2, max_value=10**7),
+        frac_c=st.floats(min_value=0.0, max_value=1.0),
+        frac_t=st.floats(min_value=0.0, max_value=1.0),
+        tail=st.sampled_from([0.025, 0.05, 0.1]),
+    )
+    def test_no_count_pair_raises_a_guard_and_every_row_is_labelled_by_the_rule(
+        self, n_c, n_t, frac_c, frac_t, tail
+    ):
+        x_c, x_t = round(frac_c * n_c), round(frac_t * n_t)
+        computation = lift_computation((x_c, n_c, x_t, n_t), alpha=2.0 * tail)
+        route = route_for_counts(x_c, n_c, x_t, n_t, tail_alpha=tail, mode="auto")
+        if route == "asymptotic":
+            assert computation.failures == {}
+            (row,) = computation.results
+            assert row.reference_kind == "t"
+        else:
+            # Finite-sample rows may carry a typed failure (a tail the evaluator cannot
+            # resolve), never a delta-method guard.
+            for failure in computation.failures.values():
+                assert failure.code.startswith("estimation.binomial.")
+            for row in computation.results:
+                assert row.reference_kind == "binomial"
+
+
+class TestExplicitFiniteSample:
+    def test_cuped_is_refused_at_construction_by_code(self):
+        with pytest.raises(CodedError) as raised:
+            Method(name="cuped", variance_reduction="cuped", conversion_inference="finite_sample")
+        assert raised.value.code == "estimation.engine.method.cuped_finite_sample"
+        assert Method(name="cuped", variance_reduction="cuped").conversion_inference == "auto"
+
+    def test_an_unknown_value_is_refused(self):
+        with pytest.raises(ValueError):
+            Method(name="unadjusted", conversion_inference="asymptotic")  # type: ignore[arg-type]
+
+    def test_an_informative_prior_is_refused_by_code_instead_of_served_by_the_delta_method(self):
+        with pytest.raises(InvalidRequestError) as raised:
+            estimate_lift(
+                metrics=[CONVERSION_METRIC],
+                summary=count_summary(300, 10_000, 330, 10_000),
+                control_group="control",
+                methods=[Method(name="unadjusted", conversion_inference="finite_sample")],
+                prior=Normal(mu=0.0, sigma=0.1),
+            )
+        assert raised.value.code == "estimation.binomial.finite_sample_unavailable"
+
+    def test_a_mean_metric_is_refused_by_the_same_code(self):
+        rows = [{**row, "metric": "revenue"} for row in count_summary(300, 10_000, 330, 10_000)]
+        with pytest.raises(InvalidRequestError) as raised:
+            estimate_lift(
+                metrics=[MeanMetric(name="revenue", entity="user", fact="revenue")],
+                summary=rows,
+                control_group="control",
+                methods=[Method(name="unadjusted", conversion_inference="finite_sample")],
+            )
+        assert raised.value.code == "estimation.binomial.finite_sample_unavailable"
+
+    def test_auto_on_an_ineligible_contrast_behaves_as_before(self):
+        rows = [{**row, "metric": "revenue"} for row in count_summary(300, 10_000, 330, 10_000)]
+        computation = estimate_lift(
+            metrics=[MeanMetric(name="revenue", entity="user", fact="revenue")],
+            summary=rows,
+            control_group="control",
+        )
+        (row,) = computation.results
+        assert row.reference_kind == "t"
+        assert row.binomial_set is None
+
+    def test_the_prior_is_served_by_auto_on_the_delta_method_path_as_before(self):
+        computation = estimate_lift(
+            metrics=[CONVERSION_METRIC],
+            summary=count_summary(300, 10_000, 330, 10_000),
+            control_group="control",
+            prior=Normal(mu=0.0, sigma=0.1),
+        )
+        (row,) = computation.results
+        assert row.binomial_set is None
+
+
+class TestPlanningRoute:
+    """``planning_route`` classifies a plan from the probability that the runtime rule sends
+    its random counts to the delta-method route."""
+
+    def test_certain_density_is_dense(self):
+        assert (
+            planning_route(1_000_000, 1_000_000, 0.05, 0.052, tail_alpha=0.025, mode="auto")
+            == "dense"
+        )
+
+    def test_counts_that_cannot_reach_the_threshold_are_sparse(self):
+        assert (
+            planning_route(2_000, 2_000, 0.001, 0.0012, tail_alpha=0.025, mode="auto") == "sparse"
+        )
+
+    def test_counts_the_threshold_splits_are_borderline(self):
+        m = dense_min_count(0.025)
+        assert (
+            planning_route(10 * m, 10 * m, 0.1, 0.11, tail_alpha=0.025, mode="auto") == "borderline"
+        )
+
+    def test_a_finite_sample_decision_is_always_sparse(self):
+        assert (
+            planning_route(10**8, 10**8, 0.2, 0.25, tail_alpha=0.025, mode="finite_sample")
+            == "sparse"
+        )
+
+    def test_an_arm_too_small_to_hold_the_threshold_on_both_sides_is_sparse(self):
+        m = dense_min_count(0.05)
+        assert planning_route(2 * m - 1, 10**7, 0.5, 0.5, tail_alpha=0.05, mode="auto") == "sparse"
+
+    def test_the_classification_agrees_with_simulated_counts(self):
+        """The simulated share of count draws the runtime rule routes asymptotic classifies
+        the plan as the planner does, for every certain class and one borderline plan."""
+        rng = np.random.default_rng(20261004)
+        tail = 0.025
+        m = dense_min_count(tail)
+        cases = {
+            "dense": (50 * m, 50 * m, 0.3, 0.31),
+            "sparse": (3 * m, 3 * m, 0.0001, 0.0002),
+            "borderline": (10 * m, 10 * m, 0.1, 0.1),
+        }
+        reps = 20_000
+        for expected, (n_c, n_t, p_c, p_t) in cases.items():
+            assert planning_route(n_c, n_t, p_c, p_t, tail_alpha=tail, mode="auto") == expected
+            x_c = rng.binomial(n_c, p_c, size=reps)
+            x_t = rng.binomial(n_t, p_t, size=reps)
+            smallest = np.minimum.reduce([x_c, n_c - x_c, x_t, n_t - x_t])
+            share = float((smallest >= m).mean())
+            if expected == "dense":
+                assert share == 1.0
+            elif expected == "sparse":
+                assert share == 0.0
+            else:
+                assert 0.0 < share < 1.0
+
+    def test_the_classification_is_monotone_in_the_treatment_rate_around_one_half(self):
+        m = dense_min_count(0.05)
+        n = 4 * m
+        extent_dense = dense_extent(n, n, 0.5, 0.45, 0.55, tail_alpha=0.05, mode="auto")
+        point = planning_route(n, n, 0.5, 0.5, tail_alpha=0.05, mode="auto")
+        assert extent_dense[0] == (point == "dense")
+        some, every = dense_extent(n, n, 0.5, 0.001, 0.999, tail_alpha=0.05, mode="auto")
+        assert some and not every
+
+    def test_the_certainty_threshold_is_a_probability_budget(self):
+        assert 0.0 < PLANNING_ROUTE_CERTAINTY < 1e-3

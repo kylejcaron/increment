@@ -19,7 +19,7 @@ from increment.semantics.assignment import ParallelAssignment
 from increment.semantics.models import MethodSpec
 
 
-def make_procedure(
+def make_procedure(  # noqa: PLR0913
     *,
     alpha: float = 0.05,
     alternative: str = "two-sided",
@@ -33,6 +33,7 @@ def make_procedure(
     population: str = "triggered",
     variance_adjustment: str = "factor_absorption",
     decision_method: str = "unadjusted",
+    conversion_inference: str = "auto",
 ) -> ArmPlanningProcedure:
     family = FamilyPolicy(
         kind="bonferroni" if family_size > 1 else "none",
@@ -72,6 +73,7 @@ def make_procedure(
         decision_method=MethodSpec(
             name=decision_method,
             variance_reduction="cuped" if decision_method == "cuped" else "none",
+            conversion_inference=cast("Literal['auto', 'finite_sample']", conversion_inference),
         ),
         sensitivity_methods=(),
         prior_present=False,

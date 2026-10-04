@@ -2609,6 +2609,98 @@ def test_cuped_method_name_without_reduction_rejected_in_binding():
     assert exc_info.value.code == "definition.method.methodspec_name_cuped"
 
 
+def test_method_spec_conversion_inference_defaults_to_auto_and_round_trips():
+    assert MethodSpec(name="unadjusted").conversion_inference == "auto"
+    assert MethodSpec.model_validate({"name": "unadjusted"}).conversion_inference == "auto"
+    explicit = MethodSpec(name="unadjusted", conversion_inference="finite_sample")
+    assert MethodSpec.model_validate(explicit.model_dump(mode="json")) == explicit
+    binding = ExperimentMetric.model_validate(
+        {
+            "metric": "orders",
+            "decision_method": {"name": "unadjusted", "conversion_inference": "finite_sample"},
+        }
+    )
+    assert binding.wants_finite_sample
+    assert not ExperimentMetric(metric="orders").wants_finite_sample
+
+
+def test_method_spec_refuses_finite_sample_with_cuped_and_unknown_values():
+    with pytest.raises(DefinitionError) as exc_info:
+        MethodSpec(name="cuped", variance_reduction="cuped", conversion_inference="finite_sample")
+    assert exc_info.value.code == "definition.method.finite_sample_cuped"
+    with pytest.raises(ValidationError):
+        MethodSpec(name="unadjusted", conversion_inference="asymptotic")  # ty: ignore[invalid-argument-type]
+
+
+def _finite_sample_definitions(metric_type: str) -> dict:
+    return {
+        "dialect": "duckdb",
+        "fact_sources": [
+            {
+                "name": "events",
+                "sql": "SELECT * FROM events",
+                "timestamp_column": "event_at",
+                "entities": ["user_id"],
+                "facts": [
+                    {"name": "exposure", "column": None},
+                    {"name": "purchase", "column": "revenue"},
+                ],
+            }
+        ],
+        "exposures": [{"name": "assignment", "fact": "exposure"}],
+        "metrics": [
+            {
+                "type": metric_type,
+                "name": "orders",
+                "entity": "user_id",
+                "fact": "purchase",
+                **(
+                    {"threshold_days": [7, 14]}
+                    if metric_type == "retention"
+                    else {"window_days": 7}
+                ),
+                **({"aggregation": "sum"} if metric_type == "mean" else {}),
+            }
+        ],
+        "experiments": [
+            {
+                "name": "exp",
+                "exposure": "assignment",
+                "unit": "user_id",
+                "start": "2026-01-01",
+                "end": "2026-01-14",
+                "control_group": "control",
+                "plan": {
+                    "primary": {
+                        "metric": "orders",
+                        "decision_method": {
+                            "name": "unadjusted",
+                            "conversion_inference": "finite_sample",
+                        },
+                    }
+                },
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize("metric_type", ["conversion", "retention"])
+def test_a_finite_sample_binding_is_accepted_on_a_conversion_or_retention_metric(metric_type):
+    definitions = Definitions.model_validate(_finite_sample_definitions(metric_type))
+    (experiment,) = definitions.experiments
+    assert experiment.bindings["orders"].wants_finite_sample
+
+
+def test_a_finite_sample_binding_on_a_mean_metric_is_refused_at_definition_load():
+    with pytest.raises(DefinitionError) as exc_info:
+        Definitions.model_validate(_finite_sample_definitions("mean"))
+    assert exc_info.value.code == "definition.invalid"
+    assert "definition.validate_experiment.finite_sample_metric_type" in {
+        code
+        for code, _ in exc_info.value.context["errors"]  # ty: ignore[not-iterable]
+    }
+
+
 def test_prior_spec_requires_positive_sigma():
     with pytest.raises(ValidationError):
         NormalPriorSpec(mu=0.0, sigma=0.0)

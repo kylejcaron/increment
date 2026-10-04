@@ -340,13 +340,15 @@ def test_golden_payload_has_stable_bytes() -> None:
     expected = (
         '{"alpha":0.025,"compliance":null,"declared":true,"inference":{"kind":"fixed"},"path":"warehouse",'
         '"procedures":{"revenue_2024-01-15":{"alpha":0.025,"alternative":"greater",'
-        '"axis":"relative","decision_method":{"name":"cuped","variance_reduction":"cuped"},'
+        '"axis":"relative","decision_method":{"conversion_inference":"auto","name":"cuped",'
+        '"variance_reduction":"cuped"},'
         '"family":{"family":{"axes":["date","metric"],"correction":"bonferroni",'
         '"guarantee":"fwer","kind":"multiplicity","name":"revenue_family","q":null},'
         '"member":true},"inference":{"kind":"fixed"},"kind":"relative",'
         '"methods_explicitly_empty":false,"metric":"revenue_2024-01-15","null_lift":0.0,'
         '"prior":{"mu":0.02,"sigma":0.15},"prior_is_global":false,"role":"primary",'
-        '"scale":"relative","sensitivity_methods":[{"name":"unadjusted","variance_reduction":"none"}]}},'
+        '"scale":"relative","sensitivity_methods":[{"conversion_inference":"auto",'
+        '"name":"unadjusted","variance_reduction":"none"}]}},'
         '"q":0.1,"view_policies":{"asof":{"axes":["date","metric"],"correction":"bonferroni",'
         '"guarantee":"fwer","kind":"multiplicity","name":"asof_family","q":null},'
         '"encouragement_breakout":{"axes":["date","metric"],"correction":"none",'
@@ -357,6 +359,53 @@ def test_golden_payload_has_stable_bytes() -> None:
     payload = compiled_plan_to_json(_rich_plan())
     assert payload == expected
     assert compiled_plan_from_json(expected) == _rich_plan()
+
+
+def _finite_sample_plan() -> CompiledDecisionPlan:
+    plan = _arm_plan()
+    procedure = cast(RelativeArmDecisionProcedure, plan.procedures[_METRIC_A]).model_copy(
+        update={
+            "decision_method": Method(name="unadjusted", conversion_inference="finite_sample"),
+            "prior": None,
+            "sensitivity_methods": (),
+        }
+    )
+    return plan.model_copy(update={"procedures": {**plan.procedures, _METRIC_A: procedure}})
+
+
+def test_conversion_inference_is_always_emitted_and_survives_the_wire():
+    plan = _finite_sample_plan()
+    payload = cast(dict[str, Any], compiled_plan_to_dict(plan))
+    assert payload["procedures"][_METRIC_A]["decision_method"]["conversion_inference"] == (
+        "finite_sample"
+    )
+    assert payload["procedures"][_METRIC_B]["decision_method"]["conversion_inference"] == "auto"
+    for restored in (
+        compiled_plan_from_dict(payload),
+        compiled_plan_from_json(compiled_plan_to_json(plan)),
+        compiled_plan_from_dto(compiled_plan_to_dto(plan)),
+    ):
+        assert restored == plan
+        method = cast(RelativeArmDecisionProcedure, restored.procedures[_METRIC_A]).decision_method
+        assert method.conversion_inference == "finite_sample"
+
+
+def test_a_payload_without_conversion_inference_decodes_as_auto():
+    payload = cast(dict[str, Any], compiled_plan_to_dict(_arm_plan()))
+    for procedure in payload["procedures"].values():
+        for method in (procedure["decision_method"], *procedure["sensitivity_methods"]):
+            del method["conversion_inference"]
+    restored = compiled_plan_from_dict(payload)
+    assert restored == _arm_plan()
+    assert WireMethod(name="unadjusted").conversion_inference == "auto"
+
+
+def test_an_unknown_conversion_inference_is_rejected():
+    payload = cast(dict[str, Any], compiled_plan_to_dict(_arm_plan()))
+    payload["procedures"][_METRIC_A]["decision_method"]["conversion_inference"] = "asymptotic"
+    with pytest.raises(WireFormatError) as raised:
+        compiled_plan_from_dict(payload)
+    assert raised.value.code == "wire.payload.invalid"
 
 
 def test_wire_dto_procedures_support_copy_and_pickle_without_mutability():

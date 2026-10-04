@@ -1,9 +1,11 @@
-"""Planning for the runtime's exact binomial risk-ratio decision.
+"""Planning for the runtime's finite-sample binomial risk-ratio decision.
 
-A binomial-eligible conversion or retention plan reports the probability that
-the unchanged runtime decision (``binomial_rr.p_plus``/``p_minus`` below the
-compiled tail allocation) rejects, integrated over the binomial count law at
-the analyzed integer counts.
+A binomial-eligible conversion or retention plan on ``conversion_inference="finite_sample"``
+reports the probability that the unchanged runtime decision (``binomial_rr.p_plus``/
+``p_minus`` below the compiled tail allocation) rejects, integrated over the binomial count
+law at the analyzed integer counts. Every plan here pins ``finite_sample``: the default
+``auto`` plans the delta-method route where the runtime takes it
+(``test_conversion_route_planning.py``).
 """
 
 from __future__ import annotations
@@ -71,6 +73,11 @@ def _runtime_power(
 
 
 def _conversion(**overrides: Any) -> ArmPlanningProcedure:
+    """A randomized conversion plan pinned to ``finite_sample``; CUPED has no such decision."""
+    overrides.setdefault(
+        "conversion_inference",
+        "auto" if overrides.get("decision_method") == "cuped" else "finite_sample",
+    )
     return make_procedure(
         metric_type="conversion",
         identification="randomized",
@@ -171,7 +178,7 @@ class TestConversionExample:
     reported 0.8004; the runtime decision rejects with probability 0.7144."""
 
     _BASELINE = Baseline.from_proportion(0.1)
-    _PROCEDURE = ArmPlanningProcedure.standard("conversion")
+    _PROCEDURE = ArmPlanningProcedure.standard("conversion", conversion_inference="finite_sample")
 
     @pytest.mark.slow
     def test_achieved_power_is_the_runtime_rejection_probability(self):
@@ -199,7 +206,7 @@ def test_triggered_sizing_agrees_with_achieved_power_at_its_assigned_size():
     its assigned predecessor are judged at the analyzed counts
     ``achieved_power`` uses."""
     baseline = Baseline(mean=0.3, var=0.21, trigger_rate=0.35)
-    procedure = ArmPlanningProcedure.standard("conversion")
+    procedure = ArmPlanningProcedure.standard("conversion", conversion_inference="finite_sample")
     sized = required_sample_size(0.8, baseline, procedure)
     replay = achieved_power(sized.n_per_arm, 0.8, baseline, procedure)
     assert (replay.power, replay.power_basis) == (sized.power, sized.power_basis)

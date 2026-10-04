@@ -55,10 +55,8 @@ from scipy.stats import binom as _binom
 from scipy.stats import norm as _norm
 from scipy.stats import t as _student_t
 
-from increment.estimation.armstats import ArmStats
 from increment.estimation.conversion_route import dense_min_count
-from increment.estimation.engine import Method, estimate_lift
-from increment.semantics.models import ConversionMetric
+from tests.estimation._conversion_counts import lift_row
 from tests.mc import (
     binomial_error_upper_bound,
     family_eta,
@@ -226,7 +224,9 @@ def worst_excess(
             routed = (max(r_lo, r_up) - tail) / delta
             current = worst.get(tail)
             if current is None or wald > current.wald:
-                worst[tail] = Excess(tail, m, wald, max(routed, current.routed) if current else routed, cell)
+                worst[tail] = Excess(
+                    tail, m, wald, max(routed, current.routed) if current else routed, cell
+                )
             elif routed > current.routed:
                 worst[tail] = Excess(tail, m, current.wald, routed, current.cell)
     return worst
@@ -274,7 +274,9 @@ def select(out: Path | None, *, workers: int, start: float, stop: float) -> int:
             )
         print(
             f"m={m:>6}  "
-            + "  ".join(f"{tail:g}:{rows[m][tail].wald:6.2f}/{rows[m][tail].routed:6.2f}" for tail in TAILS),
+            + "  ".join(
+                f"{tail:g}:{rows[m][tail].wald:6.2f}/{rows[m][tail].routed:6.2f}" for tail in TAILS
+            ),
             flush=True,
         )
     summary = []
@@ -311,49 +313,6 @@ def verify(*, workers: int) -> int:
 
 # --- Production route -------------------------------------------------------------------
 
-_METRIC = ConversionMetric(name="conv", entity="user", fact="conv")
-
-
-def summary_rows(x_c: int, n_c: int, x_t: int, n_t: int) -> list[dict[str, object]]:
-    rows: list[dict[str, object]] = []
-    for group, n, x in (("control", n_c, x_c), ("treatment", n_t, x_t)):
-        arm = ArmStats.from_raw_sums(
-            study_id="e", metric="conv", group_id=group, n=n, sum_y=float(x), sum_y2=float(x)
-        )
-        rows.append(
-            {
-                "experiment_id": "e",
-                "metric": "conv",
-                "group_id": group,
-                "n": float(arm.n),
-                "ref_y": arm.ref_y,
-                "cy1": arm.cy1,
-                "cy2": arm.cy2,
-            }
-        )
-    return rows
-
-
-def production_row(
-    counts: tuple[int, int, int, int],
-    *,
-    alpha: float,
-    alternative: str = "two-sided",
-    mode: Literal["auto", "finite_sample"] = "auto",
-):
-    """The row ``estimate_lift`` returns for four counts: the production route itself."""
-    x_c, n_c, x_t, n_t = counts
-    computation = estimate_lift(
-        metrics=[_METRIC],
-        summary=summary_rows(x_c, n_c, x_t, n_t),
-        control_group="control",
-        methods=[Method(name="unadjusted", conversion_inference=mode)],
-        alpha=alpha,
-        alternative=alternative,
-    )
-    (row,) = computation.results
-    return row
-
 
 def row_misses(row, truth_ratio: float) -> tuple[bool, bool]:
     """``(lower, upper)``: whether the row's interval lies wholly above / below the true
@@ -377,7 +336,7 @@ def conformance(samples: int = 200, seed: int = 20261004) -> float:
         x_c = int(rng.integers(50, max(51, n_c // 2)))
         x_t = int(rng.integers(50, max(51, n_t // 2)))
         tail = float(rng.choice(TAILS))
-        row = production_row((x_c, n_c, x_t, n_t), alpha=2.0 * tail)
+        row = lift_row((x_c, n_c, x_t, n_t), alpha=2.0 * tail)
         if row.reference_kind != "t":
             continue
         lower, upper = delta_method_bounds(np.array([x_c]), n_c, np.array([x_t]), n_t, tail)
@@ -419,7 +378,7 @@ def simulate_hybrid(
     ratio = cell.p_t / cell.p_c
     lower = upper = asymptotic = 0
     for (c, t), times in zip(pairs.T, multiplicity, strict=True):
-        row = production_row(
+        row = lift_row(
             (int(c), cell.n_c, int(t), cell.n_t), alpha=alpha, alternative=alternative, mode=mode
         )
         miss_lower, miss_upper = row_misses(row, ratio)
