@@ -494,7 +494,6 @@ def validate_readout_adjustment(request: ReadoutRequest) -> None:
         from increment.errors import refuse
         from increment.estimation._adjust.common import SUPPORTED_RATIO_METRIC
 
-        _refuse_observational_quantiles(metrics, design)
         configs_by_name = {config.metric.name: config for config in configs}
         decisions = [
             (metric, methods[0])
@@ -561,6 +560,8 @@ def validate_readout_adjustment(request: ReadoutRequest) -> None:
         ):
             _refuse("readout.value_scale.null", metric=name)
     if mechanism == "observational":
+        # Request-shape checks above come first; this is the estimator-capability refusal.
+        _refuse_observational_quantiles(metrics, design)
         for metric, config, methods in zip(metrics, configs, method_catalog, strict=True):
             prior = config.prior
             if isinstance(prior, (StudentTPrior, MixturePrior)):
@@ -669,8 +670,8 @@ def estimate_ate(  # noqa: PLR0913, PLR0915
             methods, prefer=lambda m: m.name != "unadjusted"
         )
     selected = list(src.context.metrics) if metrics is None else list(metrics)
-    _refuse_observational_quantiles(selected, design)
     if methods == []:
+        _refuse_observational_quantiles(selected, design)
         from increment.estimation.decision_types import (
             ArmHypothesisKey,
             DecisionComputation,
@@ -695,6 +696,22 @@ def estimate_ate(  # noqa: PLR0913, PLR0915
     cluster = src.context.cluster
     if cluster is not None and prior is not None:
         _refuse_compatibility("arm.adjustment.cluster_prior", cluster=cluster)
+    # Request-shape validation (mapping keys, scales) precedes the estimator-capability
+    # refusal, and both precede any source read.
+    scales = _resolve_value_scales(
+        src,
+        methods,
+        selected=cast("Sequence[Metric]", selected),
+        prior=prior,
+        prior_shared=prior_shared,
+        value_scale=value_scale,
+        null_lifts=null_lifts,
+        null_abs=null_abs,
+        alternatives=alternatives,
+        prior_scale_judged=_prior_scale_judged,
+    )
+    _refuse_observational_quantiles(selected, design)
+
     winsor_diagnostics: dict[str, dict[str, dict[str, int | float | None]]] = {}
     for raw_metric in selected:
         declared_metric = raw_metric
@@ -708,19 +725,6 @@ def estimate_ate(  # noqa: PLR0913, PLR0915
             declared_metric,
             design.control_group,
         )
-
-    scales = _resolve_value_scales(
-        src,
-        methods,
-        selected=cast("Sequence[Metric]", selected),
-        prior=prior,
-        prior_shared=prior_shared,
-        value_scale=value_scale,
-        null_lifts=null_lifts,
-        null_abs=null_abs,
-        alternatives=alternatives,
-        prior_scale_judged=_prior_scale_judged,
-    )
 
     results: list[LiftEstimate] = []
     refused_failures: dict[Any, DecisionFailure] = {}
