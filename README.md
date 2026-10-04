@@ -175,6 +175,9 @@ Read the [statistical limitations](docs/limitations.md),
 [backend verification notes](CONTRIBUTING.md#backend-verification) before choosing
 an analysis for production use.
 
+The [validation coverage inventory](docs/validation.md#reference-inventory) lists which
+estimators have frozen third-party references and which regimes have none.
+
 ## Contributing and license
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and contribution

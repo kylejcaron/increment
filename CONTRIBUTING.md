@@ -203,6 +203,16 @@ Probe coverage is not blanket support for every metric, design, or artifact
 extension. Use the [compatibility matrix](docs/guides/compatibility.md) and
 [statistical limitations](docs/limitations.md) to check the combination you need.
 
+### Validation evidence and external reports
+
+[`docs/validation.md`](docs/validation.md) is the single inventory of independent-reference
+evidence, including methods that have none. Frozen fixtures live under `tests/oracles/` with
+their generator scripts; ordinary tests read the fixtures only (`make test TESTS=tests/oracles`),
+never R or the network. To report a discrepancy against a reference, open a GitHub issue with the
+increment version or commit, the entry point, the reference tool and version, the two numbers and
+the tolerance, and attach aggregate moments or the reference output, never identifiers,
+credentials, or raw private data.
+
 ### Releases
 
 Dispatch `bump` on the reviewed commit. It derives the baseline from the highest
