@@ -5,7 +5,7 @@ versions on every line) and are meant to run serially, one at a time::
 
     uv run python -m scripts.measure_binomial_ceiling latency  --out /tmp/rsf0-latency.jsonl
     uv run python -m scripts.measure_binomial_ceiling ulp      --out /tmp/rsf0-ulp.jsonl
-    uv run python -m scripts.measure_binomial_ceiling recovery --out /tmp/rsf0-recovery.jsonl
+    uv run --extra demo python -m scripts.measure_binomial_ceiling recovery --out /tmp/rsf0-recovery.jsonl
 
 ``latency``
     Runs ``binomial_rr.confidence_interval`` cold in a fresh subprocess per cell and rung (two-sided,
@@ -66,11 +66,18 @@ ALPHA = 0.05
 DEFAULT_TIMEOUT = 3600.0
 
 _EPS = 2.0**-52
-#: Primitive values below this are outside float64's normal range, where a relative error in
-#: ULPs says nothing.
-_NORMAL_FLOOR = Decimal("1e-280")
-#: Values below this contribute less than half a float64 unit to any probability they weight.
-_MATERIAL = Decimal("1e-17")
+#: Values below this are not graded. Boost's small-count branch returns a wrong (typically zero)
+#: value once an intermediate product underflows, observed only for true values of at most
+#: 4.3e-267, and no probability of that size can move a sum by half a float64 unit.
+_GRADED_FLOOR = Decimal("1e-250")
+#: A graded count is on the mass of the sum it feeds when it is at most this many standard
+#: deviations from the mean or at most ``_SMALL_COUNT``; the margin consumes its relative error.
+#: Any other count is graded by absolute error, which is what a negligible weight can move a sum by.
+_BEARING_SIGMAS = 4.5
+_SMALL_COUNT = 45
+#: Expected counts (``n * rate``) of the small-count cells, where Boost's finite sum raises
+#: ``1 - x`` to a power near ``n``: the worst regime of the primitives' error.
+SMALL_COUNT_MEANS = (3, 10, 30, 100, 300)
 
 
 # --- common -----------------------------------------------------------------------------------
@@ -252,31 +259,37 @@ def _latency(args: argparse.Namespace) -> None:
 
 @dataclass
 class _Tally:
-    """Worst ULP error of one primitive over the values the oracle puts in float64's normal range."""
+    """Worst error of one primitive against the oracle over the values it is graded on.
+
+    A value on the mass of its sum (``bearing``) is graded by its relative error in units of
+    ``eps`` (what ``_eps_margin`` consumes) and, as ULPs of the value, for reference; any other
+    only by its absolute error in ``eps`` units. Values below ``_GRADED_FLOOR`` are counted and
+    skipped."""
 
     values: int = 0
     skipped: int = 0
     worst_ulps: float = 0.0
     worst_at: int | None = None
     worst_exact: float = 0.0
-    material_ulps: float = 0.0
-    material_relative: float = 0.0
+    worst_relative_eps: float = 0.0
+    worst_absolute_eps: float = 0.0
 
-    def add(self, count: int, computed: float, exact: Decimal) -> None:
+    def add(self, count: int, computed: float, exact: Decimal, *, bearing: bool) -> None:
         from calibration.binomial_oracle import precise, ulp_distance
 
-        if exact < _NORMAL_FLOOR:
+        if exact < _GRADED_FLOOR:
             self.skipped += 1
             return
         self.values += 1
         ulps = ulp_distance(computed, exact)
         if ulps > self.worst_ulps:
             self.worst_ulps, self.worst_at, self.worst_exact = ulps, count, float(exact)
-        if exact >= _MATERIAL:
-            self.material_ulps = max(self.material_ulps, ulps)
-            with precise():
-                relative = float(abs(Decimal(computed) - exact) / exact)
-            self.material_relative = max(self.material_relative, relative)
+        with precise():
+            error = abs(Decimal(computed) - exact)
+            if bearing:
+                self.worst_relative_eps = max(self.worst_relative_eps, _units(error / exact))
+            else:
+                self.worst_absolute_eps = max(self.worst_absolute_eps, _units(error))
 
     def merge(self, other: _Tally) -> None:
         self.values += other.values
@@ -287,25 +300,32 @@ class _Tally:
                 other.worst_at,
                 other.worst_exact,
             )
-        self.material_ulps = max(self.material_ulps, other.material_ulps)
-        self.material_relative = max(self.material_relative, other.material_relative)
+        self.worst_relative_eps = max(self.worst_relative_eps, other.worst_relative_eps)
+        self.worst_absolute_eps = max(self.worst_absolute_eps, other.worst_absolute_eps)
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "values": self.values,
-            "skipped_below_1e-280": self.skipped,
+            "skipped_below_floor": self.skipped,
             "worst_ulps": self.worst_ulps,
             "worst_at": self.worst_at,
             "worst_exact": self.worst_exact,
-            "material_worst_ulps": self.material_ulps,
-            "material_worst_relative": self.material_relative,
+            "worst_relative_eps": self.worst_relative_eps,
+            "worst_absolute_eps": self.worst_absolute_eps,
         }
 
 
-def _graded(counts: Sequence[int], computed: Any, exact: Sequence[Decimal]) -> _Tally:
+def _bearing(count: int, n: int, rate: float) -> bool:
+    sigma = math.sqrt(n * rate * (1.0 - rate))
+    return count <= _SMALL_COUNT or abs(count - n * rate) <= _BEARING_SIGMAS * sigma
+
+
+def _graded(
+    counts: Sequence[int], computed: Any, exact: Sequence[Decimal], n: int, rate: float
+) -> _Tally:
     tally = _Tally()
     for count, value, reference in zip(counts, computed.tolist(), exact, strict=True):
-        tally.add(int(count), value, reference)
+        tally.add(int(count), value, reference, bearing=_bearing(int(count), n, rate))
     return tally
 
 
@@ -346,8 +366,8 @@ def _window_check(n: int, rate: float, kind: str, q_end: str, r: float) -> dict[
     above = control.sf(i_hi) if i_hi < n else Decimal(0)
 
     indices = list(range(i_lo, i_hi + 1))
-    pmf_tally = _graded(indices, control_f, control_o)
-    tail_tally = _graded(thresholds, tail_f, tail_o)
+    pmf_tally = _graded(indices, control_f, control_o, n, q)
+    tail_tally = _graded(thresholds, tail_f, tail_o, n, p)
     with precise():
         exact_sum = sum((c * t for c, t in zip(control_o, tail_o, strict=True)), Decimal(0))
         weighted = sum(
@@ -362,7 +382,7 @@ def _window_check(n: int, rate: float, kind: str, q_end: str, r: float) -> dict[
         dot_error = abs(Decimal(float(np.dot(control_f, tail_f))) - exact_sum)
         bound = min(Decimal(1), exact_sum + below + above)
         slack = Decimal(certified) - bound
-        margin = brr._eps_margin(i_hi - i_lo + 1)
+        margin = brr._eps_margin(i_hi - i_lo + 1, n, n)
         return {
             "stage": "window",
             "n": n,
@@ -404,14 +424,42 @@ def _sampled_check(n: int, rate: float) -> dict[str, Any]:
         "rate": rate,
         "counts": len(ordered),
         "pmf": _graded(
-            ordered, brr._fast_binom_pmf(array, n, rate), oracle.pmf_many(ordered)
+            ordered, brr._fast_binom_pmf(array, n, rate), oracle.pmf_many(ordered), n, rate
         ).as_dict(),
         "cdf": _graded(
-            ordered, brr._fast_binom_cdf(array, n, rate), oracle.cdf_many(ordered)
+            ordered, brr._fast_binom_cdf(array, n, rate), oracle.cdf_many(ordered), n, rate
         ).as_dict(),
         "sf": _graded(
-            ordered, brr._fast_binom_sf(array, n, rate), oracle.sf_many(ordered)
+            ordered, brr._fast_binom_sf(array, n, rate), oracle.sf_many(ordered), n, rate
         ).as_dict(),
+    }
+
+
+def _small_count_check(n: int) -> dict[str, Any]:
+    """The primitives at counts 0..45 for rates whose expected counts are ``SMALL_COUNT_MEANS``
+    (not dyadic): Boost's finite-sum branch, where the error is coherent across the counts."""
+    import numpy as np
+
+    from calibration.binomial_oracle import Binomial
+    from increment.estimation import binomial_rr as brr
+
+    ordered = list(range(_SMALL_COUNT + 1))
+    array = np.array(ordered, dtype=np.int64)
+    tallies = {name: _Tally() for name in ("pmf", "cdf", "sf")}
+    for expected in SMALL_COUNT_MEANS:
+        rate = expected * 1.0123456789 / n
+        oracle = Binomial(n, rate)
+        for name, function, exact in (
+            ("pmf", brr._fast_binom_pmf, oracle.pmf_many(ordered)),
+            ("cdf", brr._fast_binom_cdf, oracle.cdf_many(ordered)),
+            ("sf", brr._fast_binom_sf, oracle.sf_many(ordered)),
+        ):
+            tallies[name].merge(_graded(ordered, function(array, n, rate), exact, n, rate))
+    return {
+        "stage": "small_count",
+        "n": n,
+        "expected_counts": list(SMALL_COUNT_MEANS),
+        **{name: tally.as_dict() for name, tally in tallies.items()},
     }
 
 
@@ -481,7 +529,7 @@ def _omitted_mass_checks(n: int) -> list[dict[str, Any]]:
 
 
 def _ulp(args: argparse.Namespace) -> None:
-    from increment.estimation._tails import SCIPY_BINOMIAL_ULP_ALLOWANCE
+    from increment.estimation import binomial_rr as brr
 
     out = Path(args.out)
     for n in _rungs(args.rungs):
@@ -494,6 +542,9 @@ def _ulp(args: argparse.Namespace) -> None:
             _emit(out, entry)
             return entry
 
+        small = record(_small_count_check(n))
+        for name, tally in worst.items():
+            tally.merge(_tally_from(small[name]))
         for rate in ULP_RATES:
             sampled = record(_sampled_check(n, rate))
             for name, tally in worst.items():
@@ -514,15 +565,19 @@ def _ulp(args: argparse.Namespace) -> None:
             flags["encloses"] &= record(entry)["encloses"]
         for entry in _omitted_mass_checks(n):
             flags["bounded"] &= record(entry)["bounded"]
-        allowance = SCIPY_BINOMIAL_ULP_ALLOWANCE
+        allowance = brr._ulp_allowance(n)
         record(
             {
                 "stage": "summary",
                 "n": n,
                 "allowance": allowance,
                 "worst_ulps": {name: t.worst_ulps for name, t in worst.items()},
-                "material_worst_ulps": {name: t.material_ulps for name, t in worst.items()},
-                "allowance_stands": all(t.worst_ulps < allowance / 2 for t in worst.values()),
+                "worst_relative_eps": {name: t.worst_relative_eps for name, t in worst.items()},
+                "worst_absolute_eps": {name: t.worst_absolute_eps for name, t in worst.items()},
+                "allowance_stands": all(
+                    max(t.worst_relative_eps, t.worst_absolute_eps) < allowance / 2
+                    for t in worst.values()
+                ),
                 "max_primitive_weighted_error_over_eps": weighted,
                 "max_dot_error_over_eps": dot,
                 "every_certificate_dominates": flags["dominates"],
@@ -536,12 +591,12 @@ def _ulp(args: argparse.Namespace) -> None:
 def _tally_from(record: dict[str, Any]) -> _Tally:
     return _Tally(
         values=record["values"],
-        skipped=record["skipped_below_1e-280"],
+        skipped=record["skipped_below_floor"],
         worst_ulps=record["worst_ulps"],
         worst_at=record["worst_at"],
         worst_exact=record["worst_exact"],
-        material_ulps=record["material_worst_ulps"],
-        material_relative=record["material_worst_relative"],
+        worst_relative_eps=record["worst_relative_eps"],
+        worst_absolute_eps=record["worst_absolute_eps"],
     )
 
 
@@ -566,7 +621,9 @@ def _permutation_multiplier(n: int) -> int:
     return multiplier
 
 
-def _recovery_cell(n: int, successes: int | None, memory: str, temp_limit: str) -> dict[str, Any]:
+def _recovery_cell(
+    n: int, successes: int | None, memory: str, temp_limit: str, temp: str
+) -> dict[str, Any]:
     """One arm built in DuckDB, run through the production producer and ``binary_counts``."""
     import duckdb
     import ibis
@@ -590,8 +647,8 @@ def _recovery_cell(n: int, successes: int | None, memory: str, temp_limit: str) 
             "THEN 1 ELSE 0 END AS DOUBLE)"
         )
     connection = ibis.duckdb.connect()
-    temp = Path(tempfile.gettempdir()) / f"rsf0-duckdb-{os.getpid()}"
-    connection.raw_sql(f"PRAGMA temp_directory='{temp}'")
+    temp_path = Path(temp)
+    connection.raw_sql(f"PRAGMA temp_directory='{temp_path}'")
     connection.raw_sql(f"PRAGMA memory_limit='{memory}'")
     connection.raw_sql(f"PRAGMA max_temp_directory_size='{temp_limit}'")
     arm_table = connection.sql(
@@ -604,7 +661,6 @@ def _recovery_cell(n: int, successes: int | None, memory: str, temp_limit: str) 
     cpu = time.process_time() - cpu
     wall = time.perf_counter() - wall
     connection.disconnect()
-    shutil.rmtree(temp, ignore_errors=True)
     arm = ArmStats(
         study_id="e",
         metric="conv",
@@ -650,6 +706,8 @@ def _recovery(args: argparse.Namespace) -> None:
         for name, successes in _recovery_cells(n).items():
             if args.cells and name not in args.cells.split(","):
                 continue
+            # The parent owns the spill directory, so a killed or timed-out child leaves none behind.
+            spill = tempfile.mkdtemp(prefix="rsf0-duckdb-")
             arguments = [
                 "_recovery_cell",
                 "--n",
@@ -658,10 +716,15 @@ def _recovery(args: argparse.Namespace) -> None:
                 args.duckdb_memory,
                 "--duckdb-temp-limit",
                 args.duckdb_temp_limit,
+                "--duckdb-temp",
+                spill,
             ]
             if successes is not None:
                 arguments += ["--successes", str(successes)]
-            result = _run_child(arguments, args.timeout)
+            try:
+                result = _run_child(arguments, args.timeout)
+            finally:
+                shutil.rmtree(spill, ignore_errors=True)
             _emit(out, {"kind": "recovery", "n": n, "cell": name, "successes": successes} | result)
 
 
@@ -693,6 +756,9 @@ def _parser() -> argparse.ArgumentParser:
     recovery = sub.add_parser("_recovery_cell")
     recovery.add_argument("--n", type=int, required=True)
     recovery.add_argument("--successes", type=int)
+    recovery.add_argument(
+        "--duckdb-temp", required=True, help="DuckDB spill directory (parent-owned)"
+    )
     _duckdb_options(recovery)
     return parser
 
@@ -717,7 +783,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     elif args.command == "_latency_cell":
         print(json.dumps(_latency_cell(args.n, args.rate, args.ratio), default=repr))
     elif args.command == "_recovery_cell":
-        cell = _recovery_cell(args.n, args.successes, args.duckdb_memory, args.duckdb_temp_limit)
+        cell = _recovery_cell(
+            args.n, args.successes, args.duckdb_memory, args.duckdb_temp_limit, args.duckdb_temp
+        )
         print(json.dumps(cell, default=repr))
 
 

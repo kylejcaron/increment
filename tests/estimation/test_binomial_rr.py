@@ -21,7 +21,7 @@ import pytest
 from scipy.special import ndtr, ndtri
 from scipy.stats import binom as _binom
 
-from calibration.binomial_oracle import Binomial, ulp_distance
+from calibration.binomial_oracle import Binomial
 from increment.estimation import binomial_rr as brr
 from increment.estimation._binomial_support import chernoff_support, exponent_lower_bound
 from increment.estimation._tails import SCIPY_BINOMIAL_ULP_ALLOWANCE
@@ -465,30 +465,22 @@ class TestExtremeAlphaFiniteUpperBound:
     """
 
     def test_astra_extreme_alpha_repro_returns_finite_upper(self):
-        ci = brr.confidence_interval(1, 1, 0, 1, alpha=1e-14, alternative="two-sided")
+        ci = brr.confidence_interval(1, 1, 0, 1, alpha=1e-10, alternative="two-sided")
         assert ci.upper is not None
         assert math.isfinite(ci.upper)
 
     @pytest.mark.parametrize("alternative", ["two-sided", "less"])
     @pytest.mark.parametrize("alpha", [1e-14, 5e-307])
-    def test_sparse_treatment_search_reaches_a_crossing_far_above_its_subunit_seed(
+    def test_an_alpha_the_certification_margin_exceeds_is_refused_not_degenerate(
         self, alpha, alternative
     ):
-        """With one control success in one control unit the Clopper-Pearson lower end is
-        exactly ``beta / 2`` (Uniform(0, 1)), and at these alphas the certification margin
-        exceeds the target until the restricted nuisance domain ``[a, 1/r]`` empties, so the
-        evaluated crossing is exactly ``1 / a``. The point estimate (0.001) is more than 60
-        doublings below it: the search must still bracket it, then stop within the declared
-        resolution of it. At 5e-307 ``1 / a`` is finite but ``2 / a`` overflows, so the
-        bracket's far end is the largest float."""
-        counts = (1, 1, 1, 1000)
-        a, _ = brr.clopper_pearson(1, 1, brr.nuisance_beta(alpha))
-        crossing = 1.0 / a
-        ci = brr.confidence_interval(*counts, alpha=alpha, alternative=alternative)
-        tau = brr._endpoint_tolerance(brr._count_scale(*counts))
-        assert ci.resolution_reached
-        assert ci.upper is not None
-        assert crossing * (1.0 - 1e-12) <= ci.upper <= crossing * math.exp(tau) * (1.0 + 1e-12)
+        """With one control success in one control unit the Clopper-Pearson lower end is exactly
+        ``beta / 2``, and at these alphas the certification margin exceeds the tail allocation,
+        so the only evaluable crossing is the degenerate ``1 / a``. It is refused, coded, as every
+        margin-dominated alpha is (`TestMarginDominatedAlpha`)."""
+        with pytest.raises(brr.BinomialDataError) as exc_info:
+            brr.confidence_interval(1, 1, 1, 1000, alpha=alpha, alternative=alternative)
+        assert exc_info.value.code == "estimation.binomial.tail_unrepresentable"
 
     def test_a_crossing_beyond_the_float_range_is_a_coded_failure(self):
         """Below this alpha ``1 / a`` exceeds the largest float, so no upper endpoint is
@@ -497,18 +489,19 @@ class TestExtremeAlphaFiniteUpperBound:
             brr.confidence_interval(1, 1, 1, 1000, alpha=1e-307, alternative="two-sided")
         assert exc_info.value.code == "estimation.binomial.tail_unrepresentable"
 
-    @pytest.mark.parametrize("alternative", ["two-sided", "greater", "less"])
-    def test_a_control_rate_the_binomial_pmf_cannot_evaluate_is_a_coded_refusal(self, alternative):
-        """At this alpha the control's Clopper-Pearson lower end (``alpha / 64``) is a denormal
-        for which SciPy's binomial PMF raises ``OverflowError``: the interval refuses with the
-        module's coded failure and names the rate, rather than leaking the library's error."""
+    def test_a_control_rate_the_binomial_pmf_cannot_evaluate_is_a_coded_refusal(self):
+        """A denormal rate (the control's Clopper-Pearson lower end at ``alpha = 4e-307``) makes
+        SciPy's binomial PMF raise ``OverflowError``: the primitive refuses with the module's coded
+        failure and names the rate, rather than leaking the library's error. (Such an alpha never
+        reaches it through `confidence_interval`: the margin refuses it first.)"""
+        rate = 4e-307 / 64.0
+        assert 0.0 < rate < sys.float_info.min
         with pytest.raises(brr.BinomialDataError) as exc_info:
-            brr.confidence_interval(1, 1, 1, 1000, alpha=4e-307, alternative=alternative)
+            brr._fast_binom_pmf(np.array([0]), 1, rate)
         error = exc_info.value
         assert error.code == "estimation.binomial.tail_unrepresentable"
         assert error.context["n"] == 1
-        rate = error.context["p"]
-        assert isinstance(rate, float) and 0.0 < rate < sys.float_info.min
+        assert error.context["p"] == rate
 
     def test_positive_control_upper_search_never_returns_none(self):
         # Within the validated Clopper-Pearson regime (beta = alpha/32
@@ -1786,13 +1779,15 @@ class TestScipyBinomErrorBudget:
     @pytest.mark.parametrize("n", [1_000, 10_000, 100_000, 1_000_000])
     @pytest.mark.parametrize("p", [0.05, 0.3, 0.4999, 1e-4])
     def test_every_primitive_stays_within_the_size_dependent_allowance(self, n, p):
-        """SciPy's pmf, cdf and sf lose up to about a quarter of ``n`` ULPs (a base rounded once
-        and raised to a power of order ``n``); the allowance the margin assumes grows with ``n``
-        and must stay at least twice the worst error measured against the decimal oracle."""
+        """The margin consumes the primitives' relative error in units of ``eps``, so that is what
+        a count on the mass of its sum (within 4.5 standard deviations of the mean, or at most 45)
+        is graded by against the decimal oracle: below half the allowance. Any other count carries
+        a negligible weight, and only its absolute error is graded. (Boost's far branches reach
+        about ``2.5 n eps`` relative at probabilities near ``exp(-0.02 n)``.)"""
         oracle = Binomial(n, p)
         sigma = math.sqrt(n * p * (1.0 - p))
-        counts = {0, 1, n - 1, n}
-        counts |= {min(n, max(0, round(n * p + z * sigma))) for z in range(-12, 13)}
+        counts = {0, 1, n - 1, n} | set(range(min(n, 46)))
+        counts |= {min(n, max(0, round(n * p + z * sigma))) for z in np.arange(-12.0, 12.5, 0.5)}
         ordered = sorted(counts)
         array = np.array(ordered, dtype=np.int64)
         for primitive, exact in (
@@ -1800,12 +1795,32 @@ class TestScipyBinomErrorBudget:
             (brr._fast_binom_cdf, oracle.cdf_many(ordered)),
             (brr._fast_binom_sf, oracle.sf_many(ordered)),
         ):
-            worst = max(
-                ulp_distance(float(value), reference)
-                for value, reference in zip(primitive(array, n, p), exact, strict=True)
-                if reference >= Decimal("1e-280")
-            )
+            tally = measure._graded(ordered, primitive(array, n, p), exact, n, p)
+            worst = max(tally.worst_relative_eps, tally.worst_absolute_eps)
             assert worst < brr._ulp_allowance(n) / 2.0, (primitive.__name__, n, p, worst)
+
+    @pytest.mark.parametrize("n", [100_000, 1_000_000, 10_000_000])
+    def test_small_counts_below_the_mean_stay_within_the_allowance(self, n):
+        """The worst regime of the primitives' error: counts 0..45 under a mean of 3 to 300, where
+        Boost raises ``1 - x`` to a power near ``n`` and the rounding is coherent across counts."""
+        entry = measure._small_count_check(n)
+        for name in ("pmf", "cdf", "sf"):
+            tally = entry[name]
+            worst = max(tally["worst_relative_eps"], tally["worst_absolute_eps"])
+            assert tally["values"] > 0
+            assert worst < brr._ulp_allowance(n) / 2.0, (name, n, worst)
+
+    @pytest.mark.parametrize("p", [0.05123456789, 0.3141592653, 0.4567890123])
+    def test_the_pmf_stays_within_the_allowance_at_a_billion_trials(self, p):
+        n = 1_000_000_000
+        sigma = math.sqrt(n * p * (1.0 - p))
+        ordered = sorted({round(n * p + z * sigma) for z in np.arange(-4.5, 4.75, 0.5)})
+        array = np.array(ordered, dtype=np.int64)
+        tally = measure._graded(
+            ordered, brr._fast_binom_pmf(array, n, p), Binomial(n, p).pmf_many(ordered), n, p
+        )
+        assert tally.values == len(ordered)
+        assert tally.worst_relative_eps < brr._ulp_allowance(n) / 2.0
 
     def test_the_allowance_is_the_floor_for_small_arms_and_grows_with_the_trials(self):
         assert brr._ulp_allowance(1) == SCIPY_BINOMIAL_ULP_ALLOWANCE
@@ -1816,6 +1831,43 @@ class TestScipyBinomErrorBudget:
             brr._eps_margin(7, 4_000_000, 1_000)
             == (4_000_000 + SCIPY_BINOMIAL_ULP_ALLOWANCE + 7) * 2.0**-52
         )
+
+
+class TestMarginDominatedAlpha:
+    """Every certified tail carries the float margin, so once the margin reaches what the tail
+    allocation leaves after the nuisance budget no p-value can be certified below it: the result
+    would be the degenerate set ``[0, 2/a]``. It is refused, coded, instead."""
+
+    @pytest.mark.parametrize("alternative", ["two-sided", "greater", "less"])
+    def test_an_alpha_below_the_margin_is_refused_at_the_ceiling(self, alternative):
+        n = brr.FINITE_SAMPLE_MAX_ARM_SIZE
+        with pytest.raises(brr.BinomialDataError) as exc_info:
+            brr.confidence_interval(3, n, 5, n, alpha=1e-7, alternative=alternative)
+        assert exc_info.value.code == "estimation.binomial.tail_unrepresentable"
+        assert exc_info.value.context["alpha"] == 1e-7
+        assert exc_info.value.context["margin"] == brr._eps_margin(1, n, n)
+
+    def test_the_refusal_is_by_the_margin_not_the_arm_size(self):
+        """The same alpha is certifiable on small arms, whose margin is a million times smaller."""
+        ci = brr.confidence_interval(3, 10_000, 5, 10_000, alpha=1e-7, alternative="two-sided")
+        assert ci.upper is not None and ci.lower <= 5 / 3 <= ci.upper
+
+    def test_an_alpha_the_margin_leaves_room_for_is_admitted_at_the_ceiling(self):
+        n = brr.FINITE_SAMPLE_MAX_ARM_SIZE
+        ci = brr.confidence_interval(3, n, 5, n, alpha=2e-6, alternative="greater")
+        assert ci.lower <= 5 / 3
+
+    def test_a_two_sided_alpha_is_judged_at_half_its_value(self):
+        n = brr.FINITE_SAMPLE_MAX_ARM_SIZE
+        margin = brr._eps_margin(1, n, n)
+        alpha = 2.0 * (margin + brr.nuisance_beta(1.0e-6)) * 0.99
+        with pytest.raises(brr.BinomialDataError):
+            brr.confidence_interval(3, n, 5, n, alpha=alpha, alternative="two-sided")
+
+    def test_a_tiny_alpha_on_a_one_unit_arm_is_refused(self):
+        with pytest.raises(brr.BinomialDataError) as exc_info:
+            brr.confidence_interval(1, 1, 0, 1, alpha=1e-14, alternative="two-sided")
+        assert exc_info.value.code == "estimation.binomial.tail_unrepresentable"
 
 
 @pytest.mark.slow

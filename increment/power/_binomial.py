@@ -59,8 +59,6 @@ from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
-from scipy.special import bdtr as _bdtr
-from scipy.special import bdtrc as _bdtrc
 from scipy.special import ndtr as _ndtr
 from scipy.stats import binom as _binom
 
@@ -773,8 +771,8 @@ class _SurrogateTails:
             floor_ = num // n_t
             ceil_ = -((-num) // n_t)
             with np.errstate(invalid="ignore"):
-                cdf = _bdtr(floor_, n_c, q)
-                sf = _bdtrc(ceil_ - 1, n_c, q)
+                cdf = _rr._fast_binom_cdf(floor_, n_c, q)
+                sf = _rr._fast_binom_sf(ceil_ - 1, n_c, q)
             cdf = np.where(floor_ < 0, 0.0, np.where(floor_ >= n_c, 1.0, cdf))
             sf = np.where(ceil_ <= 0, 1.0, np.where(ceil_ > n_c, 0.0, sf))
             out = np.where(only_t, np.where(plus, cdf, sf), out)
@@ -785,8 +783,8 @@ class _SurrogateTails:
             ceil_ = -((-num) // n_c)
             floor_ = num // n_c
             with np.errstate(invalid="ignore"):
-                sf = _bdtrc(ceil_ - 1, n_t, p)
-                cdf = _bdtr(floor_, n_t, p)
+                sf = _rr._fast_binom_sf(ceil_ - 1, n_t, p)
+                cdf = _rr._fast_binom_cdf(floor_, n_t, p)
             sf = np.where(ceil_ <= 0, 1.0, np.where(ceil_ > n_t, 0.0, sf))
             cdf = np.where(floor_ < 0, 0.0, np.where(floor_ >= n_t, 1.0, cdf))
             out = np.where(only_c, np.where(plus, sf, cdf), out)
@@ -1107,10 +1105,12 @@ def _classify_live(decision, route, live, results) -> None:
         results[index] = reject[bounds[n] : bounds[n + 1]]
 
 
-#: Bound on the gap between the surrogate replay's computed root tails and reachable bound
-#: and their exact-arithmetic values: a few roundings of arguments below 1e3 through
-#: ``ndtr``/``bdtr``/``bdtrc`` (derivative at most one; Cephes ~1e-15 absolute).
-#: ``_root_settled`` infers a count's root exit only where a neighbour's margin exceeds twice this.
+#: Floor of the gap between the surrogate replay's computed root tails and reachable bound and
+#: their exact-arithmetic values: a few roundings of arguments below 1e3 through ``ndtr``
+#: (derivative at most one). The binomial tails of a point-mass arm go through the runtime's own
+#: Boost-backed primitives, whose relative error grows with the arm (`binomial_rr._ulp_allowance`),
+#: so `_root_settled` raises it to the decision's own margin for arms past a few hundred
+#: thousand units. It infers a count's root exit only where a neighbour's margin exceeds twice it.
 _ROOT_ROUNDING = 5e-11
 
 
@@ -1162,7 +1162,7 @@ def _root_settled(
     lo, hi = groups.j0, groups.j1
     rows = np.arange(count)
     plus = groups.kind == 0
-    need = 2.0 * _ROOT_ROUNDING
+    need = 2.0 * max(_ROOT_ROUNDING, _rr._eps_margin(1, decision.n_c, decision.n_t))
 
     def edge(which: int, upper: np.ndarray) -> np.ndarray:
         """Per group, the evaluated count nearest the other end at which
@@ -1218,8 +1218,8 @@ def _window(n: int, p: float) -> _Window:
         return _Window(n, n, 0.0, np.ones(1))
     lo = max(0, int(_binom.ppf(_OUTER_TAIL, n, p)))
     hi = min(n, int(_binom.isf(_OUTER_TAIL, n, p)))
-    below = float(_bdtr(lo - 1, n, p)) if lo > 0 else 0.0
-    above = float(_bdtrc(hi, n, p)) if hi < n else 0.0
+    below = float(_rr._fast_binom_cdf(np.asarray(lo - 1), n, p)) if lo > 0 else 0.0
+    above = float(_rr._fast_binom_sf(np.asarray(hi), n, p)) if hi < n else 0.0
     weights = _rr._fast_binom_pmf(np.arange(lo, hi + 1), n, p)
     return _Window(lo, hi, below + above, weights)
 
@@ -1380,10 +1380,10 @@ class RejectionGeometry:
     def evaluate(self, p_c: float, p_t: float) -> BinomialPower:
         """Rejection probability at control rate ``p_c``, treatment rate ``p_t``."""
         decision = self.decision
+        if self.refused:
+            return BinomialPower(0.0, 0.0, 0.0)
         wc = _window(decision.n_c, p_c)
         wt = _window(decision.n_t, p_t)
-        if self.refused:
-            return BinomialPower(0.0, 0.0, wc.omitted + wt.omitted)
         plus, minus = self.cells(wc.lo, wc.hi, wt.lo, wt.hi)
         return BinomialPower(
             float(wc.weights @ plus @ wt.weights),
@@ -1409,9 +1409,9 @@ class RejectionGeometry:
         """
         decision = self.decision
         n_t = decision.n_t
-        wc = _window(decision.n_c, p_c)
         if self.refused:
             return 0.0
+        wc = _window(decision.n_c, p_c)
         low, high = _window(n_t, p_lo).lo, _window(n_t, p_hi).hi
         rows = np.arange(wc.lo, wc.hi + 1) - self.x0
         # Rows without classified cells across [low, high]: every count may reject.
@@ -1439,14 +1439,16 @@ class RejectionGeometry:
         if "minus" not in decision.kinds:
             s[:] = low - 1
         with np.errstate(invalid="ignore"):
-            tail_up = np.where(t <= 0, 1.0, _bdtrc(t - 1, n_t, p_hi))
-            inner_up = tail_up - (_bdtrc(high, n_t, p_hi) if high < n_t else 0.0)
+            tail_up = np.where(t <= 0, 1.0, _rr._fast_binom_sf(t - 1, n_t, p_hi))
+            high_up = _rr._fast_binom_sf(np.asarray(high), n_t, p_hi) if high < n_t else 0.0
+            inner_up = tail_up - high_up
             rising = _rr._fast_binom_pmf(t - 1, n_t - 1, p_hi) >= _rr._fast_binom_pmf(
                 np.array(high), n_t - 1, p_hi
             )
             up = np.where(t > high, 0.0, np.where(covered & rising, inner_up, tail_up))
-            tail_down = np.where(s >= n_t, 1.0, _bdtr(s, n_t, p_lo))
-            inner_down = tail_down - (_bdtr(low - 1, n_t, p_lo) if low > 0 else 0.0)
+            tail_down = np.where(s >= n_t, 1.0, _rr._fast_binom_cdf(s, n_t, p_lo))
+            low_down = _rr._fast_binom_cdf(np.asarray(low - 1), n_t, p_lo) if low > 0 else 0.0
+            inner_down = tail_down - low_down
             falling = _rr._fast_binom_pmf(s, n_t - 1, p_lo) >= _rr._fast_binom_pmf(
                 np.array(low - 1), n_t - 1, p_lo
             )

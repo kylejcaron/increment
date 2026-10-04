@@ -70,6 +70,15 @@ def _inflate_tail(p: float, n_c: int, n_t: int, term_count: int = 1) -> float:
     return min(1.0, math.nextafter(p + binomial_rr._eps_margin(term_count, n_c, n_t), math.inf))
 
 
+def _attainable_budget(n: int, budget: float) -> float:
+    """*budget*, or four times the float margin of an ``n``-trial tail when that margin reaches
+    it. The margin grows with ``n`` (`binomial_rr._ulp_allowance`) and is charged to every
+    omitted mass, so a window can never certify a smaller one; asking for it would expand every
+    window to the full support."""
+    margin = binomial_rr._eps_margin(2, n, n)
+    return budget if margin < budget else 4.0 * margin
+
+
 def _interval_mass(lo: int, hi: int, n: int, p: float) -> float:
     """Central estimate; callers separately charge the evaluation allowance."""
     if lo > hi:
@@ -235,7 +244,9 @@ def resolve_plus_tail(
     else:
         T_accept = -1
 
-    xt_lo, xt_hi, _xt_omitted = exact_outer_window(n_t, p_t, xt_tail_budget)
+    xt_lo, xt_hi, _xt_omitted = exact_outer_window(
+        n_t, p_t, _attainable_budget(n_t, xt_tail_budget)
+    )
     band_lo = max(0, T_accept + 1, xt_lo)
     band_hi = min(n_t, xt_hi)
     band_points = tuple(range(band_lo, band_hi + 1)) if band_lo <= band_hi else ()
@@ -264,7 +275,9 @@ def resolve_minus_tail(
     a, b_cp = _clopper_pearson(x_c_obs, n_c, beta)
     upper_q = b_cp if r <= 0.0 else min(b_cp, 1.0 / r)
     feasible = upper_q >= a
-    xt_lo, xt_hi, _xt_omitted = exact_outer_window(n_t, p_t, xt_tail_budget)
+    xt_lo, xt_hi, _xt_omitted = exact_outer_window(
+        n_t, p_t, _attainable_budget(n_t, xt_tail_budget)
+    )
     if not feasible:
         # `binomial_rr.p_minus` returns exactly `beta` for every x_t here
         # (empty restricted-nuisance domain, see its own early-return branch).
@@ -590,7 +603,7 @@ def calibrate_cell(
     beta = nuisance_beta(alpha)
     n_c, n_t, p_c, p_t = cell.n_c, cell.n_t, cell.p_c, cell.p_t
     true_rr = cell.risk_ratio
-    lo_c, hi_c, omitted_c = exact_outer_window(n_c, p_c, _XC_TAIL_BUDGET)
+    lo_c, hi_c, omitted_c = exact_outer_window(n_c, p_c, _attainable_budget(n_c, _XC_TAIL_BUDGET))
     accumulation_error = binomial_rr._eps_margin(hi_c - lo_c + 1, n_c, n_t)
 
     acc = dict.fromkeys(METRIC_NAMES, 0.0)

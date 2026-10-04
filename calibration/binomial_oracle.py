@@ -26,6 +26,11 @@ from decimal import Decimal
 from fractions import Fraction
 from functools import cache, lru_cache
 
+#: Largest gap between two requested counts that one recurrence walk crosses: a wider gap is
+#: anchored afresh (``O(sqrt n)`` terms) instead of walked, so sparse counts over a billion trials
+#: never traverse the support.
+_WALK_GAP = 5000
+
 #: Working precision in decimal digits.
 PRECISION = 60
 
@@ -286,27 +291,37 @@ class Binomial:
         """Each count anchored on its own through ``ln n!``, with no recurrence between them."""
         return [self.pmf(int(k)) for k in counts]
 
+    def _clusters(self, counts: Sequence[int]) -> list[list[int]]:
+        """The requested counts inside the support, sorted, split wherever two neighbours are more
+        than ``_WALK_GAP`` apart: a walk covers a cluster, so the cost is the span of the
+        clusters, never that of the support."""
+        inside = sorted({int(k) for k in counts if 0 <= int(k) < self.n})
+        clusters: list[list[int]] = []
+        for k in inside:
+            if clusters and k - clusters[-1][-1] <= _WALK_GAP:
+                clusters[-1].append(k)
+            else:
+                clusters.append([k])
+        return clusters
+
     def cdf_many(self, counts: Sequence[int]) -> list[Decimal]:
-        """``P(X <= k)`` for every count in *counts*, in one upward walk."""
-        wanted = sorted({int(k) for k in counts})
+        """``P(X <= k)`` for every count in *counts*: one upward walk per cluster of nearby
+        counts, anchored at the cluster's first count."""
         values: dict[int, Decimal] = {}
-        inside = [k for k in wanted if 0 <= k < self.n]
-        for k in wanted:
-            if k < 0:
-                values[k] = Decimal(0)
-            elif k >= self.n:
-                values[k] = Decimal(1)
-        if inside and not self._interior:
-            for k in inside:
-                values[k] = self.cdf(k)
-        elif inside:
+        for k in {int(k) for k in counts}:
+            if k < 0 or k >= self.n:
+                values[k] = Decimal(int(k >= self.n))
+        for cluster in self._clusters(counts):
+            if not self._interior or len(cluster) == 1:
+                for k in cluster:
+                    values[k] = self.cdf(k)
+                continue
             with _working(self.prec):
-                start, stop = inside[0], inside[-1]
-                want = set(inside)
-                running = self.cdf(start)
-                term = self.pmf(start)
-                values[start] = running
-                for j in range(start, stop):
+                want = set(cluster)
+                running = self.cdf(cluster[0])
+                term = self.pmf(cluster[0])
+                values[cluster[0]] = running
+                for j in range(cluster[0], cluster[-1]):
                     term *= self._up(j)
                     running += term
                     if j + 1 in want:
@@ -314,26 +329,23 @@ class Binomial:
         return [values[int(k)] for k in counts]
 
     def sf_many(self, counts: Sequence[int]) -> list[Decimal]:
-        """``P(X > k)`` for every count in *counts*, in one downward walk."""
-        wanted = sorted({int(k) for k in counts})
+        """``P(X > k)`` for every count in *counts*: one downward walk per cluster of nearby
+        counts, anchored at the cluster's last count."""
         values: dict[int, Decimal] = {}
-        inside = [k for k in wanted if 0 <= k < self.n]
-        for k in wanted:
-            if k < 0:
-                values[k] = Decimal(1)
-            elif k >= self.n:
-                values[k] = Decimal(0)
-        if inside and not self._interior:
-            for k in inside:
-                values[k] = self.sf(k)
-        elif inside:
+        for k in {int(k) for k in counts}:
+            if k < 0 or k >= self.n:
+                values[k] = Decimal(int(k < 0))
+        for cluster in self._clusters(counts):
+            if not self._interior or len(cluster) == 1:
+                for k in cluster:
+                    values[k] = self.sf(k)
+                continue
             with _working(self.prec):
-                start, stop = inside[-1], inside[0]
-                want = set(inside)
-                running = self.sf(start)
-                term = self.pmf(start)
-                values[start] = running
-                for j in range(start, stop, -1):
+                want = set(cluster)
+                running = self.sf(cluster[-1])
+                term = self.pmf(cluster[-1])
+                values[cluster[-1]] = running
+                for j in range(cluster[-1], cluster[0], -1):
                     # sf(j - 1) = sf(j) + pmf(j)
                     running += term
                     term *= self._down(j)

@@ -226,14 +226,24 @@ def validate_alternative(alternative: str) -> Alternative:
 # 1. Higham's bound for summing `m` nonnegative terms in [0, 1]: the absolute error is about
 #    `m * eps`, since the true sum is a sub-probability. This covers the `np.dot` step in
 #    `_tail_plus`/`_tail_minus`.
-# 2. SciPy's per-call `binom.pmf/cdf/sf` error, which is not assumed negligible. Boost evaluates
-#    them through powers such as `(x c / a)**a`, so the rounding of a base is amplified by its
-#    exponent: the relative error reaches `n * 2**-53`, at most `n` ULPs, and grows linearly with
-#    the trials `n`. Against a `decimal` oracle (`calibration/binomial_oracle.py`, measured by
-#    `scripts/measure_binomial_ceiling.py ulp`) the worst error of all three functions was 0.23 to
-#    0.26 `n` ULPs from 4e6 to 1e8 trials, and under 500 ULPs at `n <= 1000`
-#    (`TestScipyBinomErrorBudget`). `_ulp_allowance` is `n` ULPs, never below
-#    `SCIPY_BINOMIAL_ULP_ALLOWANCE`: about 4x the measured worst and twice the derived bound.
+# 2. SciPy's per-call `binom.pmf/cdf/sf` error, which is not assumed negligible. It is a relative
+#    error `r` of the value, and two mechanisms of the Boost incomplete-beta code set its size:
+#    (a) near the mean, the logarithm of the power terms is built from the numerators
+#    `x*b - y*a` and `y*a - x*b`; a build that fuses each into one multiply-subtract rounds
+#    different products, so the two errors no longer cancel and `|r| <= (y*a + x*b) * 2**-53`, about
+#    `n q (1 - q)` units of `eps / 2`, at most `n * eps / 4` (zero at a dyadic rate; an unfused
+#    build leaves about 1e-12 at `n = 1e8`). (b) for a count below 40 under the mean at a rate
+#    below one half, the finite sum starts from `fl(1 - x)**(n - s)`: the rounding of `1 - x`
+#    (at most `2**-54`) raised to a power near `n`, so `|r| <= n * 2**-54 = n * eps / 4`, the same
+#    sign across every count of one rate. Terms in the far branches can err by up to `2.5 n * eps`,
+#    but carry probability at most `2 exp(-0.02 n)`, so they move a sum by at most about 100 `eps`
+#    at any `n`, which the `SCIPY_BINOMIAL_ULP_ALLOWANCE` floor covers.
+#    `_ulp_allowance` is `n` ULPs, never below that floor: 4x the cap on `r` in `eps` units
+#    (2x in ULPs of the value). Against a `decimal` oracle (`calibration/binomial_oracle.py`;
+#    `scripts/measure_binomial_ceiling.py ulp`; `TestScipyBinomErrorBudget`) the worst measured
+#    error was `0.5 n` ULPs, `0.25 n * eps` relative, from `n = 1e5` to `1e9`. That was measured
+#    with fused multiply-subtract (arm64); an x86 build has not been run. A different SciPy or
+#    Boost build can change (a), so the test is what keeps the allowance honest.
 #    Weighted by a pmf that sums to at most one, the control pmf over `n_c` trials and the
 #    treatment tail over `n_t` trials together move the sum by at most
 #    `(_ulp_allowance(n_c) + _ulp_allowance(n_t)) * eps`.
@@ -1356,6 +1366,14 @@ def confidence_interval(
             max_arm_size=FINITE_SAMPLE_MAX_ARM_SIZE,
         )
     validated_alternative = validate_alternative(alternative)
+    # Every certified tail carries the float margin, so no p-value can be certified below
+    # `target` once the margin reaches what `target` leaves after the nuisance budget.
+    target = alpha / 2.0 if validated_alternative == "two-sided" else alpha
+    margin = _eps_margin(1, n_c, n_t)
+    if target - nuisance_beta(alpha) <= margin:
+        _raise(
+            "estimation.binomial.tail_unrepresentable", alpha=alpha, margin=margin, n_c=n_c, n_t=n_t
+        )
     arguments = (x_c, n_c, x_t, n_t, alpha, validated_alternative, null_r, NUISANCE_STOP)
     try:
         hash(arguments)
