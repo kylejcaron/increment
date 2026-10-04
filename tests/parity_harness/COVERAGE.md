@@ -3,7 +3,7 @@
 Counts and trackers only. Every per-ingress outcome, reason and authority lives in
 `tests/parity_harness/matrix.py` (`RULES`, `_SPECS`); `tests/test_parity_matrix.py` runs every cell.
 
-Last verified at commit 0da41f2.
+Last verified at commit 2a8682d.
 
 ## Axes
 
@@ -23,26 +23,28 @@ A cell's status is its most significant per-ingress verdict (`Disposition.status
 
 | Status | Cells |
 |---|---|
-| supported | 450 |
+| supported | 522 |
 | source_limited | 512 |
-| construction_limited | 1,386 |
+| construction_limited | 1,310 |
 | not_expressible | 960 |
-| unfinished | 276 |
+| unfinished | 280 |
 | unsound | 0 |
 | total | 3,584 |
 
 ## Ingress verdicts per status
 
+Verdicts are per leg: a day-axis view has a value leg and a lift leg that refuse independently, so 5,376 legs carry 32,256 verdicts.
+
 | Ingress | supported | source_limited | construction_limited | not_expressible | unfinished | unsound |
 |---|---|---|---|---|---|---|
-| from_definitions | 420 | 0 | 436 | 2,648 | 80 | 0 |
-| from_unit_day_artifact | 420 | 0 | 432 | 2,648 | 84 | 0 |
-| from_unit_summary | 102 | 984 | 1,062 | 1,216 | 220 | 0 |
-| from_unit_panel | 276 | 628 | 1,416 | 1,088 | 176 | 0 |
-| from_switchback_panel | 4 | 1,476 | 984 | 960 | 160 | 0 |
-| from_moments | 112 | 950 | 1,210 | 1,152 | 160 | 0 |
+| from_definitions | 676 | 0 | 496 | 3,976 | 228 | 0 |
+| from_unit_day_artifact | 676 | 0 | 492 | 3,976 | 232 | 0 |
+| from_unit_summary | 102 | 1,536 | 1,538 | 1,824 | 376 | 0 |
+| from_unit_panel | 484 | 920 | 1,936 | 1,632 | 404 | 0 |
+| from_switchback_panel | 4 | 2,216 | 1,428 | 1,440 | 288 | 0 |
+| from_moments | 128 | 1,478 | 1,750 | 1,728 | 292 | 0 |
 
-Cells where at least one ingress runs and another does not (each non-runner carries a status, reason and authority): 454.
+Cells where, in at least one leg, an ingress runs and another does not (each non-runner carries a status, reason and authority): 526.
 
 ## Unfinished cells and trackers
 
@@ -50,19 +52,21 @@ Each tracker is a kata issue linked to t8tc; each cell below carries the code no
 
 | Tracker | Cells | Code now raised, per ingress | What is unfinished |
 |---|---|---|---|
-| `0f6d` | 64 | definitions: breakout.quantile; unit_day_artifact: query.builders.asof_group_summary_metric_type_not_implemented; unit_panel: frame.asof.quantile_unsupported | the same quantile x day-axis hazard raises the breakout code here, not the catalog's readout.metric.quantile_grain |
-| `1cr4` | 48 | unit_summary: sequential.source.invalid | an unbounded-window sequential request raises a source code here while the definitions and panel routes raise sequential.route.unsupported |
-| `66mg` | 32 | unit_day_artifact: artifact.extension.invalid | publishing the CUPED extension for a quantile raises an artifact code instead of the arm-compatibility code the other routes raise |
-| `6z2f` | 160 | moments: frame.metric.window_days_supported; switchback_panel: frame.metric.window_days_supported; unit_day_artifact: frame.metric.window_days_supported; unit_panel: frame.metric.window_days_supported; unit_summary: frame.metric.window_days_supported | a windowed quantile is declared by the warehouse model and read from per-unit totals, yet refused on the frame path with no stated statistical reason |
+| `0f6d` | 64 | definitions: breakout.quantile; unit_day_artifact: query.builders.asof_group_summary_metric_type_not_implemented, readout.metric.quantile_grain; unit_panel: frame.asof.quantile_unsupported, readout.metric.quantile_grain | the same quantile x day-axis hazard raises the breakout code here, not the catalog's readout.metric.quantile_grain |
+| `1cr4` | 48 | definitions: sequential.route.unsupported; unit_day_artifact: sequential.route.unsupported; unit_panel: sequential.route.unsupported; unit_summary: sequential.source.invalid | every observation window must be bounded by the common registered reveal window |
+| `66mg` | 36 | definitions: arm.metric.quantile_cluster, arm.metric.quantile_cuped; moments: frame.metric.cuped_does_apply, source.frame.cluster_capability; switchback_panel: frame.metric.cuped_does_apply; unit_day_artifact: arm.metric.quantile_cluster, artifact.extension.invalid; unit_panel: frame.metric.cuped_does_apply; unit_summary: frame.metric.cuped_does_apply, source.frame.cluster_capability | a quantile has no mean to adjust |
+| `6z2f` | 160 | moments: frame.metric.window_days_supported; switchback_panel: frame.metric.window_days_supported; unit_day_artifact: frame.metric.window_days_supported; unit_panel: frame.metric.window_days_supported; unit_summary: frame.metric.window_days_supported | the artifact route reads a windowed quantile through the frame declaration and refuses it, while the definitions route that published it runs |
 | `r3bg` | 10 | definitions: readout.metric.quantile_alternative; unit_day_artifact: readout.metric.quantile_alternative; unit_panel: readout.metric.quantile_alternative; unit_summary: readout.metric.quantile_alternative | a one-sided alternative (a non-inferiority margin) is not supported for quantile metrics yet |
 | `t8ae` | 10 | definitions: source.native.operation; unit_summary: source.frame.quantile_no_moments | an adjusted quantile reads per-unit rows on the panel and artifact routes, but the native source refuses the moments operation instead |
+
+A hazard that several routes refuse with different codes is unfinished on every route that raises it (`matrix._reconcile_hazards`); `check_disposition` rejects a diverging hazard with no tracker. Tracker `66mg` covers both quantile x CUPED (`arm.metric.quantile_cuped`, `frame.metric.cuped_does_apply`, `artifact.extension.invalid`) and quantile x cluster (`arm.metric.quantile_cluster`, `source.frame.cluster_capability`); `0f6d` and `1cr4` cover the quantile day-axis and unbounded-sequential hazards the same way.
 
 ## Tiers and cost
 
 | Tier | Cells | Wall time (12 cores, `-n auto`) |
 |---|---|---|
 | fast | 2,725 | about 20 s: no warehouse route reads data |
-| slow | 860 | about 75 s: a warehouse route publishes or reads a request |
+| slow | 860 | about 90 s: a warehouse route publishes or reads a request |
 
 A warehouse route is memoised per process on its exact inputs (the digest of its Definitions payload, view, option and artifact extensions). Cells differing only in `missing` error versus zero declare the same payload, share an `xdist_group` and read once. This reuses identical work; it collapses no cell.
 
