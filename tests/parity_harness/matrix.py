@@ -669,7 +669,8 @@ _SPECS: dict[str, Spec] = {
         "source_limited",
         "a switchback frame identifies a Randomized design only: restricted, observational and "
         "encouragement designs are unsupported",
-        f"{_CAPABILITIES}: observational rows (refused, SOURCE -- no design=)",
+        f"{_CAPABILITIES}: observational rows (not expressible as `design=`; "
+        "refused as `identification=`, SOURCE)",
         "declaration",
     ),
     "REF:source.frame.switchback.metric#type": Spec(

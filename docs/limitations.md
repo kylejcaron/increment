@@ -279,8 +279,9 @@ inversion; see `increment/estimation/binomial_rr.py`), not the log-scale delta m
 handles every event count directly, with no `log_se >= 0.5` admission rule and no
 continuity correction:
 
-An Encouragement design's ITT on a conversion/retention metric keeps
-this route: the design's uptake (first-stage compliance) moments are a
+An Encouragement design's ITT on a conversion metric keeps
+this route (a retention metric under an Encouragement design is refused with
+`readout.encouragement.retention`): the design's uptake (first-stage compliance) moments are a
 different random variable over the same units and do not change the
 ITT's own sufficient statistics, so they are stripped before this route
 reads the arm rather than disqualifying it.
