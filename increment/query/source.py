@@ -23,7 +23,7 @@ import ibis.expr.types as ir
 import narwhals as nw
 
 from increment._analysis_config import effective_methods
-from increment._frame_validation import _reject_windowed_specs
+from increment._frame_validation import _reject_windowed_specs, refuse_quantile_moments
 from increment._metric_specs import MetricsArg, MetricSpec, coerce_metrics, synthesise_metric
 from increment.errors import (
     CapabilityError,
@@ -918,6 +918,14 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             )
         return trusted
 
+    def _refuse_observational_quantile(self, metric: Metric) -> None:
+        """An observational design has no quantile estimator on any ingress path."""
+        design = self.context.design
+        if getattr(metric, "type", None) == "quantile" and (
+            getattr(design, "mechanism", None) == "observational"
+        ):
+            refuse_quantile_moments(metric, design)
+
     def unit_frame(
         self,
         metric: Metric,
@@ -925,6 +933,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         covariates: Sequence[str] = (),
         outcome_stage: Literal["transformed", "raw"] = "transformed",
     ) -> Any:
+        self._refuse_observational_quantile(metric)
         cluster = self.context.cluster
         if "cluster_id" in covariates and cluster != "cluster_id":
             from increment.query.native_source import _NATIVE_COVARIATE_RESERVED
@@ -995,6 +1004,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         completed_windows_only: bool = False,
         include_covariate: bool = False,
     ) -> list[dict[str, Any]]:
+        self._refuse_observational_quantile(metric)
         self._preflight_cluster_grain(grain, operation="moments")
         if grain not in self.capabilities:
             refuse(

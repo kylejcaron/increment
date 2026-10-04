@@ -489,6 +489,78 @@ def test_observational_artifact_publish_and_reopen_restores_design(con, tmp_path
     assert reopened_design.control_group == "control"
 
 
+def test_observational_quantile_refuses_on_definitions_and_reopened_artifact(con, tmp_path):
+    """A quantile metric has no observational estimator: a reopened artifact refuses it by
+    the frame sources' code instead of reporting an IPTW mean effect under the quantile name;
+    the definitions source refuses it as well."""
+    from increment.errors import CapabilityError
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+
+    _seed(con)
+    defs_dict = {
+        "dialect": "duckdb",
+        "fact_sources": [
+            {
+                "name": "events",
+                "sql": "select *, 30.0 as tenure from native_encouragement_events",
+                "timestamp_column": "ts",
+                "entities": ["user_id"],
+                "facts": [
+                    {"name": "exposed", "column": None},
+                    {"name": "purchase", "column": "revenue"},
+                ],
+                "properties": [
+                    {"name": "tenure", "column": "tenure", "dtype": "float", "as_of": "static"}
+                ],
+            }
+        ],
+        "exposures": [{"name": "e", "fact": "exposed"}],
+        "metrics": [
+            {
+                "type": "quantile",
+                "name": "revenue",
+                "entity": "user_id",
+                "fact": "purchase",
+                "aggregation": "sum",
+                "quantile": 0.5,
+            }
+        ],
+        "experiments": [
+            {
+                "name": "native_observational_quantile_exp",
+                "exposure": "e",
+                "unit": "user_id",
+                "start": "2025-01-01",
+                "end": "2025-01-31",
+                "control_group": "control",
+                "plan": {"secondaries": ["revenue"]},
+                "design": {
+                    "mechanism": "observational",
+                    "covariates": [{"property": "tenure", "source": "events"}],
+                },
+            }
+        ],
+    }
+    defs = Definitions.model_validate(defs_dict)
+    experiment = defs.experiment("native_observational_quantile_exp")
+    assert experiment is not None
+    defs_path = _write_defs_yaml(defs_dict, tmp_path)
+    native = Analysis.from_definitions(
+        "native_observational_quantile_exp", defs_path, con, store="none"
+    )
+    with pytest.raises(CapabilityError):
+        lift_rows(native.run())
+    store = WarehouseArtifactStore(con, schema_name="artifacts")
+    ref = native.publish_unit_day_artifact(store)
+    reopened = Analysis.from_unit_day_artifact(
+        store, ref, expected_context=artifact_context(defs, experiment, "error")
+    )
+    with pytest.raises(CapabilityError) as exc_info:
+        lift_rows(reopened.run())
+    assert exc_info.value.code == "source.frame.quantile_no_moments"
+
+
 def test_compile_unit_day_artifact_context_refuses_conflicting_encouragement_uptake():
     """A caller-supplied encouragement_uptake= that disagrees with the
     experiment's own declared design is a genuine contradiction, refused

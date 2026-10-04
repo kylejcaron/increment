@@ -20,7 +20,7 @@ import datetime as dt
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, NoReturn, cast
+from typing import Any, Literal, cast
 
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
@@ -75,6 +75,7 @@ from increment._frame_validation import (  # noqa: F401
     _validate_frame_boundary,
     _validate_single_group_per_unit,
     _validate_uptake_binary,
+    refuse_quantile_moments,
 )
 from increment._metric_specs import (
     MetricsArg,
@@ -147,26 +148,6 @@ _FRAME_GRAIN = RefusalSpec(
         )
     ),
 )
-_FRAME_QUANTILE_NO_MOMENTS = RefusalSpec(
-    "source.frame.quantile_no_moments",
-    CapabilityError,
-    template="quantile metric {metric!r} has no moment representation; it is served through unit_frame. {route}",
-)
-
-
-def _refuse_quantile_moments(metric: Metric, design: object) -> NoReturn:
-    refuse(
-        _FRAME_QUANTILE_NO_MOMENTS,
-        metric=metric.name,
-        route=(
-            "an observational design has no quantile estimator; quantile metrics "
-            "run under a randomized design"
-            if getattr(design, "mechanism", None) == "observational"
-            else "use readouts.run, which routes quantiles automatically"
-        ),
-    )
-
-
 _FRAME_BREAKOUTS_UNSUPPORTED = RefusalSpec(
     "source.frame.breakouts_unsupported",
     CapabilityError,
@@ -454,7 +435,7 @@ class FrameTotalsSource(SequentialSourceMixin):
         if grain != "total":
             refuse(_FRAME_GRAIN, grain=grain, offered=self.capabilities)
         if getattr(metric, "type", None) == "quantile":
-            _refuse_quantile_moments(metric, self.design)
+            refuse_quantile_moments(metric, self.design)
         if by:
             refuse(
                 _FRAME_BREAKOUTS_UNSUPPORTED,
@@ -1197,7 +1178,7 @@ class FramePanelSource(SequentialSourceMixin):
             and isinstance(metric, QuantileMetric)
             and getattr(self.design, "mechanism", None) == "observational"
         ):
-            _refuse_quantile_moments(metric, self.design)
+            refuse_quantile_moments(metric, self.design)
         if (
             grain == "asof"
             and completed_windows_only
