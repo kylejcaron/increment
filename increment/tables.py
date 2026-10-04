@@ -64,24 +64,12 @@ _raise = raiser(_REFUSALS)
 
 
 def _binomial_stat_sig(bset: BinomialConfidenceSet, *, null_lift: float, alternative: str) -> bool:
-    """``BreakoutEstimate``/``DailyLiftEstimate`` twin of
-    ``LiftEstimate._binomial_tails``/``stat_sig()``'s binomial branch --
-    those two models carry a persisted ``binomial_set`` but no
-    ``stat_sig()`` method of their own, so this recomputes the same
-    shifted-null Berger-Boos tail test directly from the public
-    ``binomial_rr`` tail functions and the set's own persisted counts/
-    nuisance budget. Exact even for a set-only row with no finite point
-    (``x_c == 0``): the tail test never reads the point estimate."""
-    from increment.estimation.binomial_rr import p_minus, p_plus
-
-    r0 = 1.0 + null_lift
-    pp = p_plus(r0, bset.x_c, bset.n_c, bset.x_t, bset.n_t, bset.nuisance_beta)
-    pm = p_minus(r0, bset.x_c, bset.n_c, bset.x_t, bset.n_t, bset.nuisance_beta)
-    if alternative == "greater":
-        return pp < bset.decision_alpha
-    if alternative == "less":
-        return pm < bset.decision_alpha
-    return min(pp, pm) < bset.decision_alpha / 2.0
+    """``BreakoutEstimate``/``DailyLiftEstimate`` twin of ``LiftEstimate.stat_sig()``'s
+    binomial branch -- those two models carry a persisted ``binomial_set`` but no
+    ``stat_sig()`` method of their own, so this recomputes the same shifted-null Berger-Boos
+    p-value from the set's own persisted counts/nuisance budget. Exact even for a set-only row
+    with no finite point (``x_c == 0``): the tail test never reads the point estimate."""
+    return bset.null_p_value(null_lift, alternative) < bset.decision_alpha
 
 
 def _stat_sig(est: LiftEstimate | BreakoutEstimate | DailyLiftEstimate) -> bool:

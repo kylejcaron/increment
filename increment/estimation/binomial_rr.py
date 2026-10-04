@@ -84,12 +84,14 @@ an anytime algorithm: the returned value is a valid conservative upper
 bound on the supremum at every iteration, tightening (never invalidating)
 with more refinement. The search stops once its gap to ``tail_lower_enclosure`` of the best
 evaluated point (a value no larger than the exact tail there) is at most
-``NUISANCE_STOP.gap_fraction`` of the p-value it reports, or after ``NUISANCE_STOP.max_iter``
-splits. An endpoint-search probe, which only compares its p-value with the tail level, also
-stops once the certified upper bound or the lower witness settles that comparison; the p-value
-at the tested null never does. Running out of splits is not an error: the bound stays valid and
-merely looser, and `confidence_interval` discloses a search it ended while a comparison was
-still open.
+``NUISANCE_STOP.gap_fraction`` of the larger of the p-value it reports and the tail level the
+caller compares it with, plus the certification noise no search narrows, or after
+``NUISANCE_STOP.max_iter`` splits. A p-value far below its tail level is therefore bounded to
+an absolute precision near that level instead of refined to a relative one. An endpoint-search
+probe, which only compares its p-value with the tail level, also stops once the certified upper
+bound or the lower witness settles that comparison; the p-value at the tested null never does.
+Running out of splits is not an error: the bound stays valid and merely looser, and
+`confidence_interval` discloses a search it ended before its gap target.
 
 Every intermediate value combined into that certificate (a raw
 ``scipy.stats`` PMF/CDF/SF evaluation, their dot-product summation, and the
@@ -128,12 +130,16 @@ per-evaluation cost ``O(sqrt(n_c*q*(1-q)))`` instead of ``O(n_c)``. See
 
 from __future__ import annotations
 
+import decimal
 import heapq
 import math
 import re
 import sys
+import threading
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
+from decimal import Decimal
 from functools import lru_cache
 from typing import Literal, NamedTuple, cast
 
@@ -378,7 +384,56 @@ def _read_only(array: np.ndarray) -> np.ndarray:
     return array
 
 
-@lru_cache(maxsize=32)
+class _ArrayCache:
+    """Least-recently-used results of an array-valued function, bounded by their total size.
+
+    A nuisance search revisits the control PMF and treatment tail of leaves it split hundreds
+    of splits earlier, and an array's length grows with the arm, so the bound is bytes: a
+    count of entries would hold either too few small arrays or too many large ones. Reuse
+    returns the identical array a rebuild would."""
+
+    def __init__(self, function: Callable[..., np.ndarray], max_bytes: int) -> None:
+        self._function = function
+        self.__wrapped__ = function
+        self._max_bytes = max_bytes
+        self._entries: OrderedDict[tuple[object, ...], np.ndarray] = OrderedDict()
+        self._bytes = 0
+        self._lock = threading.Lock()
+
+    def __call__(self, *key: object) -> np.ndarray:
+        with self._lock:
+            hit = self._entries.get(key)
+            if hit is not None:
+                self._entries.move_to_end(key)
+                return hit
+        value = self._function(*key)
+        with self._lock:
+            if key not in self._entries:
+                self._entries[key] = value
+                self._bytes += value.nbytes
+                while self._bytes > self._max_bytes and len(self._entries) > 1:
+                    _, evicted = self._entries.popitem(last=False)
+                    self._bytes -= evicted.nbytes
+        return value
+
+    def cache_clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._bytes = 0
+
+
+#: Bytes each array cache may hold. A search at a decision runs a few hundred splits and
+#: revisits vectors of leaves split long before: at 1M per arm (40 kB vectors) 16 MiB reaches
+#: nearly the evaluation count 48 MiB does, and 24 MiB sits just past it. Entry counts of 32
+#: and 64 missed most revisits once searches ran past 60 splits.
+_ARRAY_CACHE_BYTES = 24 * 2**20
+
+
+def _array_cache(function: Callable[..., np.ndarray]) -> _ArrayCache:
+    return _ArrayCache(function, _ARRAY_CACHE_BYTES)
+
+
+@_array_cache
 def _control_pmf(n_c: int, q: float, i_lo: int, i_hi: int) -> np.ndarray:
     return _read_only(_fast_binom_pmf(np.arange(i_lo, i_hi + 1), n_c, q))
 
@@ -398,8 +453,8 @@ def _minus_threshold(n_c: int, n_t: int, k: int, i_lo: int, i_hi: int) -> np.nda
 # A search asks for each treatment vector (a function of `p` alone; the control PMF carries `q`)
 # repeatedly: `eval_at(v)` and the corner bound of every interval ending at `v` share `p(v)`.
 # Caching returns the identical array a rebuild would, so the dot product and margins are
-# untouched. 64 entries capture every reuse in simulated LRU traces of the 100k/1M-per-arm searches.
-@lru_cache(maxsize=64)
+# untouched.
+@_array_cache
 def _treatment_tail(
     kind: Literal["plus", "minus"], n_c: int, n_t: int, k: int, i_lo: int, i_hi: int, p: float
 ) -> np.ndarray:
@@ -433,15 +488,23 @@ def _tail_minus(
     return min(1.0, raw + _eps_margin(i_hi - i_lo + 1))
 
 
+def _certification_noise(window: tuple[int, int, float]) -> float:
+    """How far a `_tail_plus`/`_tail_minus` value can sit above the exact tail it bounds: the
+    window's omitted control mass, one float margin it adds, and the margin of the computed sum
+    itself. No amount of searching narrows this, so a stop target below it is unreachable."""
+    i_lo, i_hi, omitted = window
+    return omitted + 2.0 * _eps_margin(i_hi - i_lo + 1)
+
+
 def tail_lower_enclosure(value: float, window: tuple[int, int, float]) -> float:
     """A lower bound on the exact tail whose `_tail_plus`/`_tail_minus` value is *value*.
 
     That value adds the window's omitted control mass and one float margin to a computed sum
     that is itself within one margin of the windowed sum, so removing the mass and two margins
-    leaves at most the exact tail. The value is a certified upper bound; it is not a lower one.
+    (`_certification_noise`) leaves at most the exact tail. The value is a certified upper
+    bound; it is not a lower one.
     """
-    i_lo, i_hi, omitted = window
-    return max(0.0, value - (omitted + 2.0 * _eps_margin(i_hi - i_lo + 1)))
+    return max(0.0, value - _certification_noise(window))
 
 
 def _p_of_plus(q: float, r: float) -> float:
@@ -475,17 +538,18 @@ def _i_bound(u: float, v: float, r: float, n_c: int, n_t: int) -> float:
 @dataclass(frozen=True, slots=True)
 class _StopRule:
     """End of a nuisance supremum search: the gap between its certified upper bound and the
-    lower enclosure of its best evaluated point is at most *gap_fraction* of the p-value
-    ``beta + witness_lower``, or *max_iter* splits have run."""
+    lower enclosure of its best evaluated point is at most *gap_fraction* of the larger of the
+    p-value ``beta + witness_lower`` and the tail level it is read against, plus the
+    certification noise no search narrows, or *max_iter* splits have run."""
 
     gap_fraction: float
     max_iter: int
 
 
-#: Measured over 454 searches (the probes of 15 intervals, sparse to large and near alpha): a
-#: gap of 2**-14 of the p-value (1.5e-6 at a 0.025 tail) is reached within 1024 splits by 98.5%
-#: and within 2048 by 99.6%; the two others sit below p = 4e-4, and every comparison with the
-#: tail level is settled within 174 splits.
+#: Chosen from 454 searches (the probes of 15 intervals) run to a gap relative to the p-value
+#: alone: 2**-14 was reached within 1024 splits by 98.5% and within 2048 by 99.6%, and every
+#: comparison with the tail level settled within 174. Flooring the scale at the tail level and
+#: allowing for the certification noise only loosen that target.
 NUISANCE_STOP = _StopRule(gap_fraction=2.0**-14, max_iter=2048)
 
 
@@ -507,6 +571,27 @@ class _SupCertificate(NamedTuple):
         return max(0.0, self.upper - self.witness_lower)
 
 
+@dataclass(frozen=True, slots=True)
+class _Reading:
+    """What a p-value is read for, which sets how far its nuisance search must go.
+
+    *tail* is the level it will be compared with: the gap target is read against the larger of
+    the p-value and *tail*, so a p-value far below the level is not refined past the precision
+    that matters at it (``0.0``: no level, the gap stays relative at every p-value). With
+    *settle* the search also ends once the comparison with *tail* is certified either way, which
+    an endpoint search needs and the gap does not. A *ceiling* ends it once the p-value is
+    certified not below that value: only the smaller of two p-values is reported, so the other
+    need go no further than showing it is not the smaller.
+    """
+
+    tail: float = 0.0
+    settle: bool = False
+    ceiling: float = math.inf
+
+
+_UNREAD = _Reading()
+
+
 def _certified_sup(
     kind: Literal["plus", "minus"],
     a: float,
@@ -519,19 +604,21 @@ def _certified_sup(
     *,
     beta: float,
     rule: _StopRule,
-    settle: float | None = None,
+    reading: _Reading = _UNREAD,
 ) -> _SupCertificate:
     """Certified (conservative) upper bound on ``sup_{q in [a,b]}`` of the
     relevant tail evaluated along ``p(q)``, with the lower bound the search reached.
 
-    ``upper`` is valid however many splits run; more splits only tighten it. The search
-    stops once ``upper - witness_lower <= rule.gap_fraction * (beta + witness_lower)``
-    -- the gap relative to the p-value ``beta + sup`` reported -- or after ``rule.max_iter``
-    splits or at the float floor, where ``stopped`` is false and the bound is still valid.
-    With *settle*, a tail level, it also stops as soon as ``beta + upper < settle`` or
-    ``beta + witness_lower >= settle``: the comparison of the p-value with that level is then
-    certified either way, which an endpoint search needs and the gap does not. A search the
-    cap ends while the level is still inside its bounds reports ``beta + upper >= settle``.
+    ``upper`` is valid however many splits run; more splits only tighten it. With ``noise =
+    _certification_noise(window)`` the search stops once ``upper - witness_lower <=
+    rule.gap_fraction * max(beta + witness_lower, reading.tail) + noise`` -- the gap relative
+    to the p-value ``beta + sup`` reported, or to the tail level it will be compared with when
+    that is larger -- or after ``rule.max_iter`` splits or at the float floor, where
+    ``stopped`` is false and the bound is still valid. The search also stops, ``stopped``, once
+    the *reading* certifies what it asked for (`_Reading`): ``beta + witness_lower`` reaching
+    its ceiling, or with *settle* ``beta + upper < tail`` or ``beta + witness_lower >= tail``.
+    A settled search the cap ends while the level is still inside its bounds reports
+    ``beta + upper >= tail``.
     """
     if b < a:
         return _SupCertificate(0.0, 0.0, 0, True)
@@ -573,12 +660,16 @@ def _certified_sup(
     heap: list[tuple[float, float, float, float, float]] = []
     heapq.heappush(heap, (-bound(a, b, fa, fb), a, b, fa, fb))
     iterations = 0
+    noise = _certification_noise(window)
     while True:
         upper = min(1.0, max(-heap[0][0], best_achieved))
         witness = tail_lower_enclosure(best_achieved, window)
-        if upper - witness <= rule.gap_fraction * (beta + witness):
+        scale = max(beta + witness, reading.tail)
+        if upper - witness <= rule.gap_fraction * scale + noise:
             return _SupCertificate(upper, witness, iterations, True)
-        if settle is not None and (beta + upper < settle or beta + witness >= settle):
+        if beta + witness >= reading.ceiling:
+            return _SupCertificate(upper, witness, iterations, True)
+        if reading.settle and (beta + upper < reading.tail or beta + witness >= reading.tail):
             return _SupCertificate(upper, witness, iterations, True)
         if iterations == rule.max_iter:
             break
@@ -613,17 +704,19 @@ def _p_plus_impl(
     n_t: int,
     beta: float,
     rule: _StopRule,
-    settle: float | None,
+    reading: _Reading,
 ) -> _PCertificate:
     a, b = clopper_pearson(x_c, n_c, beta)
     window = _support_window(n_c, a, b)
     k = n_c * x_t - n_t * x_c
-    sup = _certified_sup("plus", a, b, r, n_c, n_t, k, window, beta=beta, rule=rule, settle=settle)
+    sup = _certified_sup(
+        "plus", a, b, r, n_c, n_t, k, window, beta=beta, rule=rule, reading=reading
+    )
     return _PCertificate(min(1.0, beta + sup.upper), sup.gap, sup.stopped)
 
 
-# *rule* and *settle* are part of every cache key, so a changed stop contract, or a bound
-# that was only settled against one tail level, is never answered for another.
+# *rule* and *reading* are part of every cache key, so a changed stop contract, or a bound that
+# was only refined or settled for one reading, is never answered for another.
 @lru_cache(maxsize=512)
 def _p_plus_cached(
     r: float,
@@ -633,9 +726,9 @@ def _p_plus_cached(
     n_t: int,
     beta: float,
     rule: _StopRule,
-    settle: float | None,
+    reading: _Reading,
 ) -> _PCertificate:
-    return _p_plus_impl(r, x_c, n_c, x_t, n_t, beta, rule, settle)
+    return _p_plus_impl(r, x_c, n_c, x_t, n_t, beta, rule, reading)
 
 
 def _p_plus_certificate(
@@ -646,7 +739,7 @@ def _p_plus_certificate(
     n_t: int,
     beta: float,
     rule: _StopRule,
-    settle: float | None = None,
+    reading: _Reading = _UNREAD,
 ) -> _PCertificate:
     # Keep refusal/type behavior of the uncached API for malformed,
     # unhashable arguments instead of letting functools raise while building
@@ -654,15 +747,21 @@ def _p_plus_certificate(
     try:
         hash((r, x_c, n_c, x_t, n_t, beta))
     except TypeError:
-        return _p_plus_impl(r, x_c, n_c, x_t, n_t, beta, rule, settle)
-    return _p_plus_cached(r, x_c, n_c, x_t, n_t, beta, rule, settle)
+        return _p_plus_impl(r, x_c, n_c, x_t, n_t, beta, rule, reading)
+    return _p_plus_cached(r, x_c, n_c, x_t, n_t, beta, rule, reading)
 
 
-def p_plus(r: float, x_c: int, n_c: int, x_t: int, n_t: int, beta: float) -> float:
-    """``p_+(r)``: p-value for ``H0: R <= r`` (rejecting favors ``R > r``)."""
+def p_plus(
+    r: float, x_c: int, n_c: int, x_t: int, n_t: int, beta: float, *, tail: float = 0.0
+) -> float:
+    """``p_+(r)``: p-value for ``H0: R <= r`` (rejecting favors ``R > r``).
+
+    A certified upper bound, refined until it is within `NUISANCE_STOP`'s gap of the
+    supremum it bounds, measured against the larger of the p-value and *tail*, the level the
+    caller compares it with (``0.0``: none, so the gap stays relative at every p-value)."""
     if r < 0.0:
         _raise("estimation.binomial.tail_unrepresentable", r=r)
-    return _p_plus_certificate(r, x_c, n_c, x_t, n_t, beta, NUISANCE_STOP).p
+    return _p_plus_certificate(r, x_c, n_c, x_t, n_t, beta, NUISANCE_STOP, _Reading(tail)).p
 
 
 def _p_minus_impl(
@@ -673,7 +772,7 @@ def _p_minus_impl(
     n_t: int,
     beta: float,
     rule: _StopRule,
-    settle: float | None,
+    reading: _Reading,
 ) -> _PCertificate:
     a, b = clopper_pearson(x_c, n_c, beta)
     upper = b if r <= 0.0 else min(b, 1.0 / r)
@@ -682,7 +781,7 @@ def _p_minus_impl(
     window = _support_window(n_c, a, upper)
     k = n_c * x_t - n_t * x_c
     sup = _certified_sup(
-        "minus", a, upper, r, n_c, n_t, k, window, beta=beta, rule=rule, settle=settle
+        "minus", a, upper, r, n_c, n_t, k, window, beta=beta, rule=rule, reading=reading
     )
     return _PCertificate(min(1.0, beta + sup.upper), sup.gap, sup.stopped)
 
@@ -696,9 +795,9 @@ def _p_minus_cached(
     n_t: int,
     beta: float,
     rule: _StopRule,
-    settle: float | None,
+    reading: _Reading,
 ) -> _PCertificate:
-    return _p_minus_impl(r, x_c, n_c, x_t, n_t, beta, rule, settle)
+    return _p_minus_impl(r, x_c, n_c, x_t, n_t, beta, rule, reading)
 
 
 def _p_minus_certificate(
@@ -709,27 +808,102 @@ def _p_minus_certificate(
     n_t: int,
     beta: float,
     rule: _StopRule,
-    settle: float | None = None,
+    reading: _Reading = _UNREAD,
 ) -> _PCertificate:
     try:
         hash((r, x_c, n_c, x_t, n_t, beta))
     except TypeError:
-        return _p_minus_impl(r, x_c, n_c, x_t, n_t, beta, rule, settle)
-    return _p_minus_cached(r, x_c, n_c, x_t, n_t, beta, rule, settle)
+        return _p_minus_impl(r, x_c, n_c, x_t, n_t, beta, rule, reading)
+    return _p_minus_cached(r, x_c, n_c, x_t, n_t, beta, rule, reading)
 
 
-def p_minus(r: float, x_c: int, n_c: int, x_t: int, n_t: int, beta: float) -> float:
-    """``p_-(r)``: p-value for ``H0: R >= r`` (rejecting favors ``R < r``)."""
+def p_minus(
+    r: float, x_c: int, n_c: int, x_t: int, n_t: int, beta: float, *, tail: float = 0.0
+) -> float:
+    """``p_-(r)``: p-value for ``H0: R >= r`` (rejecting favors ``R < r``); *tail* as for
+    `p_plus`."""
     if r < 0.0:
         _raise("estimation.binomial.tail_unrepresentable", r=r)
-    return _p_minus_certificate(r, x_c, n_c, x_t, n_t, beta, NUISANCE_STOP).p
+    return _p_minus_certificate(r, x_c, n_c, x_t, n_t, beta, NUISANCE_STOP, _Reading(tail)).p
 
 
-def p_two(r: float, x_c: int, n_c: int, x_t: int, n_t: int, beta: float) -> float:
-    """``p_two(r) = min(1, 2*min(p_+(r), p_-(r)))``."""
+def p_two(
+    r: float, x_c: int, n_c: int, x_t: int, n_t: int, beta: float, *, tail: float = 0.0
+) -> float:
+    """``p_two(r) = min(1, 2*min(p_+(r), p_-(r)))``; *tail* is the level ``min(p_+, p_-)`` is
+    compared with, as for `p_plus`."""
     return min(
-        1.0, 2.0 * min(p_plus(r, x_c, n_c, x_t, n_t, beta), p_minus(r, x_c, n_c, x_t, n_t, beta))
+        1.0,
+        2.0
+        * min(
+            p_plus(r, x_c, n_c, x_t, n_t, beta, tail=tail),
+            p_minus(r, x_c, n_c, x_t, n_t, beta, tail=tail),
+        ),
     )
+
+
+def _null_certificates(
+    r: float,
+    x_c: int,
+    n_c: int,
+    x_t: int,
+    n_t: int,
+    beta: float,
+    rule: _StopRule,
+    alternative: Alternative,
+    tail: float,
+) -> list[tuple[Literal["plus", "minus"], _PCertificate]]:
+    """The certificates whose smallest is the p-value at the null *r* for *alternative*, read
+    against *tail*: ``p_+`` for "greater", ``p_-`` for "less", both for "two-sided".
+
+    A two-sided p-value reports only ``2 * min(p_+, p_-)``, so only the smaller bound needs its
+    full precision. The test the counts make smaller (the observed ratio against *r*) is
+    refined to its gap target; the other stops once it is certified not below that bound.
+    Neither exit changes the minimum: a bound stopped that way is at least the other's, and a
+    bound below the other's is the one a full refinement would have returned.
+    """
+    reading = _Reading(tail)
+    args = (r, x_c, n_c, x_t, n_t, beta, NUISANCE_STOP)
+    if alternative == "greater":
+        return [("plus", _p_plus_certificate(*args, reading))]
+    if alternative == "less":
+        return [("minus", _p_minus_certificate(*args, reading))]
+    if x_t * n_c >= r * x_c * n_t:
+        first = _p_plus_certificate(*args, reading)
+        second = _p_minus_certificate(*args, _Reading(tail, ceiling=first.p))
+        return [("plus", first), ("minus", second)]
+    first = _p_minus_certificate(*args, reading)
+    second = _p_plus_certificate(*args, _Reading(tail, ceiling=first.p))
+    return [("minus", first), ("plus", second)]
+
+
+def _smallest_p(
+    certificates: list[tuple[Literal["plus", "minus"], _PCertificate]], alternative: Alternative
+) -> float:
+    smallest = min(certificate.p for _, certificate in certificates)
+    return min(1.0, 2.0 * smallest) if alternative == "two-sided" else smallest
+
+
+def null_p_value(
+    r: float,
+    x_c: int,
+    n_c: int,
+    x_t: int,
+    n_t: int,
+    beta: float,
+    *,
+    alternative: str,
+    tail: float,
+) -> float:
+    """The p-value for ``H0: R = r`` under *alternative*, as `confidence_interval` reports it:
+    `p_plus` for "greater", `p_minus` for "less" and `p_two` for "two-sided", read against the
+    *tail* level the caller compares it with, and equal to them without the work of the test
+    that cannot be the smaller."""
+    if r < 0.0:
+        _raise("estimation.binomial.tail_unrepresentable", r=r)
+    validated = validate_alternative(alternative)
+    certificates = _null_certificates(r, x_c, n_c, x_t, n_t, beta, NUISANCE_STOP, validated, tail)
+    return _smallest_p(certificates, validated)
 
 
 # --- Monotone inversion ----------------------------------------------------
@@ -1051,9 +1225,10 @@ class BinomialInterval:
     the ideal interval, not a coverage statement.
 
     ``capped_probes`` counts the p-value probes whose nuisance search ended short of its gap
-    target (`NUISANCE_STOP`) while the comparison with the tail level it feeds was still open,
-    and ``nuisance_gap_max`` is the largest gap in p-value they left (``0.0`` when none). The
-    bounds stay valid; at those probes they are conservative by at most that gap.
+    target (`NUISANCE_STOP`): a probe the endpoint search settles against the tail level only
+    while that comparison was still open, and the p-value at the null while the gap it is
+    refined to was. ``nuisance_gap_max`` is the largest gap in p-value they left (``0.0`` when
+    none). The bounds stay valid; at those probes they are conservative by at most that gap.
     """
 
     lower: float
@@ -1075,6 +1250,11 @@ _PRECISION_PREFIXES = (PRECISION_NOTE_PREFIX, NUISANCE_NOTE_PREFIX)
 _NOTE_SEPARATOR = re.compile(r"( \| |; )")
 
 
+def _ceiling_digits(x: float) -> str:
+    """*x* to three significant digits rounded up, so a printed bound is never below it."""
+    return format(decimal.Context(prec=3, rounding=decimal.ROUND_CEILING).plus(Decimal(x)), ".2e")
+
+
 def precision_note(ci: BinomialInterval) -> str | None:
     """The disclosures for *ci*'s searches, joined by `` | ``, or ``None`` when both met
     their targets."""
@@ -1091,9 +1271,9 @@ def precision_note(ci: BinomialInterval) -> str | None:
         )
     if ci.capped_probes:
         parts.append(
-            f"{NUISANCE_NOTE_PREFIX}: {ci.capped_probes} p-value probe(s) near the decision "
-            "ended at the nuisance search's iteration cap, and the reported bounds remain valid "
-            f"but are conservative by at most {ci.nuisance_gap_max:.2e} in p-value"
+            f"{NUISANCE_NOTE_PREFIX}: {ci.capped_probes} p-value probe(s) ended at the nuisance "
+            "search's iteration limit, and the reported bounds remain valid but are "
+            f"conservative by at most {_ceiling_digits(ci.nuisance_gap_max)} in p-value"
         )
     return " | ".join(parts) or None
 
@@ -1128,7 +1308,8 @@ def confidence_interval(
 
     Endpoints are outward-rounded to a relative log resolution declared from the counts
     (``BinomialInterval.endpoint_log_width``); `precision_note` discloses a search that fell short
-    and a nuisance search the iteration cap ended while a comparison was still open.
+    and a nuisance search the iteration cap ended before its gap target. The p-value at the null
+    is the certified bound `p_plus`/`p_minus` return for the tail level of this *alternative*.
     """
     validate_counts(x_c, n_c)
     validate_counts(x_t, n_t)
@@ -1153,16 +1334,16 @@ def confidence_interval(
 
 
 class _OpenProbes:
-    """The p-value probes of one inversion whose nuisance search ended short of its gap target
-    while the comparison with *target*, the tail level they are tested against, was still
-    open: the bound's lower enclosure under it and the bound itself at or over it."""
+    """The p-value probes of one inversion whose nuisance search ended short of its gap target,
+    keyed by test and null, with the gap each left. A probe settled against the tail level ends
+    so only while that comparison is open; the gap target of the p-value at the null is its
+    own."""
 
-    def __init__(self, target: float) -> None:
-        self.target = target
+    def __init__(self) -> None:
         self.gaps: dict[tuple[str, float], float] = {}
 
     def record(self, kind: str, r: float, probe: _PCertificate) -> float:
-        if not probe.stopped and probe.p - probe.gap < self.target <= probe.p:
+        if not probe.stopped:
             self.gaps[kind, r] = max(self.gaps.get((kind, r), 0.0), probe.gap)
         return probe.p
 
@@ -1190,25 +1371,28 @@ def _confidence_interval_cached(
     seed = (n_c * x_t) / (n_t * x_c) if x_c > 0 and x_t > 0 else 1.0
     tau = _endpoint_tolerance(_count_scale(x_c, n_c, x_t, n_t))
     target = alpha / 2.0 if alternative == "two-sided" else alpha
-    open_probes = _OpenProbes(target)
+    open_probes = _OpenProbes()
 
     # The endpoint search only compares each p-value with the tail level, so its probes stop
-    # once that comparison is certified; the p-value at the null is refined to the full gap.
+    # once that comparison is certified; the p-value at the null is refined to its gap, which
+    # is floored at the tail level.
+    settled = _Reading(target, settle=True)
+
     def f_plus(r: float) -> float:
-        probe = _p_plus_certificate(r, x_c, n_c, x_t, n_t, beta, rule, target)
+        probe = _p_plus_certificate(r, x_c, n_c, x_t, n_t, beta, rule, settled)
         return open_probes.record("plus", r, probe)
 
     def f_minus(r: float) -> float:
-        probe = _p_minus_certificate(r, x_c, n_c, x_t, n_t, beta, rule, target)
+        probe = _p_minus_certificate(r, x_c, n_c, x_t, n_t, beta, rule, settled)
         return open_probes.record("minus", r, probe)
 
-    def null_plus() -> float:
-        probe = _p_plus_certificate(null_r, x_c, n_c, x_t, n_t, beta, rule)
-        return open_probes.record("plus", null_r, probe)
-
-    def null_minus() -> float:
-        probe = _p_minus_certificate(null_r, x_c, n_c, x_t, n_t, beta, rule)
-        return open_probes.record("minus", null_r, probe)
+    def null_p() -> float:
+        certificates = _null_certificates(
+            null_r, x_c, n_c, x_t, n_t, beta, rule, alternative, target
+        )
+        for kind, certificate in certificates:
+            open_probes.record(kind, null_r, certificate)
+        return _smallest_p(certificates, alternative)
 
     a, _b = clopper_pearson(x_c, n_c, beta)
     if alternative == "two-sided":
@@ -1216,7 +1400,7 @@ def _confidence_interval_cached(
         lower = _find_boundary(f_plus, alloc, increasing=True, seed=seed, tau=tau, resolve=null_r)
         assert lower.endpoint is not None, "the lower search is always bounded (increasing=True)"
         upper = _bound_upper(f_minus, alloc, a=a, seed=seed, tau=tau, resolve=null_r)
-        p_value_null = min(1.0, 2.0 * min(null_plus(), null_minus()))
+        p_value_null = null_p()
         return BinomialInterval(
             lower=lower.endpoint,
             upper=upper.endpoint,
@@ -1230,7 +1414,7 @@ def _confidence_interval_cached(
     if alternative == "greater":
         lower = _find_boundary(f_plus, alpha, increasing=True, seed=seed, tau=tau, resolve=null_r)
         assert lower.endpoint is not None
-        p_value_null = null_plus()
+        p_value_null = null_p()
         return BinomialInterval(
             lower=lower.endpoint,
             upper=None,
@@ -1243,7 +1427,7 @@ def _confidence_interval_cached(
         )
     if alternative == "less":
         upper = _bound_upper(f_minus, alpha, a=a, seed=seed, tau=tau, resolve=null_r)
-        p_value_null = null_minus()
+        p_value_null = null_p()
         return BinomialInterval(
             lower=0.0,
             upper=upper.endpoint,

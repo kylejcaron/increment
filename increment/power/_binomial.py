@@ -5,11 +5,12 @@ unit-grain raw binary counts, fixed horizon; see
 ``increment.estimation.engine._binomial_eligible``) is decided at runtime by
 the Berger-Boos test in ``increment.estimation.binomial_rr``: for observed
 counts ``(i, j)`` at analyzed arm sizes ``(n_c, n_t)`` it reports the finite
-nuisance-search certificates ``p_+ = p_plus(r0, i, n_c, j, n_t, beta)`` and
+nuisance-search certificates ``p_+ = p_plus(r0, i, n_c, j, n_t, beta, tail=u)`` and
 ``p_- = p_minus(...)`` with ``r0 = 1 + null_lift`` and ``beta =
 nuisance_beta(alpha_d)``, ``alpha_d`` the compiled decision alpha, and rejects
 when the directional certificate is strictly below its tail allocation ``u``
-(``compiled_tail_alpha``): ``p_+ < u`` for "greater", ``p_- < u`` for "less",
+(``compiled_tail_alpha``, the level its refinement is read against): ``p_+ < u`` for
+"greater", ``p_- < u`` for "less",
 and either for "two-sided". A count pair whose runtime row fails to build is a
 ``DecisionFailure`` and never a rejection.
 
@@ -28,7 +29,7 @@ Two routes classify ``D``:
 * ``exact``: replays the runtime's own nuisance search -- the same
   Clopper-Pearson domains, support windows, endpoint and coordinate-corner
   evaluations, largest-bound-first split order with its tie order,
-  relative-gap stop rule, split cap and floating-point floor -- over many count
+  tail-floored relative-gap stop rule, split cap and floating-point floor -- over many count
   pairs at once. Its tails use the runtime's binomial special functions
   elementwise; only the summation order differs, within the per-row
   allowance ``delta``. Every comparison of the replay is carried out with
@@ -168,14 +169,18 @@ class _Leaves:
 
     _FIELDS = ("u", "v", "pu", "pv", "fu", "fv", "bound", "raw", "reach")
 
+    @staticmethod
+    def _blank(name: str, rows: int, capacity: int) -> np.ndarray:
+        if name in ("pu", "pv"):
+            return np.zeros((rows, capacity), np.int64)
+        blank = np.zeros((rows, capacity))
+        if name in ("bound", "reach"):
+            blank.fill(-np.inf)
+        return blank
+
     @classmethod
     def empty(cls, rows: int, capacity: int) -> _Leaves:
-        arrays = {
-            name: np.zeros((rows, capacity), np.int64 if name in ("pu", "pv") else np.float64)
-            for name in cls._FIELDS
-        }
-        arrays["bound"].fill(-np.inf)
-        arrays["reach"].fill(-np.inf)
+        arrays = {name: cls._blank(name, rows, capacity) for name in cls._FIELDS}
         return cls(**arrays, count=np.ones(rows, np.int64))
 
     def take(self, rows: np.ndarray, *, capacity: int) -> _Leaves:
@@ -187,11 +192,13 @@ class _Leaves:
         return taken
 
     def grow(self, capacity: int) -> None:
-        grown = _Leaves.empty(self.u.shape[0], capacity)
+        """Widen every field to *capacity* slots, one field at a time so a field's old array is
+        released before the next is replaced and the transient is one field, not a second copy."""
         width = self.u.shape[1]
         for name in self._FIELDS:
-            getattr(grown, name)[:, :width] = getattr(self, name)
-            setattr(self, name, getattr(grown, name))
+            grown = self._blank(name, self.u.shape[0], capacity)
+            grown[:, :width] = getattr(self, name)
+            setattr(self, name, grown)
 
 
 def _curvature(u: np.ndarray, v: np.ndarray, r: float, n_c: int, n_t: int) -> np.ndarray:
@@ -369,7 +376,7 @@ def _advance(  # noqa: PLR0915
         k = np.argmin(np.where(bnd == top[:, None], lv.u[:, :leaves][act], np.inf), axis=1)
         lower = np.maximum(0.0, best[act] - guard[act])
         gap = np.maximum(top, best[act]) - lower
-        allowed = rule.gap_fraction * (beta + lower)
+        allowed = rule.gap_fraction * np.maximum(beta + lower, decision.tail_alpha) + guard[act]
         stop = gap <= allowed
         if exact:
             dl = delta[act][:, None]
@@ -432,8 +439,9 @@ def _replay(batch: _Batch, tails: _ExactTails | _SurrogateTails, *, exact: bool)
     takes the leaf with the largest bound, ties to the smaller left endpoint
     (the heap's tuple order for disjoint leaves); stops when the gap to the
     best evaluated point, deflated as ``tail_lower_enclosure`` deflates it,
-    is within ``NUISANCE_STOP.gap_fraction`` of ``beta`` plus that deflated
-    value, at the floating-point floor or after ``NUISANCE_STOP.max_iter``
+    is within ``NUISANCE_STOP.gap_fraction`` of the larger of ``beta`` plus that deflated
+    value and the tail allocation, plus the certification noise (the deflation itself),
+    at the floating-point floor or after ``NUISANCE_STOP.max_iter``
     splits (read when the replay runs); and reports ``min(1, beta + min(1,
     max(remaining bounds, best endpoint)))``. The runtime's test after its
     last split only sets its ``stopped`` flag, never the reported value. On
@@ -900,16 +908,24 @@ class _Request:
 
 
 def _runtime_rejects(decision: BinomialDecision, kind: Kind, x_c: int, x_t: int) -> bool:
-    """The unchanged runtime decision of one directional test."""
-    tail = _rr.p_plus if kind == "plus" else _rr.p_minus
+    """The unchanged runtime decision of one directional test, read against its tail level."""
+    test = _rr.p_plus if kind == "plus" else _rr.p_minus
     try:
-        p = tail(decision.null_ratio, x_c, decision.n_c, x_t, decision.n_t, decision.beta)
+        p = test(
+            decision.null_ratio,
+            x_c,
+            decision.n_c,
+            x_t,
+            decision.n_t,
+            decision.beta,
+            tail=decision.tail_alpha,
+        )
     except _rr.BinomialDataError:
         return False
     return p < decision.tail_alpha
 
 
-#: Leaf-array bytes a replay may hold at once: it stores eleven eight-byte fields per leaf slot,
+#: Leaf-array bytes a replay may hold at once: it stores nine eight-byte fields per leaf slot,
 #: and a row holds ``splits + 1`` leaves after that many splits.
 _LEAF_BUDGET_BYTES = 350e6
 #: Splits the approximate route runs for every row of a batch together.
@@ -919,7 +935,7 @@ _COMMON_SPLITS = 63
 def _rows_within_budget(splits: int) -> int:
     """Rows whose leaf arrays fit ``_LEAF_BUDGET_BYTES`` after *splits* splits each."""
     leaf_bytes = 8 * len(_Leaves._FIELDS)
-    return max(1024, int(_LEAF_BUDGET_BYTES // (leaf_bytes * (splits + 1))))
+    return max(1, int(_LEAF_BUDGET_BYTES // (leaf_bytes * (splits + 1))))
 
 
 def _batch_rows(*, exact: bool) -> int:
@@ -942,33 +958,49 @@ def classify(
     the treatment count, forces it (``_root_settled``; it assumes each
     computed tail lies within ``_ROOT_ROUNDING`` of its exact-arithmetic
     value). Every other count is replayed."""
-    results: list[np.ndarray | None] = [None] * len(requests)
+    results: list[np.ndarray | None] = []
+    slots: list[list[int]] = []
     live: list[tuple[int, _Request, float, float, tuple[int, int, float]]] = []
     pending = 0
     batch_rows = _batch_rows(exact=route == "exact")
-    for n, req in enumerate(requests):
+    for req in requests:
         size = req.j1 - req.j0 + 1
         try:
             a, b = _rr.clopper_pearson(req.x_c, decision.n_c, decision.beta)
         except _rr.BinomialDataError:
             # The runtime row cannot be built: a decision failure, never a rejection.
-            results[n] = np.zeros(size, bool)
+            results.append(np.zeros(size, bool))
+            slots.append([len(results) - 1])
             continue
         hi = b
         if req.kind == "minus":
             hi = b if decision.null_ratio <= 0.0 else min(b, 1.0 / decision.null_ratio)
             if hi < a:
                 # Empty nuisance domain: the runtime reports beta alone.
-                results[n] = np.full(size, min(1.0, decision.beta) < decision.tail_alpha)
+                results.append(np.full(size, min(1.0, decision.beta) < decision.tail_alpha))
+                slots.append([len(results) - 1])
                 continue
-        if live and pending + size > batch_rows:
-            _classify_live(decision, route, live, results)
-            live, pending = [], 0
-        live.append((n, req, a, hi, _rr._support_window(decision.n_c, a, hi)))
-        pending += size
+        window = _rr._support_window(decision.n_c, a, hi)
+        mine: list[int] = []
+        # A request larger than a batch is replayed in pieces of at most a batch: each count
+        # pair has its own replay, so a piece decides exactly as the whole would.
+        for j0 in range(req.j0, req.j1 + 1, batch_rows):
+            piece = _Request(req.x_c, req.kind, j0, min(req.j1, j0 + batch_rows - 1))
+            rows = piece.j1 - piece.j0 + 1
+            if live and pending + rows > batch_rows:
+                _classify_live(decision, route, live, results)
+                live, pending = [], 0
+            results.append(None)
+            mine.append(len(results) - 1)
+            live.append((len(results) - 1, piece, a, hi, window))
+            pending += rows
+        slots.append(mine)
     if live:
         _classify_live(decision, route, live, results)
-    return [r if r is not None else np.zeros(0, bool) for r in results]
+    return [
+        np.concatenate([results[slot] for slot in mine]) if mine else np.zeros(0, bool)
+        for mine in slots
+    ]
 
 
 def _classify_live(decision, route, live, results) -> None:

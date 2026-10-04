@@ -241,7 +241,7 @@ def resolve_plus_tail(
     band_points = tuple(range(band_lo, band_hi + 1)) if band_lo <= band_hi else ()
 
     def resolve_at(xt: int) -> bool:
-        return binomial_rr.p_plus(r, x_c_obs, n_c, xt, n_t, beta) >= target
+        return binomial_rr.p_plus(r, x_c_obs, n_c, xt, n_t, beta, tail=target) >= target
 
     outside_unresolved = (xt_lo > 0 and T_accept < xt_lo - 1) or (xt_hi < n_t and T_accept < n_t)
     unresolved_mass = _xt_omitted if outside_unresolved else 0.0
@@ -288,7 +288,7 @@ def resolve_minus_tail(
     band_points = tuple(range(band_lo, band_hi + 1)) if band_lo <= band_hi else ()
 
     def resolve_at(xt: int) -> bool:
-        return binomial_rr.p_minus(r, x_c_obs, n_c, xt, n_t, beta) >= target
+        return binomial_rr.p_minus(r, x_c_obs, n_c, xt, n_t, beta, tail=target) >= target
 
     outside_unresolved = (xt_lo > 0 and T_accept > 0) or (xt_hi < n_t and T_accept > xt_hi + 1)
     unresolved_mass = _xt_omitted if outside_unresolved else 0.0

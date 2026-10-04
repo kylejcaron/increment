@@ -45,8 +45,8 @@ def _runtime_power(
     w_t = binom.pmf(np.arange(n_t + 1), n_t, p_t)
     for x_c, w_c in enumerate(binom.pmf(np.arange(n_c + 1), n_c, p_c)):
         for x_t in range(n_t + 1):
-            plus = binomial_rr.p_plus(r0, x_c, n_c, x_t, n_t, beta)
-            minus = binomial_rr.p_minus(r0, x_c, n_c, x_t, n_t, beta)
+            plus = binomial_rr.p_plus(r0, x_c, n_c, x_t, n_t, beta, tail=tail)
+            minus = binomial_rr.p_minus(r0, x_c, n_c, x_t, n_t, beta, tail=tail)
             if decision.alternative == "greater":
                 rejects = plus < tail
             elif decision.alternative == "less":
@@ -106,8 +106,8 @@ class TestExactRouteMatchesRuntime:
         plus_cells, minus_cells = RejectionGeometry(decision, "exact").cells(0, n_c, 0, n_t)
         for x_c in range(n_c + 1):
             for x_t in range(n_t + 1):
-                plus = binomial_rr.p_plus(null_ratio, x_c, n_c, x_t, n_t, beta) < tail
-                minus = binomial_rr.p_minus(null_ratio, x_c, n_c, x_t, n_t, beta) < tail
+                plus = binomial_rr.p_plus(null_ratio, x_c, n_c, x_t, n_t, beta, tail=tail) < tail
+                minus = binomial_rr.p_minus(null_ratio, x_c, n_c, x_t, n_t, beta, tail=tail) < tail
                 assert plus_cells[x_c, x_t] == ("plus" in decision.kinds and plus)
                 assert minus_cells[x_c, x_t] == ("minus" in decision.kinds and minus)
 
@@ -138,7 +138,7 @@ class TestExactRouteMatchesRuntime:
                 for x_t in sorted(probes):
                     decided = (
                         kind in decision.kinds
-                        and runtime(null_ratio, x_c, n_c, x_t, n_t, beta) < tail
+                        and runtime(null_ratio, x_c, n_c, x_t, n_t, beta, tail=tail) < tail
                     )
                     assert row[x_t] == decided, (kind, x_c, x_t)
 
@@ -288,7 +288,8 @@ class TestApproximateRoute:
         decision = BinomialDecision(n_c, n_t, 1.0, beta, 0.025, "greater")
         plus, _ = RejectionGeometry(decision, "approximate").cells(100, 100, 509, 512)
         runtime = [
-            binomial_rr.p_plus(1.0, 100, n_c, j, n_t, beta) < 0.025 for j in (509, 510, 511, 512)
+            binomial_rr.p_plus(1.0, 100, n_c, j, n_t, beta, tail=0.025) < 0.025
+            for j in (509, 510, 511, 512)
         ]
         assert runtime == [False, True, True, True]
         assert plus[0].tolist() == [False, False, False, True]
@@ -377,7 +378,7 @@ class TestReplayFollowsTheRuntimeStopContract:
                     for x_t in sorted({0, n_t, *steps.tolist(), *(steps + 1).tolist()}):
                         decided = (
                             kind in decision.kinds
-                            and runtime(ratio, x_c, n_c, x_t, n_t, beta) < tail
+                            and runtime(ratio, x_c, n_c, x_t, n_t, beta, tail=tail) < tail
                         )
                         assert row[x_t] == decided, (rule, kind, x_c, x_t)
         self._assert_longer_searches_never_reject_less(masks)
@@ -420,6 +421,40 @@ class TestReplayFollowsTheRuntimeStopContract:
         chunked = RejectionGeometry(decision, "approximate").cells(20, 40, 0, 300)
         for one_pass, in_chunks in zip(whole, chunked, strict=True):
             assert np.array_equal(one_pass, in_chunks)
+
+    @pytest.mark.parametrize(
+        ("route", "n_c", "n_t", "x_lo", "x_hi"),
+        [("exact", 40, 60, 3, 14), ("approximate", 300, 300, 20, 40)],
+    )
+    def test_no_replay_exceeds_its_row_budget_even_for_one_request_wider_than_it(
+        self, monkeypatch, route, n_c, n_t, x_lo, x_hi
+    ):
+        """A request spans a whole run of treatment counts. With the leaf budget cut to a
+        megabyte a single request is several batches wide: it is replayed in pieces, no replay
+        holds more rows than the budget allows, and no decision changes."""
+        from increment.power import _binomial
+
+        decision = BinomialDecision(
+            n_c, n_t, 1.0, binomial_rr.nuisance_beta(0.05), 0.025, "two-sided"
+        )
+        whole = RejectionGeometry(decision, route).cells(x_lo, x_hi, 0, n_t)
+
+        monkeypatch.setattr(_binomial, "_LEAF_BUDGET_BYTES", 1e6)
+        batch_rows = _binomial._batch_rows(exact=route == "exact")
+        assert batch_rows < n_t + 1
+        replayed: list[int] = []
+        live_batch = _binomial._classify_live
+
+        def spy(decision, route, live, results):
+            replayed.append(sum(item[1].j1 - item[1].j0 + 1 for item in live))
+            return live_batch(decision, route, live, results)
+
+        monkeypatch.setattr(_binomial, "_classify_live", spy)
+        split = RejectionGeometry(decision, route).cells(x_lo, x_hi, 0, n_t)
+
+        assert replayed and max(replayed) <= batch_rows
+        for one_batch, in_pieces in zip(whole, split, strict=True):
+            assert np.array_equal(one_batch, in_pieces)
 
 
 class TestRouting:

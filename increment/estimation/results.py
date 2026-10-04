@@ -293,6 +293,25 @@ class BinomialConfidenceSet(CodedModel, BaseModel):
         """Whether these counts admit a finite empirical-lift point (``x_c > 0``)."""
         return self.x_c > 0
 
+    def null_p_value(self, null_lift: float, alternative: str) -> float:
+        """The exact p-value for ``H0: R = 1 + null_lift`` under *alternative*, from these
+        persisted counts and nuisance budget, refined against the level the verdict compares
+        it with (``decision_alpha``, halved for the two-sided test): the recompute behind
+        ``LiftEstimate.stat_sig()``/``p_value()`` and the tables' twin of them."""
+        from increment.estimation.binomial_rr import null_p_value
+
+        tail = self.decision_alpha / 2.0 if alternative == "two-sided" else self.decision_alpha
+        return null_p_value(
+            1.0 + null_lift,
+            self.x_c,
+            self.n_c,
+            self.x_t,
+            self.n_t,
+            self.nuisance_beta,
+            alternative=alternative,
+            tail=tail,
+        )
+
 
 def _reference_fields(dof: float | None) -> dict[str, Any]:
     """Build the persisted reference triple from a legacy degrees of freedom."""
@@ -1467,21 +1486,6 @@ class LiftEstimate(_RowIdentity):
             return self.risk_if_shipped()
         return self._posterior().expected_positive_part(scale=self.scale)
 
-    def _binomial_tails(self, null_lift: float) -> tuple[float, float]:
-        """``(p_+(r0), p_-(r0))`` at ``r0 = 1 + null_lift`` for this row's
-        persisted counts and nuisance budget -- the shared recompute both
-        ``stat_sig()`` and ``p_value()`` use for a ``reference_kind=
-        "binomial"`` row, point-backed or not.
-        """
-        from increment.estimation.binomial_rr import p_minus, p_plus
-
-        bset = self.binomial_set
-        assert bset is not None, "validated: reference_kind='binomial' rows carry a set"
-        r0 = 1.0 + null_lift
-        pp = p_plus(r0, bset.x_c, bset.n_c, bset.x_t, bset.n_t, bset.nuisance_beta)
-        pm = p_minus(r0, bset.x_c, bset.n_c, bset.x_t, bset.n_t, bset.nuisance_beta)
-        return pp, pm
-
     def require_sequential_result(self) -> SequentialResult:
         """Return the authoritative stopped likelihood state or refuse a fixed row."""
         if self.sequential_result is None:
@@ -1551,14 +1555,10 @@ class LiftEstimate(_RowIdentity):
         if self.relative_confidence_set is not None:
             return self.relative_confidence_set.contains(self.null_lift) is False
         if self.reference_kind == "binomial":
-            pp, pm = self._binomial_tails(self.null_lift)
             bset = self.binomial_set
             assert bset is not None
-            if self.alternative == "greater":
-                return pp < bset.decision_alpha
-            if self.alternative == "less":
-                return pm < bset.decision_alpha
-            return min(pp, pm) < bset.decision_alpha / 2.0
+            # ``p_two < alpha`` is ``min(p_+, p_-) < alpha / 2``: doubling is exact.
+            return bset.null_p_value(self.null_lift, self.alternative) < bset.decision_alpha
         if self.alternative == "greater":
             assert self.lift is not None
             return self.lift.lb is not None and self.lift.lb > self.null_lift
@@ -1669,12 +1669,9 @@ class LiftEstimate(_RowIdentity):
                     metric=self.metric,
                     null_lift=self.null_lift,
                 )
-            pp, pm = self._binomial_tails(self.null_lift)
-            if self.alternative == "greater":
-                return pp
-            if self.alternative == "less":
-                return pm
-            return min(1.0, 2.0 * min(pp, pm))
+            bset = self.binomial_set
+            assert bset is not None
+            return bset.null_p_value(self.null_lift, self.alternative)
         if self.reference_kind == "t" or self.n_clusters is not None:
             if self.inference != "fixed":
                 self._posterior()  # raises the sequential-inference refusal
