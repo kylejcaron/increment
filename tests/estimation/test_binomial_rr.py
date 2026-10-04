@@ -15,6 +15,7 @@ from math import comb
 
 import numpy as np
 import pytest
+from scipy.special import ndtr, ndtri
 from scipy.stats import binom as _binom
 
 from increment.estimation import binomial_rr as brr
@@ -280,20 +281,41 @@ class TestApplicabilityBoundaryCalibration:
             assert ci.upper is not None and math.isfinite(ci.upper)
 
 
-def _analytic(root: float, *, increasing: bool, smooth: bool):
+def _analytic(root: float, *, increasing: bool, shape: str):
     """``(f, target)`` whose evaluated crossing sits at *root*, with no SciPy involved.
 
-    Increasing: ``f(r) >= target`` iff ``r >= root``. Decreasing: iff ``r <= root``. The
-    step form jumps from 0 to 1 at the crossing; the smooth form is ``r / (r + root)`` (or
-    its mirror).
+    Increasing: ``f(r) >= target`` iff ``r >= root``. Decreasing: iff ``r <= root``. ``step``
+    jumps from 0 to 1 at the crossing, ``ratio`` is ``r / (r + root)`` and ``steep`` is
+    ``0.5 * (r / root)**40`` held below a ceiling, so interpolation on it is badly misled
+    on either side of the crossing. Decreasing forms are the mirrors in ``root / r``.
     """
-    if smooth:
-        if increasing:
-            return (lambda r: r / (r + root)), 0.5
-        return (lambda r: root / (r + root)), 0.5
+
+    def unit(r: float) -> float:
+        """The increasing form as a function of ``r / root`` (0 at 0, its ceiling at inf)."""
+        if r <= 0.0:
+            return 0.0
+        if shape == "step":
+            return 1.0 if r >= 1.0 else 0.0
+        if shape == "ratio":
+            return 1.0 if math.isinf(r) else r / (r + 1.0)
+        return 0.5 * math.exp(0.5 if math.isinf(r) else min(40.0 * math.log(r), 0.5))
+
     if increasing:
-        return (lambda r: 1.0 if r >= root else 0.0), 0.5
-    return (lambda r: 1.0 if r <= root else 0.0), 0.5
+        return (lambda r: unit(r / root)), 0.5
+    return (lambda r: unit(root / r) if r > 0.0 else unit(math.inf)), 0.5
+
+
+def _normal_tail(root: float, *, increasing: bool, sigma: float):
+    """A p-value-like ``f`` with a Gaussian tail in ``log r``: ``ndtri(f)`` is linear in it."""
+    z_target = float(ndtri(0.025))
+
+    def f(r: float) -> float:
+        if r <= 0.0:
+            return 0.0 if increasing else 1.0
+        u = math.log(r / root) / sigma
+        return float(ndtr(z_target + u if increasing else z_target - u))
+
+    return f, 0.025
 
 
 def _counted(f):
@@ -339,8 +361,8 @@ class TestEndpointResolutionContract:
         scales = [brr._count_scale(x, 100_000, 2 * x, 100_000) for x in (1, 10, 100, 1_000, 10_000)]
         assert scales == sorted(scales, reverse=True)
 
-    def test_tolerance_is_one_64th_of_the_scale_between_its_clamps(self):
-        assert brr._endpoint_tolerance(0.0141) == pytest.approx(0.0141 / 64.0)
+    def test_tolerance_is_one_128th_of_the_scale_between_its_clamps(self):
+        assert brr._endpoint_tolerance(0.0141) == pytest.approx(0.0141 / 128.0)
 
     def test_tolerance_is_never_coarser_than_the_cap_or_finer_than_the_floor(self):
         assert brr._endpoint_tolerance(2.0) == 2.0**-11
@@ -354,13 +376,13 @@ class TestEndpointSearchOnAnalyticFunctions:
     @pytest.mark.parametrize("tau", [2.0**-11, 2.0**-30])
     @pytest.mark.parametrize("factor", [1e-9, 0.3, 0.999, 3.0, 1e3])
     @pytest.mark.parametrize("seed", [1e-6, 1.0, 1e6])
-    @pytest.mark.parametrize("smooth", [False, True])
+    @pytest.mark.parametrize("shape", ["step", "ratio", "steep"])
     @pytest.mark.parametrize("increasing", [True, False])
     def test_endpoint_is_outward_and_its_bracket_reaches_tau(
-        self, increasing, smooth, seed, factor, tau
+        self, increasing, shape, seed, factor, tau
     ):
         root = seed * factor
-        f, target = _analytic(root, increasing=increasing, smooth=smooth)
+        f, target = _analytic(root, increasing=increasing, shape=shape)
         probe, calls = _counted(f)
         found = _find_boundary(probe, target, increasing=increasing, seed=seed, tau=tau)
         assert found.reached
@@ -373,15 +395,32 @@ class TestEndpointSearchOnAnalyticFunctions:
         else:
             assert found.endpoint >= root - slack
             assert found.endpoint * math.exp(-found.log_width) <= root + slack
-        # f(0), f(cap), f(seed), at most 40 steps outward or inward, then halvings of ln 2.
-        assert len(calls) <= 3 + 41 + math.ceil(math.log2(math.log(2.0) / tau))
+        # f(0), f(cap), f(seed), at most 40 steps outward or inward, then the refinement
+        # budget: halvings of the ln 2 bracket plus the interpolation's slack.
+        halvings = math.ceil(math.log2(math.log(2.0) / tau))
+        assert len(calls) <= 3 + 41 + halvings + brr._REFINE_SLACK
+
+    @pytest.mark.parametrize("increasing", [True, False])
+    @pytest.mark.parametrize("offset", [0.9, 1.0, 1.1])
+    def test_interpolation_reaches_the_stop_in_far_fewer_probes_than_bisection(
+        self, increasing, offset
+    ):
+        """On a Gaussian tail in log r -- the shape of the evaluated p-envelope -- the
+        probit-linear probes cross a ln 2 bracket in a handful of evaluations."""
+        tau = 2.0**-20
+        f, target = _normal_tail(1.0, increasing=increasing, sigma=0.01)
+        probe, calls = _counted(f)
+        found = _find_boundary(probe, target, increasing=increasing, seed=offset, tau=tau)
+        assert found.reached and found.log_width <= tau
+        bisections = math.ceil(math.log2(math.log(2.0) / tau))
+        assert len(calls) <= bisections // 2
 
     @pytest.mark.parametrize("direction", [math.inf, 0.0])
     @pytest.mark.parametrize("seed", [1e-6, 1.0, 1e6])
     @pytest.mark.parametrize("increasing", [True, False])
     def test_a_crossing_one_float_from_the_seed_is_bracketed(self, increasing, seed, direction):
         root = math.nextafter(seed, direction)
-        f, target = _analytic(root, increasing=increasing, smooth=False)
+        f, target = _analytic(root, increasing=increasing, shape="step")
         tau = 2.0**-30
         found = _find_boundary(f, target, increasing=increasing, seed=seed, tau=tau)
         assert found.reached and found.endpoint is not None
@@ -408,20 +447,19 @@ class TestEndpointSearchOnAnalyticFunctions:
         assert found.endpoint is None
         assert found.reached
 
-    @pytest.mark.parametrize("smooth", [False, True])
+    @pytest.mark.parametrize("shape", ["step", "ratio", "steep"])
     @pytest.mark.parametrize("increasing", [True, False])
     @pytest.mark.parametrize("offset", [-1e-6, -1e-9, 0.0, 1e-9, 1e-6])
+    @pytest.mark.parametrize("tau", [0.1, 1e-3])
     def test_the_tested_null_sits_on_the_side_its_own_evaluation_gives(
-        self, increasing, smooth, offset
+        self, increasing, shape, offset, tau
     ):
         """The reported set excludes the null exactly when ``f(null) < target``, even when
-        the null falls inside the final bracket (here, 1e-3 wide around the crossing)."""
+        the null falls inside the final bracket (here, *tau* wide around the crossing)."""
         root = 2.0
-        f, target = _analytic(root, increasing=increasing, smooth=smooth)
+        f, target = _analytic(root, increasing=increasing, shape=shape)
         resolve = root * (1.0 + offset)
-        found = _find_boundary(
-            f, target, increasing=increasing, seed=1.7, tau=1e-3, resolve=resolve
-        )
+        found = _find_boundary(f, target, increasing=increasing, seed=1.7, tau=tau, resolve=resolve)
         assert found.endpoint is not None
         included = resolve >= found.endpoint if increasing else resolve <= found.endpoint
         assert included == (f(resolve) >= target)
@@ -430,7 +468,7 @@ class TestEndpointSearchOnAnalyticFunctions:
     def test_a_crossing_below_the_descent_floor_is_reported_as_unresolved(self, increasing):
         seed = 1.0
         root = seed * 2.0**-50
-        f, target = _analytic(root, increasing=increasing, smooth=False)
+        f, target = _analytic(root, increasing=increasing, shape="step")
         found = _find_boundary(f, target, increasing=increasing, seed=seed, tau=2.0**-11)
         assert not found.reached
         assert found.log_width > 2.0**-11
@@ -442,7 +480,7 @@ class TestEndpointSearchOnAnalyticFunctions:
     def test_a_crossing_just_above_the_descent_floor_is_resolved(self, increasing):
         seed = 1.0
         root = seed * 2.0**-39
-        f, target = _analytic(root, increasing=increasing, smooth=False)
+        f, target = _analytic(root, increasing=increasing, shape="step")
         found = _find_boundary(f, target, increasing=increasing, seed=seed, tau=2.0**-11)
         assert found.reached
         assert found.log_width <= 2.0**-11
@@ -471,6 +509,30 @@ class TestPrecisionDisclosure:
         assert isinstance(note, str) and note.startswith(brr.PRECISION_NOTE_PREFIX)
 
     @pytest.mark.parametrize(
+        ("template", "expected"),
+        [
+            ("{}", None),
+            ("kept | {}", "kept"),
+            ("{}; kept", "kept"),
+            ("{} | kept; more", "kept; more"),
+            ("first; second | {} | third", "first; second | third"),
+            ("first | second; {}", "first | second"),
+            ("untouched; text | alone", "untouched; text | alone"),
+        ],
+    )
+    @pytest.mark.parametrize("width", [1e-2, math.inf])
+    def test_the_disclosure_lifts_out_of_a_longer_note_with_the_rest_intact(
+        self, template, expected, width
+    ):
+        note = brr.precision_note(self._interval(reached=False, width=width))
+        assert note is not None
+        assert brr.without_precision_note(template.format(note)) == expected
+
+    def test_an_absent_note_stays_absent(self):
+        assert brr.without_precision_note(None) is None
+        assert brr.without_precision_note("") is None
+
+    @pytest.mark.parametrize(
         "counts",
         [(6, 60, 9, 60), (0, 30, 5, 30), (60, 600, 6, 600), (5, 100, 0, 100), (50, 50, 50, 50)],
     )
@@ -497,6 +559,9 @@ class TestEndpointContainment:
             pytest.param((60, 600, 6, 600), "two-sided", id="reversed"),
             pytest.param((60, 600, 6, 600), "less", id="reversed-upper-bound"),
             pytest.param((5, 100, 0, 100), "two-sided", id="zero-treatment"),
+            pytest.param((500, 1000, 1, 1000), "two-sided", id="ratio-near-zero"),
+            pytest.param((1, 1000, 500, 1000), "two-sided", id="ratio-large"),
+            pytest.param((500, 1000, 0, 1000), "two-sided", id="dense-control-zero-treatment"),
         ],
     )
     def test_endpoints_enclose_the_finer_reference(self, counts, alternative):
@@ -519,12 +584,20 @@ class TestExactBinomialLatency:
     search (_certified_sup) is fully unaffected.
     """
 
-    def test_100k_per_arm_two_sided_search_work_stays_bounded(self, monkeypatch):
-        """The outer search stays bounded at production arm sizes: the expensive tail
-        evaluation is probed a few dozen times, never scanned across a grid. The bound is
-        derived from the resolution contract: each directional search evaluates the
-        origin, the unbounded check, the seed and at most two further bracketing points,
-        halves its ln 2 bracket to ``tau``, and probes the null once."""
+    @pytest.mark.parametrize(
+        "counts",
+        [
+            pytest.param((10_000, 100_000, 11_000, 100_000), id="10pct"),
+            pytest.param((90_000, 100_000, 91_000, 100_000), id="90pct"),
+        ],
+    )
+    def test_100k_per_arm_two_sided_search_work_stays_bounded(self, monkeypatch, counts):
+        """The outer search stays bounded at production arm sizes and conversion rates: the
+        expensive tail evaluation is probed a few dozen times, never scanned across a grid.
+        The bound is derived from the resolution contract: each directional search evaluates
+        the origin, the unbounded check, the seed and at most two further bracketing points,
+        spends at most its bisection count plus the interpolation slack narrowing the ln 2
+        bracket to ``tau``, and probes the null once."""
         probes: list[float] = []
 
         def spy(fn):
@@ -536,15 +609,15 @@ class TestExactBinomialLatency:
 
         monkeypatch.setattr(brr, "p_plus", spy(brr.p_plus))
         monkeypatch.setattr(brr, "p_minus", spy(brr.p_minus))
-        counts = (10_000, 100_000, 11_000, 100_000)
         ci = brr.confidence_interval(*counts, alpha=0.05, alternative="two-sided")
         tau = brr._endpoint_tolerance(brr._count_scale(*counts))
         bisections = math.ceil(math.log2(math.log(2.0) / tau))
-        per_search = 1 + 1 + 1 + 2 + bisections + 1
+        per_search = 1 + 1 + 1 + 2 + bisections + brr._REFINE_SLACK + 1
         p_value_calls = 2
         assert len(probes) <= 2 * per_search + p_value_calls
-        assert ci.lower < 1.1
-        assert ci.upper is not None and ci.upper > 1.1
+        ratio = (counts[2] / counts[3]) / (counts[0] / counts[1])
+        assert ci.upper is not None
+        assert ci.lower < ratio < ci.upper
 
     @pytest.mark.parametrize(
         "counts", [(1_000, 10_000, 1_100, 10_000), (10, 20_000, 12, 20_000)], ids=str

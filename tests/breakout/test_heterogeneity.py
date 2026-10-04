@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import warnings
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 import numpy as np
@@ -2549,6 +2549,27 @@ def test_bh_selected_binomial_heterogeneity_does_not_undo_fcr_interval():
     assert all(
         item.lift is None and item.excluded == "reference_not_normal" for item in selected_raw
     )
+
+
+def test_binomial_rebuild_with_an_unresolved_endpoint_search_is_withheld(monkeypatch):
+    """A rebuild at another alpha whose endpoint search fell short of its resolution is
+    refused rather than presented as an interval; the rows' own alpha never rebuilds."""
+    from increment.breakout import heterogeneity
+
+    estimates = _binomial_breakout()
+    real = heterogeneity.confidence_interval
+
+    def unresolved(*args, **kwargs):
+        return replace(real(*args, **kwargs), endpoint_log_width=math.inf, resolution_reached=False)
+
+    monkeypatch.setattr(heterogeneity, "confidence_interval", unresolved)
+
+    with pytest.raises(InvalidRequestError) as exc_info:
+        segment_heterogeneity(estimates, alpha=0.10)
+
+    assert exc_info.value.code == "breakout.segment_heterogeneity_rebuild"
+    _, segments = segment_heterogeneity(estimates, alpha=0.05)
+    assert segments
 
 
 def test_segment_contrast_refuses_exact_binomial_reference():

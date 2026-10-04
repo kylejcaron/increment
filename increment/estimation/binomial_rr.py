@@ -94,12 +94,15 @@ on the MATHEMATICAL supremum, not merely on whatever SciPy happened to
 return -- see the "Floating-point outward-rounding certification" section.
 
 Endpoint search: each crossing of the evaluated p-envelope is bracketed geometrically from the
-point estimate, then bisected on ``sqrt(lo * hi)`` until the bracket's log width is at most
-``_endpoint_tolerance`` -- 1/64 of ``_count_scale`` (the log-risk-ratio standard error),
-clamped to ``[2**-40, 2**-11]``. The reported endpoint is the bracket end OUTSIDE the set, so
-the interval only ever widens; a search that stops short of its tolerance is flagged on the
-result (``BinomialInterval.resolution_reached``) and disclosed by `precision_note`. That is
-the search resolution of the evaluated envelope: the nuisance supremum's certification gap and
+point estimate, then narrowed by interpolated probes (a probit-linear fit in log r, under a
+budget of bisection's probe count plus a small slack) until the bracket's log width is at most
+``_endpoint_tolerance`` -- 1/128 of ``_count_scale`` (the log-risk-ratio standard error),
+clamped to ``[2**-40, 2**-11]``. Interpolation only chooses where to probe: the reported
+endpoint is the bracket end OUTSIDE the set, a probed point the evaluation itself put outside
+it, so it lies beyond the evaluated crossing by less than the final bracket's log width
+whatever the fit predicted. A search that stops short of its tolerance is flagged on the result
+(``BinomialInterval.resolution_reached``) and disclosed by `precision_note`. That is the
+search resolution of the evaluated envelope: the nuisance supremum's certification gap and
 SciPy's primitive error are separate quantities.
 
 Scalability: a full evaluation of ``F_+``/``F_-`` enumerates every
@@ -118,6 +121,7 @@ from __future__ import annotations
 
 import heapq
 import math
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
@@ -125,6 +129,7 @@ from typing import Literal, cast
 
 import numpy as np
 import scipy.special._ufuncs as _scu
+from scipy.special import ndtri as _ndtri
 from scipy.stats import beta as _beta_dist
 
 from increment._literals import ALTERNATIVE_VALUES, Alternative
@@ -571,15 +576,26 @@ def p_two(r: float, x_c: int, n_c: int, x_t: int, n_t: int, beta: float) -> floa
 
 
 #: Extra bisection budget for placing the tested null on its exact side of a
-#: boundary; reached only when the coarse search stops with the null inside.
+#: boundary; reached only when the refined bracket still contains the null.
 _RESOLVE_BISECT = 60
 
-#: Endpoint stop as a fraction of `_count_scale`, the log-risk-ratio standard error.
-_ENDPOINT_RESOLUTION = 2.0**-6
-#: Finest stop. Halving a ln 2 bracket to it takes about 40 steps, which also bounds the search.
+#: Endpoint stop as a fraction of `_count_scale`, the log-risk-ratio standard error. Probes are
+#: interpolated, so each halving of the stop costs about one probe in the expensive region.
+_ENDPOINT_RESOLUTION = 2.0**-7
+#: Finest stop, and how far below its seed a search descends before giving up on a crossing:
+#: halving a ln 2 bracket to it takes about 40 steps.
 _ENDPOINT_FLOOR = 2.0**-40
 #: Coarsest stop, for sparse cells whose standard error is O(1).
 _ENDPOINT_CAP = 2.0**-11
+#: Nearest an interpolated probe sits to a bracket end, as a fraction of the stop: an estimate
+#: within that distance of the crossing brackets it from both sides in one more probe.
+_CLOSING_MARGIN = 0.5
+#: Probes beyond plain bisection's count that interpolation may spend before the window around
+#: the midpoint forces bisection.
+_REFINE_SLACK = 2
+#: P-values are clamped here before the probit, so a plateau at 0 or 1 scores a finite value.
+_SCORE_FLOOR = 1e-300
+_SCORE_CEILING = 1.0 - 2.0**-53
 
 
 def _count_scale(x_c: int, n_c: int, x_t: int, n_t: int) -> float:
@@ -618,6 +634,133 @@ class _Boundary:
     reached: bool
 
 
+class _Crossing:
+    """The bracket ``[lo, hi]`` of one monotone inversion and the probit score of each probe.
+
+    ``hi`` is at or above the crossing of ``f`` at ``target`` and ``lo`` below it, each by one
+    evaluation, so the outward endpoint is ``lo`` for an increasing ``f`` (the set is
+    ``[r, inf)``) and ``hi`` for a decreasing one (the set is ``[0, r]``).
+    """
+
+    __slots__ = ("_f", "_increasing", "_scores", "_target", "_z_target", "hi", "lo")
+
+    def __init__(self, f: Callable[[float], float], target: float, *, increasing: bool) -> None:
+        self._f = f
+        self._target = target
+        self._increasing = increasing
+        self._z_target = float(_ndtri(target))
+        self._scores: dict[float, float] = {}
+        self.lo = 0.0
+        self.hi = 0.0
+
+    @property
+    def endpoint(self) -> float:
+        return self.lo if self._increasing else self.hi
+
+    def log_width(self) -> float:
+        return math.log1p((self.hi - self.lo) / self.lo) if self.lo > 0.0 else math.inf
+
+    def at_or_above(self, r: float) -> bool:
+        """Whether one evaluation puts *r* at or above the crossing; records its score."""
+        p = self._f(r)
+        clamped = min(max(p, _SCORE_FLOOR), _SCORE_CEILING)
+        self._scores[r] = float(_ndtri(clamped)) - self._z_target
+        return (p >= self._target) == self._increasing
+
+    def narrow(self, r: float) -> None:
+        if self.at_or_above(r):
+            self.hi = r
+        else:
+            self.lo = r
+
+    def bisect(self) -> bool:
+        """Probe the geometric midpoint; ``False`` when floating point has no point inside."""
+        mid = math.sqrt(self.lo) * math.sqrt(self.hi) if self.lo > 0.0 else self.hi / 2.0
+        if not self.lo < mid < self.hi:
+            return False
+        self.narrow(mid)
+        return True
+
+    def bracket_from(self, seed: float, *, cap: float, max_expand: int) -> bool:
+        """Bracket the crossing geometrically from *seed*, within a factor of 2 at any scale.
+
+        Doubles away from *seed* while it lies below the crossing and halves toward 0 while
+        it lies above, down to ``seed * _ENDPOINT_FLOOR`` (then ``lo`` is left at 0). ``False``
+        means a decreasing ``f`` stayed at or above its target through *cap*: unbounded.
+        """
+        floor = seed * _ENDPOINT_FLOOR
+        if self.at_or_above(seed):
+            self.hi, self.lo = seed, seed / 2.0
+            while self.at_or_above(self.lo):
+                self.hi, self.lo = self.lo, self.lo / 2.0
+                if self.lo < floor:
+                    self.lo = 0.0
+                    break
+            return True
+        self.lo, self.hi = seed, seed * 2.0
+        expands = 0
+        while not self.at_or_above(self.hi):
+            self.lo, self.hi = self.hi, self.hi * 2.0
+            expands += 1
+            if self.hi > cap and not self._increasing:
+                return False
+            if self.hi > cap or expands > max_expand:
+                _raise(
+                    "estimation.binomial.tail_unrepresentable",
+                    target=self._target,
+                    probed=self.hi,
+                )
+        return True
+
+    def _probe_point(self, tau: float, remaining: int) -> float:
+        """Next probe, in log r: the probit-linear estimate of the crossing from the bracket
+        ends, held at least ``_CLOSING_MARGIN * tau`` inside them, then confined to the window
+        around the midpoint that leaves *remaining* probes enough to reach *tau* by bisection.
+        """
+        a, b = math.log(self.lo), math.log(self.hi)
+        s_lo, s_hi = self._scores[self.lo], self._scores[self.hi]
+        mid = 0.5 * (a + b)
+        x = mid if s_lo == s_hi else a + (b - a) * (s_lo / (s_lo - s_hi))
+        margin = _CLOSING_MARGIN * tau
+        x = min(max(x, a + margin), b - margin)
+        radius = max(0.5 * tau * 2.0**remaining - 0.5 * (b - a), 0.0)
+        return math.exp(min(max(x, mid - radius), mid + radius))
+
+    def refine(self, tau: float) -> None:
+        """Narrow the bracket to a log width of at most *tau* (a bracket reaching 0 stays).
+
+        Each probe is a point where the evaluation decides which side of the crossing it is on,
+        so the bracket and the outward endpoint are the evaluation's own whatever the
+        interpolation predicts. The probe window caps the search at
+        ``ceil(log2(w / tau)) + _REFINE_SLACK`` probes for an initial bracket of log width *w*.
+        """
+        if self.lo <= 0.0:
+            return
+        budget = max(0, math.ceil(math.log2(self.log_width() / tau))) + _REFINE_SLACK
+        for spent in range(budget):
+            if self.log_width() <= tau:
+                return
+            r = self._probe_point(tau, budget - spent)
+            if self.lo < r < self.hi:
+                self.narrow(r)
+            elif not self.bisect():
+                return
+        while self.log_width() > tau and self.bisect():
+            pass
+
+    def place_null(self, null: float) -> None:
+        """Never leave *null* on the wrong side of the reported endpoint: probe it exactly when
+        it sits inside the bracket and bisect until the endpoint is no longer equal to it.
+        """
+        if not self.lo <= null <= self.hi:
+            return
+        if self.lo < null < self.hi:
+            self.narrow(null)
+        for _ in range(_RESOLVE_BISECT):
+            if self.endpoint != null or not self.bisect():
+                break
+
+
 def _find_boundary(
     f: Callable[[float], float],
     target: float,
@@ -632,19 +775,18 @@ def _find_boundary(
     """Outward-rounded boundary of ``{r >= 0 : f(r) >= target}`` (an ``[r, inf)`` set if
     *increasing*, a ``[0, r]`` set otherwise), bracketed to a log width of at most *tau*.
 
-    The crossing is bracketed geometrically from *seed*: doubled away from it while *seed* is on
-    the set's side, halved toward 0 (down to ``seed * 2**-40``) once *seed* is past it, so any
-    positive crossing above that floor sits in a bracket of ratio 2 whatever its scale. The
-    bracket is then bisected on ``sqrt(lo * hi)``.
-
-    The endpoint is the bracket end OUTSIDE the set: the lower-bound search reports the largest
-    *r* confirmed outside (extending the set downward), the upper-bound search the smallest
-    (extending it upward) -- always conservative, never overstating precision. ``None`` means the
-    search exhausted *cap* without ``f`` dropping below *target* (only reachable for
-    *increasing=False*). Callers are responsible for supplying a *cap* that DISTINGUISHES a
-    genuinely unbounded set from a merely-large one: e.g. `confidence_interval` derives *cap*
-    from the Clopper-Pearson nuisance bound rather than using this default, so ``None`` here
-    reflects only the mathematically established case.
+    The crossing is bracketed geometrically from *seed* (`_Crossing.bracket_from`) and the
+    bracket refined by interpolated probes under a bisection-equivalent budget
+    (`_Crossing.refine`). The endpoint is the bracket end OUTSIDE the set: the lower-bound
+    search reports the largest *r* confirmed outside (extending the set downward), the
+    upper-bound search the smallest (extending it upward). It therefore lies beyond the
+    evaluated crossing by less than the final bracket's log width: a coarser or finer *tau*
+    can move it either way, never to the inside of a crossing the evaluation confirmed.
+    ``None`` means the search exhausted *cap* without ``f`` dropping below *target* (only
+    reachable for *increasing=False*). Callers are responsible for supplying a *cap* that
+    DISTINGUISHES a genuinely unbounded set from a merely-large one: e.g.
+    `confidence_interval` derives *cap* from the Clopper-Pearson nuisance bound rather than
+    using this default, so ``None`` here reflects only the mathematically established case.
 
     A crossing below the halving floor, or a bracket floating point cannot halve, leaves
     ``reached`` false with the conservative endpoint and the width actually achieved (``inf``
@@ -664,60 +806,14 @@ def _find_boundary(
             return _Boundary(None, 0.0, True)
         if f(0.0) < target:
             return _Boundary(0.0, 0.0, True)
-
-    def at_or_above(r: float) -> bool:
-        # Increasing f: f(lo) < target <= f(hi), so f >= target is the bracket's upper side.
-        # Decreasing f: f(lo) >= target > f(hi), so f < target is -- the inverted invariant.
-        return (f(r) >= target) == increasing
-
-    floor = seed * _ENDPOINT_FLOOR
-    if at_or_above(seed):
-        hi, lo = seed, seed / 2.0
-        while at_or_above(lo):
-            hi, lo = lo, lo / 2.0
-            if lo < floor:
-                lo = 0.0
-                break
-    else:
-        lo, hi = seed, seed * 2.0
-        expands = 0
-        while not at_or_above(hi):
-            lo, hi = hi, hi * 2.0
-            expands += 1
-            if hi > cap and not increasing:
-                return _Boundary(None, 0.0, True)
-            if hi > cap or expands > max_expand:
-                _raise("estimation.binomial.tail_unrepresentable", target=target, probed=hi)
-
-    def log_width() -> float:
-        return math.log1p((hi - lo) / lo) if lo > 0.0 else math.inf
-
-    def bisect_once() -> bool:
-        nonlocal lo, hi
-        mid = math.sqrt(lo) * math.sqrt(hi) if lo > 0.0 else hi / 2.0
-        if mid <= lo or mid >= hi:
-            return False
-        if at_or_above(mid):
-            hi = mid
-        else:
-            lo = mid
-        return True
-
-    while lo > 0.0 and log_width() > tau:
-        if not bisect_once():
-            break
-    if resolve is not None and lo <= resolve <= hi:
-        if lo < resolve < hi:
-            if at_or_above(resolve):
-                hi = resolve
-            else:
-                lo = resolve
-        # Only a boundary still equal to *resolve* is on the wrong side of it.
-        for _ in range(_RESOLVE_BISECT):
-            if (lo if increasing else hi) != resolve or not bisect_once():
-                break
-    width = log_width()
-    return _Boundary(lo if increasing else hi, width, width <= tau)
+    crossing = _Crossing(f, target, increasing=increasing)
+    if not crossing.bracket_from(seed, cap=cap, max_expand=max_expand):
+        return _Boundary(None, 0.0, True)
+    crossing.refine(tau)
+    if resolve is not None:
+        crossing.place_null(resolve)
+    width = crossing.log_width()
+    return _Boundary(crossing.endpoint, width, width <= tau)
 
 
 def _bound_upper(
@@ -796,9 +892,11 @@ class BinomialInterval:
     resolution_reached: bool
 
 
-#: Leading text of the note an unresolved endpoint search leaves on a row. A caller that
-#: replaces a row's interval drops the superseded note by this prefix.
+#: Leading text of the note an unresolved endpoint search leaves on a row. The disclosure holds
+#: none of the separators rows join their notes with, so `without_precision_note` can lift it
+#: out of a longer note.
 PRECISION_NOTE_PREFIX = "binomial endpoint resolution not reached"
+_NOTE_SEPARATOR = re.compile(r"( \| |; )")
 
 
 def precision_note(ci: BinomialInterval) -> str | None:
@@ -811,9 +909,24 @@ def precision_note(ci: BinomialInterval) -> str | None:
         else "a bracket that still reaches zero"
     )
     return (
-        f"{PRECISION_NOTE_PREFIX}: an endpoint was located only to {achieved}; "
-        "the reported bounds remain conservative (outward-rounded)"
+        f"{PRECISION_NOTE_PREFIX}: an endpoint was located only to {achieved}, "
+        "and the reported bounds remain conservative (outward-rounded)"
     )
+
+
+def without_precision_note(note: str | None) -> str | None:
+    """*note* with any `precision_note` removed, the rest of it and its separators intact."""
+    if not note:
+        return None
+    pieces = _NOTE_SEPARATOR.split(note)
+    kept: list[str] = []
+    for index in range(0, len(pieces), 2):
+        if pieces[index].startswith(PRECISION_NOTE_PREFIX):
+            continue
+        if kept:
+            kept.append(pieces[index - 1])
+        kept.append(pieces[index])
+    return "".join(kept) or None
 
 
 def confidence_interval(

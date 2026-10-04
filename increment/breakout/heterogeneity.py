@@ -139,7 +139,7 @@ _REFUSALS = refusals(
         "breakout.segment_contrast_estimate": "segment_contrast requires an estimate on both segments; unavailable rows cannot be contrasted",
         "breakout.segment.lift_none_excluded": "lift=None requires excluded to explain the unavailable row",
         "breakout.segment.point_unavailable": "a finite point estimate is unavailable for this excluded segment row",
-        "breakout.segment_heterogeneity_rebuild": "segment_heterogeneity: cannot rebuild {metric!r}/{dimension_value!r}'s relative-scale interval at alpha={alpha} -- the row is alternative={alternative!r}, dof={dof!r}, inference={inference!r}, reference_kind={reference_kind!r}, reference_df={reference_df!r}, and a symmetric two-sided Normal interval would silently misrepresent its shape or reference, including a t sampling reference from clustering or Welch. Pass an alpha matching this row's own level, or exclude it before correcting.",
+        "breakout.segment_heterogeneity_rebuild": "segment_heterogeneity: cannot rebuild {metric!r}/{dimension_value!r}'s relative-scale interval at alpha={alpha} -- the row is alternative={alternative!r}, dof={dof!r}, inference={inference!r}, reference_kind={reference_kind!r}, reference_df={reference_df!r}, and a rebuild from its stored statistics would be wrong or unresolved: a symmetric two-sided Normal interval would silently misrepresent its shape or reference (including a t sampling reference from clustering or Welch), and an exact binomial inversion at this alpha whose endpoint search did not reach its resolution is not reported. Pass an alpha matching this row's own level, or exclude it before correcting.",
         "breakout.tau_prior_scale": "tau_prior_scale must be > 0, got {tau_prior_scale}",
     },
 )
@@ -685,6 +685,8 @@ def _relative_raw_lift(
             alpha=tail_alpha,
             alternative=row.alternative,
         )
+        if not interval.resolution_reached:
+            return _refuse_rebuild(row, alpha, strict=strict)
         lower, upper = to_lift_bounds(interval)
         return Estimate(
             value=lift.value,

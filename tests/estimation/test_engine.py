@@ -2316,10 +2316,22 @@ class TestBinomialDirectionalAlphaConvention:
         assert round_tripped.require_lift().ub == lift.ub
 
     @pytest.mark.parametrize("alternative", ["greater", "less"])
-    def test_fcr_reinversion_replaces_the_precision_disclosure(self, alternative, monkeypatch):
+    @pytest.mark.parametrize(
+        ("template", "kept"),
+        [
+            ("{}", None),
+            ("{}; kept", "kept"),
+            ("front | {} | kept; more", "front | kept; more"),
+            ("kept; more | {}", "kept; more"),
+        ],
+    )
+    def test_fcr_reinversion_replaces_the_precision_disclosure(
+        self, alternative, template, kept, monkeypatch
+    ):
         """The reinverted interval supersedes the first pass, so its disclosure does too: a
-        note about the superseded search is dropped (other notes survive), and an
-        unresolved reinversion is disclosed next to what the row already said."""
+        note about the superseded search is dropped (other text and its separators
+        survive), and an unresolved reinversion is disclosed after what the row already
+        said."""
         from dataclasses import replace
 
         from increment.estimation import binomial_rr
@@ -2336,11 +2348,6 @@ class TestBinomialDirectionalAlphaConvention:
         ).results
         assert nominal.note is None
 
-        superseded = nominal.model_copy(
-            update={"note": f"{binomial_rr.PRECISION_NOTE_PREFIX}: superseded | kept"}
-        )
-        assert open_bound_from_two_sided_at_target(superseded).note == "kept"
-
         real = binomial_rr.confidence_interval
 
         def unresolved(*args, **kwargs):
@@ -2348,10 +2355,16 @@ class TestBinomialDirectionalAlphaConvention:
                 real(*args, **kwargs), endpoint_log_width=math.inf, resolution_reached=False
             )
 
+        disclosure = binomial_rr.precision_note(
+            unresolved(20, 200, 40, 200, alpha=0.1, alternative=alternative)
+        )
+        assert disclosure is not None
+        superseded = nominal.model_copy(update={"note": template.format(disclosure)})
+        assert open_bound_from_two_sided_at_target(superseded).note == kept
+
         monkeypatch.setattr(binomial_rr, "confidence_interval", unresolved)
-        flagged = open_bound_from_two_sided_at_target(nominal.model_copy(update={"note": "kept"}))
-        assert flagged.note is not None
-        assert flagged.note.startswith("kept | " + binomial_rr.PRECISION_NOTE_PREFIX)
+        flagged = open_bound_from_two_sided_at_target(superseded)
+        assert flagged.note == " | ".join(filter(None, (kept, disclosure)))
 
 
 class TestEncouragementItiRetainsBinomialRoute:

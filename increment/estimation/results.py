@@ -1845,17 +1845,9 @@ def _open_joint_far_bound(relative: RelativeConfidenceSet) -> Estimate | None:
 
 def _reinverted_binomial_note(note: str | None, ci: BinomialInterval) -> str | None:
     """*note* with any superseded endpoint-resolution disclosure replaced by *ci*'s own."""
-    from increment.estimation.binomial_rr import PRECISION_NOTE_PREFIX, precision_note
+    from increment.estimation.binomial_rr import precision_note, without_precision_note
 
-    kept = [
-        part
-        for part in (note.split(" | ") if note else [])
-        if not part.startswith(PRECISION_NOTE_PREFIX)
-    ]
-    disclosure = precision_note(ci)
-    if disclosure is not None:
-        kept.append(disclosure)
-    return " | ".join(kept) or None
+    return " | ".join(filter(None, (without_precision_note(note), precision_note(ci)))) or None
 
 
 def open_bound_from_two_sided_at_target(estimate: LiftEstimate) -> LiftEstimate:
