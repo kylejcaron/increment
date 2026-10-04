@@ -328,6 +328,20 @@ def _counted(f):
     return probe, calls
 
 
+def _refine_spending(monkeypatch, calls: list[float]) -> list[tuple[float, int]]:
+    """Record ``(bracket log width, evaluations spent)`` for each `_Crossing.refine` call."""
+    refinements: list[tuple[float, int]] = []
+    real = brr._Crossing.refine
+
+    def wrapped(self, tau: float) -> None:
+        before, width = len(calls), self.log_width()
+        real(self, tau)
+        refinements.append((width, len(calls) - before))
+
+    monkeypatch.setattr(brr._Crossing, "refine", wrapped)
+    return refinements
+
+
 class TestEndpointResolutionContract:
     """``_count_scale`` is a search unit in log-risk-ratio units and ``_endpoint_tolerance``
     turns it into the bracket's log width at stop."""
@@ -373,17 +387,18 @@ class TestEndpointSearchOnAnalyticFunctions:
     """The inversion alone, on functions with a known crossing: outward endpoint, declared
     log width, null placement and disclosed resolution failure."""
 
-    @pytest.mark.parametrize("tau", [2.0**-11, 2.0**-30])
-    @pytest.mark.parametrize("factor", [1e-9, 0.3, 0.999, 3.0, 1e3])
+    @pytest.mark.parametrize("tau", [0.1, 2.0**-11, 2.0**-30, 2.0**-40])
+    @pytest.mark.parametrize("factor", [1e-9, 0.3, 0.999, 1.0000001, 1.9999, 3.0, 1e3])
     @pytest.mark.parametrize("seed", [1e-6, 1.0, 1e6])
     @pytest.mark.parametrize("shape", ["step", "ratio", "steep"])
     @pytest.mark.parametrize("increasing", [True, False])
     def test_endpoint_is_outward_and_its_bracket_reaches_tau(
-        self, increasing, shape, seed, factor, tau
+        self, increasing, shape, seed, factor, tau, monkeypatch
     ):
         root = seed * factor
         f, target = _analytic(root, increasing=increasing, shape=shape)
         probe, calls = _counted(f)
+        refinements = _refine_spending(monkeypatch, calls)
         found = _find_boundary(probe, target, increasing=increasing, seed=seed, tau=tau)
         assert found.reached
         assert found.endpoint is not None
@@ -395,10 +410,10 @@ class TestEndpointSearchOnAnalyticFunctions:
         else:
             assert found.endpoint >= root - slack
             assert found.endpoint * math.exp(-found.log_width) <= root + slack
-        # f(0), f(cap), f(seed), at most 40 steps outward or inward, then the refinement
-        # budget: halvings of the ln 2 bracket plus the interpolation's slack.
-        halvings = math.ceil(math.log2(math.log(2.0) / tau))
-        assert len(calls) <= 3 + 41 + halvings + brr._REFINE_SLACK
+        # The refinement spends at most one probe per halving of the bracket to tau, plus the
+        # interpolation's slack: the rounding of the log coordinates cannot cost one more.
+        ((width, spent),) = refinements
+        assert spent <= math.ceil(math.log2(width / tau)) + brr._REFINE_SLACK
 
     @pytest.mark.parametrize("increasing", [True, False])
     @pytest.mark.parametrize("offset", [0.9, 1.0, 1.1])

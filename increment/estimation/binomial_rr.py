@@ -103,7 +103,8 @@ it, so it lies beyond the evaluated crossing by less than the final bracket's lo
 whatever the fit predicted. A search that stops short of its tolerance is flagged on the result
 (``BinomialInterval.resolution_reached``) and disclosed by `precision_note`. That is the
 search resolution of the evaluated envelope: the nuisance supremum's certification gap and
-SciPy's primitive error are separate quantities.
+SciPy's primitive error are separate quantities. Probes are placed with SciPy's ``ndtri``, so an
+endpoint is reproducible to the tolerance, not bit for bit, across SciPy and libm builds.
 
 Scalability: a full evaluation of ``F_+``/``F_-`` enumerates every
 control-success count ``i`` in ``0..n_c`` (the conditional sum over
@@ -593,6 +594,9 @@ _CLOSING_MARGIN = 0.5
 #: Probes beyond plain bisection's count that interpolation may spend before the window around
 #: the midpoint forces bisection.
 _REFINE_SLACK = 2
+#: Float64 error of a planned probe in log r, per unit of ``1 + max(|log lo|, |log hi|)``: the
+#: logarithms of the bracket ends, the arithmetic planning the probe, and the exponential back.
+_LOG_ROUNDING = 2.0**-48
 #: P-values are clamped here before the probit, so a plateau at 0 or 1 scores a finite value.
 _SCORE_FLOOR = 1e-300
 _SCORE_CEILING = 1.0 - 2.0**-53
@@ -716,6 +720,8 @@ class _Crossing:
         """Next probe, in log r: the probit-linear estimate of the crossing from the bracket
         ends, held at least ``_CLOSING_MARGIN * tau`` inside them, then confined to the window
         around the midpoint that leaves *remaining* probes enough to reach *tau* by bisection.
+        The window is sized against *tau* less the rounding of the log coordinates, so the
+        last probe lands the bracket at or below *tau* rather than a ulp above it.
         """
         a, b = math.log(self.lo), math.log(self.hi)
         s_lo, s_hi = self._scores[self.lo], self._scores[self.hi]
@@ -723,7 +729,8 @@ class _Crossing:
         x = mid if s_lo == s_hi else a + (b - a) * (s_lo / (s_lo - s_hi))
         margin = _CLOSING_MARGIN * tau
         x = min(max(x, a + margin), b - margin)
-        radius = max(0.5 * tau * 2.0**remaining - 0.5 * (b - a), 0.0)
+        goal = tau - _LOG_ROUNDING * (1.0 + max(abs(a), abs(b)))
+        radius = max(0.5 * goal * 2.0**remaining - 0.5 * (b - a), 0.0)
         return math.exp(min(max(x, mid - radius), mid + radius))
 
     def refine(self, tau: float) -> None:
@@ -732,7 +739,10 @@ class _Crossing:
         Each probe is a point where the evaluation decides which side of the crossing it is on,
         so the bracket and the outward endpoint are the evaluation's own whatever the
         interpolation predicts. The probe window caps the search at
-        ``ceil(log2(w / tau)) + _REFINE_SLACK`` probes for an initial bracket of log width *w*.
+        ``ceil(log2(w / tau)) + _REFINE_SLACK`` probes for an initial bracket of log width *w*,
+        sized against *tau* less the rounding of the log coordinates (`_LOG_ROUNDING`), so the
+        last probe never leaves the bracket a ulp above *tau*; bisection finishes only a bracket
+        that rounding still left wider.
         """
         if self.lo <= 0.0:
             return
