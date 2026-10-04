@@ -715,7 +715,8 @@ count cells, the control window by the treatment windows at the null rate and at
 alternative that solve evaluates. A supplied effect, an effect search (the union of the
 windows it evaluates) and each row of a power curve are separate solves: the cells an
 earlier row or the supplied effect left on the shared geometry are a cache, dropped when
-the next solve needs the room, so a curve row answers as its scalar call does. The work
+the next solve needs the room (the solve's own cells never are, and its union is what the
+bound counts), so a curve row answers as its scalar call does. The work
 follows that count, not the arm size, which the runtime decides up to a billion units.
 Planning refuses a decision whose null rectangle exceeds the bound before any replay
 (`power.binomial_replay_bound_exceeded`), and with the same code (its context then names

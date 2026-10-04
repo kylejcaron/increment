@@ -198,7 +198,8 @@ rate alone; `var` does not enter.
   evaluates. A supplied effect, an effect search (the union of the windows it
   evaluates) and each row of a `power_curve` are separate solves: cells an
   earlier row or the supplied effect left are a cache, dropped when the next
-  solve needs the room, so a row answers as its scalar call does. A design whose
+  solve needs the room (the solve's own cells never are, and its union is what the
+  bound counts), so a row answers as its scalar call does. A design whose
   null rectangle exceeds 10,000,000 cells, or an alternative whose window would
   take its solve past it, is refused with `power.binomial_replay_bound_exceeded`
   before any replay or allocation (the error's context names the analyzed
