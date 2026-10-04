@@ -235,9 +235,13 @@ def _round_outward(x: float, *, direction: Literal["down", "up"]) -> float:
     conservative (outward-rounded) bound survives a further EXACT
     arithmetic operation (e.g. subtracting 1 to convert a risk-ratio bound
     to relative lift) without an ordinary rounding of that operation
-    silently narrowing the bound back past the true value.
+    silently narrowing the bound back past the true value. The largest
+    finite float stays itself: that operation moves it toward zero, so its
+    rounding cannot have fallen short of the true value, and the neighbour
+    is infinite where every consumer needs a finite endpoint.
     """
-    return math.nextafter(x, -math.inf if direction == "down" else math.inf)
+    neighbour = math.nextafter(x, -math.inf if direction == "down" else math.inf)
+    return neighbour if math.isfinite(neighbour) else x
 
 
 #: Small-tail solver applicability floor. Only n=1 has closed-form

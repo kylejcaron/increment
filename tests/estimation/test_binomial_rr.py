@@ -10,6 +10,7 @@ separately -- see that module for coverage-frequency evidence).
 from __future__ import annotations
 
 import math
+import sys
 from decimal import Decimal, localcontext
 from math import comb
 
@@ -22,6 +23,7 @@ from increment.estimation import binomial_rr as brr
 from increment.estimation._binomial_support import chernoff_support, exponent_lower_bound
 from increment.estimation._tails import SCIPY_BINOMIAL_ULP_ALLOWANCE
 from increment.estimation.binomial_rr import _find_boundary
+from increment.estimation.results import BinomialConfidenceSet
 from tests.estimation._binomial_endpoint_reference import assert_endpoints_contain_finer_reference
 
 # --- Independent decimal oracle for scipy.stats.binom --------------------
@@ -209,6 +211,47 @@ class TestToLiftBounds:
         ci = brr.confidence_interval(0, 10, 5, 10, alpha=0.05, alternative="two-sided")
         _lower, upper = brr.to_lift_bounds(ci)
         assert upper is None
+
+    @pytest.mark.parametrize("closeness", [1e-9, 1e-5, 3e-4])
+    def test_an_endpoint_at_the_float_range_converts_to_a_finite_lift_bound(self, closeness):
+        """An upper crossing within the declared resolution of the largest float can be
+        reported as that float (the search's outward end, clipped to its finite cap); the
+        lift conversion must keep it finite, outward of the exact ``R - 1``, and constructible
+        as the persisted set, which refuses an infinite endpoint."""
+        root = sys.float_info.max * (1.0 - closeness)
+        found = _find_boundary(
+            lambda r: 1.0 if r <= root else 0.0,
+            0.5,
+            increasing=False,
+            seed=1e-3,
+            tau=2.0**-11,
+            cap=sys.float_info.max,
+        )
+        assert found.endpoint is not None and found.endpoint >= root
+        ci = brr.BinomialInterval(
+            lower=0.5,
+            upper=found.endpoint,
+            geometry="central",
+            p_value_null=0.4,
+            endpoint_log_width=found.log_width,
+            resolution_reached=found.reached,
+        )
+        lower, upper = brr.to_lift_bounds(ci)
+        assert upper is not None and math.isfinite(upper)
+        assert upper >= found.endpoint - 1.0
+        BinomialConfidenceSet(
+            lower=lower,
+            upper=upper,
+            alpha=0.05,
+            decision_alpha=0.05,
+            level=0.95,
+            geometry="central",
+            x_c=1,
+            n_c=1,
+            x_t=1,
+            n_t=1000,
+            nuisance_beta=brr.nuisance_beta(0.05),
+        )
 
 
 class TestFastBinomMatchesScipy:
