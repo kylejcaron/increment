@@ -35,7 +35,7 @@ from increment._literals import (
     ALTERNATIVE_VALUES,
     Alternative,
     PreferredDirection,
-    Role,
+    RowRole,
     ValueScale,
 )
 from increment.errors import (
@@ -597,9 +597,9 @@ class LiftEstimate(_RowIdentity):
     prior_shrunk: bool = False
     # True when `prior is not None`: lift.log_mean/log_se are raw pre-prior
     # statistics while value/lb/ub are the prior-informed posterior.
-    role: Role | None = None
-    # The declared-plan role this row was estimated under; None only when
-    # `src.plan.declared` is False (no `AnalysisPlan` was ever declared).
+    role: RowRole | None = None
+    # The declared-plan role this row was estimated under, or "exploratory" for a metric
+    # added after the plan; None only when `src.plan.declared` is False.
     discovery: bool | None = None
     # None outside a tested family; otherwise BH/e-BH selection or qualified
     # fixed-roster Bonferroni selection for asymptotic mean inference.
@@ -615,6 +615,8 @@ class LiftEstimate(_RowIdentity):
     # fcr_alpha = min(realized_threshold, family_nominal_alpha).
     family_guarantee: Literal["finite_sample", "asymptotic_sequential"] | None = None
     family_nominal_alpha: float | None = None
+    family_size: int | None = Field(default=None, ge=1)
+    # Hypotheses in the correcting family (BH's m) where the family records it; None otherwise.
 
     # family_threshold is R*q/m for BH/e-BH; unset for asymptotic Bonferroni.
     # Reported intervals never receive more than their nominal alpha.
@@ -996,6 +998,10 @@ class LiftEstimate(_RowIdentity):
                 reason="a finite point estimate is unavailable; use binomial_set",
             )
         return self.lift
+
+    def _family_view(self) -> LiftEstimate:
+        """The estimate exploratory-family evidence and FCR reissue read: this row itself."""
+        return self
 
     def reintervalize(self, alpha: float) -> LiftEstimate:
         """Reinvert persisted inference; bootstrap roots are never regenerated."""

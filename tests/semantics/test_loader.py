@@ -1381,6 +1381,9 @@ def test_realistic_demo_example_loads():
         "average_order_value",
         "d7_retention",
         "checkout_latency_ms",
+        "orders_per_user",
+        "page_views_per_user",
+        "checkout_loads_per_user",
     }
     latency = next(m for m in defs.metrics if m.name == "checkout_latency_ms")
     assert isinstance(latency, RatioMetric)

@@ -51,6 +51,7 @@ __all__ = [
     "refuse_observational_relative_margin",
     "validate_compiled_encouragement_plan",
     "validate_readout_plan",
+    "with_unassigned_procedures",
 ]
 
 
@@ -584,6 +585,28 @@ def compile_decision_plan(
 
     validate_sequential_plan(compiled, metrics, design)
     return compiled
+
+
+def with_unassigned_procedures(
+    plan: CompiledDecisionPlan,
+    metrics: Sequence[Metric],
+    *,
+    design: Randomized | Encouragement | Observational | None,
+) -> CompiledDecisionPlan:
+    """*plan* plus default unassigned procedures for *metrics* it does not compile.
+
+    The one place a metric outside the declared plan receives a procedure: the
+    undeclared-plan default (``role="unassigned"``, two-sided, full ``alpha``) joins no
+    family and leaves every declared procedure untouched.
+    """
+    from types import MappingProxyType
+
+    missing = [metric for metric in metrics if metric.name not in plan.procedures]
+    if not missing:
+        return plan
+    defaults = compile_decision_plan(None, missing, path=plan.path, design=design)
+    procedures = MappingProxyType({**plan.procedures, **defaults.procedures})
+    return plan.model_copy(update={"procedures": procedures})
 
 
 def validate_compiled_encouragement_plan(

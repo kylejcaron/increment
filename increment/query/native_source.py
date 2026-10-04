@@ -1331,6 +1331,7 @@ class DefinitionsMomentSource(SequentialSourceMixin):
             "breakout_source",
             "breakout_sources",
             "day_source",
+            "exploratory_source",
         }
     )
     shape: Literal["unit_summary", "unit_panel"] | None = None
@@ -1777,6 +1778,35 @@ class DefinitionsMomentSource(SequentialSourceMixin):
             extra_sources=self._declared_breakout_sources() if include_breakouts else (),
         ) as pinned:
             yield pinned if population == "assigned" else pinned.triggered_source()
+
+    def exploratory_source(self, *, metrics: Sequence[Metric]) -> DefinitionsMomentSource:
+        """A sibling source over the declared metrics plus *metrics*, in this session.
+
+        Each added metric compiles the default unassigned procedure
+        (:func:`increment.plan.with_unassigned_procedures`), so no declared procedure,
+        family, or configuration changes. It shares this source's session, so a pinned
+        snapshot serves it from the same pin; it never materializes (``store="none"``)
+        and holds nothing to close.
+        """
+        from increment.plan import with_unassigned_procedures
+
+        added = tuple(metrics)
+        plan = with_unassigned_procedures(self._context.plan, added, design=self._context.design)
+        sibling = DefinitionsMomentSource(
+            self._session,
+            self._experiment,
+            [*self._metrics, *added],
+            store="none",
+            on_mixed_assignment=self._on_mixed_assignment,
+            backend=self._backend,
+            design=self._context.design,
+            plan=plan,
+        )
+        sibling._horizon_metrics = (
+            *self._horizon_metrics,
+            *(metric for metric in added if metric not in self._horizon_metrics),
+        )
+        return sibling
 
     def _metric_primary_events(self, metric: Metric) -> Table:
         """This metric's own primary events table (numerator events for a

@@ -24,8 +24,10 @@ from increment.dashboard._data import (
     DashboardSnapshot,
     ExploreView,
     _require_same_experiment,
+    all_metrics,
     group_data_csv,
     load_explore,
+    metric_names,
     readout_csv,
     row_for_metric,
 )
@@ -56,6 +58,8 @@ from increment.dashboard._format import (
     timestamp_label,
 )
 from increment.dashboard._html import (
+    overview_notes,
+    overview_table,
     render_details,
     render_health,
     render_metric_details,
@@ -159,9 +163,16 @@ def build_payload(analysis: Analysis, *, snapshot: DashboardSnapshot) -> dict[st
         "results": _styled(table + results_notes(snapshot)),
         "health": _styled(render_health(snapshot).text),
         "provenance": _styled(render_details(snapshot).text),
-        "metrics": [_metric_payload(snapshot, model.name) for model in snapshot.metrics],
+        "metrics": [_metric_payload(snapshot, model.name) for model in all_metrics(snapshot)],
         "readoutCsv": readout_csv(snapshot).decode("utf-8"),
         "scopes": scopes,
+        "overview": {
+            key: {
+                "html": _styled(overview_table(snapshot, breakout)),
+                "notes": overview_notes(snapshot, breakout),
+            }
+            for key, breakout in breakouts.items()
+        },
         "explore": {
             key: _explore_scope(analysis, snapshot, breakout, correction)
             for key, breakout in breakouts.items()
@@ -287,7 +298,13 @@ def _metric_payload(snapshot: DashboardSnapshot, metric: str) -> dict[str, Any]:
     return {
         "key": metric,
         "label": _label(metric),
-        "role": str(row.get("role") or "unassigned") if row is not None else "unassigned",
+        "role": (
+            str(row.get("role") or "unassigned")
+            if row is not None
+            else "exploratory"
+            if metric not in metric_names(snapshot)
+            else "unassigned"
+        ),
         "detail": _styled(render_metric_details(snapshot, metric=metric).text),
         "csv": group_data_csv(snapshot, metric=metric).decode("utf-8"),
     }
@@ -452,7 +469,7 @@ def _explore_scope(
     breakout: tuple[str | None, str] | None,
     correction: str | None,
 ) -> dict[str, dict[str, Any]]:
-    names = [model.name for model in snapshot.metrics]
+    names = [model.name for model in all_metrics(snapshot)]
     entries: dict[str, dict[str, Any]] = {name: {} for name in names}
     for view_key, (view, complete) in _VIEWS.items():
         batch = None
@@ -469,7 +486,9 @@ def _explore_scope(
                     breakout=breakout,
                 )
             )
+        declared = set(metric_names(snapshot))
         for metric in names:
+            # The metric=None batch covers declared metrics only; added metrics load their own.
             entries[metric][view_key] = _explore_entry(
                 analysis,
                 snapshot,
@@ -477,7 +496,7 @@ def _explore_scope(
                 view_key=view_key,
                 breakout=breakout,
                 correction=correction,
-                batch=batch,
+                batch=batch if metric in declared else None,
             )
     return entries
 

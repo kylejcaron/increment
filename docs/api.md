@@ -204,6 +204,17 @@ metric maturity, respecting the experiment's day boundary and mixed-assignment
 policy. This unit-level history requires a native definitions-backed
 analysis; non-native and clustered sources raise a coded `CapabilityError`.
 
+`Analysis.available_metrics` lists the saved metrics the experiment does not declare, in
+definitions order. `run`, `run_breakout`, `run_asof_lift`, `run_asof` and `run_daily` accept
+`exploratory_metrics=` naming some of them: their rows carry `role="exploratory"`, join no
+plan family, and leave every declared row unchanged. `metrics=[]` with
+`exploratory_metrics=` reads only the added metrics. An unknown or already-declared name
+(`facade.analysis_config.exploratory_metric_unavailable`) is refused before any query, as is
+any source other than `Analysis.from_definitions`
+(`facade.analysis.exploratory_metrics_source_limited`) and a registered sequential plan
+(`facade.analysis.exploratory_metrics_sequential`). `Analysis.dashboard_snapshot` pins the
+added metrics when they are passed in `metrics=`.
+
 ::: increment.Metric
 
 ::: increment.Method
@@ -602,6 +613,42 @@ correction is adopted against, and a weighted headline whose selection bias
 cannot be removed honestly is worse than none.
 
 ::: increment.segment_rollout_recommendation
+
+## Exploratory multiplicity
+
+`select_exploratory_family` corrects whole-window `LiftEstimate` rows and segment
+`BreakoutEstimate` rows as one Benjamini-Hochberg family at FDR level `q`. Every
+returned row records `discovery`, `family_axes`, `family_q`, `family_threshold` and
+`family_size`, so a row read alone states which family corrected it. A selected
+row's interval is reissued at the Benjamini-Yekutieli level `1 - R*q/m`, capped at
+the row's own nominal level, and equals the interval `run_breakout(correction="bh")`
+returns for the same cell; unselected rows keep their nominal interval.
+
+Rows must be uncorrected fixed-horizon decision rows. Each refusal names every
+offending row in its `rows` context:
+
+| Combination | Classification |
+|---|---|
+| Mean, ratio and CUPED rows (Wald log-scale interval) | Supported: reissued from the persisted raw statistics and reference. |
+| Conversion and retention rows (exact binomial) | Supported: reinverted from the persisted counts, one-sided geometry kept. |
+| Clustered ratio rows (Fieller set) | Supported: reinverted from the persisted joint reference. |
+| Breakout segments, and whole-window rows beside them | Supported: one family over metric, arm and segment. |
+| Cells excluded by design (too few units, no control arm) | Not hypotheses: returned unchanged, outside the family. Outcome-based exclusions stay in `m` as non-rejections. |
+| Informative prior | Mathematically unsound for BH (a posterior tail is not a frequentist p-value): refused, `breakout.run_breakout_bh_excludes_prior`. |
+| Sequential inference | Unfinished: refused, `estimation.family.exploratory_sequential`. |
+| Quantile, percentile-winsorized and additive-scale rows | Unfinished: their interval cannot be reissued from persisted state without approximation, so they are refused, `estimation.family.exploratory_construction`. |
+| Rows already corrected, sensitivity rows, day-axis rows | Refused: `estimation.family.exploratory_pre_corrected`, `estimation.family.exploratory_non_decision`, `estimation.family.exploratory_row`. |
+
+::: increment.estimation.family.select_exploratory_family
+
+`exploratory_family_exclusion` applies the same admissibility test to one row and
+returns the reason it cannot join the family, or `None`. Leave excluded rows out of
+the family and report the reason, instead of letting one cell refuse the call; the
+refusals carry the same strings in their `reasons` (or `constructions`) context.
+One-sided (`greater`/`less`) Wald, exact binomial and Fieller rows are reissued
+exactly, with their one-sided geometry, and are not excluded.
+
+::: increment.estimation.family.exploratory_family_exclusion
 
 ## Errors
 

@@ -189,6 +189,7 @@ def _base_liftestimate_to_row(
         "family_axes": getattr(est, "family_axes", None),
         "family_q": getattr(est, "family_q", None),
         "family_threshold": getattr(est, "family_threshold", None),
+        "family_size": getattr(est, "family_size", None),
         "group_id": est.group_id,
     }
     if region is not None:
@@ -378,6 +379,7 @@ def contrast_results_to_readout(
                 "family_axes": None,
                 "family_q": None,
                 "family_threshold": None,
+                "family_size": None,
             }
         )
     return rows

@@ -14,11 +14,12 @@ def _():
 
     import _dashboard_demo as demo
     import ibis
+    import marimo as mo
 
     from increment import Analysis
     from increment.dashboard import DashboardConfig, prepare_dashboard, render_dashboard
 
-    return Analysis, DashboardConfig, Path, demo, ibis, prepare_dashboard, render_dashboard
+    return Analysis, DashboardConfig, Path, demo, ibis, mo, prepare_dashboard, render_dashboard
 
 
 @app.cell
@@ -35,10 +36,27 @@ def _(ibis):
 
 
 @app.cell
-def _(Analysis, DashboardConfig, con, demo, demo_manifest):
+def _(Analysis, con, demo_manifest):
     analysis = Analysis.from_definitions(
         "checkout_redesign", "examples/realistic_demo/definitions", con
     )
+    return (analysis,)
+
+
+@app.cell
+def _(analysis, mo):
+    # Saved definitions the experiment does not declare; changing the selection re-prepares.
+    added_metrics = mo.ui.multiselect(
+        options=[metric.name for metric in analysis.available_metrics],
+        label="Add exploratory metrics",
+        full_width=True,
+    )
+    added_metrics
+    return (added_metrics,)
+
+
+@app.cell
+def _(DashboardConfig, added_metrics, demo, demo_manifest):
     config = DashboardConfig(
         expected_allocation={"control": 0.5, "treatment": 0.5},
         title="Checkout redesign",
@@ -49,8 +67,9 @@ def _(Analysis, DashboardConfig, con, demo, demo_manifest):
             "checkout_latency_ms": "ms",
         },
         provenance=demo.demo_provenance(demo_manifest),
+        exploratory_metrics=tuple(added_metrics.value),
     )
-    return analysis, config
+    return (config,)
 
 
 @app.cell

@@ -72,6 +72,7 @@ Reproduce this table with `uv run --extra demo --extra tables --extra dashboard 
 | `Analysis.planning_baseline` under a declared trigger (triggered-population moments and `trigger_rate`) | refused (SOURCE -- `from_unit_summary` accepts no `Experiment` declaration, so `planning_baseline`'s `trigger` always resolves `None`; the assigned population is analyzed instead) | refused (SOURCE -- same as `from_unit_summary`) | refused (SOURCE -- same as `from_unit_summary`) | yes | yes with the `trigger_population` and `assignment_counts` extensions; otherwise refused (SOURCE, `analysis.planning_baseline.trigger_evidence_unavailable`) | refused (SOURCE -- same as `from_unit_summary`) |
 | Logged-policy contrast (`estimate_policy_contrast`) | refused (SOURCE -- no `Analysis` constructor carries a decision trace: the per-decision chosen action, exact logged propensity, logging policy version and reward boundary; the family's own ingress is `LoggedTrace.from_records` / `from_frame`) | refused (SOURCE -- same) | refused (SOURCE -- same) | refused (SOURCE -- same) | refused (SOURCE -- same) | refused (SOURCE -- same) |
 | TabularPolicy persistence (`model_dump_json` / `model_validate_json`) | not comparable (SOURCE -- no `Analysis` constructor carries a policy table; the policy is a `LoggedTrace` input) | not comparable (SOURCE -- same) | not comparable (SOURCE -- same) | not comparable (SOURCE -- same) | not comparable (SOURCE -- same) | not comparable (SOURCE -- same). Within the family: JSON roundtrips string-keyed tables only; any other key type refuses (CONSTRUCTION -- JSON object keys are strings, `logged_policy.policy.json_context_key`); typed keys persist through `model_dump(mode="python")` or trusted pickle |
+| Metrics added after the plan: `Analysis.available_metrics` and `exploratory_metrics=` on `run`, `run_breakout`, `run_asof_lift`, `run_asof`, `run_daily` | refused (SOURCE, `facade.analysis.exploratory_metrics_source_limited` -- no saved definitions to add from; use `Analysis.from_definitions`) | refused (SOURCE, same code) | refused (SOURCE, same code) | yes, `role="exploratory"` under the default unassigned procedure; refused under registered sequential inference (`facade.analysis.exploratory_metrics_sequential` -- an added metric is chosen after data are visible, so no registered model covers it) | refused (SOURCE, same code) | refused (SOURCE, same code) |
 
 For `from_definitions`, pinning preserves dimensions joined by freshness-bearing
 fact sources. Qualifying non-enrolled events can establish that later data has
@@ -82,6 +83,14 @@ Windowed ratios use the earlier numerator/denominator observation bound for
 totals and completed as-of cohorts. An entirely null component under
 `missing="zero"` retains the panel-extent fallback; an explicitly supplied
 `observation_end` remains authoritative.
+
+An added metric is read through the same estimators as a declared one: CUPED, ratio
+and winsorized metrics follow the call-wide `decision_method` you pass (the metric has no
+declared binding, so the default unadjusted estimator applies), clustering and breakouts
+follow the experiment's declaration, and the day-axis refusals (clustered, winsorized,
+quantile, dimensioned `run_daily` of an undeclared metric) keep their codes. It joins
+no plan family and never changes a declared row; under a breakout multiplicity plan its
+segment cells form a family of their own.
 
 For clustered triggered planning, `from_definitions` and `from_unit_day_artifact`
 retain both populations: assigned mean cluster size determines recruitment;

@@ -173,7 +173,7 @@ and do not restyle the notebook canvas.
 | `render_health(snapshot)` | Visual allocation bars with target markers, the SRM verdict, and visible assignment warnings and result caveats. Allocation over time and evidence expands to a CoefTable with one row per variant, cumulative enrolled share, and the check statistics. |
 | `render_results(snapshot)` | The whole declared family through CoefTable, grouped by role, with forest plots and an explicit adverse-guardrail callout. Redundant confidence, significance, and confidence-set display columns are omitted; levels and interpretation remain in notes and CSV. |
 | `render_metric_details(snapshot, metric=...)` | Lift, interval, and direction chips; policy and evidence-geometry details; observed data by group, including eligibility, exclusions, counts, units, and provenance. |
-| `load_explore(analysis, snapshot=..., metric=..., view=..., completed_windows_only=..., breakout=...)` | One advanced view captured during preparation. `metric=None` loads every declared metric together; a name selects its own captured series. Original coded refusals remain specific to each state. Validates experiment binding and options, without warehouse queries or materialization. |
+| `load_explore(analysis, snapshot=..., metric=..., view=..., completed_windows_only=..., breakout=...)` | One advanced view captured during preparation. `metric=None` loads every declared metric together; a declared or added metric name selects its own captured series. Original coded refusals remain specific to each state. Validates experiment binding and options, without warehouse queries or materialization. |
 | `render_explore(snapshot, data, metric=..., view=..., completed_windows_only=...)` | One Explore section with a combined cumulative-lift table or separate absolute daily/cumulative tables per metric, actual date basis/range, and visible unavailable-point reasons. Applicable headline evidence geometry is labeled separately from the series. Pass the same metric selection used to load data; `metric=None` renders every declared metric together. |
 | `render_details(snapshot)` | Collapsible experiment metadata, per-metric policies, provenance, and static-snapshot limitations. |
 | `readout_csv(snapshot)` | The current headline readout as UTF-8 CSV bytes, for `mo.download`. |
@@ -233,7 +233,40 @@ undeclared breakout selection is refused with `InvalidRequestError`
 (`dashboard.invalid_view`); the refusal context names the rejected metric, view,
 or breakout.
 
-Explore selects a metric and a declared breakout, then switches between
+### Overview
+
+Explore opens on **Overview**: one CoefTable of every metric's relative lift.
+With **Compare by** set to a declared breakout, each metric's segments nest
+beneath its whole-experiment row. Selecting a metric opens its **Time series**.
+
+- The experiment's own metrics on the whole experiment are the Readout's
+  confirmatory rows, never re-corrected.
+- Every other cell is exploratory: the whole-experiment rows of added
+  metrics, and every segment cell of every metric and declared breakout.
+  These cells form one Benjamini-Hochberg family at the plan's `q`, fixed
+  for the snapshot, so switching **Compare by** never changes a cell. Only a
+  discovery is coloured as a finding, with its FCR-adjusted interval; other
+  exploratory intervals are unadjusted and drawn neutral even when they
+  exclude zero.
+- A cell the family cannot take (for example a quantile metric or an
+  informative prior) is left out with its reason in **Overview notes**; it
+  never blocks the other cells. Under a registered sequential plan the added
+  metrics and uncorrected segments are refused with their coded reasons.
+
+### Added exploratory metrics
+
+`DashboardConfig(exploratory_metrics=(...))` names metrics from
+`analysis.available_metrics`: saved definitions the experiment does not
+declare. They are read in the same pinned snapshot as everything else, appear
+in the Overview's Exploratory group and in Time series, and never enter the
+Readout or the Report. A name the definitions do not offer is refused with
+`dashboard.invalid_config` before any read. The example notebook offers a
+searchable multiselect above the dashboard; changing it re-prepares the
+snapshot, so the exploratory family grows with each added metric.
+
+### Time series
+
+Time series selects a metric and a declared breakout, then switches between
 **Relative lift** and **Absolute values**. Relative lift is cumulative;
 absolute values show the control and treatment arms on daily or cumulative
 scales. **Completed windows only** applies to cumulative views, not daily

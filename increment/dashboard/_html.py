@@ -7,11 +7,11 @@ state: notebooks own their controls and pass the values in.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import replace
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import fields, replace
 from importlib import resources
 from math import ceil, inf, isfinite, log10
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import coeftable as ct
 import marimo as mo
@@ -20,7 +20,9 @@ from scipy.stats import norm
 
 from increment.dashboard._data import (
     DashboardSnapshot,
+    all_metrics,
     decision_rows,
+    enriched_rows,
     estimate_for_metric,
     group_data_rows,
     require_metric,
@@ -718,11 +720,15 @@ _TABLE_WRAP = '<div class="inc-dashboard-table-wrap">{}</div>'
 
 
 def _geometry_disclosure(
-    snapshot: DashboardSnapshot, rows: Iterable[Mapping[str, Any]], *, label: str
+    snapshot: DashboardSnapshot,
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    label: str,
+    name: Callable[[Mapping[str, Any]], str] = lambda row: str(row.get("metric")),
 ) -> str:
     geometry = _list(
         [
-            f"<strong>{esc(row.get('metric'))}</strong>: {esc(text)}"
+            f"<strong>{esc(name(row))}</strong>: {esc(text)}"
             for row in rows
             for text in _geometry_explanations(snapshot, row)
         ],
@@ -746,6 +752,160 @@ def results_table(snapshot: DashboardSnapshot) -> str:
     charts = snapshot.config.theme.charts
     resize_forest(table, width=charts.forest_width, height=charts.forest_height)
     return _TABLE_WRAP.format(native_html(table, metrics))
+
+
+_WHOLE = "Whole experiment"
+
+
+def overview_rows(
+    snapshot: DashboardSnapshot, breakout: tuple[str | None, str] | None
+) -> list[dict[str, Any]]:
+    """The Explore overview's decision rows for one scope, metric by metric.
+
+    Declared metrics' whole-experiment rows are the Readout's rows. Exploratory rows (added
+    metrics and every segment) carry the overview family's correction and the ``_exploratory``
+    mark; their significance is their BH discovery, not their unadjusted interval.
+    """
+    overview = snapshot.overview
+
+    def exploratory(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {**row, "stat_sig": bool(row.get("discovery")), "_exploratory": True} for row in rows
+        ]
+
+    by_metric: dict[str, list[dict[str, Any]]] = {}
+    for row in decision_rows(snapshot):
+        by_metric.setdefault(str(row["metric"]), []).append(
+            {**row, "segment": f"{_WHOLE} · confirmatory"}
+        )
+    if overview is not None and overview.family_refusal is None:
+        for row in exploratory(enriched_rows(overview.exploratory)):
+            by_metric.setdefault(str(row["metric"]), []).append({**row, "segment": _WHOLE})
+        segments = overview.segments.get(breakout, ()) if breakout is not None else ()
+        for row in exploratory(enriched_rows(segments)):
+            by_metric.setdefault(str(row["metric"]), []).append(row)
+    # Segments nest under their metric, so every row takes its metric's declared role group;
+    # added metrics form the Exploratory group.
+    roles = {str(row["metric"]): row.get("role") for row in decision_rows(snapshot)}
+    ordered = [
+        {**row, "role": roles.get(model.name, "exploratory")}
+        for model in all_metrics(snapshot)
+        for row in by_metric.get(model.name, [])
+    ]
+    if breakout is None:
+        return [{key: value for key, value in row.items() if key != "segment"} for row in ordered]
+    # Segment nesting needs one method column; each row is its metric's decision method.
+    return [{**row, "method": "decision"} for row in ordered]
+
+
+def overview_table(snapshot: DashboardSnapshot, breakout: tuple[str | None, str] | None) -> str:
+    """The Explore overview as one native CoefTable, segments nested under each metric."""
+    rows = overview_rows(snapshot, breakout)
+    if not rows:
+        return f'<p class="inc-dashboard-note">{missing_html("no decision rows to show")}</p>'
+    table, metrics = readout_native(
+        _display_rows(rows),
+        title="",
+        subtitle=f"{snapshot.treatment_group} vs {snapshot.control_group}",
+        theme=coeftable_theme(snapshot.config.theme),
+        nest_by="arm" if breakout is None else "segment",
+        advisory=False,
+        show_interval_level=True,
+    )
+    drop_columns(table, _REDUNDANT_COLUMNS)
+    charts = snapshot.config.theme.charts
+    resize_forest(table, width=charts.forest_width, height=charts.forest_height)
+    _colour_discoveries_only(table)
+    declared = {model.name for model in snapshot.metrics}
+    explained = [
+        row for row in rows if row["metric"] not in declared or row.get("dimension") is not None
+    ]
+
+    def name(row: Mapping[str, Any]) -> str:
+        segmented = row.get("dimension") is not None
+        return f"{row['metric']} · {row['segment']}" if segmented else str(row["metric"])
+
+    return (
+        _TABLE_WRAP.format(native_html(table, metrics))
+        + _geometry_disclosure(snapshot, explained, label=INTERVALS_DISCLOSURE, name=name)
+        + _caveats_list(result_caveats([{**row, "metric": name(row)} for row in explained]))
+    )
+
+
+def _colour_discoveries_only(table: ct.CoefTable) -> None:
+    """Draw exploratory rows that are not BH discoveries in the inconclusive colour.
+
+    The forest colours any interval that clears zero; an exploratory row's unadjusted interval
+    may clear zero without the family selecting it, and must not look like a finding.
+    """
+    frame = pd.DataFrame(table.data)
+    if "_exploratory" not in frame.columns:
+        return
+    marked = frame["_exploratory"].fillna(False).astype(bool)
+    neutral = frozenset(int(i) for i in frame.index[marked & ~frame["stat_sig"].astype(bool)])
+    if not neutral:
+        return
+
+    def inconclusive(*_: Any) -> Literal["inconclusive"]:
+        return "inconclusive"
+
+    def neutral_forest(column: Any) -> Any:
+        base = type(column)
+
+        class DiscoveryForest(base):
+            def cell(self, ctx: Any) -> str:
+                if ctx.index in neutral:
+                    ctx = replace(ctx, color_rule=inconclusive)
+                return super().cell(ctx)
+
+        return DiscoveryForest(
+            **{field.name: getattr(column, field.name) for field in fields(column)}
+        )
+
+    table.columns = tuple(
+        neutral_forest(column) if isinstance(column, ct.Forest) else column
+        for column in table.columns
+    )
+
+
+def overview_notes(
+    snapshot: DashboardSnapshot, breakout: tuple[str | None, str] | None
+) -> list[str]:
+    """Plain-text statements a reader needs beside the overview table."""
+    overview = snapshot.overview
+    notes = [
+        "Whole-experiment rows of the experiment's own metrics are the Readout's confirmatory "
+        "results, never re-corrected here."
+    ]
+    if overview is None:
+        return notes
+    for metric, place, refusal in overview.refusals:
+        notes.append(f"{metric} ({place}) is unavailable: {refusal} ({refusal.code}).")
+    if overview.family_refusal is not None:
+        refusal = overview.family_refusal
+        notes.append(
+            f"Exploratory cells are not shown: {refusal} ({refusal.code}). Uncorrected "
+            "exploratory estimates are not substituted."
+        )
+        return notes
+    notes.append(
+        f"Exploratory family: Benjamini-Hochberg at q = {overview.family_q:.3g} across "
+        f"{count_text(overview.family_size)} comparisons (added metrics and every segment cell "
+        "of every declared breakout), fixed for this snapshot."
+    )
+    notes.append(
+        "Only BH discoveries are coloured as findings, with FCR-adjusted intervals. Other "
+        "exploratory intervals are unadjusted and drawn in the neutral colour even when they "
+        "exclude zero. Exploratory results generate hypotheses; they are not confirmatory."
+    )
+    if overview.exclusions:
+        cells = "; ".join(
+            f"{metric} ({place}): {reason}" for metric, place, reason in overview.exclusions
+        )
+        notes.append(
+            f"Not in the exploratory family, so shown unadjusted and never marked: {cells}."
+        )
+    return notes
 
 
 def results_notes(snapshot: DashboardSnapshot) -> str:
@@ -1243,7 +1403,7 @@ def _absolute_metric_table(
         )
         nest = "Date basis"
     labels = metric_frame[["metric", nest]].drop_duplicates(ignore_index=True)
-    model = next(model for model in snapshot.metrics if model.name == metric)
+    model = require_metric(snapshot, metric)
     # Ticks must stay distinct on the tightest plotted segment.
     spans: list[float] = []
     for _, part in metric_frame.groupby(nest):
@@ -1370,7 +1530,15 @@ def _lift_trajectory_table(
 ) -> str:
     """Cumulative lift as native CoefTable trajectories: latest reading beside its history."""
     segmented = any(estimate.dimension is not None for estimate in estimates)
-    latest_rows = estimates_to_readout(_latest_points(estimates))
+    # Day-axis rows carry no preferred direction; take it from each metric's definition so an
+    # adverse move is never coloured as a favourable one.
+    latest_rows = [
+        {
+            **row,
+            "preferred_direction": require_metric(snapshot, str(row["metric"])).preferred_direction,
+        }
+        for row in estimates_to_readout(_latest_points(estimates))
+    ]
     charts = snapshot.config.theme.charts
     native_theme = coeftable_theme(snapshot.config.theme)
     table, metrics = readout_native(
@@ -1431,7 +1599,9 @@ def _temporal_table(
             )
         return _lift_trajectory_table(snapshot, decisions, compact=metric is None)
     frame = data.to_frame()
-    selected = [model.name for model in snapshot.metrics if metric is None or model.name == metric]
+    selected = [
+        model.name for model in all_metrics(snapshot) if metric is None or model.name == metric
+    ]
     return _absolute_tables(snapshot, frame, selected=selected)
 
 

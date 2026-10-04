@@ -205,7 +205,11 @@ def _event_rows(units: int) -> list[dict[str, Any]]:
 
 @contextmanager
 def _workspace(
-    tmp_path, *, units: int = 30, breakout_sources: tuple[str | None, ...] = ("event_log",)
+    tmp_path,
+    *,
+    units: int = 30,
+    breakout_sources: tuple[str | None, ...] = ("event_log",),
+    metrics: str = _METRICS,
 ):
     import ibis
     import pyarrow as pa
@@ -250,7 +254,7 @@ def _workspace(
     for name, body in (
         ("fact_sources.yaml", _PROFILE_SOURCES if profiles else _EVENT_LOG_SOURCE),
         ("exposures.yaml", _EXPOSURES),
-        ("metrics.yaml", _METRICS),
+        ("metrics.yaml", metrics),
         ("experiments.yaml", _experiments(breakout_sources=breakout_sources)),
     ):
         (definitions / name).write_text(body)

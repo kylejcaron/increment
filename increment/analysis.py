@@ -20,7 +20,6 @@ import inspect
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ibis.backends.sql import SQLBackend
@@ -31,6 +30,7 @@ from increment._analysis_config import (
     _Unset,
     effective_methods,
     normalize_display_correction,
+    select_exploratory_metrics,
     select_metrics,
 )
 from increment._breakout_readouts import BreakoutReadouts, BreakoutRequest
@@ -42,7 +42,7 @@ from increment._day_axis import (
     _day_axis_source_route,
 )
 from increment._evidence_dispatch import ContrastHandler, ContrastReadoutRequest
-from increment._literals import ValueScale
+from increment._literals import Correction, ValueScale
 from increment._sitewide import SitewideReadouts, SitewideRequest
 from increment._source_operations import (
     AllocationHistoryOperation,
@@ -51,6 +51,7 @@ from increment._source_operations import (
     DashboardGroupDataOperation,
     DashboardSnapshotHandler,
     DashboardSnapshotPayload,
+    ExploratorySourceOperation,
     ExportMomentsOperation,
     MaterializeOperation,
     ReadoutSnapshotOperation,
@@ -88,13 +89,18 @@ from increment.errors import (
     CapabilityError,
     InvalidRequestError,
     RefusalSpec,
+    UnsupportedRequestError,
     raiser,
     refusals,
 )
 from increment.errors import refuse as _refuse
 from increment.estimation.contrast_results import ContrastResults
 from increment.estimation.engine import Method
-from increment.plan import bind_automatic_sequential_plan, compile_decision_plan
+from increment.plan import (
+    bind_automatic_sequential_plan,
+    compile_decision_plan,
+    with_unassigned_procedures,
+)
 from increment.query.artifact_contract import (
     ArtifactContractError,
     ArtifactStore,
@@ -159,6 +165,21 @@ _UNDECLARED_BREAKOUT = RefusalSpec(
     "facade.analysis.undeclared_breakout",
     InvalidRequestError,
     template="breakout {requested!r} is not declared by this experiment; declared: {declared!r}",
+)
+_EXPLORATORY_SOURCE_LIMITED = RefusalSpec(
+    "facade.analysis.exploratory_metrics_source_limited",
+    CapabilityError,
+    template="{method}: exploratory_metrics adds metrics from the saved definitions, which this source does not carry -- use Analysis.from_definitions.",
+)
+_EXPLORATORY_SEQUENTIAL = RefusalSpec(
+    "facade.analysis.exploratory_metrics_sequential",
+    UnsupportedRequestError,
+    template="{method}: exploratory_metrics {names!r} are chosen after data are visible, so no registered sequential model covers them under {inference}; read the declared metrics alone, or use a fixed-horizon plan.",
+)
+_UNCORRECTED_SEQUENTIAL = RefusalSpec(
+    "facade.analysis.uncorrected_segments_sequential",
+    UnsupportedRequestError,
+    template="uncorrected segment rows have no fixed-horizon p-values under {inference}; read the registered breakout with run_breakout() instead.",
 )
 
 
@@ -1030,7 +1051,13 @@ class Analysis:
     def dashboard_snapshot(
         self, operation: DashboardSnapshotHandler, *, metrics: Sequence[Metric]
     ) -> DashboardSnapshotPayload:
-        """Prepare one complete dashboard payload against an isolated, pinned source."""
+        """Prepare one complete dashboard payload against an isolated, pinned source.
+
+        *metrics* names every metric the payload reads, so the pin covers exactly their
+        fact sources. Pass the declared metrics together with any
+        :attr:`available_metrics` the operation will add through ``exploratory_metrics``:
+        an added metric outside the pin is refused rather than read from a later state.
+        """
         self._require_arm_state("dashboard_snapshot")
         src = _require_analysis_operation(
             self._src,
@@ -1446,6 +1473,55 @@ class Analysis:
         """All metrics and guardrails for this experiment."""
         return list(self._metrics)
 
+    @property
+    def available_metrics(self) -> list[Metric]:
+        """Saved metrics the experiment does not declare, in definitions order.
+
+        These are the names ``exploratory_metrics=`` accepts. Only
+        ``Analysis.from_definitions`` carries saved definitions to add from; every other
+        source refuses with ``facade.analysis.exploratory_metrics_source_limited``.
+        """
+        state = self._state
+        if not isinstance(state, DefinitionsArmAnalysisState):
+            _refuse(_EXPLORATORY_SOURCE_LIMITED, method="available_metrics")
+        declared = {*state.experiment.metric_names, *(metric.name for metric in self._metrics)}
+        return [metric for metric in state.definitions.metrics if metric.name not in declared]
+
+    def _exploratory_metrics(self, names: Sequence[str] | None, *, caller: str) -> list[Metric]:
+        """Resolve ``exploratory_metrics=`` before any query; ``[]`` when none were named."""
+        if not names:
+            return []
+        if not isinstance(self._state, DefinitionsArmAnalysisState):
+            _refuse(_EXPLORATORY_SOURCE_LIMITED, method=caller)
+        added = select_exploratory_metrics(
+            self.available_metrics,
+            {*self._experiment.metric_names, *(metric.name for metric in self._metrics)},
+            names,
+            caller=caller,
+        )
+        inference = self._plan.inference
+        if getattr(inference, "registration", None) is not None:
+            _refuse(
+                _EXPLORATORY_SEQUENTIAL,
+                method=caller,
+                names=[metric.name for metric in added],
+                inference=type(inference).__name__,
+            )
+        return added
+
+    def _exploratory_analysis(self, added: Sequence[Metric], *, caller: str) -> Analysis:
+        """This analysis reading from a sibling source that also carries *added*."""
+        state = self._require_arm_state(caller)
+        src = _require_analysis_operation(
+            self._src,
+            "exploratory_source",
+            ExploratorySourceOperation,
+            message=f"{caller}(exploratory_metrics=...) needs a native Analysis.from_definitions instance.",
+        )
+        derived = copy.copy(self)
+        derived._state = replace(state, source=src.exploratory_source(metrics=added))
+        return derived
+
     # Caching and materialization
 
     # SQL introspection
@@ -1619,6 +1695,7 @@ class Analysis:
         metrics: Sequence[str | Metric] | None = None,
         estimands: Sequence[str] | None = None,
         value_scale: Mapping[str, ValueScale] | None = None,
+        exploratory_metrics: Sequence[str] | None = None,
     ) -> LiftEstimates | ContrastResults:
         """Run the full A/B test analysis pipeline.
 
@@ -1645,6 +1722,12 @@ class Analysis:
         value_scale : Mapping[str, Literal["relative", "absolute"]] | None
             Observational-only: report a metric's rows as additive ATE
             instead of relative lift.
+        exploratory_metrics : Sequence[str] | None
+            Names from :attr:`available_metrics` to estimate in addition to the declared
+            ones (``from_definitions`` only). Their rows carry ``role="exploratory"``
+            under the default unassigned procedure (two-sided, full ``alpha``), join no
+            plan family, and leave every declared row unchanged. ``metrics=[]`` with
+            ``exploratory_metrics`` returns only the added rows.
 
         Returns
         -------
@@ -1654,21 +1737,38 @@ class Analysis:
             selected metric. Switchback calls accept only UNSET role/prior overrides;
             ``estimands`` and ``value_scale`` remain arm-only.
         """
+        added = self._exploratory_metrics(exploratory_metrics, caller="run")
         if isinstance(self._state, ContrastAnalysisState):
             return self._run_contrast(
                 decision_method, sensitivity_methods, prior, metrics, estimands, value_scale
             )
         selected = select_metrics(cast("Sequence[Metric]", self._metrics), metrics, caller="run")
-        request = WholeWindowRequest(
-            metrics=tuple(selected),
-            estimands=tuple(estimands) if estimands is not None else None,
-            value_scale=value_scale,
-            population="assigned",
-            decision_method=decision_method,
-            sensitivity_methods=sensitivity_methods,
-            prior=prior,
-        )
-        return LiftEstimates(self._whole_window().run(request))
+
+        def request(chosen: Sequence[Metric]) -> WholeWindowRequest:
+            return WholeWindowRequest(
+                metrics=tuple(chosen),
+                estimands=tuple(estimands) if estimands is not None else None,
+                value_scale=value_scale,
+                population="assigned",
+                decision_method=decision_method,
+                sensitivity_methods=sensitivity_methods,
+                prior=prior,
+            )
+
+        rows = self._whole_window().run(request(selected)) if selected or not added else []
+        if added:
+            # The design-level compliance rows already ride with the declared read.
+            rows = [
+                *rows,
+                *(
+                    row.model_copy(update={"role": "exploratory"})
+                    for row in self._exploratory_analysis(added, caller="run")
+                    ._whole_window()
+                    .run(request(added))
+                    if row.estimand != "compliance"
+                ),
+            ]
+        return LiftEstimates(rows)
 
     def _run_contrast(
         self,
@@ -1941,6 +2041,7 @@ class Analysis:
         sensitivity_methods: Sequence[Method] | _Unset = UNSET,
         prior: Prior | None | _Unset = UNSET,
         metrics: Sequence[str | Metric] | None = None,
+        exploratory_metrics: Sequence[str] | None = None,
     ) -> BreakoutEstimates:
         """Per-segment lift estimates for every declared breakout.
 
@@ -1958,6 +2059,12 @@ class Analysis:
             Explicit role/prior overrides; UNSET inherits each metric's declaration.
         metrics : Sequence[str | Metric] | None
             Narrow the estimated metrics. ``None`` selects every declared metric.
+        exploratory_metrics : Sequence[str] | None
+            Names from :attr:`available_metrics` to break out in addition to the declared
+            ones (``from_definitions`` only). Their rows equal those of the same metric
+            declared in a plan of its own: the plan's breakout multiplicity applies to
+            the added metrics' cells as one family of their own, so no declared row
+            changes. ``metrics=[]`` with ``exploratory_metrics`` returns only the added rows.
 
         Notes
         -----
@@ -1975,6 +2082,27 @@ class Analysis:
             segments instead. ``source`` names the resolved
             :class:`FactSource`. Empty when no breakouts are declared.
         """
+        return self._run_breakout(
+            decision_method=decision_method,
+            sensitivity_methods=sensitivity_methods,
+            prior=prior,
+            metrics=metrics,
+            exploratory_metrics=exploratory_metrics,
+        )
+
+    def _run_breakout(
+        self,
+        *,
+        decision_method: Method | _Unset = UNSET,
+        sensitivity_methods: Sequence[Method] | _Unset = UNSET,
+        prior: Prior | None | _Unset = UNSET,
+        metrics: Sequence[str | Metric] | None = None,
+        exploratory_metrics: Sequence[str] | None = None,
+        correction: Correction | None = None,
+    ) -> BreakoutEstimates:
+        """:meth:`run_breakout`, optionally under an explicit *correction* in place of the
+        plan's breakout multiplicity (``"none"`` leaves every cell standing alone)."""
+        added = self._exploratory_metrics(exploratory_metrics, caller="run_breakout")
         if isinstance(self._state, ContrastAnalysisState):
             reject_role_overrides_under_contrast(
                 decision_method=decision_method,
@@ -1983,27 +2111,64 @@ class Analysis:
             )
         self._require_arm_state("run_breakout")
         self._refuse_trigger("run_breakout")
-        src = self._src
-        design = getattr(self, "_design", None)
+        inference = self._plan.inference
+        if correction is not None and getattr(inference, "registration", None) is not None:
+            _refuse(_UNCORRECTED_SEQUENTIAL, inference=type(inference).__name__)
+        selected = select_metrics(
+            cast("Sequence[Metric]", self._src.context.metrics), metrics, caller="run_breakout"
+        )
+        rows = (
+            self._breakout_rows(
+                selected,
+                decision_method=decision_method,
+                sensitivity_methods=sensitivity_methods,
+                prior=prior,
+                correction=correction,
+            )
+            if selected or not added
+            else BreakoutEstimates([])
+        )
+        if added:
+            exploratory = self._exploratory_analysis(added, caller="run_breakout")
+            rows = BreakoutEstimates(
+                [
+                    *rows,
+                    *exploratory._breakout_rows(
+                        added,
+                        decision_method=decision_method,
+                        sensitivity_methods=sensitivity_methods,
+                        prior=prior,
+                        correction=correction,
+                    ),
+                ]
+            )
+        return rows
+
+    def _breakout_rows(
+        self,
+        selected: Sequence[Metric],
+        *,
+        decision_method: Method | _Unset,
+        sensitivity_methods: Sequence[Method] | _Unset,
+        prior: Prior | None | _Unset,
+        correction: Correction | None,
+    ) -> BreakoutEstimates:
         policy = self._plan.view_policies.for_view(
             "breakout",
-            mechanism=getattr(design, "mechanism", None),
+            mechanism=getattr(getattr(self, "_design", None), "mechanism", None),
             segmented=True,
-        )
-        correction = normalize_display_correction(policy.correction)
-        q = policy.q if policy.q is not None else self._plan.q
-        selected = select_metrics(
-            cast("Sequence[Metric]", src.context.metrics), metrics, caller="run_breakout"
         )
         request = BreakoutRequest(
             metrics=tuple(selected),
             decision_method=decision_method,
             sensitivity_methods=sensitivity_methods,
             prior=prior,
-            correction=correction,
-            q=q,
+            correction=correction or normalize_display_correction(policy.correction),
+            q=policy.q if policy.q is not None else self._plan.q,
         )
-        return BreakoutReadouts(src=src, experiment=getattr(self, "_experiment", None)).run(request)
+        return BreakoutReadouts(src=self._src, experiment=getattr(self, "_experiment", None)).run(
+            request
+        )
 
     def _refuse_clustered_day_axis(self, method: str) -> None:
         """A declared cluster is total-grain only; see `_CLUSTERED_DAY_AXIS`."""
@@ -2020,6 +2185,7 @@ class Analysis:
         *,
         metrics: Sequence[str | Metric] | None = None,
         dimension: str | None = None,
+        exploratory_metrics: Sequence[str] | None = None,
     ) -> DailyMetricValues:
         """Per-day absolute metric values, optionally broken out by segment.
 
@@ -2045,6 +2211,10 @@ class Analysis:
         dimension : str | None
             Break each day out by one declared breakout's dimension.
             Must match a declared breakout ``property``.
+        exploratory_metrics : Sequence[str] | None
+            Names from :attr:`available_metrics` to read in addition to the declared
+            metrics (``from_definitions`` only); ``metrics=[]`` reads only these. A
+            dimensioned read keeps its refusal of metrics the experiment does not declare.
 
         Returns
         -------
@@ -2064,8 +2234,9 @@ class Analysis:
             property, or (dimensioned only) *metrics* names an
             undeclared metric.
         """
+        added = self._exploratory_metrics(exploratory_metrics, caller="run_daily")
         self._require_arm_state("run_daily")
-        selected = self._select_day_axis_metrics(metrics, caller="run_daily")
+        selected = self._select_day_axis_metrics(metrics, caller="run_daily", added=added)
         req = DayAxisRequest(
             caller="run_daily", grain="daily", metrics=tuple(selected), dimension=dimension
         )
@@ -2078,27 +2249,41 @@ class Analysis:
         compiled unassigned procedures, matching the method/prior defaults the
         facade already resolves for them.
         """
-        metrics = cast("Sequence[Metric]", kwargs["metrics"])
-        missing = [metric for metric in metrics if metric.name not in self._plan.procedures]
-        effective_plan = self._plan
-        if missing:
-            defaults = compile_decision_plan(
-                None,
-                missing,
-                path=self._plan.path,
-                design=getattr(self, "_design", None),
-            )
-            procedures = MappingProxyType({**self._plan.procedures, **defaults.procedures})
-            effective_plan = self._plan.model_copy(update={"procedures": procedures})
-        return _run_daily_lift_estimates(plan=effective_plan, **kwargs)
+        plan = with_unassigned_procedures(
+            self._plan,
+            cast("Sequence[Metric]", kwargs["metrics"]),
+            design=getattr(self, "_design", None),
+        )
+        return _run_daily_lift_estimates(plan=plan, **kwargs)
 
     def _select_day_axis_metrics(
-        self, metrics: Sequence[str | Metric] | None, *, caller: str
+        self,
+        metrics: Sequence[str | Metric] | None,
+        *,
+        caller: str,
+        added: Sequence[Metric] = (),
     ) -> list[Metric]:
         # Only the native route accepts undeclared call-time Metric objects.
         native = _day_axis_source_route(self._src) == "native"
-        return select_metrics(
+        selected = select_metrics(
             self._metrics, metrics, caller=caller, allow_undeclared_objects=native
+        )
+        if not added:
+            return selected
+        # Added metrics follow the declared ones; a shared name is a duplicate.
+        return select_metrics((), [*selected, *added], caller=caller, allow_undeclared_objects=True)
+
+    @staticmethod
+    def _stamp_exploratory(rows: DailyLiftEstimates, added: Sequence[Metric]) -> DailyLiftEstimates:
+        """*rows* with the added metrics' rows marked ``role="exploratory"``."""
+        names = {metric.name for metric in added}
+        if not names:
+            return rows
+        return DailyLiftEstimates(
+            [
+                row.model_copy(update={"role": "exploratory"}) if row.metric in names else row
+                for row in rows
+            ]
         )
 
     def _day_axis(self) -> DayAxisReadouts:
@@ -2184,6 +2369,7 @@ class Analysis:
         metrics: Sequence[str | Metric] | None = None,
         dimension: str | None = None,
         completed_windows_only: bool = False,
+        exploratory_metrics: Sequence[str] | None = None,
     ) -> DailyMetricValues:
         """Per-day absolute metric values "as of day N".
 
@@ -2219,6 +2405,10 @@ class Analysis:
             (uptake makes both windows required). Also raises for an
             unbounded retention band, which has no closing day to gate
             on either.
+        exploratory_metrics : Sequence[str] | None
+            Names from :attr:`available_metrics` to read in addition to the declared
+            metrics (``from_definitions`` only); ``metrics=[]`` reads only these. A
+            dimensioned read keeps its refusal of metrics the experiment does not declare.
 
         Returns
         -------
@@ -2237,8 +2427,9 @@ class Analysis:
             metric list contains a `RetentionMetric` with an unbounded
             band, or *dimension* matches no declared breakout property.
         """
+        added = self._exploratory_metrics(exploratory_metrics, caller="run_asof")
         self._require_arm_state("run_asof")
-        selected = self._select_day_axis_metrics(metrics, caller="run_asof")
+        selected = self._select_day_axis_metrics(metrics, caller="run_asof", added=added)
         req = DayAxisRequest(
             caller="run_asof",
             grain="asof",
@@ -2258,6 +2449,7 @@ class Analysis:
         dimension: str | None = None,
         estimands: Sequence[str] | None = None,
         completed_windows_only: bool = False,
+        exploratory_metrics: Sequence[str] | None = None,
     ) -> DailyLiftEstimates:
         """As-of relative lift history, or a registered sequential checkpoint.
 
@@ -2286,6 +2478,10 @@ class Analysis:
             analyses, and dataframe-panel sources.
         metrics : Sequence[str | Metric] | None
             Override the declared/constructed metric set.
+        exploratory_metrics : Sequence[str] | None
+            Names from :attr:`available_metrics` to read in addition to the declared
+            metrics (``from_definitions`` only); their rows carry ``role="exploratory"``
+            and ``metrics=[]`` reads only these. A registered sequential plan refuses them.
         dimension : str | None
             Break each day's fixed-horizon lift out by one declared dimension.
             Unsupported for registered sequential inference.
@@ -2332,8 +2528,9 @@ class Analysis:
         UnsupportedRequestError
             Segmented as-of BH or observational designs.
         """
+        added = self._exploratory_metrics(exploratory_metrics, caller="run_asof_lift")
         self._require_arm_state("run_asof_lift")
-        selected = self._select_day_axis_metrics(metrics, caller="run_asof_lift")
+        selected = self._select_day_axis_metrics(metrics, caller="run_asof_lift", added=added)
         req = DayAxisRequest(
             caller="run_asof_lift",
             grain="asof",
@@ -2342,9 +2539,12 @@ class Analysis:
             completed_windows_only=completed_windows_only,
             estimands=tuple(estimands) if estimands is not None else None,
         )
-        return self._day_axis().lift(
-            req,
-            decision_method=decision_method,
-            sensitivity_methods=sensitivity_methods,
-            prior=prior,
+        return self._stamp_exploratory(
+            self._day_axis().lift(
+                req,
+                decision_method=decision_method,
+                sensitivity_methods=sensitivity_methods,
+                prior=prior,
+            ),
+            added,
         )

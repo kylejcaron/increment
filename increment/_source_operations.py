@@ -127,28 +127,60 @@ class DashboardBreakoutReads:
     _scoped: Analysis = field(repr=False)
 
     def run_asof_lift(
-        self, *, metrics: Sequence[str], completed_windows_only: bool = False
+        self,
+        *,
+        metrics: Sequence[str],
+        completed_windows_only: bool = False,
+        exploratory_metrics: Sequence[str] | None = None,
     ) -> DailyLiftEstimates:
         return self._scoped.run_asof_lift(
             metrics=metrics,
+            exploratory_metrics=exploratory_metrics,
             completed_windows_only=completed_windows_only,
             dimension=self.breakout.property,
         )
 
     def run_asof(
-        self, *, metrics: Sequence[str], completed_windows_only: bool = False
+        self,
+        *,
+        metrics: Sequence[str],
+        completed_windows_only: bool = False,
+        exploratory_metrics: Sequence[str] | None = None,
     ) -> DailyMetricValues:
         return self._scoped.run_asof(
             metrics=metrics,
+            exploratory_metrics=exploratory_metrics,
             completed_windows_only=completed_windows_only,
             dimension=self.breakout.property,
         )
 
-    def run_daily(self, *, metrics: Sequence[str]) -> DailyMetricValues:
-        return self._scoped.run_daily(metrics=metrics, dimension=self.breakout.property)
+    def run_daily(
+        self, *, metrics: Sequence[str], exploratory_metrics: Sequence[str] | None = None
+    ) -> DailyMetricValues:
+        return self._scoped.run_daily(
+            metrics=metrics,
+            exploratory_metrics=exploratory_metrics,
+            dimension=self.breakout.property,
+        )
 
-    def run_breakout(self, *, metrics: Sequence[str]) -> BreakoutEstimates:
-        return self._scoped.run_breakout(metrics=metrics)
+    def run_breakout(
+        self, *, metrics: Sequence[str], exploratory_metrics: Sequence[str] | None = None
+    ) -> BreakoutEstimates:
+        return self._scoped.run_breakout(metrics=metrics, exploratory_metrics=exploratory_metrics)
+
+    def uncorrected_segments(
+        self, *, metrics: Sequence[str], exploratory_metrics: Sequence[str] | None = None
+    ) -> BreakoutEstimates:
+        """This breakout's segment rows with no view-multiplicity correction.
+
+        The same estimators, methods, roles, and per-metric configuration as
+        :meth:`run_breakout`, but each cell stands alone: no Bonferroni split, no BH
+        selection, and no family fields, so a caller can correct a wider family itself.
+        A registered sequential plan has no fixed-horizon p-values to correct and refuses.
+        """
+        return self._scoped._run_breakout(
+            metrics=metrics, exploratory_metrics=exploratory_metrics, correction="none"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,6 +322,11 @@ class DaySourceOperation(Protocol):
     def day_source(self, *, metrics: Sequence[Metric]) -> DayEvidenceSource: ...
 
 
+@runtime_checkable
+class ExploratorySourceOperation(Protocol):
+    def exploratory_source(self, *, metrics: Sequence[Metric]) -> MomentSource: ...
+
+
 __all__ = [
     "BreakoutChoice",
     "ExploreKey",
@@ -303,6 +340,7 @@ __all__ = [
     "BreakoutSourceOperation",
     "BreakoutSourcesOperation",
     "DaySourceOperation",
+    "ExploratorySourceOperation",
     "ExportMomentsOperation",
     "MaterializeOperation",
     "MomentsSourceOperation",

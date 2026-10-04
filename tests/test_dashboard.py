@@ -1304,7 +1304,7 @@ def test_readout_csv_round_trips_every_row_identity_and_value(
 def test_readout_csv_preserves_undefined_geometry_without_retained_samples(
     storefront: DashboardSnapshot,
 ) -> None:
-    from increment.dashboard._data import _enriched_rows
+    from increment.dashboard._data import enriched_rows
     from increment.estimation._winsor_bootstrap import full_procedure_bootstrap_reference
     from increment.estimation.winsor import estimate_winsor_lift
     from increment.winsor import BootstrapReference
@@ -1317,7 +1317,7 @@ def test_readout_csv_preserves_undefined_geometry_without_retained_samples(
     reference = BootstrapReference.model_validate(payload)
     estimate = estimate_winsor_lift(raw, "C", "T", reference=reference)
     snapshot = dataclasses.replace(
-        storefront, estimates=(estimate,), readout_rows=_enriched_rows((estimate,))
+        storefront, estimates=(estimate,), readout_rows=enriched_rows((estimate,))
     )
     row = next(csv.DictReader(io.StringIO(readout_csv(snapshot).decode("utf-8"))))
     region = json.loads(row["confidence_set"])
@@ -1760,6 +1760,28 @@ def test_summary_levels_distinguish_methods_for_the_same_metric(
         method_at = summary.index(str(row["method"]))
         preceding = [value for start, value in levels if start < method_at]
         assert preceding[-1] == pytest.approx(float(row["level"]), abs=0.00005)
+
+
+def test_a_rising_trajectory_of_a_decrease_preferred_metric_is_coloured_adverse(
+    storefront_analysis, storefront: DashboardSnapshot
+) -> None:
+    from increment.breakout.estimates import DailyLiftEstimates
+    from increment.dashboard._theme import coeftable_theme
+    from increment.estimation.results import Estimate
+
+    model = next(m for m in storefront.metrics if m.preferred_direction == "decrease")
+    series = load_explore(
+        storefront_analysis, snapshot=storefront, metric=model.name, view="cumulative_lift"
+    )
+    assert isinstance(series, DailyLiftEstimates)
+    rising = DailyLiftEstimates(
+        row.model_copy(update={"lift": Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95)})
+        for row in series
+    )
+    html = render_explore(storefront, rising, metric=model.name, view="cumulative_lift").text
+    theme = coeftable_theme(storefront.config.theme)
+    assert theme.unfavorable in html
+    assert theme.favorable not in html
 
 
 def test_segmented_temporal_rendering_accepts_distinct_decision_methods(

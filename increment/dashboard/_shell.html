@@ -173,6 +173,9 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 .metric-detail-note { font-size: 11px; margin: 12px 0 0; }
 
 /* ===== Explore ============================================================= */
+.explore-mode { margin: 0 0 14px; }
+.explore-overview .plot-notes { margin-top: 14px; }
+.explore-overview .metric-detail-note { margin: 10px 0 0; }
 .scope-bar {
   display: flex; align-items: center; justify-content: space-between; gap: 20px; border: 1px solid var(--line);
   border-radius: var(--inc-dashboard-radius); background: var(--surface); padding: 15px 20px; margin-bottom: 25px;
@@ -590,7 +593,11 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     <section class="view" id="panel-explore" data-view="explore" role="tabpanel" aria-labelledby="tab-explore" hidden>
       <div class="section-head">
         <h2>Explore results</h2>
-        <p>Compare metrics across the experiment’s declared segments.</p>
+        <p>Every metric's lift, broken out by the experiment’s declared segments.</p>
+      </div>
+      <div class="segmented explore-mode" id="explore-mode" role="group" aria-label="Explore view">
+        <button type="button" data-explore-view="overview" aria-pressed="true">Overview</button>
+        <button type="button" data-explore-view="series" aria-pressed="false">Time series</button>
       </div>
       <div class="scope-bar" id="scope-bar">
         <span class="scope-label" id="scope-label">Compare by</span>
@@ -598,7 +605,15 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
         <p class="scope-description" id="scope-description"></p>
       </div>
       <p class="explore-empty" id="explore-empty" hidden>No exploratory views were captured with this snapshot.</p>
-      <div class="explore-layout" id="explore-layout">
+      <section class="explore-overview" id="explore-overview" aria-label="Overview of every metric">
+        <div class="table-surface native-output" id="overview-table" role="region" tabindex="0"></div>
+        <details class="metric-detail plot-notes" id="overview-notes" open>
+          <summary id="overview-notes-summary"></summary>
+          <ul id="overview-notes-list"></ul>
+        </details>
+        <p class="muted metric-detail-note">Select a metric to open its time series.</p>
+      </section>
+      <div class="explore-layout" id="explore-layout" hidden>
         <aside class="metric-list" id="metric-list" aria-label="Focus metric"></aside>
         <section class="explore-workspace" aria-labelledby="explore-metric-name">
           <h3 id="explore-metric-name"></h3>
@@ -880,10 +895,11 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   $('inspector').addEventListener('keydown', (event) => { if (event.key === 'Escape') closeInspector(); });
 
   /* ---------- Explore -------------------------------------------------------- */
-  const exploreState = { scope: scopeKeys.includes('overall') ? 'overall' : scopeKeys[0], metric: exploreMetrics.length ? exploreMetrics[0].key : null, mode: 'relative', cadence: 'cumulative', complete: false };
+  const exploreState = { view: 'overview', scope: scopeKeys.includes('overall') ? 'overall' : scopeKeys[0], metric: exploreMetrics.length ? exploreMetrics[0].key : null, mode: 'relative', cadence: 'cumulative', complete: false };
+  const overview = data.overview && typeof data.overview === 'object' ? data.overview : {};
   const groupDownload = createDownload($('group-download'));
-  const ROLE_ORDER = ['primary', 'secondary', 'guardrail'];
-  const ROLE_LABELS = { primary: 'Primary', secondary: 'Secondary outcomes', guardrail: 'Guardrails' };
+  const ROLE_ORDER = ['primary', 'secondary', 'guardrail', 'exploratory'];
+  const ROLE_LABELS = { primary: 'Primary', secondary: 'Secondary outcomes', guardrail: 'Guardrails', exploratory: 'Added (exploratory)' };
   const roleLabel = (role) => own(ROLE_LABELS, str(role).toLowerCase()) || (str(role) ? str(role).charAt(0).toUpperCase() + str(role).slice(1) : 'Other metrics');
   const MODE_TEXT = { relative: 'cumulative relative lift versus the control arm', cumulative: 'cumulative per-arm absolute values', daily: 'daily per-arm absolute values' };
   let exploreBuilt = false;
@@ -927,11 +943,37 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     $('metric-list').replaceChildren(...items);
     const empty = exploreMetrics.length === 0;
     $('explore-empty').hidden = !empty;
-    $('explore-layout').hidden = empty;
+    $('explore-mode').hidden = empty;
+  }
+
+  function renderOverview() {
+    const packet = own(overview, exploreState.scope);
+    const table = $('overview-table');
+    let notes = [];
+    if (packet && typeof packet === 'object') {
+      mountNative(table, packet.html, { metrics: 'select' });
+      notes = Array.isArray(packet.notes) ? packet.notes.map(str).filter(Boolean) : [];
+    } else {
+      table.replaceChildren(el('p', { className: 'inc-dashboard-note', text: 'This overview was not captured with the snapshot.' }));
+    }
+    $('overview-notes').hidden = notes.length === 0;
+    $('overview-notes-summary').textContent = 'Overview notes (' + notes.length + ')';
+    $('overview-notes-list').replaceChildren(...notes.map((note) => el('li', { text: note })));
   }
 
   function renderExplore() {
     if (!exploreBuilt) buildExplore();
+    const series = exploreState.view === 'series';
+    for (const button of $('explore-mode').children) button.setAttribute('aria-pressed', String(button.dataset.exploreView === exploreState.view));
+    for (const button of $('scope-controls').children) button.setAttribute('aria-pressed', String(button.dataset.scope === exploreState.scope));
+    const empty = exploreMetrics.length === 0;
+    $('explore-overview').hidden = empty || series;
+    $('explore-layout').hidden = empty || !series;
+    if (!series) {
+      $('scope-description').textContent = 'Segments nest under each metric; the exploratory correction is the same for every breakout.';
+      renderOverview();
+      return;
+    }
     const metric = metricByKey.get(exploreState.metric);
     if (!metric) return;
     const scope = scopes[exploreState.scope] || {};
@@ -939,7 +981,6 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     const absolute = exploreState.mode === 'absolute';
     const daily = absolute && exploreState.cadence === 'daily';
 
-    for (const button of $('scope-controls').children) button.setAttribute('aria-pressed', String(button.dataset.scope === exploreState.scope));
     for (const button of $('metric-list').querySelectorAll('.metric-tab')) button.setAttribute('aria-pressed', String(button.dataset.metric === exploreState.metric));
     for (const button of $('mode-group').children) button.setAttribute('aria-pressed', String(button.dataset.mode === exploreState.mode));
     for (const button of $('cadence-group').children) button.setAttribute('aria-pressed', String(button.dataset.cadence === exploreState.cadence));
@@ -980,9 +1021,17 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 
   $('plot-notes').addEventListener('toggle', () => { notesOpen = $('plot-notes').open; });
   $('panel-explore').addEventListener('click', (event) => {
+    const row = event.target.closest('#overview-table tr[data-metric]');
+    if (row && metricByKey.has(row.dataset.metric)) {
+      exploreState.metric = row.dataset.metric;
+      exploreState.view = 'series';
+      renderExplore();
+      return;
+    }
     const button = event.target.closest('button');
     if (!button) return;
-    if (button.dataset.scope !== undefined) exploreState.scope = button.dataset.scope;
+    if (button.dataset.exploreView !== undefined) exploreState.view = button.dataset.exploreView;
+    else if (button.dataset.scope !== undefined) exploreState.scope = button.dataset.scope;
     else if (button.dataset.metric !== undefined) exploreState.metric = button.dataset.metric;
     else if (button.dataset.mode !== undefined) exploreState.mode = button.dataset.mode;
     else if (button.dataset.cadence !== undefined) exploreState.cadence = button.dataset.cadence;

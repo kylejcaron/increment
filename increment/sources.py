@@ -79,6 +79,7 @@ SourceOperation = Literal[
     "breakout_source",
     "breakout_sources",
     "day_source",
+    "exploratory_source",
     "artifact_experiment",
 ]
 

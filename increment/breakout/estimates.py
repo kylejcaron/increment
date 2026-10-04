@@ -45,7 +45,7 @@ from pydantic import (
 )
 from scipy.stats import norm as _norm
 
-from increment._literals import Alternative, Correction, Role, ValueScale
+from increment._literals import Alternative, Correction, Role, RowRole, ValueScale
 from increment._moment_plan import OPTIONAL_SLOTS, SLOTS, X_SLOT_ROLES
 from increment._policy_alpha import resolve_cell_alpha
 from increment.compatibility import _conservative_divide
@@ -72,7 +72,12 @@ from increment.estimation.engine import (
 from increment.estimation.engine import (
     merge_decision_computations as _merge_decision_computations,
 )
-from increment.estimation.family import decision_cells, family_discovery, select_family
+from increment.estimation.family import (
+    BH_EXCLUDES_PRIOR,
+    decision_cells,
+    family_discovery,
+    select_family,
+)
 from increment.estimation.inference import LiftGuardError, Prior
 from increment.estimation.meta import ESTIMATION_META_ALPHA_TOO_SMALL
 from increment.estimation.results import (
@@ -161,7 +166,6 @@ _REFUSALS = refusals(
         "breakout.run_breakout_duplicate": "run_breakout: duplicate summary row for segment {dimension}={value!r}, metric={metric!r}, group_id={group_id!r} -- each (segment, metric, arm) cell's moments must arrive as one pre-aggregated row; duplicates would silently discard one row's units (duplicate control: last row wins the control lookup) or double-count the segment downstream (duplicate treatment: two output rows for one cell inflate segment_heterogeneity's k).",
         "breakout.metric_found_group": "Metric(s) {unknown_metrics} found in group_summary but not in the metrics list. Declared metrics: {declared_names}",
         "breakout.run_breakout_correction": "run_breakout: correction must be 'none', 'bonferroni', or 'bh', got {correction!r}",
-        "breakout.run_breakout_bh_excludes_prior": "run_breakout: correction='bh' cannot use an informative prior; BH/e-BH family selection requires frequentist p-values/e-values",
         "breakout.run_breakout_methods": "run_breakout: methods=[] requests zero estimation methods -- every declared (metric, arm) pair would then be reported as unestimable with a misleading 'no data' warning, when the real reason is that no method was asked for. Pass methods=None for the default ([Method(name='unadjusted')]) or a non-empty list of Methods.",
         "breakout.run_breakout_dimension": "run_breakout: dimension column {dimension!r} not found in summary. Available columns: {columns}",
         "breakout.run_breakout_group": "run_breakout: group_summary missing required columns: {missing}",
@@ -179,6 +183,7 @@ _REFUSALS = refusals(
 
 _REFUSALS["estimation.meta.alpha_too_small"] = ESTIMATION_META_ALPHA_TOO_SMALL
 _REFUSALS["estimation.diagnostics.alpha"] = ESTIMATION_DIAGNOSTICS_ALPHA
+_REFUSALS["breakout.run_breakout_bh_excludes_prior"] = BH_EXCLUDES_PRIOR
 _refuse = raiser(_REFUSALS)
 
 
@@ -536,6 +541,36 @@ def _reject_sequential_mixed_authority(row: Any) -> None:
         )
 
 
+#: The persisted state a ``BreakoutEstimate`` shares with the ``LiftEstimate`` it was cut from.
+_FAMILY_VIEW_FIELDS = (
+    "metric",
+    "group_id",
+    "method",
+    "method_role",
+    "inference",
+    "alternative",
+    "null_lift",
+    "null_abs",
+    "dof",
+    "reference_kind",
+    "reference_df",
+    "lift",
+    "relative_confidence_set",
+    "relative_unavailable_reason",
+    "binomial_set",
+    "estimand",
+    "value_scale",
+    "note",
+    "abs_diff",
+    "abs_se",
+    "abs_lb",
+    "abs_ub",
+    "abs_reference_kind",
+    "abs_reference_df",
+    "prior_shrunk",
+)
+
+
 class BreakoutEstimate(_RowIdentity):
     """A lift estimate for ONE segment (dimension value) of a breakout.
 
@@ -575,6 +610,8 @@ class BreakoutEstimate(_RowIdentity):
     family_guarantee: Literal["finite_sample", "asymptotic_sequential"] | None = None
     family_nominal_alpha: float | None = None
     # Mirrors LiftEstimate: a sequential family's regime and nominal alpha.
+    family_size: int | None = Field(default=None, ge=1)
+    # Hypotheses in the correcting family (BH's m) where the family records it; None otherwise.
     dimension: str  # the breakout column name, e.g. "country"
     dimension_value: str  # the segment, e.g. "US"
     null_abs: float | None = Field(default=None, allow_inf_nan=False)
@@ -598,6 +635,9 @@ class BreakoutEstimate(_RowIdentity):
     abs_reference_kind: Literal["normal", "t"] | None = None
     abs_reference_df: float | None = Field(default=None, allow_inf_nan=False, gt=0)
     excluded: ExclusionReason | None = None
+    prior_shrunk: bool = False
+    # True when the cell was estimated under an informative prior: lift.log_mean/log_se are
+    # then the raw pre-prior statistics while value/lb/ub are the posterior (mirrors LiftEstimate).
 
     @model_validator(mode="after")
     def _lift_or_excluded(self):
@@ -705,6 +745,20 @@ class BreakoutEstimate(_RowIdentity):
         if self.lift is None:
             _refuse("breakout.breakout.point_unavailable")
         return self.lift
+
+    def _family_view(self) -> LiftEstimate | None:
+        """The ``LiftEstimate`` this cell was cut from, which exploratory-family evidence and
+        FCR reissue read; ``None`` for an excluded cell, which carries no estimate."""
+        if self.excluded is not None:
+            return None
+        joint = (
+            self.relative_confidence_set is not None or self.relative_unavailable_reason is not None
+        )
+        scalar_wald = self.reference_kind in ("normal", "t") and not joint
+        return LiftEstimate(
+            **{name: getattr(self, name) for name in _FAMILY_VIEW_FIELDS},
+            scale="log" if scalar_wald else "linear",
+        )
 
     low_reliability: bool = False
     n_treat: float | None = None
@@ -1274,9 +1328,9 @@ class DailyLiftEstimate(_RowIdentity):
     dimension_value: str | None = None  # the segment, e.g. "US"
     source: str | None = None  # resolved FactSource name, when known
     low_reliability: bool = False
-    role: Role | None = None
-    # The declared-plan role this day/as-of cell was estimated under; drives the
-    # per-cell alpha split. None when no plan was declared (exploratory default).
+    role: RowRole | None = None
+    # The declared-plan role this day/as-of cell was estimated under (drives the per-cell
+    # alpha split), or "exploratory" for an added metric. None when no plan was declared.
     null_lift: float = Field(default=0.0, allow_inf_nan=False)
     null_abs: float | None = Field(default=None, allow_inf_nan=False)
     # The shifted null carried by the procedure that produced this row. Exactly
@@ -2052,6 +2106,7 @@ def _breakout_estimate_row(
             dimension=dimension,
             dimension_value=dimension_value,
             source=source,
+            prior_shrunk=lift_estimate.prior_shrunk or lift_estimate.prior_spec is not None,
             # BreakoutEstimate-only sidecar: _copy_common_fields doesn't
             # carry it (DailyLiftEstimate has no winsor_* fields).
             winsor_lower_percentile=lift_estimate.winsor_lower_percentile,
