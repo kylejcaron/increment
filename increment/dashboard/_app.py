@@ -63,6 +63,7 @@ from increment.dashboard._html import (
     results_table,
     results_warnings,
     temporal_figure,
+    unavailable_point_note,
 )
 from increment.dashboard._theme import theme_css, theme_from_payload
 from increment.errors import CodedError
@@ -573,7 +574,13 @@ def _render_entry(
             "pointCount": 0,
         }
     data = type(data)(rows)
-    figure, gaps = temporal_figure(snapshot, data, metric=metric, view=view)
+    figure = temporal_figure(snapshot, data, metric=metric, view=view)
+    notes = _notes(
+        snapshot, rows, metric=metric, view=view, complete=complete, correction=correction
+    )
+    gaps = unavailable_point_note(data.to_frame())
+    if gaps is not None:
+        notes.append(gaps)
     first, last = min(row.ds for row in rows), max(row.ds for row in rows)
     series = len({(row.dimension_value, row.group_id) for row in rows})
     caption = (
@@ -581,11 +588,9 @@ def _render_entry(
         f"{series} series · {monitoring_sentence(rows, view=view)}"
     )
     return {
-        "html": _styled(figure + gaps),
+        "html": _styled(figure),
         "caption": caption,
-        "notes": _notes(
-            snapshot, rows, metric=metric, view=view, complete=complete, correction=correction
-        ),
+        "notes": notes,
         "pointCount": len(rows),
     }
 

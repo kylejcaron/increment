@@ -1100,8 +1100,8 @@ def _maturity_label(*, completed_windows_only: bool) -> str:
 
 def temporal_figure(
     snapshot: DashboardSnapshot, data: Any, *, metric: str | None, view: str
-) -> tuple[str, str]:
-    """The native table(s) for a non-empty temporal view, then its unavailable-point block.
+) -> str:
+    """The native table(s) for a non-empty temporal view.
 
     A metric whose points mix calendar and cohort dates cannot share one axis, so it gets a
     warning in place of a chart.
@@ -1111,17 +1111,11 @@ def temporal_figure(
         not frame["ds_basis"].dropna().nunique()
         or (frame.groupby("metric")["ds_basis"].nunique() != 1).any()
     ):
-        return (
-            _status(
-                "warn",
-                "A metric mixes calendar and cohort date bases, so its points cannot share one axis.",
-            ),
-            "",
+        return _status(
+            "warn",
+            "A metric mixes calendar and cohort date bases, so its points cannot share one axis.",
         )
-    return (
-        _temporal_table(snapshot, data, metric=metric, view=view),
-        _gaps_block(frame, view=view),
-    )
+    return _temporal_table(snapshot, data, metric=metric, view=view)
 
 
 def _temporal_body(
@@ -1145,8 +1139,8 @@ def _temporal_body(
         completed_windows_only=completed_windows_only,
         monitoring=monitoring_sentence(rows, view=view),
     )
-    figure, gaps = temporal_figure(snapshot, data, metric=metric, view=view)
-    return figure + caption + gaps
+    figure = temporal_figure(snapshot, data, metric=metric, view=view)
+    return figure + caption + _gaps_block(frame, view=view)
 
 
 def _temporal_caption(
@@ -1441,16 +1435,31 @@ def _temporal_table(
     return _absolute_tables(snapshot, frame, selected=selected)
 
 
+def _unavailable_counts(frame: Any) -> tuple[dict[str, int], int]:
+    if "unavailable" not in frame.columns:
+        return {}, len(frame)
+    return frame["unavailable"].dropna().value_counts().to_dict(), len(frame)
+
+
+def unavailable_point_note(frame: Any) -> str | None:
+    """One plain-text note on why points are missing, or ``None`` when none are."""
+    counts, total = _unavailable_counts(frame)
+    if not counts:
+        return None
+    reasons = "; ".join(f"{reason}: {count_text(count)}" for reason, count in counts.items())
+    return (
+        f"{count_text(sum(counts.values()))} of {count_text(total)} points are unavailable "
+        f"({reasons}). They remain gaps in the chart, not zeros."
+    )
+
+
 def _gaps_block(frame: Any, *, view: str) -> str:
     """Why points are missing, and that they are left as gaps."""
-    if "unavailable" not in frame.columns:
+    counts, total = _unavailable_counts(frame)
+    if not counts:
         return ""
-    reasons = frame["unavailable"].dropna()
-    if not len(reasons):
-        return ""
-    counts = reasons.value_counts().to_dict()
     items = [
-        f"{esc(reason)}: {count_text(count)} of {count_text(len(frame))} points"
+        f"{esc(reason)}: {count_text(count)} of {count_text(total)} points"
         for reason, count in counts.items()
     ]
     heading = "Unavailable points" if view != "segments" else "Excluded segments"

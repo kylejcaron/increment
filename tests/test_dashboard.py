@@ -1272,6 +1272,15 @@ def test_daily_values_report_their_actual_calendar_basis_and_gap_reasons(
     assert "nonpositive_mean" in html
 
 
+def test_dashboard_explore_reports_unavailable_points_in_its_plot_notes(
+    storefront_payload,
+) -> None:
+    entry = storefront_payload["explore"]["overall"]["checkout_conversion"]["daily_values"]
+    notes = " ".join(entry["notes"])
+    assert "nonpositive_mean" in notes
+    assert "nonpositive_mean" not in entry["html"]
+
+
 # Export: CSV consumer round-trip.
 
 

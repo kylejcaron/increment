@@ -243,10 +243,10 @@ sources of the same property never mix, and a refusal from one never hides
 the other. Unsupported engine requests display their refusal instead of
 substituting whole-experiment results.
 
-Temporal plots use a separate value scale per metric. Date-basis and
-unavailable-point disclosures distinguish observation dates from retention
-cohort dates. Missing estimates remain gaps; one-sided intervals show their
-finite bound without inventing an endpoint.
+Temporal plots use a separate value scale per metric. Date-basis disclosures
+distinguish observation dates from retention cohort dates. Missing estimates
+remain gaps; **Plot notes** count unavailable points by reason. One-sided
+intervals show their finite bound without inventing an endpoint.
 
 Absolute daily and cumulative plots show numeric y-axis ticks. Both arms
 share a scale within each metric; unrelated metrics keep separate scales
