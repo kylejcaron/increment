@@ -1323,10 +1323,10 @@ class ArmStats(CodedModel, BaseModel):
 #: each term and the expected `successes * (n - successes) / n`: `(n + 8) * u`. Producers
 #: approach it, adding millions of equal tiny residuals onto a growing total that rounds the same
 #: way every time. On the real DuckDB producer path (`scripts/measure_binomial_ceiling.py
-#: recovery`) the error reached 1355x `variance_slack` at 1e9 units and stayed within a fifth of
-#: the bound at every size. `1024 * variance_slack` keeps >4x headroom up to 4e6 units and exceeds
-#: the bound there; above, the bound is the tolerance. Corrupt or non-binary data misses either
-#: by orders of magnitude.
+#: recovery`) the error reached 2442x `variance_slack` at 1e9 units and stayed within a quarter
+#: of the bound at every size (at most 0.24 of it, at 4e6 units). `1024 * variance_slack` keeps
+#: >4x headroom up to 4e6 units and exceeds the bound there; above, the bound is the tolerance.
+#: Corrupt or non-binary data misses either by orders of magnitude.
 _BERNOULLI_CONSISTENCY_SLACK = 1024.0
 _UNIT_ROUNDOFF = 2.0**-53
 
