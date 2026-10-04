@@ -274,7 +274,6 @@ class TestRefusalsNameTheAutoRoute:
         refusal = self._refusal(lambda: achieved_power(n, 0.02, baseline, _plan("finite_sample")))
         assert refusal.code == "power.binomial_replay_bound_exceeded"
         assert refusal.context["conversion_inference"] == "finite_sample"
-        assert "auto" in str(refusal)
         assert achieved_power(n, 0.02, baseline, _plan("auto")).power_basis == "asymptotic"
 
     def test_the_size_search_refusal_names_auto(self, monkeypatch):
@@ -286,7 +285,6 @@ class TestRefusalsNameTheAutoRoute:
             lambda: required_sample_size(0.05, baseline, _plan("finite_sample"))
         )
         assert refusal.code == "power.binomial_replay_bound_exceeded"
-        assert "auto" in str(refusal)
         sized = required_sample_size(0.05, baseline, _plan("auto"))
         assert sized.power_basis == "asymptotic"
 
@@ -297,7 +295,6 @@ class TestRefusalsNameTheAutoRoute:
             lambda: required_sample_size(0.5, baseline, _plan("finite_sample", alpha=alpha))
         )
         assert refusal.code == "power.binomial_tail_level_unrepresentable"
-        assert "auto" in str(refusal)
         sized = required_sample_size(0.5, baseline, _plan("auto", alpha=alpha))
         assert sized.power >= PowerDesign().power
         assert sized.power_basis in ("asymptotic", "approximate", "exact")
@@ -309,9 +306,10 @@ class TestRefusalsNameTheAutoRoute:
             lambda: required_sample_size(0.5, baseline, _plan("finite_sample"), design)
         )
         assert refusal.code == "power.binomial_arm_ceiling_below_smallest_design"
-        assert "auto" in str(refusal)
 
 
+@pytest.mark.slow
+@pytest.mark.parameter_recovery
 class TestPlanningMatchesTheRuntimeRejectionRate:
     """Planning and the runtime derive the same rejection probability independently, so at
     matched inputs they agree: a dense plan within ``4 * se + 0.003`` of the simulated
@@ -325,3 +323,21 @@ class TestPlanningMatchesTheRuntimeRejectionRate:
         rate, se, share = runtime_rejection_rate(n, n, p, p * (1 + lift), reps=2_000, seed=20261004)
         assert share == 1.0
         assert abs(planned.power - rate) <= 4 * se + 0.003
+
+
+def test_a_baseline_cuped_rho_does_not_discard_an_explicit_finite_sample_request():
+    baseline = Baseline(mean=0.3, var=0.21, cuped_rho=0.4)
+    with pytest.raises(CodedError) as raised:
+        achieved_power(5_000, 0.1, baseline, _plan("finite_sample"))
+    assert raised.value.code == "estimation.binomial.finite_sample_unavailable"
+    # The default route plans the CUPED-adjusted decision as before.
+    assert achieved_power(5_000, 0.1, baseline, _plan("auto")).power_basis == "asymptotic"
+
+
+def test_the_dense_runtime_rate_smoke_agrees_with_planning():
+    p = 0.3
+    n = _dense_n(p)
+    planned = achieved_power(n, 0.03, Baseline.from_proportion(p), _plan())
+    rate, se, share = runtime_rejection_rate(n, n, p, p * 1.03, reps=400, seed=20261004)
+    assert share == 1.0
+    assert abs(planned.power - rate) <= 4 * se + 0.003

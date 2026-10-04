@@ -1374,6 +1374,12 @@ def _derive_axes_from_baseline(
         for method in (procedure.decision_method, *procedure.sensitivity_methods)
     )
     if baseline.cuped_rho != 0.0 and not already_cuped:
+        if procedure.decision_method.conversion_inference == "finite_sample":
+            refuse_finite_sample_unavailable(
+                procedure.metric.metric_type,
+                "the baseline's cuped_rho makes the decision CUPED-adjusted, which has no "
+                "finite-sample test inversion",
+            )
         procedure = procedure.model_copy(
             update={"decision_method": MethodSpec(name="cuped", variance_reduction="cuped")}
         )
