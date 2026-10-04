@@ -173,7 +173,33 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 .metric-detail-note { font-size: 11px; margin: 12px 0 0; }
 
 /* ===== Explore ============================================================= */
-.explore-mode { margin: 0 0 14px; }
+.explore-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px; margin: 0 0 14px; }
+.added-metrics { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.added-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.added-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 4px 6px 4px 10px; border: 1px solid var(--line); border-radius: 99px; background: var(--surface); }
+.added-chip button { border: 0; background: transparent; padding: 0 4px; font-size: 14px; line-height: 1; color: var(--muted); }
+.added-chip button:hover { color: var(--ink); background: none; }
+.added-picker { position: relative; }
+.added-open { font-size: 12px; font-weight: 600; color: var(--accent); background: var(--surface); border: 1px solid var(--line); border-radius: var(--inc-dashboard-radius); padding: 7px 12px; }
+.added-open:hover { background: var(--tint); }
+.added-open:disabled, .added-chip button:disabled { opacity: .55; cursor: not-allowed; }
+.added-panel { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; width: min(340px, 86vw); background: var(--surface); border: 1px solid var(--line); border-radius: var(--inc-dashboard-radius); box-shadow: 0 10px 30px rgba(0,0,0,.18); padding: 10px; }
+.added-panel input { width: 100%; box-sizing: border-box; font: inherit; font-size: 13px; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: max(0px, calc(var(--inc-dashboard-radius) - 2px)); padding: 7px 9px; }
+.added-panel input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.added-options { list-style: none; margin: 8px 0 0; padding: 0; max-height: 220px; overflow-y: auto; }
+.added-options label { display: flex; align-items: baseline; gap: 8px; padding: 6px 4px; font-size: 13px; border-radius: 4px; cursor: pointer; }
+.added-options label:hover { background: var(--tint); }
+.added-options input { width: auto; accent-color: var(--accent); }
+.added-options small { display: block; color: var(--muted); font-size: 11px; line-height: 1.4; }
+.added-options .added-empty { color: var(--muted); font-size: 12px; padding: 6px 4px; }
+.added-hint { font-size: 11px; color: var(--muted); line-height: 1.5; margin: 8px 2px 0; }
+.added-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.added-actions button { font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: max(0px, calc(var(--inc-dashboard-radius) - 2px)); }
+.added-cancel { background: transparent; border: 1px solid var(--line); color: var(--ink); }
+.added-apply { background: var(--accent); border: 1px solid var(--accent); color: var(--on-accent); }
+.added-status { font-size: 12px; color: var(--muted); margin: -6px 0 14px; }
+.added-status[data-kind="error"] { color: var(--unfavorable); }
+.explore-mode { margin: 0; }
 .explore-overview .plot-notes { margin-top: 14px; }
 .explore-overview .metric-detail-note { margin: 10px 0 0; }
 .scope-bar {
@@ -464,13 +490,21 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   function current() { return root.getAttribute('data-theme') === 'dark' ? 'dark' : 'light'; }
   // Same-origin embeds expose the mode on their <iframe> and, when a notebook host (#App)
   // contains it, the active canvas and text colors on that host, so the embedding page can style
-  // around the dashboard; cross-origin frames deny access and simply skip this.
+  // around the dashboard; cross-origin frames deny access and simply skip this. A widget may
+  // mount the frame inside a shadow root, so the search climbs through shadow hosts.
+  function notebookHost(node) {
+    while (node) {
+      if (node.id === 'App') return node;
+      node = node.parentElement || (node.getRootNode && node.getRootNode().host) || null;
+    }
+    return null;
+  }
   function publish() {
     try {
       const frame = window.frameElement;
       if (!frame) return;
       frame.setAttribute('data-inc-dashboard-theme', current());
-      const host = frame.closest('#App');
+      const host = notebookHost(frame);
       if (host) {
         const style = window.getComputedStyle(root);
         for (const role of ['canvas', 'text']) {
@@ -595,10 +629,29 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
         <h2>Explore results</h2>
         <p>Every metric's lift, broken out by the experiment’s declared segments.</p>
       </div>
-      <div class="segmented explore-mode" id="explore-mode" role="group" aria-label="Explore view">
-        <button type="button" data-explore-view="overview" aria-pressed="true">Overview</button>
-        <button type="button" data-explore-view="series" aria-pressed="false">Time series</button>
+      <div class="explore-toolbar">
+        <div class="segmented explore-mode" id="explore-mode" role="group" aria-label="Explore view">
+          <button type="button" data-explore-view="overview" aria-pressed="true">Overview</button>
+          <button type="button" data-explore-view="series" aria-pressed="false">Time series</button>
+        </div>
+        <div class="added-metrics" id="added-metrics" hidden>
+          <span class="scope-label" id="added-label">Added metrics</span>
+          <div class="added-chips" id="added-chips" role="list" aria-labelledby="added-label"></div>
+          <div class="added-picker">
+            <button type="button" class="added-open" id="added-open" aria-expanded="false" aria-controls="added-panel">+ Add metrics</button>
+            <div class="added-panel" id="added-panel" role="dialog" aria-label="Add exploratory metrics" hidden>
+              <input type="search" id="added-search" placeholder="Search saved metrics" aria-label="Search saved metrics" autocomplete="off">
+              <ul class="added-options" id="added-options"></ul>
+              <p class="added-hint">Added metrics are exploratory: they join the overview's correction and never the Readout.</p>
+              <div class="added-actions">
+                <button type="button" class="added-cancel" id="added-cancel">Cancel</button>
+                <button type="button" class="added-apply" id="added-apply">Apply</button>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
+      <p class="added-status" id="added-status" role="status" aria-live="polite" hidden></p>
       <div class="scope-bar" id="scope-bar">
         <span class="scope-label" id="scope-label">Compare by</span>
         <div class="scope-controls" id="scope-controls" role="group" aria-labelledby="scope-label"></div>
@@ -1043,6 +1096,86 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     renderExplore();
   });
 
+  /* ---------- Added exploratory metrics -------------------------------------- */
+  // The page is a captured snapshot; only the hosting notebook can prepare a new one. A host that
+  // can (the dashboard widget) answers our `ready` with `bridge`; without one the picker is
+  // read-only. Messages are accepted only from the parent window and carry a source tag.
+  const added = data.exploratory && typeof data.exploratory === 'object' ? data.exploratory : {};
+  const available = Array.isArray(added.available) ? added.available : [];
+  const selectedAdded = Array.isArray(added.selected) ? added.selected.map(str) : [];
+  const HOST = 'inc-dashboard-host';
+  let bridged = false;
+  let draft = new Set(selectedAdded);
+  let waiting = null;
+
+  function toHost(message) {
+    try { if (window.parent !== window) window.parent.postMessage({ source: 'inc-dashboard', ...message }, '*'); } catch (error) { /* no host */ }
+  }
+  function setStatus(text, kind) {
+    const node = $('added-status');
+    node.hidden = !text;
+    node.textContent = text;
+    node.dataset.kind = kind || '';
+  }
+  function labelFor(key) {
+    const option = available.find((item) => str(item.key) === key);
+    return option ? str(option.label) || key : key;
+  }
+  function requestMetrics(next) {
+    if (!bridged) return;
+    setStatus('Preparing a new snapshot with ' + next.length + ' added metric' + (next.length === 1 ? '' : 's') + '…');
+    clearTimeout(waiting);
+    // A live host acknowledges at once; silence means no running notebook can prepare one.
+    waiting = setTimeout(() => setStatus('Changing added metrics needs a running notebook; this page is a static snapshot.', 'error'), 4000);
+    toHost({ type: 'set-exploratory-metrics', metrics: next });
+  }
+  function renderAddedOptions() {
+    const query = $('added-search').value.trim().toLowerCase();
+    const matches = available.filter((item) => !query || [item.key, item.label, item.description].some((text) => str(text).toLowerCase().includes(query)));
+    $('added-options').replaceChildren(...(matches.length ? matches.map((item) => {
+      const key = str(item.key);
+      const box = el('input', { type: 'checkbox', checked: draft.has(key) });
+      box.addEventListener('change', () => { if (box.checked) draft.add(key); else draft.delete(key); });
+      return el('li', {}, el('label', {}, box, el('span', {}, str(item.label) || key, item.description ? el('small', { text: str(item.description) }) : null)));
+    }) : [el('li', { className: 'added-empty', text: 'No saved metric matches.' })]));
+  }
+  function setPanel(open) {
+    $('added-panel').hidden = !open;
+    $('added-open').setAttribute('aria-expanded', String(open));
+    if (open) { draft = new Set(selectedAdded); $('added-search').value = ''; renderAddedOptions(); $('added-search').focus(); }
+  }
+  function renderAdded() {
+    $('added-metrics').hidden = available.length === 0 && selectedAdded.length === 0;
+    $('added-chips').replaceChildren(...selectedAdded.map((key) => {
+      const remove = el('button', { type: 'button', 'aria-label': 'Remove ' + labelFor(key), title: bridged ? 'Remove' : 'Read-only snapshot', disabled: !bridged, text: '×' });
+      remove.addEventListener('click', () => requestMetrics(selectedAdded.filter((item) => item !== key)));
+      return el('span', { className: 'added-chip', role: 'listitem' }, labelFor(key), remove);
+    }));
+    $('added-open').disabled = !bridged || available.length === 0;
+    $('added-open').title = bridged ? '' : 'This static snapshot cannot prepare new results.';
+  }
+  $('added-open').addEventListener('click', () => setPanel($('added-panel').hidden));
+  $('added-cancel').addEventListener('click', () => setPanel(false));
+  $('added-search').addEventListener('input', renderAddedOptions);
+  $('added-apply').addEventListener('click', () => {
+    const next = available.map((item) => str(item.key)).filter((key) => draft.has(key));
+    setPanel(false);
+    if (next.join('\n') !== selectedAdded.join('\n')) requestMetrics(next);
+  });
+  $('added-panel').addEventListener('keydown', (event) => { if (event.key === 'Escape') { setPanel(false); $('added-open').focus(); } });
+  window.addEventListener('message', (event) => {
+    if (event.source !== window.parent || event.source === window) return;
+    const message = event.data;
+    if (!message || message.source !== HOST) return;
+    if (message.type === 'bridge') { bridged = true; renderAdded(); }
+    else if (message.type === 'status') {
+      const status = str(message.status);
+      if (status === 'preparing') { clearTimeout(waiting); setStatus('Preparing a new snapshot… this reads the warehouse and recomputes the exploratory family.'); }
+      else if (status) { clearTimeout(waiting); setStatus('The new snapshot was not prepared: ' + status, 'error'); }
+    } else if (message.type === 'restore' && VIEWS.includes(str(message.view))) navigate(str(message.view));
+  });
+  renderAdded();
+
   /* ---------- Health and Report ---------------------------------------------- */
   function renderHealthStatus(node) {
     if (!healthStatus) { node.hidden = true; return; }
@@ -1375,6 +1508,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   renderHero();
   showView(location.hash.slice(1));
   fitFrame();
+  toHost({ type: 'ready' });
 })();
 </script>
 </body>

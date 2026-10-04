@@ -10,18 +10,18 @@
   color: var(--inc-dashboard-notebook-text);
 }
 
-#App [data-cell-name]:has(iframe) {
+#App [data-cell-name]:has(marimo-anywidget) {
   width: 100%;
   max-width: none;
   padding: 0;
   background: transparent;
 }
 
-#App [data-cell-name]:has(iframe) .output-area {
+#App [data-cell-name]:has(marimo-anywidget) .output-area {
   padding: 0;
 }
 
 /* marimo's full-width layout still pads the page; give the dashboard cell that width back. */
-#App .px-1:has([data-cell-name] iframe) {
+#App .px-1:has([data-cell-name] marimo-anywidget) {
   padding-inline: 8px;
 }

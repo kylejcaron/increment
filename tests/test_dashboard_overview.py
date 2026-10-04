@@ -184,3 +184,35 @@ def test_added_metrics_come_from_the_pinned_read(tmp_path):
         assert fresh.overview is not None
         dumped = [row.model_dump(mode="json") for row in fresh.overview.exploratory]
         assert dumped != [row.model_dump(mode="json") for row in before]
+
+
+def _page_payload(page: str) -> dict:
+    import json
+    import re
+
+    match = re.search(r'<script type="application/json" id="dashboard-data">(.*?)</script>', page)
+    assert match is not None
+    return json.loads(match.group(1))
+
+
+@pytest.mark.slow
+def test_the_dashboard_widget_reprepares_for_added_metrics_and_keeps_a_refusal(tmp_path):
+    from increment.dashboard._app import DashboardWidget
+
+    with _workspace(tmp_path, metrics=_SAVED) as (_, analysis):
+        widget = DashboardWidget(analysis, snapshot=prepare_dashboard(analysis, config=_config()))
+        offered = _page_payload(widget.document)["exploratory"]
+        assert [item["key"] for item in offered["available"]] == [ADDED]
+        assert offered["selected"] == []
+
+        widget.exploratory_metrics = [ADDED]
+        assert widget.status == ""
+        payload = _page_payload(widget.document)
+        assert payload["exploratory"]["selected"] == [ADDED]
+        assert ADDED in {metric["key"] for metric in payload["metrics"]}
+
+        page = widget.document
+        widget.exploratory_metrics = ["not_a_saved_metric"]
+        assert "dashboard.invalid_config" in widget.status
+        assert widget.exploratory_metrics == [ADDED]
+        assert widget.document == page

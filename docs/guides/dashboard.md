@@ -75,9 +75,11 @@ temporal and breakout views as well as the headline.
 
 `render_dashboard` embeds the captured evidence without querying the warehouse.
 Its browser controls select prepared evidence; they never alter the analysis
-plan or recompute confirmatory results. Section-level renderers also accept
-already-prepared data. Re-executing preparation intentionally creates a new
-snapshot that reflects subsequent source changes.
+plan or recompute confirmatory results. The one exception is **Added metrics**
+in Explore: in a running notebook, changing them prepares a new snapshot from
+`analysis` with those exploratory metrics and replaces the page. Section-level
+renderers also accept already-prepared data. Re-executing preparation
+intentionally creates a new snapshot that reflects subsequent source changes.
 You retain ownership of `analysis` and its connection; the package does not
 close or replace them. When deliberately rebinding to a different experiment,
 the caller must close the old connection.
@@ -167,7 +169,7 @@ and do not restyle the notebook canvas.
 
 | Call | Renders |
 |---|---|
-| `render_dashboard(analysis, snapshot=...)` | The complete interactive four-tab dashboard from captured evidence, without warehouse queries; native plots, scoped controls, metric inspectors, health, provenance, and a readable Report with the full captured metric family. |
+| `render_dashboard(analysis, snapshot=...)` | The complete interactive four-tab dashboard from captured evidence, as a marimo anywidget; native plots, scoped controls, metric inspectors, health, provenance, and a readable Report with the full captured metric family. Its Explore **Added metrics** control re-prepares the snapshot in a running notebook. |
 | `dashboard_styles(theme=MIDNIGHT)` | The configured theme and scoped stylesheet as one style block. Reads packaged resources, so it needs no repository-relative path. |
 | `render_header(snapshot)` | Experiment identity, window, population, inference, arms, and three summary cards: enrolled units, observed arm split, and a compact primary lift with its bracketed interval and direction-aware significance status. |
 | `render_health(snapshot)` | Visual allocation bars with target markers, the SRM verdict, and visible assignment warnings and result caveats. Allocation over time and evidence expands to a CoefTable with one row per variant, cumulative enrolled share, and the check statistics. |
@@ -260,9 +262,11 @@ beneath its whole-experiment row. Selecting a metric opens its **Time series**.
 declare. They are read in the same pinned snapshot as everything else, appear
 in the Overview's Exploratory group and in Time series, and never enter the
 Readout or the Report. A name the definitions do not offer is refused with
-`dashboard.invalid_config` before any read. The example notebook offers a
-searchable multiselect above the dashboard; changing it re-prepares the
-snapshot, so the exploratory family grows with each added metric.
+`dashboard.invalid_config` before any read. In Explore, **Added metrics** lists
+the selection; **+ Add metrics** searches the saved definitions. Applying a
+change prepares a new snapshot (it reads the warehouse, so it takes a few
+seconds) and reopens Explore; the exploratory family grows with each added
+metric. A refused preparation keeps the current snapshot and shows the refusal.
 
 ### Time series
 
@@ -372,7 +376,9 @@ declared breakout dimension and a single resolved segment is equally valid.
 Both live notebooks and static HTML exports contain the prepared **Readout**,
 **Explore**, **Health**, and **Report** tabs. Metric, declared-breakout,
 relative/absolute, daily/cumulative, and maturity controls select embedded
-evidence in the browser; no Python kernel is needed after export.
+evidence in the browser; no Python kernel is needed after export. A static
+export shows its captured added metrics, but changing them needs a running
+notebook; the control says so instead of applying the change.
 
 By default, the dashboard uses **Midnight · Daylight** in light mode and
 **Midnight** in dark mode; custom presets supply their own paired palettes.

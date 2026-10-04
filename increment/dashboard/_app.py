@@ -14,11 +14,13 @@ import json
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from importlib import resources
 from typing import TYPE_CHECKING, Any
 
+import anywidget
 import marimo as mo
+import traitlets
 
 from increment.dashboard._data import (
     DashboardSnapshot,
@@ -28,6 +30,7 @@ from increment.dashboard._data import (
     group_data_csv,
     load_explore,
     metric_names,
+    prepare_dashboard,
     readout_csv,
     row_for_metric,
 )
@@ -96,12 +99,56 @@ _VIEW_TITLES = {
 }
 
 
-def render_dashboard(analysis: Analysis, *, snapshot: DashboardSnapshot) -> mo.Html:
+def render_dashboard(analysis: Analysis, *, snapshot: DashboardSnapshot) -> Any:
     """The complete interactive dashboard for one prepared snapshot.
 
-    ``analysis`` proves the experiment binding; every tab reads only captured evidence.
+    ``analysis`` proves the experiment binding; every tab reads only captured evidence. In a
+    running notebook, adding or removing exploratory metrics in Explore prepares a new snapshot
+    from ``analysis`` and replaces the page; a static export shows its captured selection.
     """
-    return mo.iframe(document(build_payload(analysis, snapshot=snapshot)), height=_FRAME_HEIGHT)
+    return mo.ui.anywidget(DashboardWidget(analysis, snapshot=snapshot))
+
+
+class DashboardWidget(anywidget.AnyWidget):
+    """The dashboard page, plus the one request it can send back: a new set of added metrics.
+
+    ``document`` is the rendered page. Setting ``exploratory_metrics`` prepares a new snapshot
+    with those metrics and replaces ``document``; a refused preparation keeps the current
+    snapshot, restores the selection, and reports the refusal in ``status``.
+    """
+
+    _esm = resources.files(__package__).joinpath("_bridge.js").read_text(encoding="utf-8")
+    _css = f".inc-dashboard-frame{{display:block;width:100%;height:{_FRAME_HEIGHT};border:0}}"
+    document = traitlets.Unicode("").tag(sync=True)
+    exploratory_metrics = traitlets.List(traitlets.Unicode()).tag(sync=True)
+    status = traitlets.Unicode("").tag(sync=True)
+
+    def __init__(self, analysis: Analysis, *, snapshot: DashboardSnapshot) -> None:
+        super().__init__(
+            document=document(build_payload(analysis, snapshot=snapshot)),
+            exploratory_metrics=list(snapshot.config.exploratory_metrics),
+        )
+        self._analysis = analysis
+        self._snapshot = snapshot
+        self.observe(self._prepare, names="exploratory_metrics")
+
+    def _prepare(self, change: Mapping[str, Any]) -> None:
+        requested = tuple(change["new"])
+        current = self._snapshot.config.exploratory_metrics
+        if requested == current:
+            return
+        self.status = "preparing"
+        try:
+            config = replace(self._snapshot.config, exploratory_metrics=requested)
+            snapshot = prepare_dashboard(self._analysis, config=config)
+            page = document(build_payload(self._analysis, snapshot=snapshot))
+        except CodedError as exc:
+            self.status = f"{exc} ({exc.code})"
+            self.exploratory_metrics = list(current)
+            return
+        self._snapshot = snapshot
+        self.document = page
+        self.status = ""
 
 
 def document(payload: Mapping[str, Any]) -> str:
@@ -172,6 +219,17 @@ def build_payload(analysis: Analysis, *, snapshot: DashboardSnapshot) -> dict[st
                 "notes": overview_notes(snapshot, breakout),
             }
             for key, breakout in breakouts.items()
+        },
+        "exploratory": {
+            "available": [
+                {
+                    "key": model.name,
+                    "label": _label(model.name),
+                    "description": str(getattr(model, "description", "") or ""),
+                }
+                for model in analysis.available_metrics
+            ],
+            "selected": [model.name for model in snapshot.exploratory_metrics],
         },
         "explore": {
             key: _explore_scope(analysis, snapshot, breakout, correction)
