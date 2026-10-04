@@ -409,6 +409,57 @@ Every public capability declares its behavior for every metric type in
 Compatibility probes establish composition behavior. Statistical calibration
 belongs in the capability's dedicated tests.
 
+### Adding a method or design
+
+Open a GitHub issue before implementing a new estimator, inference route, or
+experiment design. Whether to take on a method is a product decision for the
+code owners; the conditions below decide whether an approved addition is
+complete. They gate new methods only and do not hold up fixes to behavior that
+already ships. A new method needs all of the following:
+
+1. **A documented need.** A real user scenario or a published source, not
+   breadth for its own sake.
+2. **An approved design.** The estimand, the identification argument, the
+   assumptions, and the guarantee class it is derived to have (`exact`,
+   `asymptotic`, `planning approximation`, or `experimental`, as defined under
+   [evidence status](docs/validation.md#evidence-status)). State assumptions
+   and the strength of the guarantee in the public documentation.
+3. **Interactions classified.** For CUPED, ratio metrics, clustering,
+   sequential inference, winsorization, breakouts, and multiplicity roles, give
+   every applicable combination one status: `supported`, `source_limited`,
+   `construction_limited`, `unfinished`, `unsound`, or `not_expressible`. The
+   statuses are defined in the [evidence status](docs/validation.md#evidence-status)
+   table. A mathematically invalid combination is `unsound` and carries its
+   derivation; it is not missing engineering. A missing implementation is
+   `unfinished` and is tracked in an issue, not in the limitations page.
+4. **Planning matches runtime.** Where the planner and the runtime derive the
+   same quantity, an equivalence test at matched inputs.
+5. **Ingress parity.** A row or axis value in the enumerated
+   [parity matrix](tests/parity_harness/COVERAGE.md) with a stated disposition
+   for each of the six `Analysis` entry points. Path presence alone is not
+   evidence of parity.
+6. **An independent reference.** Either a frozen comparison against a
+   third-party tool or independent primitive under `tests/oracles/`, or a
+   justified independent construction check (an enumeration or an exact
+   derivation that shares no code with the implementation). Record it in the
+   [reference inventory](docs/validation.md#reference-inventory) with its
+   tolerance and the regimes it does not cover. If no matched reference
+   exists, list the method under
+   [unvalidated regimes](docs/validation.md#unvalidated-regimes) rather than
+   leaving the gap unstated.
+7. **Stable refusals and bounds.** A coded refusal for each unsupported
+   variant, raised before data is loaded and identical across ingress paths,
+   plus measured, enforced operational bounds (input size, latency, memory)
+   with a refusal at the bound.
+8. **A complete change.** Examples, guides, the
+   [compatibility reference](docs/guides/compatibility.md), the path-by-capability
+   table, and fixtures updated together, following
+   [Capability composition](#capability-composition) above.
+
+These conditions do not require every existing method to be validated before a
+new one is added, and a missing external case study is recorded as absent, not
+manufactured.
+
 ### Advisory complexity reports
 
 Use `make complexity` for a full cognitive-complexity report or:
