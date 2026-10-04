@@ -94,7 +94,8 @@ The [dataframe quickstart](docs/guides/quickstart.md) covers metric declarations
 missing values, analysis plans, uncertainty intervals, and monitoring.
 
 Next: [add CUPED](docs/guides/cuped.md#on-the-dataframe-path) ·
-[monitor sequentially](docs/guides/sequential-inference.md#sequential-monitoring-of-a-conversion-metric) ·
+monitor sequentially ([mean or ratio](docs/guides/sequential-inference.md#ordinary-continuous-monitoring),
+[conversion or retention](docs/guides/sequential-inference.md#sequential-monitoring-of-a-conversion-metric)) ·
 [run a switchback](docs/guides/switchback.md#supported-contract) ·
 [adjust for opt-in treatment](docs/guides/observational.md) ·
 [other data shapes](docs/guides/choose-a-method.md).
@@ -145,7 +146,7 @@ portable unit-day artifacts, and moments exports.
 | Use priors and probability-based decisions | [Bayesian inference](docs/guides/priors-and-decisions.md) |
 | Reduce variance | [CUPED](docs/guides/cuped.md#on-the-dataframe-path) |
 | Correct multiple comparisons | [Multiplicity](docs/guides/multiplicity.md) |
-| Monitor an experiment | [Sequential inference](docs/guides/sequential-inference.md#sequential-monitoring-of-a-conversion-metric) |
+| Monitor an experiment | [Mean or ratio metrics](docs/guides/sequential-inference.md#ordinary-continuous-monitoring) · [Conversion or retention metrics](docs/guides/sequential-inference.md#sequential-monitoring-of-a-conversion-metric) |
 | Plan sample size or power | [Power analysis](docs/guides/power-analysis.md) |
 | Analyze non-randomized treatments | [Observational inference](docs/guides/observational.md) |
 | Analyze encouragement or switchback designs | [Encouragement](docs/guides/encouragement.md) · [Switchback](docs/guides/switchback.md#supported-contract) |
