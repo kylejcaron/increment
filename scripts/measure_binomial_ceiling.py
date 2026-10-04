@@ -1,11 +1,12 @@
 """Measure the finite-sample (exact binomial) route's compute ceiling, outside pytest.
 
-Three subcommands write one JSON line per measurement (commit, machine, Python/SciPy/NumPy
+Four subcommands write one JSON line per measurement (commit, machine, Python/SciPy/NumPy
 versions on every line) and are meant to run serially, one at a time::
 
     uv run python -m scripts.measure_binomial_ceiling latency  --out /tmp/rsf0-latency.jsonl
     uv run python -m scripts.measure_binomial_ceiling ulp      --out /tmp/rsf0-ulp.jsonl
     uv run --extra demo python -m scripts.measure_binomial_ceiling recovery --out /tmp/rsf0-recovery.jsonl
+    uv run python -m scripts.measure_binomial_ceiling planning --out /tmp/rsf0-planning.jsonl
 
 ``latency``
     Runs ``binomial_rr.confidence_interval`` cold in a fresh subprocess per cell and rung (two-sided,
@@ -27,6 +28,13 @@ versions on every line) and are meant to run serially, one at a time::
     reconstruction error and the second-moment error in units of ``variance_slack`` -- plus the
     constant-0.5 corruption cell, which must still be refused. The raw moments are recorded so
     acceptance can be re-evaluated under another tolerance without rebuilding the arm.
+
+``planning``
+    Runs ``achieved_power``, ``minimum_detectable_effect`` or ``required_sample_size`` cold in a
+    fresh subprocess per cell at a conversion baseline, recording CPU time, the child's peak
+    resident set, the retained count cells the replay spans and the power basis -- or the coded
+    refusal a design beyond the replay bound raises. ``--rungs`` does not apply: each cell fixes
+    its own design.
 """
 
 from __future__ import annotations
@@ -463,9 +471,16 @@ def _small_count_check(n: int) -> dict[str, Any]:
     }
 
 
+def _resolvable(endpoint: float) -> bool:
+    """Neither clamped to an end of the unit interval nor so near one that the float spacing there
+    is a visible share of the endpoint's complement."""
+    return 0.0 < endpoint < 1.0 and 1.0 - endpoint > 1e-9
+
+
 def _enclosure_checks(n: int) -> list[dict[str, Any]]:
     """The Clopper-Pearson endpoints against exact tails: the outward-rounded lower endpoint must
-    leave ``P(X >= x)`` at most ``beta / 2``, the upper ``P(X <= x)``."""
+    leave ``P(X >= x)`` at most ``beta / 2``, the upper ``P(X <= x)``, and a resolvable endpoint
+    must not leave it under a tenth of that (the allowance is relative to the smaller side)."""
     from calibration.binomial_oracle import Binomial
     from increment.estimation import binomial_rr as brr
 
@@ -473,11 +488,15 @@ def _enclosure_checks(n: int) -> list[dict[str, Any]]:
     for beta in (brr.nuisance_beta(ALPHA), 1e-9):
         half = Decimal(beta) / 2
         for x in sorted(
-            {0, 1, 10, 100, round(n * 0.05), round(n * 1e-4), round(n * 0.5), n - 1, n}
+            {0, 1, 2, 3, 4, 5, 10, 100, round(n * 1e-4), round(n * 0.05), round(n * 0.5)}
+            | {n - 100, n - 10, n - 5, n - 4, n - 3, n - 2, n - 1, n}
         ):
             lower, upper = brr.clopper_pearson(x, n, beta)
             lower_mass = Binomial(n, lower).sf(x - 1) if x > 0 else Decimal(0)
             upper_mass = Binomial(n, upper).cdf(x) if x < n else Decimal(0)
+            tight = (not _resolvable(lower) or lower_mass >= half / 10) and (
+                not _resolvable(upper) or upper_mass >= half / 10
+            )
             out.append(
                 {
                     "stage": "clopper_pearson",
@@ -489,6 +508,7 @@ def _enclosure_checks(n: int) -> list[dict[str, Any]]:
                     "lower_tail_over_half_beta": float(lower_mass / half),
                     "upper_tail_over_half_beta": float(upper_mass / half),
                     "encloses": lower_mass <= half and upper_mass <= half,
+                    "tight": tight,
                 }
             )
     return out
@@ -535,7 +555,7 @@ def _ulp(args: argparse.Namespace) -> None:
     for n in _rungs(args.rungs):
         started = time.process_time()
         worst = {name: _Tally() for name in ("pmf", "cdf", "sf")}
-        flags = {"dominates": True, "encloses": True, "bounded": True}
+        flags = {"dominates": True, "encloses": True, "tight": True, "bounded": True}
         weighted = dot = 0.0
 
         def record(entry: dict[str, Any]) -> dict[str, Any]:
@@ -562,7 +582,9 @@ def _ulp(args: argparse.Namespace) -> None:
                         weighted = max(weighted, entry["primitive_weighted_error_over_eps"])
                         dot = max(dot, entry["dot_error_over_eps"])
         for entry in _enclosure_checks(n):
-            flags["encloses"] &= record(entry)["encloses"]
+            checked = record(entry)
+            flags["encloses"] &= checked["encloses"]
+            flags["tight"] &= checked["tight"]
         for entry in _omitted_mass_checks(n):
             flags["bounded"] &= record(entry)["bounded"]
         allowance = brr._ulp_allowance(n)
@@ -582,6 +604,7 @@ def _ulp(args: argparse.Namespace) -> None:
                 "max_dot_error_over_eps": dot,
                 "every_certificate_dominates": flags["dominates"],
                 "every_cp_enclosure_holds": flags["encloses"],
+                "every_cp_endpoint_tight": flags["tight"],
                 "every_omitted_mass_bounded": flags["bounded"],
                 "cpu_s": round(time.process_time() - started, 1),
             }
@@ -728,6 +751,97 @@ def _recovery(args: argparse.Namespace) -> None:
             _emit(out, {"kind": "recovery", "n": n, "cell": name, "successes": successes} | result)
 
 
+# --- planning ---------------------------------------------------------------------------------
+
+#: ``(cell, planner, control rate, units per arm, relative lift)``: planning the runtime decision
+#: costs what its replay spans, not the arm size. Dense cells reach the replay bound
+#: (`power._binomial.PLANNING_CELL_CEILING` retained cells) near a million units per arm at 5% and
+#: 190,000 at 50%; the rare cells expect a hundred events per arm at 1e6 to 1e9 units; one dense
+#: cell sits beyond the bound and is refused.
+PLANNING_CELLS = (
+    ("dense-1e5", "power", 0.05, 100_000, 0.05),
+    ("dense-2.5e5", "power", 0.05, 250_000, 0.03),
+    ("dense-5e5", "power", 0.05, 500_000, 0.02),
+    ("dense-1e6", "power", 0.05, 1_000_000, 0.015),
+    ("dense-1e6-mde", "mde", 0.05, 1_000_000, None),
+    ("dense-size", "size", 0.05, None, 0.0175),
+    ("wide-1.9e5", "power", 0.5, 190_000, 0.03),
+    ("wide-1.9e5-mde", "mde", 0.5, 190_000, None),
+    ("rare-1e6", "power", 1e-4, 1_000_000, 0.5),
+    ("rare-1e8", "power", 1e-6, 100_000_000, 0.5),
+    ("rare-1e9", "power", 1e-7, 1_000_000_000, 0.5),
+    ("dense-5e6-refused", "power", 0.05, 5_000_000, 0.01),
+)
+
+
+def _planning_cell(planner: str, rate: float, n: int | None, lift: float | None) -> dict[str, Any]:
+    """One cold planning call: ``achieved_power``, ``minimum_detectable_effect`` or
+    ``required_sample_size`` at a conversion baseline, or the coded refusal it raised."""
+    from increment.errors import CodedError
+    from increment.estimation.arm_contract import ArmPlanningProcedure
+    from increment.power import (
+        Baseline,
+        achieved_power,
+        minimum_detectable_effect,
+        required_sample_size,
+    )
+    from increment.power._binomial import replay_cells
+    from increment.power.core import _binomial_key
+
+    baseline = Baseline.from_proportion(rate)
+    procedure = ArmPlanningProcedure.standard("conversion")
+    wall = time.perf_counter()
+    cpu = time.process_time()
+    outcome: dict[str, Any]
+    units = n
+    try:
+        if planner == "power":
+            assert n is not None and lift is not None
+            result = achieved_power(n, lift, baseline, procedure)
+        elif planner == "mde":
+            assert n is not None
+            result = minimum_detectable_effect(n, baseline, procedure)
+        else:
+            assert lift is not None
+            result = required_sample_size(lift, baseline, procedure)
+            units = result.n_per_arm
+        outcome = {
+            "n_per_arm": result.n_per_arm,
+            "power": result.power,
+            "mde_relative": result.mde_relative,
+            "power_basis": result.power_basis,
+        }
+    except CodedError as refusal:
+        outcome = {"refused": refusal.code, "refusal_context": dict(refusal.context)}
+    cpu = time.process_time() - cpu
+    wall = time.perf_counter() - wall
+    cells = replay_cells(_binomial_key(procedure, units, units), rate) if units else None
+    return {
+        "kind": "planning",
+        "planner": planner,
+        "rate": rate,
+        "n": n,
+        "lift": lift,
+        "replay_cells": cells,
+        "call_wall_s": round(wall, 3),
+        "call_cpu_s": round(cpu, 3),
+        **outcome,
+    }
+
+
+def _planning(args: argparse.Namespace) -> None:
+    out = Path(args.out)
+    for cell, planner, rate, n, lift in PLANNING_CELLS:
+        if args.cells and cell not in args.cells.split(","):
+            continue
+        arguments = ["_planning_cell", "--planner", planner, "--rate", repr(rate)]
+        if n is not None:
+            arguments += ["--n", str(n)]
+        if lift is not None:
+            arguments += ["--lift", repr(lift)]
+        _emit(out, {"kind": "planning", "cell": cell} | _run_child(arguments, args.timeout))
+
+
 # --- entry ------------------------------------------------------------------------------------
 
 
@@ -740,15 +854,22 @@ def _parser() -> argparse.ArgumentParser:
         ("latency", "cold confidence_interval latency and memory"),
         ("ulp", "primitive ULP error, enclosure and omitted mass against the oracle"),
         ("recovery", "DuckDB producer error against binary_counts"),
+        ("planning", "cold planning call cost and memory (CPU seconds, peak RSS)"),
     ):
         command = sub.add_parser(name, help=help_text)
         command.add_argument("--out", required=True, help="JSONL file to append to")
-        command.add_argument("--rungs", help="comma-separated arm sizes (default: 4e6..1e9)")
+        if name != "planning":
+            command.add_argument("--rungs", help="comma-separated arm sizes (default: 4e6..1e9)")
         if name != "ulp":
             command.add_argument("--cells", help="comma-separated cell names to run")
             command.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
         if name == "recovery":
             _duckdb_options(command)
+    planning = sub.add_parser("_planning_cell")
+    planning.add_argument("--planner", required=True, choices=("power", "mde", "size"))
+    planning.add_argument("--rate", type=float, required=True)
+    planning.add_argument("--n", type=int)
+    planning.add_argument("--lift", type=float)
     latency = sub.add_parser("_latency_cell")
     latency.add_argument("--n", type=int, required=True)
     latency.add_argument("--rate", type=float, required=True)
@@ -780,6 +901,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         _ulp(args)
     elif args.command == "recovery":
         _recovery(args)
+    elif args.command == "planning":
+        _planning(args)
+    elif args.command == "_planning_cell":
+        print(json.dumps(_planning_cell(args.planner, args.rate, args.n, args.lift), default=repr))
     elif args.command == "_latency_cell":
         print(json.dumps(_latency_cell(args.n, args.rate, args.ratio), default=repr))
     elif args.command == "_recovery_cell":
