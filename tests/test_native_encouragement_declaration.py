@@ -490,9 +490,9 @@ def test_observational_artifact_publish_and_reopen_restores_design(con, tmp_path
 
 
 def test_observational_quantile_refuses_on_definitions_and_reopened_artifact(con, tmp_path):
-    """A quantile metric has no observational estimator: a reopened artifact refuses it by
-    the frame sources' code instead of reporting an IPTW mean effect under the quantile name;
-    the definitions source refuses it as well."""
+    """A quantile metric has no observational estimator: the definitions source and a reopened
+    artifact both refuse it with the frame sources' code instead of reporting an IPTW mean
+    effect under the quantile name."""
     from increment.errors import CapabilityError
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
@@ -549,8 +549,9 @@ def test_observational_quantile_refuses_on_definitions_and_reopened_artifact(con
     native = Analysis.from_definitions(
         "native_observational_quantile_exp", defs_path, con, store="none"
     )
-    with pytest.raises(CapabilityError):
+    with pytest.raises(CapabilityError) as definitions_error:
         lift_rows(native.run())
+    assert definitions_error.value.code == "source.frame.quantile_no_moments"
     store = WarehouseArtifactStore(con, schema_name="artifacts")
     ref = native.publish_unit_day_artifact(store)
     reopened = Analysis.from_unit_day_artifact(

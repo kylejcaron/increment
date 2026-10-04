@@ -851,7 +851,7 @@ designs only) cannot read covariates from an artifact; use `from_definitions`.
   windowed metric, compute each unit's windowed value upstream and declare it
   as an unwindowed metric on `from_unit_summary`; no frame source serves
   unit-grain estimators for a retention metric. A quantile metric has no
-  observational estimator: the frame sources and a reopened unit-day artifact
+  observational estimator: the frame sources, definitions sources and a reopened unit-day artifact
   refuse it with `source.frame.quantile_no_moments`. A
   covariate that genuinely varies within a unit refuses by name too
   (`frame.frame_panel.unit_covariate_varies`), naming the offending units.

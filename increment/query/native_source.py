@@ -24,6 +24,7 @@ from ibis import Table
 from ibis import to_sql as ibis_to_sql
 
 from increment._analysis_config import effective_methods, overlay_configs, resolve_configs
+from increment._frame_validation import refuse_quantile_moments
 from increment._moment_plan import COMPLIANCE_ARM_FROM_CLUSTER_ROW
 from increment._source_operations import DashboardGroupData
 from increment._window import NO_DATA_SIGNAL, resolve_window_days
@@ -2799,11 +2800,20 @@ class DefinitionsMomentSource(SequentialSourceMixin):
         if require_uptake:
             self._resolve_uptake(None, operation=operation)
 
+    def _refuse_observational_quantile(self, metric: Metric) -> None:
+        """An observational design has no quantile estimator on any ingress path."""
+        design = self._context.design
+        if metric.type == "quantile" and getattr(design, "mechanism", None) == "observational":
+            refuse_quantile_moments(metric, design)
+
     def _refuse_quantile_metrics(self, effective: Sequence[Metric], *, operation: str) -> None:
         """A quantile has no moments representation: there is no summary
         SQL to introspect and nothing an exported moments cube could carry.
         """
         non_additive = [m.name for m in effective if m.type == "quantile"]
+        if operation == "moments":
+            for metric in effective:
+                self._refuse_observational_quantile(metric)
         if non_additive:
             _refuse_operation(
                 operation=operation,
@@ -4090,6 +4100,7 @@ class DefinitionsMomentSource(SequentialSourceMixin):
         population: Literal["assigned", "triggered"] = "assigned",
         outcome_stage: Literal["transformed", "raw"] = "transformed",
     ) -> pa.Table:
+        self._refuse_observational_quantile(metric)
         if outcome_stage not in ("raw", "transformed"):
             from increment.winsor import winsor_refuse
 
