@@ -130,6 +130,33 @@ class TestExtremeAlphaFiniteUpperBound:
         assert ci.upper is not None
         assert math.isfinite(ci.upper)
 
+    @pytest.mark.parametrize("alternative", ["two-sided", "less"])
+    def test_sparse_treatment_search_reaches_a_crossing_far_above_its_subunit_seed(
+        self, alternative
+    ):
+        """With one control success in one control unit the Clopper-Pearson lower end is
+        exactly ``beta / 2`` (Uniform(0, 1)), and at this alpha the certification margin
+        exceeds the target until the restricted nuisance domain ``[a, 1/r]`` empties, so the
+        evaluated crossing is exactly ``1 / a``. The point estimate (0.001) is more than 60
+        doublings below it: the search must still bracket it, then stop within the declared
+        resolution of it."""
+        counts = (1, 1, 1, 1000)
+        alpha = 1e-14
+        a, _ = brr.clopper_pearson(1, 1, brr.nuisance_beta(alpha))
+        crossing = 1.0 / a
+        ci = brr.confidence_interval(*counts, alpha=alpha, alternative=alternative)
+        tau = brr._endpoint_tolerance(brr._count_scale(*counts))
+        assert ci.resolution_reached
+        assert ci.upper is not None
+        assert crossing * (1.0 - 1e-12) <= ci.upper <= crossing * math.exp(tau) * (1.0 + 1e-12)
+
+    def test_a_crossing_beyond_the_float_range_is_a_coded_failure(self):
+        """Below this alpha ``1 / a`` exceeds the largest float, so no upper endpoint is
+        representable: a coded refusal, not an unbounded set or an arithmetic overflow."""
+        with pytest.raises(brr.BinomialDataError) as exc_info:
+            brr.confidence_interval(1, 1, 1, 1000, alpha=1e-307, alternative="two-sided")
+        assert exc_info.value.code == "estimation.binomial.tail_unrepresentable"
+
     def test_positive_control_upper_search_never_returns_none(self):
         # Within the validated Clopper-Pearson regime (beta = alpha/32
         # above `_CP_BETA_FLOOR`; x=2, n=3 is not a trivial exact shape)

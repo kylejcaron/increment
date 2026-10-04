@@ -99,7 +99,7 @@ budget of bisection's probe count plus a small slack) until the bracket's log wi
 ``_endpoint_tolerance`` -- 1/128 of ``_count_scale`` (the log-risk-ratio standard error),
 clamped to ``[2**-40, 2**-11]``. Interpolation only chooses where to probe: the reported
 endpoint is the bracket end OUTSIDE the set, a probed point the evaluation itself put outside
-it, so it lies beyond the evaluated crossing by less than the final bracket's log width
+it, so it lies beyond the evaluated crossing by at most the final bracket's log width
 whatever the fit predicted. A search that stops short of its tolerance is flagged on the result
 (``BinomialInterval.resolution_reached``) and disclosed by `precision_note`. That is the
 search resolution of the evaluated envelope: the nuisance supremum's certification gap and
@@ -685,12 +685,13 @@ class _Crossing:
         self.narrow(mid)
         return True
 
-    def bracket_from(self, seed: float, *, cap: float, max_expand: int) -> bool:
+    def bracket_from(self, seed: float, *, cap: float) -> bool:
         """Bracket the crossing geometrically from *seed*, within a factor of 2 at any scale.
 
         Doubles away from *seed* while it lies below the crossing and halves toward 0 while
-        it lies above, down to ``seed * _ENDPOINT_FLOOR`` (then ``lo`` is left at 0). ``False``
-        means a decreasing ``f`` stayed at or above its target through *cap*: unbounded.
+        it lies above, down to ``seed * _ENDPOINT_FLOOR`` (then ``lo`` is left at 0). Doubling
+        runs to *cap*, however far *seed* sits below the crossing. ``False`` means a decreasing
+        ``f`` stayed at or above its target through *cap*: unbounded.
         """
         floor = seed * _ENDPOINT_FLOOR
         if self.at_or_above(seed):
@@ -702,18 +703,16 @@ class _Crossing:
                     break
             return True
         self.lo, self.hi = seed, seed * 2.0
-        expands = 0
         while not self.at_or_above(self.hi):
             self.lo, self.hi = self.hi, self.hi * 2.0
-            expands += 1
-            if self.hi > cap and not self._increasing:
+            if self.hi > cap or math.isinf(self.hi):
+                if self._increasing:
+                    _raise(
+                        "estimation.binomial.tail_unrepresentable",
+                        target=self._target,
+                        probed=self.hi,
+                    )
                 return False
-            if self.hi > cap or expands > max_expand:
-                _raise(
-                    "estimation.binomial.tail_unrepresentable",
-                    target=self._target,
-                    probed=self.hi,
-                )
         return True
 
     def _probe_point(self, tau: float, remaining: int) -> float:
@@ -779,7 +778,6 @@ def _find_boundary(
     seed: float,
     tau: float,
     cap: float = 1e12,
-    max_expand: int = 60,
     resolve: float | None = None,
 ) -> _Boundary:
     """Outward-rounded boundary of ``{r >= 0 : f(r) >= target}`` (an ``[r, inf)`` set if
@@ -790,7 +788,7 @@ def _find_boundary(
     (`_Crossing.refine`). The endpoint is the bracket end OUTSIDE the set: the lower-bound
     search reports the largest *r* confirmed outside (extending the set downward), the
     upper-bound search the smallest (extending it upward). It therefore lies beyond the
-    evaluated crossing by less than the final bracket's log width: a coarser or finer *tau*
+    evaluated crossing by at most the final bracket's log width: a coarser or finer *tau*
     can move it either way, never to the inside of a crossing the evaluation confirmed.
     ``None`` means the search exhausted *cap* without ``f`` dropping below *target* (only
     reachable for *increasing=False*). Callers are responsible for supplying a *cap* that
@@ -817,7 +815,7 @@ def _find_boundary(
         if f(0.0) < target:
             return _Boundary(0.0, 0.0, True)
     crossing = _Crossing(f, target, increasing=increasing)
-    if not crossing.bracket_from(seed, cap=cap, max_expand=max_expand):
+    if not crossing.bracket_from(seed, cap=cap):
         return _Boundary(None, 0.0, True)
     crossing.refine(tau)
     if resolve is not None:
@@ -851,10 +849,9 @@ def _bound_upper(
     is therefore GUARANTEED to exist at or before ``2/a``, and the search
     is capped there rather than at an arbitrary numeric ceiling. A search
     that still fails to locate it (representation genuinely prevents
-    certification, e.g. ``a`` so small the doubling needs more than
-    `_find_boundary`'s expansion budget) raises a coded numerical failure
-    instead of silently reporting an unbounded set for a case that is NOT
-    analytically unbounded.
+    certification, e.g. ``a`` so small that ``2/a`` overflows) raises a
+    coded numerical failure instead of silently reporting an unbounded
+    set for a case that is NOT analytically unbounded.
     """
     if a <= 0.0:
         return _Boundary(None, 0.0, True)

@@ -849,9 +849,12 @@ def segment_heterogeneity(  # noqa: PLR0915
         moment inputs; also raised when a live row's stored relative-scale
         interval must be rebuilt at *alpha* but the rebuild would
         misrepresent it (wrong shape or reference distribution -- see
-        :func:`_relative_raw_lift`). A row corrected by a BH/FCR
-        family-selection pass is withheld instead of raising when its
-        own corrected alpha differs from the requested one (see above).
+        :func:`_relative_raw_lift`), or, for an exact-binomial row, when
+        the inversion at *alpha* does not reach its endpoint resolution
+        (see :func:`~increment.estimation.binomial_rr.precision_note`). A
+        row corrected by a BH/FCR family-selection pass is withheld instead
+        of raising when its own corrected alpha differs from the requested
+        one (see above).
     Returns
     -------
     SegmentHeterogeneityResult
