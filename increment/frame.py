@@ -1314,7 +1314,9 @@ class FramePanelSource(SequentialSourceMixin):
         stays refused by name: a retention row's per-unit value depends
         on evaluating its band against the full day axis, and a windowed
         metric has no per-unit window/censoring concept in this sum --
-        collapse to one row per unit and use from_unit_summary.
+        compute each unit's windowed value upstream and declare it as an unwindowed
+        metric on from_unit_summary. No frame source serves unit-grain estimators
+        for a retention metric.
         """
         if outcome_stage == "raw":
             from increment.winsor import winsor_refuse

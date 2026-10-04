@@ -1541,8 +1541,10 @@ class ArtifactMomentSource(SequentialSourceMixin):
         runs, executed on the pinned snapshot -- the one deliberate unit-level
         materialization this reader performs. The transformed stage covers
         unwindowed mean/ratio/conversion/quantile metrics; a windowed or
-        retention metric refuses by name (collapse to one row per unit and use
-        ``from_unit_summary``). This reader carries no covariate evidence, so
+        retention metric refuses by name (compute each unit's windowed value
+        upstream and declare it as an unwindowed metric on ``from_unit_summary``;
+        no frame source serves unit-grain estimators for a retention metric).
+        This reader carries no covariate evidence, so
         any requested covariate refuses.
         """
         if outcome_stage not in ("raw", "transformed"):

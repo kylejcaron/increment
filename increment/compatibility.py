@@ -135,11 +135,13 @@ def _render_compatibility_refusal(
             f"CUPED is not supported with a declared cluster "
             f"('{context.get('cluster')}')"
             + (" under an encouragement design" if encouragement else "")
-            + " -- clustered moments carry no per-unit covariate evidence. Use an "
-            "unadjusted decision method and remove any CUPED sensitivity methods (for "
-            "example, Method(name='unadjusted')); for frame sources, also remove the "
-            "covariate declaration. This runs the clustered analysis with the same "
-            "estimand but no CUPED variance reduction."
+            + " -- clustered moments carry no per-unit covariate evidence. Keep a "
+            "decision method that does not use CUPED (variance_reduction='none') and "
+            "remove or replace every method that requests CUPED: an observational "
+            "decision such as iptw stays as it is, and for randomized or "
+            "encouragement designs Method(name='unadjusted') is such a method. For "
+            "frame sources, also remove the covariate declaration. The clustered "
+            "analysis then keeps the same estimand without CUPED variance reduction."
         )
     if code == "arm.adjustment.cluster_prior":
         return (

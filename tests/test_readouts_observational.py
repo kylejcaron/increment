@@ -183,6 +183,33 @@ def test_run_dispatches_clustered_dml_with_arm_atomic_folds():
     assert estimate.n_clusters is not None and estimate.n_clusters >= 10
 
 
+def test_clustered_observational_cuped_sensitivity_refuses_and_dropping_it_keeps_iptw():
+    """A CUPED-configured sensitivity refuses under a declared cluster; the remedy keeps the
+    causal iptw decision and removes only the CUPED method."""
+    tbl = _confounded_table(200, seed=13)
+    seen = {"C": 0, "T": 0}
+    geo_ids = []
+    for variant in tbl["variant"].to_pylist():
+        geo_ids.append(f"{variant}-geo-{seen[variant] // 2}")
+        seen[variant] += 1
+    analysis = Analysis.from_unit_summary(
+        tbl.append_column("geo_id", pa.array(geo_ids)),
+        unit="user_id",
+        group="variant",
+        metrics={"revenue": "mean"},
+        cluster="geo_id",
+        design=_OBS_TRIM,
+    )
+    cuped_unadjusted = Method(name="unadjusted", variance_reduction="cuped")
+    with pytest.raises(CapabilityError) as exc_info:
+        analysis.run(decision_method=Method(name="iptw"), sensitivity_methods=[cuped_unadjusted])
+    assert exc_info.value.code == "arm.adjustment.cluster_cuped"
+    assert exc_info.value.context["cluster"] == "geo_id"
+    with pytest.warns(IncrementWarning):
+        (estimate,) = lift_rows(analysis.run(decision_method=Method(name="iptw")))
+    assert (estimate.method, estimate.method_role) == ("iptw", "decision")
+
+
 def test_run_refuses_a_control_only_observational_source():
     """The arm gate covers the observational branch too: a control-only
     source refuses with the stable code instead of an estimator error."""
