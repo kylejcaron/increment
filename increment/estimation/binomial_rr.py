@@ -329,10 +329,23 @@ def _support_window(
 # of tail calls in one `confidence_interval`. These wrappers call binom's underlying
 # `_scu._binom_*` ufuncs with its support clamping, bit-for-bit
 # (`tests/estimation/test_binomial_rr.py::TestFastBinomMatchesScipy`).
+def _special(
+    name: str, ufunc: Callable[..., np.ndarray], k: np.ndarray, n: int, p: float | np.ndarray
+) -> np.ndarray:
+    """One of binom's ufuncs at clamped counts. SciPy's overflow policy raises for the PMF at a
+    rate near the bottom of the float range (denormal, and above it as *n* grows): the
+    evaluation cannot be certified there, so it refuses instead of leaking ``OverflowError``.
+    """
+    try:
+        return ufunc(k, n, p)
+    except OverflowError:
+        _raise("estimation.binomial.tail_unrepresentable", primitive=name, n=n, p=p)
+
+
 def _fast_binom_cdf(k: np.ndarray, n: int, p: float | np.ndarray) -> np.ndarray:
     clamped = np.minimum(np.maximum(k, 0), n)
     # ty: ignore[unresolved-attribute] -- private scipy ufunc; TestFastBinomMatchesScipy pins parity
-    out = np.minimum(np.maximum(_scu._binom_cdf(clamped, n, p), 0.0), 1.0)
+    out = np.minimum(np.maximum(_special("cdf", _scu._binom_cdf, clamped, n, p), 0.0), 1.0)
     out = np.where(k < 0, 0.0, out)
     return np.where(k >= n, 1.0, out)
 
@@ -340,7 +353,7 @@ def _fast_binom_cdf(k: np.ndarray, n: int, p: float | np.ndarray) -> np.ndarray:
 def _fast_binom_sf(k: np.ndarray, n: int, p: float | np.ndarray) -> np.ndarray:
     clamped = np.minimum(np.maximum(k, 0), n)
     # ty: ignore[unresolved-attribute] -- private scipy ufunc; TestFastBinomMatchesScipy pins parity
-    out = np.minimum(np.maximum(_scu._binom_sf(clamped, n, p), 0.0), 1.0)
+    out = np.minimum(np.maximum(_special("sf", _scu._binom_sf, clamped, n, p), 0.0), 1.0)
     out = np.where(k < 0, 1.0, out)
     return np.where(k >= n, 0.0, out)
 
@@ -348,7 +361,7 @@ def _fast_binom_sf(k: np.ndarray, n: int, p: float | np.ndarray) -> np.ndarray:
 def _fast_binom_pmf(k: np.ndarray, n: int, p: float | np.ndarray) -> np.ndarray:
     clamped = np.minimum(np.maximum(k, 0), n)
     # ty: ignore[unresolved-attribute] -- private scipy ufunc; TestFastBinomMatchesScipy pins parity
-    out = np.minimum(np.maximum(_scu._binom_pmf(clamped, n, p), 0.0), 1.0)
+    out = np.minimum(np.maximum(_special("pmf", _scu._binom_pmf, clamped, n, p), 0.0), 1.0)
     return np.where((k < 0) | (k > n), 0.0, out)
 
 

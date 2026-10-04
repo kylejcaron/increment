@@ -160,6 +160,18 @@ class TestExtremeAlphaFiniteUpperBound:
             brr.confidence_interval(1, 1, 1, 1000, alpha=1e-307, alternative="two-sided")
         assert exc_info.value.code == "estimation.binomial.tail_unrepresentable"
 
+    @pytest.mark.parametrize("alternative", ["two-sided", "greater", "less"])
+    def test_a_control_rate_the_binomial_pmf_cannot_evaluate_is_a_coded_refusal(self, alternative):
+        """At this alpha the control's Clopper-Pearson lower end (``alpha / 64``) is a denormal
+        for which SciPy's binomial PMF raises ``OverflowError``: the interval refuses with the
+        module's coded failure and names the rate, rather than leaking the library's error."""
+        with pytest.raises(brr.BinomialDataError) as exc_info:
+            brr.confidence_interval(1, 1, 1, 1000, alpha=4e-307, alternative=alternative)
+        error = exc_info.value
+        assert error.code == "estimation.binomial.tail_unrepresentable"
+        assert error.context["n"] == 1
+        assert 0.0 < error.context["p"] < sys.float_info.min
+
     def test_positive_control_upper_search_never_returns_none(self):
         # Within the validated Clopper-Pearson regime (beta = alpha/32
         # above `_CP_BETA_FLOOR`; x=2, n=3 is not a trivial exact shape)
