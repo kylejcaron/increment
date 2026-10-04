@@ -348,6 +348,31 @@ def _reject_unusable_value_scales(
             _refuse("estimation.adjust.value_scale_names", metric_type=metric_type, name=name)
 
 
+def _validate_request_mappings(
+    src: MomentSource,
+    *,
+    value_scale: Mapping[str, ValueScale] | None,
+    null_lifts: Mapping[str, float] | None,
+    null_abs: Mapping[str, float] | None,
+    alternatives: Mapping[str, str] | None,
+) -> dict[str, Metric]:
+    """Pure request-shape checks on the per-metric mappings; returns the declared metrics.
+
+    Idempotent and warning-free, so `estimate_ate` can run it ahead of the
+    observational-quantile refusal and leave method and shared-prior judgments after it.
+    """
+    by_name = {m.name: m for m in src.context.metrics}
+    for label, mapping in (
+        ("value_scale", value_scale),
+        ("null_lifts", null_lifts),
+        ("null_abs", null_abs),
+        ("alternatives", alternatives),
+    ):
+        _reject_unknown_metric_keys(by_name, label, mapping)
+    _reject_unusable_value_scales(by_name, value_scale)
+    return by_name
+
+
 def _resolve_value_scales(
     src: MomentSource,
     methods: list[Method],
@@ -381,15 +406,13 @@ def _resolve_value_scales(
     otherwise see only a fragment) skip the re-check here.
     """
     _reject_unsupported_prior_type(prior)
-    by_name = {m.name: m for m in src.context.metrics}
-    for label, mapping in (
-        ("value_scale", value_scale),
-        ("null_lifts", null_lifts),
-        ("null_abs", null_abs),
-        ("alternatives", alternatives),
-    ):
-        _reject_unknown_metric_keys(by_name, label, mapping)
-    _reject_unusable_value_scales(by_name, value_scale)
+    by_name = _validate_request_mappings(
+        src,
+        value_scale=value_scale,
+        null_lifts=null_lifts,
+        null_abs=null_abs,
+        alternatives=alternatives,
+    )
 
     for name, requested in (value_scale or {}).items():
         if requested == "absolute" and name in (null_abs or {}):
@@ -696,8 +719,17 @@ def estimate_ate(  # noqa: PLR0913, PLR0915
     cluster = src.context.cluster
     if cluster is not None and prior is not None:
         _refuse_compatibility("arm.adjustment.cluster_prior", cluster=cluster)
-    # Request-shape validation (mapping keys, scales) precedes the estimator-capability
-    # refusal, and both precede any source read.
+    # Pure request-shape validation (mapping keys, scales) precedes the estimator-capability
+    # refusal; method and shared-prior judgments (which can warn) follow it, and both
+    # precede any source read.
+    _validate_request_mappings(
+        src,
+        value_scale=value_scale,
+        null_lifts=null_lifts,
+        null_abs=null_abs,
+        alternatives=alternatives,
+    )
+    _refuse_observational_quantiles(selected, design)
     scales = _resolve_value_scales(
         src,
         methods,
@@ -710,7 +742,6 @@ def estimate_ate(  # noqa: PLR0913, PLR0915
         alternatives=alternatives,
         prior_scale_judged=_prior_scale_judged,
     )
-    _refuse_observational_quantiles(selected, design)
 
     winsor_diagnostics: dict[str, dict[str, dict[str, int | float | None]]] = {}
     for raw_metric in selected:

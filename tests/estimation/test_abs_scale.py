@@ -586,6 +586,32 @@ class TestRefusalMatrix:
         assert exc_info.value.code == "estimation.adjust.value_scale_names"
         assert exc_info.value.context["metric_type"] == kind
 
+    def test_observational_quantile_refusal_precedes_shared_prior_advisories(self):
+        """A quantile in the call is refused by its stable code before the shared-prior
+        advisory for the absolute-scale means can fire, so warnings-as-errors still see it."""
+        from increment.errors import CapabilityError
+
+        table = _oracle_table(n=200)
+        table = table.append_column("signups", pa.array(table["revenue"].to_numpy() * 0.5))
+        src = _src(
+            table,
+            metrics=[
+                MetricSpec(name="revenue", type="mean"),
+                MetricSpec(name="signups", type="mean"),
+                MetricSpec(name="p90", type="quantile", value_column="revenue", quantile=0.9),
+            ],
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            with pytest.raises(CapabilityError) as exc_info:
+                estimate_ate(
+                    src,
+                    _DESIGN,
+                    value_scale={"revenue": "absolute", "signups": "absolute"},
+                    prior=Normal(mu=0.0, sigma=10.0),
+                )
+        assert exc_info.value.code == "source.frame.quantile_no_moments"
+
     def test_absolute_row_cannot_be_targeted_by_null_abs_at_estimate_ate(self):
         with pytest.raises(InvalidRequestError) as exc_info:
             estimate_ate(
