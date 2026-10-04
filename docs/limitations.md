@@ -337,9 +337,10 @@ It also has two further boundaries, both refusals rather than silent degradation
   (2e-12 to 1.4e-11 from 1,000 to 4,000,000 per arm, which no search narrows), or
   after 2,048 splits. The reported p-value is therefore a certified upper bound that
   exceeds the supremum-based p-value by no more than that gap: 2^-14 of the p-value
-  above the tail level and 2^-14 of the tail level (1.5e-6 at a 0.025 tail) below it.
-  The target is never tighter than a fixed 1e-6 stop, and a p-value within the gap of
-  the tail level is read as not rejecting. The endpoint search only
+  above the tail level and 2^-14 of the tail level below it (1.5e-6 at a 0.025 tail,
+  6.1e-7 at a 0.01 tail). The target is never tighter than a fixed 1e-6 stop at a tail
+  level of 0.0164 or more, and a p-value within the gap of the tail level is read as not
+  rejecting. The endpoint search only
   compares p-values with the tail level, so each probe also stops once that comparison
   is certified either way. A search the cap ends is not an error: its p-value stays a valid,
   conservative bound, and the row's `note` says how many probes ended so and the largest
