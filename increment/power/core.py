@@ -2294,16 +2294,6 @@ class _BinomialPlan:
     mode: ConversionInference
     tail_alpha: float
     key: BinomialDecision
-    procedure: ArmPlanningProcedure
-
-    def replay(self) -> RejectionGeometry:
-        """The geometry replaying the runtime's decision. Under ``auto`` a decision the runtime
-        refuses in full (an arm above its ceiling, a tail level its float margin dominates) has
-        none: counts it routes to the delta method are planned in closed form, and an effect the
-        finite-sample route would decide is refused like any other undecided decision."""
-        if self.geometry is None:
-            _refuse_undecided(self.procedure, self.key, scope="requested")
-        return self.geometry
 
     def rate(self, theta: float) -> float:
         return _alternative_rate(self.log_p_c, theta)
@@ -2325,7 +2315,19 @@ class _BinomialPlan:
         route = self.route(theta)
         if route == "borderline":
             return "approximate"
-        return "asymptotic" if route == "dense" else self.replay().route
+        if route == "dense":
+            return "asymptotic"
+        return "exact" if self.geometry is None else self.geometry.route
+
+    def replays_exactly(self, theta: float) -> bool:
+        """Whether effect ``theta`` is decided by an exact replay (not the closed form, and not an
+        approximate geometry): the computational route a sizing search dispatches on, apart from
+        the basis the result reports."""
+        return (
+            self.route(theta) != "dense"
+            and self.geometry is not None
+            and self.geometry.route == "exact"
+        )
 
     def evaluate(self, theta: float, distance: float) -> BinomialPower:
         """The rejection mass at effect ``theta``, ``distance`` from the null on the log scale,
@@ -2336,7 +2338,13 @@ class _BinomialPlan:
         route = self.route(theta)
         if route == "dense":
             return _modelled(self.arm.power(distance, theta))
-        replay = self.replay().evaluate(self.p_c, self.rate(theta))
+        # A decision the runtime refuses in full (only under ``auto``) rejects nothing on the
+        # finite-sample route: the counts it keeps there contribute no power.
+        replay = (
+            _modelled(0.0)
+            if self.geometry is None
+            else self.geometry.evaluate(self.p_c, self.rate(theta))
+        )
         if route == "sparse":
             return replay
         closed = _modelled(self.arm.power(distance, theta))
@@ -2384,7 +2392,9 @@ class _BinomialPlan:
         probability on the exact route) at every alternative between two effects, numerical
         error included, and whether the set is closed there."""
         low, high = sorted((self.rate(theta_a), self.rate(theta_b)))
-        return self.replay().closure(self.p_c, low, high)
+        if self.geometry is None:
+            return Closure(0.0, True)
+        return self.geometry.closure(self.p_c, low, high)
 
     def bound(self, theta_a: float, theta_b: float) -> float:
         """Upper bound on every computed point power between the effects."""
@@ -2521,7 +2531,6 @@ def _binomial_plan(
         mode,
         procedure.compiled_tail_alpha,
         key,
-        procedure,
     )
 
 
@@ -3227,7 +3236,7 @@ def _binomial_size(  # noqa: PLR0915
                     n = min(hi - 1, max(lo + 1, round(guess)))
 
     start = min(max(proposal, floor), ceiling)
-    if plan_at(start).basis_at(theta) == "exact":
+    if plan_at(start).replays_exactly(theta):
         # The approximate replay costs a fraction of the exact one and agrees
         # with it closely; its crossing proposes the size the exact decision
         # then verifies (the proposal and its predecessor) and corrects.
