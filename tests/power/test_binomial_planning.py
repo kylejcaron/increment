@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+import weakref
 from typing import Any
 
 import numpy as np
@@ -341,6 +342,73 @@ class TestApproximateRoute:
             assert np.array_equal(got, expected)
 
 
+class _LeafMeter:
+    """Bytes of `_Leaves` arrays alive at once in the real replay, and the cells it keeps searching.
+
+    Wraps the replay's own allocations (`_Leaves._blank`, `empty`, `take`) and adds nothing to
+    what they return: each array is tracked by a weak reference and leaves the total when the
+    replay drops it. `take` also counts the one field its fancy indexing gathers beside both
+    sets of arrays, which is a temporary the assignment frees at once."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from increment.power import _binomial
+
+        self.live = 0
+        self.peak = 0
+        self.searching: list[tuple[int, str, int]] = []
+        self._refs: dict[int, Any] = {}
+        self._batch: Any = None
+        leaves = _binomial._Leaves
+        blank, empty, take = leaves._blank, leaves.empty.__func__, leaves.take
+        replay = _binomial._replay
+
+        def metered_blank(name, rows, capacity):
+            array = blank(name, rows, capacity)
+            self._track(array)
+            return array
+
+        def metered_empty(cls, rows, capacity):
+            created = empty(cls, rows, capacity)
+            self._track(created.count)
+            return created
+
+        def metered_take(this, rows, *, capacity):
+            taken = take(this, rows, capacity=capacity)
+            self._track(taken.count)
+            gather = max(getattr(this, name).dtype.itemsize for name in leaves._FIELDS)
+            self.peak = max(self.peak, self.live + gather * this.u.shape[1] * rows.size)
+            batch = self._batch
+            for row in rows.tolist():
+                group = int(batch.group[row])
+                kind = "plus" if batch.groups.kind[group] == 0 else "minus"
+                self.searching.append((int(batch.groups.x_c[group]), kind, int(batch.j[row])))
+            return taken
+
+        def metered_replay(batch, tails, *, exact):
+            self._batch = batch
+            return replay(batch, tails, exact=exact)
+
+        monkeypatch.setattr(leaves, "_blank", staticmethod(metered_blank))
+        monkeypatch.setattr(leaves, "empty", classmethod(metered_empty))
+        monkeypatch.setattr(leaves, "take", metered_take)
+        monkeypatch.setattr(_binomial, "_replay", metered_replay)
+
+    def _track(self, array: np.ndarray) -> None:
+        key, size = id(array), array.nbytes
+        self.live += size
+        self.peak = max(self.peak, self.live)
+
+        def release(_ref: Any) -> None:
+            self.live -= size
+            del self._refs[key]
+
+        self._refs[key] = weakref.ref(array, release)
+
+    def reset(self) -> None:
+        self.peak = 0
+        self.searching = []
+
+
 class TestReplayFollowsTheRuntimeStopContract:
     """Planning reads ``binomial_rr.NUISANCE_STOP`` when it replays, so a search the cap ends
     is decided as the runtime decides it, and a longer search never rejects less."""
@@ -457,6 +525,54 @@ class TestReplayFollowsTheRuntimeStopContract:
         assert replayed and max(replayed) <= batch_rows
         for one_batch, in_pieces in zip(whole, split, strict=True):
             assert np.array_equal(one_batch, in_pieces)
+
+    @pytest.mark.parametrize(
+        ("route", "n_c", "n_t", "x_lo", "x_hi"),
+        [("exact", 40, 60, 3, 14), ("approximate", 300, 300, 20, 40)],
+    )
+    def test_batches_of_six_split_searches_stay_within_the_leaf_budget(
+        self, monkeypatch, route, n_c, n_t, x_lo, x_hi
+    ):
+        """A replay capped at six splits is one stage: its batch is largest while the rows still
+        searching are copied out of the root's arrays, beside which the copy and the field being
+        gathered are held. Handed only counts that keep searching, with the budget cut to about a
+        hundred rows, every batch fills with such rows; the live leaf arrays must stay within
+        the budget and no decision differ from an uncut budget's."""
+        from increment.power import _binomial
+
+        beta = binomial_rr.nuisance_beta(0.05)
+        decision = BinomialDecision(n_c, n_t, 1.0, beta, 0.025, "two-sided")
+        monkeypatch.setattr(binomial_rr, "NUISANCE_STOP", binomial_rr._StopRule(self._GAP, 6))
+        meter = _LeafMeter(monkeypatch)
+        wide = [
+            _binomial._Request(x_c, kind, 0, n_t)
+            for x_c in range(x_lo, x_hi + 1)
+            for kind in decision.kinds
+        ]
+        _binomial.classify(decision, route, wide)
+        # One request a count, so each batch is filled to its row limit.
+        requests = [_binomial._Request(x_c, kind, j, j) for x_c, kind, j in meter.searching[:300]]
+        assert len(requests) == 300
+        uncut = _binomial.classify(decision, route, requests)
+
+        budget = 6.5e4
+        monkeypatch.setattr(_binomial, "_LEAF_BUDGET_BYTES", budget)
+        assert _binomial._batch_rows(exact=route == "exact") < len(requests)
+        meter.reset()
+        cut = _binomial.classify(decision, route, requests)
+
+        assert meter.live == 0
+        assert meter.peak <= budget
+        assert meter.peak >= 0.95 * budget  # the batches really fill the budget
+        decided = np.concatenate(cut)
+        assert decided.any()
+        assert not decided.all()
+        assert np.array_equal(decided, np.concatenate(uncut))
+        if route == "exact":
+            for req, rejected in zip(requests, decided, strict=True):
+                runtime = binomial_rr.p_plus if req.kind == "plus" else binomial_rr.p_minus
+                p = runtime(1.0, req.x_c, n_c, req.j0, n_t, beta, tail=0.025)
+                assert rejected == (p < 0.025)
 
 
 class TestRouting:
