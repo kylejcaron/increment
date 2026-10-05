@@ -288,7 +288,9 @@ offered metric. A name the definitions do not offer is refused with
 the selection; **+ Add metrics** searches the saved definitions. Applying a
 change re-renders the same snapshot and reopens Explore; nothing is read
 again, so the results and the correction cannot change. A name the snapshot
-did not offer is refused and the current page stays.
+did not offer is refused and the current page stays. Selecting an added
+metric's row opens its Overview result, with its family correction; data by
+group and its download are captured for the experiment's own metrics only.
 
 ### Time series
 

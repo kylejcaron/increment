@@ -357,6 +357,7 @@ def _allocation_warnings(snapshot: DashboardSnapshot, allocation: SRMResult) -> 
 
 
 def _metric_payload(snapshot: DashboardSnapshot, metric: str) -> dict[str, Any]:
+    declared = metric in metric_names(snapshot)
     row = row_for_metric(snapshot, metric)
     return {
         "key": metric,
@@ -364,12 +365,13 @@ def _metric_payload(snapshot: DashboardSnapshot, metric: str) -> dict[str, Any]:
         "role": (
             str(row.get("role") or "unassigned")
             if row is not None
-            else "exploratory"
-            if metric not in metric_names(snapshot)
             else "unassigned"
+            if declared
+            else "exploratory"
         ),
         "detail": _styled(render_metric_details(snapshot, metric=metric).text),
-        "csv": group_data_csv(snapshot, metric=metric).decode("utf-8"),
+        # Group data is captured for declared metrics only; no download is offered otherwise.
+        "csv": group_data_csv(snapshot, metric=metric).decode("utf-8") if declared else "",
     }
 
 

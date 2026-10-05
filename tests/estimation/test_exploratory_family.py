@@ -590,6 +590,56 @@ def test_fieller_rows_are_reissued_from_their_joint_reference(alternative):
         assert row.relative_confidence_set.alternative == alternative
 
 
+@pytest.mark.parametrize(
+    ("alternative", "null_abs"), [("two-sided", -0.5), ("less", -0.5), ("greater", -1.5)]
+)
+@pytest.mark.parametrize("q", [0.05, 0.4])
+def test_a_margin_selected_row_with_an_unavailable_relative_interval_is_reissued(
+    alternative, null_abs, q
+):
+    """A zero treatment mean leaves only the additive interval; the margin selects the row by it."""
+    metric = _mean_metric("refunds")
+    summary = pd.DataFrame(
+        [
+            _mean_arm(200, 1.0, 0.04, metric="refunds", group_id="control"),
+            _mean_arm(200, 0.0, 0.0, metric="refunds", group_id="treatment"),
+        ]
+    )
+
+    def second_pass(alpha):
+        (row,) = estimate_lift(
+            [metric],
+            summary,
+            control_group="control",
+            alpha=alpha,
+            alternative=alternative,
+            null_abs=null_abs,
+        ).results
+        return row
+
+    nominal = second_pass(NOMINAL_ALPHA)
+    assert nominal.lift is None
+    assert nominal.relative_unavailable_reason == "nonpositive_arm_mean"
+    assert exploratory_family_exclusion(nominal) is None
+    fillers = [_wald_row(f"m{i}", 0.1, alternative=alternative) for i in range(3)]
+
+    corrected = select_exploratory_family([nominal, *fillers], q=q)
+
+    row, *rest = corrected
+    assert row.discovery is True
+    assert [other.discovery for other in rest] == [False] * 3
+    assert row.family_threshold == pytest.approx(q / 4)
+    assert [other.require_lift() for other in rest] == [f.require_lift() for f in fillers]
+    fcr = min(q / 4, NOMINAL_ALPHA)
+    expected = second_pass(_fcr_alpha_for(alternative, fcr))
+    _close((row.abs_lb, row.abs_ub), (expected.abs_lb, expected.abs_ub))
+    assert (row.abs_diff, row.abs_se, row.lift) == (nominal.abs_diff, nominal.abs_se, None)
+    assert nominal.abs_lb is not None and nominal.abs_ub is not None
+    assert row.abs_lb is not None and row.abs_ub is not None
+    if q / 4 < NOMINAL_ALPHA:
+        assert row.abs_lb < nominal.abs_lb and row.abs_ub > nominal.abs_ub
+
+
 # --- refusals ---------------------------------------------------------------------------
 
 

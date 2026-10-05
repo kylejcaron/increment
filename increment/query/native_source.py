@@ -1782,7 +1782,7 @@ class DefinitionsMomentSource(SequentialSourceMixin):
     def exploratory_source(self, *, metrics: Sequence[Metric]) -> DefinitionsMomentSource:
         """A sibling source over the declared metrics plus *metrics*, in this session.
 
-        Each added metric compiles the default unassigned procedure
+        Each added metric compiles the default unassigned procedure at this plan's alpha
         (:func:`increment.plan.with_unassigned_procedures`), so no declared procedure,
         family, or configuration changes. It shares this source's session, so a pinned
         snapshot serves it from the same pin; it never materializes (``store="none"``)
@@ -3270,10 +3270,12 @@ class DefinitionsMomentSource(SequentialSourceMixin):
                 if name in {metric.name for metric in selected_metrics}
             }
             if missing:
-                from increment.plan import compile_decision_plan
+                from increment.plan import with_unassigned_procedures
 
-                local = compile_decision_plan(None, missing, path="warehouse")
-                procedures.update(local.procedures)
+                defaults = with_unassigned_procedures(self._context.plan, missing, design=None)
+                procedures.update(
+                    {metric.name: defaults.procedures[metric.name] for metric in missing}
+                )
             context_plan = type(self._context.plan)(
                 declared=self._context.plan.declared,
                 alpha=self._context.plan.alpha,

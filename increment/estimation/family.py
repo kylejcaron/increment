@@ -922,7 +922,9 @@ def select_exploratory_family(
     row's own nominal level, from the construction the row persists: the Wald interval from its
     raw statistics and reference, the exact binomial set from its counts, or the Fieller set
     from its joint reference, each with its one-sided geometry. That equals the interval
-    ``run_breakout(correction="bh")`` returns for the same cell. An unselected row keeps its
+    ``run_breakout(correction="bh")`` returns for the same cell. A row whose relative interval is
+    unavailable (a non-positive arm mean) reports only its additive interval; an absolute margin
+    can select it, and that interval is reissued at the same level. An unselected row keeps its
     interval.
 
     A cell excluded for an outcome-based reason (zero variance, non-positive mean, extreme
@@ -955,7 +957,7 @@ def select_exploratory_family(
         _UNCAPPED,
         computation=_exploratory_computation(tested),
     )
-    from increment.estimation._fcr_reinterval import nominal_alpha, reinterval_at_fcr
+    from increment.estimation._fcr_reinterval import reinterval_selected
 
     axes = ("metric", "arm", "segment") if any(m.scope for m in tested) else ("metric", "arm")
     family = {
@@ -971,11 +973,8 @@ def select_exploratory_family(
             continue
         selected = family_discovery(outcome, member.key)
         view = None
-        if selected and member.view is not None and member.construction != "unavailable":
+        if selected and member.view is not None:
             assert outcome.realized_threshold is not None
-            cap = nominal_alpha(member.view, member.construction)
-            view = reinterval_at_fcr(
-                member.view, member.construction, min(outcome.realized_threshold, cap)
-            )
+            view = reinterval_selected(member.view, member.construction, outcome.realized_threshold)
         corrected.append(_stamped(member.row, view, discovery=selected, **family))
     return tuple(corrected)

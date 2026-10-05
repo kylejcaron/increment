@@ -208,7 +208,8 @@ analysis; non-native and clustered sources raise a coded `CapabilityError`.
 experiment does not declare, in definitions order; report-only `total`/`active` metrics and other
 entities' metrics are not offered. `run`, `run_breakout`, `run_asof_lift`, `run_asof` and `run_daily` accept
 `exploratory_metrics=` naming some of them. Lift rows from `run`, `run_breakout` and
-`run_asof_lift` carry `role="exploratory"` and join no plan family; the absolute values from
+`run_asof_lift` carry `role="exploratory"`, join no plan family, and are tested two-sided at
+the plan's full `alpha` in every view; the absolute values from
 `run_asof` and `run_daily` carry no role. Every declared row is unchanged. `metrics=[]` with
 `exploratory_metrics=` reads only the added metrics. An unknown or already-declared name
 (`facade.analysis_config.exploratory_metric_unavailable`) is refused before any query, as is
@@ -634,6 +635,7 @@ offending row in its `rows` context:
 | Mean, ratio and CUPED rows (Wald log-scale interval) | Supported: reissued from the persisted raw statistics and reference. |
 | Conversion and retention rows (exact binomial) | Supported: reinverted from the persisted counts, one-sided geometry kept. |
 | Clustered ratio rows (Fieller set) | Supported: reinverted from the persisted joint reference. |
+| Rows with no relative interval (non-positive arm mean) selected by an absolute margin | Supported: the additive interval is reissued from the persisted `abs_diff`, `abs_se` and reference. |
 | Breakout segments, and whole-window rows beside them | Supported: one family over metric, arm and segment. |
 | Cells excluded by design (too few units, no control arm) | Not hypotheses: returned unchanged, outside the family. Outcome-based exclusions stay in `m` as non-rejections. |
 | Informative prior | Mathematically unsound for BH (a posterior tail is not a frequentist p-value): refused, `breakout.run_breakout_bh_excludes_prior`. |

@@ -786,6 +786,19 @@ def estimate_for_metric(snapshot: DashboardSnapshot, metric: str) -> LiftEstimat
     )
 
 
+def added_row(snapshot: DashboardSnapshot, metric: str) -> Mapping[str, Any] | None:
+    """An added metric's whole-experiment decision row from the overview, or ``None``.
+
+    The row carries the overview family's correction: its discovery flag and, when selected,
+    its FCR-adjusted interval. ``None`` when the metric's read was refused or left no row.
+    """
+    overview = snapshot.overview
+    if overview is None:
+        return None
+    rows = [row for row in overview.exploratory if row.metric == metric]
+    return next((row for row in enriched_rows(rows) if row.get("method_role") == "decision"), None)
+
+
 def metric_model(snapshot: DashboardSnapshot, metric: str) -> Metric | None:
     """The declared or added metric definition for one metric name, or ``None``."""
     return next((model for model in all_metrics(snapshot) if model.name == metric), None)

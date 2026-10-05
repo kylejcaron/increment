@@ -21,10 +21,11 @@ from increment.plan import bind_automatic_sequential_plan
 from increment.semantics.design import Randomized
 from increment.semantics.models import AnalysisPlan, Definitions, MultiplicitySpec
 from increment.sequential_source import native_observation_mapping
-from tests.analysis_factory import lift_rows, make_analysis
+from tests.analysis_factory import _native_source, lift_rows, make_analysis
 from tests.parity_harness import dataset as ds
 
 ADDED = ("purchase_rate", "rps", "revenue_cuped")
+PLAN_ALPHAS = (0.05, 0.01)
 CUPED = Method(name="cuped", variance_reduction="cuped")
 UNAVAILABLE = "facade.analysis_config.exploratory_metric_unavailable"
 
@@ -47,6 +48,11 @@ def _rows(rows: Any, *, drop: tuple[str, ...] = ("role",)) -> list[dict[str, Any
     return [{k: v for k, v in row.model_dump().items() if k not in drop} for row in rows]
 
 
+def _nominal_alphas(rows: Any) -> list[float]:
+    """The nominal level each estimated row's interval was built at."""
+    return [row.lift.alpha for row in rows if row.lift is not None]
+
+
 @pytest.fixture(scope="module")
 def warehouse():
     con = ds.duckdb_connection()
@@ -59,16 +65,17 @@ def test_available_metrics_are_the_undeclared_definitions_in_definitions_order(w
     assert [m.name for m in analysis.available_metrics] == ["revenue", "revenue_cuped"]
 
 
+@pytest.mark.parametrize("alpha", PLAN_ALPHAS)
 @pytest.mark.parametrize(
     ("name", "call_wide"),
     [(name, {}) for name in ADDED] + [("revenue_cuped", {"decision_method": CUPED})],
     ids=[*ADDED, "revenue_cuped-cuped"],
 )
 def test_added_whole_window_rows_equal_the_metric_declared_in_its_own_plan(
-    warehouse, name, call_wide
+    warehouse, name, call_wide, alpha
 ):
-    declared = _analysis(warehouse, AnalysisPlan(primary=name)).run(**call_wide)
-    added = _analysis(warehouse, AnalysisPlan(primary="revenue")).run(
+    declared = _analysis(warehouse, AnalysisPlan(alpha=alpha, primary=name)).run(**call_wide)
+    added = _analysis(warehouse, AnalysisPlan(alpha=alpha, primary="revenue")).run(
         metrics=[], exploratory_metrics=[name], **call_wide
     )
     assert declared and {row.role for row in declared} == {"primary"}
@@ -96,16 +103,19 @@ def test_declared_whole_window_rows_are_identical_with_added_metrics(warehouse):
     ]
 
 
+@pytest.mark.parametrize("alpha", PLAN_ALPHAS)
 @pytest.mark.parametrize("correction", ["none", "bonferroni", "bh"])
 @pytest.mark.parametrize("name", ADDED)
-def test_added_breakout_rows_equal_the_metric_declared_in_its_own_plan(warehouse, name, correction):
+def test_added_breakout_rows_equal_the_metric_declared_in_its_own_plan(
+    warehouse, name, correction, alpha
+):
     view = MultiplicitySpec(correction=correction)
-    declared = _analysis(
-        warehouse, AnalysisPlan(primary=name, view_multiplicity=view), breakout=True
-    ).run_breakout()
-    added = _analysis(
-        warehouse, AnalysisPlan(primary="revenue", view_multiplicity=view), breakout=True
-    ).run_breakout(metrics=[], exploratory_metrics=[name])
+    declared_plan = AnalysisPlan(alpha=alpha, primary=name, view_multiplicity=view)
+    added_plan = AnalysisPlan(alpha=alpha, primary="revenue", view_multiplicity=view)
+    declared = _analysis(warehouse, declared_plan, breakout=True).run_breakout()
+    added = _analysis(warehouse, added_plan, breakout=True).run_breakout(
+        metrics=[], exploratory_metrics=[name]
+    )
     assert declared and {row.role for row in added} == {"exploratory"}
     assert _rows(added) == _rows(declared)
 
@@ -128,10 +138,11 @@ def test_declared_breakout_rows_are_identical_with_added_metrics(warehouse):
     assert {row.metric for row in combined[len(without) :]} == {"rps"}
 
 
+@pytest.mark.parametrize("alpha", PLAN_ALPHAS)
 @pytest.mark.parametrize("name", ADDED)
-def test_added_day_axis_rows_equal_the_metric_declared_in_its_own_plan(warehouse, name):
-    declared = _analysis(warehouse, AnalysisPlan(primary=name))
-    added = _analysis(warehouse, AnalysisPlan(primary="revenue"))
+def test_added_day_axis_rows_equal_the_metric_declared_in_its_own_plan(warehouse, name, alpha):
+    declared = _analysis(warehouse, AnalysisPlan(alpha=alpha, primary=name))
+    added = _analysis(warehouse, AnalysisPlan(alpha=alpha, primary="revenue"))
     lift = added.run_asof_lift(metrics=[], exploratory_metrics=[name])
     assert lift and {row.role for row in lift} == {"exploratory"}
     assert _rows(lift) == _rows(declared.run_asof_lift())
@@ -142,6 +153,31 @@ def test_added_day_axis_rows_equal_the_metric_declared_in_its_own_plan(warehouse
     assert [row.role for row in both if row.metric == "revenue"] == [
         row.role for row in added.run_asof_lift() if row.metric == "revenue"
     ]
+
+
+@pytest.mark.parametrize("name", ADDED)
+@pytest.mark.parametrize("alpha", [0.01, 0.1])
+def test_an_added_metric_keeps_the_plan_alpha_in_every_lift_view(warehouse, name, alpha):
+    analysis = _analysis(warehouse, AnalysisPlan(alpha=alpha, primary="revenue"), breakout=True)
+    reads = {
+        "run": analysis.run(metrics=[], exploratory_metrics=[name]),
+        "run_asof_lift": analysis.run_asof_lift(metrics=[], exploratory_metrics=[name]),
+        "run_breakout": analysis.run_breakout(metrics=[], exploratory_metrics=[name]),
+    }
+    for view, rows in reads.items():
+        nominal = _nominal_alphas(rows)
+        assert nominal, view
+        assert nominal == pytest.approx([alpha] * len(nominal), abs=1e-12), view
+
+
+@pytest.mark.parametrize("alpha", [0.01, 0.1])
+def test_a_day_source_over_an_added_metric_tests_it_at_the_plan_alpha(warehouse, alpha):
+    analysis = _analysis(warehouse, AnalysisPlan(alpha=alpha, primary="revenue"))
+    added = next(metric for metric in analysis.available_metrics if metric.name == "rps")
+    day = _native_source(analysis).day_source(metrics=(*analysis.metrics, added))
+    procedures = day.context.plan.procedures
+    assert procedures["rps"].alpha == pytest.approx(alpha, abs=1e-12)
+    assert procedures["revenue"].alpha == pytest.approx(alpha, abs=1e-12)
 
 
 def test_dimensioned_daily_reads_keep_their_refusal_of_undeclared_metrics(warehouse):

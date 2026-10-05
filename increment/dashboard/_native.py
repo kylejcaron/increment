@@ -16,15 +16,18 @@ from __future__ import annotations
 import html
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import coeftable as ct
 import narwhals as nw
 from coeftable.collapsible import make_collapsible
 from coeftable.labels import ROW_LABEL
-from great_tables._gt_data import FormatFn, FormatterSkipElement
 
 from increment.tables import readout_table
+
+if TYPE_CHECKING:
+    # Annotation-only: great_tables is a transitive dependency and this module is private.
+    from great_tables._gt_data import FormatFn, FormatterSkipElement
 
 __all__ = [
     "drop_columns",

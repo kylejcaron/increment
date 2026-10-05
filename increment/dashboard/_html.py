@@ -20,6 +20,7 @@ from scipy.stats import norm
 
 from increment.dashboard._data import (
     DashboardSnapshot,
+    added_row,
     all_metrics,
     decision_rows,
     enriched_rows,
@@ -1097,6 +1098,8 @@ def render_details(snapshot: DashboardSnapshot) -> mo.Html:
 def render_metric_details(snapshot: DashboardSnapshot, *, metric: str) -> mo.Html:
     """Definition, tested tail, policy, and observed group evidence for one metric."""
     model = require_metric(snapshot, metric)
+    if metric not in {declared.name for declared in snapshot.metrics}:
+        return _added_metric_details(snapshot, model)
     estimate = estimate_for_metric(snapshot, metric)
     row = row_for_metric(snapshot, metric)
     group_body = _group_data_disclosure(snapshot, metric)
@@ -1121,6 +1124,49 @@ def render_metric_details(snapshot: DashboardSnapshot, *, metric: str) -> mo.Htm
         )
         + _geometry_disclosure(snapshot, [row], label=INTERVALS_DISCLOSURE)
         + group_body
+        + _list(result_caveats([row]), css_class="inc-dashboard-caveats"),
+        subtitle=str(getattr(model, "description", "") or ""),
+    )
+
+
+_ADDED_GROUP_NOTE = (
+    "Data by group is captured for the experiment's own metrics; an added metric shows its "
+    "Overview result, corrected in the exploratory family."
+)
+
+
+def _added_metric_details(snapshot: DashboardSnapshot, model: Any) -> mo.Html:
+    """An added metric's whole-experiment Overview result, with its family correction."""
+    row = added_row(snapshot, model.name)
+    note = f'<p class="inc-dashboard-note">{esc(_ADDED_GROUP_NOTE)}</p>'
+    if row is None:
+        refusal = next(
+            (
+                f"{refused} ({refused.code})"
+                for metric, place, refused in (
+                    snapshot.overview.refusals if snapshot.overview else ()
+                )
+                if metric == model.name and place == "whole experiment"
+            ),
+            "no whole-experiment result for this added metric",
+        )
+        body = f'<p class="inc-dashboard-note">{missing_html(refusal)}</p>' + note
+        return _section("metric-details", f"Metric: {model.name}", body)
+    return _section(
+        "metric-details",
+        f"Metric: {model.name}",
+        _chips(
+            [
+                ("Lift", effect_html(row)),
+                ("Interval", interval_html(row)),
+                ("Favorable", esc(row.get("preferred_direction") or "not declared")),
+            ]
+        )
+        + _disclosure(
+            "Definition and analysis policy", _kv(_metric_detail_entries(snapshot, model, row))
+        )
+        + _geometry_disclosure(snapshot, [row], label=INTERVALS_DISCLOSURE)
+        + note
         + _list(result_caveats([row]), css_class="inc-dashboard-caveats"),
         subtitle=str(getattr(model, "description", "") or ""),
     )

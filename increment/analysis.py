@@ -1733,9 +1733,9 @@ class Analysis:
         exploratory_metrics : Sequence[str] | None
             Names from :attr:`available_metrics` to estimate in addition to the declared
             ones (``from_definitions`` only). Their rows carry ``role="exploratory"``
-            under the default unassigned procedure (two-sided, full ``alpha``), join no
-            plan family, and leave every declared row unchanged. ``metrics=[]`` with
-            ``exploratory_metrics`` returns only the added rows.
+            under the default unassigned procedure (two-sided, at the plan's full
+            ``alpha``), join no plan family, and leave every declared row unchanged.
+            ``metrics=[]`` with ``exploratory_metrics`` returns only the added rows.
 
         Returns
         -------
@@ -2254,8 +2254,8 @@ class Analysis:
         """Internal day-axis boundary: always supply an effective compiled plan.
 
         Call-time Metric objects absent from the analysis plan receive locally
-        compiled unassigned procedures, matching the method/prior defaults the
-        facade already resolves for them.
+        compiled unassigned procedures at the plan's alpha, matching the method/prior
+        defaults the facade already resolves for them.
         """
         plan = with_unassigned_procedures(
             self._plan,

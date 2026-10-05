@@ -17,6 +17,9 @@ import math
 from fractions import Fraction
 from typing import TYPE_CHECKING, Literal, assert_never
 
+from scipy.stats import norm as _norm
+from scipy.stats import t as _t
+
 from increment.estimation._tails import resolvable_expm1, wald_bounds
 from increment.estimation.results import (
     BinomialConfidenceSet,
@@ -29,7 +32,8 @@ from increment.estimation.results import (
 if TYPE_CHECKING:
     from increment.estimation.results import LiftEstimate
 
-#: ``unavailable`` rows carry no relative interval to reissue (a point-free or degenerate cell).
+#: ``unavailable`` rows carry no relative interval (a non-positive arm mean, a degenerate
+#: covariance); the additive interval they report, when they have one, is what is reissued.
 Construction = Literal["wald", "binomial", "joint", "unavailable"]
 
 
@@ -63,6 +67,30 @@ def classify(view: LiftEstimate) -> tuple[Construction | None, str]:
     return "wald", "Wald interval on the log scale"
 
 
+def _has_additive_interval(view: LiftEstimate) -> bool:
+    return view.abs_lb is not None and view.abs_ub is not None
+
+
+def _additive_reference_df(view: LiftEstimate) -> float | None:
+    return view.abs_reference_df if view.abs_reference_kind == "t" else None
+
+
+def _additive_nominal_alpha(view: LiftEstimate) -> float:
+    """The call-level alpha of *view*'s central additive interval.
+
+    A row without a relative interval persists no alpha. Its additive interval was cut at
+    ``crit * abs_se`` around ``abs_diff``, so the critical value read from its width returns
+    the alpha through the persisted reference, to rounding.
+    """
+    assert view.abs_lb is not None and view.abs_ub is not None
+    assert view.abs_se is not None and view.abs_se > 0.0
+    crit = (view.abs_ub - view.abs_lb) / (2.0 * view.abs_se)
+    df = _additive_reference_df(view)
+    tail = float(_norm.sf(crit) if df is None else _t.sf(crit, df))
+    alpha_eff = 2.0 * tail
+    return alpha_eff if view.alternative == "two-sided" else alpha_eff / 2.0
+
+
 def nominal_alpha(view: LiftEstimate, construction: Construction) -> float:
     """The call-level alpha *view* was built at, the cap on its FCR level.
 
@@ -80,7 +108,7 @@ def nominal_alpha(view: LiftEstimate, construction: Construction) -> float:
             alpha_eff = view.lift.alpha
             return alpha_eff if view.alternative == "two-sided" else alpha_eff / 2.0
         case "unavailable":
-            raise AssertionError("an unavailable interval has no nominal alpha")
+            return _additive_nominal_alpha(view)
         case _:
             assert_never(construction)
 
@@ -206,16 +234,28 @@ def _joint_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
     )
 
 
+def _unavailable_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
+    """The central additive interval an estimator cuts for such a row at *alpha*."""
+    from increment.estimation.inference import _joint_additive_bounds
+
+    if not _has_additive_interval(view):
+        return view
+    assert view.abs_diff is not None and view.abs_se is not None
+    abs_lb, abs_ub = _joint_additive_bounds(
+        view.abs_diff, view.abs_se, alpha, view.alternative, _additive_reference_df(view)
+    )
+    return view.model_copy(update={"abs_lb": abs_lb, "abs_ub": abs_ub})
+
+
 def reinterval_at_fcr(
     view: LiftEstimate, construction: Construction, fcr_alpha: float | Fraction
 ) -> LiftEstimate:
     """*view* reissued at the total noncoverage budget *fcr_alpha*.
 
     Two-sided rows get a central interval at *fcr_alpha*; a directional row gets the open bound
-    ``open_bound_from_two_sided_at_target`` derives from the parent built at the halved alpha.
+    ``open_bound_from_two_sided_at_target`` derives from the parent built at the halved alpha. A
+    row without a relative interval has its additive interval reissued centrally.
     """
-    if construction == "unavailable":
-        return view
     alpha = _fcr_alpha_for(view.alternative, fcr_alpha)
     match construction:
         case "wald":
@@ -224,6 +264,21 @@ def reinterval_at_fcr(
             parent = _binomial_parent(view, alpha)
         case "joint":
             parent = _joint_parent(view, alpha)
+        case "unavailable":
+            parent = _unavailable_parent(view, alpha)
         case _:
             assert_never(construction)
     return open_bound_from_two_sided_at_target(parent)
+
+
+def reinterval_selected(
+    view: LiftEstimate, construction: Construction, realized_threshold: float
+) -> LiftEstimate:
+    """*view* reissued at ``min(realized_threshold, nominal)``, the level a selected row reports.
+
+    A row with no relative and no additive interval has nothing to reissue.
+    """
+    if construction == "unavailable" and not _has_additive_interval(view):
+        return view
+    cap = nominal_alpha(view, construction)
+    return reinterval_at_fcr(view, construction, min(realized_threshold, cap))

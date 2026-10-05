@@ -86,7 +86,8 @@ totals and completed as-of cohorts. An entirely null component under
 
 An added metric is read through the same estimators as a declared one: CUPED, ratio
 and winsorized metrics follow the call-wide `decision_method` you pass (the metric has no
-declared binding, so the default unadjusted estimator applies), clustering and breakouts
+declared binding, so the default estimator applies: IPTW under an observational design,
+unadjusted otherwise), clustering and breakouts
 follow the experiment's declaration, and the day-axis refusals (clustered, winsorized,
 quantile, dimensioned `run_daily` of an undeclared metric) keep their codes. It joins
 no plan family and never changes a declared row; under a breakout multiplicity plan its

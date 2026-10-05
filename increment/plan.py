@@ -596,8 +596,9 @@ def with_unassigned_procedures(
     """*plan* plus default unassigned procedures for *metrics* it does not compile.
 
     The one place a metric outside the declared plan receives a procedure: the
-    undeclared-plan default (``role="unassigned"``, two-sided, full ``alpha``) joins no
-    family and leaves every declared procedure untouched.
+    undeclared-plan default (``role="unassigned"``, two-sided) is tested at *plan*'s own
+    ``alpha``, the level a declared plan gives its unassigned metrics, so every view reads
+    it at one level. It joins no family and leaves every declared procedure untouched.
     """
     from types import MappingProxyType
 
@@ -605,7 +606,11 @@ def with_unassigned_procedures(
     if not missing:
         return plan
     defaults = compile_decision_plan(None, missing, path=plan.path, design=design)
-    procedures = MappingProxyType({**plan.procedures, **defaults.procedures})
+    leveled = {
+        name: type(procedure).model_validate({**dict(procedure), "alpha": plan.alpha})
+        for name, procedure in defaults.procedures.items()
+    }
+    procedures = MappingProxyType({**plan.procedures, **leveled})
     return plan.model_copy(update={"procedures": procedures})
 
 

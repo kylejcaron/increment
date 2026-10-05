@@ -396,3 +396,20 @@ def test_offered_metrics_read_together_match_each_metric_read_alone(
                 if view == "segments":
                     discoveries += sum(bool(getattr(row, "discovery", None)) for row in captured)
         assert discoveries > 0 or correction == "bonferroni"
+
+
+def test_an_added_metric_inspector_shows_its_overview_result(tmp_path):
+    from increment.dashboard._app import build_payload
+
+    with _workspace(tmp_path, metrics=_SAVED) as (_, analysis):
+        snapshot = prepare_dashboard(analysis, config=_config(ADDED))
+        assert snapshot.overview is not None
+        (row,) = [r for r in snapshot.overview.exploratory if r.method_role == "decision"]
+        payload = {m["key"]: m for m in build_payload(analysis, snapshot=snapshot)["metrics"]}
+        added = payload[ADDED]
+        assert added["role"] == "exploratory"
+        assert "no decision result" not in added["detail"]
+        assert f"{row.require_lift().value:+.1%}" in added["detail"]
+        assert added["csv"] == ""
+        # A declared metric keeps its group-data download.
+        assert payload["checkout_conversion"]["csv"] != ""
