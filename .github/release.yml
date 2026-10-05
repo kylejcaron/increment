@@ -7,14 +7,12 @@ changelog:
     - title: Breaking changes
       labels: [breaking]
     - title: Features
-      labels: [feature, enhancement]
+      labels: [feature]
     - title: Fixes
-      labels: [bug, fix]
-    - title: Statistics and inference
-      labels: [stats, inference]
+      labels: [bug]
     - title: Documentation
-      labels: [documentation, docs]
+      labels: [documentation]
     - title: Internal
-      labels: [internal, refactor, ci]
+      labels: [internal]
     - title: Other changes
       labels: ["*"]
