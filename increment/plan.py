@@ -35,6 +35,7 @@ from increment.semantics.models import (
     Metric,
     MultiplicitySpec,
 )
+from increment.sequential_state import fixed_horizon_alternative
 
 if TYPE_CHECKING:
     from increment._analysis_config import ResolvedMetricConfig
@@ -116,7 +117,7 @@ _REFUSALS = refusals(
             InvalidRequestError,
             template="unknown correction={correction!r}; supported: 'bh', 'bonferroni', 'none'",
         ),
-        "readout.inference.observational_run": "sequential inference is not supported under an observational design; use fixed-horizon inference (valid for one planned analysis, not repeated looks)",
+        "readout.inference.observational_run": "sequential inference is not supported under an observational design; {route}",
         "readout.encouragement.correction": "multiplicity correction is not supported under an encouragement design",
     },
 )
@@ -145,7 +146,12 @@ def validate_readout_plan(request: ReadoutRequest) -> None:
         and mechanism == "observational"
         and not isinstance(plan.inference, FixedInference)
     ):
-        _raise("readout.inference.observational_run")
+        _raise(
+            "readout.inference.observational_run",
+            route=fixed_horizon_alternative(
+                request.metrics, "an observational design", "observational"
+            ),
+        )
     if view == "breakout" and mechanism == "encouragement" and correction not in (None, "none"):
         _raise("readout.encouragement.correction")
 

@@ -138,10 +138,10 @@ def _render_compatibility_refusal(
             + " -- clustered moments carry no per-unit covariate evidence. Keep a "
             "decision method that does not use CUPED (variance_reduction='none') and "
             "remove or replace every method that requests CUPED: an observational "
-            "decision such as iptw stays as it is, and for randomized or "
-            "encouragement designs Method(name='unadjusted') is such a method. For "
-            "frame sources, also remove the covariate declaration. The clustered "
-            "analysis then keeps the same estimand without CUPED variance reduction."
+            "decision such as iptw stays as it is, keeping its adjustment covariates, "
+            "and for randomized or encouragement designs Method(name='unadjusted') is "
+            "such a method. The clustered analysis then keeps the same estimand "
+            "without CUPED variance reduction."
         )
     if code == "arm.adjustment.cluster_prior":
         return (

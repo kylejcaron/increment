@@ -58,6 +58,20 @@ def sequential_refuse(code: str, reason: str) -> NoReturn:
     refuse(_REFUSALS[code], reason=reason)
 
 
+def fixed_horizon_alternative(metrics, supports: str, quantile_limit: str) -> str:
+    """The fixed-horizon route, qualified when a quantile metric has no such estimator."""
+    route = (
+        f"use fixed-horizon inference, which supports {supports} (valid for one planned "
+        "analysis, not repeated looks)"
+    )
+    if any(getattr(metric, "type", None) == "quantile" for metric in metrics):
+        route += (
+            f"; a quantile metric has no {quantile_limit} estimator under any inference "
+            "kind, so it needs a randomized, unclustered design"
+        )
+    return route
+
+
 def validate_sequential_transform(metric) -> None:
     """Admit only outcome transforms that are predictable when each unit is revealed.
 
