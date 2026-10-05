@@ -323,8 +323,13 @@ like `z^3` relative to the tail, so extreme tails need thousands of events. The 
 grows more slowly than `z^4` below them, so the middle tails carry a margin well above 1.25
 (about 3.7 times at 0.025 and 0.05), and counts the interval already covers take the
 finite-sample route there, which is valid at every count. A tail below 0.0005 is extrapolated by
-the same formula, not measured. Per tail, the requirement is a step of that ladder (anchored at 10
-for the tails from 0.025 up, at 1,637 below):
+the same formula, not measured. Per tail, the requirement is a step of a ladder of that ratio
+with every step of that candidate's own ladder through 1.25 times it measured; the ladders are
+anchored at 10 for the tails from 0.025 up and at 1,637 below (the 0.005 tail's on the
+continuation of an interrupted scan, at 2,489.5). A scan records its ladder with every step, so
+a row of another start's ladder stands in for none of those steps; `python -m
+calibration.conversion_route required` reads saved scans, placing one written before the ladder
+was recorded on the ladder its own steps determine and refusing one no ladder fits:
 
 | One-sided tail | 0.0005 | 0.001 | 0.005 | 0.01 | 0.025 | 0.05 | 0.1 |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -370,10 +375,12 @@ seven tails every cell stays within tolerance; the worst excess over each tail's
 0.50 / +0.34 / +0.40 / +0.48 / +0.53 / +0.63 / +0.67 at the 0.1 / 0.05 / 0.025 / 0.01 / 0.005 /
 0.001 / 0.0005 tails. The production pipeline on 57,601, 30,400 and 62,400 seeded draws at the
 0.1, 0.05 and 0.025 tails agrees with the exact value within four Monte Carlo standard errors;
-that check was not run below the 0.025 tail. `conformance` finds the vectorised interval within
-`2.1e-14` (relative) of `estimate_lift`'s and the interpolated Student quantile within
-`1.7e-15` of `t.isf`. A bounded grid is evidence at those cells, not a coverage claim for every
-data-generating process.
+that check was not run below the 0.025 tail. The calibration-only vectorised interval agreed
+with `estimate_lift` within `2.1e-14` (relative), and the interpolated Student quantile agreed
+with `t.isf` within `1.7e-15`, on the measured `conformance` cells. These empirical comparisons
+are not numerical certificates; planning and exact enumeration use the runtime calculation
+directly. A bounded grid is evidence at those cells, not coverage for every data-generating
+process.
 
 A BH-selected row is re-estimated at its own corrected level and routed there, so its label can
 differ from the label of the nominal row whose p-value selected it.
@@ -811,71 +818,84 @@ not guarantee that a future data-generating process has either variance shape.
 ### Conversion planning follows the runtime's route; the finite-sample replay is bounded
 
 Unadjusted, unclustered, fixed-horizon conversion and retention plans mirror the runtime's
-count rule. Each evaluated plan is classified from the probability that its random counts
-are all dense for the plan's tail allocation (`P(m <= X <= n - m)` per arm, the arms
-independent, `m = dense_min_count`): `dense` (at least `1 - 1e-6`) is the closed-form
-model above (`power_basis="asymptotic"`, no replay, no cell budget, no arm ceiling, so a
-dense plan above a billion units per arm is planned), `sparse` (at most `1e-6`) is the replay
-of the finite-sample decision, and `borderline` is the smaller of the replayed and the
-closed-form power, reported as `power_basis="approximate"` whatever the replay's own basis.
-The runtime's rejection probability there mixes the two routes' decisions (the finite-sample
-test on the draws the rule keeps on it, the delta method on the rest), which neither power
-equals: the minimum is an approximation chosen to lean conservative (the finite-sample test is
-the more conservative of the two where they differ, and the minimum keeps the figure under the
-closed form where the replay happens to exceed it), not a proven lower bound. A minimum
-detectable effect whose whole path from the null is dense is the closed-form one, solved
-without a replay. `conversion_inference="finite_sample"` plans the replay at every size and
-is the only plan the bound below can refuse, so default users plan dense designs in
-milliseconds. The measurements below are for the replay (sparse, borderline and explicit
-`finite_sample` plans).
+count rule. A count pair is decided by the delta method when its four per-arm success and
+failure counts are all at least `m = dense_min_count` for the plan's tail allocation and by the
+finite-sample test otherwise, so a plan's power is the rejection probability of that union
+over the count lattice: the production delta decision on the routed rectangle plus the replayed
+finite-sample decision on the rest (`power_basis="exact"`, or `"approximate"` with `power` the
+certified lower figure when the replay budget leaves more than `1e-6` undecided). It is neither
+route's power: a plan whose counts straddle the threshold is not the smaller of the two. A plan
+whose counts are dense with probability at least `1 - 1e-6` (`P(m <= X <= n - m)` per arm, the
+arms independent) is enumerated while its lattice has at most 100,000 cells (a cost limit,
+the same for every design), retaining any undecided finite-route mass in the upper bound.
+Larger dense lattices use the closed-form model above (`power_basis="asymptotic"`, no replay,
+no cell budget, no arm ceiling, so a dense plan above a billion units per arm is planned).
+Its figures have the measured 0.005 agreement criterion, not a runtime lower-bound guarantee.
+A decision the runtime refuses in full on the finite-sample
+route (a tail level its margin dominates, an arm above its ceiling) is refused for a plan that
+keeps more than half of `1e-6` of its counts there, never reported as zero power. A minimum
+detectable effect whose whole path from the null is closed-form is solved without a lattice.
+`conversion_inference="finite_sample"` plans the replay at every size and is the only plan the
+cell bound below can refuse outright. The measurements below are for the enumerated plans.
 
 `python -m calibration.conversion_route bound` compares each route's plan with the pipeline's
 exact rejection probability, summed over the count lattice, and judges each by the claim of its
 route. The 534 designs run so far reach every production tail at central and rare-event rates,
-with falls at the 0.025 and 0.1 tails; the `tails` and `window` grids define every production
-request at its own alpha, two-sided against a rise and directional in both directions, and
-the directional requests have been run at the 0.05 and 0.1 tails (central and rare-event) and
-two 0.01 designs. A dense plan was within 0.005 of it at 181 of 183 designs and
-0.0060 at the two smallest (1,236 per arm at a 50% baseline and a 6% lift, tail 0.1, sparsest
-expected count 1.5 times the threshold), where it understates. A sparse plan on the
-approximate replay was between 1.8e-5 above and 3.3e-4 below it at 115 designs. A borderline
-plan was between 1.6e-5 above and 0.072 below it at 236 designs; its largest overshoot is a
-rare-event design where 1e-5 of the counts take the delta method, so it is the approximate
-replay's own accuracy. These are the accuracy of the closed form and of the replay, not a
-bound: no borderline plan is proven to stay at or below the exact rejection probability.
+with falls (negative lifts) at the 0.01, 0.025, 0.05 and 0.1 tails; the `tails` and `window`
+grids define every production request at its own alpha, two-sided against a rise and
+directional in both directions, and the directional requests have been run at the 0.05 and 0.1
+tails (central and rare-event) and two 0.01 designs. Those figures were measured against the
+interim planner (the smaller of the replayed and the closed-form power for a plan whose counts
+straddle the threshold, and a Normal-tail replay above 16,000 cells): a sparse plan was
+between 1.8e-5 above and 3.3e-4 below the pipeline's exact probability, and a borderline plan
+between 1.6e-5 above and 0.072 below it. Neither is a claim of the hybrid planner, whose
+enclosure is checked against the same enumeration with no tolerance beyond its own undecided
+mass and numerical error (the dense closed form keeps its 0.005 ceiling; its two failures, at
+1,236 per arm and a 50% baseline with a 6% lift, are now enumerated).
 
-With at most 16,000 retained (control, treatment) cells at the null rate the
-decision set is replayed exactly (`power_basis="exact"`); up to 10,000,000 cells the
-replay uses Normal conditional tails (`power_basis="approximate"`), a model of the decision
-whose rejection probability is what that route reports and encloses: its numerical
-certificates are model-only and do not bound the model's departure from the runtime, measured
-at up to 0.8 percentage points below the runtime's power (unequal allocation,
-shifted null) and able to misclassify rare-event count pairs near the tail
-allocation, which put it up to 2e-5 above the runtime's power in the rare-event designs
-enumerated above. The runtime's own control-arm window and floating-point
-allowance carry over to both routes. A binomial plan's call takes seconds
-rather than milliseconds. Measured on an Apple M3 Pro: exact route at 701 per
-arm, about 0.8 s for achieved power or MDE and 1.9 s for sizing; approximate
-route at 10,000 / 20,000 / 35,000 per arm (10% baseline), 1.2 / 2.6 / 3.9 s
-for achieved power and 6.3 / 15.5 / 22 s for sizing, and at 20,000 per arm
-with a 50% baseline 6.4 s and 67 s. Every count pair's decision comes from its
-own replay, except counts the replay's first step would settle: those are
-inferred from a neighbouring count's margin through the step's monotonicity
-in the treatment count, which assumes each computed tail lies within the larger of
-`5e-11` and the decision's float margin (see **Extreme alpha**) of its exact-arithmetic
-value. Sizing returns a verified bracket crossing, not a proven global minimum.
+A `bound --out` checkpoint records each design's enumeration beside the finite-sample
+construction and routing floor it was summed under, and its plan beside the planner model. A
+resumed run reuses an enumeration of the current runtime, plans again under a retired model, and
+refuses a record that names neither (every earlier layout wrote one undated section) rather than
+reusing, relabelling or enumerating it again unnoticed: the refusal names the file line, and the
+designs are enumerated to a new `--out`. The saved earlier files are kept unchanged as evidence.
 
-Every computed probability carries the runtime's SciPy error allowance (`n` units in
-the last place of each binomial weight) and the rounding of its sums. The resulting
-interval is about `1e-12` of the power at 1,000 units per arm and `4e-7` at a billion.
-Sizing uses its lower end to verify the target. MDE instead uses computed point
-power and effect tolerance `1e-8 + 1e-8 * abs(effect)`, without promising the first
-representable passing effect. Internal bounds exclude earlier intervals; an earlier
-uncertain interval wider than the effect tolerance cannot be skipped for a later band.
-If the search cannot resolve it, the companion `mde_relative` is `None` with
-`numerical_resolution`, while a supplied-effect power remains available.
-The interval covers integration of the replayed decision set, not the approximate
-route's separate model error. Triggered plans use rounded analyzed counts.
+A plan not evaluated in closed form integrates the count lattice with a bounded decision
+budget. Evaluated pairs use the runtime's delta-method calculation on the routed rectangle
+and the finite-sample replay elsewhere. Each evaluation decides at most 100,000 routed pairs
+and replays at most 150,000 finite-sample directional pairs, prioritising heavier cells and
+retaining unprocessed probability in the upper bound. `power_basis="exact"` means at most
+`1e-6` remains undecided; `"approximate"` means more remains, with `power` the certified lower
+figure. The Normal-tail replay is used only to propose sizes. The runtime's control-arm
+window and floating-point allowance carry over.
+
+On a loaded 12-core Apple machine, evaluating a dense 62,500-cell plan (1,236 per arm) with
+the runtime calculation took 10 to 20 seconds. Public calls that also search for an effect
+require further evaluations. Broader calibration certification of this implementation is
+pending; the saved campaign results above describe the interim planner.
+
+Each evaluated finite-sample pair uses its own replay or a root exit settled by the replay's
+first step; no pair inherits a neighbour's decision, because the runtime's stopped search
+need not be monotone in a count. Sizing returns a verified bracket crossing,
+not a proven global minimum.
+
+Every probability planning computes carries the runtime's SciPy error allowance (`n` units in
+the last place of each binomial weight, `2.2e-7` of it at a billion units per arm, `4.5e-13`
+below 2,048) and the rounding of its sums, so a power is enclosed by an interval of about
+`1e-12` of it at 1,000 units per arm and `4e-7` at a billion, and every comparison with the
+target is made at its ends. A size or an effect is reported only when the lower end reaches
+the target; an effect search excludes an interval of effects only when a bound on the
+rejection set, enlarged by the same error, stays below it. One whose interval straddles the
+target is not decided, so the answer can exceed the first that reaches the target by that
+much (measured against the earlier comparisons of the computed values: the effect by a
+relative `1e-12` at 701 to 2,000 units per arm and `4.4e-7` at a billion; a size by 174 of
+489,713,690 units) and its reported `power` exceeds the target by about the interval. A
+target that no effect certifies, while the bound cannot exclude every effect, lies within the
+interval of the greatest power any effect may reach and is neither certified nor ruled out: the
+companion `mde_relative` is `None` with `numerical_resolution`. The interval
+covers the runtime's rejection probability wherever `power_basis` is `exact` or `approximate`,
+and the delta-method model's where it is `asymptotic`. Triggered plans use the
+rounded analyzed counts.
 
 A solve's replay is bounded by the cells it stores: at most 10,000,000 (control, treatment)
 count cells, the control window by the treatment windows at the null rate and at every
