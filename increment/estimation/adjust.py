@@ -646,7 +646,7 @@ def estimate_ate(  # noqa: PLR0913, PLR0915
     _raise_if_empty: bool = True,
     _prior_scale_judged: bool = False,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
-    route_alpha: float | None = None,
+    _route_alpha: float | None = None,
 ) -> DecisionComputation[LiftEstimate]:
     """Estimate ATE-scale lift for every declared metric under an
     observational `design`.
@@ -686,14 +686,12 @@ def estimate_ate(  # noqa: PLR0913, PLR0915
     `_resolve_value_scales`'s cross-metric judgments, but not per-mapping
     key validation, which always checks every source-declared name.
 
-    `_raise_if_empty`, `prior_shared`, and `_prior_scale_judged` are
+    `_raise_if_empty`, `prior_shared`, `_prior_scale_judged` and `_route_alpha` are
     `readouts.run` plumbing: they let a caller splitting metrics across
     several calls judge "nothing estimated" and prior scale-uniformity
-    once, across every group (see `judge_shared_prior_scales`).
-
-    `route_alpha` is the smallest level (in `alpha`'s convention) a multiplicity procedure can
-    later read a p-value at; an explicit `Method(name="unadjusted")` row of a conversion metric
-    is routed as `estimate_lift` routes it at that level (see its `route_alpha`).
+    once, across every group (see `judge_shared_prior_scales`), and route a multiplicity
+    family's conversion rows at the smallest level its procedure reads a p-value at
+    (see `_estimate_lift`'s `route_alpha`).
     """
     if methods is None:
         methods = [Method(name="iptw")]
@@ -804,7 +802,7 @@ def estimate_ate(  # noqa: PLR0913, PLR0915
                         preferred_direction=metric.declared_preferred_direction,
                         cluster=cluster,
                         method_roles=method_roles,
-                        route_alpha=route_alpha,
+                        route_alpha=_route_alpha,
                     ).results
                 # The docstring promise "labelled accordingly" must be visible
                 # on the row itself, not just the method name, for a report reader.

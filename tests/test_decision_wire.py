@@ -415,9 +415,9 @@ def _decision_method(restored: CompiledDecisionPlan) -> Method:
 
 
 def test_a_legacy_unadjusted_method_decodes_to_the_route_it_ran():
-    """Before the field existed every unadjusted conversion row of a fixed-horizon, prior-free,
-    relative-scale procedure ran the finite-sample route: a stored plan decodes to that, never
-    silently to ``auto``."""
+    """Before the field existed every unadjusted conversion row of a fixed-horizon, prior-free
+    procedure ran the finite-sample route: a stored plan decodes to that, never silently to
+    ``auto``."""
     restored = compiled_plan_from_dict(_legacy_unadjusted_plan())
     assert _decision_method(restored) == Method(
         name="unadjusted", conversion_inference="finite_sample"
@@ -450,9 +450,14 @@ def test_a_legacy_plan_with_a_prior_or_an_adjustment_decodes_to_auto():
     assert first.decision_method.conversion_inference == "auto"
     # A CUPED sensitivity method is variance reduction, never the binomial route.
     assert first.sensitivity_methods == (Method(name="cuped", variance_reduction="cuped"),)
-    # An absolute-scale procedure is not a relative binomial decision.
+
+
+def test_a_legacy_absolute_margin_plan_decodes_to_the_route_it_ran():
+    """A prior-free absolute-margin procedure read the same binomial set as a relative one: its
+    stored method is ``finite_sample``, not ``auto``."""
+    restored = compiled_plan_from_dict(_legacy_payload(_arm_plan()))
     second = cast(AbsoluteArmDecisionProcedure, restored.procedures[_METRIC_B])
-    assert second.decision_method.conversion_inference == "auto"
+    assert second.decision_method == Method(name="unadjusted", conversion_inference="finite_sample")
 
 
 def test_a_wire_method_must_state_its_route():
@@ -461,9 +466,11 @@ def test_a_wire_method_must_state_its_route():
     assert raised.value.code == "model.field.missing"
 
 
-def _executed_row_kinds(restored: CompiledDecisionPlan, metric_type: str) -> list[str | None]:
-    """The ``reference_kind`` of the decoded decision method run through ``estimate_lift`` on a
-    dense contrast of a metric of ``metric_type``."""
+def _method_row_kinds(
+    method: Method, metric_type: str, *, null_abs: float | None = None
+) -> list[str | None]:
+    """The ``reference_kind`` of ``method`` run through ``estimate_lift`` on a dense contrast of
+    a metric of ``metric_type``, against an absolute margin when ``null_abs`` is given."""
     from increment.estimation.engine import estimate_lift
     from increment.semantics.models import ConversionMetric, MeanMetric
     from tests.estimation._conversion_counts import count_summary
@@ -477,9 +484,15 @@ def _executed_row_kinds(restored: CompiledDecisionPlan, metric_type: str) -> lis
         metrics=[metric],
         summary=count_summary(50_000, 1_000_000, 51_500, 1_000_000),
         control_group="control",
-        methods=[_decision_method(restored)],
+        methods=[method],
+        null_abs=null_abs,
     )
     return [row.reference_kind for row in computation.results]
+
+
+def _executed_row_kinds(restored: CompiledDecisionPlan, metric_type: str) -> list[str | None]:
+    """The ``reference_kind`` of the decoded decision method run on a dense contrast."""
+    return _method_row_kinds(_decision_method(restored), metric_type)
 
 
 def test_a_legacy_plan_replays_on_every_metric_type_it_could_be_stored_for():
@@ -491,6 +504,16 @@ def test_a_legacy_plan_replays_on_every_metric_type_it_could_be_stored_for():
     assert _executed_row_kinds(conversion, "conversion") == ["binomial"]
     mean = compiled_plan_from_dict(_legacy_unadjusted_plan(), metric_types={_METRIC_A: "mean"})
     assert _executed_row_kinds(mean, "mean") == ["t"]
+
+
+def test_a_legacy_absolute_margin_plan_replays_on_the_route_it_ran():
+    """A dense absolute-margin conversion decision stored before the field existed ran the
+    finite-sample route, so it replays there and not on ``auto``'s delta method."""
+    restored = compiled_plan_from_dict(_legacy_payload(_arm_plan()))
+    procedure = cast(AbsoluteArmDecisionProcedure, restored.procedures[_METRIC_B])
+    method, margin = procedure.decision_method, procedure.null_abs
+    assert _method_row_kinds(method, "conversion", null_abs=margin) == ["binomial"]
+    assert _method_row_kinds(Method(name="unadjusted"), "conversion", null_abs=margin) == ["t"]
 
 
 def test_a_cube_exported_before_the_field_existed_replays_on_every_metric_type(tmp_path):

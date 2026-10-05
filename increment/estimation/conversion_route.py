@@ -41,6 +41,7 @@ import numpy as np
 from scipy.stats import norm
 
 from increment._literals import ConversionInference
+from increment.compatibility import _conservative_divide
 from increment.errors import InvalidRequestError, refusals, refuse
 
 Route = Literal["asymptotic", "finite_sample"]
@@ -145,6 +146,14 @@ def route_for_counts(
         return "finite_sample"
     smallest = min(x_c, n_c - x_c, x_t, n_t - x_t)
     return "asymptotic" if smallest >= dense_min_count(tail_alpha) else "finite_sample"
+
+
+def family_route_alpha(q: float, hypotheses: int) -> float | None:
+    """The smallest level a BH family of ``hypotheses`` decides a p-value at, in ``alpha``'s
+    convention: ``q / hypotheses`` rounded downward exactly as the selection threshold is, so a
+    row is never routed at a looser level than the one its p-value is read at. ``None`` for a
+    family with no hypotheses."""
+    return _conservative_divide(q, hypotheses) if hypotheses > 0 else None
 
 
 def _outside_mass(n: int, p: float, m: int) -> float:

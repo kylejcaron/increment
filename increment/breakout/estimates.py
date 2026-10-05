@@ -63,6 +63,7 @@ from increment.errors import (
 )
 from increment.estimation._readout_refusals import READOUT_REFUSALS
 from increment.estimation.armstats import ArmStats
+from increment.estimation.conversion_route import family_route_alpha
 from increment.estimation.diagnostics import ESTIMATION_DIAGNOSTICS_ALPHA
 from increment.estimation.encouragement import ESTIMANDS, estimate_encouragement
 from increment.estimation.engine import (
@@ -3125,7 +3126,7 @@ def run_breakout(  # noqa: PLR0913
     # A BH family reads each nominal p-value at a threshold as small as ``q / m``: route each
     # conversion cell at that level, never at the looser per-segment one.
     family_size = len(_breakout_family_cells(segments, all_pairs)) if correction == "bh" else 0
-    route_alpha = q / family_size if family_size else None
+    route_alpha = family_route_alpha(q, family_size)
     results: list[BreakoutEstimate] = []
     segment_computations: dict[tuple[str, str], DecisionComputation[LiftEstimate]] = {}
     warned_open_ended: set[str] = set()

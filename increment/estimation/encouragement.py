@@ -1548,7 +1548,7 @@ def estimate_encouragement(  # noqa: PLR0913
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None = None,
     cluster: str | None = None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
-    route_alpha: float | None = None,
+    _route_alpha: float | None = None,
 ) -> DecisionComputation[LiftEstimate]:
     """Estimate ITT, compliance (first stage), and LATE for an encouragement design.
 
@@ -1596,9 +1596,9 @@ def estimate_encouragement(  # noqa: PLR0913
     ``inference``, and any ratio metric on any estimand; withholds the
     complier-relative ``late`` row (unbuilt moment family).
 
-    ``route_alpha`` is the smallest level (in ``alpha``'s convention) a multiplicity procedure
-    can later read an ``itt`` p-value at; ``itt`` rows of a conversion metric are routed as
-    ``estimate_lift`` routes them at that level (see its ``route_alpha``).
+    ``_route_alpha`` is readout plumbing, not a decision input: the smallest level a
+    multiplicity procedure reads an ``itt`` p-value at, at which ``itt`` rows of a conversion
+    metric are routed (see ``_estimate_lift``'s ``route_alpha``).
     """
     _require_exclusion_for_late(design, estimands)
     if inference is not None:
@@ -1667,7 +1667,7 @@ def estimate_encouragement(  # noqa: PLR0913
         inference,
         cluster,
         method_roles,
-        route_alpha,
+        _route_alpha,
     )
     if not isinstance(prepared, _PreparedEncouragementEstimation):
         return prepared

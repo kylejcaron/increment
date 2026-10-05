@@ -682,17 +682,17 @@ def _legacy_conversion_inference(
     """The ``conversion_inference`` a stored method lacking the field ran under.
 
     Before the field existed an unadjusted conversion or retention row of a fixed-horizon,
-    prior-free, relative-scale procedure ran the finite-sample route, so a method of that kind
-    is ``"finite_sample"``. Every other stored method never had that route (a CUPED method, an
-    observational adjustment, an informative prior, sequential inference, an absolute-scale
-    row, or a metric that is not a conversion or retention rate) and is ``"auto"``, which
-    leaves it on the route it always took. ``metric_type`` is the stored metric's declared
-    type when the caller knows it; without it a metric is taken to be a conversion rate."""
+    prior-free procedure ran the finite-sample route on either value scale (an absolute margin
+    reads the same binomial set through its additive sidecar), so a method of that kind is
+    ``"finite_sample"``. Every other stored method never had that route (a CUPED method, an
+    observational adjustment, an informative prior, sequential inference, or a metric that is
+    not a conversion or retention rate) and is ``"auto"``, which leaves it on the route it
+    always took. ``metric_type`` is the stored metric's declared type when the caller knows
+    it; without it a metric is taken to be a conversion rate."""
     inference = procedure.get("inference")
     kind = inference.get("kind", "fixed") if isinstance(inference, Mapping) else "fixed"
     historically_exact = (
-        procedure.get("kind", "relative") == "relative"
-        and procedure.get("prior") is None
+        procedure.get("prior") is None
         and kind == "fixed"
         and method.get("name") == "unadjusted"
         and method.get("variance_reduction", "none") == "none"
