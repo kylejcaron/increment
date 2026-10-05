@@ -258,8 +258,7 @@ def _export_and_replay(
             path = Path(td) / "moments.parquet"
             analysis.export(path)
             rows = pq.read_table(path).to_pylist()
-        plan_kwargs = {} if plan is None else {"plan": plan}
-        return Analysis.from_moments(rows, control="control", metrics=metrics, **plan_kwargs)
+        return Analysis.from_moments(rows, control="control", metrics=metrics, plan=plan)
     finally:
         _close_parity_analysis(analysis)
 
