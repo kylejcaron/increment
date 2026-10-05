@@ -972,9 +972,9 @@ def _batch_rows(*, exact: bool) -> int:
     however many of its rows keep searching.
 
     A one-stage replay (the exact route, or an approximate one capped at its common splits)
-    is largest as `_Leaves.grow` widens the batch's arrays to their last width. A two-stage
-    replay is largest in one of two moments. Having copied the rows still searching beside the
-    first stage's arrays, which the copies equal when every row survives, it holds both and the
+    peaks either while copying the root into search arrays or widening to the last width.
+    A two-stage replay peaks in one of two moments. Having copied the rows still searching
+    beside the first stage's arrays, which the copies equal when every row survives, it holds both and the
     one field `_Leaves.take` gathers of the chunk it is copying: the batch takes half the
     budget less that gather. Then the copies wait beside a chunk that deepens, which takes the
     other half (`_chunk_rows`). The moments before these, the root's arrays beside the first
@@ -982,7 +982,9 @@ def _batch_rows(*, exact: bool) -> int:
     max_iter = _rr.NUISANCE_STOP.max_iter
     common = _common_splits(max_iter, exact=exact)
     if common == max_iter:
-        return max(1, int(_LEAF_BUDGET_BYTES // _widening_bytes(_stage_slots(max_iter))))
+        slots = _stage_slots(max_iter)
+        root_copy = _leaf_bytes(1) + _leaf_bytes(_START_SLOTS) + 8
+        return max(1, int(_LEAF_BUDGET_BYTES // max(root_copy, _widening_bytes(slots))))
     first = _stage_slots(common)
     gather = 8 * first * _chunk_rows(max_iter)
     return max(1, int((_LEAF_BUDGET_BYTES - gather) // (2 * _leaf_bytes(first))))
