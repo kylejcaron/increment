@@ -1226,8 +1226,10 @@ class BinomialInterval:
     ``capped_probes`` counts the p-value probes whose nuisance search ended short of its gap
     target (`NUISANCE_STOP`): a probe the endpoint search settles against the tail level only
     while that comparison was still open, and the p-value at the null while the gap it is
-    refined to was. ``nuisance_gap_max`` is the largest gap in p-value they left (``0.0`` when
-    none). The bounds stay valid; at those probes they are conservative by at most that gap.
+    refined to was. ``nuisance_gap_max`` is the largest gap they left (``0.0`` when none), in
+    the p-value this alternative reports: a two-sided p-value is twice the smaller
+    directional one, so a directional probe's gap counts twice there. The bounds stay valid;
+    at those probes they are conservative by at most that gap.
     """
 
     lower: float
@@ -1334,16 +1336,18 @@ def confidence_interval(
 
 class _OpenProbes:
     """The p-value probes of one inversion whose nuisance search ended short of its gap target,
-    keyed by test and null, with the gap each left. A probe settled against the tail level ends
-    so only while that comparison is open; the gap target of the p-value at the null is its
-    own."""
+    keyed by test and null, with the gap each left, times *scale* (the factor from a
+    directional certificate to the p-value the inversion reports: 2 for a two-sided one). A
+    probe settled against the tail level ends so only while that comparison is open; the gap
+    target of the p-value at the null is its own."""
 
-    def __init__(self) -> None:
+    def __init__(self, scale: float) -> None:
+        self.scale = scale
         self.gaps: dict[tuple[str, float], float] = {}
 
     def record(self, kind: str, r: float, probe: _PCertificate) -> float:
         if not probe.stopped:
-            self.gaps[kind, r] = max(self.gaps.get((kind, r), 0.0), probe.gap)
+            self.gaps[kind, r] = max(self.gaps.get((kind, r), 0.0), self.scale * probe.gap)
         return probe.p
 
     @property
@@ -1370,7 +1374,7 @@ def _confidence_interval_cached(
     seed = (n_c * x_t) / (n_t * x_c) if x_c > 0 and x_t > 0 else 1.0
     tau = _endpoint_tolerance(_count_scale(x_c, n_c, x_t, n_t))
     target = alpha / 2.0 if alternative == "two-sided" else alpha
-    open_probes = _OpenProbes()
+    open_probes = _OpenProbes(2.0 if alternative == "two-sided" else 1.0)
 
     # The endpoint search only compares each p-value with the tail level, so its probes stop
     # once that comparison is certified; the p-value at the null is refined to its gap, which

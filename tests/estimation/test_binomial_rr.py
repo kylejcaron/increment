@@ -1021,6 +1021,18 @@ class TestNuisanceCapOnTheInterval:
             assert capped.upper is not None and capped.upper >= reference.upper
         assert capped.p_value_null >= reference.p_value_null
 
+    @pytest.mark.parametrize("alternative", ["two-sided", "greater", "less"])
+    def test_the_disclosed_gap_bounds_the_reported_p_values_excess(self, alternative, monkeypatch):
+        """The p-value an interval reports at the null is twice the smaller directional bound
+        when two-sided, so the gap it discloses is stated in that p-value, not the directional
+        one it was measured in."""
+        reference = brr.confidence_interval(*self.COUNTS, alpha=0.05, alternative=alternative)
+        monkeypatch.setattr(brr, "NUISANCE_STOP", brr._StopRule(2.0**-14, 3))
+        capped = brr.confidence_interval(*self.COUNTS, alpha=0.05, alternative=alternative)
+
+        assert capped.nuisance_gap_max > 0.0
+        assert capped.p_value_null - reference.p_value_null <= capped.nuisance_gap_max
+
     def test_a_probe_far_under_the_tail_level_reaches_its_floored_gap_and_is_not_disclosed(self):
         """At 100 / 1,000 versus 130 / 1,000 the search at risk ratio 0.65 (a p-value near
         1e-7, far under the 0.025 tail) cannot reach a gap relative to it within the cap. Read

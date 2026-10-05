@@ -335,16 +335,18 @@ It also has two further boundaries, both refusals rather than silent degradation
   witnessed lower end of the supremum is within 2^-14 of the larger of the p-value
   and the tail level it is compared with, plus the certificate's own float noise
   (2e-12 to 1.4e-11 from 1,000 to 4,000,000 per arm, which no search narrows), or
-  after 2,048 splits. The reported p-value is therefore a certified upper bound that
-  exceeds the supremum-based p-value by no more than that gap: 2^-14 of the p-value
-  above the tail level and 2^-14 of the tail level below it (1.5e-6 at a 0.025 tail,
-  6.1e-7 at a 0.01 tail). The target is never tighter than a fixed 1e-6 stop at a tail
-  level of 0.0164 or more, and a p-value within the gap of the tail level is read as not
-  rejecting. The endpoint search only
+  after 2,048 splits. The reported directional p-value is therefore a certified upper
+  bound that exceeds the supremum-based p-value by no more than that gap: 2^-14 of the
+  p-value above the tail level and 2^-14 of the tail level below it (1.5e-6 at a 0.025
+  tail, 6.1e-7 at a 0.01 tail). A two-sided p-value is twice the smaller directional
+  one, so it exceeds its ideal by at most twice that. The target is never tighter than
+  a fixed 1e-6 stop at a tail level of 0.0164 or more, and a p-value within the gap of
+  the tail level is read as not rejecting. The endpoint search only
   compares p-values with the tail level, so each probe also stops once that comparison
   is certified either way. A search the cap ends is not an error: its p-value stays a valid,
   conservative bound, and the row's `note` says how many probes ended so and the largest
-  gap they left, in p-value units. No tolerance beyond that disclosure is promised, and a
+  gap they left, in units of the p-value the row reports (twice a directional gap on a
+  two-sided row). No tolerance beyond that disclosure is promised, and a
   row persisted by an earlier version keeps its stored endpoints while
   `p_value()` and `stat_sig()` recompute from its counts with the tighter bound;
   re-run to refresh the endpoints. Each endpoint is the outer end of a search
