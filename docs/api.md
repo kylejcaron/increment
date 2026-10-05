@@ -732,11 +732,14 @@ outcomes. `InvalidRequestError` codes and their `context`:
 `CodedModel` and every definition model in `increment.semantics.models`
 (which use `CodedValidationMixin`) surface coded validator refusals from direct
 construction and direct `model_validate`, `model_validate_json`, and
-`model_validate_strings` calls: a declaration refused by one of its own
-validators raises its `DefinitionError` with its code. Pydantic schema
-boundaries such as `TypeAdapter` and an ordinary `BaseModel` containing one of
-these models still raise `ValidationError`: Pydantic captures the refusal
-because `CodedError` intentionally remains compatible with `ValueError`.
+`model_validate_strings` calls. Definition-specific validators raise
+`DefinitionError`; shared finite-sample metric-type and CUPED refusals raise
+`InvalidRequestError` with the same `conversion_inference.finite_sample.*` code
+and structured context as frame, estimation and planning requests. Catch
+`CodedError` when handling both kinds by code. Pydantic schema boundaries such
+as `TypeAdapter` and an ordinary `BaseModel` containing one of these models
+still raise `ValidationError`: Pydantic captures the refusal because
+`CodedError` intentionally remains compatible with `ValueError`.
 Recover the coded refusal explicitly at those boundaries:
 
 Only `CodedModel` (including `Definitions`) also translates declared-field

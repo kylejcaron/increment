@@ -27,8 +27,8 @@ from pydantic import (
 )
 
 from increment._finite_sample_refusals import (
-    FINITE_SAMPLE_METRIC_TYPE,
     refuse_finite_sample_cuped,
+    refuse_finite_sample_metric_type,
 )
 from increment._immutable import _FrozenMapping
 from increment._literals import (
@@ -3013,13 +3013,7 @@ class Definitions(CodedModel, _Base):
                 and metric is not None
                 and metric.type not in ("conversion", "retention")
             ):
-                errors.append(
-                    (
-                        FINITE_SAMPLE_METRIC_TYPE.code,
-                        f"experiment '{experiment.name}': metric '{name}': "
-                        + FINITE_SAMPLE_METRIC_TYPE.render(metric_type=metric.type),
-                    )
-                )
+                refuse_finite_sample_metric_type(metric.type, metric=name)
 
     @staticmethod
     def _validate_experiment_metric(

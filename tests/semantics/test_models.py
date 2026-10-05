@@ -2692,13 +2692,10 @@ def test_a_finite_sample_binding_is_accepted_on_a_conversion_or_retention_metric
 
 
 def test_a_finite_sample_binding_on_a_mean_metric_is_refused_at_definition_load():
-    with pytest.raises(DefinitionError) as exc_info:
+    with pytest.raises(InvalidRequestError) as exc_info:
         Definitions.model_validate(_finite_sample_definitions("mean"))
-    assert exc_info.value.code == "definition.invalid"
-    assert "conversion_inference.finite_sample.metric_type" in {
-        code
-        for code, _ in exc_info.value.context["errors"]  # ty: ignore[not-iterable]
-    }
+    assert exc_info.value.code == "conversion_inference.finite_sample.metric_type"
+    assert exc_info.value.context == {"metric_type": "mean", "metric": "orders"}
 
 
 def test_one_hazard_has_one_code_and_context_across_every_layer():
@@ -2713,16 +2710,16 @@ def test_one_hazard_has_one_code_and_context_across_every_layer():
     cuped_code = "conversion_inference.finite_sample.cuped"
     finite = {"conversion_inference": "finite_sample"}
 
-    with pytest.raises(DefinitionError) as definition_metric:
+    with pytest.raises(InvalidRequestError) as definition_metric:
         Definitions.model_validate(_finite_sample_definitions("mean"))
-    sub_codes = {code for code, _ in definition_metric.value.context["errors"]}  # ty: ignore[not-iterable]
-    assert sub_codes == {metric_code}
+    assert definition_metric.value.context == {"metric_type": "mean", "metric": "orders"}
     with pytest.raises(InvalidRequestError) as frame_metric:
         MetricSpec(name="m", decision_method=Method(name="unadjusted", **finite))
     with pytest.raises(InvalidRequestError) as plan_metric:
         ArmPlanningProcedure.standard("mean", **finite)  # ty: ignore[invalid-argument-type]
-    assert {frame_metric.value.code, plan_metric.value.code} == {metric_code}
-    assert frame_metric.value.context["metric_type"] == plan_metric.value.context["metric_type"]
+    metric_errors = (definition_metric.value, frame_metric.value, plan_metric.value)
+    assert {error.code for error in metric_errors} == {metric_code}
+    assert {error.context["metric_type"] for error in metric_errors} == {"mean"}
 
     cuped = {"name": "cuped", "variance_reduction": "cuped", **finite}
     with pytest.raises(InvalidRequestError) as definition_cuped:
