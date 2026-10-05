@@ -3,14 +3,15 @@
 ``build_case`` returns the ``ParityCase`` for the five matched-arm ingresses of a
 cell and, separately, one single-ingress case for ``from_switchback_panel`` (which
 identifies a different estimand and is never row-compared with the other five).
-Every builder derives its inputs from the one event log in ``matrix_data``.
+The five matched-arm builders derive their inputs from the one event log in
+``matrix_data``; the switchback builder synthesizes its own fixed schedule
+(``switchback_frame``) because its estimand needs one.
 """
 
 from __future__ import annotations
 
 import copy
 import datetime as dt
-import json
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -35,6 +36,7 @@ from tests.analysis_factory import make_analysis
 from . import matrix_data as md
 from .cases import (
     CONSTRUCTORS,
+    Absence,
     ParityCase,
     _export_and_replay,
     _publish_and_adopt,
@@ -534,7 +536,7 @@ def _expectations(outcomes: Mapping[str, Outcome], attempted: tuple[str, ...]) -
     """The waiver fields that make the runner assert each recorded outcome."""
     waive: dict[str, str] = {}
     codes: dict[str, str] = {}
-    absence: dict[str, type[Exception]] = {}
+    absence: dict[str, Absence] = {}
     for name in CONSTRUCTORS:
         if name not in attempted:
             waive[name] = _NOT_ATTEMPTED
@@ -545,7 +547,7 @@ def _expectations(outcomes: Mapping[str, Outcome], attempted: tuple[str, ...]) -
             codes[name] = outcome.code
         elif isinstance(outcome, StructuralAbsence):
             waive[name] = f"structurally absent: {outcome.fact}"
-            absence[name] = outcome.error
+            absence[name] = Absence(outcome.error, outcome.field)
     return {
         "waive": waive,
         "waived_refusal_codes": codes,
@@ -593,27 +595,4 @@ def build_switchback_case(cell: Cell, method: str, outcomes: Mapping[str, Outcom
         build={"from_switchback_panel": _switchback_builder(cell)},
         **_expectations(outcomes, ("from_switchback_panel",)),
         **_case_fields(cell, method),
-    )
-
-
-def memo_key(cell: Cell, method: str, name: str) -> tuple[Any, ...] | None:
-    """Identical warehouse inputs: the digest of what the builder will read.
-
-    ``missing`` error and zero declare the same Definitions payload, so a cell that
-    differs only there reads the same events through the same request and reaches the same
-    result; the executor runs it once per process.
-    """
-    if name not in ("from_definitions", "from_unit_day_artifact"):
-        return None
-    payload = definitions_payload(cell)
-    if cell.missing in ("drop", "impute"):
-        payload["metrics"][0]["missing"] = cell.missing
-    return (
-        name,
-        json.dumps(payload, sort_keys=True),
-        cell.view,
-        method,
-        cell.option,
-        cell.option in ("winsor_fixed", "winsor_percentile"),
-        _extension_kinds(cell),
     )

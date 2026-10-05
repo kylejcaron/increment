@@ -136,10 +136,13 @@ class StructuralAbsence:
 
     The runner attempts the declaration with the unsupported field or keyword and expects
     exactly ``error`` (``TypeError`` for a keyword, pydantic's ``ValidationError`` for a
-    schema field); no refusal code exists to record.
+    schema field) naming ``field`` as the thing it cannot express: the validation error
+    must locate ``field``, and a keyword must be absent from the constructor's signature.
+    No refusal code exists to record.
     """
 
     fact: str
+    field: str
     error: type[Exception] = TypeError
 
 
@@ -342,7 +345,7 @@ _SPECS: dict[str, Spec] = {
         "declaration",
         fact="no Definitions metric has a missing field",
     ),
-    "EXC:TypeError": Spec(
+    "EXC:TypeError#cluster": Spec(
         "source_limited",
         "from_switchback_panel takes no cluster= parameter: a switchback contrast has no "
         "arm-cluster shape",
@@ -695,11 +698,11 @@ def _outcome(why: str, spec: Spec) -> Outcome:
     if why == "RUNS":
         return Runs()
     kind, _, rest = why.partition(":")
-    name = rest.partition("#")[0]
+    name, _, field = rest.partition("#")
     if kind == "REF":
         return Refuses(name)
     return StructuralAbsence(
-        spec.fact, {"ValidationError": ValidationError, "TypeError": TypeError}[name]
+        spec.fact, field, {"ValidationError": ValidationError, "TypeError": TypeError}[name]
     )
 
 
@@ -1181,7 +1184,7 @@ RULES: dict[str, tuple[Box, ...]] = {
         box("RUNS", "mean conversion", "run", "none", "error", "rows"),
         box("REF:frame.metric.missing_impute", "mean conversion ratio retention quantile windowed_mean windowed_conversion windowed_ratio", "run breakout", "*", "impute", "rows"),
         box("REF:source.frame.switchback.metric#type", "ratio retention quantile windowed_ratio", "run breakout", "none cuped sequential ni_margin", "error zero drop", "rows"),
-        box("EXC:TypeError", "mean conversion ratio retention quantile total active windowed_mean windowed_conversion windowed_ratio windowed_total windowed_active", "run breakout", "cluster", "*", "rows"),
+        box("EXC:TypeError#cluster", "mean conversion ratio retention quantile total active windowed_mean windowed_conversion windowed_ratio windowed_total windowed_active", "run breakout", "cluster", "*", "rows"),
         box("REF:source.frame.switchback.identification", "mean conversion ratio retention quantile total active windowed_mean windowed_conversion windowed_ratio windowed_total windowed_active", "run breakout", "observational", "*", "rows"),
         box("REF:definition.retention.metric_window_days", "windowed_retention", "daily asof", "none cuped cluster sequential observational ni_margin", "*", "values"),
         box("REF:facade.analysis.contrast_unavailable", "mean conversion", "daily asof", "none", "error", "values"),
@@ -1197,7 +1200,7 @@ RULES: dict[str, tuple[Box, ...]] = {
         box("REF:source.frame.switchback.plan#margin", "mean conversion", "daily asof", "ni_margin", "error", "values"),
         box("REF:frame.metric.missing_impute", "mean conversion ratio retention quantile windowed_mean windowed_conversion windowed_ratio", "daily asof", "*", "impute", "values"),
         box("REF:source.frame.switchback.metric#type", "ratio retention quantile windowed_ratio", "daily asof", "none cuped sequential ni_margin", "error zero drop", "values"),
-        box("EXC:TypeError", "mean conversion ratio retention quantile total active windowed_mean windowed_conversion windowed_ratio windowed_total windowed_active", "daily asof", "cluster", "*", "values"),
+        box("EXC:TypeError#cluster", "mean conversion ratio retention quantile total active windowed_mean windowed_conversion windowed_ratio windowed_total windowed_active", "daily asof", "cluster", "*", "values"),
         box("REF:source.frame.switchback.identification", "mean conversion ratio retention quantile total active windowed_mean windowed_conversion windowed_ratio windowed_total windowed_active", "daily asof", "observational", "*", "values"),
         box("REF:definition.retention.metric_window_days", "windowed_retention", "daily asof", "none cuped cluster sequential observational ni_margin", "*", "lift"),
         box("REF:facade.analysis.contrast_unavailable", "mean conversion", "daily asof", "none", "error", "lift"),
@@ -1213,7 +1216,7 @@ RULES: dict[str, tuple[Box, ...]] = {
         box("REF:source.frame.switchback.plan#margin", "mean conversion", "daily asof", "ni_margin", "error", "lift"),
         box("REF:frame.metric.missing_impute", "mean conversion ratio retention quantile windowed_mean windowed_conversion windowed_ratio", "daily asof", "*", "impute", "lift"),
         box("REF:source.frame.switchback.metric#type", "ratio retention quantile windowed_ratio", "daily asof", "none cuped sequential ni_margin", "error zero drop", "lift"),
-        box("EXC:TypeError", "mean conversion ratio retention quantile total active windowed_mean windowed_conversion windowed_ratio windowed_total windowed_active", "daily asof", "cluster", "*", "lift"),
+        box("EXC:TypeError#cluster", "mean conversion ratio retention quantile total active windowed_mean windowed_conversion windowed_ratio windowed_total windowed_active", "daily asof", "cluster", "*", "lift"),
         box("REF:source.frame.switchback.identification", "mean conversion ratio retention quantile total active windowed_mean windowed_conversion windowed_ratio windowed_total windowed_active", "daily asof", "observational", "*", "lift"),
     ),
 }

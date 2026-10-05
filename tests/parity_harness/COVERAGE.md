@@ -64,14 +64,14 @@ An observational design has no quantile estimator, so an observational quantile 
 
 ## Tiers and cost
 
-| Tier | Cells | Wall time (12 cores, `-n auto`) |
+| Tier | Cells | Wall time (`-n 2`, measured on an arm64 laptop) |
 |---|---|---|
-| fast | 2,552 | about 20 s: no ingress runs or reaches the request stage; each declaration either refuses with a code or is structurally absent (a schema or keyword the ingress cannot express) |
-| slow | 1,032 | about 100 s: some ingress runs, or refuses only once a request is read |
+| fast | 2,552 | about 60 s: no ingress runs or reaches the request stage; each declaration either refuses with a code or is structurally absent (a schema or keyword the ingress cannot express, with the declared field named by the error) |
+| slow | 1,032 | about 11 minutes: some ingress runs, or refuses only once a request is read |
 
 The tiers count `test_cell` items, so they total the 3,584 cells; the unparameterized disposition test (`test_every_cell_is_dispositioned_and_its_split_explained`) is not a cell and is in the fast tier on its own. A cell is slow when any of its six ingresses builds data and runs or reads a request (`Disposition.all_verdicts`), not only a warehouse route.
 
-A warehouse route is memoised per process on its exact inputs (the digest of its Definitions payload, view, option and artifact extensions). Cells differing only in `missing` error versus zero declare the same payload, share an `xdist_group` and read once. This reuses identical work; it collapses no cell.
+Every cell builds and runs each of its ingresses itself; no result is shared between cells, so a cell never depends on test order or on a sibling having run. Cells that differ only in `missing` error versus zero therefore repeat the warehouse read; that repetition is the cost of independence.
 
 ## Collapse proofs
 
@@ -79,7 +79,7 @@ None. No cell is collapsed into a representative.
 
 ## Existing scenario cases
 
-The 68 `PARITY_CASES` are unchanged and keep their own scenario assertions (sequential families, encouragement/LATE, priors, multiplicity roles, observational covariate shapes). The matrix does not map them to cells; it executes every cell directly.
+The 69 `PARITY_CASES` keep their own scenario assertions (sequential families, encouragement/LATE, priors, multiplicity roles, observational covariate shapes, the observational quantile refusal). The matrix does not map them to cells; it executes every cell directly. A row is compared on every public field (`model_dump()` of the emitted row) at 1e-9 relative for floats and exactly otherwise; see `runner.py` for the few path-naming fields it drops.
 
 ## Fixture choices that bound what a cell proves
 

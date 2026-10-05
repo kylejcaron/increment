@@ -12,14 +12,12 @@ refusal and a numeric disagreement all fail.
 Cells in which any ingress builds and reads data (an ingress runs, or refuses only once a
 request is read) are ``slow``. In the remaining cells no ingress runs or reaches the request
 stage: each declaration either refuses with a code or is structurally absent (a schema or
-keyword the ingress cannot express), so they run in the fast tier. A warehouse route is
-memoised per process on its exact inputs, and the cells that share those inputs share an
-``xdist_group``.
+keyword the ingress cannot express, with the declared field named by the error), so they run
+in the fast tier. Every cell builds and runs each of its ingresses itself: no result is
+shared between cells, so a cell never depends on test order or on a sibling having run.
 """
 
 from __future__ import annotations
-
-from dataclasses import replace
 
 import pytest
 
@@ -29,8 +27,6 @@ from tests.parity_harness.runner import CaseResult, assert_parity, run_case
 
 # Advisories (a dropped-row count, a small-K cluster note) are not part of a cell's contract.
 pytestmark = pytest.mark.filterwarnings("ignore::increment.errors.IncrementWarning")
-
-_MEMO: dict[tuple, CaseResult] = {}
 
 
 def _reads_data(disposition: matrix.Disposition) -> bool:
@@ -46,32 +42,9 @@ def _params() -> list:
     params = []
     for cell in matrix.iter_cells():
         disposition = matrix.classify(cell)
-        marks = [
-            pytest.mark.xdist_group(
-                f"parity-matrix-{cell.metric}-{cell.view}-{cell.option}-{cell.day_boundary}"
-            )
-        ]
-        if _reads_data(disposition):
-            marks.append(pytest.mark.slow)
+        marks = [pytest.mark.slow] if _reads_data(disposition) else []
         params.append(pytest.param(cell, id=cell.id, marks=marks))
     return params
-
-
-def _run_one(cell: matrix.Cell, method: str, case: ParityCase, name: str) -> CaseResult:
-    single = replace(
-        case,
-        build={name: case.build[name]},
-        waive={n: why for n, why in case.waive.items() if n == name},
-        waived_refusal_codes={n: c for n, c in case.waived_refusal_codes.items() if n == name},
-        expected_absence={n: e for n, e in case.expected_absence.items() if n == name},
-    )
-    inputs = matrix_cases.memo_key(cell, method, name)
-    if inputs is None:
-        return run_case(single)
-    key = (*inputs, case.waived_refusal_codes.get(name), case.expected_absence.get(name))
-    if key not in _MEMO:
-        _MEMO[key] = run_case(single)
-    return _MEMO[key]
 
 
 def _assert_runners_produced_rows(
@@ -89,15 +62,9 @@ def _assert_runners_produced_rows(
 def _matched(cell: matrix.Cell, method: str, disposition: matrix.Disposition) -> None:
     outcomes = disposition.outcomes(method)
     case = matrix_cases.build_case(cell, method, outcomes)
-    parts = [_run_one(cell, method, case, name) for name in case.build]
-    merged = CaseResult(
-        rows={n: r for part in parts for n, r in part.rows.items()},
-        refusals={n: c for part in parts for n, c in part.refusals.items()},
-        sequential_state={n: s for part in parts for n, s in part.sequential_state.items()},
-        absences={n: e for part in parts for n, e in part.absences.items()},
-    )
-    _assert_runners_produced_rows(case, outcomes, merged)
-    assert_parity(case, merged)
+    result = run_case(case)
+    _assert_runners_produced_rows(case, outcomes, result)
+    assert_parity(case, result)
 
 
 def _switchback(cell: matrix.Cell, method: str, disposition: matrix.Disposition) -> None:

@@ -98,6 +98,15 @@ class ParityDataset:
 
 
 @dataclass(frozen=True)
+class Absence:
+    """The exception a constructor raises because its signature or schema cannot express the
+    request, and the unsupported field or keyword that exception must name."""
+
+    error: type[Exception]
+    field: str
+
+
+@dataclass(frozen=True)
 class ParityCase:
     """One capability, driven through every applicable constructor.
 
@@ -109,19 +118,22 @@ class ParityCase:
     but ABSENT from ``build`` is not attempted at all (a SOURCE reason
     only, no code -- e.g. a switchback-only constructor for a non-
     switchback dataset). A name present in BOTH ``build`` and ``waive`` is
-    attempted and MUST raise a ``CodedError`` whose ``.code`` equals
-    ``waived_refusal_codes[name]``; the runner asserts this. A name in
+    attempted and MUST either raise a ``CodedError`` whose ``.code`` equals
+    ``waived_refusal_codes[name]`` or, when listed in ``expected_absence``, fail to
+    construct as described below; the runner asserts this. A name in
     ``waived_refusal_codes`` without a matching ``build`` entry, or a name
-    in ``build`` with a reason-only ``waive`` entry and no code, is a
+    in ``build`` with a reason-only ``waive`` entry and no code or absence, is a
     contract error the runner also rejects.
 
     ``view`` reads one day-axis method (``run_daily``, ``run_daily_lift``,
     ``run_asof`` or ``run_asof_lift``) instead of ``run``/``run_breakout``;
-    ``breakout_dimension`` then names the day-axis ``dimension``. ``refusal_only`` lets a case in which EVERY attempted
-    ingress raises its recorded code pass (no ingress is compared). A name in
-    ``expected_absence`` is attempted and MUST raise exactly that exception
-    type: the constructor signature cannot express the request (an unsupported
-    keyword is a ``TypeError``), so no refusal code exists to record.
+    ``breakout_dimension`` then names the day-axis ``dimension``. ``refusal_only`` lets a
+    case in which EVERY attempted ingress raises its recorded code, or is declared absent,
+    pass (no ingress is compared). A name in ``expected_absence`` is attempted and MUST
+    raise exactly that ``Absence.error`` type naming ``Absence.field``: the constructor
+    signature or schema cannot express the request (an unsupported keyword is a
+    ``TypeError``, an unsupported schema field a validation error), so no refusal code
+    exists to record.
     """
 
     id: str
@@ -147,7 +159,7 @@ class ParityCase:
     expected_warning_codes: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     view: Literal["daily", "daily_lift", "asof", "asof_lift"] | None = None
     refusal_only: bool = False
-    expected_absence: Mapping[str, type[Exception]] = field(default_factory=dict)
+    expected_absence: Mapping[str, Absence] = field(default_factory=dict)
 
 
 class _Warehouse(NamedTuple):
@@ -3437,9 +3449,9 @@ def _encouragement_declared_definitions_case(
         ]
         defs_dict["metrics"][0]["aggregation"] = "avg_event"
     specs = [
-        MetricSpec(name="revenue", type="mean", missing="drop")
+        MetricSpec(name="revenue", type="mean", missing="drop", preferred_direction="increase")
         if missing_treatment_outcomes
-        else MetricSpec(name="revenue", type="mean")
+        else MetricSpec(name="revenue", type="mean", preferred_direction="increase")
     ]
     if metric_free:
         defs_dict["metrics"] = []
@@ -4360,10 +4372,16 @@ def _multiplicity_roles_case() -> ParityCase:
         return _export_and_replay(
             summary,
             [
-                MetricSpec(name="revenue", type="mean"),
-                MetricSpec(name="purchase_rate", type="conversion"),
-                MetricSpec(name="rps", type="ratio", numerator="revenue", denominator="sessions"),
-                MetricSpec(name="latency", type="mean"),
+                MetricSpec(name="revenue", type="mean", preferred_direction="increase"),
+                MetricSpec(name="purchase_rate", type="conversion", preferred_direction="increase"),
+                MetricSpec(
+                    name="rps",
+                    type="ratio",
+                    numerator="revenue",
+                    denominator="sessions",
+                    preferred_direction="increase",
+                ),
+                MetricSpec(name="latency", type="mean", preferred_direction="decrease"),
             ],
         )
 
@@ -4600,6 +4618,158 @@ def _observational_covariate_case() -> ParityCase:
         waived_refusal_codes={
             "from_moments": "source.moments.covariate_unavailable",
         },
+        # Publishes/adopts a unit-day artifact on every run.
+        slow=True,
+    )
+
+
+_OBSERVATIONAL_QUANTILE_PLAN = AnalysisPlan(primary="revenue")
+
+
+def _observational_quantile_case() -> ParityCase:
+    """An observational design has no quantile estimator, so every ingress that can hold a
+    per-unit quantile refuses `run()` with the one readout-seam code; a moments cube cannot
+    hold a quantile at all and refuses at its own source code first. Reuses the observational
+    covariate dataset with `revenue` read as a median."""
+    rows, units = _observational_covariate_rows()
+    defs_dict: dict[str, Any] = {
+        "dialect": "duckdb",
+        "fact_sources": [
+            {
+                "name": "events",
+                "sql": "SELECT * FROM events",
+                "timestamp_column": "event_at",
+                "entities": ["user_id"],
+                "facts": [
+                    {"name": "exposure", "column": None},
+                    {"name": "purchase_revenue", "column": "revenue"},
+                ],
+                "properties": [
+                    {
+                        "name": "tenure",
+                        "column": "tenure",
+                        "dtype": "float",
+                        "as_of": "pre_exposure",
+                    }
+                ],
+            }
+        ],
+        "exposures": [{"name": "enrolled", "fact": "exposure"}],
+        "metrics": [
+            {
+                "name": "revenue",
+                "type": "quantile",
+                "entity": "user_id",
+                "fact": "purchase_revenue",
+                "aggregation": "sum",
+                "quantile": 0.5,
+            }
+        ],
+        "experiments": [
+            {
+                "name": "obs_exp",
+                "exposure": "enrolled",
+                "unit": "user_id",
+                "control_group": "control",
+                "start": "2025-01-01",
+                "end": "2025-01-12",
+                "plan": {"primary": "revenue"},
+                "design": {
+                    "mechanism": "observational",
+                    "covariates": [{"property": "tenure", "source": "events"}],
+                },
+            }
+        ],
+    }
+    specs = [MetricSpec(name="revenue", type="quantile", quantile=0.5)]
+
+    def design() -> Observational:
+        return Observational(
+            control_group="control", adjustment=AdjustmentSet(covariates=("tenure",))
+        )
+
+    def frame() -> Any:
+        return pd.DataFrame([{"user_id": uid, **unit} for uid, unit in units.items()])
+
+    def build_definitions() -> Analysis:
+        con = ds.duckdb_connection(rows)
+        analysis = make_analysis(con, Definitions.model_validate(defs_dict), experiment="obs_exp")
+        return _track_connection(analysis, con)
+
+    def build_artifact() -> Analysis:
+        con = ds.duckdb_connection(rows)
+        native = make_analysis(con, Definitions.model_validate(defs_dict), experiment="obs_exp")
+        return _publish_and_adopt(con, native, kinds=("unit_covariate",))
+
+    def build_unit_summary() -> Analysis:
+        return Analysis.from_unit_summary(
+            frame(),
+            unit="user_id",
+            group="variant",
+            metrics=specs,
+            design=design(),
+            plan=_OBSERVATIONAL_QUANTILE_PLAN,
+        )
+
+    def build_unit_panel() -> Analysis:
+        panel = frame()
+        panel["date"] = dt.date(2025, 1, 10)
+        return Analysis.from_unit_panel(
+            panel,
+            unit="user_id",
+            group="variant",
+            date="date",
+            metrics=specs,
+            design=design(),
+            plan=_OBSERVATIONAL_QUANTILE_PLAN,
+        )
+
+    def build_moments() -> Analysis:
+        # A quantile has no moments representation: exporting the summary refuses.
+        summary = build_unit_summary()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                path = Path(td) / "moments.parquet"
+                summary.export(path)
+                replay_rows = pq.read_table(path).to_pylist()
+        finally:
+            summary.close()
+        return Analysis.from_moments(
+            replay_rows, metrics=specs, design=design(), plan=_OBSERVATIONAL_QUANTILE_PLAN
+        )
+
+    seam = "readout.observational.quantile"
+    return ParityCase(
+        id="observational_quantile_refused_at_the_readout_seam",
+        build={
+            "from_definitions": build_definitions,
+            "from_unit_day_artifact": build_artifact,
+            "from_unit_summary": build_unit_summary,
+            "from_unit_panel": build_unit_panel,
+            "from_moments": build_moments,
+        },
+        waive={
+            "from_definitions": f"CONSTRUCTION: an observational design has no quantile estimator ({seam})",
+            "from_unit_day_artifact": f"CONSTRUCTION: no quantile estimator under an observational design ({seam})",
+            "from_unit_summary": f"CONSTRUCTION: no quantile estimator under an observational design ({seam})",
+            "from_unit_panel": f"CONSTRUCTION: no quantile estimator under an observational design ({seam})",
+            "from_moments": (
+                "SOURCE: a quantile has no moments representation -- export() itself "
+                "refuses before a from_moments cube could ever exist."
+            ),
+            "from_switchback_panel": (
+                "SOURCE: no design= parameter, and a quantile metric is refused at the "
+                "switchback metric-type gate (source.frame.switchback.metric)."
+            ),
+        },
+        waived_refusal_codes={
+            "from_definitions": seam,
+            "from_unit_day_artifact": seam,
+            "from_unit_summary": seam,
+            "from_unit_panel": seam,
+            "from_moments": "source.frame.quantile_no_moments",
+        },
+        refusal_only=True,
         # Publishes/adopts a unit-day artifact on every run.
         slow=True,
     )
@@ -5283,9 +5453,9 @@ def _nonpositive_mean_case() -> ParityCase:
         return _export_and_replay(
             summary,
             [
-                MetricSpec(name="revenue", type="mean"),
-                MetricSpec(name="refunds", type="mean"),
-                MetricSpec(name="converted", type="conversion"),
+                MetricSpec(name="revenue", type="mean", preferred_direction="increase"),
+                MetricSpec(name="refunds", type="mean", preferred_direction="decrease"),
+                MetricSpec(name="converted", type="conversion", preferred_direction="increase"),
             ],
         )
 
@@ -6374,7 +6544,11 @@ def _inferred_null_metric_case() -> ParityCase:
     definitions = Definitions.model_validate(definition)
     specs = [
         MetricSpec(
-            name="purchase_rate", type="conversion", value_column="converted", missing="zero"
+            name="purchase_rate",
+            type="conversion",
+            value_column="converted",
+            missing="zero",
+            preferred_direction="increase",
         )
     ]
 
@@ -6409,7 +6583,12 @@ def _inferred_null_metric_case() -> ParityCase:
         analysis = native()
         try:
             return _export_and_replay(
-                analysis, [MetricSpec(name="purchase_rate", type="conversion")]
+                analysis,
+                [
+                    MetricSpec(
+                        name="purchase_rate", type="conversion", preferred_direction="increase"
+                    )
+                ],
             )
         finally:
             analysis.close()
@@ -6804,6 +6983,7 @@ PARITY_CASES: tuple[ParityCase, ...] = (
     _encouragement_fcr_reestimation_case(),
     _observational_covariate_case(),
     _observational_multiplicity_case(),
+    _observational_quantile_case(),
     _observational_aipw_dml_case(),
     _observational_aipw_dml_case(default_sensitivity=True),
     _observational_categorical_case(),
