@@ -67,11 +67,11 @@ class TestSmoke:
         "cell",
         [
             # rare: sparsest expected count three times the threshold
-            cr.Cell("rare", 600_000, 600_000, 0.0067, 0.0067, 1.0, 3.0),
+            cr.Cell("rare", 1_000_000, 1_000_000, 0.0067, 0.0067, 1.0, 3.0),
             # failure-limited
-            cr.Cell("failure", 8_000, 8_000, 0.5, 0.5, 1.0, 3.0),
+            cr.Cell("failure", 14_000, 14_000, 0.5, 0.5, 1.0, 3.0),
             # central
-            cr.Cell("central", 20_000, 20_000, 0.3, 0.33, 1.1, 3.0),
+            cr.Cell("central", 24_000, 24_000, 0.3, 0.33, 1.1, 3.0),
         ],
         ids=["rare", "failure_limited", "central"],
     )
