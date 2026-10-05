@@ -198,7 +198,8 @@ the sparse, borderline and explicit `finite_sample` plans.
   points but understated power by up to 0.8 points with an unequal allocation
   and a shifted null, and it can misclassify count pairs whose runtime p-value
   sits near the tail allocation in rare-event designs.
-- Replay bound: the replay's work and memory follow the number of (control,
+- Replay bound (a `sparse` or `borderline` plan and every explicit `conversion_inference="finite_sample"`
+  plan replay; a `dense` `auto` plan has none): the replay's work and memory follow the number of (control,
   treatment) count cells a solve stores, not the arm size: the control window
   by the treatment windows at the null rate and at every alternative that solve
   evaluates. A supplied effect, an effect search (the union of the windows it
@@ -221,13 +222,16 @@ the sparse, borderline and explicit `finite_sample` plans.
   1,000,000. A 5% baseline with equal arms reaches the bound at about one million
   units per arm and a 50% baseline at about 190,000; a rare baseline stays far
   inside it at any arm size (100 million units per arm at a rate of 2e-7 expect
-  twenty events and replay about four thousand cells). Measured on an Apple M3
-  Pro under a shared load, a call within the bound takes up to about two minutes
-  of CPU for `achieved_power` or `minimum_detectable_effect` near a million units
-  per arm at 5%, up to about 3.5 minutes at 190,000 per arm at 50% (where the
-  companion effect search runs to its own refusal), and several minutes for
-  `required_sample_size`, with a peak under 2 GiB (the
-  [limitations page](../limitations.md) lists the cells measured). The bound
+  twenty events and replay about four thousand cells). Measured on a 12-core
+  machine under a shared load, an explicit `finite_sample` `achieved_power` at a 5% baseline
+  takes 11 s of CPU at 100,000 units per arm and 253 s (1.7 GiB) at 1,000,000, and is
+  refused within milliseconds at 5,000,000 and 50,000,000 (48.3 and 483 million null
+  cells); a design of about a hundred events per arm takes 0.3 to 0.4 s at 1e5, 1e6, 5e6
+  and 5e7 units per arm. Earlier measurements on an Apple M3 Pro put a call within the
+  bound at up to about 3.5 minutes at 190,000 per arm at 50% (where the companion effect
+  search runs to its own refusal) and several minutes for `required_sample_size`, with a
+  peak under 2 GiB. The same dense calls under the default `auto` take 1 to 3 ms at every
+  size, with no bound (the [limitations page](../limitations.md) lists the cells measured). The bound
   limits the planner only: the runtime decides arms of up to a billion units.
 
 The route depends only on the design, never on timing. Every probability here is a computed

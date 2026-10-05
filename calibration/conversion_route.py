@@ -324,7 +324,7 @@ def required_count(
 ) -> int | None:
     """Smallest ladder ``m`` whose excess is within tolerance at ``m`` and at every larger
     ladder step through ``MARGIN * m``; ``None`` when the ladder ends before one does."""
-    ms = sorted(rows)
+    ms = sorted(m for m in rows if tail in rows[m])
     passing = [getattr(rows[m][tail], key) <= 1.0 for m in ms]
     for index, m in enumerate(ms):
         window = [i for i, other in enumerate(ms) if i >= index and other <= MARGIN * m]
@@ -981,6 +981,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     hybrid_parser.add_argument("--workers", type=int, default=1)
     hybrid_parser.add_argument("--tails", type=float, nargs="+", default=list(TAILS))
     hybrid_parser.add_argument("--replicate-tails", type=float, nargs="*", default=[0.1, 0.05])
+    hybrid_parser.add_argument("--count", type=int, default=3)
     bound_parser = sub.add_parser("bound", help="planned power against the exact pipeline power")
     bound_parser.add_argument("--workers", type=int, default=1)
     mirror_parser = sub.add_parser("mirror", help="planned power against the production route")
@@ -1011,7 +1012,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return mirror(args.reps, args.seed)
     if args.command == "bound":
         return bound(workers=args.workers)
-    return hybrid(args.tails, workers=args.workers, replicate_tails=args.replicate_tails)
+    return hybrid(
+        args.tails, workers=args.workers, count=args.count, replicate_tails=args.replicate_tails
+    )
 
 
 if __name__ == "__main__":

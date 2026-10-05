@@ -1093,9 +1093,7 @@ class TestRunBreakoutBHRoutesAtTheFamilysSmallestLevel:
     dense at the nominal level but not at ``q / m`` must take the finite-sample route."""
 
     @staticmethod
-    def _segment_rows(
-        country: str, smallest: int, *, metric: str = "conv"
-    ) -> list[dict[str, Any]]:
+    def _segment_rows(country: str, smallest: int, *, metric: str = "conv") -> list[dict[str, Any]]:
         """A 5% conversion contrast whose sparsest of the four counts is ``smallest``, the
         treatment arm five conversions up."""
         return [
@@ -1107,7 +1105,9 @@ class TestRunBreakoutBHRoutesAtTheFamilysSmallestLevel:
 
     @staticmethod
     def _kinds(estimates: BreakoutEstimates, metric: str = "conv") -> dict[str, str | None]:
-        return {row.dimension_value: row.reference_kind for row in estimates if row.metric == metric}
+        return {
+            row.dimension_value: row.reference_kind for row in estimates if row.metric == metric
+        }
 
     @pytest.mark.parametrize(
         ("alternative", "alpha", "q"), [("two-sided", 0.2, 0.2), ("greater", 0.1, 0.1)]

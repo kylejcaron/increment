@@ -47,14 +47,32 @@ class TestDenseMinCount:
         # tail: the least per-arm success and failure count at which `auto` is asymptotic.
         shipped = {tail: dense_min_count(tail) for tail in PRODUCTION_TAILS}
         assert shipped == {
-            0.0005: 10552,
-            0.001: 8208,
-            0.005: 3962,
-            0.01: 2636,
-            0.025: 1329,
-            0.05: 659,
-            0.1: 400,
+            0.0005: 17000,
+            0.001: 13224,
+            0.005: 6384,
+            0.01: 4247,
+            0.025: 2140,
+            0.05: 1062,
+            0.1: 412,
         }
+
+    # tail: the least count whose all-draw noncoverage excess is within `scientific_delta(tail)`
+    # there and at every larger step, measured by `python -m calibration.conversion_route select`
+    # on the cell family `calibration.conversion_route.cells` (the larger of the 1-2-5 control
+    # size grid's and the original grid's step).
+    MEASURED_REQUIREMENT = {
+        0.0005: 13320,
+        0.001: 10072,
+        0.005: 2863,
+        0.01: 2165,
+        0.025: 615,
+        0.05: 286,
+        0.1: 329,
+    }
+
+    @pytest.mark.parametrize("tail", PRODUCTION_TAILS)
+    def test_the_law_is_at_least_the_plans_margin_over_the_measured_requirement(self, tail):
+        assert dense_min_count(tail) >= math.ceil(1.25 * self.MEASURED_REQUIREMENT[tail])
 
     @given(st.floats(min_value=1e-300, max_value=0.5, exclude_max=True))
     def test_every_tail_clears_the_guard_floor(self, tail):
@@ -173,7 +191,7 @@ class TestRowsCarryTheirRoute:
         assert lift_row(counts, alpha=0.05, alternative="greater").reference_kind == "t"
         assert lift_row(counts, alpha=0.05, alternative="less").reference_kind == "t"
 
-    @pytest.mark.parametrize("treatment_successes", [2_000, 4_000, 8_000, 16_000, 30_000])
+    @pytest.mark.parametrize("treatment_successes", [2_200, 4_000, 8_000, 16_000, 30_000])
     def test_the_route_does_not_follow_the_effect_or_the_p_value(self, treatment_successes):
         # Control and treatment failures stay far above the threshold; only the effect moves.
         row = lift_row((8_000, 100_000, treatment_successes, 100_000))

@@ -58,10 +58,13 @@ PLANNING_ROUTE_CERTAINTY = 1e-6
 _GUARD_FLOOR = 9
 
 #: ``dense_min_count(tail) = max(_DENSE_FLOOR, ceil(_DENSE_SLOPE * z ** 4))``, ``z = Phi^{-1}(1 - tail)``:
-#: the boundary coverage scan's counts per tail with its 1.25x margin
-#: (``python -m calibration.conversion_route select``).
-_DENSE_FLOOR = 400
-_DENSE_SLOPE = 90
+#: at least 1.25 times the count the boundary coverage scan requires at every production tail
+#: (``python -m calibration.conversion_route select``; ``docs/limitations.md`` tabulates the
+#: requirement and the law against it). The floor is 1.25 times the requirement at the 0.1 tail,
+#: where the tolerance is the tightest fraction of the tail; the slope is 1.25 times the largest
+#: requirement over ``z ** 4``, which the 0.0005 tail sets.
+_DENSE_FLOOR = 412
+_DENSE_SLOPE = 145
 
 
 _REFUSALS = refusals(

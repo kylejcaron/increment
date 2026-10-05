@@ -841,37 +841,54 @@ supplied-effect rectangles fit, and a search that reaches that ceiling refuses w
 search have their own codes (see the sizing table in the power-analysis guide): the arm
 ceiling or a float margin that dominates the tail level at larger arms ends it with
 `power.binomial_size_search_unreachable` and `maximum_power`, and a decision refused at the
-smallest design is refused before any search (see **Extreme alpha**). A supplied effect
+smallest design is refused before any search (see **Extreme alpha**). Under `conversion_inference="finite_sample"` a supplied effect
 reaches the bound at about a million units per arm at a 5% baseline, about 190,000 at 50%,
-and at any arm the runtime admits at a rate expecting up to about 48,000 events per arm.
-Measured with `scripts/measure_binomial_ceiling.py planning` on an Apple M3 Pro, cold CPU
-seconds and peak resident set, under a shared load that varied by a factor of about two
-between runs (null cells are the null rectangle). The cells marked † were re-measured at
-`45829f1`, after a companion effect search became a solve of its own (it no longer inherits
-the supplied effect's cells, so an unresolved companion costs what a refused
-`minimum_detectable_effect` does); the others are from `2da355f`, before it, and a
-companion effect there was cheaper to refuse:
+and at any arm the runtime admits at a rate expecting up to about 48,000 events per arm; under the
+default `"auto"` a dense plan has no replay and no such bound. Measured with
+`scripts/measure_binomial_ceiling.py planning` (`--conversion-inference finite_sample` or
+`auto`) on a 12-core machine at its final S12 commit, cold CPU seconds and peak resident set,
+under a shared load that varied by several times between cells (null cells are the null
+rectangle). Explicit `finite_sample` plans at 1e5, 1e6, 5e6 and 5e7 units per arm, dense (a 5%
+baseline) and sparse (about a hundred events per arm):
 
 | Baseline, units per arm | Call | CPU / peak | Outcome |
 |---|---|---:|---|
-| 5%, 100,000 | `achieved_power`, lift 5% | 6.3 s / 1.3 GiB | 0.97M null cells, companion effect available |
+| 5%, 100,000 | `achieved_power`, lift 5% | 11.2 s / 1.13 GiB | 0.97M null cells, companion effect available |
+| 5%, 1,000,000 | `achieved_power`, lift 1.5% | 253 s / 1.65 GiB | 9.67M null cells; companion effect `numerical_resolution` |
+| 5%, 5,000,000 | `achieved_power` or `minimum_detectable_effect` | refused after 0.001 s / 0.13 GiB | 48.3M null cells |
+| 5%, 50,000,000 | `achieved_power` or `minimum_detectable_effect` | refused after 0.002 s / 0.12 GiB | 483M null cells |
+| 0.1% at 1e5, 0.01% at 1e6, 0.002% at 5e6, 0.0002% at 5e7 (100 events) | `achieved_power`, lift 50%, and `minimum_detectable_effect` | 0.3 to 0.4 s / 0.24 to 0.27 GiB | 20,164 null cells at each size, answered (`approximate`) |
+
+The same calls under `"auto"`:
+
+| Baseline, units per arm | Call | CPU / peak | Outcome |
+|---|---|---:|---|
+| 5%, 1e5 to 5e7 | `achieved_power`, `minimum_detectable_effect` and `required_sample_size` | 1 to 3 ms / 0.12 GiB | `power_basis="asymptotic"`; at 5e6 the power for lift 1% is 0.951 and the MDE 0.77%, at 5e7 the power for lift 0.3% is 0.930 and the MDE 0.24% |
+| 50%, 1e5 and 1.9e5 | `minimum_detectable_effect`, `achieved_power` | 1 to 3 ms / 0.12 GiB | asymptotic, answered where the replay refuses |
+| 100 events per arm at 1e5, 1e6, 5e6, 5e7 | `achieved_power`, lift 50% | 0.18 to 0.36 s / 0.20 to 0.28 GiB | the sparse replay, unchanged (`approximate`) |
+
+Earlier measurements of the replay at other sizes (an Apple M3 Pro at `45829f1`, `2da355f`),
+which an explicit `finite_sample` plan still takes and which were not repeated at this commit.
+The cells marked † were re-measured at `45829f1`, after a companion effect search became a solve
+of its own (it no longer inherits the supplied effect's cells, so an unresolved companion costs
+what a refused `minimum_detectable_effect` does); the others are from `2da355f`:
+
+| Baseline, units per arm | Call | CPU / peak | Outcome |
+|---|---|---:|---|
 | 5%, 250,000 | `achieved_power`, lift 3% | 16.5 s / 1.6 GiB | 2.4M null cells, companion effect available |
 | 5%, 500,000 † | `achieved_power`, lift 2% | 35.3 s / 1.8 GiB | 4.8M null cells, companion effect available |
 | 5%, 500,000 † | `minimum_detectable_effect` | 35.7 s / 1.9 GiB | answered |
-| 5%, 1,000,000 † | `achieved_power`, lift 1.5% | 119 s / 1.8 GiB | 9.7M null cells; companion effect `numerical_resolution` |
 | 5%, 1,000,000 † | `minimum_detectable_effect` | refused after 61.0 s / 1.8 GiB | needs 19.7M cells |
 | 5%, lift 1.75% | `required_sample_size` | 277 s / 1.7 GiB | 993,064 per arm; companion effect `numerical_resolution` (not re-measured) |
 | 50%, 100,000 | `minimum_detectable_effect` | refused after 57.5 s / 1.3 GiB | needs 10.6M cells (5.1M null) |
 | 50%, 190,000 † | `achieved_power`, lift 3% | 201 s / 1.7 GiB | 9.7M null cells; companion effect `numerical_resolution` |
 | 50%, 190,000 † | `minimum_detectable_effect` | refused after 210 s / 1.1 GiB | needs 10.8M cells |
 | 1e-4 at 1e6, 1e-6 at 1e8, 1e-7 at 1e9 (100 events) | `achieved_power`, lift 50% | 0.85 s / 0.2 GiB | 20,164 null cells, answered |
-| 5%, 5,000,000 | `achieved_power`, lift 1% | refused after 0.7 s / 0.1 GiB | 48.3M null cells |
 
-Not measured: `required_sample_size` at a 50% baseline or beyond a million units per arm,
-and the 5% sizing row since a companion effect became its own solve (its time can only have
-grown). Planning a design above the bound has no replay: under `auto` a dense one is planned in
-closed form, an explicit `finite_sample` one is refused. Before the bound existed a call took
-574 s and 3.4 GiB at 4,000,000 per arm (39 million cells).
+Not measured: `required_sample_size` at a 50% baseline or beyond a million units per arm under
+`finite_sample`. Planning a design above the bound has no replay: under `auto` a dense one is
+planned in closed form, an explicit `finite_sample` one is refused. Before the bound existed a
+call took 574 s and 3.4 GiB at 4,000,000 per arm (39 million cells).
 
 Bounded-metric baselines and implied null/alternative rates must stay strictly
 positive and at most 1. A requested rate above 1 is refused rather than treated
