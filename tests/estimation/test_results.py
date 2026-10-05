@@ -1284,7 +1284,14 @@ class TestLiftEstimateBinomialCrossInvariants:
         assert exc_info.value.code == "estimation.results.lift.binomial_lift_availability"
 
     @pytest.mark.parametrize(
-        "recorded", ["binomial_bb_difference_v1", "binomial_bb_difference_v3", None, "absent"]
+        "recorded",
+        [
+            "binomial_bb_difference_v1",
+            "binomial_bb_difference_v2",
+            "binomial_bb_difference_v4",
+            None,
+            "absent",
+        ],
     )
     def test_a_row_cut_under_another_construction_or_naming_none_is_refused(self, recorded):
         """5,778 / 57,780 against 5,985 / 57,780 as the 60-split search stored it: an interval

@@ -190,10 +190,10 @@ class Estimate(CodedModel, BaseModel):
         return self.lb > null or self.ub < null
 
 
-BinomialMethod = Literal["binomial_bb_difference_v2"]
-#: The construction `BinomialConfidenceSet` reads: the exact test inversion under its current
-#: nuisance stop rule. A producer stamps it on every set it cuts.
-BINOMIAL_METHOD: BinomialMethod = "binomial_bb_difference_v2"
+BinomialMethod = Literal["binomial_bb_difference_v3"]
+#: The construction `BinomialConfidenceSet` reads: its nuisance envelope, integer thresholds
+#: and numerical stop rule. A producer stamps it on every set it cuts.
+BINOMIAL_METHOD: BinomialMethod = "binomial_bb_difference_v3"
 
 
 class BinomialConfidenceSet(CodedModel, BaseModel):

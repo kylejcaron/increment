@@ -371,13 +371,15 @@ It also has two further boundaries, both refusals rather than silent degradation
   A search the cap ends is not an error: its p-value stays a valid,
   conservative bound, and the row's `note` says how many probes ended so and the largest
   gap they left, in units of the p-value the row reports (twice a directional gap on a
-  two-sided row). No tolerance beyond that disclosure is promised. The stop rule is part of
-  the construction every `BinomialConfidenceSet` records (`binomial_bb_difference_v2`): a
-  row persisted under `binomial_bb_difference_v1`, which stopped each search at an absolute
-  1e-6 or after 60 splits, or without naming a construction at all, is refused when read
-  (`estimation.results.binomial.obsolete_construction`) rather than shown with endpoints
-  its counts no longer reproduce beside a verdict recomputed with the tighter bound;
-  re-run the analysis to cut it again. Each endpoint is the outer end of a search
+  two-sided row). No tolerance beyond that disclosure is promised. Every
+  `BinomialConfidenceSet` records `binomial_bb_difference_v3`: its Clopper–Pearson
+  widening is relative to the smaller endpoint/complement, its numerical allowance
+  scales with arm size, and its lattice thresholds use integer arithmetic. A row
+  persisted under v1 (the absolute-gap stop), v2 (the earlier nuisance envelope),
+  another construction, or no construction is refused when read
+  (`estimation.results.binomial.obsolete_construction`), rather than combining its
+  endpoints with a verdict recomputed by a different rule. Re-run the analysis to cut
+  it again. Each endpoint is the outer end of a search
   bracket no wider than 0.05% (2^-11) and no wider than 1/128 of the log risk
   ratio's standard error, whichever is finer, so the search works harder as
   arms grow and the standard error shrinks. The stop is the resolution of the
