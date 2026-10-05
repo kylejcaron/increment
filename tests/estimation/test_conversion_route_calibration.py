@@ -307,6 +307,29 @@ class TestBoundGridAndRule:
         assert {c.alpha / 2.0 for c in tails} == {0.0005, 0.001, 0.005, 0.01, 0.05}
         assert all(0.0 < c.lift < 0.5 for c in tails)
 
+    def test_the_window_grid_is_all_borderline_and_sweeps_the_routed_share(self):
+        from increment.estimation.conversion_route import planning_route
+
+        window = cr.bound_cells("window")
+        assert len(window) == 168
+        assert len({(c.n, c.p_c, c.lift, c.alpha, c.alternative) for c in window}) == len(window)
+        shares: dict[tuple[float, float, str], list[float]] = {}
+        for c in window:
+            tail = c.alpha / 2.0 if c.alternative == "two-sided" else c.alpha
+            p_t = c.p_c * (1.0 + c.lift)
+            assert planning_route(c.n, c.n, c.p_c, p_t, tail_alpha=tail, mode="auto") == (
+                "borderline"
+            )
+            shares.setdefault((tail, c.p_c, c.alternative), []).append(
+                cr._routed_share(c.n, c.p_c, p_t, dense_min_count(tail))
+            )
+        assert len(shares) == 21
+        for swept in shares.values():
+            assert swept == sorted(swept)
+            assert swept[0] < 1e-4
+            assert swept[-1] > 1.0 - 1e-4
+            assert any(0.2 < share < 0.8 for share in swept)
+
     @pytest.mark.parametrize(
         ("route", "basis", "margin", "holds"),
         [

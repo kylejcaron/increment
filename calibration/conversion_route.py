@@ -1041,12 +1041,64 @@ _EXTENDED_SHAPES = ((0.15, 0.06), (0.01, 0.06), (0.002, 0.06))
 _EXTENDED_NEGATIVE_SHAPES = ((0.3, -0.05), (0.01, -0.06), (0.6, -0.04))
 
 
-BoundGrid = Literal["original", "extended", "tails"]
+BoundGrid = Literal["original", "extended", "tails", "window"]
 
 #: One-sided production tails the other grids do not reach, each read as a two-sided level
 #: ``alpha = 2 * tail``.
 _OTHER_TAILS = (0.0005, 0.001, 0.005, 0.01, 0.05)
 _OTHER_TAIL_FACTORS = (0.9, 1.0, 1.04, 1.1, 1.25)
+
+#: Probabilities that all four counts reach the routing threshold, swept by the ``window`` grid:
+#: from just inside the borderline class (``planning_route`` calls a plan sparse at or below
+#: ``1e-6`` and dense at or above ``1 - 1e-6``), where the pipeline is almost the finite-sample
+#: route, to just short of dense, where it is almost the delta method.
+_WINDOW_SHARES = (1e-5, 1e-3, 0.05, 0.3, 0.7, 0.95, 0.999, 1.0 - 1e-5)
+#: Per production tail, ``(control rate, alpha, alternative)`` of the ``window`` grid's shapes:
+#: a central and a rare-event two-sided design, and a central directional one.
+_WINDOW_SHAPES = ((0.3, 2.0, "two-sided"), (0.01, 2.0, "two-sided"), (0.3, 1.0, "greater"))
+_WINDOW_TAILS = (0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1)
+
+
+def _routed_share(n: int, p_c: float, p_t: float, m: int) -> float:
+    """Probability that all four counts of equal arms of ``n`` reach ``m``: the
+    complement of ``planning_route``'s outside mass, which it keeps exact."""
+    from increment.estimation.conversion_route import _outside_mass
+
+    outside_c, outside_t = _outside_mass(n, p_c, m), _outside_mass(n, p_t, m)
+    if outside_c + outside_t < 0.5:
+        return 1.0 - (outside_c + outside_t - outside_c * outside_t)
+    return (1.0 - outside_c) * (1.0 - outside_t)
+
+
+def _window_size(p_c: float, p_t: float, m: int, share: float) -> int:
+    """Least arm size at which ``_routed_share`` reaches ``share``: the share rises with the
+    arm size, from nothing at 0.8 times the size that puts ``m`` expected counts in the
+    sparser arm to one at 1.4 times it."""
+    q = min(p_c, p_t, 1.0 - p_c, 1.0 - p_t)
+    lo, hi = math.ceil(0.8 * m / q), math.ceil(1.4 * m / q)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if _routed_share(mid, p_c, p_t, m) >= share:
+            hi = mid
+        else:
+            lo = mid + 1
+    return lo
+
+
+def _window_cells() -> tuple[MirrorCell, ...]:
+    out: list[MirrorCell] = []
+    for tail in _WINDOW_TAILS:
+        m = dense_min_count(tail)
+        z = float(_norm.isf(tail))
+        for p_c, alpha_per_tail, alternative in _WINDOW_SHAPES:
+            lift = round(z * math.sqrt(2.0 * (1.0 - p_c) / m), 3)
+            sizes = sorted(
+                {_window_size(p_c, p_c * (1.0 + lift), m, share) for share in _WINDOW_SHARES}
+            )
+            out.extend(
+                MirrorCell("bound", n, p_c, lift, alpha_per_tail * tail, alternative) for n in sizes
+            )
+    return tuple(out)
 
 
 def bound_cells(grid: BoundGrid = "original") -> tuple[MirrorCell, ...]:
@@ -1055,8 +1107,12 @@ def bound_cells(grid: BoundGrid = "original") -> tuple[MirrorCell, ...]:
     not saturated at the boundary, at positive and negative lifts; ``tails`` covers the other
     production tails with a central and a rare-event shape whose lift puts the sparsest count's
     power near one half (``z * sqrt(2 (1 - p) / m)`` on the log scale, for tail quantile ``z``),
-    at five distances across the boundary."""
+    at five distances across the boundary; ``window`` sweeps every production tail through the
+    whole borderline class at those shapes, at the arm sizes where the probability of routing
+    all four counts to the delta method is each of ``_WINDOW_SHARES``."""
     out: list[MirrorCell] = []
+    if grid == "window":
+        return _window_cells()
     if grid == "tails":
         for tail in _OTHER_TAILS:
             m = dense_min_count(tail)
@@ -1175,7 +1231,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     bound_parser.add_argument("--workers", type=int, default=1)
     bound_parser.add_argument("--out", type=Path, default=None)
     bound_parser.add_argument(
-        "--grid", choices=("original", "extended", "tails"), default="original"
+        "--grid", choices=("original", "extended", "tails", "window"), default="original"
     )
     mirror_parser = sub.add_parser("mirror", help="planned power against the production route")
     mirror_parser.add_argument("--reps", type=int, default=20_000)
