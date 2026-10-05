@@ -785,9 +785,13 @@ def overview_rows(
             by_metric.setdefault(str(row["metric"]), []).append({**row, "segment": _WHOLE})
         segments = overview.segments.get(breakout, ()) if breakout is not None else ()
         for row in exploratory(enriched_rows(segments)):
-            by_metric.setdefault(str(row["metric"]), []).append(row)
-    # Segments nest under their metric, so every row takes its metric's declared role group;
-    # added metrics form the Exploratory group.
+            # Segment cells sit in their metric's role section so they can nest beneath it, but
+            # they belong to the exploratory family, never the metric's declared one.
+            labelled = {**row, "segment": f"{row['segment']} · exploratory"}
+            by_metric.setdefault(str(row["metric"]), []).append(labelled)
+    # readout_table sections rows only by ``role``, so every row takes its metric's declared
+    # role section (added metrics form the Exploratory section); the segment label above, not
+    # the section, states each cell's inferential role.
     roles = {str(row["metric"]): row.get("role") for row in decision_rows(snapshot)}
     ordered = [
         {**row, "role": roles.get(model.name, "exploratory")}
