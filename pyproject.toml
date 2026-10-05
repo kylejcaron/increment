@@ -45,6 +45,7 @@ dependencies = [
     "pyarrow>=23.0.1,!=25.0.0; python_version >= '3.14'",
 ]
 classifiers = [
+    "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
@@ -77,9 +78,6 @@ build-backend = "hatchling.build"
 dev = [
     "ruff>=0.8.0",
     "prek>=0.4.11",
-    "jupyter>=1.1.1",
-    "notebook>=7.4.5",
-    "ipywidgets>=8.1.7",
     "marimo>=0.25.0",
     "altair>=5.4",
     "pytest>=9.0.2",

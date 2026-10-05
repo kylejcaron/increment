@@ -221,8 +221,9 @@ def _create_table_namespace(
 ) -> str | tuple[str, str] | None:
     """The `database=` value for `create_table` on this backend.
 
-    Snowflake and BigQuery parse that argument as a dotted string and reject the
-    (catalog, schema) tuple every other table operation accepts.
+    Snowflake needs a quoted catalog-plus-schema string. BigQuery needs the bare
+    dataset: Ibis 12 otherwise reuses ``project.dataset`` as the dataset in DDL.
+    The BigQuery table name carries the explicit project instead.
     """
     if catalog is None or schema is None:
         return database
@@ -233,7 +234,7 @@ def _create_table_namespace(
             for part in (catalog, schema)
         )
     if backend == "bigquery":
-        return f"{catalog}.{schema}"
+        return schema
     return database
 
 
@@ -343,6 +344,13 @@ class WarehouseArtifactStore:
                 schema=self._schema,
             )
 
+    def _create_table_name(self, name: str) -> str:
+        if self._con.name == "bigquery" and self._catalog is not None and self._schema is not None:
+            return sqlglot.table(name, db=self._schema, catalog=self._catalog, quoted=True).sql(
+                "bigquery"
+            )
+        return name
+
     def _ensure_namespace(self) -> None:
         if self._schema is None:
             return
@@ -374,7 +382,7 @@ class WarehouseArtifactStore:
         except Exception:
             try:
                 self._con.create_table(
-                    self._meta_name,
+                    self._create_table_name(self._meta_name),
                     schema=ibis.schema(dict.fromkeys(self._INDEX_TABLE_COLUMNS, "string")),
                     database=cast("Any", self._create_database),
                     overwrite=False,
@@ -409,7 +417,7 @@ class WarehouseArtifactStore:
         except Exception:
             try:
                 self._con.create_table(
-                    self._dropped_name,
+                    self._create_table_name(self._dropped_name),
                     schema=ibis.schema(
                         {
                             "artifact_id": "string",
@@ -834,7 +842,10 @@ class WarehouseArtifactStore:
         generation.unregistered[locator.name] = locator
         try:
             self._con.create_table(
-                locator.name, table, database=cast("Any", self._create_database), overwrite=False
+                self._create_table_name(locator.name),
+                table,
+                database=cast("Any", self._create_database),
+                overwrite=False,
             )
             persisted = self._con.table(locator.name, database=cast("Any", self._database))
             # Only ARTIFACT_BASE_RELATION_ROLES use the fast digest (format 2 or 3,

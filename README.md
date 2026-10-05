@@ -1,5 +1,10 @@
 # increment
 
+[![CI](https://github.com/kylejcaron/increment/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kylejcaron/increment/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/increment?include_prereleases)](https://pypi.org/project/increment/)
+[![Python](https://img.shields.io/pypi/pyversions/increment)](https://pypi.org/project/increment/)
+[![License](https://img.shields.io/pypi/l/increment)](LICENSE)
+
 > [!WARNING]
 > **Increment is currently in pre-release.** APIs and supported combinations may
 > change before a stable release. Review the [statistical limitations](docs/limitations.md)
@@ -12,8 +17,9 @@ that already exists. Define warehouse analyses in version-controlled YAML, or
 start directly from a dataframe. Increment does not assign traffic, ship feature
 flags, or maintain a separate event store.
 
+[Website](https://incrementdocs.pages.dev/) · [Hosted documentation](https://incrementdocs.pages.dev/docs/) ·
 [Quickstart](#quickstart) · [Warehouse analysis](#connect-your-warehouse) ·
-[Documentation](#explore-the-guides) · [Statistical limitations](docs/limitations.md)
+[Guides](#explore-the-guides) · [Statistical limitations](docs/limitations.md)
 
 ## What you can do
 
