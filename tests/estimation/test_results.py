@@ -1294,10 +1294,8 @@ class TestLiftEstimateBinomialCrossInvariants:
         ],
     )
     def test_a_row_cut_under_another_construction_or_naming_none_is_refused(self, recorded):
-        """5,778 / 57,780 against 5,985 / 57,780 as the 60-split search stored it: an interval
-        still containing the null at counts whose p-value the current rule puts under 0.05.
-        The row names the earlier construction, so reading it is refused rather than showing
-        those endpoints beside a verdict recomputed from the counts."""
+        """Reject earlier, unknown and absent construction markers rather than combining
+        stored endpoints with a verdict recomputed under different numerical rules."""
         persisted = {
             "metric": "conv",
             "group_id": "treatment",

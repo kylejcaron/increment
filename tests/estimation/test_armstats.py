@@ -1554,12 +1554,9 @@ class TestBinaryCountsProducerPathTolerance:
 
 @pytest.mark.slow
 def test_a_unit_frame_and_its_exported_moments_decide_alike_beyond_the_former_arm_ceiling():
-    """A control arm of 4,000,100 units (the exact route once refused above 4,000,000) against
-    a small treatment arm, through the per-unit frame ingress and through the moments cube it
-    exports: both pass the Bernoulli second-moment check, which is the rounding bound of the
-    arm's units from here, and reach the same counts and the same interval. The warehouse
-    producer's own moments are measured above and by ``scripts/measure_binomial_ceiling.py``;
-    a warehouse build at this size costs minutes and gigabytes, beyond the parity harness."""
+    """Frame and exported-moments decisions agree above four million units per arm.
+    The parity harness's ``exact_binomial_beyond_the_former_arm_ceiling`` case also
+    checks definitions, unit-day artifacts and unit panels at this scale."""
     import tempfile
     from pathlib import Path
 
