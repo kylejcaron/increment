@@ -1281,8 +1281,10 @@ def _lift_decision_bundle(  # noqa: PLR0915
             )
             continue
         if result.reference_kind == "binomial":
+            bset = result.binomial_set
+            assert bset is not None, "validated: reference_kind='binomial' rows carry a set"
             evidence[hypothesis] = PValueEvidence(
-                hypothesis, result.method, result.p_value(), "binomial_bb_difference_v1"
+                hypothesis, result.method, result.p_value(), bset.method
             )
             continue
         evidence_row, failure_row = _raw_stats_evidence(result, hypothesis)

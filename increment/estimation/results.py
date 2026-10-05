@@ -208,6 +208,11 @@ class BinomialConfidenceSet(CodedModel, BaseModel):
     infinity. ``lower`` is never ``None``: the relative-lift scale's
     natural floor, ``-1`` (``R = 0``), is always a legitimate finite
     value, attainable and closed.
+
+    ``method`` names the construction the endpoints were cut under, nuisance stop rule
+    included: ``LiftEstimate.stat_sig()``/``p_value()`` recompute from the counts with the
+    current rule, so a set cut under another one would sit beside a verdict its own interval
+    can contradict. Such a set is refused when read, not interpreted with the current rule.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -221,12 +226,24 @@ class BinomialConfidenceSet(CodedModel, BaseModel):
     # sitewide central-equivalent display alpha above, so these differ in
     # ordinary inference and coincide after directional FCR reinversion.
     geometry: Literal["central", "lower_bound", "upper_bound"]
-    method: Literal["binomial_bb_difference_v1"] = "binomial_bb_difference_v1"
+    method: Literal["binomial_bb_difference_v2"] = "binomial_bb_difference_v2"
     x_c: int = Field(ge=0)
     n_c: int = Field(ge=1)
     x_t: int = Field(ge=0)
     n_t: int = Field(ge=1)
     nuisance_beta: float = Field(gt=0.0, lt=1.0, allow_inf_nan=False)
+
+    @field_validator("method", mode="before")
+    @classmethod
+    def _cut_under_the_current_construction(cls, value: object) -> object:
+        supported = cls.model_fields["method"].default
+        if value != supported:
+            _raise(
+                "estimation.results.binomial.obsolete_construction",
+                method=str(value),
+                supported=supported,
+            )
+        return value
 
     @model_validator(mode="after")
     def _validate_binomial_set(self):
@@ -419,6 +436,7 @@ _REFUSALS = refusals(
         "estimation.results.binomial.interval_inverted": "binomial confidence set has lower={lower} > upper={upper}",
         "estimation.results.binomial.counts_out_of_range": "binomial confidence set counts out of range: x_c={x_c}, n_c={n_c}, x_t={x_t}, n_t={n_t}",
         "estimation.results.binomial.decision_metadata": "binomial confidence set has inconsistent decision metadata: {reason}",
+        "estimation.results.binomial.obsolete_construction": "binomial confidence set was cut under method {method!r}; this version reads only {supported!r}. Its endpoints came from a different nuisance stop rule than the p-value recomputed from its counts now uses, so its interval and verdict could disagree. Re-run the analysis to cut the set again.",
         "estimation.results.binomial.posterior_unavailable": "metric={metric!r} group_id={group_id!r}: no Normal/lognormal posterior exists for a reference_kind='binomial' row -- the exact binomial method is a frequentist test-inversion, not a posterior; chance_to_beat/prob_beyond/prob_within/risk_if_shipped and their favorable variants are unavailable here. Use stat_sig()/p_value() (both binomial-set-aware) or the persisted lift/binomial_set bounds directly.",
         "estimation.results.lift.binomial_lift_availability": "metric={metric!r} group_id={group_id!r}: {reason}",
         "estimation.results.lift.absolute_reference_mismatch": "absolute reference {kind!r} requires df exactly for t, got {df!r}",
@@ -1909,6 +1927,7 @@ def open_bound_from_two_sided_at_target(estimate: LiftEstimate) -> LiftEstimate:
             bset.n_t,
             alpha=bset.alpha,
             alternative=_validate_alternative(estimate.alternative),
+            null_r=1.0 + estimate.null_lift,
         )
         ci_lower, ci_upper = _to_lift_bounds(ci)
         new_lift = (
@@ -1927,7 +1946,6 @@ def open_bound_from_two_sided_at_target(estimate: LiftEstimate) -> LiftEstimate:
                 "lower": ci_lower,
                 "upper": ci_upper,
                 "geometry": ci.geometry,
-            null_r=1.0 + estimate.null_lift,
                 "decision_alpha": bset.alpha,
                 "nuisance_beta": _nuisance_beta(bset.alpha),
             }

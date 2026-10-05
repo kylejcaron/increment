@@ -1276,14 +1276,11 @@ class TestLiftEstimateBinomialCrossInvariants:
             LiftEstimate.model_validate(payload)
         assert exc_info.value.code == "estimation.results.lift.binomial_lift_availability"
 
-    def test_a_row_persisted_before_the_tighter_nuisance_stop_answers_from_its_counts(self):
-        """5,778 / 57,780 against 5,985 / 57,780 as the 60-iteration search stored it: its
-        interval still contains the null and its stored p-value exceeded 0.05. Read by the
-        current code the row validates and keeps that stored interval, and `p_value()` /
-        `stat_sig()` answer from the counts with the tighter bound; a re-run refreshes the
-        endpoints."""
-        from increment.estimation import binomial_rr
-
+    def test_a_row_cut_under_the_earlier_stop_rule_is_refused_with_a_route_forward(self):
+        """5,778 / 57,780 against 5,985 / 57,780 as the 60-split search stored it: an interval
+        still containing the null at counts whose p-value the current rule puts under 0.05.
+        The row names the earlier construction, so reading it is refused rather than showing
+        those endpoints beside a verdict recomputed from the counts."""
         persisted = {
             "metric": "conv",
             "group_id": "treatment",
@@ -1326,17 +1323,31 @@ class TestLiftEstimateBinomialCrossInvariants:
             },
             "scale": "linear",
         }
-        row = LiftEstimate.model_validate_json(json.dumps(persisted))
-        beta = binomial_rr.nuisance_beta(0.05)
-        fresh = binomial_rr.p_two(1.0, 5778, 57780, 5985, 57780, beta, tail=0.025)
-        assert row.p_value() == pytest.approx(fresh, abs=1e-12)
-        assert row.stat_sig() is True
-        assert row.binomial_set is not None
-        assert (row.binomial_set.lower, row.binomial_set.upper) == (
-            persisted["binomial_set"]["lower"],
-            persisted["binomial_set"]["upper"],
+        with pytest.raises(InvalidRequestError) as row_error:
+            LiftEstimate.model_validate_json(json.dumps(persisted))
+        with pytest.raises(InvalidRequestError) as set_error:
+            BinomialConfidenceSet.model_validate(persisted["binomial_set"])
+        for exc_info in (row_error, set_error):
+            assert exc_info.value.code == "estimation.results.binomial.obsolete_construction"
+            assert exc_info.value.context["method"] == "binomial_bb_difference_v1"
+
+    def test_those_counts_cut_by_the_current_rule_agree_with_their_interval(self):
+        """The same counts cut now put the null outside the interval, as the verdict recomputed
+        from the counts does, and the row reads back from its own JSON."""
+        from increment.estimation import binomial_rr
+
+        counts = (5778, 57780, 5985, 57780)
+        ci = binomial_rr.confidence_interval(*counts, alpha=0.05, alternative="two-sided")
+        lower, upper = binomial_rr.to_lift_bounds(ci)
+        bset = _binomial_set(
+            lower=lower, upper=upper, x_c=counts[0], n_c=counts[1], x_t=counts[2], n_t=counts[3]
         )
-        assert row.require_lift().lb == persisted["lift"]["lb"]
+        row = LiftEstimate(**_binomial_row(binomial_set=bset))
+
+        assert lower > row.null_lift
+        assert row.stat_sig()
+        assert row.p_value() < 0.05
+        assert LiftEstimate.model_validate_json(row.model_dump_json()) == row
 
 
 def _registered_sequential_row():
