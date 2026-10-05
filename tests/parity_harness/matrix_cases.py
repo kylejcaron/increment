@@ -13,7 +13,7 @@ from __future__ import annotations
 import copy
 import datetime as dt
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, Literal, cast
 
 import pandas as pd
 
@@ -437,7 +437,7 @@ class _Ingress:
             type="mean",
             value_column="latency",
             preferred_direction="increase",
-            missing=cell.missing,
+            missing=cast("Literal['error', 'zero', 'drop', 'impute']", cell.missing),
         )
         kwargs: dict[str, Any] = {
             "unit": "user_id",
