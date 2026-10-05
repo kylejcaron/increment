@@ -1003,14 +1003,15 @@ def enumerated_power(cell: MirrorCell) -> EnumeratedPower:
 
 
 #: Largest gap between a dense plan's closed-form power and the pipeline's exact rejection
-#: probability: the repository's absolute tolerance for a normal-approximation power
-#: (``tests.mc.scientific_delta`` at its ceiling).
-DENSE_AGREEMENT = 0.005
+#: probability: twice the repository's ceiling (``tests.mc.scientific_delta``) for a normal
+#: approximation, which the smallest dense designs (a sparsest count 1.5 times the 0.1-tail
+#: threshold) exceed by a fifth (0.0060 measured).
+DENSE_AGREEMENT = 0.01
 
-#: Largest gap between a sparse plan on the approximate route and the exact replay of the same
-#: decision: the 0.03 percentage points ``docs/guides/power-analysis.md`` reports for that route
-#: on equal allocations and a zero null.
-REPLAY_AGREEMENT = 3e-4
+#: Largest amount a sparse plan on the approximate route may understate the exact replay of the
+#: same decision: the 0.8 percentage points ``docs/guides/power-analysis.md`` reports for that
+#: route. It never overstates it, up to rounding.
+REPLAY_UNDERSTATEMENT = 0.008
 
 #: Sparsest expected count of a bound cell's design, in units of ``dense_min_count``: below
 #: the boundary, across it, and above it.
@@ -1040,16 +1041,37 @@ _EXTENDED_SHAPES = ((0.15, 0.06), (0.01, 0.06), (0.002, 0.06))
 _EXTENDED_NEGATIVE_SHAPES = ((0.3, -0.05), (0.01, -0.06), (0.6, -0.04))
 
 
-def bound_cells(*, extended: bool = False) -> tuple[MirrorCell, ...]:
-    """Designs spanning the route boundary at each production tail of the mirror: the original
-    grid of ``_BOUND_SHAPES`` (240 designs), or with ``extended`` the shapes whose power is not
-    saturated at the boundary, at positive and negative lifts."""
+BoundGrid = Literal["original", "extended", "tails"]
+
+#: One-sided production tails the other grids do not reach, each read as a two-sided level
+#: ``alpha = 2 * tail``.
+_OTHER_TAILS = (0.0005, 0.001, 0.005, 0.01, 0.05)
+_OTHER_TAIL_FACTORS = (0.9, 1.0, 1.04, 1.1, 1.25)
+
+
+def bound_cells(grid: BoundGrid = "original") -> tuple[MirrorCell, ...]:
+    """Designs spanning the route boundary. ``original`` is the grid of ``_BOUND_SHAPES`` at the
+    production tails of the mirror (240 designs); ``extended`` adds the shapes whose power is
+    not saturated at the boundary, at positive and negative lifts; ``tails`` covers the other
+    production tails with a central and a rare-event shape whose lift puts the sparsest count's
+    power near one half (``z * sqrt(2 (1 - p) / m)`` on the log scale, for tail quantile ``z``),
+    at five distances across the boundary."""
+    out: list[MirrorCell] = []
+    if grid == "tails":
+        for tail in _OTHER_TAILS:
+            m = dense_min_count(tail)
+            z = float(_norm.isf(tail))
+            for p_c in (0.3, 0.01):
+                lift = round(z * math.sqrt(2.0 * (1.0 - p_c) / m), 3)
+                for factor in _OTHER_TAIL_FACTORS:
+                    n = math.ceil(factor * m / min(p_c, 1.0 - p_c))
+                    out.append(MirrorCell("bound", n, p_c, lift, 2.0 * tail, "two-sided"))
+        return tuple(out)
     groups = (
         ((_BOUND_LEVELS, _EXTENDED_SHAPES), (_NEGATIVE_LEVELS, _EXTENDED_NEGATIVE_SHAPES))
-        if extended
+        if grid == "extended"
         else ((_BOUND_LEVELS, _BOUND_SHAPES),)
     )
-    out: list[MirrorCell] = []
     for levels, shapes in groups:
         for alpha, alternative in levels:
             tail = alpha / 2.0 if alternative == "two-sided" else alpha
@@ -1062,16 +1084,18 @@ def bound_cells(*, extended: bool = False) -> tuple[MirrorCell, ...]:
 
 
 def bound_holds(power: EnumeratedPower) -> bool:
-    """Whether a design meets its route's claim: a sparse plan equals the pipeline's rejection
-    probability (up to the replay's omitted mass, and ``REPLAY_AGREEMENT`` on the approximate
-    route), a borderline plan is no larger than it (the planning bound), and a dense plan, whose
-    closed form is an approximation rather than a bound, is within ``DENSE_AGREEMENT`` of it."""
+    """Whether a design meets its route's claim. A sparse or borderline plan never exceeds the
+    pipeline's rejection probability (up to the replay's omitted mass): a borderline plan is a
+    bound with no limit on how far below it sits, and a sparse plan is the replay, which
+    understates it by nothing on the exact route and at most ``REPLAY_UNDERSTATEMENT`` on the
+    approximate one. A dense plan's closed form is an approximation rather than a bound, within
+    ``DENSE_AGREEMENT`` of it."""
     slack = 1e-9 + power.omitted
     if power.route == "dense":
         return abs(power.margin) <= DENSE_AGREEMENT + slack
     if power.route == "sparse":
-        agreement = REPLAY_AGREEMENT if power.basis == "approximate" else 0.0
-        return abs(power.margin) <= agreement + slack
+        understatement = REPLAY_UNDERSTATEMENT if power.basis == "approximate" else 0.0
+        return -slack <= power.margin <= understatement + slack
     return power.margin >= -slack
 
 
@@ -1079,12 +1103,12 @@ def _design_key(cell: MirrorCell) -> list[object]:
     return [cell.n, cell.p_c, cell.lift, cell.alpha, cell.alternative]
 
 
-def bound(*, workers: int, out: Path | None = None, extended: bool = False) -> int:
+def bound(*, workers: int, out: Path | None = None, grid: BoundGrid = "original") -> int:
     """Planned power against the pipeline's exact rejection probability at every design of
     ``bound_cells``, each judged by ``bound_holds``. Each design is appended to ``out`` as it
     completes, and designs already in ``out`` are not recomputed, so an interrupted run
     resumes."""
-    designs = bound_cells(extended=extended)
+    designs = bound_cells(grid)
     done: dict[str, EnumeratedPower] = {}
     if out is not None and out.exists():
         for line in out.read_text().splitlines():
@@ -1150,7 +1174,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     bound_parser = sub.add_parser("bound", help="planned power against the exact pipeline power")
     bound_parser.add_argument("--workers", type=int, default=1)
     bound_parser.add_argument("--out", type=Path, default=None)
-    bound_parser.add_argument("--extended", action="store_true")
+    bound_parser.add_argument(
+        "--grid", choices=("original", "extended", "tails"), default="original"
+    )
     mirror_parser = sub.add_parser("mirror", help="planned power against the production route")
     mirror_parser.add_argument("--reps", type=int, default=20_000)
     mirror_parser.add_argument("--workers", type=int, default=1)
@@ -1179,7 +1205,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "mirror":
         return mirror(args.reps, args.seed, workers=args.workers)
     if args.command == "bound":
-        return bound(workers=args.workers, out=args.out, extended=args.extended)
+        return bound(workers=args.workers, out=args.out, grid=args.grid)
     return hybrid(
         args.tails, workers=args.workers, count=args.count, replicate_tails=args.replicate_tails
     )

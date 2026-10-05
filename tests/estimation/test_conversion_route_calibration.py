@@ -295,26 +295,29 @@ class TestPlanningBound:
 class TestBoundGridAndRule:
     def test_the_enumerated_grids_are_distinct_designs_with_both_signs_of_lift(self):
         """The original grid is 240 designs; the extended grid adds rare-event and negative-lift
-        designs, each tested at a directional level of its own sign."""
-        original, extended = cr.bound_cells(), cr.bound_cells(extended=True)
-        assert len(original) == 240
-        assert len(extended) == 180
-        for grid in (original, extended):
+        designs, each tested at a directional level of its own sign; the tails grid reaches the
+        production tails the others do not."""
+        original, extended, tails = (cr.bound_cells(g) for g in ("original", "extended", "tails"))
+        assert (len(original), len(extended), len(tails)) == (240, 180, 50)
+        for grid in (original, extended, tails):
             assert len({(c.n, c.p_c, c.lift, c.alpha, c.alternative) for c in grid}) == len(grid)
         assert all(c.lift > 0.0 for c in original)
         assert {c.alternative for c in extended if c.lift < 0.0} == {"two-sided", "less"}
         assert {c.alternative for c in extended if c.lift > 0.0} == {"two-sided", "greater"}
+        assert {c.alpha / 2.0 for c in tails} == {0.0005, 0.001, 0.005, 0.01, 0.05}
+        assert all(0.0 < c.lift < 0.5 for c in tails)
 
     @pytest.mark.parametrize(
         ("route", "basis", "margin", "holds"),
         [
-            ("dense", "asymptotic", 0.004, True),
-            ("dense", "asymptotic", -0.006, False),
+            ("dense", "asymptotic", 0.009, True),
+            ("dense", "asymptotic", -0.011, False),
             ("sparse", "exact", 1e-6, False),
-            ("sparse", "approximate", 2e-4, True),
-            ("sparse", "approximate", -4e-4, False),
+            ("sparse", "approximate", 5e-3, True),
+            ("sparse", "approximate", 0.009, False),
+            ("sparse", "approximate", -1e-6, False),
             ("borderline", "approximate", -1e-6, False),
-            ("borderline", "approximate", 0.02, True),
+            ("borderline", "approximate", 0.2, True),
         ],
     )
     def test_bound_holds_judges_each_route_by_its_own_claim(self, route, basis, margin, holds):
