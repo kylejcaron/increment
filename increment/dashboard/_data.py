@@ -6,29 +6,50 @@ warehouse query, owns no connection, and computes no statistics itself.
 
 from __future__ import annotations
 
+import copy
 import csv
 import datetime as dt
 import hashlib
 import io
 import json
 import math
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
 from pydantic import BaseModel
 
 from increment._canonical import canonical_json_bytes
-from increment._source_operations import DashboardGroupData, DashboardSnapshotPayload
+from increment._source_operations import (
+    BreakoutChoice,
+    DashboardBreakoutReads,
+    DashboardExploreCapture,
+    DashboardGroupData,
+    DashboardSnapshotPayload,
+    ExploreKey,
+)
 from increment.breakout.estimates import (
+    BreakoutEstimate,
     BreakoutEstimates,
     DailyLiftEstimates,
     DailyMetricValues,
     LiftEstimates,
 )
-from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec, _freeze, refuse
+from increment.dashboard._theme import MIDNIGHT, DashboardTheme, require_theme
+from increment.errors import (
+    CapabilityError,
+    CodedError,
+    InvalidRequestError,
+    RefusalSpec,
+    _freeze,
+    refuse,
+)
 from increment.estimation.diagnostics import SRMResult
+from increment.estimation.family import (
+    exploratory_family_exclusion,
+    select_exploratory_family,
+)
 from increment.tables import estimates_to_readout
 
 if TYPE_CHECKING:
@@ -79,6 +100,8 @@ _UNSUPPORTED_EXPERIMENT = RefusalSpec(
 # An allocation check the source declines is not a passing check; the caller
 # sees the original code and reason instead of a fabricated SRMResult.
 _ALLOCATION_NOT_APPLICABLE = "dashboard.allocation_not_applicable"
+# A source with no saved definitions offers no metrics to add.
+_EXPLORATORY_SOURCE_LIMITED = "facade.analysis.exploratory_metrics_source_limited"
 
 
 def _validated_allocation(raw: object) -> Mapping[str, float]:
@@ -147,13 +170,20 @@ def _validated_units(raw: object) -> Mapping[str, str]:
 
 @dataclass(frozen=True, slots=True)
 class DashboardConfig:
-    """Display configuration a caller supplies alongside their ``Analysis``."""
+    """Display configuration a caller supplies alongside their ``Analysis``.
+
+    ``exploratory_metrics`` are the added metrics shown. The overview's exploratory family counts
+    every saved metric the definitions offer whether shown or not, so choosing what to display,
+    before or after seeing results, never changes the correction.
+    """
 
     expected_allocation: Mapping[str, float]
     title: str | None = None
     source_label: str = ""
     provenance: Mapping[str, str] = field(default_factory=dict)
     metric_units: Mapping[str, str] = field(default_factory=dict)
+    theme: DashboardTheme = MIDNIGHT
+    exploratory_metrics: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -161,16 +191,59 @@ class DashboardConfig:
         )
         object.__setattr__(self, "provenance", _validated_provenance(self.provenance))
         object.__setattr__(self, "metric_units", _validated_units(self.metric_units))
+        require_theme(self.theme)
         if self.title is not None and not self.title.strip():
             refuse(_INVALID_CONFIG, reason="title must be a non-empty string when supplied")
+        names = self.exploratory_metrics
+        if isinstance(names, str) or not all(isinstance(n, str) and n.strip() for n in names):
+            refuse(_INVALID_CONFIG, reason="exploratory_metrics must be a sequence of metric names")
+        if len(set(names)) != len(tuple(names)):
+            refuse(_INVALID_CONFIG, reason="exploratory_metrics repeats a metric name")
+        object.__setattr__(self, "exploratory_metrics", tuple(names))
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardOverview:
+    """The Explore overview's exploratory cells, captured with the headline.
+
+    ``exploratory`` holds the added metrics' whole-window rows and ``segments`` each declared
+    breakout's segment rows, all corrected as one BH family of
+    ``family_size`` cells at ``family_q``. When the family itself is refused, ``family_refusal``
+    holds that refusal and no exploratory cell is shown. ``refusals`` names each metric whose
+    read was refused as ``(metric, place, refusal)``. ``exclusions`` names each cell left out
+    of the family as ``(metric, place, reason)``; such a cell is shown uncorrected and never
+    marked as a discovery. Every offered metric's cells are kept, shown or not.
+    """
+
+    exploratory: tuple[LiftEstimate, ...]
+    segments: Mapping[BreakoutChoice, tuple[BreakoutEstimate, ...]]
+    family_size: int
+    family_q: float
+    family_refusal: CodedError | None = None
+    refusals: tuple[tuple[str, str, CodedError], ...] = ()
+    exclusions: tuple[tuple[str, str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "exploratory", tuple(self.exploratory))
+        object.__setattr__(
+            self,
+            "segments",
+            MappingProxyType({key: tuple(rows) for key, rows in self.segments.items()}),
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class DashboardSnapshot:
-    """One prepared reading of an experiment: metadata, allocation, results.
+    """One prepared reading of an experiment: metadata, allocation, results, Explore views.
 
     Read-only by construction. It holds no connection and is not a portable
     analysis format; reprepare from the source instead of persisting it.
+    ``explore`` maps ``(view, metric or None, completed windows only, breakout)`` to the
+    capture taken inside the same pinned read as the headline, where ``breakout`` is a
+    declared ``(source, property)`` choice or ``None`` for the whole experiment;
+    ``load_explore`` only looks these up. A hand-built snapshot with no captures refuses
+    every Explore request. ``offered_metrics`` are every saved metric read and counted in the
+    overview's family; ``exploratory_metrics`` are the ones shown.
     """
 
     experiment_name: str
@@ -193,9 +266,15 @@ class DashboardSnapshot:
     config: DashboardConfig
     computed_at: dt.datetime
     group_data: tuple[DashboardGroupData, ...]
+    explore: Mapping[ExploreKey, DashboardExploreCapture] = field(default_factory=dict)
+    overview: DashboardOverview | None = None
+    exploratory_metrics: tuple[Metric, ...] = ()
+    offered_metrics: tuple[Metric, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "metrics", tuple(self.metrics))
+        object.__setattr__(self, "exploratory_metrics", tuple(self.exploratory_metrics))
+        object.__setattr__(self, "offered_metrics", tuple(self.offered_metrics))
         object.__setattr__(self, "estimates", tuple(self.estimates))
         object.__setattr__(self, "breakouts", tuple(self.breakouts))
         object.__setattr__(
@@ -204,6 +283,7 @@ class DashboardSnapshot:
             tuple(_freeze(row) for row in self.readout_rows),
         )
         object.__setattr__(self, "group_data", tuple(self.group_data))
+        object.__setattr__(self, "explore", MappingProxyType(dict(self.explore)))
         object.__setattr__(
             self,
             "allocation_history",
@@ -424,19 +504,27 @@ def _binding_fingerprint(experiment: Experiment, metrics: Sequence[Metric]) -> s
 def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> DashboardSnapshot:
     """Run the headline analysis once and capture it as a read-only snapshot.
 
-    This is the only place the dashboard computes results. Display controls
-    downstream never recompute; reexecuting the source cell is an intentional
-    new snapshot. The caller keeps ownership of ``analysis`` and its
-    connection: nothing here closes or replaces them.
+    This is the only place the dashboard computes results. Every Explore view a caller can
+    later load is read inside the same pinned operation as the headline, allocation and group
+    data, so ``load_explore`` never touches the warehouse and a later source change cannot
+    make the views disagree with the headline; reexecuting the source cell is an intentional
+    new snapshot. The caller keeps ownership of ``analysis`` and its connection: nothing here
+    closes or replaces them.
     """
     experiment = _supported_experiment(analysis)
     primary_metric = _declared_primary(experiment)
     control_group, treatment_group = _declared_arms(experiment, config)
     metrics = _declared_metrics(analysis, experiment)
-    unknown_units = set(config.metric_units) - {metric.name for metric in metrics}
+    offered = _offered_metrics(analysis, config)
+    shown_models = _shown_metrics(offered, config.exploratory_metrics)
+    added = tuple(model.name for model in offered)
+    # Units may name any offered metric, shown or not.
+    known = {metric.name for metric in metrics} | set(added)
+    unknown_units = set(config.metric_units) - known
     if unknown_units:
         refuse(
-            _INVALID_CONFIG, reason=f"metric_units names are undeclared: {sorted(unknown_units)!r}"
+            _INVALID_CONFIG,
+            reason=f"metric_units names metrics the dashboard does not read: {sorted(unknown_units)!r}",
         )
 
     def _read(pinned: Analysis) -> DashboardSnapshotPayload:
@@ -457,6 +545,15 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
             if estimate.method_role == "decision" and estimate.sequential_result is not None
         }
         group_data = pinned.dashboard_group_data(metrics=metrics, checkpoints=checkpoints or None)
+        explore = _capture_explore(
+            pinned,
+            names=tuple(metric.name for metric in metrics),
+            added=added,
+            scopes=tuple(
+                ((b.source, b.property), pinned.dashboard_breakout_reads(b))
+                for b in experiment.breakouts
+            ),
+        )
         return DashboardSnapshotPayload(
             allocation=allocation,
             allocation_refusal=allocation_refusal,
@@ -464,9 +561,10 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
             allocation_history_refusal=allocation_history_refusal,
             estimates=tuple(estimates),
             group_data=group_data,
+            explore=explore,
         )
 
-    payload = analysis.dashboard_snapshot(_read, metrics=metrics)
+    payload = analysis.dashboard_snapshot(_read, metrics=(*metrics, *offered))
     allocation = payload.allocation
     allocation_refusal = payload.allocation_refusal
     allocation_history = (
@@ -474,6 +572,28 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
     )
     allocation_history_refusal = payload.allocation_history_refusal
     estimates = payload.estimates
+    captures = {capture.key: capture for capture in payload.explore}
+    overview_keys = [key for key in captures if key[0] in (_OVERVIEW_WHOLE, _OVERVIEW_SEGMENTS)]
+    read = {key: captures.pop(key) for key in overview_keys}
+    refusals = tuple(
+        (
+            str(key[1]),
+            "whole experiment" if key[3] is None else str(key[3][1]),
+            copy.copy(capture.refusal),
+        )
+        for key, capture in read.items()
+        if key[1] is not None and capture.refusal is not None
+    )
+    overview = _overview(
+        read.get((_OVERVIEW_WHOLE, None, False, None)),
+        {
+            key[3]: capture
+            for key, capture in read.items()
+            if key[0] == _OVERVIEW_SEGMENTS and key[1] is None and key[3] is not None
+        },
+        refusals=refusals,
+        q=experiment.plan.q,
+    )
     return DashboardSnapshot(
         experiment_name=experiment.name,
         binding_fingerprint=_binding_fingerprint(experiment, metrics),
@@ -487,12 +607,16 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
         metrics=metrics,
         breakouts=tuple((b.source, b.property) for b in experiment.breakouts),
         estimates=estimates,
-        readout_rows=_enriched_rows(estimates),
+        readout_rows=enriched_rows(estimates),
         allocation=allocation,
         allocation_refusal=allocation_refusal,
         allocation_history=allocation_history,
         allocation_history_refusal=allocation_history_refusal,
         group_data=payload.group_data,
+        explore=captures,
+        overview=overview,
+        exploratory_metrics=shown_models,
+        offered_metrics=offered,
         config=config,
         computed_at=dt.datetime.now(dt.UTC),
     )
@@ -507,6 +631,16 @@ def _supported_experiment(analysis: Analysis) -> Experiment:
         refuse(
             _UNSUPPORTED_EXPERIMENT,
             reason="the dashboard needs an Analysis with a declared experiment definition",
+        )
+    if experiment.design is not None:
+        mechanism = experiment.design.mechanism
+        refuse(
+            _UNSUPPORTED_EXPERIMENT,
+            reason=(
+                f"the experiment declares a {mechanism} design; read its estimates "
+                "with Analysis.run()"
+            ),
+            mechanism=mechanism,
         )
     return experiment
 
@@ -605,7 +739,9 @@ def _require_treatment_arm(estimates: Sequence[LiftEstimate], *, treatment: str)
         )
 
 
-def _enriched_rows(estimates: Sequence[LiftEstimate]) -> tuple[Mapping[str, Any], ...]:
+def enriched_rows(
+    estimates: Sequence[LiftEstimate | BreakoutEstimate],
+) -> tuple[Mapping[str, Any], ...]:
     """Readout rows carrying each estimate's tested ``alternative``.
 
     The readout adapter drops the tested tail, so a one-sided guardrail would
@@ -650,9 +786,27 @@ def estimate_for_metric(snapshot: DashboardSnapshot, metric: str) -> LiftEstimat
     )
 
 
+def added_row(snapshot: DashboardSnapshot, metric: str) -> Mapping[str, Any] | None:
+    """An added metric's whole-experiment decision row from the overview, or ``None``.
+
+    The row carries the overview family's correction: its discovery flag and, when selected,
+    its FCR-adjusted interval. ``None`` when the metric's read was refused or left no row.
+    """
+    overview = snapshot.overview
+    if overview is None:
+        return None
+    rows = [row for row in overview.exploratory if row.metric == metric]
+    return next((row for row in enriched_rows(rows) if row.get("method_role") == "decision"), None)
+
+
 def metric_model(snapshot: DashboardSnapshot, metric: str) -> Metric | None:
-    """The declared metric definition for one metric name, or ``None``."""
-    return next((model for model in snapshot.metrics if model.name == metric), None)
+    """The declared or added metric definition for one metric name, or ``None``."""
+    return next((model for model in all_metrics(snapshot) if model.name == metric), None)
+
+
+def all_metrics(snapshot: DashboardSnapshot) -> tuple[Metric, ...]:
+    """Declared metrics in plan order, then the added exploratory metrics."""
+    return (*snapshot.metrics, *snapshot.exploratory_metrics)
 
 
 def metric_names(snapshot: DashboardSnapshot) -> tuple[str, ...]:
@@ -675,7 +829,314 @@ def require_metric(snapshot: DashboardSnapshot, metric: str | None) -> Metric:
     return model
 
 
-# Optional exploration: one requested view, no headline recomputation.
+# Optional exploration: every view is captured with the headline, then only looked up.
+
+# Each state the dashboard can ask of the source: (view, completed windows only). The completed
+# gate is a cumulative maturity rule, so daily values and segments have only the open state.
+_CAPTURED_STATES: tuple[tuple[str, bool], ...] = (
+    ("cumulative_lift", False),
+    ("cumulative_lift", True),
+    ("cumulative_values", False),
+    ("cumulative_values", True),
+    ("daily_values", False),
+    ("segments", False),
+)
+# Absolute per-arm values are computed per metric, with no cross-metric correction.
+_INDEPENDENT_VIEWS = frozenset({"cumulative_values", "daily_values"})
+# Views whose correction never spans metrics, so one read serves every added metric: values have
+# none, and the segmented as-of Bonferroni divisor counts segments only (BH there is refused).
+# Segments are excluded: under a BH breakout policy one read is one metric x arm x segment family.
+_BATCHED_VIEWS = frozenset({"cumulative_lift", "cumulative_values", "daily_values"})
+# The overview's inputs, read for its exploratory family and never served by ``load_explore``:
+# the added metrics' whole-window rows, and every metric's uncorrected segment rows for one
+# declared breakout.
+_OVERVIEW_WHOLE = "overview_whole"
+_OVERVIEW_SEGMENTS = "overview_segments"
+
+
+def _offered_metrics(analysis: Analysis, config: DashboardConfig) -> tuple[Metric, ...]:
+    """Every saved metric the definitions offer; all are read and counted, shown or not.
+
+    A source with no saved definitions offers none; asking it to show a metric is refused with
+    its coded reason.
+    """
+    try:
+        return tuple(analysis.available_metrics)
+    except CodedError as exc:
+        if config.exploratory_metrics or exc.code != _EXPLORATORY_SOURCE_LIMITED:
+            raise
+        return ()
+
+
+def _shown_metrics(offered: Sequence[Metric], names: Sequence[str]) -> tuple[Metric, ...]:
+    """The offered metrics named to show, refused unless each is offered."""
+    available = {metric.name: metric for metric in offered}
+    unknown = [name for name in names if name not in available]
+    if unknown:
+        refuse(
+            _INVALID_CONFIG,
+            reason=(
+                f"exploratory metrics name metrics the definitions do not offer beyond the "
+                f"experiment's own: {unknown!r}"
+            ),
+            unknown=tuple(unknown),
+            available=tuple(available),
+        )
+    return tuple(available[name] for name in names)
+
+
+def show_exploratory_metrics(
+    snapshot: DashboardSnapshot, names: Sequence[str]
+) -> DashboardSnapshot:
+    """``snapshot`` showing ``names`` among its offered metrics.
+
+    Every offered metric was read and corrected with the headline, so this reads nothing and
+    recomputes nothing: the results, family and captures are the snapshot's own.
+    """
+    config = replace(snapshot.config, exploratory_metrics=tuple(names))
+    shown = _shown_metrics(snapshot.offered_metrics, config.exploratory_metrics)
+    return replace(snapshot, config=config, exploratory_metrics=shown)
+
+
+def _decisions(capture: DashboardExploreCapture | None) -> list[Any]:
+    if capture is None:
+        return []
+    return [row for row in capture.rows if row.method_role == "decision"]
+
+
+def _overview(
+    whole: DashboardExploreCapture | None,
+    segments: Mapping[BreakoutChoice, DashboardExploreCapture],
+    *,
+    refusals: tuple[tuple[str, str, CodedError], ...],
+    q: float,
+) -> DashboardOverview:
+    """Correct the added whole-window rows and every answered segment row as one BH family.
+
+    A metric whose read was refused keeps its own refusal and adds no cells. A cell the family
+    cannot take is left out with its reason rather than refusing every other cell.
+    """
+    exploratory = _decisions(whole)
+    scoped = {breakout: _decisions(capture) for breakout, capture in segments.items()}
+    cells = [*exploratory, *(row for rows in scoped.values() for row in rows)]
+    reasons = [exploratory_family_exclusion(cell) for cell in cells]
+    exclusions = tuple(
+        (str(cell.metric), _cell_place(cell), reason)
+        for cell, reason in zip(cells, reasons, strict=True)
+        if reason is not None
+    )
+    admitted = [cell for cell, reason in zip(cells, reasons, strict=True) if reason is None]
+    try:
+        corrected = iter(select_exploratory_family(admitted, q=q))
+    except CodedError as exc:
+        return DashboardOverview(
+            exploratory=(),
+            segments={},
+            family_size=len(admitted),
+            family_q=q,
+            family_refusal=copy.copy(exc),
+            refusals=refusals,
+            exclusions=exclusions,
+        )
+    results = [
+        cell if reason is not None else next(corrected)
+        for cell, reason in zip(cells, reasons, strict=True)
+    ]
+    sizes = {row.family_size for row in results if row.family_size is not None}
+    rows = iter(results)
+    added = tuple(cast("LiftEstimate", next(rows)) for _ in exploratory)
+    captured = {
+        breakout: tuple(cast("BreakoutEstimate", next(rows)) for _ in scoped[breakout])
+        for breakout in segments
+    }
+    return DashboardOverview(
+        exploratory=added,
+        segments=captured,
+        family_size=next(iter(sizes), 0),
+        family_q=q,
+        refusals=refusals,
+        exclusions=exclusions,
+    )
+
+
+def _cell_place(cell: Any) -> str:
+    dimension = getattr(cell, "dimension", None)
+    if dimension is None:
+        return "whole experiment"
+    return f"{dimension} = {cell.dimension_value}"
+
+
+def _capture_explore(
+    pinned: Analysis,
+    *,
+    names: tuple[str, ...],
+    added: tuple[str, ...] = (),
+    scopes: tuple[tuple[BreakoutChoice, DashboardBreakoutReads], ...],
+) -> tuple[DashboardExploreCapture, ...]:
+    """Every Explore request ``load_explore`` can serve, answered from the pinned analysis.
+
+    The lift family and segment estimates are read per metric and for every declared metric
+    together, because each selection carries its own multiplicity. Absolute values are
+    independent per metric, so one call over every metric serves them all; only when that call
+    is refused is each metric asked alone, so one metric's refusal never hides another's series.
+    Temporal views are read for the whole experiment and through each declared breakout's own
+    reads, as are segments, so one breakout's refusal never hides another source of the same
+    property. Source refusals are kept as the original coded errors. ``added`` metrics are never
+    read inside the declared metrics' joint family. Where a view's correction never spans
+    metrics (``_BATCHED_VIEWS``) one read per scope serves them all, and a refused read, or a
+    metric it returns nothing for, is asked alone; segments, whose BH family would span every
+    metric in the read, are read one metric at a time. Each declared breakout also captures
+    uncorrected segment rows for every declared and ``added`` metric, the overview's
+    exploratory family.
+    """
+    captures: dict[ExploreKey, DashboardExploreCapture] = {}
+
+    def ask(
+        reader: Analysis | DashboardBreakoutReads,
+        view: str,
+        metric: str | None,
+        *,
+        complete: bool,
+        breakout: BreakoutChoice | None,
+    ) -> DashboardExploreCapture:
+        key = (view, metric, complete, breakout)
+        selected = list(names) if metric is None else [metric]
+        try:
+            data = _read_view(reader, view, selected, complete=complete, added=added)
+        except CodedError as exc:
+            captures[key] = DashboardExploreCapture.refused(key, exc)
+        else:
+            captures[key] = DashboardExploreCapture.answered(key, data, collection=type(data))
+        return captures[key]
+
+    whole: tuple[tuple[BreakoutChoice | None, Analysis | DashboardBreakoutReads], ...] = (
+        (None, pinned),
+    )
+    for view, complete in _CAPTURED_STATES:
+        for breakout, reader in scopes if view == "segments" else (*whole, *scopes):
+            joint = ask(reader, view, None, complete=complete, breakout=breakout)
+            independent = view in _INDEPENDENT_VIEWS and joint.refusal is None
+            for name in names:
+                key = (view, name, complete, breakout)
+                if len(names) == 1:
+                    captures[key] = replace(joint, metric=name)
+                elif independent:
+                    assert joint.collection is not None
+                    captures[key] = DashboardExploreCapture.answered(
+                        key,
+                        [row for row in joint.rows if row.metric == name],
+                        collection=joint.collection,
+                    )
+                else:
+                    ask(reader, view, name, complete=complete, breakout=breakout)
+            if not added:
+                continue
+            if view not in _BATCHED_VIEWS:
+                for name in added:
+                    ask(reader, view, name, complete=complete, breakout=breakout)
+                continue
+            # One read serves every added metric; a refused read, or a metric it returns nothing
+            # for, is asked alone to keep that metric's own answer.
+            try:
+                batch = _read_view(reader, view, list(added), complete=complete, added=added)
+            except CodedError:
+                batch = None
+            for name in added:
+                rows = [] if batch is None else [row for row in batch if row.metric == name]
+                if batch is None or not rows:
+                    ask(reader, view, name, complete=complete, breakout=breakout)
+                else:
+                    key = (view, name, complete, breakout)
+                    captures[key] = DashboardExploreCapture.answered(
+                        key, rows, collection=type(batch)
+                    )
+
+    def overview_read(
+        view: str,
+        breakout: BreakoutChoice | None,
+        declared: tuple[str, ...],
+        read: Callable[[list[str], list[str]], Sequence[Any]],
+        collection: Callable[[Iterable[Any]], Sequence[Any]],
+    ) -> None:
+        """One read of every metric; on a refusal, each metric alone, keeping its own refusal."""
+        key = (view, None, False, breakout)
+        try:
+            captures[key] = DashboardExploreCapture.answered(
+                key, read(list(declared), list(added)), collection=collection
+            )
+            return
+        except CodedError:
+            pass
+        rows: list[Any] = []
+        for name in (*declared, *added):
+            one = (view, name, False, breakout)
+            try:
+                part = read([name] if name in declared else [], [name] if name in added else [])
+            except CodedError as exc:
+                captures[one] = DashboardExploreCapture.refused(one, exc)
+            else:
+                rows.extend(part)
+        captures[key] = DashboardExploreCapture.answered(key, rows, collection=collection)
+
+    def extra(added_names: list[str]) -> dict[str, Any]:
+        return {"exploratory_metrics": added_names} if added_names else {}
+
+    if added:
+        overview_read(
+            _OVERVIEW_WHOLE,
+            None,
+            (),
+            lambda _, added_names: pinned.run(metrics=[], **extra(added_names)),
+            LiftEstimates,
+        )
+    for breakout, reader in scopes:
+        overview_read(
+            _OVERVIEW_SEGMENTS,
+            breakout,
+            names,
+            lambda declared, added_names, reader=reader: reader.uncorrected_segments(
+                metrics=declared, **extra(added_names)
+            ),
+            BreakoutEstimates,
+        )
+    return tuple(captures.values())
+
+
+def _read_view(
+    reader: Analysis | DashboardBreakoutReads,
+    view: str,
+    selected: list[str],
+    *,
+    complete: bool,
+    added: tuple[str, ...],
+) -> Any:
+    """One view for ``selected``; added metrics go through ``exploratory_metrics``."""
+    declared = [name for name in selected if name not in added]
+    extra = [name for name in selected if name in added]
+    kwargs: dict[str, Any] = {"exploratory_metrics": extra} if extra else {}
+    if view == "cumulative_lift":
+        return reader.run_asof_lift(metrics=declared, completed_windows_only=complete, **kwargs)
+    if view == "daily_values":
+        return reader.run_daily(metrics=declared, **kwargs)
+    if view == "cumulative_values":
+        return reader.run_asof(metrics=declared, completed_windows_only=complete, **kwargs)
+    return reader.run_breakout(metrics=declared, **kwargs)
+
+
+def _captured(snapshot: DashboardSnapshot, key: ExploreKey, *, metric: str | None) -> Any:
+    """A fresh collection of one captured view, or a fresh copy of its original refusal."""
+    capture = snapshot.explore.get(key)
+    if capture is None:
+        view, _, complete, breakout = key
+        refuse(
+            _INVALID_VIEW,
+            reason="this snapshot did not capture that view; prepare a new snapshot",
+            view=view,
+            metric=metric,
+            completed_windows_only=complete,
+            breakout=breakout,
+        )
+    return capture.load()
 
 
 def load_explore(
@@ -689,10 +1150,19 @@ def load_explore(
 ) -> DailyLiftEstimates | DailyMetricValues | BreakoutEstimates:
     """Load exactly the one advanced view a caller asked for.
 
-    A thin dispatch over the public readout API. It never reruns the headline
-    family, the allocation check, or materialization, so changing a display
-    control cannot change a verdict. ``metric=None`` selects every declared
-    metric in snapshot order; a metric name selects just that metric.
+    A lookup into the views captured with the headline by :func:`prepare_dashboard`: it
+    reads no warehouse, never reruns the headline family, the allocation check, or
+    materialization, and so cannot disagree with the snapshot or change a verdict. ``analysis``
+    only proves the caller still holds the experiment the snapshot was prepared from. Each call
+    returns a fresh collection; a state the source refused at capture raises its original coded
+    error. ``metric=None`` selects every declared metric in snapshot order; a metric name
+    selects just that metric.
+
+    ``breakout`` names one declared ``(source, dimension)`` choice. Segment
+    views require it when breakouts are declared; the temporal views break
+    their series out by it. Each choice was read through that declared
+    breakout alone, so another source of the same property, or its refusal,
+    never appears in it. Without it a temporal view is the whole experiment.
     """
     if view not in get_args(ExploreView):
         refuse(_INVALID_VIEW, reason=f"unknown view {view!r}", view=view, metric=metric)
@@ -709,15 +1179,10 @@ def load_explore(
             metric=metric,
         )
     if view == "segments":
-        return _load_segments(analysis, snapshot=snapshot, metric=metric, breakout=breakout)
-    selected = list(metric_names(snapshot)) if metric is None else [metric]
-    if view == "cumulative_lift":
-        return analysis.run_asof_lift(
-            metrics=selected, completed_windows_only=completed_windows_only
-        )
-    if view == "daily_values":
-        return analysis.run_daily(metrics=selected)
-    return analysis.run_asof(metrics=selected, completed_windows_only=completed_windows_only)
+        return _load_segments(snapshot=snapshot, metric=metric, breakout=breakout)
+    if breakout is not None:
+        breakout = _declared_breakout(snapshot, breakout, view=view, metric=metric)
+    return _captured(snapshot, (view, metric, completed_windows_only, breakout), metric=metric)
 
 
 def _require_same_experiment(
@@ -740,15 +1205,36 @@ def _require_same_experiment(
         )
 
 
+def _declared_breakout(
+    snapshot: DashboardSnapshot,
+    breakout: tuple[str | None, str],
+    *,
+    view: str,
+    metric: str | None,
+) -> BreakoutChoice:
+    """The caller's choice, refused unless the experiment declares exactly it."""
+    source, dimension = breakout
+    requested = (source, dimension)
+    if requested not in snapshot.breakouts:
+        refuse(
+            _INVALID_VIEW,
+            reason=f"{requested!r} is not a declared breakout of this experiment",
+            view=view,
+            metric=metric,
+            requested=requested,
+            declared=snapshot.breakouts,
+        )
+    return requested
+
+
 def _load_segments(
-    analysis: Analysis,
     *,
     snapshot: DashboardSnapshot,
     metric: str | None,
     breakout: tuple[str | None, str] | None,
 ) -> BreakoutEstimates:
     if not snapshot.breakouts:
-        # A truthful empty state: no declared breakouts, so no query at all.
+        # A truthful empty state: no declared breakouts, so nothing was captured or needed.
         return BreakoutEstimates()
     if breakout is None:
         refuse(
@@ -758,41 +1244,14 @@ def _load_segments(
             metric=metric,
             declared=snapshot.breakouts,
         )
-    if tuple(breakout) not in snapshot.breakouts:
-        refuse(
-            _INVALID_VIEW,
-            reason=f"{tuple(breakout)!r} is not a declared breakout of this experiment",
-            view="segments",
-            metric=metric,
-            requested=tuple(breakout),
-            declared=snapshot.breakouts,
-        )
-    declared_source, dimension = breakout
-    metrics = [metric] if metric is not None else list(metric_names(snapshot))
-    estimates = analysis.run_breakout(metrics=metrics)
-    candidates = [
+    choice = _declared_breakout(snapshot, breakout, view="segments", metric=metric)
+    source, dimension = choice
+    estimates = _captured(snapshot, ("segments", metric, False, choice), metric=metric)
+    # A registered sequential readout answers its registered dimension whatever the scope.
+    return BreakoutEstimates(
         estimate
         for estimate in estimates
-        if estimate.dimension == dimension and estimate.method_role == "decision"
-    ]
-    source = declared_source or _resolved_source(candidates, dimension=dimension, metric=metric)
-    return BreakoutEstimates(estimate for estimate in candidates if estimate.source == source)
-
-
-def _resolved_source(
-    candidates: Sequence[Any], *, dimension: str, metric: str | None
-) -> str | None:
-    """The single source a dimension resolved to, or a refusal when ambiguous."""
-    sources = {estimate.source for estimate in candidates}
-    if len(sources) > 1:
-        refuse(
-            _INVALID_VIEW,
-            reason=(
-                f"dimension {dimension!r} resolved to more than one source; choose one explicitly"
-            ),
-            view="segments",
-            metric=metric,
-            dimension=dimension,
-            sources=tuple(sorted(str(source) for source in sources)),
-        )
-    return next(iter(sources), None)
+        if estimate.dimension == dimension
+        and estimate.method_role == "decision"
+        and (source is None or estimate.source == source)
+    )

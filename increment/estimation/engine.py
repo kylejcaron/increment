@@ -44,7 +44,12 @@ from increment.estimation._tails import two_sided_critical_value, wald_bounds
 from increment.estimation.armstats import ArmStats, binary_counts, welch_satterthwaite_df
 from increment.estimation.cuped import AdjustedRatioMoments, fit_cuped, fit_ratio_cuped
 from increment.estimation.inference import LiftGuardError, Prior, infer_lift
-from increment.estimation.results import BinomialConfidenceSet, Estimate, LiftEstimate
+from increment.estimation.results import (
+    BinomialConfidenceSet,
+    Estimate,
+    LiftEstimate,
+    _alpha_eff_for,
+)
 from increment.estimation.sequential import (
     ASYMPTOTIC_PROCEDURE_POLICIES,
     SEQUENTIAL_POLICIES,
@@ -1318,6 +1323,7 @@ def _infer_clustered_lift_result(
         abs_ub=upper,
         abs_reference_kind="t" if abs_df is not None else None,
         abs_reference_df=abs_df,
+        abs_alpha=_alpha_eff_for(alternative, alpha) if lower is not None else None,
         n_clusters=strategy.n_clusters,
         dof=strategy.dof,
         reference_kind="t",
@@ -1911,6 +1917,7 @@ def _infer_binomial_lift_result(
         null_abs=null_abs,
         abs_lb=abs_lb,
         abs_ub=abs_ub,
+        abs_alpha=alpha_eff if abs_lb is not None else None,
         reference_kind="binomial",
         binomial_set=binomial_set,
     )
@@ -2102,6 +2109,7 @@ def _nonpositive_mean_additive_row(
         abs_ub=upper,
         abs_reference_kind=("t" if abs_dof is not None else "normal") if abs_se > 0.0 else None,
         abs_reference_df=abs_dof,
+        abs_alpha=_alpha_eff_for(alternative, alpha) if lower is not None else None,
         reference_kind="normal",
         reference_df=None,
         note="Arm mean is non-positive; the log-scale relative lift is undefined. "

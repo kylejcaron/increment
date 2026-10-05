@@ -1014,7 +1014,7 @@ def test_reverse_ordered_index_table_publishes_and_adopts_like_native() -> None:
         adopted_rows = adopted.run(metrics=[metric])
         assert len(adopted_rows) == len(native_rows) > 0
         for got, want in zip(adopted_rows, native_rows, strict=True):
-            for field in ("abs_diff", "abs_se", "abs_lb", "abs_ub"):
+            for field in ("abs_diff", "abs_se", "abs_lb", "abs_ub", "abs_alpha"):
                 assert getattr(got, field) == pytest.approx(getattr(want, field), rel=1e-9)
     finally:
         adopted.close()

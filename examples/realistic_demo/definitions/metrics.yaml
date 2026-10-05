@@ -64,3 +64,36 @@ metrics:
         - property: page
           op: equals
           values: ["/checkout"]
+
+  # Saved definitions the checkout experiment does not declare; the dashboard can add them
+  # to Explore as exploratory metrics.
+  - type: mean
+    name: orders_per_user
+    description: "Completed orders per enrolled user"
+    entity: user_id
+    preferred_direction: increase
+    fact: order
+    aggregation: count
+    window_days: 14
+
+  - type: mean
+    name: page_views_per_user
+    description: "Page views per enrolled user"
+    entity: user_id
+    preferred_direction: increase
+    fact: page_view
+    aggregation: count
+    window_days: 14
+
+  - type: mean
+    name: checkout_loads_per_user
+    description: "Checkout page loads per enrolled user"
+    entity: user_id
+    preferred_direction: decrease
+    fact: page_load
+    aggregation: count
+    window_days: 14
+    filters:
+      - property: page
+        op: equals
+        values: ["/checkout"]

@@ -7,19 +7,25 @@ complete native operations that a caller may opt into.
 
 from __future__ import annotations
 
+import copy
 import datetime as dt
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
-from increment.errors import _freeze
+from increment.errors import CodedError, _freeze
 
 if TYPE_CHECKING:
     import pyarrow as pa
 
     from increment.analysis import Analysis
+    from increment.breakout.estimates import (
+        BreakoutEstimates,
+        DailyLiftEstimates,
+        DailyMetricValues,
+    )
     from increment.estimation.diagnostics import SRMResult
     from increment.estimation.results import LiftEstimate
     from increment.query.native_source import DayEvidenceSource
@@ -57,6 +63,126 @@ class DashboardGroupData:
         object.__setattr__(self, "unavailable", _freeze(self.unavailable))
 
 
+# A declared breakout choice as (declared source or None, property).
+BreakoutChoice = tuple[str | None, str]
+# (view, metric or None for every declared metric, completed windows only, breakout choice)
+ExploreKey = tuple[str, str | None, bool, BreakoutChoice | None]
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardExploreCapture:
+    """One Explore request answered inside the pinned read.
+
+    Holds the rows the source returned, or the coded refusal it raised, never both. The refusal
+    is a detached copy with no traceback, so no frame keeps the pinned analysis alive, and
+    every :meth:`load` yields a fresh collection or a fresh copy of that refusal.
+    """
+
+    view: str
+    metric: str | None
+    completed_windows_only: bool
+    breakout: BreakoutChoice | None
+    collection: Callable[[Iterable[Any]], Sequence[Any]] | None
+    rows: tuple[Any, ...]
+    refusal: CodedError | None
+
+    @classmethod
+    def answered(
+        cls,
+        key: ExploreKey,
+        rows: Sequence[Any],
+        *,
+        collection: Callable[[Iterable[Any]], Sequence[Any]],
+    ) -> DashboardExploreCapture:
+        view, metric, completed, breakout = key
+        return cls(view, metric, completed, breakout, collection, tuple(rows), None)
+
+    @classmethod
+    def refused(cls, key: ExploreKey, refusal: CodedError) -> DashboardExploreCapture:
+        view, metric, completed, breakout = key
+        return cls(view, metric, completed, breakout, None, (), copy.copy(refusal))
+
+    @property
+    def key(self) -> ExploreKey:
+        return (self.view, self.metric, self.completed_windows_only, self.breakout)
+
+    def load(self) -> Sequence[Any]:
+        """A fresh collection of the captured rows, or a fresh copy of the captured refusal."""
+        if self.refusal is not None:
+            raise copy.copy(self.refusal)
+        assert self.collection is not None
+        return self.collection(self.rows)
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardBreakoutReads:
+    """The Explore reads of one declared breakout, and nothing else.
+
+    Every read hands the source this breakout alone, so another source of the same property,
+    or its refusal, never enters it. Families are computed per breakout, so the rows equal
+    this breakout's rows from the dimension-wide reads.
+    """
+
+    breakout: Breakout
+    _scoped: Analysis = field(repr=False)
+
+    def run_asof_lift(
+        self,
+        *,
+        metrics: Sequence[str],
+        completed_windows_only: bool = False,
+        exploratory_metrics: Sequence[str] | None = None,
+    ) -> DailyLiftEstimates:
+        return self._scoped.run_asof_lift(
+            metrics=metrics,
+            exploratory_metrics=exploratory_metrics,
+            completed_windows_only=completed_windows_only,
+            dimension=self.breakout.property,
+        )
+
+    def run_asof(
+        self,
+        *,
+        metrics: Sequence[str],
+        completed_windows_only: bool = False,
+        exploratory_metrics: Sequence[str] | None = None,
+    ) -> DailyMetricValues:
+        return self._scoped.run_asof(
+            metrics=metrics,
+            exploratory_metrics=exploratory_metrics,
+            completed_windows_only=completed_windows_only,
+            dimension=self.breakout.property,
+        )
+
+    def run_daily(
+        self, *, metrics: Sequence[str], exploratory_metrics: Sequence[str] | None = None
+    ) -> DailyMetricValues:
+        return self._scoped.run_daily(
+            metrics=metrics,
+            exploratory_metrics=exploratory_metrics,
+            dimension=self.breakout.property,
+        )
+
+    def run_breakout(
+        self, *, metrics: Sequence[str], exploratory_metrics: Sequence[str] | None = None
+    ) -> BreakoutEstimates:
+        return self._scoped.run_breakout(metrics=metrics, exploratory_metrics=exploratory_metrics)
+
+    def uncorrected_segments(
+        self, *, metrics: Sequence[str], exploratory_metrics: Sequence[str] | None = None
+    ) -> BreakoutEstimates:
+        """This breakout's segment rows with no view-multiplicity correction.
+
+        The same estimators, methods, roles, and per-metric configuration as
+        :meth:`run_breakout`, but each cell stands alone: no Bonferroni split, no BH
+        selection, and no family fields, so a caller can correct a wider family itself.
+        A registered sequential plan has no fixed-horizon p-values to correct and refuses.
+        """
+        return self._scoped._run_breakout(
+            metrics=metrics, exploratory_metrics=exploratory_metrics, correction="none"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class DashboardSnapshotPayload:
     """Complete dashboard evidence from one pinned source read."""
@@ -67,10 +193,12 @@ class DashboardSnapshotPayload:
     allocation_history_refusal: tuple[str, str] | None
     estimates: tuple[LiftEstimate, ...]
     group_data: tuple[DashboardGroupData, ...]
+    explore: tuple[DashboardExploreCapture, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "estimates", tuple(self.estimates))
         object.__setattr__(self, "group_data", tuple(self.group_data))
+        object.__setattr__(self, "explore", tuple(self.explore))
 
 
 class DashboardSnapshotHandler(Protocol):
@@ -180,6 +308,7 @@ class ReadoutSnapshotOperation(Protocol):
         metrics: Sequence[Metric],
         population: Literal["assigned", "triggered"],
         uptake_facts: Sequence[str] = (),
+        include_breakouts: bool = False,
     ) -> AbstractContextManager[MomentSource]: ...
 
 
@@ -193,7 +322,16 @@ class DaySourceOperation(Protocol):
     def day_source(self, *, metrics: Sequence[Metric]) -> DayEvidenceSource: ...
 
 
+@runtime_checkable
+class ExploratorySourceOperation(Protocol):
+    def exploratory_source(self, *, metrics: Sequence[Metric]) -> MomentSource: ...
+
+
 __all__ = [
+    "BreakoutChoice",
+    "ExploreKey",
+    "DashboardBreakoutReads",
+    "DashboardExploreCapture",
     "DashboardGroupData",
     "DashboardGroupDataOperation",
     "AllocationHistoryOperation",
@@ -202,6 +340,7 @@ __all__ = [
     "BreakoutSourceOperation",
     "BreakoutSourcesOperation",
     "DaySourceOperation",
+    "ExploratorySourceOperation",
     "ExportMomentsOperation",
     "MaterializeOperation",
     "MomentsSourceOperation",

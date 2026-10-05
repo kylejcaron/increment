@@ -67,6 +67,7 @@ dashboard = [
     "marimo>=0.25.0",
     "coeftable>=0.13.1",
     "pandas>=2.2",
+    "anywidget>=0.9",
 ]
 
 [build-system]

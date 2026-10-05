@@ -52,6 +52,7 @@ htmlcov/
 .kata/
 /.roborev/
 /.superpowers/
+/docs/superpowers/
 /.worktrees/
 .claude/settings.local.json
 

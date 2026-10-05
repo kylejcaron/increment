@@ -35,7 +35,7 @@ from increment._literals import (
     ALTERNATIVE_VALUES,
     Alternative,
     PreferredDirection,
-    Role,
+    RowRole,
     ValueScale,
 )
 from increment.errors import (
@@ -402,6 +402,8 @@ _REFUSALS = refusals(
         "estimation.results.binomial.posterior_unavailable": "metric={metric!r} group_id={group_id!r}: no Normal/lognormal posterior exists for a reference_kind='binomial' row -- the exact binomial method is a frequentist test-inversion, not a posterior; chance_to_beat/prob_beyond/prob_within/risk_if_shipped and their favorable variants are unavailable here. Use stat_sig()/p_value() (both binomial-set-aware) or the persisted lift/binomial_set bounds directly.",
         "estimation.results.lift.binomial_lift_availability": "metric={metric!r} group_id={group_id!r}: {reason}",
         "estimation.results.lift.absolute_reference_mismatch": "absolute reference {kind!r} requires df exactly for t, got {df!r}",
+        "estimation.results.lift.absolute_alpha_without_interval": "abs_alpha={abs_alpha!r} is the alpha an additive interval was cut at, but this row carries no additive interval (abs_lb/abs_ub)",
+        "estimation.results.lift.absolute_alpha_mismatch": "abs_alpha={abs_alpha!r} contradicts the alpha {alpha!r} of the relative interval the same call cut",
     },
 )
 _raise = raiser(_REFUSALS)
@@ -413,6 +415,21 @@ def _validate_absolute_reference_fields(row: Any) -> Any:
             "estimation.results.lift.absolute_reference_mismatch",
             kind=row.abs_reference_kind,
             df=row.abs_reference_df,
+        )
+    if row.abs_alpha is None:
+        return row
+    if row.abs_lb is None or row.abs_ub is None:
+        _raise("estimation.results.lift.absolute_alpha_without_interval", abs_alpha=row.abs_alpha)
+    lift = row.lift
+    if (
+        lift is not None
+        and lift.alpha is not None
+        and not math.isclose(row.abs_alpha, lift.alpha, rel_tol=1e-12, abs_tol=0.0)
+    ):
+        _raise(
+            "estimation.results.lift.absolute_alpha_mismatch",
+            abs_alpha=row.abs_alpha,
+            alpha=lift.alpha,
         )
     return row
 
@@ -551,6 +568,10 @@ class LiftEstimate(_RowIdentity):
     # None means the sidecar reference is unavailable, including legacy rows.
     abs_reference_kind: Literal["normal", "t"] | None = None
     abs_reference_df: float | None = Field(default=None, allow_inf_nan=False, gt=0)
+    abs_alpha: float | None = Field(default=None, gt=0.0, lt=1.0, allow_inf_nan=False)
+    # The central-equivalent alpha the additive interval was cut at, in `Estimate.alpha`'s
+    # convention: a directional row carries the doubled call alpha. Set with abs_lb/abs_ub;
+    # None for a row serialized before it was persisted.
 
     winsor_lower_percentile: float | None = None
     winsor_upper_percentile: float | None = None
@@ -597,9 +618,9 @@ class LiftEstimate(_RowIdentity):
     prior_shrunk: bool = False
     # True when `prior is not None`: lift.log_mean/log_se are raw pre-prior
     # statistics while value/lb/ub are the prior-informed posterior.
-    role: Role | None = None
-    # The declared-plan role this row was estimated under; None only when
-    # `src.plan.declared` is False (no `AnalysisPlan` was ever declared).
+    role: RowRole | None = None
+    # The declared-plan role this row was estimated under, or "exploratory" for a metric
+    # added after the plan; None only when `src.plan.declared` is False.
     discovery: bool | None = None
     # None outside a tested family; otherwise BH/e-BH selection or qualified
     # fixed-roster Bonferroni selection for asymptotic mean inference.
@@ -615,6 +636,8 @@ class LiftEstimate(_RowIdentity):
     # fcr_alpha = min(realized_threshold, family_nominal_alpha).
     family_guarantee: Literal["finite_sample", "asymptotic_sequential"] | None = None
     family_nominal_alpha: float | None = None
+    family_size: int | None = Field(default=None, ge=1)
+    # Hypotheses in the correcting family (BH's m) where the family records it; None otherwise.
 
     # family_threshold is R*q/m for BH/e-BH; unset for asymptotic Bonferroni.
     # Reported intervals never receive more than their nominal alpha.
@@ -727,7 +750,8 @@ class LiftEstimate(_RowIdentity):
                 or self.dof is not None
                 or self.n_clusters is not None
                 or any(
-                    x is not None for x in (self.abs_diff, self.abs_se, self.abs_lb, self.abs_ub)
+                    x is not None
+                    for x in (self.abs_diff, self.abs_se, self.abs_lb, self.abs_ub, self.abs_alpha)
                 )
                 or self.method != "independent_mean"
             ):
@@ -774,6 +798,7 @@ class LiftEstimate(_RowIdentity):
                 or self.abs_diff != region.additive_point
                 or self.abs_lb != region.additive.lower.value
                 or self.abs_ub != region.additive.upper.value
+                or (self.abs_alpha is not None and self.abs_alpha != region.alpha)
                 or self.abs_se is not None
             ):
                 winsor_refuse(
@@ -926,6 +951,7 @@ class LiftEstimate(_RowIdentity):
                     self.abs_ub,
                     self.abs_reference_kind,
                     self.abs_reference_df,
+                    self.abs_alpha,
                     self.n_clusters,
                 )
             )
@@ -997,6 +1023,10 @@ class LiftEstimate(_RowIdentity):
             )
         return self.lift
 
+    def _family_view(self) -> LiftEstimate:
+        """The estimate exploratory-family evidence and FCR reissue read: this row itself."""
+        return self
+
     def reintervalize(self, alpha: float) -> LiftEstimate:
         """Reinvert persisted inference; bootstrap roots are never regenerated."""
         if self.confidence_set is None:
@@ -1026,6 +1056,7 @@ class LiftEstimate(_RowIdentity):
                 "lift": result.lift,
                 "abs_lb": result.abs_lb,
                 "abs_ub": result.abs_ub,
+                "abs_alpha": result.abs_alpha,
             }
         )
 
@@ -1715,6 +1746,14 @@ def _fcr_alpha_for(alternative: str, fcr_alpha: float | Fraction) -> float:
     return math.nextafter(value, 0.0) if Fraction(value) > exact else value
 
 
+def _alpha_eff_for(alternative: str, alpha: float) -> float:
+    """The central-equivalent alpha a call-level *alpha* displays under.
+
+    The inverse of ``_fcr_alpha_for``: directional alternatives double it.
+    """
+    return alpha if alternative == "two-sided" else 2.0 * alpha
+
+
 def _working_value(estimate: LiftEstimate, value: float) -> float:
     if estimate.scale != "log":
         return value
@@ -2240,7 +2279,7 @@ class RelativeConfidenceSet(CodedModel, BaseModel):
         ``2 * alpha`` across both -- the alpha-doubling identity every
         other inference path in the library displays under.
         """
-        return self.alpha if self.alternative == "two-sided" else 2.0 * self.alpha
+        return _alpha_eff_for(self.alternative, self.alpha)
 
     def estimate(self) -> Estimate | None:
         """The displayed interval: central at ``alpha_eff``, never closed toward
@@ -2362,6 +2401,11 @@ def _validate_joint_relative_row(row: Any) -> bool:
             _raise(
                 "estimation.results.joint.invalid_set",
                 reason="additive bounds contradict joint reference and alpha",
+            )
+        if row.abs_alpha is not None and row.abs_alpha != relative.alpha_eff:
+            _raise(
+                "estimation.results.joint.invalid_set",
+                reason="additive alpha contradicts the joint set",
             )
         return True
     return False

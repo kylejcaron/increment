@@ -2276,6 +2276,7 @@ def test_panel_cuped_scratch_alias_collision_matches_ordinary_and_summary(backen
                 "abs_se",
                 "abs_lb",
                 "abs_ub",
+                "abs_alpha",
             ):
                 got, want = getattr(result, field), getattr(baseline, field)
                 assert got == (

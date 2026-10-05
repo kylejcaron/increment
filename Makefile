@@ -62,9 +62,9 @@ endif
 sim:
 	uv run --extra demo python -m increment.simulate --replications 200
 demo:
-	uv run --group dev --extra demo --extra tables marimo edit examples/realistic_demo/
+	uv run --group dev --extra demo --extra tables --extra dashboard marimo edit examples/realistic_demo/
 examples:
-	uv run --group dev --extra demo --extra tables marimo edit examples/ --no-token
+	uv run --group dev --extra demo --extra tables --extra dashboard marimo edit examples/ --no-token
 check: lint typecheck test-fast test-slow
 
 # Local CI omits interpreter/floor matrices, Windows, notebooks and live warehouses.

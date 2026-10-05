@@ -251,6 +251,7 @@ def _unadjusted_joint_result(
     from increment.estimation.results import (
         Estimate,
         LiftEstimate,
+        _alpha_eff_for,
         _joint_reference_from_exact,
         relative_confidence_set,
     )
@@ -353,6 +354,7 @@ def _unadjusted_joint_result(
         if abs_se is not None
         else None,
         abs_reference_df=abs_df if abs_se is not None else None,
+        abs_alpha=_alpha_eff_for(alternative, alpha) if abs_lower is not None else None,
         n_clusters=len(state.cluster_ids),
         dof=df,
         reference_kind=kind,

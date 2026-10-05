@@ -2,30 +2,35 @@
    Every rule is prefixed inc-dashboard- so a notebook's other output and
    marimo's own chrome are untouched. */
 
+/* Section aliases inherit the preset generated at the document or notebook boundary. */
 .inc-dashboard-root {
-  --inc-dashboard-canvas: #f2f0e9;
-  --inc-dashboard-panel: #fffef9;
-  --inc-dashboard-text: #292d26;
-  --inc-dashboard-muted: #62695d;
-  --inc-dashboard-accent: #42644d;
-  --inc-dashboard-favorable: #386647;
-  --inc-dashboard-warning: #956017;
-  --inc-dashboard-unfavorable: #a23c3c;
-  --inc-dashboard-inconclusive: #80601c;
-  --inc-dashboard-inconclusive-bg: #f4ecd7;
-  --inc-dashboard-favorable-bg: #e6efe7;
-  --inc-dashboard-unfavorable-bg: #f5e5e2;
-  --inc-dashboard-rule: #dcded1;
-  --inc-dashboard-band: #f5f5ed;
-  --inc-dashboard-column: #ecefe4;
+  --inc-dashboard-canvas: var(--inc-dashboard-theme-canvas);
+  --inc-dashboard-panel: var(--inc-dashboard-theme-panel);
+  --inc-dashboard-text: var(--inc-dashboard-theme-text);
+  --inc-dashboard-muted: var(--inc-dashboard-theme-muted);
+  --inc-dashboard-accent: var(--inc-dashboard-theme-accent);
+  --inc-dashboard-control: var(--inc-dashboard-theme-control);
+  --inc-dashboard-treatment: var(--inc-dashboard-theme-treatment);
+  --inc-dashboard-favorable: var(--inc-dashboard-theme-favorable);
+  --inc-dashboard-warning: var(--inc-dashboard-theme-inconclusive);
+  --inc-dashboard-unfavorable: var(--inc-dashboard-theme-unfavorable);
+  --inc-dashboard-inconclusive: var(--inc-dashboard-theme-inconclusive);
+  --inc-dashboard-inconclusive-bg: var(--inc-dashboard-theme-inconclusive-bg);
+  --inc-dashboard-favorable-bg: var(--inc-dashboard-theme-favorable-bg);
+  --inc-dashboard-unfavorable-bg: var(--inc-dashboard-theme-unfavorable-bg);
+  --inc-dashboard-rule: var(--inc-dashboard-theme-rule);
+  --inc-dashboard-band: var(--inc-dashboard-theme-band);
+  --inc-dashboard-column: var(--inc-dashboard-theme-column);
+  --inc-dashboard-header: var(--inc-dashboard-theme-header);
+  --inc-dashboard-header-text: var(--inc-dashboard-theme-header-text);
 
   box-sizing: border-box;
   width: 100%;
-  max-width: 1180px;
+  max-width: var(--inc-dashboard-section-width);
   margin: 0 auto;
   color: var(--inc-dashboard-text);
-  font-family: var(--marimo-text-font, system-ui, -apple-system, "Segoe UI", sans-serif);
-  font-size: 14px;
+  font-family: var(--inc-dashboard-body-font);
+  font-size: var(--inc-dashboard-table-size);
   line-height: 1.5;
   font-variant-numeric: tabular-nums;
 }
@@ -47,7 +52,7 @@
 
 .inc-dashboard-title {
   margin: 0;
-  font-family: Georgia, "Iowan Old Style", serif;
+  font-family: var(--inc-dashboard-heading-font);
   font-size: 43px;
   font-weight: 500;
   letter-spacing: -0.045em;
@@ -55,7 +60,7 @@
 
 .inc-dashboard-heading {
   margin: 0 0 4px;
-  font-family: Georgia, "Iowan Old Style", serif;
+  font-family: var(--inc-dashboard-heading-font);
   font-size: 26px;
   font-weight: 500;
   letter-spacing: -0.02em;
@@ -115,7 +120,7 @@
 }
 
 .inc-dashboard-arm {
-  font-family: var(--marimo-monospace-font, ui-monospace, SFMono-Regular, monospace);
+  font-family: var(--inc-dashboard-mono-font);
 }
 
 /* Summary cards */
@@ -154,7 +159,7 @@
 
 .inc-dashboard-card-value {
   margin: 0;
-  font-family: Georgia, "Iowan Old Style", serif;
+  font-family: var(--inc-dashboard-heading-font);
   font-size: 31px;
   font-weight: 500;
   overflow-wrap: break-word;
@@ -178,7 +183,7 @@
   align-items: baseline;
   gap: 4px 10px;
   margin: 0 0 7px;
-  font-family: Georgia, "Iowan Old Style", serif;
+  font-family: var(--inc-dashboard-heading-font);
   letter-spacing: -0.025em;
 }
 
@@ -300,7 +305,7 @@
 
 .inc-dashboard-code,
 .inc-dashboard-root code {
-  font-family: var(--marimo-monospace-font, ui-monospace, SFMono-Regular, monospace);
+  font-family: var(--inc-dashboard-mono-font);
   font-size: 13px;
   color: var(--inc-dashboard-muted);
 }
@@ -324,14 +329,9 @@
   margin: 12px 0 4px;
 }
 
-.inc-dashboard-disclosure .inc-dashboard-table {
-  min-width: 720px;
-}
-
 .inc-dashboard-unavailable-reasons {
   display: block;
-  width: 24rem;
-  max-width: 60vw;
+  max-width: 24rem;
   white-space: normal;
   text-align: left;
 }
@@ -339,32 +339,56 @@
 .inc-dashboard-root table {
   background: var(--inc-dashboard-panel) !important;
   color: var(--inc-dashboard-text) !important;
+  font-family: var(--inc-dashboard-body-font) !important;
 }
 
 .inc-dashboard-root table td {
   color: var(--inc-dashboard-text) !important;
 }
 
+.inc-dashboard-root .gt_row {
+  padding: var(--inc-dashboard-cell-padding-y) var(--inc-dashboard-cell-padding-x) !important;
+}
+
+.inc-dashboard-root .gt_col_heading {
+  padding: calc(var(--inc-dashboard-cell-padding-y) + 1px) var(--inc-dashboard-cell-padding-x) !important;
+}
+
+/* great_tables' own row rule is a literal grey; cells CoefTable did not style
+   inline would keep it in either mode. */
+.inc-dashboard-root td.gt_row:not([style*="border-top"]) {
+  border-top-color: var(--inc-dashboard-rule) !important;
+}
+
+.inc-dashboard-root .gt_column_spanner_outer {
+  background: var(--inc-dashboard-header) !important;
+  color: var(--inc-dashboard-header-text) !important;
+}
+
+.inc-dashboard-root .gt_column_spanner {
+  border-color: var(--inc-dashboard-rule) !important;
+}
+
 .inc-dashboard-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 14px;
+  font-size: var(--inc-dashboard-table-size);
 }
 
 .inc-dashboard-table th,
 .inc-dashboard-table td {
-  padding: 8px 12px;
+  padding: var(--inc-dashboard-cell-padding-y) var(--inc-dashboard-cell-padding-x);
   text-align: right;
   border-bottom: 1px solid var(--inc-dashboard-rule);
   white-space: nowrap;
 }
 
 .inc-dashboard-table thead th {
-  background: var(--inc-dashboard-column);
+  background: var(--inc-dashboard-header);
   font-size: 12px;
   font-weight: 620;
   letter-spacing: 0.02em;
-  color: var(--inc-dashboard-muted);
+  color: var(--inc-dashboard-header-text);
 }
 
 .inc-dashboard-table th:first-child,
@@ -440,11 +464,11 @@
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: var(--inc-dashboard-accent);
+  background: var(--inc-dashboard-treatment);
 }
 
 .inc-dashboard-meter-fill--control {
-  background: var(--inc-dashboard-muted);
+  background: var(--inc-dashboard-control);
 }
 
 .inc-dashboard-meter-target {
@@ -465,7 +489,7 @@
 }
 
 .inc-dashboard-brand {
-  font-family: Georgia, "Iowan Old Style", serif;
+  font-family: var(--inc-dashboard-heading-font);
   font-size: 28px;
   letter-spacing: -0.055em;
   color: var(--inc-dashboard-text);

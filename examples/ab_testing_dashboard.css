@@ -1,57 +1,27 @@
-/* Notebook framing only; reusable section styles live in increment.dashboard. */
+/* The embedded dashboard owns its layout in live and exported notebooks. */
 :root {
   --marimo-text-font: system-ui, -apple-system, "Segoe UI", sans-serif;
   --marimo-heading-font: Georgia, "Iowan Old Style", serif;
 }
 
+
 #App {
-  background: #f2f0e9;
-  color: #292d26;
+  background: var(--inc-dashboard-notebook-canvas);
+  color: var(--inc-dashboard-notebook-text);
 }
 
-#App [data-cell-name] {
+#App [data-cell-name]:has(marimo-anywidget) {
   width: 100%;
-  max-width: 1176px;
-  margin-inline: auto;
-  padding: 0 36px;
-  background: #fffef9;
-  border-inline: 1px solid #dcded1;
-  border-radius: 0;
-}
-
-#App [data-cell-name]:has(.inc-dashboard-navigation) {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  padding: 22px 0;
-  margin-bottom: 34px;
-  background: #f2f0e9;
-  border: 0;
-  border-bottom: 1px solid #dcded1;
-}
-
-#App [data-cell-name]:has(#overview) {
-  border-top: 1px solid #dcded1;
-  padding-top: 24px;
-}
-
-#App [data-cell-name]:last-child {
-  border-bottom: 1px solid #dcded1;
-  padding-bottom: 28px;
-}
-
-#App [data-cell-name]:has(style):not(:has(.inc-dashboard-root)) {
+  max-width: none;
+  padding: 0;
   background: transparent;
-  border: 0;
 }
 
-@media (max-width: 760px) {
-  #App [data-cell-name] {
-    padding-inline: 18px;
-  }
+#App [data-cell-name]:has(marimo-anywidget) .output-area {
+  padding: 0;
+}
 
-  #App [data-cell-name]:has(.inc-dashboard-navigation) {
-    padding: 14px 0;
-    margin-bottom: 18px;
-  }
+/* marimo's full-width layout still pads the page; give the dashboard cell that width back. */
+#App .px-1:has([data-cell-name] marimo-anywidget) {
+  padding-inline: 8px;
 }

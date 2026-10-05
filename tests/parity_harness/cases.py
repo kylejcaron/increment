@@ -51,7 +51,13 @@ from increment.semantics.models import (
 )
 from increment.semantics.sequential import SequentialCompliancePolicy
 from increment.sequential_source import native_observation_mapping
-from tests.analysis_factory import _moment_source, _native_source, make_analysis, native_connection
+from tests.analysis_factory import (
+    _moment_source,
+    _native_source,
+    make_analysis,
+    make_analysis_like,
+    native_connection,
+)
 
 from . import dataset as ds
 
@@ -813,6 +819,57 @@ def _breakout_case(*, boolean: bool = False) -> ParityCase:
         },
     )
     return case
+
+
+def _dashboard_breakout_reads_case() -> ParityCase:
+    from increment.semantics.models import Breakout
+
+    def outcome(read: Callable[[], Any]) -> Any:
+        try:
+            rows = read()
+        except CodedError as exc:
+            return exc.code
+        return sorted(row.model_dump_json() for row in rows)
+
+    def probe(path: str, analysis: Analysis) -> None:
+        if path != "from_definitions":
+            with pytest.raises(CodedError) as caught:
+                analysis.dashboard_breakout_reads(Breakout(property="store"))
+            assert caught.value.code == "facade.analysis.operation"
+            return
+        (declared,) = analysis.experiment.breakouts
+        with pytest.raises(CodedError) as caught:
+            analysis.dashboard_breakout_reads(declared.model_copy(update={"property": "nope"}))
+        assert caught.value.code == "facade.analysis.undeclared_breakout"
+        reads = analysis.dashboard_breakout_reads(declared)
+        names = [metric.name for metric in analysis.metrics]
+        dimension = declared.property
+        observed = []
+        for scoped, whole in (
+            (
+                lambda: reads.run_asof_lift(metrics=names),
+                lambda: analysis.run_asof_lift(metrics=names, dimension=dimension),
+            ),
+            (
+                lambda: reads.run_asof(metrics=names, completed_windows_only=True),
+                lambda: analysis.run_asof(
+                    metrics=names, completed_windows_only=True, dimension=dimension
+                ),
+            ),
+            (
+                lambda: reads.run_daily(metrics=names),
+                lambda: analysis.run_daily(metrics=names, dimension=dimension),
+            ),
+            (
+                lambda: reads.run_breakout(metrics=names),
+                lambda: analysis.run_breakout(metrics=names),
+            ),
+        ):
+            observed.append(outcome(scoped))
+            assert observed[-1] == outcome(whole)
+        assert all(isinstance(rows, list) and rows for rows in observed), observed
+
+    return replace(_breakout_case(), id="dashboard-breakout-reads", source_probe=probe)
 
 
 def _window_edge_rows() -> list[dict[str, Any]]:
@@ -5879,9 +5936,8 @@ def _inferred_null_metric_case() -> ParityCase:
     )
 
 
-def _switchback_neighboring_integer_case() -> ParityCase:
+def _neighboring_integer_switchback_analysis() -> Analysis:
     import polars as pl
-    from scipy.stats import t
 
     from increment.semantics.assignment import (
         IndependentBernoulliOrder,
@@ -5890,36 +5946,39 @@ def _switchback_neighboring_integer_case() -> ParityCase:
     )
     from increment.semantics.unit_cycle import UnitCycleTApproximation
 
-    def build() -> Analysis:
-        rows = [
-            {
-                "unit": unit,
-                "cycle": 0,
-                "period": period,
-                "step": 0,
-                "arm": "control" if period == 0 else "treatment",
-                "y": 2**53 + period * delta,
-            }
-            for unit, delta in (("a", 1), ("b", 2))
-            for period in (0, 1)
-        ]
-        return Analysis.from_switchback_panel(
-            pl.DataFrame(rows),
-            unit="unit",
-            cycle="cycle",
-            period="period",
-            step="step",
-            group="arm",
-            metrics={"y": "mean"},
-            identification=Randomized(
-                control_group="control", allocation={"control": 0.5, "treatment": 0.5}
-            ),
-            assignment=SwitchbackAssignment(
-                sequence=IndependentBernoulliOrder(probability_ct=0.5),
-                window=SwitchbackWindow(washout_steps=0, observation_steps=1),
-            ),
-            contrast_references={"y": UnitCycleTApproximation()},
-        )
+    rows = [
+        {
+            "unit": unit,
+            "cycle": 0,
+            "period": period,
+            "step": 0,
+            "arm": "control" if period == 0 else "treatment",
+            "y": 2**53 + period * delta,
+        }
+        for unit, delta in (("a", 1), ("b", 2))
+        for period in (0, 1)
+    ]
+    return Analysis.from_switchback_panel(
+        pl.DataFrame(rows),
+        unit="unit",
+        cycle="cycle",
+        period="period",
+        step="step",
+        group="arm",
+        metrics={"y": "mean"},
+        identification=Randomized(
+            control_group="control", allocation={"control": 0.5, "treatment": 0.5}
+        ),
+        assignment=SwitchbackAssignment(
+            sequence=IndependentBernoulliOrder(probability_ct=0.5),
+            window=SwitchbackWindow(washout_steps=0, observation_steps=1),
+        ),
+        contrast_references={"y": UnitCycleTApproximation()},
+    )
+
+
+def _switchback_neighboring_integer_case() -> ParityCase:
+    from scipy.stats import t
 
     def probe(results: Any) -> None:
         (row,) = results
@@ -5931,13 +5990,72 @@ def _switchback_neighboring_integer_case() -> ParityCase:
 
     return ParityCase(
         id="audit-switchback-neighboring-integers",
-        build={"from_switchback_panel": build},
+        build={"from_switchback_panel": _neighboring_integer_switchback_analysis},
         waive={
             name: "SOURCE: parallel-arm and portable-moment constructors carry no switchback schedule"
             for name in CONSTRUCTORS
             if name != "from_switchback_panel"
         },
         readout_probe=probe,
+    )
+
+
+_EXPLORATORY_SOURCE_LIMITED = "facade.analysis.exploratory_metrics_source_limited"
+_EXPLORATORY_READS: dict[str, Callable[..., Any]] = {
+    "run": lambda analysis, names: analysis.run(exploratory_metrics=names),
+    "run_breakout": lambda analysis, names: analysis.run_breakout(exploratory_metrics=names),
+    "run_asof_lift": lambda analysis, names: analysis.run_asof_lift(exploratory_metrics=names),
+    "run_asof": lambda analysis, names: analysis.run_asof(exploratory_metrics=names),
+    "run_daily": lambda analysis, names: analysis.run_daily(exploratory_metrics=names),
+}
+
+
+def _exploratory_metrics_case() -> ParityCase:
+    """Added metrics are supported on ``from_definitions`` alone (the only ingress holding
+    saved definitions to add from); every other ingress refuses with one shared code. The
+    switchback ingress builds no case-wide fixture, so its refusal is probed beside the
+    native one."""
+
+    def refused(analysis: Analysis) -> None:
+        for read in _EXPLORATORY_READS.values():
+            with pytest.raises(CodedError) as caught:
+                read(analysis, ["purchase_rate"])
+            assert caught.value.code == _EXPLORATORY_SOURCE_LIMITED
+        with pytest.raises(CodedError) as caught:
+            analysis.available_metrics  # noqa: B018
+        assert caught.value.code == _EXPLORATORY_SOURCE_LIMITED
+
+    def probe(path: str, analysis: Analysis) -> None:
+        if path != "from_definitions":
+            refused(analysis)
+            return
+        refused(_neighboring_integer_switchback_analysis())
+        revenue = [metric for metric in analysis.metrics if metric.name == "revenue"]
+        narrowed = make_analysis_like(
+            analysis,
+            metrics=revenue,
+            experiment=analysis.experiment.model_copy(
+                update={"plan": AnalysisPlan(secondaries=["revenue"])}
+            ),
+        )
+        assert [metric.name for metric in narrowed.available_metrics] == [
+            "purchase_rate",
+            "rps",
+            "revenue_cuped",
+        ]
+        rows = narrowed.run(metrics=[], exploratory_metrics=["purchase_rate", "rps"])
+        assert [row.metric for row in rows] == ["purchase_rate", "rps"]
+        assert {row.role for row in rows} == {"exploratory"}
+        assert [row.metric for row in narrowed.run(exploratory_metrics=["rps"])] == [
+            "revenue",
+            "rps",
+        ]
+        with pytest.raises(CodedError) as caught:
+            narrowed.run(exploratory_metrics=["revenue"])
+        assert caught.value.code == "facade.analysis_config.exploratory_metric_unavailable"
+
+    return replace(
+        _mean_ratio_conversion_cuped_case(), id="exploratory-metrics", source_probe=probe
     )
 
 
@@ -6139,6 +6257,8 @@ PARITY_CASES: tuple[ParityCase, ...] = (
     _lift_prior_case("mixture"),
     _breakout_case(),
     _breakout_case(boolean=True),
+    _dashboard_breakout_reads_case(),
+    _exploratory_metrics_case(),
     _window_spelling_case(native_spelling="zulu"),
     _window_spelling_case(native_spelling="offset"),
     _sequential_missing_zero_mean_ratio_case(),

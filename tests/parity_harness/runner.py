@@ -19,7 +19,7 @@ to split on.
 The compared payload is the full additive-and-relative surface: value, lb,
 ub, level, role, discovery, family_q, family_threshold, family_guarantee,
 family_nominal_alpha, family_axes, alternative, reference_kind, note,
-inference, null_lift, null_abs, abs_diff, abs_se, abs_lb, abs_ub,
+inference, null_lift, null_abs, abs_diff, abs_se, abs_lb, abs_ub, abs_alpha,
 abs_reference_kind, abs_reference_df, reference_df, dof, quantile_p_value,
 relative_unavailable_reason, relative_confidence_set (structurally, via
 `model_dump()`), BreakoutEstimate's own `excluded`, and a sequential row's
@@ -95,6 +95,7 @@ _NUMERIC_FIELDS = (
     "abs_se",
     "abs_lb",
     "abs_ub",
+    "abs_alpha",
     "abs_reference_df",
     "reference_df",
     "dof",
@@ -202,6 +203,7 @@ def _row_payload(row: Any) -> dict[str, Any]:
         "abs_se": row.abs_se,
         "abs_lb": row.abs_lb,
         "abs_ub": row.abs_ub,
+        "abs_alpha": row.abs_alpha,
         "abs_reference_kind": row.abs_reference_kind,
         "abs_reference_df": row.abs_reference_df,
         "reference_df": row.reference_df,

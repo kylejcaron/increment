@@ -178,6 +178,7 @@ def _base_liftestimate_to_row(
         "binomial_set": binomial,
         "abs_reference_kind": getattr(est, "abs_reference_kind", None),
         "abs_reference_df": getattr(est, "abs_reference_df", None),
+        "abs_alpha": getattr(est, "abs_alpha", None),
         "estimand": getattr(est, "estimand", "itt"),
         "value_scale": getattr(est, "value_scale", "relative"),
         "preferred_direction": getattr(est, "preferred_direction", None),
@@ -189,6 +190,7 @@ def _base_liftestimate_to_row(
         "family_axes": getattr(est, "family_axes", None),
         "family_q": getattr(est, "family_q", None),
         "family_threshold": getattr(est, "family_threshold", None),
+        "family_size": getattr(est, "family_size", None),
         "group_id": est.group_id,
     }
     if region is not None:
@@ -378,6 +380,7 @@ def contrast_results_to_readout(
                 "family_axes": None,
                 "family_q": None,
                 "family_threshold": None,
+                "family_size": None,
             }
         )
     return rows

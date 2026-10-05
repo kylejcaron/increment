@@ -13,7 +13,7 @@ call-wide/design-default tiers.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, cast
 
@@ -43,6 +43,7 @@ _REFUSALS = refusals(
         "facade.analysis_config.unknown_metric_declared": "{caller}: unknown metric(s) {unknown_names!r}; declared: {declared_names!r}",
         "facade.analysis_config.metric_definition_mismatch": "{caller}: metric object(s) {mismatched_names!r} differ from their declared definitions; select by name or pass a field-equal declared metric",
         "facade.analysis_config.metric_no_resolved": "metric {metric_name!r} has no resolved source configuration",
+        "facade.analysis_config.exploratory_metric_unavailable": "{caller}: exploratory_metrics cannot add {names!r} -- unknown to the loaded definitions: {unknown_names!r}; already declared by the experiment (pass them in metrics= instead): {declared_names!r}. Available to add: {available_names!r}",
     },
 )
 _raise = raiser(_REFUSALS)
@@ -225,6 +226,46 @@ def select_metrics(
 
     ordered = [resolved_by_name[m.name] for m in declared if m.name in resolved_by_name]
     return [*ordered, *undeclared_in_order]
+
+
+def select_exploratory_metrics(
+    available: Sequence[Metric],
+    declared_names: Collection[str],
+    requested: Sequence[str] | None,
+    *,
+    caller: str,
+) -> list[Metric]:
+    """Resolve *requested* names against the definitions' *available* metrics, caller order.
+
+    ``None`` or empty adds nothing. A duplicate raises the shared duplicate-name code;
+    an unknown name, or one the experiment already declares, raises
+    ``facade.analysis_config.exploratory_metric_unavailable``. Pure and in-process, so
+    it runs before any query.
+    """
+    if not requested:
+        return []
+    names = [requested] if isinstance(requested, str) else list(requested)
+    duplicate_names = sorted({name for name in names if names.count(name) > 1})
+    if duplicate_names:
+        _raise(
+            "facade.analysis_config.duplicate_metric_name",
+            caller=caller,
+            duplicate_names=duplicate_names,
+        )
+    by_name = {metric.name: metric for metric in available}
+    declared = set(declared_names)
+    unknown = sorted(name for name in names if name not in by_name and name not in declared)
+    already_declared = sorted(name for name in names if name in declared)
+    if unknown or already_declared:
+        _raise(
+            "facade.analysis_config.exploratory_metric_unavailable",
+            caller=caller,
+            names=sorted(names),
+            unknown_names=unknown,
+            declared_names=already_declared,
+            available_names=[metric.name for metric in available],
+        )
+    return [by_name[name] for name in names]
 
 
 def resolve_configs(
