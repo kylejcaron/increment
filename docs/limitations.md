@@ -828,15 +828,15 @@ milliseconds. The measurements below are for the replay (sparse, borderline and 
 
 `python -m calibration.conversion_route bound` compares each route's plan with the pipeline's
 exact rejection probability, summed over the count lattice, and judges each by the claim of its
-route. The 524 designs run so far reach every production tail at central and rare-event rates,
+route. The 534 designs run so far reach every production tail at central and rare-event rates,
 with falls at the 0.025 and 0.1 tails; the `tails` and `window` grids define every production
 request at its own alpha, two-sided against a rise and directional in both directions, and
-the directional requests have been run at the 0.05 tail (central and rare-event), the 0.1 tail
-(central) and two 0.01 designs. A dense plan was within 0.005 of it at 181 of 183 designs and
+the directional requests have been run at the 0.05 and 0.1 tails (central and rare-event) and
+two 0.01 designs. A dense plan was within 0.005 of it at 181 of 183 designs and
 0.0060 at the two smallest (1,236 per arm at a 50% baseline and a 6% lift, tail 0.1, sparsest
 expected count 1.5 times the threshold), where it understates. A sparse plan on the
 approximate replay was between 1.8e-5 above and 3.3e-4 below it at 115 designs. A borderline
-plan was between 1.6e-5 above and 0.072 below it at 226 designs; its largest overshoot is a
+plan was between 1.6e-5 above and 0.072 below it at 236 designs; its largest overshoot is a
 rare-event design where 1e-5 of the counts take the delta method, so it is the approximate
 replay's own accuracy. These are the accuracy of the closed form and of the replay, not a
 bound: no borderline plan is proven to stay at or below the exact rejection probability.
