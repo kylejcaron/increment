@@ -178,6 +178,7 @@ def _base_liftestimate_to_row(
         "binomial_set": binomial,
         "abs_reference_kind": getattr(est, "abs_reference_kind", None),
         "abs_reference_df": getattr(est, "abs_reference_df", None),
+        "abs_alpha": getattr(est, "abs_alpha", None),
         "estimand": getattr(est, "estimand", "itt"),
         "value_scale": getattr(est, "value_scale", "relative"),
         "preferred_direction": getattr(est, "preferred_direction", None),

@@ -17,12 +17,10 @@ import math
 from fractions import Fraction
 from typing import TYPE_CHECKING, Literal, assert_never
 
-from scipy.stats import norm as _norm
-from scipy.stats import t as _t
-
 from increment.estimation._tails import resolvable_expm1, wald_bounds
 from increment.estimation.results import (
     BinomialConfidenceSet,
+    _alpha_eff_for,
     _fcr_alpha_for,
     _fixed_fcr_parameters,
     open_bound_from_two_sided_at_target,
@@ -50,6 +48,8 @@ def classify(view: LiftEstimate) -> tuple[Construction | None, str]:
     if view.confidence_set is not None:
         return None, "percentile-winsorized confidence set (a single-level construction)"
     if view.relative_unavailable_reason is not None:
+        if _has_additive_interval(view) and view.abs_alpha is None:
+            return None, "additive interval without its persisted alpha"
         return "unavailable", "relative interval unavailable"
     if view.relative_confidence_set is not None:
         return "joint", "joint relative set"
@@ -75,26 +75,11 @@ def _additive_reference_df(view: LiftEstimate) -> float | None:
     return view.abs_reference_df if view.abs_reference_kind == "t" else None
 
 
-def _additive_nominal_alpha(view: LiftEstimate) -> float:
-    """The call-level alpha of *view*'s central additive interval.
-
-    A row without a relative interval persists no alpha. Its additive interval was cut at
-    ``crit * abs_se`` around ``abs_diff``, so the critical value read from its width returns
-    the alpha through the persisted reference, to rounding.
-    """
-    assert view.abs_lb is not None and view.abs_ub is not None
-    assert view.abs_se is not None and view.abs_se > 0.0
-    crit = (view.abs_ub - view.abs_lb) / (2.0 * view.abs_se)
-    df = _additive_reference_df(view)
-    tail = float(_norm.sf(crit) if df is None else _t.sf(crit, df))
-    alpha_eff = 2.0 * tail
-    return alpha_eff if view.alternative == "two-sided" else alpha_eff / 2.0
-
-
 def nominal_alpha(view: LiftEstimate, construction: Construction) -> float:
     """The call-level alpha *view* was built at, the cap on its FCR level.
 
-    A directional row carries the doubled display alpha; the cap is the single-tail budget.
+    A directional row carries the doubled display alpha; the cap is the single-tail budget. A row
+    with no relative interval reads it from the persisted alpha of its additive interval.
     """
     match construction:
         case "joint":
@@ -108,7 +93,8 @@ def nominal_alpha(view: LiftEstimate, construction: Construction) -> float:
             alpha_eff = view.lift.alpha
             return alpha_eff if view.alternative == "two-sided" else alpha_eff / 2.0
         case "unavailable":
-            return _additive_nominal_alpha(view)
+            assert view.abs_alpha is not None, "classified: the additive interval carries its alpha"
+            return view.abs_alpha if view.alternative == "two-sided" else view.abs_alpha / 2.0
         case _:
             assert_never(construction)
 
@@ -153,6 +139,7 @@ def _wald_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
         updates["abs_lb"], updates["abs_ub"] = wald_bounds(
             view.abs_diff, abs_reference.crit, view.abs_se, what="FCR additive interval"
         )
+        updates["abs_alpha"] = abs_reference.alpha_eff
     return view.model_copy(update=updates)
 
 
@@ -205,6 +192,7 @@ def _binomial_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
         updates["abs_lb"], updates["abs_ub"] = _binomial_abs_bounds(
             view.abs_diff, view.abs_se, alpha_eff
         )
+        updates["abs_alpha"] = alpha_eff
     return view.model_copy(update=updates)
 
 
@@ -230,6 +218,7 @@ def _joint_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
             "lift": reissued.estimate(),
             "abs_lb": abs_lb,
             "abs_ub": abs_ub,
+            "abs_alpha": reissued.alpha_eff if abs_lb is not None else None,
         }
     )
 
@@ -244,7 +233,13 @@ def _unavailable_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
     abs_lb, abs_ub = _joint_additive_bounds(
         view.abs_diff, view.abs_se, alpha, view.alternative, _additive_reference_df(view)
     )
-    return view.model_copy(update={"abs_lb": abs_lb, "abs_ub": abs_ub})
+    return view.model_copy(
+        update={
+            "abs_lb": abs_lb,
+            "abs_ub": abs_ub,
+            "abs_alpha": _alpha_eff_for(view.alternative, alpha) if abs_lb is not None else None,
+        }
+    )
 
 
 def reinterval_at_fcr(

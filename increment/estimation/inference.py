@@ -61,6 +61,7 @@ from increment.estimation.results import (
     JointContrastReference,
     LiftEstimate,
     RelativeUnavailableReason,
+    _alpha_eff_for,
     relative_confidence_set,
 )
 from increment.estimation.sequential import AlwaysValid, AsymptoticMean, MixedFamily
@@ -328,7 +329,7 @@ def _resolve_fixed_horizon(
         refuse(UNKNOWN_ALTERNATIVE, alternative=alternative)
     if not 0.0 < alpha < 1.0:
         _raise("estimation.diagnostics.alpha", alpha=alpha)
-    alpha_eff = alpha if alternative == "two-sided" else 2.0 * alpha
+    alpha_eff = _alpha_eff_for(alternative, alpha)
     if alpha_eff >= 1.0:
         _raise("estimation.inference.one_sided_alpha_doubles", alpha=alpha, alpha_eff=alpha_eff)
     if alpha_eff / 2.0 == 0.0:
@@ -626,6 +627,7 @@ def infer_lift(  # noqa: PLR0913
         if abs_ref is not None
         else None,
         abs_reference_df=abs_ref.reference.df if abs_ref is not None else None,
+        abs_alpha=abs_ref.alpha_eff if abs_ref is not None else None,
         n_clusters=n_clusters,
         dof=dof,
         reference_kind=ref.reference.kind,
@@ -840,6 +842,7 @@ def infer_ate(  # noqa: PLR0913, PLR0915
             if abs_se is not None
             else None,
             abs_reference_df=abs_dof if abs_se is not None else None,
+            abs_alpha=_alpha_eff_for(alternative, alpha) if additive_lb is not None else None,
             n_clusters=n_clusters,
             dof=joint_reference.df if joint_reference is not None else dof,
             reference_kind=joint_reference.kind
@@ -930,6 +933,7 @@ def infer_ate(  # noqa: PLR0913, PLR0915
         if abs_ref is not None
         else None,
         abs_reference_df=abs_ref.reference.df if abs_ref is not None else None,
+        abs_alpha=abs_ref.alpha_eff if abs_ref is not None else None,
         n_clusters=n_clusters,
         dof=dof,
         reference_kind=ref.reference.kind,

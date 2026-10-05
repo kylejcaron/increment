@@ -1131,27 +1131,54 @@ def render_metric_details(snapshot: DashboardSnapshot, *, metric: str) -> mo.Htm
 
 _ADDED_GROUP_NOTE = (
     "Data by group is captured for the experiment's own metrics; an added metric shows its "
-    "Overview result, corrected in the exploratory family."
+    "Overview result."
 )
 
 
+def _added_family_state(snapshot: DashboardSnapshot, metric: str, row: Mapping[str, Any]) -> str:
+    """What the exploratory family did to this added metric's whole-experiment interval."""
+    overview = snapshot.overview
+    reason = next(
+        (
+            why
+            for name, place, why in (overview.exclusions if overview else ())
+            if name == metric and place == "whole experiment"
+        ),
+        None,
+    )
+    if reason is not None:
+        return f"Not in the exploratory family ({reason}): the interval is unadjusted."
+    if row.get("discovery"):
+        return "A discovery in the exploratory family: the interval is FCR-adjusted."
+    return "In the exploratory family, not a discovery: the interval is at its nominal level."
+
+
 def _added_metric_details(snapshot: DashboardSnapshot, model: Any) -> mo.Html:
-    """An added metric's whole-experiment Overview result, with its family correction."""
+    """An added metric's whole-experiment Overview result, with its family state."""
+    overview = snapshot.overview
     row = added_row(snapshot, model.name)
     note = f'<p class="inc-dashboard-note">{esc(_ADDED_GROUP_NOTE)}</p>'
     if row is None:
-        refusal = next(
-            (
-                f"{refused} ({refused.code})"
-                for metric, place, refused in (
-                    snapshot.overview.refusals if snapshot.overview else ()
-                )
-                if metric == model.name and place == "whole experiment"
-            ),
-            "no whole-experiment result for this added metric",
+        refused = overview.family_refusal if overview is not None else None
+        if refused is None:
+            refused = next(
+                (
+                    error
+                    for metric, place, error in (overview.refusals if overview else ())
+                    if metric == model.name and place == "whole experiment"
+                ),
+                None,
+            )
+        reason = (
+            "no whole-experiment result for this added metric"
+            if refused is None
+            else f"{refused} ({refused.code})"
         )
-        body = f'<p class="inc-dashboard-note">{missing_html(refusal)}</p>' + note
+        body = f'<p class="inc-dashboard-note">{missing_html(reason)}</p>' + note
         return _section("metric-details", f"Metric: {model.name}", body)
+    state = (
+        f'<p class="inc-dashboard-note">{esc(_added_family_state(snapshot, model.name, row))}</p>'
+    )
     return _section(
         "metric-details",
         f"Metric: {model.name}",
@@ -1162,6 +1189,7 @@ def _added_metric_details(snapshot: DashboardSnapshot, model: Any) -> mo.Html:
                 ("Favorable", esc(row.get("preferred_direction") or "not declared")),
             ]
         )
+        + state
         + _disclosure(
             "Definition and analysis policy", _kv(_metric_detail_entries(snapshot, model, row))
         )

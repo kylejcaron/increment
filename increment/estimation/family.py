@@ -697,7 +697,14 @@ _FAMILY_FIELDS = (
     "family_size",
 )
 #: The interval-bearing fields a reissued row replaces; everything else is the row's own.
-_INTERVAL_FIELDS = ("lift", "binomial_set", "relative_confidence_set", "abs_lb", "abs_ub")
+_INTERVAL_FIELDS = (
+    "lift",
+    "binomial_set",
+    "relative_confidence_set",
+    "abs_lb",
+    "abs_ub",
+    "abs_alpha",
+)
 #: Each selected row is capped at its own nominal level below, so selection runs uncapped.
 _UNCAPPED = math.nextafter(1.0, 0.0)
 #: Breakout exclusions that condition only on arm counts, ancillary to the outcome: such a cell
@@ -924,8 +931,8 @@ def select_exploratory_family(
     from its joint reference, each with its one-sided geometry. That equals the interval
     ``run_breakout(correction="bh")`` returns for the same cell. A row whose relative interval is
     unavailable (a non-positive arm mean) reports only its additive interval; an absolute margin
-    can select it, and that interval is reissued at the same level. An unselected row keeps its
-    interval.
+    can select it, and that interval is reissued from its persisted ``abs_alpha`` at the same
+    level, never narrower than the nominal one. An unselected row keeps its interval.
 
     A cell excluded for an outcome-based reason (zero variance, non-positive mean, extreme
     ratio) stays in ``m`` as a non-rejection, as in ``run_breakout``. A cell excluded by design
@@ -939,7 +946,8 @@ def select_exploratory_family(
     (``estimation.family.exploratory_sequential``), informative-prior rows
     (``breakout.run_breakout_bh_excludes_prior``), and rows whose interval cannot be reissued
     without approximation (``estimation.family.exploratory_construction``: quantile, percentile
-    winsorized, additive-scale and similar constructions). A cell whose evidence is unavailable
+    winsorized, additive-scale and similar constructions, and an additive-only interval whose
+    ``abs_alpha`` was not persisted). A cell whose evidence is unavailable
     refuses the family as ``run_breakout`` does (``family.evidence.incomplete``). An empty input
     returns ``()``.
     """

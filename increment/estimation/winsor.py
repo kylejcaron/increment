@@ -331,6 +331,11 @@ def estimate_winsor_lift(
         abs_diff=region.additive_point,
         abs_lb=region.additive.lower.value,
         abs_ub=region.additive.upper.value,
+        abs_alpha=(
+            region.alpha
+            if region.additive.lower.value is not None and region.additive.upper.value is not None
+            else None
+        ),
         null_lift=null_lift,
         null_abs=null_abs,
         preferred_direction=preferred_direction,

@@ -533,6 +533,7 @@ def _reject_sequential_mixed_authority(row: Any) -> None:
         "abs_ub",
         "abs_reference_kind",
         "abs_reference_df",
+        "abs_alpha",
     )
     if any(getattr(row, field) is not None for field in fields):
         sequential_refuse(
@@ -567,6 +568,7 @@ _FAMILY_VIEW_FIELDS = (
     "abs_ub",
     "abs_reference_kind",
     "abs_reference_df",
+    "abs_alpha",
     "prior_shrunk",
 )
 
@@ -634,6 +636,8 @@ class BreakoutEstimate(_RowIdentity):
     abs_ub: float | None = Field(default=None, allow_inf_nan=False)
     abs_reference_kind: Literal["normal", "t"] | None = None
     abs_reference_df: float | None = Field(default=None, allow_inf_nan=False, gt=0)
+    abs_alpha: float | None = Field(default=None, gt=0.0, lt=1.0, allow_inf_nan=False)
+    # Mirrors LiftEstimate.abs_alpha: the central-equivalent alpha of abs_lb/abs_ub.
     excluded: ExclusionReason | None = None
     prior_shrunk: bool = False
     # True when the cell was estimated under an informative prior: lift.log_mean/log_se are
@@ -1017,6 +1021,7 @@ def _copy_common_fields(source: LiftEstimate, /, **overrides: Any) -> dict[str, 
         "abs_ub": source.abs_ub,
         "abs_reference_kind": source.abs_reference_kind,
         "abs_reference_df": source.abs_reference_df,
+        "abs_alpha": source.abs_alpha,
     }
     copied.update(overrides)
     return copied
@@ -1341,6 +1346,8 @@ class DailyLiftEstimate(_RowIdentity):
     abs_ub: float | None = Field(default=None, allow_inf_nan=False)
     abs_reference_kind: Literal["normal", "t"] | None = None
     abs_reference_df: float | None = Field(default=None, allow_inf_nan=False, gt=0)
+    abs_alpha: float | None = Field(default=None, gt=0.0, lt=1.0, allow_inf_nan=False)
+    # Mirrors LiftEstimate.abs_alpha: the central-equivalent alpha of abs_lb/abs_ub.
     # Additive evidence for null_abs decisions. None when that sidecar is
     # unavailable; never reconstructed from the relative interval.
     policy_name: Literal["compiled_plan", "default_exploratory"] = "default_exploratory"

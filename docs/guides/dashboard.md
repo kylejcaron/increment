@@ -175,7 +175,7 @@ and do not restyle the notebook canvas.
 | `render_header(snapshot)` | Experiment identity, window, population, inference, arms, and three summary cards: enrolled units, observed arm split, and a compact primary lift with its bracketed interval and direction-aware significance status. |
 | `render_health(snapshot)` | Visual allocation bars with target markers, the SRM verdict, and visible assignment warnings and result caveats. Allocation over time and evidence expands to a CoefTable with one row per variant, cumulative enrolled share, and the check statistics. |
 | `render_results(snapshot)` | The whole declared family through CoefTable, grouped by role, with forest plots and an explicit adverse-guardrail callout. Redundant confidence, significance, and confidence-set display columns are omitted; levels and interpretation remain in notes and CSV. |
-| `render_metric_details(snapshot, metric=...)` | Lift, interval, and direction chips; policy and evidence-geometry details; observed data by group, including eligibility, exclusions, counts, units, and provenance. |
+| `render_metric_details(snapshot, metric=...)` | Lift, interval, and direction chips; policy and evidence-geometry details; for the experiment's own metrics, observed data by group, including eligibility, exclusions, counts, units, and provenance. An added metric shows its Overview result instead. |
 | `load_explore(analysis, snapshot=..., metric=..., view=..., completed_windows_only=..., breakout=...)` | One advanced view captured during preparation. `metric=None` loads every declared metric together; a declared or added metric name selects its own captured series. Original coded refusals remain specific to each state. Validates experiment binding and options, without warehouse queries or materialization. |
 | `render_explore(snapshot, data, metric=..., view=..., completed_windows_only=...)` | One Explore section with a combined cumulative-lift table or separate absolute daily/cumulative tables per metric, actual date basis/range, and visible unavailable-point reasons. Applicable headline evidence geometry is labeled separately from the series. Pass the same metric selection used to load data; `metric=None` renders every declared metric together. |
 | `render_details(snapshot)` | Collapsible experiment metadata, per-metric policies, provenance, and static-snapshot limitations. |
@@ -358,7 +358,8 @@ Cluster-randomized and non-native sources do not supply this unit timeline.
 
 ## Observed data by group
 
-Each metric's disclosure and group-data download use the same captured rows.
+Each declared metric's disclosure and group-data download use the same captured
+rows; added exploratory metrics have neither.
 They show assigned and eligible units, the observed arm value, counts and
 totals where meaningful, the observation cutoff and window, and exclusion
 reasons. The accounting is
@@ -437,7 +438,8 @@ policies, observed arm data, allocation history, and provenance remain in
 Readout, metric inspection, Explore, and Health rather than filling the PDF.
 
 The full-readout CSV download belongs to Report, not Readout. Explore retains
-its metric-specific group-data CSV; all downloads use the captured snapshot.
+its metric-specific group-data CSV for the experiment's own metrics; all
+downloads use the captured snapshot.
 
 Preparation can be more expensive than a single-view export because it
 computes the declared temporal choices. This is a captured analysis, not a

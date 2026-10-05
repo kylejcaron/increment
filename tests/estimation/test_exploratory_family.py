@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import math
 import pickle
 import warnings
@@ -299,6 +300,7 @@ def test_wald_rows_are_reissued_as_their_estimator_builds_them(alternative, refe
         )
         _close(row.require_lift().model_dump(), expected.require_lift().model_dump())
         _close((row.abs_lb, row.abs_ub), (expected.abs_lb, expected.abs_ub))
+        assert expected.abs_alpha is not None and row.abs_alpha == expected.abs_alpha
         assert row.abs_lb is not None and nominal[index].abs_lb is not None
         assert row.abs_lb < nominal[index].abs_lb
         assert row.reference_kind == nominal[index].reference_kind
@@ -587,6 +589,7 @@ def test_fieller_rows_are_reissued_from_their_joint_reference(alternative):
             row.relative_confidence_set.model_dump(), expected.relative_confidence_set.model_dump()
         )
         _close((row.abs_lb, row.abs_ub), (expected.abs_lb, expected.abs_ub))
+        assert expected.abs_alpha is not None and row.abs_alpha == expected.abs_alpha
         assert row.relative_confidence_set.alternative == alternative
 
 
@@ -638,6 +641,158 @@ def test_a_margin_selected_row_with_an_unavailable_relative_interval_is_reissued
     assert row.abs_lb is not None and row.abs_ub is not None
     if q / 4 < NOMINAL_ALPHA:
         assert row.abs_lb < nominal.abs_lb and row.abs_ub > nominal.abs_ub
+
+
+def _offset_row(difference, variance, *, alternative="two-sided", alpha=NOMINAL_ALPHA):
+    """An estimator row at a large offset: the arm means straddle zero, so only the additive
+    interval exists, and it is cut around ``difference`` at float resolution."""
+
+    def arm(group_id, mean):
+        return {
+            "experiment_id": "exp1",
+            "metric": "refunds",
+            "group_id": group_id,
+            "n": 200.0,
+            "ref_y": mean,
+            "cy1": 0.0,
+            "cy2": variance * 199.0,
+        }
+
+    (row,) = estimate_lift(
+        [_mean_metric("refunds")],
+        [arm("control", -difference / 2.0), arm("treatment", difference / 2.0)],
+        control_group="control",
+        alpha=alpha,
+        alternative=alternative,
+        null_abs=0.0,
+    ).results
+    assert row.relative_unavailable_reason == "nonpositive_arm_mean"
+    return row
+
+
+def _without_abs_alpha(row):
+    """The row as a payload serialized before ``abs_alpha`` was persisted loads it."""
+    payload = json.loads(row.model_dump_json())
+    payload.pop("abs_alpha", None)
+    return type(row).model_validate(payload)
+
+
+@pytest.mark.parametrize("alternative", ["two-sided", "greater"])
+@pytest.mark.parametrize(
+    ("difference", "variance"),
+    [
+        (2.0, 4.0),
+        (1.0e6, 4.0),
+        (2.0**29 - 0.09, 1.0),
+        (2.0**30 - 0.18, 4.0),
+        (2.0**31 - 0.09, 1.0),
+    ],
+)
+@pytest.mark.parametrize("q", [0.05, 0.4])
+def test_a_selected_margin_row_at_a_large_offset_is_reissued_without_narrowing(
+    alternative, difference, variance, q
+):
+    """However large the offset, a selected row's additive interval equals the estimator's at
+    ``min(R*q/m, alpha)`` and is never narrower than the nominal interval."""
+    nominal = _offset_row(difference, variance, alternative=alternative)
+    assert exploratory_family_exclusion(nominal) is None
+    fillers = [_wald_row(f"m{i}", 0.1, alternative=alternative) for i in range(3)]
+
+    row, *rest = select_exploratory_family([nominal, *fillers], q=q)
+
+    assert row.discovery is True and row.family_threshold == pytest.approx(q / 4)
+    assert [other.discovery for other in rest] == [False] * 3
+    fcr = min(q / 4, NOMINAL_ALPHA)
+    expected = _offset_row(
+        difference, variance, alternative=alternative, alpha=_fcr_alpha_for(alternative, fcr)
+    )
+    assert (row.abs_lb, row.abs_ub) == (expected.abs_lb, expected.abs_ub)
+    assert nominal.abs_lb is not None and nominal.abs_ub is not None
+    assert row.abs_lb is not None and row.abs_ub is not None
+    assert row.abs_lb <= nominal.abs_lb and row.abs_ub >= nominal.abs_ub
+
+
+@pytest.mark.parametrize("q", [0.05, 0.4])
+def test_a_margin_row_with_bounds_near_the_float_limit_is_reissued_without_overflow(q):
+    """Both bounds are finite while their difference is not. No estimator emits an ITT row with a
+    standard error this large, so the joint row from ``infer_ate`` is labelled ITT to reach the
+    family."""
+
+    def build(alpha):
+        return infer_ate(
+            "m",
+            "treatment",
+            "unadjusted",
+            point=None,
+            scores=ScoreStats(metric="m", contrast="t", n=64, sum_psi=0.0, sum_psi2=2.56),
+            alpha=alpha,
+            abs_diff=5e307,
+            abs_se=4.8e307,
+            null_abs=-1.2e308,
+            relative_unavailable_reason="joint_covariance_indefinite",
+            method_role="decision",
+        ).model_copy(update={"estimand": "itt"})
+
+    nominal = build(NOMINAL_ALPHA)
+    assert nominal.abs_lb is not None and nominal.abs_ub is not None
+    assert math.isinf(nominal.abs_ub - nominal.abs_lb)
+    fillers = [_wald_row(f"m{i}", 0.1) for i in range(3)]
+
+    row, *_ = select_exploratory_family([nominal, *fillers], q=q)
+
+    assert row.discovery is True and row.family_threshold == pytest.approx(q / 4)
+    expected = build(min(q / 4, NOMINAL_ALPHA))
+    assert (row.abs_lb, row.abs_ub) == (expected.abs_lb, expected.abs_ub)
+    assert row.abs_lb is not None and row.abs_ub is not None
+    assert row.abs_lb <= nominal.abs_lb and row.abs_ub >= nominal.abs_ub
+
+
+def test_a_margin_row_without_its_persisted_alpha_is_left_out_of_the_family():
+    """A row serialized before ``abs_alpha`` existed has an additive interval whose level is not
+    recorded, and a level read back from the endpoints would be a guess."""
+    legacy = _without_abs_alpha(_offset_row(2.0, 4.0))
+    fillers = [_wald_row(f"m{i}", 0.1) for i in range(3)]
+
+    assert legacy.abs_lb is not None and legacy.abs_ub is not None
+    assert exploratory_family_exclusion(legacy)
+    with pytest.raises(CodedError) as raised:
+        select_exploratory_family([legacy, *fillers], q=0.4)
+    assert raised.value.code == "estimation.family.exploratory_construction"
+    assert [other.discovery for other in select_exploratory_family(fillers, q=0.4)] == [False] * 3
+
+
+@pytest.mark.parametrize("alternative", ["two-sided", "greater"])
+def test_a_legacy_wald_row_keeps_its_relative_level_and_gains_the_alpha_it_was_reissued_at(
+    alternative,
+):
+    """Only an additive-only row depends on ``abs_alpha``: a Wald row's cap is its relative alpha."""
+    half = 0.05 / math.sqrt(2.0)
+
+    def build(alpha):
+        return infer_lift(
+            "m",
+            "treatment",
+            "unadjusted",
+            4.5 * 0.05,
+            half,
+            half,
+            alpha=alpha,
+            alternative=alternative,
+            abs_diff=1.0,
+            abs_se=0.3,
+            abs_dof=40.0,
+            method_role="decision",
+        )
+
+    legacy = _without_abs_alpha(build(NOMINAL_ALPHA))
+    fillers = [_wald_row(f"m{i}", 0.1, alternative=alternative) for i in range(3)]
+    assert legacy.abs_alpha is None and exploratory_family_exclusion(legacy) is None
+
+    row, *_ = select_exploratory_family([legacy, *fillers], q=0.05)
+
+    expected = build(_fcr_alpha_for(alternative, 0.05 / 4))
+    assert (row.abs_lb, row.abs_ub) == (expected.abs_lb, expected.abs_ub)
+    assert expected.abs_alpha is not None and row.abs_alpha == expected.abs_alpha
 
 
 # --- refusals ---------------------------------------------------------------------------
