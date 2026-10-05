@@ -343,22 +343,32 @@ def ladder(start: float = 10.0, stop: float = 40_000.0) -> list[int]:
     return steps
 
 
-#: Ladder steps are rounded to integers, so a measured step may sit this far above one ladder
-#: step over its predecessor.
-_LADDER_ROUNDING = 2
+#: A ladder step is the rounded value of a geometric sequence, so it sits at most half a unit from
+#: its unrounded value, and the next step at most half a unit from ``LADDER_STEP`` times the next
+#: unrounded value: consecutive steps ``a < b`` satisfy ``|b - LADDER_STEP * a| <= _LADDER_ROUNDING``.
+#: A scan that skips a step has ``b >= LADDER_STEP ** 2 * (a - 0.5) - 0.5``, beyond the bound from
+#: ``a = 10`` on, the smallest step ``ladder`` starts at.
+_LADDER_ROUNDING = 0.5 * (LADDER_STEP + 1.0)
+
+
+def _adjacent(a: int, b: int) -> bool:
+    """Whether no ladder step lies between consecutive measured steps ``a < b``."""
+    return b <= LADDER_STEP * a + _LADDER_ROUNDING
 
 
 def _covers(steps: Sequence[int], limit: float) -> bool:
     """Whether ``steps`` (ascending, the first being a candidate) measure every ladder step
-    through ``limit``: no gap wider than one ladder step, and a last step the next ladder step
-    above which exceeds ``limit``."""
+    through ``limit``: no ladder step skipped between them, and after the last step within
+    ``limit`` either a measured step adjacent to it or a next ladder step that cannot lie
+    within ``limit``."""
     within = [step for step in steps if step <= limit]
-    gaps_closed = all(
-        b <= LADDER_STEP * a + _LADDER_ROUNDING
-        for a, b in zip(steps, steps[1:], strict=False)
-        if b <= limit
+    beyond = [step for step in steps if step > limit]
+    if not all(_adjacent(a, b) for a, b in zip(within, within[1:], strict=False)):
+        return False
+    last = within[-1]
+    return LADDER_STEP * last - _LADDER_ROUNDING > limit or (
+        bool(beyond) and _adjacent(last, beyond[0])
     )
-    return gaps_closed and LADDER_STEP * within[-1] + _LADDER_ROUNDING > limit
 
 
 def required_count(

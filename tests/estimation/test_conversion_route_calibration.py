@@ -377,3 +377,18 @@ class TestRequiredCount:
         rows[1150] = {}
         rows[1521] = {}
         assert cr.required_count(rows, 0.01) is None
+
+    def test_a_scan_interrupted_at_its_first_default_step_leaves_no_requirement(self):
+        """Step 10 of the default ladder is followed by 12, which lies inside ``MARGIN`` times 10:
+        a scan that stopped at 10 has measured nothing of that window."""
+        assert cr.ladder(10.0, 60.0)[:3] == [10, 12, 13]
+        rows = _rows({10: 0.5})
+        assert cr.required_count(rows, 0.01) is None
+
+    def test_a_default_ladder_step_the_scan_skipped_is_not_bridged(self):
+        """The rounding allowance between steps must not hide a skipped step at the small
+        counts the default ladder starts at."""
+        ladder = cr.ladder(10.0, 60.0)
+        assert cr.required_count(_rows(dict.fromkeys(ladder, 0.5)), 0.01) == 10
+        rows = _rows(dict.fromkeys([step for step in ladder if step != 12], 0.5))
+        assert cr.required_count(rows, 0.01) == 13
