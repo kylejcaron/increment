@@ -55,10 +55,14 @@ that allowance: one it cannot settle hands the count pair to the unchanged
 runtime functions. Two proved exits stop a replay once its Boolean outcome
 is fixed: an achieved endpoint already at the tail allocation cannot
 reject, and once every current leaf's reachable bound (``_eventual_bound``)
-is below it the runtime must reject. It costs about a hundred CPU-microseconds a pair, so a
-evaluation replays at most `EVALUATION_REPLAY_BUDGET` pairs, the heaviest first; the rest are ambiguous. A
-plan whose finite-sample pairs together weigh at most half of `RESOLUTION` (counts the rule
-routes to the delta method with near certainty) replays none.
+is below it the runtime must reject. It costs about a hundred CPU-microseconds a pair, so an
+evaluation replays at most `EVALUATION_REPLAY_BUDGET` pairs and runs at most
+`EVALUATION_ROW_BUDGET` of the runtime's delta rows, the heaviest first; the rest are ambiguous.
+A plan whose finite-sample pairs together weigh at most half of `RESOLUTION` (counts the rule
+routes to the delta method with near certainty) replays none. Both budgets choose from every
+pair of the evaluation's windows by weight, whether or not the geometry already holds the pair,
+so the pairs an evaluation decides, and its enclosure, are a function of its request alone: the
+same on a fresh geometry, on one shared with other evaluations, and on a repeat.
 
 Route ``approximate`` replays the same search with a continuity-corrected Normal
 tail for the conditional sum and exact single-binomial tails when either
@@ -167,15 +171,15 @@ _SURROGATE_SLACK = 1e-12
 #: (`conversion_route.PLANNING_ROUTE_CERTAINTY`).
 RESOLUTION = 1e-6
 
-#: Directional replays (a count pair is replayed once per direction its alternative reads) one
-#: evaluation may run of the runtime's own finite-sample search, at about 100 to 400
-#: CPU-microseconds each at the arm sizes where counts reach the routing floor. The pairs it
-#: leaves, lightest first, are undecided and add their mass to the upper end of the enclosure.
+#: Directional replays (a count pair is replayed once per direction its alternative reads) of the
+#: runtime's own finite-sample search one evaluation's request pays for, at about 100 to 400
+#: CPU-microseconds each at the arm sizes where counts reach the routing floor. The lightest pairs
+#: past it are undecided in that evaluation and add their mass to the upper end of the enclosure.
 EVALUATION_REPLAY_BUDGET = 150_000
 
 #: Runtime calculations (`conversion_delta.production_decision`, about 0.2 CPU-milliseconds each:
-#: a pair is decided exactly as the runtime decides it) one evaluation may run for the routed
-#: pairs. The rest stay undecided.
+#: a pair is decided exactly as the runtime decides it) one evaluation's request pays for on the
+#: routed pairs. The lightest ones past it are undecided in that evaluation.
 EVALUATION_ROW_BUDGET = 100_000
 
 # prose: allow-long derivation of a constant
@@ -1558,13 +1562,16 @@ class RejectionGeometry:
     """The decided rejection set of one runtime decision, grown on demand.
 
     Under ``auto`` the runtime decides a count pair by the delta method inside the routed
-    rectangle (`Routing`) and by the finite-sample test everywhere else, so the geometry holds the
-    union of the two: the production delta decision (`production_decision`, the runtime row
-    itself) on the rectangle and the
-    finite-sample replay on the rest. Without a routing every pair takes the finite-sample
-    route. A pair the replay was not run for (the lightest ones once an evaluation's budget is spent, or
-    all of them when the runtime refuses the finite-sample decision in full) stays undecided; its
-    mass is reported, never counted as a rejection or a non-rejection.
+    rectangle (`Routing`) and by the finite-sample test everywhere else, so the geometry holds
+    the union of the two: the production delta decision (`production_decision`, the runtime row
+    itself) on the rectangle and the finite-sample replay on the rest. Without a routing every
+    pair takes the finite-sample route. An evaluation decides the pairs of its own request
+    (`_selected`): the heaviest ones its row and replay budgets pay for, whatever the geometry
+    already holds. A pair outside them stays undecided in that evaluation (all of the pairs off
+    the routed rectangle when the runtime refuses the finite-sample decision in full); its mass
+    is reported, never counted as a rejection or a non-rejection. What the geometry holds is
+    the runtime's own decisions kept for reuse: they save an evaluation's work and never change
+    its enclosure.
 
     Control counts ``[x0, x0 + rows)`` index every block; treatment counts
     are stored in disjoint column segments, merged whenever a request
@@ -1607,8 +1614,6 @@ class RejectionGeometry:
         self.effects: dict[tuple[float | str, ...], object] = {}
         # The current solve's rows and its treatment spans, merged as the segments are.
         self._footprint: tuple[int, int, list[tuple[int, int]]] | None = None
-        self._replayed = 0
-        self._rows_run = 0
 
     def begin_solve(self) -> None:
         """Start a solve: the cells stored so far become a cache, outside its footprint."""
@@ -1744,81 +1749,99 @@ class RejectionGeometry:
         lo_t, hi_t = self.routing.counts(self.decision.n_t)
         return (x >= lo_c) & (x <= hi_c), (j >= lo_t) & (j <= hi_t)
 
-    def ensure(
-        self,
-        x_lo: int,
-        x_hi: int,
-        j_lo: int,
-        j_hi: int,
-        weights: tuple[np.ndarray, np.ndarray] | None = None,
-        *,
-        replay: bool = True,
-    ) -> None:
-        """Decide every cell of ``[x_lo, x_hi] x [j_lo, j_hi]`` not yet decided: the delta
-        decision inside the routed rectangle, the finite-sample replay elsewhere (unless
-        ``replay`` is false). ``weights`` (the count laws of the two windows) lets the replay
-        leave the lightest cells undecided once the evaluation's budget is spent (`_affordable`);
-        without them every cell is replayed."""
+    def ensure(self, x_lo: int, x_hi: int, j_lo: int, j_hi: int) -> None:
+        """Decide every cell of ``[x_lo, x_hi] x [j_lo, j_hi]`` not yet decided that a route
+        decides at all: the delta decision inside the routed rectangle, the finite-sample replay
+        elsewhere (nowhere when the runtime refuses that decision in full). No budget applies;
+        an evaluation decides the cells of its own request instead (`_selected`)."""
         segment, rows, cols = self._reserve(x_lo, x_hi, j_lo, j_hi)
-        unknown = ~segment.known[rows, cols]
-        if not unknown.any():
-            return
+        self._decide(segment, rows, cols, (x_lo, x_hi, j_lo, j_hi), None)
+
+    def _decide(
+        self,
+        segment: _Segment,
+        rows: slice,
+        cols: slice,
+        window: tuple[int, int, int, int],
+        select: np.ndarray | None,
+    ) -> None:
+        """Decide the cells of *select* (every cell a route decides when ``None``) of the
+        reserved rectangle ``window = (x_lo, x_hi, j_lo, j_hi)`` that are not yet decided."""
+        x_lo, x_hi, j_lo, j_hi = window
         row_in, col_in = self._routed_flags(x_lo, x_hi, j_lo, j_hi)
         routed = row_in[:, None] & col_in[None, :]
-        delta = unknown & routed
-        pending = unknown & ~routed
-        replay_cells = self._affordable(pending, weights) if replay else np.zeros_like(pending)
-        decided = np.zeros_like(delta)
+        if select is None:
+            select = np.ones_like(routed) if self.finite else routed
+        todo = select & ~segment.known[rows, cols]
+        if not todo.any():
+            return
+        delta = todo & routed
+        replay_cells = todo & ~routed
         if delta.any():
-            decided = self._decide_routed(segment, rows, cols, (x_lo, j_lo), delta, row_in, col_in)
+            self._decide_routed(segment, rows, cols, (x_lo, j_lo), delta)
         if replay_cells.any():
             self._replay(segment, rows, cols, (x_lo, j_lo), replay_cells)
-        segment.known[rows, cols] |= decided | replay_cells
+        segment.known[rows, cols] |= todo
 
-    def _affordable(
-        self, pending: np.ndarray, weights: tuple[np.ndarray, np.ndarray] | None
+    def _selected(self, wc: _Window, wt: _Window) -> np.ndarray:
+        """The cells of the rectangle ``wc`` by ``wt`` an evaluation decides, a function of the
+        request alone: the decision, its routing and route, and the count laws of the two
+        windows. Never of what the geometry holds, so a repeated evaluation, one on a geometry
+        another evaluation has used and one on a fresh geometry decide the same cells.
+
+        Every routed pair is chosen from while `EVALUATION_ROW_BUDGET` pays for it, and every
+        pair off the routed rectangle (none when the runtime refuses the finite-sample decision
+        in full, nor when those pairs weigh at most half of `RESOLUTION`) while
+        `EVALUATION_REPLAY_BUDGET` does, the heaviest first (`_heaviest`). A pair outside the
+        choice is undecided in this evaluation, even if an earlier one decided it."""
+        row_in, col_in = self._routed_flags(wc.lo, wc.hi, wt.lo, wt.hi)
+        routed = row_in[:, None] & col_in[None, :]
+        weights = (wc.weights, wt.weights)
+        selected = self._heaviest(routed, weights, EVALUATION_ROW_BUDGET)
+        total_c, total_t = float(wc.weights.sum()), float(wt.weights.sum())
+        inside_c, inside_t = float(wc.weights[row_in].sum()), float(wt.weights[col_in].sum())
+        finite_mass = (total_c - inside_c) * total_t + inside_c * (total_t - inside_t)
+        if not self.finite or finite_mass <= RESOLUTION / 2.0:
+            return selected
+        pending = ~routed
+        if self.route == "exact":
+            kinds = len(self.decision.kinds)
+            pending = self._heaviest(pending, weights, EVALUATION_REPLAY_BUDGET, kinds)
+        return selected | pending
+
+    @staticmethod
+    def _heaviest(
+        cells: np.ndarray,
+        weights: tuple[np.ndarray, np.ndarray],
+        budget: int,
+        per_cell: int = 1,
     ) -> np.ndarray:
-        """The cells of *pending* (those the finite-sample replay must decide) to replay now.
-
-        None when the runtime refuses that decision in full. Without weights, all of them. With
-        them, none when their whole mass is at most half of `RESOLUTION` (a plan the count rule
-        routes to the delta method with near certainty needs no replay), all when they fit the
-        evaluation's budget, and otherwise the heaviest cells that do: those whose weight
-        reaches the lowest floor, on a ladder of 32 steps a decade, that they fit under."""
-        if not self.finite or not pending.any():
-            return np.zeros_like(pending)
-        if weights is None or self.route != "exact":
-            return pending
-        budget = max(0, EVALUATION_REPLAY_BUDGET - self._replayed)
-        if budget == 0:
-            return np.zeros_like(pending)
+        """The cells of *cells* that *budget* decisions pay for at ``per_cell`` of them a cell:
+        all of them when they fit, otherwise the heaviest, those whose weight (the product of
+        the two count laws in *weights*) reaches the lowest floor, on a ladder of 32 steps a
+        decade, that they fit under. The choice reads the mask and the weights only."""
+        if int(np.count_nonzero(cells)) * per_cell <= budget:
+            return cells
         w_c, w_t = weights
-        kinds = len(self.decision.kinds)
         bins = _DECADES * _BINS_PER_DECADE
         counts = np.zeros(bins + 1, np.int64)
-        mass = 0.0
         step = max(1, _BLOCK_CELLS // max(1, w_t.size))
         for start in range(0, w_c.size, step):
-            block = pending[start : start + step]
+            block = cells[start : start + step]
             weight = np.outer(w_c[start : start + step], w_t)[block]
-            mass += float(np.sum(weight))
             level = np.clip(
                 np.floor(_BINS_PER_DECADE * np.log10(np.maximum(weight, 1e-300))), -bins, 0
             )
             counts += np.bincount((level + bins).astype(np.int64), minlength=bins + 1)
-        if mass <= RESOLUTION / 2.0:
-            return np.zeros_like(pending)
-        if int(counts.sum()) * kinds <= budget:
-            return pending
         kept = np.cumsum(counts[::-1])[::-1]
-        fits = np.flatnonzero(kept * kinds <= budget)
+        fits = np.flatnonzero(kept * per_cell <= budget)
         if fits.size == 0:
-            return np.zeros_like(pending)
+            return np.zeros_like(cells)
         floor = 10.0 ** ((int(fits[0]) - bins) / _BINS_PER_DECADE)
-        keep = np.zeros_like(pending)
+        keep = np.zeros_like(cells)
         for start in range(0, w_c.size, step):
-            block = pending[start : start + step]
-            keep[start : start + step] = block & (np.outer(w_c[start : start + step], w_t) >= floor)
+            weight = np.outer(w_c[start : start + step], w_t)
+            keep[start : start + step] = cells[start : start + step] & (weight >= floor)
         return keep
 
     def _decide_routed(
@@ -1828,53 +1851,25 @@ class RejectionGeometry:
         cols: slice,
         origin: tuple[int, int],
         delta: np.ndarray,
-        row_in: np.ndarray,
-        col_in: np.ndarray,
-    ) -> np.ndarray:
-        """Write the delta decision of the *delta* cells, all inside the routed rectangle, and
-        return the mask of those decided. Every pair is decided by the runtime's own calculation
-        (`conversion_delta.production_decision`) while the evaluation's row budget
-        (`EVALUATION_ROW_BUDGET`) lasts; once it is spent the remaining pairs stay undecided
-        (ambiguous mass), never assumed."""
+    ) -> None:
+        """Write the runtime's own decision (`conversion_delta.production_decision`) of the
+        *delta* cells, all inside the routed rectangle. Their number is the caller's to bound:
+        an evaluation passes the cells `EVALUATION_ROW_BUDGET` pays for (`_selected`)."""
         decision, routing = self.decision, self.routing
         assert routing is not None
         x_lo, j_lo = origin
-        decided = np.zeros_like(delta)
-        r_idx, c_idx = np.flatnonzero(row_in), np.flatnonzero(col_in)
-        c0, c1 = int(c_idx[0]), int(c_idx[-1]) + 1
-        x_t = (j_lo + np.arange(c0, c1))[None, :]
-        step = max(1, _BLOCK_CELLS // (c1 - c0))
-        for start in range(int(r_idx[0]), int(r_idx[-1]) + 1, step):
-            stop = min(int(r_idx[-1]) + 1, start + step)
-            x_c = (x_lo + np.arange(start, stop))[:, None]
-            block = delta[start:stop, c0:c1]
-            if not block.any():
-                continue
-            plus = np.zeros_like(block)
-            minus = np.zeros_like(block)
-            kept = np.zeros_like(block)
-            for a, b in np.argwhere(block):
-                if self._rows_run >= EVALUATION_ROW_BUDGET:
-                    break
-                self._rows_run += 1
-                plus[a, b], minus[a, b] = production_decision(
-                    int(x_c[a, 0]),
-                    decision.n_c,
-                    int(x_t[0, b]),
-                    decision.n_t,
-                    tail=decision.tail_alpha,
-                    alternative=decision.alternative,
-                    null_lift=routing.null_lift,
-                )
-                kept[a, b] = True
-            target = (
-                slice(rows.start + start, rows.start + stop),
-                slice(cols.start + c0, cols.start + c1),
+        for a, b in np.argwhere(delta):
+            plus, minus = production_decision(
+                x_lo + int(a),
+                decision.n_c,
+                j_lo + int(b),
+                decision.n_t,
+                tail=decision.tail_alpha,
+                alternative=decision.alternative,
+                null_lift=routing.null_lift,
             )
-            segment.plus[target] = np.where(kept, plus, segment.plus[target])
-            segment.minus[target] = np.where(kept, minus, segment.minus[target])
-            decided[start:stop, c0:c1] = kept
-        return decided
+            segment.plus[rows.start + a, cols.start + b] = plus
+            segment.minus[rows.start + a, cols.start + b] = minus
 
     def _replay(
         self,
@@ -1899,7 +1894,6 @@ class RejectionGeometry:
             target = segment.plus if req.kind == "plus" else segment.minus
             row = req.x_c - self.x0
             target[row, req.j0 - segment.j0 : req.j1 - segment.j0 + 1] = mask
-        self._replayed += int(replay.sum()) * len(self.decision.kinds)
 
     def cells(self, x_lo: int, x_hi: int, j_lo: int, j_hi: int) -> tuple[np.ndarray, np.ndarray]:
         """Plus and minus rejection masks over ``[x_lo, x_hi] x [j_lo, j_hi]``, every cell
@@ -1914,13 +1908,12 @@ class RejectionGeometry:
     def evaluate(self, p_c: float, p_t: float) -> BinomialPower:
         """Rejection probability at control rate ``p_c``, treatment rate ``p_t``: the weight of the
         cells decided to reject, with the mass of the cells left undecided and of everything
-        outside the windows as the width of its enclosure.
+        outside the windows as the width of its enclosure. The cells decided are the request's
+        own (`_selected`), so the enclosure does not depend on what the geometry already holds.
 
         Raises `FiniteRouteUnavailable` when the runtime refuses the finite-sample decision in
         full and the count pairs it would decide carry more than half of `RESOLUTION`."""
         decision = self.decision
-        self._replayed = 0
-        self._rows_run = 0
         if not self.finite:
             # The count pairs the runtime keeps on the route it refuses are known in closed form,
             # before any cell is stored.
@@ -1932,36 +1925,23 @@ class RejectionGeometry:
                 raise FiniteRouteUnavailable(unrouted)
         wc = _window(decision.n_c, p_c)
         wt = _window(decision.n_t, p_t)
-        row_in, col_in = self._routed_flags(wc.lo, wc.hi, wt.lo, wt.hi)
-        # The mass the finite-sample route would decide in these windows. A plan that keeps at
-        # most half of `RESOLUTION` there leaves it undecided whatever an earlier solve cached.
-        total_t = float(wt.weights.sum())
-        inside_c, inside_t = float(wc.weights[row_in].sum()), float(wt.weights[col_in].sum())
-        finite_mass = (float(wc.weights.sum()) - inside_c) * total_t + inside_c * (
-            total_t - inside_t
-        )
-        skip = self.routing is not None and finite_mass <= RESOLUTION / 2.0
+        # The bound on stored cells refuses an oversized window before any mask is allocated.
         try:
-            self.ensure(wc.lo, wc.hi, wt.lo, wt.hi, (wc.weights, wt.weights), replay=not skip)
+            segment, rows, cols = self._reserve(wc.lo, wc.hi, wt.lo, wt.hi)
         except ReplayBoundExceeded as exceeded:
             raise ReplayBoundExceeded(exceeded.cells, p_t) from None
-        segment = self._containing(wt.lo, wt.hi)
-        assert segment is not None
-        rows = slice(wc.lo - self.x0, wc.hi - self.x0 + 1)
-        cols = slice(wt.lo - segment.j0, wt.hi - segment.j0 + 1)
-        plus, minus, known = (
-            segment.plus[rows, cols],
-            segment.minus[rows, cols],
-            segment.known[rows, cols],
-        )
-        if skip:
-            decided = row_in[:, None] & col_in[None, :]
-            plus, minus, known = plus & decided, minus & decided, known & decided
+        selected = self._selected(wc, wt)
+        self._decide(segment, rows, cols, (wc.lo, wc.hi, wt.lo, wt.hi), selected)
+        # Only the evaluation's own selection is read: a cell an earlier evaluation of this
+        # geometry decided outside it is undecided here, so the enclosure is the same on a fresh
+        # geometry, a shared one and a repeat.
+        plus = segment.plus[rows, cols] & selected
+        minus = segment.minus[rows, cols] & selected
         # The matrix products sum over the control window, then over the treatment window.
         inflation = _inflation(
             wc.error, wt.error, _compounded(wc.size), _compounded(wt.size), _UNIT_ROUNDOFF
         )
-        undecided = float(wc.weights @ ~known @ wt.weights)
+        undecided = float(wc.weights @ ~selected @ wt.weights)
         if not self.finite and undecided * inflation > RESOLUTION / 2.0:
             raise FiniteRouteUnavailable(undecided * inflation)
         return BinomialPower(
