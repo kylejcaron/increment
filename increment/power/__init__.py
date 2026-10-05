@@ -9,7 +9,7 @@ contrast by its counts (``conversion_inference``), planning follows the route:
 dense counts are that closed-form model (``power_basis`` ``"asymptotic"``), sparse
 counts the finite-sample binomial risk-ratio decision's rejection probability
 (``"exact"`` or ``"approximate"``), and counts the threshold splits the smaller of
-the two.
+the two, an ``"approximate"`` figure that leans conservative and is not a proven bound.
 Segment-pairwise planning deliberately retains its separate baseline-only
 approximation.
 

@@ -26,9 +26,11 @@ route near impossible, or the plan is explicitly ``finite_sample``, power is the
 finite-sample decision's rejection probability at the analyzed integer counts,
 exact within a cell budget and otherwise the same decision replayed with Normal
 conditional tails (``increment.power._binomial``). Between the two the smaller
-of the two powers is reported. ``PowerResult.power_basis`` names which. The
-Bernoulli shape above applies to every conversion and retention plan the
-delta-method route decides.
+of the two powers is reported as ``power_basis="approximate"``: the runtime's
+rejection probability there mixes the two routes' decisions, which neither power
+equals, so the reported power is an approximation chosen to lean conservative,
+not a proven bound. The Bernoulli shape above applies to every conversion and retention
+plan the delta-method route decides.
 
 Because the variance depends on the alternative, a decreasing direction's
 noncentrality ``d / S(theta0 - d)`` rises to a single peak and then falls:
@@ -737,8 +739,10 @@ class PowerResult(CodedModel, BaseModel):
         conditional tails, for binomial plans whose exact geometry exceeds the
         planning cell budget; its numerical enclosure is of the model's integral
         only and does not bound the model's departure from the runtime (measured
-        at up to 0.8 percentage points below it). A plan the count rule splits
-        reports the replayed decision's basis and the smaller of the two powers.
+        at up to 0.8 percentage points below it); also every plan
+        the count rule splits between its two routes, which reports the smaller
+        of the two powers (an approximation of the runtime's mixed rejection
+        probability that leans conservative, not a proven bound).
     mde_relative : float | None
         Minimum detectable relative effect on the complier scale, expressed
         RELATIVE TO the declared null: ``(exp(distance) - 1) /
@@ -2274,7 +2278,10 @@ class _BinomialPlan:
     ``geometry``. Under ``"auto"`` the runtime takes the delta-method route where all four
     counts are dense, so each effect's rates classify (``planning_route``): ``dense`` is the
     closed-form model ``arm``, ``sparse`` the replay, and ``borderline`` the smaller of the
-    two powers -- the claim stays true where the replay happens to exceed the closed form.
+    two powers. The runtime's rejection probability there is a mixture of the two routes'
+    decisions that neither power equals, so the smaller is an approximation chosen to lean
+    conservative, not a proven bound, and is reported as ``approximate`` whatever the
+    replay's own basis.
     """
 
     geometry: RejectionGeometry
@@ -2301,7 +2308,10 @@ class _BinomialPlan:
 
     def basis_at(self, theta: float) -> PowerBasis:
         """``PowerResult.power_basis`` of effect ``theta``."""
-        return "asymptotic" if self.route(theta) == "dense" else self.geometry.route
+        route = self.route(theta)
+        if route == "borderline":
+            return "approximate"
+        return "asymptotic" if route == "dense" else self.geometry.route
 
     def evaluate(self, theta: float, distance: float) -> BinomialPower:
         """The rejection mass at effect ``theta``, ``distance`` from the null on the log scale,

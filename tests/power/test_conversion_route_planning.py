@@ -164,7 +164,7 @@ class TestSparsePlansAreTheReplay:
         )
 
 
-class TestBorderlinePlansAreTheConservativeRoute:
+class TestBorderlinePlansAreTheSmallerOfTheTwoRoutes:
     def _cell(self):
         # The sparsest count of both arms sits about one standard deviation from the threshold.
         m = dense_min_count(TAIL)
@@ -172,13 +172,13 @@ class TestBorderlinePlansAreTheConservativeRoute:
         n = math.ceil(1.05 * m / p)
         return n, p
 
-    def test_the_classification_is_borderline_and_the_basis_is_the_replays(self):
+    def test_the_classification_is_borderline_and_the_basis_is_approximate(self):
+        """The runtime's rejection probability there mixes both routes' decisions, which neither
+        power equals, so the figure is an approximation whatever the replay's own basis."""
         n, p = self._cell()
         assert planning_route(n, n, p, p * 1.05, tail_alpha=TAIL, mode="auto") == "borderline"
         baseline = Baseline.from_proportion(p)
-        auto = achieved_power(n, 0.05, baseline, _plan("auto"))
-        pinned = achieved_power(n, 0.05, baseline, _plan("finite_sample"))
-        assert auto.power_basis == pinned.power_basis != "asymptotic"
+        assert achieved_power(n, 0.05, baseline, _plan("auto")).power_basis == "approximate"
 
     def test_power_is_the_smaller_of_the_replay_and_the_closed_form(self):
         n, p = self._cell()
