@@ -168,15 +168,31 @@ def _outside_mass(n: int, p: float, m: int) -> float:
     return min(1.0, below + above)
 
 
+def _routed(outside_c: float, outside_t: float) -> float:
+    """Probability that every count of independent arms reaches the dense band, from each arm's
+    outside mass: the product of the arms' inside masses, which keeps its relative precision
+    where it is small."""
+    return (1.0 - outside_c) * (1.0 - outside_t)
+
+
 def _planning_class(outside_c: float, outside_t: float) -> PlanningRoute:
     """Classify a plan from each arm's probability of falling outside the dense band."""
     # The complement of both arms inside, summed without cancellation.
     outside = outside_c + outside_t - outside_c * outside_t
     if outside <= PLANNING_ROUTE_CERTAINTY:
         return "dense"
-    if (1.0 - outside_c) * (1.0 - outside_t) <= PLANNING_ROUTE_CERTAINTY:
+    if _routed(outside_c, outside_t) <= PLANNING_ROUTE_CERTAINTY:
         return "sparse"
     return "borderline"
+
+
+def routed_share(n_c: int, n_t: int, p_c: float, p_t: float, *, tail_alpha: float) -> float:
+    """Probability that the runtime rule takes the asymptotic route for arm sizes ``(n_c, n_t)``
+    and true rates ``(p_c, p_t)``: ``P(m <= X_c <= n_c - m) * P(m <= X_t <= n_t - m)`` with
+    ``m = dense_min_count(tail_alpha)`` and independent binomial arms. ``planning_route``
+    classifies a plan from this probability."""
+    m = dense_min_count(tail_alpha)
+    return _routed(_outside_mass(n_c, p_c, m), _outside_mass(n_t, p_t, m))
 
 
 def planning_route(
@@ -191,12 +207,10 @@ def planning_route(
     """Which route a plan at arm sizes ``(n_c, n_t)`` and true rates ``(p_c, p_t)`` takes.
 
     The runtime rule reads the four realised counts, so the plan's probability of the
-    asymptotic route is ``P(m <= X_c <= n_c - m) * P(m <= X_t <= n_t - m)`` with
-    ``m = dense_min_count(tail_alpha)`` and independent binomial arms. A plan is
-    ``dense`` when that probability is at least ``1 - PLANNING_ROUTE_CERTAINTY``,
-    ``sparse`` when it is at most ``PLANNING_ROUTE_CERTAINTY``, and ``borderline``
-    between. ``mode="finite_sample"`` is always ``sparse``: the runtime never leaves
-    the finite-sample route.
+    asymptotic route is ``routed_share``. A plan is ``dense`` when that probability is at
+    least ``1 - PLANNING_ROUTE_CERTAINTY``, ``sparse`` when it is at most
+    ``PLANNING_ROUTE_CERTAINTY``, and ``borderline`` between. ``mode="finite_sample"`` is
+    always ``sparse``: the runtime never leaves the finite-sample route.
     """
     if mode == "finite_sample":
         return "sparse"

@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from scipy.stats import norm
+from scipy.stats import binom, norm
 
 from increment.errors import CodedError, InvalidRequestError
 from increment.estimation.armstats import ArmStats
@@ -23,6 +23,7 @@ from increment.estimation.conversion_route import (
     family_route_alpha,
     planning_route,
     route_for_counts,
+    routed_share,
 )
 from increment.estimation.engine import Method, _estimate_lift, estimate_lift
 from increment.estimation.family import bh_select
@@ -467,6 +468,43 @@ class TestPlanningRoute:
                 assert share == 0.0
             else:
                 assert 0.0 < share < 1.0
+
+    @pytest.mark.parametrize(
+        ("n_c", "n_t", "p_c", "p_t", "tail"),
+        [
+            (3_000, 3_000, 0.3, 0.33, 0.025),
+            (2_000, 5_000, 0.2, 0.25, 0.1),
+            (20_000, 18_000, 0.02, 0.03, 0.01),
+            (400, 400, 0.5, 0.5, 0.05),
+        ],
+    )
+    def test_the_routed_share_is_the_product_of_the_arms_binomial_band_probabilities(
+        self, n_c, n_t, p_c, p_t, tail
+    ):
+        """The probability that all four counts reach the threshold, derived independently from
+        the binomial distribution function; an arm too small to hold it on both sides has none."""
+        m = dense_min_count(tail)
+        expected = 1.0
+        for n, p in ((n_c, p_c), (n_t, p_t)):
+            expected *= binom.cdf(n - m, n, p) - binom.cdf(m - 1, n, p) if n >= 2 * m else 0.0
+        assert routed_share(n_c, n_t, p_c, p_t, tail_alpha=tail) == pytest.approx(
+            expected, rel=1e-9, abs=1e-15
+        )
+
+    def test_the_routed_share_decides_the_classification(self):
+        """A plan is dense where the share reaches ``1 - PLANNING_ROUTE_CERTAINTY`` and sparse
+        where it falls to ``PLANNING_ROUTE_CERTAINTY``, as sizes grow past the threshold."""
+        tail = 0.025
+        for n in range(400, 40_000, 400):
+            share = routed_share(n, n, 0.1, 0.11, tail_alpha=tail)
+            route = planning_route(n, n, 0.1, 0.11, tail_alpha=tail, mode="auto")
+            assert route == (
+                "dense"
+                if share >= 1.0 - PLANNING_ROUTE_CERTAINTY
+                else "sparse"
+                if share <= PLANNING_ROUTE_CERTAINTY
+                else "borderline"
+            )
 
     def test_the_classification_is_monotone_in_the_treatment_rate_around_one_half(self):
         m = dense_min_count(0.05)
