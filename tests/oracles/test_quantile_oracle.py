@@ -42,4 +42,4 @@ def test_log_scale_half_width_matches_independent_qbinom_bracket(case):
     values = _values_for(case["id"])
     _, se = log_quantile_se(values, case["q"], alpha=0.05)
     r_se = (math.log(case["upper"]) - math.log(case["lower"])) / (2.0 * _Z)
-    assert se == pytest.approx(r_se, rel=_TOL["se_rel"])
+    assert se == pytest.approx(r_se, rel=_TOL["se_rel"], abs=0.0)

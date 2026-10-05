@@ -207,8 +207,10 @@ extension. Use the [compatibility matrix](docs/guides/compatibility.md) and
 
 [`docs/validation.md`](docs/validation.md) is the single inventory of independent-reference
 evidence, including methods that have none. Frozen fixtures live under `tests/oracles/` with
-their generator scripts; ordinary tests read the fixtures only (`make test TESTS=tests/oracles`),
-never R or the network. To report a discrepancy against a reference, open a GitHub issue with the
+their generator scripts; ordinary tests read the fixtures only, never R or the network. Run an
+oracle with `make test TESTS=tests/oracles/test_welch_oracle.py` (the focused runner takes test
+files, not directories; [Reproduce](docs/validation.md#reproduce) lists each one). To report a
+discrepancy against a reference, open a GitHub issue with the
 increment version or commit, the entry point, the reference tool and version, the two numbers and
 the tolerance, and attach aggregate moments or the reference output, never identifiers,
 credentials, or raw private data.

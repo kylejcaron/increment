@@ -44,8 +44,8 @@ def _run(case: dict):
 def test_welch_difference_interval_matches_r_t_test(case):
     row = _run(case)
     assert row.abs_reference_kind == "t"
-    assert row.abs_reference_df == pytest.approx(case["df"], rel=_TOL["rel"])
-    assert row.abs_diff == pytest.approx(case["diff"], rel=_TOL["rel"])
-    assert row.abs_se == pytest.approx(case["se"], rel=_TOL["rel"])
-    assert row.abs_lb == pytest.approx(case["lower"], rel=_TOL["rel"])
-    assert row.abs_ub == pytest.approx(case["upper"], rel=_TOL["rel"])
+    assert row.abs_reference_df == pytest.approx(case["df"], rel=_TOL["rel"], abs=0.0)
+    assert row.abs_diff == pytest.approx(case["diff"], rel=_TOL["rel"], abs=0.0)
+    assert row.abs_se == pytest.approx(case["se"], rel=_TOL["rel"], abs=0.0)
+    assert row.abs_lb == pytest.approx(case["lower"], rel=_TOL["rel"], abs=0.0)
+    assert row.abs_ub == pytest.approx(case["upper"], rel=_TOL["rel"], abs=0.0)
