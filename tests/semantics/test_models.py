@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from increment.errors import DefinitionError
+from increment.errors import DefinitionError, InvalidRequestError
 from increment.semantics.models import (
     AdjustmentCovariate,
     AnalysisPlan,
@@ -2625,9 +2625,9 @@ def test_method_spec_conversion_inference_defaults_to_auto_and_round_trips():
 
 
 def test_method_spec_refuses_finite_sample_with_cuped_and_unknown_values():
-    with pytest.raises(DefinitionError) as exc_info:
+    with pytest.raises(InvalidRequestError) as exc_info:
         MethodSpec(name="cuped", variance_reduction="cuped", conversion_inference="finite_sample")
-    assert exc_info.value.code == "definition.method.finite_sample_cuped"
+    assert exc_info.value.code == "conversion_inference.finite_sample.cuped"
     with pytest.raises(ValidationError):
         MethodSpec(name="unadjusted", conversion_inference="asymptotic")  # ty: ignore[invalid-argument-type]
 
@@ -2695,10 +2695,42 @@ def test_a_finite_sample_binding_on_a_mean_metric_is_refused_at_definition_load(
     with pytest.raises(DefinitionError) as exc_info:
         Definitions.model_validate(_finite_sample_definitions("mean"))
     assert exc_info.value.code == "definition.invalid"
-    assert "definition.validate_experiment.finite_sample_metric_type" in {
+    assert "conversion_inference.finite_sample.metric_type" in {
         code
         for code, _ in exc_info.value.context["errors"]  # ty: ignore[not-iterable]
     }
+
+
+def test_one_hazard_has_one_code_and_context_across_every_layer():
+    """A ``finite_sample`` request on a metric that is not a conversion or retention rate, and
+    on a CUPED-adjusted method, is refused with the same code and typed context whether a
+    definition, a frame metric, an estimator method or a power plan carries it."""
+    from increment._metric_specs import MetricSpec
+    from increment.estimation.arm_contract import ArmPlanningProcedure
+    from increment.estimation.engine import Method
+
+    metric_code = "conversion_inference.finite_sample.metric_type"
+    cuped_code = "conversion_inference.finite_sample.cuped"
+    finite = {"conversion_inference": "finite_sample"}
+
+    with pytest.raises(DefinitionError) as definition_metric:
+        Definitions.model_validate(_finite_sample_definitions("mean"))
+    sub_codes = {code for code, _ in definition_metric.value.context["errors"]}  # ty: ignore[not-iterable]
+    assert sub_codes == {metric_code}
+    with pytest.raises(InvalidRequestError) as frame_metric:
+        MetricSpec(name="m", decision_method=Method(name="unadjusted", **finite))
+    with pytest.raises(InvalidRequestError) as plan_metric:
+        ArmPlanningProcedure.standard("mean", **finite)  # ty: ignore[invalid-argument-type]
+    assert {frame_metric.value.code, plan_metric.value.code} == {metric_code}
+    assert frame_metric.value.context["metric_type"] == plan_metric.value.context["metric_type"]
+
+    cuped = {"name": "cuped", "variance_reduction": "cuped", **finite}
+    with pytest.raises(InvalidRequestError) as definition_cuped:
+        MethodSpec(**cuped)  # ty: ignore[invalid-argument-type]
+    with pytest.raises(InvalidRequestError) as method_cuped:
+        Method(**cuped)  # ty: ignore[invalid-argument-type]
+    assert {definition_cuped.value.code, method_cuped.value.code} == {cuped_code}
+    assert definition_cuped.value.context == method_cuped.value.context
 
 
 def test_prior_spec_requires_positive_sigma():

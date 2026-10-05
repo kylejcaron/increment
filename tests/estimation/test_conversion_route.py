@@ -362,7 +362,7 @@ class TestExplicitFiniteSample:
     def test_cuped_is_refused_at_construction_by_code(self):
         with pytest.raises(CodedError) as raised:
             Method(name="cuped", variance_reduction="cuped", conversion_inference="finite_sample")
-        assert raised.value.code == "estimation.engine.method.cuped_finite_sample"
+        assert raised.value.code == "conversion_inference.finite_sample.cuped"
         assert Method(name="cuped", variance_reduction="cuped").conversion_inference == "auto"
 
     def test_an_unknown_value_is_refused(self):
@@ -380,7 +380,7 @@ class TestExplicitFiniteSample:
             )
         assert raised.value.code == "estimation.binomial.finite_sample_unavailable"
 
-    def test_a_mean_metric_is_refused_by_the_same_code(self):
+    def test_a_mean_metric_is_refused_by_the_shared_metric_type_code(self):
         rows = [{**row, "metric": "revenue"} for row in count_summary(300, 10_000, 330, 10_000)]
         with pytest.raises(InvalidRequestError) as raised:
             estimate_lift(
@@ -389,7 +389,7 @@ class TestExplicitFiniteSample:
                 control_group="control",
                 methods=[Method(name="unadjusted", conversion_inference="finite_sample")],
             )
-        assert raised.value.code == "estimation.binomial.finite_sample_unavailable"
+        assert raised.value.code == "conversion_inference.finite_sample.metric_type"
 
     def test_auto_on_an_ineligible_contrast_behaves_as_before(self):
         rows = [{**row, "metric": "revenue"} for row in count_summary(300, 10_000, 330, 10_000)]

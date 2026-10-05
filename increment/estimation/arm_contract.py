@@ -11,6 +11,7 @@ from pydantic import (
     model_validator,
 )
 
+from increment._finite_sample_refusals import refuse_finite_sample_metric_type
 from increment._literals import Alternative, ConversionInference, PreferredDirection, ValueScale
 from increment.compatibility import (
     ARM_COMPATIBILITY_REFUSALS,
@@ -256,8 +257,9 @@ class ArmCompatibilityRequest(CodedModel, BaseModel):
 
 def _require_finite_sample_servable(metric_type: str, *, clustered: bool, sequential: bool) -> None:
     """Refuse an explicit ``finite_sample`` plan the finite-sample route cannot serve."""
+    if metric_type not in ("conversion", "retention"):
+        refuse_finite_sample_metric_type(metric_type)
     reason = finite_sample_blocker(
-        metric_type,
         cluster="the plan's cluster" if clustered else None,
         prior_present=False,
         sequential=sequential,

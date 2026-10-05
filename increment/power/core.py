@@ -64,6 +64,10 @@ from scipy.stats import chi2 as _chi2
 from scipy.stats import ncx2 as _ncx2
 from scipy.stats import norm as _norm
 
+from increment._finite_sample_refusals import (
+    refuse_finite_sample_cuped,
+    refuse_finite_sample_metric_type,
+)
 from increment._literals import Alternative, ConversionInference
 from increment.compatibility import (
     PowerDesign,
@@ -1379,10 +1383,8 @@ def _derive_axes_from_baseline(
     )
     if baseline.cuped_rho != 0.0 and not already_cuped:
         if procedure.decision_method.conversion_inference == "finite_sample":
-            refuse_finite_sample_unavailable(
-                procedure.metric.metric_type,
-                "the baseline's cuped_rho makes the decision CUPED-adjusted, which has no "
-                "finite-sample test inversion",
+            refuse_finite_sample_cuped(
+                procedure.decision_method.name, adjusted_by="baseline_cuped_rho"
             )
         procedure = procedure.model_copy(
             update={"decision_method": MethodSpec(name="cuped", variance_reduction="cuped")}
@@ -1426,8 +1428,9 @@ def _require_finite_sample_plannable(procedure: ArmPlanningProcedure) -> None:
     decide with the finite-sample route, as the runtime refuses the same request."""
     if _conversion_mode(procedure) != "finite_sample" or _runtime_binomial(procedure):
         return
+    if procedure.metric.metric_type not in ("conversion", "retention"):
+        refuse_finite_sample_metric_type(procedure.metric.metric_type)
     reason = finite_sample_blocker(
-        procedure.metric.metric_type,
         cluster="the plan's cluster" if procedure.dependence == "cluster" else None,
         prior_present=procedure.prior_present,
         sequential=not isinstance(procedure.inference, FixedInference),

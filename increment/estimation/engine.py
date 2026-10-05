@@ -21,6 +21,10 @@ import narwhals as nw
 from narwhals.typing import IntoDataFrame
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from increment._finite_sample_refusals import (
+    refuse_finite_sample_cuped,
+    refuse_finite_sample_metric_type,
+)
 from increment._literals import Alternative, ConversionInference, PreferredDirection
 from increment._moment_plan import CORE_SLOTS, OPTIONAL_SLOTS, X_ROLE_VARIABLES
 from increment.errors import (
@@ -109,7 +113,6 @@ _REFUSALS = refusals(
         "estimation.engine.arm.invalid_count": "{what} is {value!r}, not a finite integer-valued count -- ArmStats.n rejects a fractional value at direct construction, so the untyped dataframe ingress must too instead of silently truncating it (int(2.9) == 2) into a different arm size than the row declared. Round or fix the upstream aggregation so 'n' is integral.",
         "estimation.engine.ratio.negative_variance": "ratio_abs_diff_se refused these moments: {reason} -- a deficit at this scale means the numerator/denominator moments violate Cauchy-Schwarz (an infeasible covariance), not merely cancelled, so reporting a clamped zero-SE (maximal confidence) would be the most dangerous possible failure mode for a decision number.",
         "estimation.engine.method.name_without_variance": "Method(name={self!r}) without variance_reduction='cuped' would label an unadjusted estimate as CUPED-adjusted; pass Method(name='cuped', variance_reduction='cuped') or rename.",
-        "estimation.engine.method.cuped_finite_sample": "Method(name={name!r}) combines variance_reduction='cuped' with conversion_inference='finite_sample': CUPED adjusts the outcome by a fitted covariate slope, so the contrast is no longer a pair of raw binomial counts and has no finite-sample test inversion. Use conversion_inference='auto' (CUPED then adjusts on the asymptotic route) or drop variance_reduction='cuped'.",
         "estimation.engine.method.name_iptw_does": "Method(name='iptw') does not accept outcome_learner/folds -- IPTW fits one propensity model with no cross-fitting; set propensity_learner (mapped to iptw_estimate's learner=) instead, or use Method(name='dml') / Method(name='aipw') for cross-fit outcome-model pluggability.",
         "estimation.engine.carries_format_moments": "{what} carries format-1 moments (raw additive sums: 'sum_y2' present, 'cy2' absent). increment consumes CENTERED moments -- ref_y/cy1/cy2 and the c-form families -- because raw second moments lose the variance signal to floating-point cancellation once the mean dwarfs the spread, so they are never reinterpreted here. Two ways in: Analysis.from_moments(...), which adapts stamped or unstamped format-1 rows automatically, or ArmStats.from_raw_sums(...) for hand-built rows.",
         "estimation.engine.carries_unsupported_weighted": "{what} carries unsupported weighted ArmStats fields: {unsupported}; weighted estimands must use ScoreStats.",
@@ -284,7 +287,7 @@ class Method(CodedModel, BaseModel):
     def _check_label_matches_configuration(self) -> Method:
         VARIANCE_REDUCTION.get(self.variance_reduction)  # raises if unregistered
         if self.conversion_inference == "finite_sample" and self.variance_reduction == "cuped":
-            _refuse("estimation.engine.method.cuped_finite_sample", name=self.name)
+            refuse_finite_sample_cuped(self.name)
         if self.name == "cuped" and self.variance_reduction != "cuped":
             _refuse("estimation.engine.method.name_without_variance", self=self.name)
         if self.name == "iptw" and (self.outcome_learner is not None or self.folds is not None):
@@ -648,6 +651,8 @@ def _validate_conversion_inference(
         explicit = [method for method in methods if method.conversion_inference == "finite_sample"]
         if not explicit:
             continue
+        if metric.type not in ("conversion", "retention"):
+            refuse_finite_sample_metric_type(metric.type, metric=metric.name)
         if any(method.name in ADJUSTMENTS for method in explicit):
             refuse_finite_sample_unavailable(
                 metric.name,
@@ -655,7 +660,7 @@ def _validate_conversion_inference(
                 "outcome models instead of comparing raw binomial counts",
             )
         reason = finite_sample_blocker(
-            metric.type, cluster=cluster, prior_present=prior is not None, sequential=sequential
+            cluster=cluster, prior_present=prior is not None, sequential=sequential
         )
         if reason is not None:
             refuse_finite_sample_unavailable(metric.name, reason)
@@ -2609,10 +2614,11 @@ def _lift_for_method(  # noqa: PLR0913
     )
     if not eligible:
         if method.conversion_inference == "finite_sample":
+            if metric_type not in ("conversion", "retention"):
+                refuse_finite_sample_metric_type(metric_type, metric=treatment.metric)
             refuse_finite_sample_unavailable(
                 treatment.metric,
                 finite_sample_blocker(
-                    metric_type,
                     cluster=cluster,
                     prior_present=prior is not None,
                     sequential=inference is not None,

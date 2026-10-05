@@ -89,17 +89,13 @@ def refuse_finite_sample_unavailable(metric: str, reason: str) -> NoReturn:
 
 
 def finite_sample_blocker(
-    metric_type: str, *, cluster: str | None, prior_present: bool, sequential: bool
+    *, cluster: str | None, prior_present: bool, sequential: bool
 ) -> str | None:
-    """Why ``conversion_inference="finite_sample"`` cannot serve one metric's request,
-    or ``None`` when it can: the finite-sample route is the independent-binomial test
-    inversion of an unclustered conversion or retention rate at a fixed horizon, with
-    no informative prior."""
-    if metric_type not in ("conversion", "retention"):
-        return (
-            f"the metric type is {metric_type!r}, and the finite-sample route serves "
-            "conversion and retention rates only"
-        )
+    """Why ``conversion_inference="finite_sample"`` cannot serve one conversion or retention
+    metric's request, or ``None`` when it can: the finite-sample route is the
+    independent-binomial test inversion of an unclustered rate at a fixed horizon, with no
+    informative prior. A metric that is not a conversion or retention rate is the shared
+    ``increment._finite_sample_refusals`` hazard, refused before this is asked."""
     if cluster is not None:
         return (
             f"the units are clustered by {cluster!r}, which the independent-binomial test "

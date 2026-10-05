@@ -219,7 +219,7 @@ class TestExplicitFiniteSamplePlans:
     def test_a_mean_metric_cannot_plan_finite_sample(self):
         with pytest.raises(CodedError) as raised:
             ArmPlanningProcedure.standard("mean", conversion_inference="finite_sample")
-        assert raised.value.code == "estimation.binomial.finite_sample_unavailable"
+        assert raised.value.code == "conversion_inference.finite_sample.metric_type"
 
 
 class TestRefusalsNameTheAutoRoute:
@@ -293,7 +293,7 @@ def test_a_baseline_cuped_rho_does_not_discard_an_explicit_finite_sample_request
     baseline = Baseline(mean=0.3, var=0.21, cuped_rho=0.4)
     with pytest.raises(CodedError) as raised:
         achieved_power(5_000, 0.1, baseline, _plan("finite_sample"))
-    assert raised.value.code == "estimation.binomial.finite_sample_unavailable"
+    assert raised.value.code == "conversion_inference.finite_sample.cuped"
     # The default route plans the CUPED-adjusted decision as before.
     assert achieved_power(5_000, 0.1, baseline, _plan("auto")).power_basis == "asymptotic"
 

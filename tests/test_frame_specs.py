@@ -705,8 +705,8 @@ def test_metric_spec_refuses_a_finite_sample_method_off_a_binary_metric(metric_t
             decision_method=Method(name="unadjusted", conversion_inference="finite_sample"),
             **extra,
         )
-    assert exc_info.value.code == "frame.metric.finite_sample_metric_type"
-    assert exc_info.value.context == {"name": "revenue", "type": metric_type}
+    assert exc_info.value.code == "conversion_inference.finite_sample.metric_type"
+    assert exc_info.value.context == {"metric_type": metric_type, "metric": "revenue"}
 
 
 def test_metric_spec_refuses_a_finite_sample_sensitivity_method_on_a_mean_metric() -> None:
@@ -715,7 +715,7 @@ def test_metric_spec_refuses_a_finite_sample_sensitivity_method_on_a_mean_metric
             name="revenue",
             sensitivity_methods=(Method(name="unadjusted", conversion_inference="finite_sample"),),
         )
-    assert exc_info.value.code == "frame.metric.finite_sample_metric_type"
+    assert exc_info.value.code == "conversion_inference.finite_sample.metric_type"
 
 
 def test_metric_spec_cuped_method_rejected_on_quantile() -> None:

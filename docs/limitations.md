@@ -301,8 +301,11 @@ interval is computed. It never compares an interval or a p-value, and it labels 
 `Method.conversion_inference` selects: `"auto"` (the default, on `Method`, `MethodSpec` and the
 wire format) routes by counts, and `"finite_sample"` always takes the finite-sample route
 (refused by code, `estimation.binomial.finite_sample_unavailable`, with an informative prior,
-clustered units, sequential inference, a metric that is not a conversion or retention rate,
-or an observational adjustment, and at construction with CUPED). There is no forced
+clustered units, sequential inference or an observational adjustment; and on a metric that is
+not a conversion or retention rate or on a CUPED-adjusted method, with
+`conversion_inference.finite_sample.metric_type` and `conversion_inference.finite_sample.cuped`,
+the one code per hazard whether a definition, a frame metric, a method or a plan carries it).
+There is no forced
 delta-method value and no analysis-wide knob. A multiplicity family that reads p-values at
 levels below the row's own routes each row at the smallest level it can be decided at (for a
 BH family, `q` over the hypotheses it tests), never at a looser one. Plans and wire payloads

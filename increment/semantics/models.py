@@ -26,6 +26,10 @@ from pydantic import (
     model_validator,
 )
 
+from increment._finite_sample_refusals import (
+    FINITE_SAMPLE_METRIC_TYPE,
+    refuse_finite_sample_cuped,
+)
 from increment._immutable import _FrozenMapping
 from increment._literals import (
     ALTERNATIVE_VALUES,
@@ -326,9 +330,6 @@ DEFINITION_REFUSALS: dict[str, RefusalSpec] = {
     ),
     "definition.method.methodspec_name_cuped": RefusalSpec(
         "definition.method.methodspec_name_cuped", DefinitionError, _render_definition_message
-    ),
-    "definition.method.finite_sample_cuped": RefusalSpec(
-        "definition.method.finite_sample_cuped", DefinitionError, _render_definition_message
     ),
     "definition.metric_base.margin_margin_abs": RefusalSpec(
         "definition.metric_base.margin_margin_abs", DefinitionError, _render_definition_message
@@ -1762,13 +1763,7 @@ class MethodSpec(_Base):
                 "would label an unadjusted estimate as CUPED-adjusted",
             )
         if self.conversion_inference == "finite_sample" and self.variance_reduction == "cuped":
-            _definition_refusal(
-                "definition.method.finite_sample_cuped",
-                f"MethodSpec(name={self.name!r}) combines variance_reduction='cuped' with "
-                "conversion_inference='finite_sample': CUPED adjusts by a fitted covariate "
-                "slope, so the contrast is no longer a pair of raw binomial counts. Use "
-                "conversion_inference='auto' or drop variance_reduction='cuped'",
-            )
+            refuse_finite_sample_cuped(self.name)
         return self
 
 
@@ -3020,11 +3015,9 @@ class Definitions(CodedModel, _Base):
             ):
                 errors.append(
                     (
-                        "definition.validate_experiment.finite_sample_metric_type",
-                        f"experiment '{experiment.name}': metric '{name}' (type "
-                        f"'{metric.type}') declares conversion_inference='finite_sample', "
-                        "which applies only to conversion and retention metrics -- drop it "
-                        "or use conversion_inference='auto'",
+                        FINITE_SAMPLE_METRIC_TYPE.code,
+                        f"experiment '{experiment.name}': metric '{name}': "
+                        + FINITE_SAMPLE_METRIC_TYPE.render(metric_type=metric.type),
                     )
                 )
 

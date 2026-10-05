@@ -12,6 +12,7 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
+from increment._finite_sample_refusals import refuse_finite_sample_metric_type
 from increment._literals import PreferredDirection
 from increment.errors import (
     CodedModel,
@@ -72,7 +73,6 @@ _REFUSALS = refusals(
         "frame.metric.method_name_cuped": "metric {name!r}: Method(name='cuped') without variance_reduction='cuped' would label an unadjusted estimate as CUPED-adjusted; pass Method(name='cuped', variance_reduction='cuped') or rename.",
         "frame.metric.cuped_supported_metrics": "metric {name!r}: CUPED is not supported for {type} metrics -- a quantile is not a mean of per-unit values, so there is no per-unit residual for a covariate slope to act on. CUPED is supported for mean, conversion, retention and ratio metrics; a ratio adjusts its numerator and denominator against covariate= with a slope each.",
         "frame.metric.declares_cuped_method": "metric {name!r} declares a CUPED method but no covariate= column -- CUPED needs a pre-period covariate",
-        "frame.metric.finite_sample_metric_type": "metric {name!r} (type={type!r}) declares conversion_inference='finite_sample', which applies only to conversion and retention metrics -- drop it or use conversion_inference='auto'",
         "frame.metrics_empty_supply": "metrics is empty; supply at least one metric to estimate",
         "frame.metrics_entries_metricspec": "metrics entries must be MetricSpec or mapping, got {type_name}",
         "frame.duplicate_metric_name": "duplicate metric name {name!r}: moments are keyed by name, so two specs sharing one name silently interleave their rows and cross-pair arms. Give each metric a distinct name.",
@@ -266,7 +266,7 @@ class MetricSpec(CodedModel, BaseModel):
         if self.type not in ("conversion", "retention") and any(
             method.conversion_inference == "finite_sample" for method in methods
         ):
-            _raise("frame.metric.finite_sample_metric_type", name=self.name, type=self.type)
+            refuse_finite_sample_metric_type(self.type, metric=self.name)
         return self
 
     @property
