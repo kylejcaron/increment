@@ -7437,6 +7437,348 @@ def _conversion_route_breakout_case() -> ParityCase:
     )
 
 
+# A two-hypothesis BH family at q = 0.2 reads p-values at q / 2 = 0.1, a 0.05 tail, while its
+# rows' own two-sided alpha of 0.2 puts a 0.1 tail on each side: counts dense at the nominal
+# tail but not at the family's must take the finite-sample route under an encouragement or an
+# observational design exactly as under a randomized one.
+def _family_route_between() -> int:
+    return (dense_min_count(_ROUTE_ALPHA / 2) + dense_min_count(_ROUTE_ALPHA / 4)) // 2
+
+
+def _family_route_counts() -> dict[str, tuple[int, Literal["t", "binomial"]]]:
+    """Per metric: control successes (the treatment arm has one more, so no row is a BH
+    discovery and every row keeps the pass routed at the family's level) and the route label
+    that level assigns."""
+    return {
+        "a": (_family_route_between(), "binomial"),
+        "b": (2 * dense_min_count(_ROUTE_ALPHA / 4), "t"),
+    }
+
+
+def _family_route_rows() -> list[dict[str, Any]]:
+    counts = _family_route_counts()
+    n = 4 * max(count for count, _ in counts.values())
+    return [
+        {
+            "user_id": f"{group[0]}{i}",
+            "group_id": group,
+            "tenure": float(i % 7),
+            "uptake": int(group == "treatment" and i % 3 == 0),
+            **{name: int(i < count + shift) for name, (count, _) in counts.items()},
+        }
+        for i in range(n)
+        for group, shift in (("control", 0), ("treatment", 1))
+    ]
+
+
+def _family_event(unit: str, at: dt.datetime, event: str, **extra: Any) -> dict[str, Any]:
+    return {
+        "user_id": unit,
+        "event_at": at,
+        "event": event,
+        "experiment_id": None,
+        "group_id": None,
+        "tenure": None,
+        **extra,
+    }
+
+
+def _family_route_events() -> list[dict[str, Any]]:
+    """Event-log shape of `_family_route_rows`: an exposure, a pre-exposure profile carrying the
+    covariate, a click for an uptake unit, one event per conversion, and freshness padding."""
+    events: list[dict[str, Any]] = []
+    for row in _family_route_rows():
+        unit = row["user_id"]
+        events.append(
+            _family_event(
+                unit,
+                _ENCOURAGEMENT_EXPOSURE_AT,
+                "exposure",
+                experiment_id="exp",
+                group_id=row["group_id"],
+            )
+        )
+        events.append(
+            _family_event(
+                unit,
+                _ENCOURAGEMENT_EXPOSURE_AT - dt.timedelta(days=14),
+                "profile",
+                tenure=row["tenure"],
+            )
+        )
+        if row["uptake"]:
+            events.append(_family_event(unit, _ENCOURAGEMENT_CLICK_AT, "clicked"))
+        events.extend(
+            _family_event(unit, _ENCOURAGEMENT_PURCHASE_AT, name)
+            for name in _family_route_counts()
+            if row[name]
+        )
+        events.append(_family_event(unit, _ENCOURAGEMENT_FRESHNESS_PAD_AT, "pad"))
+    return events
+
+
+def _family_route_defs_dict(
+    design: dict[str, Any], plan: dict[str, Any], *, covariate: bool
+) -> dict[str, Any]:
+    names = list(_family_route_counts())
+    source: dict[str, Any] = {
+        "name": "events",
+        "sql": "SELECT * FROM events",
+        "timestamp_column": "event_at",
+        "entities": ["user_id"],
+        "facts": [
+            {"name": "exposure", "column": None},
+            {"name": "clicked", "column": None},
+            {"name": "pad", "column": None},
+            *({"name": name, "column": None} for name in names),
+        ],
+    }
+    if covariate:
+        source["properties"] = [
+            {"name": "tenure", "column": "tenure", "dtype": "float", "as_of": "pre_exposure"}
+        ]
+    return {
+        "dialect": "duckdb",
+        "fact_sources": [source],
+        "exposures": [{"name": "assignment", "fact": "exposure"}],
+        "metrics": [
+            {
+                "type": "conversion",
+                "name": name,
+                "entity": "user_id",
+                "fact": name,
+                "window_days": 1,
+                "preferred_direction": "increase",
+            }
+            for name in names
+        ],
+        "experiments": [
+            {
+                "name": "exp",
+                "exposure": "assignment",
+                "unit": "user_id",
+                "start": "2025-01-10",
+                "end": _ENCOURAGEMENT_EXPERIMENT_END.isoformat(),
+                "control_group": "control",
+                "allocation": {"control": 0.5, "treatment": 0.5},
+                "plan": plan,
+                "design": design,
+            }
+        ],
+    }
+
+
+def _family_route_panel() -> pd.DataFrame:
+    """A two-day panel (the pre-exposure day zeroed, the exposure day carrying the unit totals)
+    built from `_family_route_rows`."""
+    names = list(_family_route_counts())
+    rows: list[dict[str, Any]] = []
+    for row in _family_route_rows():
+        rows.append(
+            {
+                **{key: row[key] for key in ("user_id", "group_id", "tenure")},
+                "date": dt.date(2025, 1, 10),
+                "uptake": 0,
+                **dict.fromkeys(names, 0),
+            }
+        )
+        rows.append({**row, "date": dt.date(2025, 1, 11)})
+    return pd.DataFrame(rows)
+
+
+def _family_route_probe(results: Any) -> None:
+    rows = {
+        row.metric: row
+        for row in results
+        if row.group_id == "treatment" and row.estimand in (None, "itt")
+        if row.method_role == "decision"
+    }
+    assert set(rows) == set(_family_route_counts())
+    for name, (_, kind) in _family_route_counts().items():
+        assert rows[name].reference_kind == kind, name
+        assert (rows[name].binomial_set is None) == (kind == "t"), name
+
+
+def _conversion_route_encouragement_case() -> ParityCase:
+    """Two conversion secondaries of an Encouragement design, one dense at the nominal tail and
+    one dense at the family's: every ingress must route each ITT row at the family's level."""
+    plan = AnalysisPlan(alpha=_ROUTE_ALPHA, q=_ROUTE_ALPHA, secondaries=("a", "b"))
+    definitions = Definitions.model_validate(
+        _family_route_defs_dict(
+            {
+                "mechanism": "encouragement",
+                "uptake": {"fact": "clicked"},
+                "exclusion_restriction": {
+                    "acknowledged": True,
+                    "justification": "uptake does not gate the conversion outcome",
+                },
+            },
+            plan.model_dump(mode="json"),
+            covariate=False,
+        )
+    )
+    metrics = [
+        MetricSpec(name=name, type="conversion", preferred_direction="increase")
+        for name in _family_route_counts()
+    ]
+
+    def build_definitions() -> Analysis:
+        con = ds.duckdb_connection(_family_route_events())
+        return _track_connection(make_analysis(con, definitions, experiment="exp"), con)
+
+    def build_artifact() -> Analysis:
+        con = ds.duckdb_connection(_family_route_events())
+        return _publish_and_adopt(con, make_analysis(con, definitions, experiment="exp"))
+
+    def build_unit_summary() -> Analysis:
+        return Analysis.from_unit_summary(
+            pd.DataFrame(_family_route_rows()),
+            unit="user_id",
+            group="group_id",
+            metrics=metrics,
+            design=_ENCOURAGEMENT_ITT_DESIGN,
+            uptake="uptake",
+            plan=plan,
+        )
+
+    def build_unit_panel() -> Analysis:
+        return Analysis.from_unit_panel(
+            _family_route_panel(),
+            unit="user_id",
+            group="group_id",
+            date="date",
+            metrics=metrics,
+            design=_ENCOURAGEMENT_ITT_DESIGN,
+            uptake="uptake",
+            plan=plan,
+        )
+
+    def build_moments() -> Analysis:
+        summary = build_unit_summary()
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "moments.parquet"
+            summary.export(path)
+            rows = pq.read_table(path).to_pylist()
+        summary.close()
+        return Analysis.from_moments(
+            rows, metrics=metrics, design=_ENCOURAGEMENT_ITT_DESIGN, plan=plan
+        )
+
+    return ParityCase(
+        id="conversion_route_encouragement_family",
+        build={
+            "from_definitions": build_definitions,
+            "from_unit_day_artifact": build_artifact,
+            "from_unit_summary": build_unit_summary,
+            "from_unit_panel": build_unit_panel,
+            "from_moments": build_moments,
+        },
+        estimands=("itt",),
+        waive=dict(_SWITCHBACK_WAIVE),
+        readout_probe=_family_route_probe,
+        slow=True,
+    )
+
+
+def _conversion_route_observational_case() -> ParityCase:
+    """The same two conversion secondaries under an Observational design with an explicit
+    unadjusted decision method: every ingress that can attach the covariate routes each row at
+    the family's level."""
+    unadjusted = {"name": "unadjusted"}
+    plan = AnalysisPlan(alpha=_ROUTE_ALPHA, q=_ROUTE_ALPHA, secondaries=("a", "b"))
+    definitions = Definitions.model_validate(
+        _family_route_defs_dict(
+            {
+                "mechanism": "observational",
+                "covariates": [{"property": "tenure", "source": "events"}],
+            },
+            {
+                "alpha": _ROUTE_ALPHA,
+                "q": _ROUTE_ALPHA,
+                "secondaries": [
+                    {"metric": name, "decision_method": unadjusted}
+                    for name in _family_route_counts()
+                ],
+            },
+            covariate=True,
+        )
+    )
+    metrics = [
+        MetricSpec(
+            name=name,
+            type="conversion",
+            preferred_direction="increase",
+            decision_method=unadjusted,
+        )
+        for name in _family_route_counts()
+    ]
+
+    def design() -> Observational:
+        return Observational(
+            control_group="control", adjustment=AdjustmentSet(covariates=("tenure",))
+        )
+
+    def frame() -> pd.DataFrame:
+        return pd.DataFrame(_family_route_rows())
+
+    def build_definitions() -> Analysis:
+        con = ds.duckdb_connection(_family_route_events())
+        return _track_connection(make_analysis(con, definitions, experiment="exp"), con)
+
+    def build_artifact() -> Analysis:
+        con = ds.duckdb_connection(_family_route_events())
+        native = make_analysis(con, definitions, experiment="exp")
+        return _publish_and_adopt(con, native, kinds=("unit_covariate",))
+
+    def build_unit_summary() -> Analysis:
+        return Analysis.from_unit_summary(
+            frame(), unit="user_id", group="group_id", metrics=metrics, design=design(), plan=plan
+        )
+
+    def build_unit_panel() -> Analysis:
+        panel = frame()
+        panel["date"] = dt.date(2025, 1, 10)
+        return Analysis.from_unit_panel(
+            panel,
+            unit="user_id",
+            group="group_id",
+            date="date",
+            metrics=metrics,
+            design=design(),
+            plan=plan,
+        )
+
+    def build_moments() -> Analysis:
+        summary = build_unit_summary()
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "moments.parquet"
+            summary.export(path)
+            rows = pq.read_table(path).to_pylist()
+        summary.close()
+        return Analysis.from_moments(rows, metrics=metrics, design=design(), plan=plan)
+
+    return ParityCase(
+        id="conversion_route_observational_family",
+        build={
+            "from_definitions": build_definitions,
+            "from_unit_day_artifact": build_artifact,
+            "from_unit_summary": build_unit_summary,
+            "from_unit_panel": build_unit_panel,
+            "from_moments": build_moments,
+        },
+        waive={
+            "from_moments": "SOURCE: a moments cube holds no per-unit rows to attach a covariate to.",
+            "from_switchback_panel": (
+                "SOURCE: a per-unit adjustment set has no analogue on a switchback "
+                "block/period schedule, and this dataset has none."
+            ),
+        },
+        waived_refusal_codes={"from_moments": "source.moments.covariate_unavailable"},
+        readout_probe=_family_route_probe,
+        slow=True,
+    )
+
+
 PARITY_CASES: tuple[ParityCase, ...] = (
     _encouragement_multi_metric_breakout_case(),
     _inferred_null_metric_case(),
@@ -7517,6 +7859,8 @@ PARITY_CASES: tuple[ParityCase, ...] = (
     _encouragement_itt_case(dense=True),
     _conversion_route_case(),
     _conversion_route_breakout_case(),
+    _conversion_route_encouragement_case(),
+    _conversion_route_observational_case(),
     _binary_breakout_ancillary_uptake_case(),
     _binary_breakout_ancillary_uptake_case(include_fact_only_unit=True),
     _encouragement_declared_definitions_case(),

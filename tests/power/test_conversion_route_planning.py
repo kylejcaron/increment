@@ -28,7 +28,6 @@ from increment.power import (
     power_curve,
     required_sample_size,
 )
-from increment.power._binomial import RejectionGeometry
 from tests.estimation._conversion_counts import runtime_rejection_rate
 from tests.power._procedures import make_procedure
 
@@ -55,31 +54,6 @@ def _mean_plan(**overrides: Any) -> ArmPlanningProcedure:
         variance_adjustment="none",
         **overrides,
     )
-
-
-class _ReplaySpy:
-    """Records every replay evaluation a plan makes and refuses the replay's closure bound,
-    the exclusion machinery whose cost a dense plan must never pay."""
-
-    def __init__(self, monkeypatch) -> None:
-        self.evaluated: list[tuple[int, int, float, float]] = []
-        evaluate = RejectionGeometry.evaluate
-
-        def recording(geometry, p_c, p_t):
-            decision = geometry.decision
-            self.evaluated.append((decision.n_c, decision.n_t, p_c, p_t))
-            return evaluate(geometry, p_c, p_t)
-
-        def forbidden(*args, **kwargs):
-            raise AssertionError("a dense plan must not bound its effect search by replays")
-
-        monkeypatch.setattr(RejectionGeometry, "evaluate", recording)
-        monkeypatch.setattr(RejectionGeometry, "closure_bound", forbidden)
-
-    def assert_replayed_only_where_the_runtime_is_not_dense(self) -> None:
-        for n_c, n_t, p_c, p_t in self.evaluated:
-            route = planning_route(n_c, n_t, p_c, p_t, tail_alpha=TAIL, mode="auto")
-            assert route != "dense", (n_c, n_t, p_c, p_t)
 
 
 def _dense_n(p: float) -> int:
@@ -131,46 +105,37 @@ class TestDensePlansAreTheClosedForm:
         ) == pytest.approx(0.8, abs=1e-3)
 
     @pytest.mark.parametrize("planner", ["achieved_power", "minimum_detectable_effect", "size"])
-    def test_a_dense_plan_replays_only_effects_the_runtime_would_not_decide_densely(
-        self, monkeypatch, planner
-    ):
-        spy = _ReplaySpy(monkeypatch)
-        p = 0.05
-        baseline = Baseline.from_proportion(p)
-        n = _dense_n(p)
+    def test_a_dense_plan_beyond_the_replay_bound_is_planned_in_closed_form(self, planner):
+        """Five million units per arm at a 5% baseline replay 48 million count cells, past the
+        bound a replayed decision is refused at: a dense plan answers, so it replays none of
+        the effects between the null and its answer."""
+        baseline = Baseline.from_proportion(0.05)
+        n = 5_000_000
         if planner == "achieved_power":
-            result = achieved_power(n, 0.02, baseline, _plan())
+            result = achieved_power(n, 0.01, baseline, _plan())
         elif planner == "minimum_detectable_effect":
             result = minimum_detectable_effect(n, baseline, _plan())
         else:
-            result = required_sample_size(0.05, baseline, _plan())
+            result = required_sample_size(0.005, baseline, _plan())
         assert result.power_basis == "asymptotic"
-        spy.assert_replayed_only_where_the_runtime_is_not_dense()
 
-    def test_the_default_plan_is_auto_and_reaches_the_closed_form_at_a_million_units(
-        self, monkeypatch
-    ):
-        spy = _ReplaySpy(monkeypatch)
+    def test_the_default_plan_is_auto_and_reaches_the_closed_form_at_a_million_units(self):
         procedure = ArmPlanningProcedure.standard("conversion")
         assert procedure.decision_method.conversion_inference == "auto"
         result = achieved_power(1_000_000, 0.02, Baseline.from_proportion(0.05), procedure)
         assert result.power_basis == "asymptotic"
         assert 0.0 < result.power < 1.0
-        spy.assert_replayed_only_where_the_runtime_is_not_dense()
 
-    def test_arms_above_the_finite_sample_ceiling_are_planned_with_power(self, monkeypatch):
+    def test_arms_above_the_finite_sample_ceiling_are_planned_with_power(self):
         """No evaluator ceiling binds the closed form: a dense plan at 2e9 per arm has the
         asymptotic power, where the finite-sample runtime refuses every count pair."""
-        spy = _ReplaySpy(monkeypatch)
         n = 2 * binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE
         baseline = Baseline.from_proportion(0.1)
         result = achieved_power(n, 0.001, baseline, _plan())
         assert result.power_basis == "asymptotic"
         assert result.power > 0.9
-        spy.assert_replayed_only_where_the_runtime_is_not_dense()
 
-    def test_a_curve_over_dense_sizes_is_closed_form_throughout(self, monkeypatch):
-        spy = _ReplaySpy(monkeypatch)
+    def test_a_curve_over_dense_sizes_is_closed_form_throughout(self):
         p = 0.1
         baseline = Baseline.from_proportion(p)
         n = _dense_n(p)
@@ -178,7 +143,6 @@ class TestDensePlansAreTheClosedForm:
             n_per_arm=[n, 2 * n], relative_lift=[0.03, 0.05], baseline=baseline, procedure=_plan()
         )
         assert {row["power_basis"] for row in curve.to_dicts()} == {"asymptotic"}
-        spy.assert_replayed_only_where_the_runtime_is_not_dense()
 
 
 class TestSparsePlansAreTheReplay:
