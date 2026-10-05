@@ -7682,8 +7682,8 @@ def _conversion_route_encouragement_case() -> ParityCase:
 
 def _conversion_route_observational_case() -> ParityCase:
     """The same two conversion secondaries under an Observational design with an explicit
-    unadjusted decision method: every ingress that can attach the covariate routes each row at
-    the family's level."""
+    unadjusted decision method: every ingress, a replayed moments cube included (it keeps the
+    exported plan's method bindings), routes each row at the family's level."""
     unadjusted = {"name": "unadjusted"}
     plan = AnalysisPlan(alpha=_ROUTE_ALPHA, q=_ROUTE_ALPHA, secondaries=("a", "b"))
     definitions = Definitions.model_validate(
@@ -7755,7 +7755,7 @@ def _conversion_route_observational_case() -> ParityCase:
             summary.export(path)
             rows = pq.read_table(path).to_pylist()
         summary.close()
-        return Analysis.from_moments(rows, metrics=metrics, design=design(), plan=plan)
+        return Analysis.from_moments(rows, metrics=metrics, design=design())
 
     return ParityCase(
         id="conversion_route_observational_family",
@@ -7767,13 +7767,11 @@ def _conversion_route_observational_case() -> ParityCase:
             "from_moments": build_moments,
         },
         waive={
-            "from_moments": "SOURCE: a moments cube holds no per-unit rows to attach a covariate to.",
             "from_switchback_panel": (
                 "SOURCE: a per-unit adjustment set has no analogue on a switchback "
                 "block/period schedule, and this dataset has none."
             ),
         },
-        waived_refusal_codes={"from_moments": "source.moments.covariate_unavailable"},
         readout_probe=_family_route_probe,
         slow=True,
     )

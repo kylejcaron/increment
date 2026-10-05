@@ -25,6 +25,7 @@ from increment.estimation.conversion_route import (
     route_for_counts,
 )
 from increment.estimation.engine import Method, _estimate_lift, estimate_lift
+from increment.estimation.family import bh_select
 from increment.estimation.inference import Normal
 from increment.semantics.models import MeanMetric
 from tests.estimation._conversion_counts import (
@@ -481,21 +482,23 @@ class TestPlanningRoute:
 
 
 class TestFamilyRouteLevel:
-    """The level a BH family routes its rows at is the smallest threshold selection reads, rounded
-    downward as selection rounds it, so a row is never routed at a looser level."""
+    """The level a BH family routes its rows at is the smallest threshold selection reads: the
+    greatest float not above ``q / hypotheses``, so a row is never routed at a looser level."""
 
     @given(
         st.floats(min_value=1e-12, max_value=1.0),
         st.integers(min_value=1, max_value=10**6),
     )
-    def test_the_level_is_never_looser_than_q_over_the_hypotheses_and_within_an_ulp_of_it(
-        self, q, hypotheses
-    ):
+    def test_the_level_is_the_greatest_float_not_above_q_over_the_hypotheses(self, q, hypotheses):
         level = family_route_alpha(q, hypotheses)
         assert level is not None
         exact = Fraction(q) / hypotheses
-        assert Fraction(level) <= exact
-        assert float(exact) - level <= 2.0 * math.ulp(float(exact))
+        assert Fraction(level) <= exact < Fraction(math.nextafter(level, math.inf))
+
+    def test_the_level_is_the_rank_one_threshold_benjamini_hochberg_reads(self):
+        # 0.1 / 7 is not exactly representable: ordinary division can round above it.
+        _, threshold = bh_select([1.0] * 6 + [0.0], 0.1)
+        assert family_route_alpha(0.1, 7) == threshold
 
     def test_a_family_without_hypotheses_has_no_level(self):
         assert family_route_alpha(0.1, 0) is None

@@ -224,13 +224,13 @@ the sparse, borderline and explicit `finite_sample` plans.
   inside it at any arm size (100 million units per arm at a rate of 2e-7 expect
   twenty events and replay about four thousand cells). Measured on a 12-core
   machine under a shared load, an explicit `finite_sample` `achieved_power` at a 5% baseline
-  takes 11 s of CPU at 100,000 units per arm and 253 s (1.7 GiB) at 1,000,000, and is
-  refused within milliseconds at 5,000,000 and 50,000,000 (48.3 and 483 million null
-  cells); a design of about a hundred events per arm takes 0.3 to 0.4 s at 1e5, 1e6, 5e6
+  takes 10 s of CPU at 100,000 units per arm and 198 s (1.7 GiB) at 1,000,000, and is
+  refused within a millisecond at 5,000,000 and 50,000,000 (48.3 and 483 million null
+  cells); a design of about a hundred events per arm takes 0.2 s at 1e5, 1e6, 5e6
   and 5e7 units per arm. Earlier measurements on an Apple M3 Pro put a call within the
   bound at up to about 3.5 minutes at 190,000 per arm at 50% (where the companion effect
   search runs to its own refusal) and several minutes for `required_sample_size`, with a
-  peak under 2 GiB. The same dense calls under the default `auto` take 1 to 3 ms at every
+  peak under 2 GiB. The same dense calls under the default `auto` take a millisecond at every
   size, with no bound (the [limitations page](../limitations.md) lists the cells measured). The bound
   limits the planner only: the runtime decides arms of up to a billion units.
 

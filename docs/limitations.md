@@ -309,34 +309,67 @@ BH family, `q` over the hypotheses it tests), never at a looser one. Plans and w
 written before the field existed decode as `"finite_sample"`, the route they were produced
 under.
 
-`dense_min_count(tail) = max(400, ceil(90 z^4))` with `z = Phi^-1(1 - tail)`: the least count at
-which the delta-method interval's one-sided noncoverage in the boundary cells stays within
-`tests.mc.scientific_delta(tail)` of the tail (a tenth of the tail below 0.05, else 0.005),
-fit to the measured requirement with a 1.25x margin. The tail error of a log risk ratio
-Wald interval grows like `z^3` relative to the tail, so extreme tails need thousands of
-events. Per tail the shipped counts are:
+`dense_min_count(tail) = max(412, ceil(145 z^4))` with `z = Phi^-1(1 - tail)`. It is an envelope
+of a measured requirement, not a fit: the requirement is the least count at which the
+delta-method interval's one-sided noncoverage in the boundary cells below stays within
+`tests.mc.scientific_delta(tail)` of the tail (a tenth of the tail below 0.05, 0.005 at and above
+it) at that count and at every larger step of a geometric ladder (ratio 1.15) through 1.25 times
+it. The law is at least 1.25 times the requirement at every production tail; the 0.1 tail sets
+its floor and the 0.0005 tail its slope. The tail error of a log risk ratio Wald interval grows
+like `z^3` relative to the tail, so extreme tails need thousands of events. The requirement
+grows more slowly than `z^4` below them, so the middle tails carry a margin well above 1.25
+(about 3.7 times at 0.025 and 0.05), and counts the interval already covers take the
+finite-sample route there, which is valid at every count. A tail below 0.0005 is extrapolated by
+the same formula, not measured. Per tail, the requirement is a step of that ladder (anchored at 10
+for the tails from 0.025 up, at 1,637 below):
 
 | One-sided tail | 0.0005 | 0.001 | 0.005 | 0.01 | 0.025 | 0.05 | 0.1 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `dense_min_count` | 10,552 | 8,208 | 3,962 | 2,636 | 1,329 | 659 | 400 |
+| Measured requirement | 13,320 | 10,072 | 2,863 | 2,165 | 576 | 286 | 329 |
+| `dense_min_count` | 17,000 | 13,224 | 6,384 | 4,247 | 2,140 | 1,062 | 412 |
+| Law over requirement | 1.28 | 1.31 | 2.23 | 1.96 | 3.72 | 3.71 | 1.25 |
 
 `python -m calibration.conversion_route select` integrates the interval's noncoverage over
 the exact binomial lattice in rare, failure-limited and central boundary cells (control sizes
-1e3 to 1e7, allocations 1:1, 1:4 and 4:1, risk ratios 0.5 to 2) and reports, per tail, the
-worst excess over the tail in tolerance units (at most 1 passes); `verify` re-checks the
-shipped counts at each tail and at 1.25 times them, `hybrid` runs the production routing
-at counts two below to two above each threshold, and `mirror` compares planned power with the
-production route. Measured worst excess (tolerance units) at selected counts:
+1e3 to 1e7 at every 1, 2 and 5 of a decade, allocations 1:1, 1:4 and 4:1, risk ratios 0.5 to 2)
+and reports, per tail, the worst excess over the tail in tolerance units (at most 1 passes); the
+failure-limited cells bind at every tail. The excess just below each requirement and at it:
+
+| One-sided tail | 0.0005 | 0.001 | 0.005 | 0.01 | 0.025 | 0.05 | 0.1 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Last failing step | 11,583 | 8,758 | 2,490 | 1,883 | 501 | 249 | 286 |
+| Worst excess there | 1.15 | 1.09 | 1.29 | 1.01 | 1.16 | 1.21 | 1.03 |
+| Requirement | 13,320 | 10,072 | 2,863 | 2,165 | 576 | 286 | 329 |
+| Worst excess there | 0.87 | 0.98 | 0.97 | 0.99 | 0.98 | 0.93 | 0.97 |
+
+and, at counts every tail was measured at (worst excess in tolerance units):
 
 | Count `m` | 0.0005 | 0.001 | 0.005 | 0.01 | 0.025 | 0.05 | 0.1 |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 435 | 6.33 | 5.06 | 2.80 | 2.08 | 1.22 | 0.74 | 0.82 |
-| 1,007 | 3.88 | 3.11 | 1.79 | 1.28 | 0.76 | 0.50 | 0.54 |
-| 2,329 | 2.70 | 2.23 | 1.30 | 0.97 | 0.61 | 0.38 | 0.43 |
-| 3,542 | 1.90 | 1.53 | 0.88 | 0.70 | 0.39 | 0.25 | 0.29 |
+| 435 | 6.84 | 5.47 | 3.07 | 2.25 | 1.39 | 0.88 | 0.95 |
+| 1,637 | 2.86 | 2.35 | 1.37 | 1.03 | 0.64 | 0.41 | 0.45 |
+| 2,165 | 2.73 | 2.25 | 1.31 | 0.99 | 0.62 | 0.39 | 0.42 |
 
-A bounded grid is evidence at those cells, not a coverage claim for every data-generating
-process.
+`verify` re-checks the shipped count at each tail and at 1.25 times it in the same cells; every
+cell passes (worst excess in tolerance units, at the count and at 1.25 times it):
+
+| One-sided tail | 0.0005 | 0.001 | 0.005 | 0.01 | 0.025 | 0.05 | 0.1 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| At `dense_min_count` | 0.84 | 0.72 | 0.62 | 0.69 | 0.62 | 0.56 | 0.97 |
+| At 1.25 times it | 0.83 | 0.71 | 0.65 | 0.60 | 0.47 | 0.42 | 0.76 |
+
+The 0.1 tail passes by 3% at its floor. `hybrid` sums the production pipeline's noncoverage
+exactly over the count lattice at design counts two below to two above the shipped count (the
+three cells with the most routed noncoverage at each offset, plus a directional level): at the
+0.1 and 0.05 tails every cell stays within tolerance (worst excess +0.50 and +0.34), and the
+production pipeline on 57,601 and 30,400 seeded draws agrees with the exact value within four
+Monte Carlo standard errors; `conformance` finds the vectorised interval within `2.1e-14`
+(relative) of `estimate_lift`'s and the interpolated Student quantile within `1.7e-15` of
+`t.isf`. A bounded grid is evidence at those cells, not a coverage claim for every
+data-generating process.
+
+A BH-selected row is re-estimated at its own corrected level and routed there, so its label can
+differ from the label of the nominal row whose p-value selected it.
 
 An Encouragement design's ITT on a conversion metric takes the same
 routes (ITT and LATE readouts of a retention metric under an Encouragement design are refused
@@ -846,26 +879,26 @@ reaches the bound at about a million units per arm at a 5% baseline, about 190,0
 and at any arm the runtime admits at a rate expecting up to about 48,000 events per arm; under the
 default `"auto"` a dense plan has no replay and no such bound. Measured with
 `scripts/measure_binomial_ceiling.py planning` (`--conversion-inference finite_sample` or
-`auto`) on a 12-core machine at its final S12 commit, cold CPU seconds and peak resident set,
+`auto`) on a 12-core machine, cold CPU seconds of the call and the process's peak resident set,
 under a shared load that varied by several times between cells (null cells are the null
 rectangle). Explicit `finite_sample` plans at 1e5, 1e6, 5e6 and 5e7 units per arm, dense (a 5%
 baseline) and sparse (about a hundred events per arm):
 
 | Baseline, units per arm | Call | CPU / peak | Outcome |
 |---|---|---:|---|
-| 5%, 100,000 | `achieved_power`, lift 5% | 11.2 s / 1.13 GiB | 0.97M null cells, companion effect available |
-| 5%, 1,000,000 | `achieved_power`, lift 1.5% | 253 s / 1.65 GiB | 9.67M null cells; companion effect `numerical_resolution` |
-| 5%, 5,000,000 | `achieved_power` or `minimum_detectable_effect` | refused after 0.001 s / 0.13 GiB | 48.3M null cells |
-| 5%, 50,000,000 | `achieved_power` or `minimum_detectable_effect` | refused after 0.002 s / 0.12 GiB | 483M null cells |
-| 0.1% at 1e5, 0.01% at 1e6, 0.002% at 5e6, 0.0002% at 5e7 (100 events) | `achieved_power`, lift 50%, and `minimum_detectable_effect` | 0.3 to 0.4 s / 0.24 to 0.27 GiB | 20,164 null cells at each size, answered (`approximate`) |
+| 5%, 100,000 | `achieved_power`, lift 5% | 9.8 s / 1.34 GiB | 0.97M null cells, companion effect available |
+| 5%, 1,000,000 | `achieved_power`, lift 1.5% | 198 s / 1.72 GiB | 9.67M null cells; companion effect `numerical_resolution` |
+| 5%, 5,000,000 | `achieved_power` or `minimum_detectable_effect` | refused within 1 ms / 0.12 GiB | 48.3M null cells |
+| 5%, 50,000,000 | `achieved_power` or `minimum_detectable_effect` | refused within 1 ms / 0.12 GiB | 483M null cells |
+| 0.1% at 1e5, 0.01% at 1e6, 0.002% at 5e6, 0.0002% at 5e7 (100 events) | `achieved_power`, lift 50%, and `minimum_detectable_effect` | 0.19 to 0.20 s / 0.21 to 0.26 GiB | 20,164 null cells at each size, answered (`approximate`) |
 
 The same calls under `"auto"`:
 
 | Baseline, units per arm | Call | CPU / peak | Outcome |
 |---|---|---:|---|
-| 5%, 1e5 to 5e7 | `achieved_power`, `minimum_detectable_effect` and `required_sample_size` | 1 to 3 ms / 0.12 GiB | `power_basis="asymptotic"`; at 5e6 the power for lift 1% is 0.951 and the MDE 0.77%, at 5e7 the power for lift 0.3% is 0.930 and the MDE 0.24% |
-| 50%, 1e5 and 1.9e5 | `minimum_detectable_effect`, `achieved_power` | 1 to 3 ms / 0.12 GiB | asymptotic, answered where the replay refuses |
-| 100 events per arm at 1e5, 1e6, 5e6, 5e7 | `achieved_power`, lift 50% | 0.18 to 0.36 s / 0.20 to 0.28 GiB | the sparse replay, unchanged (`approximate`) |
+| 5%, 1e5 to 5e7 | `achieved_power`, `minimum_detectable_effect` and `required_sample_size` | 1 ms / 0.12 GiB | `power_basis="asymptotic"`; at 5e6 the power for lift 1% is 0.951 and the MDE 0.77%, at 5e7 the power for lift 0.3% is 0.930 and the MDE 0.24% |
+| 50%, 1e5 and 1.9e5 | `minimum_detectable_effect`, `achieved_power` | 1 ms / 0.12 GiB | asymptotic, answered where the replay refuses |
+| 100 events per arm at 1e5, 1e6, 5e6, 5e7 | `achieved_power`, lift 50% | 0.19 to 0.21 s / 0.23 to 0.25 GiB | the sparse replay, unchanged (`approximate`) |
 
 Earlier measurements of the replay at other sizes (an Apple M3 Pro at `45829f1`, `2da355f`),
 which an explicit `finite_sample` plan still takes and which were not repeated at this commit.
