@@ -44,6 +44,7 @@ def lift_computation(
     alpha: float = 0.05,
     alternative: str = "two-sided",
     method: Method | None = None,
+    null_lift: float | None = None,
 ):
     """``estimate_lift`` on the contrast ``counts = (x_c, n_c, x_t, n_t)``."""
     return estimate_lift(
@@ -53,6 +54,7 @@ def lift_computation(
         methods=[Method(name="unadjusted") if method is None else method],
         alpha=alpha,
         alternative=alternative,
+        null_lift=null_lift,
     )
 
 
@@ -62,6 +64,7 @@ def lift_row(
     alpha: float = 0.05,
     alternative: str = "two-sided",
     mode: Literal["auto", "finite_sample"] = "auto",
+    null_lift: float | None = None,
 ) -> LiftEstimate:
     """The one row of ``lift_computation``; a failed contrast fails the caller."""
     computation = lift_computation(
@@ -69,6 +72,7 @@ def lift_row(
         alpha=alpha,
         alternative=alternative,
         method=Method(name="unadjusted", conversion_inference=mode),
+        null_lift=null_lift,
     )
     assert not computation.failures, computation.failures
     (row,) = computation.results

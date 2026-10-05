@@ -191,6 +191,14 @@ def routed_share(n_c: int, n_t: int, p_c: float, p_t: float, *, tail_alpha: floa
     return _routed(_outside_mass(n_c, p_c, m), _outside_mass(n_t, p_t, m))
 
 
+def unrouted_share(n_c: int, n_t: int, p_c: float, p_t: float, *, floor: int) -> float:
+    """Probability that the runtime rule keeps a draw on the finite-sample route: some arm's
+    success or failure count falls below ``floor``. The complement of ``routed_share``, summed
+    from the arms' outside masses so it keeps its relative precision where it is small."""
+    outside_c, outside_t = _outside_mass(n_c, p_c, floor), _outside_mass(n_t, p_t, floor)
+    return min(1.0, outside_c + outside_t - outside_c * outside_t)
+
+
 def planning_route(
     n_c: int,
     n_t: int,

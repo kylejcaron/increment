@@ -164,32 +164,6 @@ class TestSparsePlansAreTheReplay:
         )
 
 
-class TestBorderlinePlansAreTheSmallerOfTheTwoRoutes:
-    def _cell(self):
-        # The sparsest count of both arms sits about one standard deviation from the threshold.
-        m = dense_min_count(TAIL)
-        p = 0.3
-        n = math.ceil(1.05 * m / p)
-        return n, p
-
-    def test_the_classification_is_borderline_and_the_basis_is_approximate(self):
-        """The runtime's rejection probability there mixes both routes' decisions, which neither
-        power equals, so the figure is an approximation whatever the replay's own basis."""
-        n, p = self._cell()
-        assert planning_route(n, n, p, p * 1.05, tail_alpha=TAIL, mode="auto") == "borderline"
-        baseline = Baseline.from_proportion(p)
-        assert achieved_power(n, 0.05, baseline, _plan("auto")).power_basis == "approximate"
-
-    def test_power_is_the_smaller_of_the_replay_and_the_closed_form(self):
-        n, p = self._cell()
-        baseline = Baseline.from_proportion(p)
-        auto = achieved_power(n, 0.05, baseline, _plan("auto")).power
-        replay = achieved_power(n, 0.05, baseline, _plan("finite_sample")).power
-        closed = achieved_power(n, 0.05, baseline, _mean_plan()).power
-        assert auto == pytest.approx(min(replay, closed), abs=1e-12)
-        assert auto <= replay and auto <= closed
-
-
 class TestExplicitFiniteSamplePlans:
     def test_a_dense_plan_pinned_to_finite_sample_is_replayed_not_closed_form(self):
         p = 0.1

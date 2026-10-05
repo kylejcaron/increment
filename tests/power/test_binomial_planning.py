@@ -31,6 +31,7 @@ from increment.power import (
     Baseline,
     PowerDesign,
     PowerResult,
+    _binomial,
     achieved_power,
     minimum_detectable_effect,
     power_curve,
@@ -43,6 +44,7 @@ from increment.power._binomial import (
     ReplayBoundExceeded,
     window_cells,
 )
+from increment.power.core import planned_enclosure
 from tests.power._procedures import make_procedure
 
 
@@ -986,8 +988,12 @@ class TestPlanningNumericalEnclosure:
         below = minimum_detectable_effect(6, baseline, _FAR_END, PowerDesign(power=11 / 32 - 1e-9))
         assert below.power >= 11 / 32 - 1e-9
 
-    def test_large_arm_point_power_survives_numerically_unavailable_effect(self):
-        """Effect localization can be unresolved even when supplied point power is usable."""
+    @pytest.mark.slow
+    def test_a_billion_unit_effect_and_size_are_certified_not_merely_computed(self):
+        """At hundreds of millions of units the allowance of one pmf is ``n`` ULPs, 1e-7 of it,
+        so a computed power at the target is not known to reach it: the effect and the size
+        reported are those whose enclosure reaches the target, and a size's predecessor's does
+        not."""
         eps = float(np.finfo(np.float64).eps)
         target = PowerDesign().power
 
@@ -1313,10 +1319,26 @@ class TestApproximateRoute:
         assert runtime == [False, True, True, True]
         assert plus[0].tolist() == [False, False, True, True]
 
-    def test_plans_beyond_the_cell_budget_are_approximate(self):
-        result = achieved_power(2_600, 0.1, Baseline.from_proportion(0.1), _conversion())
-        assert result.power_basis == "approximate"
-        assert 0.0 < result.power < 1.0
+    def test_a_plan_beyond_the_replay_budget_leaves_its_lightest_pairs_ambiguous(self, monkeypatch):
+        """Past the evaluation's replay budget the heaviest pairs are decided and the rest are
+        ambiguous: the figure is the certified lower one and the runtime's probability stays
+        inside the enclosure."""
+        n, p_c, p_t = 300, 0.1, 0.2
+        procedure = _conversion()
+        beta = binomial_rr.nuisance_beta(procedure.compiled_alpha)
+        decision = BinomialDecision(n, n, 1.0, beta, procedure.compiled_tail_alpha, "two-sided")
+        plus, minus = RejectionGeometry(decision, "exact").cells(0, n, 0, n)
+        weights = np.outer(binom.pmf(np.arange(n + 1), n, p_c), binom.pmf(np.arange(n + 1), n, p_t))
+        exact = float(weights[plus | minus].sum())
+
+        monkeypatch.setattr(_binomial, "EVALUATION_REPLAY_BUDGET", 2_000)
+        enclosure = planned_enclosure(n, p_t / p_c - 1.0, Baseline.from_proportion(p_c), procedure)
+        assert enclosure.basis == "approximate"
+        assert enclosure.ambiguous > _binomial.RESOLUTION
+        assert enclosure.lower <= enclosure.power <= exact + 1e-12
+        assert enclosure.lower <= exact <= enclosure.upper
+        # What the budget keeps is the heaviest part, so little mass is left out.
+        assert enclosure.ambiguous < 0.05
 
     @pytest.mark.parametrize(
         ("n_c", "n_t", "p", "ratio", "alternative"),

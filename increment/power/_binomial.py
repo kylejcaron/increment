@@ -1,9 +1,14 @@
-"""Planning power for the runtime's exact binomial risk-ratio decision.
+"""Planning power for the runtime's decision of a conversion or retention contrast.
 
 A binomial-eligible conversion or retention contrast (unadjusted, unclustered,
 unit-grain raw binary counts, fixed horizon; see
-``increment.estimation.engine._binomial_eligible``) is decided at runtime by
-the Berger-Boos test in ``increment.estimation.binomial_rr``: for observed
+``increment.estimation.engine._binomial_eligible``) is decided at runtime by one of two
+routes chosen from its four per-arm success and failure counts alone
+(``increment.estimation.conversion_route``). Counts that all reach ``floor =
+dense_min_count(tail)`` form the routed rectangle ``R = [floor, n_c - floor] x [floor, n_t -
+floor]`` and are decided by the delta method (``increment.estimation.conversion_delta``); every
+other pair, and every pair under ``conversion_inference="finite_sample"``, by the Berger-Boos
+test in ``increment.estimation.binomial_rr``: for observed
 counts ``(i, j)`` at analyzed arm sizes ``(n_c, n_t)`` it reports the finite
 nuisance-search certificates ``p_+ = p_plus(r0, i, n_c, j, n_t, beta, tail=u)`` and
 ``p_- = p_minus(...)`` with ``r0 = 1 + null_lift`` and ``beta =
@@ -14,62 +19,67 @@ when the directional certificate is strictly below its tail allocation ``u``
 and either for "two-sided". A count pair whose runtime row fails to build is a
 ``DecisionFailure`` and never a rejection.
 
-For fixed ``(n_c, n_t, r0, beta, u, alternative)`` that event ``D(i, j)`` is a
-set of count pairs -- the rejection geometry -- independent of the true rates,
-so the planning power is the polynomial
+For fixed ``(n_c, n_t, r0, beta, u, alternative, floor)`` the event ``D(i, j)`` that the
+runtime rejects is a set of count pairs -- the rejection geometry -- independent of the true
+rates, so the planning power is the polynomial
 
-    power(p_c, p_t) = sum_i sum_j Bin(i; n_c, p_c) Bin(j; n_t, p_t) D(i, j).
+    power(p_c, p_t) = sum_i sum_j Bin(i; n_c, p_c) Bin(j; n_t, p_t) D(i, j),
 
-It is integrated over outer count windows each omitting at most ``_OUTER_TAIL`` of its arm's
-mass; the omitted mass is measured, not renormalized. Every SciPy pmf, cdf and sf value read
-carries the runtime's relative error allowance (``binomial_rr._ulp_allowance``, ``n`` ULPs, the
-same one its float margin is built on) and every dot product rounds, so a computed value is
-never an exact probability: `BinomialPower` encloses the weighted mass of the decision set the
-geometry replays in ``[lower, upper]`` (the computed power less and plus that error, the
-omitted mass added to the upper end) and `RejectionGeometry.closure_bound` bounds that mass,
-with the same error, across an interval of treatment rates. The enclosure is of the
-integration only, so it is the runtime's rejection probability only for the ``exact`` route,
-whose mask is the runtime's own decision; the ``approximate`` route's mask is its Normal-tail
-decision model, whose departure from the runtime is the measured approximation of that route
-and is not covered. A comparison with a target certifies a crossing from the lower end and
-excludes an interval from the upper bound only, for the model its route names.
+the delta decision's rejections on ``R`` plus the finite-sample decision's on the rest. Neither
+route's power, and no function of the two, is that sum. It is integrated over outer count
+windows each omitting at most ``_OUTER_TAIL`` of its arm's mass; the omitted mass is measured,
+not renormalized. Every SciPy pmf, cdf and sf value read carries the runtime's relative error
+allowance (``binomial_rr._ulp_allowance``, ``n`` ULPs, the same one its float margin is built
+on) and every dot product rounds, so a computed value is never an exact probability.
 
-Two routes classify ``D``:
+`BinomialPower` encloses the runtime's rejection probability in ``[lower, upper]``: the weight
+of the pairs decided to reject, less and plus that error, with the mass of the pairs no
+decision was made for (``ambiguous``) and of everything outside the windows (``omitted``) added
+to the upper end only. A pair is decided by the unchanged runtime: the delta decision on ``R``
+(`conversion_delta.delta_decision`, settled by the runtime's own row wherever the vectorised
+rule is within its agreement), the replay of the finite-sample search below elsewhere. The
+runtime's finite-sample search is bounded and stopped (a split cap, a relative-gap stop), so
+its rejection set need not be monotone in the treatment count the way the supremum it bounds
+is; no pair is decided by extending a neighbour's decision. `RejectionGeometry.closure_bound`
+bounds the rejection mass, with the same error, across an interval of treatment rates by what
+the decided pairs reject and by counting every undecided pair as a rejection.
 
-* ``exact``: replays the runtime's own nuisance search -- the same
-  Clopper-Pearson domains, support windows, endpoint and coordinate-corner
-  evaluations, largest-bound-first split order with its tie order,
-  tail-floored relative-gap stop rule, split cap and floating-point floor -- over many count
-  pairs at once. Its tails use the runtime's binomial special functions
-  elementwise; only the summation order differs, within the per-row
-  allowance ``delta``. Every comparison of the replay is carried out with
-  that allowance: one it cannot settle hands the count pair to the unchanged
-  runtime functions. Two proved exits stop a replay once its Boolean outcome
-  is fixed: an achieved endpoint already at the tail allocation cannot
-  reject, and once every current leaf's reachable bound (``_eventual_bound``)
-  is below it the runtime must reject.
-* ``approximate``: replays the same search with a continuity-corrected Normal
-  tail for the conditional sum and exact single-binomial tails when either
-  arm is deterministic, keeping every allowance and cap the runtime adds. It
-  is the certificate-aware approximation of the exact route: no fitted
-  offsets and no threshold compression. Its exits are the same non-rejection
-  stop and a rejection stop from interval bounds of the Normal tail over each
-  leaf (``_SurrogateTails.reach``).
+The replay of the finite-sample decision, route ``exact``, replays the runtime's own nuisance
+search -- the same
+Clopper-Pearson domains, support windows, endpoint and coordinate-corner
+evaluations, largest-bound-first split order with its tie order,
+tail-floored relative-gap stop rule, split cap and floating-point floor -- over many count
+pairs at once. Its tails use the runtime's binomial special functions
+elementwise; only the summation order differs, within the per-row
+allowance ``delta``. Every comparison of the replay is carried out with
+that allowance: one it cannot settle hands the count pair to the unchanged
+runtime functions. Two proved exits stop a replay once its Boolean outcome
+is fixed: an achieved endpoint already at the tail allocation cannot
+reject, and once every current leaf's reachable bound (``_eventual_bound``)
+is below it the runtime must reject. It costs about a hundred CPU-microseconds a pair, so a
+evaluation replays at most `EVALUATION_REPLAY_BUDGET` pairs, the heaviest first; the rest are ambiguous. A
+plan whose finite-sample pairs together weigh at most half of `RESOLUTION` (counts the rule
+routes to the delta method with near certainty) replays none.
 
-The route is a deterministic function of the geometry: ``exact`` when the
-retained (control, treatment) cell count at the null rate is within
-``EXACT_CELL_BUDGET``, else ``approximate``. A decision the runtime refuses in full (an arm
+Route ``approximate`` replays the same search with a continuity-corrected Normal
+tail for the conditional sum and exact single-binomial tails when either
+arm is deterministic, keeping every allowance and cap the runtime adds. It is a heuristic the
+size search proposes from, not a claim on the runtime: its figure is enclosed by ``[0, 1]``.
+Its exits are the same non-rejection
+stop and a rejection stop from interval bounds of the Normal tail over each
+leaf (``_SurrogateTails.reach``).
+
+A decision the runtime refuses in full (an arm
 above its ceiling, a nuisance budget below the endpoint solver's floor, or a tail level its
-float margin dominates with no count pair rejected on the nuisance domain alone; see `refused`)
-decides no count pair: it has no rejection geometry and planning refuses it rather than report
-a power for it. Under a dominating margin the runtime decides only the count pairs whose
-control count empties the minus certificate's domain at the null (`structural_floor`), and
-refuses the rest; a plan is built only where its control window holds structural counts alone
-(`window_decided`), so no refused pair is ever integrated as a non-rejection. A geometry never
-stores more than ``PLANNING_CELL_CEILING`` cells: a decision whose null rectangle exceeds it is
-not planned, and an evaluation whose own rectangle (the control window at the control rate by
-the treatment window at the alternative rate), or the union the geometry would hold with it,
-exceeds it raises ``ReplayBoundExceeded`` before any mask is allocated.
+float margin dominates; see `refused`) decides no count pair on the finite-sample route. Under
+``finite_sample`` planning refuses it rather than report a power; under ``auto`` the pairs it
+would decide stay ambiguous, and a plan that keeps more than half of `RESOLUTION` of its mass
+on them raises `FiniteRouteUnavailable` instead of reporting a power. A geometry never stores
+more than ``PLANNING_CELL_CEILING`` cells: a decision whose null rectangle exceeds it is not
+planned, and an evaluation whose own rectangle (the control window at the control rate by the
+treatment window at the alternative rate), or the union the geometry would hold with it,
+exceeds it raises ``ReplayBoundExceeded`` before any mask is allocated. A plan the rule routes
+to the delta method with near certainty is enumerated only below `ENUMERATION_CELLS`.
 """
 
 from __future__ import annotations
@@ -86,6 +96,8 @@ from scipy.stats import binom as _binom
 
 from increment._literals import Alternative
 from increment.estimation import binomial_rr as _rr
+from increment.estimation.conversion_delta import delta_decision, production_decision
+from increment.estimation.conversion_route import unrouted_share
 
 Kind = Literal["plus", "minus"]
 Route = Literal["exact", "approximate"]
@@ -151,10 +163,22 @@ _TERM_GROWTH = 1.0 + 1e-9
 #: bounds (both float64 evaluations of the same Normal tail formula).
 _SURROGATE_SLACK = 1e-12
 
-#: Exact-route budget in retained (control, treatment) cells at the null rate.
-#: Benchmarks across arm sizes, rates, and one- and two-sided tests keep the
-#: slowest measured complete `achieved_power` call near two seconds.
-EXACT_CELL_BUDGET = 16_000
+#: Mass of cells a plan may leave undecided and still be reported as decided (``exact``): the
+#: probability within which the count rule's routing is taken as certain
+#: (`conversion_route.PLANNING_ROUTE_CERTAINTY`).
+RESOLUTION = 1e-6
+
+#: Directional replays (a count pair is replayed once per direction its alternative reads) one
+#: evaluation may run of the runtime's own finite-sample search, at about 100 to 400
+#: CPU-microseconds each at the arm sizes where counts reach the routing floor. The pairs it
+#: leaves, lightest first, are undecided and add their mass to the upper end of the enclosure.
+EVALUATION_REPLAY_BUDGET = 150_000
+
+#: Cells below which a plan the count rule routes to the delta method with near certainty is
+#: still enumerated (the production delta decision summed over the count lattice) instead of
+#: read from the closed-form model. The closed form is exact only as counts grow: it understated
+#: the enumerated power by up to 0.006 at the smallest dense designs. Past this size it stands.
+ENUMERATION_CELLS = 250_000
 
 #: Planning bound in (control, treatment) count cells a geometry may store, about 10-15
 #: CPU-microseconds each. It bounds every evaluation's rectangle (the control window by the
@@ -181,6 +205,21 @@ class BinomialDecision:
         if self.alternative == "less":
             return ("minus",)
         return ("plus", "minus")
+
+
+@dataclass(frozen=True, slots=True)
+class Routing:
+    """The rectangle of count pairs the runtime decides by the delta method under ``auto``:
+    each arm's success and failure counts all at least ``floor`` (`conversion_route.
+    dense_min_count` of the tail allocation), tested against ``1 + null_lift``. Every other pair
+    takes the finite-sample route."""
+
+    floor: int
+    null_lift: float
+
+    def counts(self, n: int) -> tuple[int, int]:
+        """The routed counts ``[lo, hi]`` of an arm of ``n`` units (empty when ``lo > hi``)."""
+        return self.floor, n - self.floor
 
 
 # --- Groups: one control count and direction over a treatment-count range ----
@@ -1420,26 +1459,44 @@ class ReplayBoundExceeded(Exception):
         self.p_t = p_t
 
 
-def route_for(cells: int) -> Route:
-    """Deterministic route of a geometry with ``cells`` retained cells at the null rate: exact
-    within the cell budget, else approximate."""
-    return "exact" if cells <= EXACT_CELL_BUDGET else "approximate"
+class FiniteRouteUnavailable(Exception):
+    """The runtime refuses the finite-sample decision in full (`refused`) while the count pairs
+    the count rule keeps on it carry ``mass``, more than half of `RESOLUTION`: their decisions do
+    not exist, so the plan has no power to report for them."""
+
+    def __init__(self, mass: float) -> None:
+        super().__init__(mass)
+        self.mass = mass
+
+
+#: Cells of one block of a vectorised sum over a window, and the ladder of cell weights a replay
+#: budget distinguishes (``1e-60`` to one, 32 steps a decade).
+_BLOCK_CELLS = 1 << 21
+_DECADES = 60
+_BINS_PER_DECADE = 32
 
 
 @dataclass(frozen=True, slots=True)
 class BinomialPower:
-    """Rejection mass at one alternative of the decision set a geometry replays, split into the
-    part from plus-direction rejections (nondecreasing in the treatment rate) and the
-    remainder from minus-direction rejections (nonincreasing in it).
-    ``power`` sums the retained cells in float64; ``omitted`` bounds what the windows left out
-    and ``inflation`` (at least one) the numerical error of that sum, so the mass lies in
-    ``[lower, upper]``: the runtime's rejection probability for an ``exact`` geometry, the
-    mass of the Normal-tail decision model for an ``approximate`` one."""
+    """Rejection mass of the runtime's decision at one alternative, split into the part from
+    plus-direction rejections (nondecreasing in the treatment rate) and the remainder from
+    minus-direction rejections (nonincreasing in it).
+
+    ``power`` sums the weight of the cells decided to reject in float64. ``omitted`` bounds the
+    mass outside the retained windows, ``ambiguous`` the mass of retained cells no decision was
+    made for (cells a replay budget left out, or a finite-sample route the runtime refuses would
+    have decided), and ``inflation`` (at least one) the numerical error of the sum, so the
+    runtime's rejection probability lies in ``[lower, upper]``. A ``closed_form`` figure is the
+    delta-method model of the plan and encloses only itself; a figure that is not ``certified``
+    is a heuristic with no claim on the runtime, enclosed by ``[0, 1]``."""
 
     plus: float
     minus: float
     omitted: float
     inflation: float
+    ambiguous: float = 0.0
+    closed_form: bool = False
+    certified: bool = True
 
     @property
     def power(self) -> float:
@@ -1447,16 +1504,31 @@ class BinomialPower:
 
     @property
     def lower(self) -> float:
-        """No larger than the exact retained mass of the replayed decision set (the runtime's
-        rejection probability on the ``exact`` route): what the retained cells certify."""
+        """No larger than the exact mass of the cells decided to reject, hence than the runtime's
+        rejection probability: what the decided cells certify."""
+        if not self.certified:
+            return 0.0
         return max(0.0, _down(self.power / self.inflation))
 
     @property
     def upper(self) -> float:
-        """No smaller than the replayed decision set's rejection probability (the runtime's on
-        the ``exact`` route): the exact retained mass at the most the computed sum allows, plus
-        the omitted mass."""
-        return min(1.0, _up(_up(self.power * self.inflation) + self.omitted))
+        """No smaller than the runtime's rejection probability: the exact mass of the cells
+        decided to reject at the most the computed sum allows, plus the mass of every cell left
+        undecided and of everything outside the retained windows."""
+        if not self.certified:
+            return 1.0
+        return min(1.0, _up(_up(_up(self.power * self.inflation) + self.ambiguous) + self.omitted))
+
+    @property
+    def basis(self) -> Literal["asymptotic", "exact", "approximate"]:
+        """``PowerResult.power_basis`` of this figure: ``asymptotic`` for the closed-form model,
+        ``exact`` when the runtime's own decision was enumerated and left at most `RESOLUTION` of
+        mass undecided, ``approximate`` otherwise (a budgeted or heuristic replay)."""
+        if self.closed_form:
+            return "asymptotic"
+        if self.certified and self.omitted + self.ambiguous <= RESOLUTION:
+            return "exact"
+        return "approximate"
 
 
 @dataclass(slots=True)
@@ -1475,7 +1547,16 @@ class _Segment:
 
 
 class RejectionGeometry:
-    """The classified rejection set of one runtime decision, grown on demand.
+    """The decided rejection set of one runtime decision, grown on demand.
+
+    Under ``auto`` the runtime decides a count pair by the delta method inside the routed
+    rectangle (`Routing`) and by the finite-sample test everywhere else, so the geometry holds the
+    union of the two: the production delta decision (`delta_decision`, settled by the runtime row
+    itself wherever the vectorised rule is within its agreement) on the rectangle and the
+    finite-sample replay on the rest. Without a routing every pair takes the finite-sample
+    route. A pair the replay was not run for (the lightest ones once an evaluation's budget is spent, or
+    all of them when the runtime refuses the finite-sample decision in full) stays undecided; its
+    mass is reported, never counted as a rejection or a non-rejection.
 
     Control counts ``[x0, x0 + rows)`` index every block; treatment counts
     are stored in disjoint column segments, merged whenever a request
@@ -1488,19 +1569,28 @@ class RejectionGeometry:
     segments its requests cover, apart from the cells earlier solves left, which are only a
     cache. The bound is on the footprint, so a solve is refused exactly when a fresh geometry
     would refuse it; when the stored cells (footprint and cache) would exceed it while the
-    footprint fits, the cache is dropped and the footprint kept. The decision is one the
-    runtime decides (`refused` is false): a refused decision has no rejection set to classify.
-    Under a dominating float margin every control window evaluated must start at or above
-    `structural_floor` (`window_decided`): the runtime refuses the counts below it.
+    footprint fits, the cache is dropped and the footprint kept.
+
+    ``route`` is ``exact`` for the runtime's own replay; ``approximate`` replays the Normal-tail
+    model of the finite-sample decision instead, which proposes a size and is not a claim on the
+    runtime.
     """
 
     def __init__(
-        self, decision: BinomialDecision, route: Route, max_cells: int = PLANNING_CELL_CEILING
+        self,
+        decision: BinomialDecision,
+        route: Route,
+        max_cells: int = PLANNING_CELL_CEILING,
+        routing: Routing | None = None,
     ) -> None:
         self.decision = decision
         self.route = route
         self.max_cells = max_cells
-        assert not refused(decision), "a decision the runtime refuses has no rejection geometry"
+        self.routing = routing
+        # The runtime's finite-sample decision exists unless it refuses every count pair; under
+        # ``auto`` the pairs it would decide stay undecided then.
+        self.finite = not refused(decision)
+        assert self.finite or routing is not None, "a refused decision has no rejection geometry"
         self.x0 = 0
         self.rows = 0
         self.segments: list[_Segment] = []
@@ -1509,6 +1599,7 @@ class RejectionGeometry:
         self.effects: dict[tuple[float | str, ...], object] = {}
         # The current solve's rows and its treatment spans, merged as the segments are.
         self._footprint: tuple[int, int, list[tuple[int, int]]] | None = None
+        self._replayed = 0
 
     def begin_solve(self) -> None:
         """Start a solve: the cells stored so far become a cache, outside its footprint."""
@@ -1615,8 +1706,9 @@ class RejectionGeometry:
                 return segment
         return None
 
-    def ensure(self, x_lo: int, x_hi: int, j_lo: int, j_hi: int) -> None:
-        """Classify every cell of ``[x_lo, x_hi] x [j_lo, j_hi]`` not yet known."""
+    def _reserve(self, x_lo: int, x_hi: int, j_lo: int, j_hi: int) -> tuple[_Segment, slice, slice]:
+        """Bound the footprint of ``[x_lo, x_hi] x [j_lo, j_hi]``, store it, and return the one
+        segment covering it with the row and column slices of the rectangle inside it."""
         footprint = self._footprint_after(x_lo, x_hi, j_lo, j_hi)
         needed = self._footprint_cells(footprint)
         if needed > self.max_cells:
@@ -1628,11 +1720,161 @@ class RejectionGeometry:
         segment = self._merged(j_lo, j_hi)
         rows = slice(x_lo - self.x0, x_hi - self.x0 + 1)
         cols = slice(j_lo - segment.j0, j_hi - segment.j0 + 1)
+        return segment, rows, cols
+
+    def _routed_flags(
+        self, x_lo: int, x_hi: int, j_lo: int, j_hi: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Which control counts of ``[x_lo, x_hi]`` and treatment counts of ``[j_lo, j_hi]`` lie
+        in the routed rectangle (none without a routing)."""
+        x = np.arange(x_lo, x_hi + 1)
+        j = np.arange(j_lo, j_hi + 1)
+        if self.routing is None:
+            return np.zeros(x.size, bool), np.zeros(j.size, bool)
+        lo_c, hi_c = self.routing.counts(self.decision.n_c)
+        lo_t, hi_t = self.routing.counts(self.decision.n_t)
+        return (x >= lo_c) & (x <= hi_c), (j >= lo_t) & (j <= hi_t)
+
+    def ensure(
+        self,
+        x_lo: int,
+        x_hi: int,
+        j_lo: int,
+        j_hi: int,
+        weights: tuple[np.ndarray, np.ndarray] | None = None,
+        *,
+        replay: bool = True,
+    ) -> None:
+        """Decide every cell of ``[x_lo, x_hi] x [j_lo, j_hi]`` not yet decided: the delta
+        decision inside the routed rectangle, the finite-sample replay elsewhere (unless
+        ``replay`` is false). ``weights`` (the count laws of the two windows) lets the replay
+        leave the lightest cells undecided once the evaluation's budget is spent (`_affordable`);
+        without them every cell is replayed."""
+        segment, rows, cols = self._reserve(x_lo, x_hi, j_lo, j_hi)
         unknown = ~segment.known[rows, cols]
         if not unknown.any():
             return
-        # Runs of unknown treatment counts, row by row.
-        edges = np.diff(np.pad(unknown.astype(np.int8), ((0, 0), (1, 1))), axis=1)
+        row_in, col_in = self._routed_flags(x_lo, x_hi, j_lo, j_hi)
+        routed = row_in[:, None] & col_in[None, :]
+        delta = unknown & routed
+        pending = unknown & ~routed
+        replay_cells = self._affordable(pending, weights) if replay else np.zeros_like(pending)
+        if delta.any():
+            self._decide_routed(segment, rows, cols, (x_lo, j_lo), delta, row_in, col_in)
+        if replay_cells.any():
+            self._replay(segment, rows, cols, (x_lo, j_lo), replay_cells)
+        segment.known[rows, cols] |= delta | replay_cells
+
+    def _affordable(
+        self, pending: np.ndarray, weights: tuple[np.ndarray, np.ndarray] | None
+    ) -> np.ndarray:
+        """The cells of *pending* (those the finite-sample replay must decide) to replay now.
+
+        None when the runtime refuses that decision in full. Without weights, all of them. With
+        them, none when their whole mass is at most half of `RESOLUTION` (a plan the count rule
+        routes to the delta method with near certainty needs no replay), all when they fit the
+        evaluation's budget, and otherwise the heaviest cells that do: those whose weight
+        reaches the lowest floor, on a ladder of 32 steps a decade, that they fit under."""
+        if not self.finite or not pending.any():
+            return np.zeros_like(pending)
+        if weights is None or self.route != "exact":
+            return pending
+        budget = max(0, EVALUATION_REPLAY_BUDGET - self._replayed)
+        if budget == 0:
+            return np.zeros_like(pending)
+        w_c, w_t = weights
+        kinds = len(self.decision.kinds)
+        bins = _DECADES * _BINS_PER_DECADE
+        counts = np.zeros(bins + 1, np.int64)
+        mass = 0.0
+        step = max(1, _BLOCK_CELLS // max(1, w_t.size))
+        for start in range(0, w_c.size, step):
+            block = pending[start : start + step]
+            weight = np.outer(w_c[start : start + step], w_t)[block]
+            mass += float(np.sum(weight))
+            level = np.clip(
+                np.floor(_BINS_PER_DECADE * np.log10(np.maximum(weight, 1e-300))), -bins, 0
+            )
+            counts += np.bincount((level + bins).astype(np.int64), minlength=bins + 1)
+        if mass <= RESOLUTION / 2.0:
+            return np.zeros_like(pending)
+        if int(counts.sum()) * kinds <= budget:
+            return pending
+        kept = np.cumsum(counts[::-1])[::-1]
+        fits = np.flatnonzero(kept * kinds <= budget)
+        if fits.size == 0:
+            return np.zeros_like(pending)
+        floor = 10.0 ** ((int(fits[0]) - bins) / _BINS_PER_DECADE)
+        keep = np.zeros_like(pending)
+        for start in range(0, w_c.size, step):
+            block = pending[start : start + step]
+            keep[start : start + step] = block & (np.outer(w_c[start : start + step], w_t) >= floor)
+        return keep
+
+    def _decide_routed(
+        self,
+        segment: _Segment,
+        rows: slice,
+        cols: slice,
+        origin: tuple[int, int],
+        delta: np.ndarray,
+        row_in: np.ndarray,
+        col_in: np.ndarray,
+    ) -> None:
+        """Write the delta decision of the *delta* cells, all inside the routed rectangle.
+        A pair the vectorised rule leaves open is decided by the runtime row itself."""
+        decision, routing = self.decision, self.routing
+        assert routing is not None
+        x_lo, j_lo = origin
+        r_idx, c_idx = np.flatnonzero(row_in), np.flatnonzero(col_in)
+        c0, c1 = int(c_idx[0]), int(c_idx[-1]) + 1
+        x_t = (j_lo + np.arange(c0, c1))[None, :]
+        step = max(1, _BLOCK_CELLS // (c1 - c0))
+        for start in range(int(r_idx[0]), int(r_idx[-1]) + 1, step):
+            stop = min(int(r_idx[-1]) + 1, start + step)
+            x_c = (x_lo + np.arange(start, stop))[:, None]
+            block = delta[start:stop, c0:c1]
+            if not block.any():
+                continue
+            out = delta_decision(
+                x_c,
+                decision.n_c,
+                x_t,
+                decision.n_t,
+                tail=decision.tail_alpha,
+                alternative=decision.alternative,
+                null_lift=routing.null_lift,
+            )
+            plus, minus = out.plus.copy(), out.minus.copy()
+            for a, b in np.argwhere(~out.settled & block):
+                plus[a, b], minus[a, b] = production_decision(
+                    int(x_c[a, 0]),
+                    decision.n_c,
+                    int(x_t[0, b]),
+                    decision.n_t,
+                    tail=decision.tail_alpha,
+                    alternative=decision.alternative,
+                    null_lift=routing.null_lift,
+                )
+            target = (
+                slice(rows.start + start, rows.start + stop),
+                slice(cols.start + c0, cols.start + c1),
+            )
+            segment.plus[target] = np.where(block, plus, segment.plus[target])
+            segment.minus[target] = np.where(block, minus, segment.minus[target])
+
+    def _replay(
+        self,
+        segment: _Segment,
+        rows: slice,
+        cols: slice,
+        origin: tuple[int, int],
+        replay: np.ndarray,
+    ) -> None:
+        """Decide the *replay* cells by the finite-sample route, a run of treatment counts per
+        control count and direction at a time."""
+        x_lo, j_lo = origin
+        edges = np.diff(np.pad(replay.astype(np.int8), ((0, 0), (1, 1))), axis=1)
         starts = np.argwhere(edges == 1)
         stops = np.argwhere(edges == -1)
         requests = [
@@ -1644,10 +1886,11 @@ class RejectionGeometry:
             target = segment.plus if req.kind == "plus" else segment.minus
             row = req.x_c - self.x0
             target[row, req.j0 - segment.j0 : req.j1 - segment.j0 + 1] = mask
-        segment.known[rows, cols] = True
+        self._replayed += int(replay.sum()) * len(self.decision.kinds)
 
     def cells(self, x_lo: int, x_hi: int, j_lo: int, j_hi: int) -> tuple[np.ndarray, np.ndarray]:
-        """Plus and minus rejection masks over ``[x_lo, x_hi] x [j_lo, j_hi]``."""
+        """Plus and minus rejection masks over ``[x_lo, x_hi] x [j_lo, j_hi]``, every cell
+        decided by its route (a pair neither route decides rejects in neither direction)."""
         self.ensure(x_lo, x_hi, j_lo, j_hi)
         segment = self._containing(j_lo, j_hi)
         assert segment is not None
@@ -1656,23 +1899,64 @@ class RejectionGeometry:
         return segment.plus[rows, cols], segment.minus[rows, cols]
 
     def evaluate(self, p_c: float, p_t: float) -> BinomialPower:
-        """Rejection probability at control rate ``p_c``, treatment rate ``p_t``."""
+        """Rejection probability at control rate ``p_c``, treatment rate ``p_t``: the weight of the
+        cells decided to reject, with the mass of the cells left undecided and of everything
+        outside the windows as the width of its enclosure.
+
+        Raises `FiniteRouteUnavailable` when the runtime refuses the finite-sample decision in
+        full and the count pairs it would decide carry more than half of `RESOLUTION`."""
         decision = self.decision
+        self._replayed = 0
+        if not self.finite:
+            # The count pairs the runtime keeps on the route it refuses are known in closed form,
+            # before any cell is stored.
+            assert self.routing is not None
+            unrouted = unrouted_share(
+                decision.n_c, decision.n_t, p_c, p_t, floor=self.routing.floor
+            )
+            if unrouted > RESOLUTION / 2.0:
+                raise FiniteRouteUnavailable(unrouted)
         wc = _window(decision.n_c, p_c)
         wt = _window(decision.n_t, p_t)
+        row_in, col_in = self._routed_flags(wc.lo, wc.hi, wt.lo, wt.hi)
+        # The mass the finite-sample route would decide in these windows. A plan that keeps at
+        # most half of `RESOLUTION` there leaves it undecided whatever an earlier solve cached.
+        total_t = float(wt.weights.sum())
+        inside_c, inside_t = float(wc.weights[row_in].sum()), float(wt.weights[col_in].sum())
+        finite_mass = (float(wc.weights.sum()) - inside_c) * total_t + inside_c * (
+            total_t - inside_t
+        )
+        skip = self.routing is not None and finite_mass <= RESOLUTION / 2.0
         try:
-            plus, minus = self.cells(wc.lo, wc.hi, wt.lo, wt.hi)
+            self.ensure(wc.lo, wc.hi, wt.lo, wt.hi, (wc.weights, wt.weights), replay=not skip)
         except ReplayBoundExceeded as exceeded:
             raise ReplayBoundExceeded(exceeded.cells, p_t) from None
+        segment = self._containing(wt.lo, wt.hi)
+        assert segment is not None
+        rows = slice(wc.lo - self.x0, wc.hi - self.x0 + 1)
+        cols = slice(wt.lo - segment.j0, wt.hi - segment.j0 + 1)
+        plus, minus, known = (
+            segment.plus[rows, cols],
+            segment.minus[rows, cols],
+            segment.known[rows, cols],
+        )
+        if skip:
+            decided = row_in[:, None] & col_in[None, :]
+            plus, minus, known = plus & decided, minus & decided, known & decided
         # The matrix products sum over the control window, then over the treatment window.
         inflation = _inflation(
             wc.error, wt.error, _compounded(wc.size), _compounded(wt.size), _UNIT_ROUNDOFF
         )
+        undecided = float(wc.weights @ ~known @ wt.weights)
+        if not self.finite and undecided * inflation > RESOLUTION / 2.0:
+            raise FiniteRouteUnavailable(undecided * inflation)
         return BinomialPower(
             float(wc.weights @ plus @ wt.weights),
             float(wc.weights @ (minus & ~plus) @ wt.weights),
             _up(wc.omitted + wt.omitted),
             inflation,
+            ambiguous=_up(undecided * inflation) if undecided else 0.0,
+            certified=self.route == "exact",
         )
 
     def point_upper(self, p_c: float, p_lo: float, p_hi: float, bound: float) -> float:
@@ -1699,24 +1983,30 @@ class RejectionGeometry:
         ``exact`` route) at control rate ``p_c`` and every
         treatment rate ``p`` in ``[p_lo, p_hi]``, numerical error included.
 
-        Every evaluation in the interval classifies treatment counts inside ``[L, H]``, the
+        Every evaluation in the interval decides treatment counts inside ``[L, H]``, the
         lower edge of ``p_lo``'s window to the upper edge of ``p_hi``'s. A control row rejects
         at those counts only from its first plus rejection ``t`` on and up to its last minus
-        rejection ``s`` (``t = H + 1`` and ``s = L - 1`` when it has none; a row with unclassified
-        counts may reject at every one). A binomial tail is nondecreasing in its rate, so
-        ``P(X >= t)`` at ``p_hi`` bounds the plus rejections at every ``p`` and ``P(X <= s)`` at
-        ``p_lo`` the minus ones. No assumption on which side of ``[L, H]`` a rejection outside it
-        falls is needed once the mass below ``L`` at ``p_lo`` and above ``H`` at ``p_hi`` is added
-        to every row. A row's bound is that sum, at most one; control counts outside the window
-        add its omitted mass. The bound reads only what earlier evaluations classified and is a
-        valid bound on the unclassified rest.
+        rejection ``s`` (``t = H + 1`` and ``s = L - 1`` when it has none), an undecided count
+        counting as a rejection in both directions. A binomial tail is nondecreasing in its
+        rate, so ``P(X >= t)`` at ``p_hi`` bounds the plus rejections at every ``p`` and
+        ``P(X <= s)`` at ``p_lo`` the minus ones. No assumption on which side of ``[L, H]`` a
+        rejection outside it falls is needed once the mass below ``L`` at ``p_lo`` and above ``H``
+        at ``p_hi`` is added to every row, and none on how the decision orders the counts within
+        a row: ``t`` and ``s`` are read off the decided cells. A row's bound is that sum, at most
+        one; control counts outside the window add its omitted mass. The bound reads only what
+        earlier evaluations decided and is a valid bound on the rest.
+
+        The bound is tight only where the set is already closed: ``closed`` says every control row
+        has all of ``[L, H]`` classified, its plus rejections run on to ``H`` from the first and
+        its minus rejections back to ``L`` from the last. Elsewhere the bound counts counts the
+        decision does not reject, so it can exceed the power it bounds by any amount.
         """
         decision = self.decision
         n_t = decision.n_t
         wc = _window(decision.n_c, p_c)
         low, high = _window_bounds(n_t, p_lo)[0], _window_bounds(n_t, p_hi)[1]
         rows = np.arange(wc.lo, wc.hi + 1) - self.x0
-        # A row without classified counts across [low, high] may reject at every one.
+        # A row without decided counts across [low, high] may reject at every one.
         t = np.full(rows.size, low, np.int64)
         s = np.full(rows.size, high, np.int64)
         segment = self._containing(low, high)
@@ -1727,13 +2017,16 @@ class RejectionGeometry:
             j = np.arange(low, high + 1)
             plus = segment.plus[r, cols]
             minus = segment.minus[r, cols]
-            known = segment.known[r, cols].all(axis=1)
-            first_index = np.argmax(plus, axis=1)
-            first = np.where(plus.any(axis=1), j[first_index], high + 1)
-            last_index = j.size - 1 - np.argmax(minus[:, ::-1], axis=1)
-            last = np.where(minus.any(axis=1), j[last_index], low - 1)
-            t[inside] = np.where(known, first, low)
-            s[inside] = np.where(known, last, high)
+            open_ = ~segment.known[r, cols]
+            may_plus = plus | open_
+            may_minus = minus | open_
+            first_index = np.argmax(may_plus, axis=1)
+            t[inside] = np.where(may_plus.any(axis=1), j[first_index], high + 1)
+            last_index = j.size - 1 - np.argmax(may_minus[:, ::-1], axis=1)
+            s[inside] = np.where(may_minus.any(axis=1), j[last_index], low - 1)
+            run_plus = plus.sum(axis=1) == np.where(plus.any(axis=1), j.size - first_index, 0)
+            run_minus = minus.sum(axis=1) == np.where(minus.any(axis=1), last_index + 1, 0)
+            closed = bool(inside.all() and not open_.any() and run_plus.all() and run_minus.all())
         if "plus" not in decision.kinds:
             t[:] = n_t + 1
         if "minus" not in decision.kinds:

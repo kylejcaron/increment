@@ -5,11 +5,13 @@ evaluated at its own mean under the alternative. Mean-like planning assumes
 equal absolute effective arm variances; conversion and retention planning use
 the Bernoulli variance shape at the implied treatment rate. Where the runtime
 routes an unadjusted, unclustered, fixed-horizon conversion or retention
-contrast by its counts (``conversion_inference``), planning follows the route:
-dense counts are that closed-form model (``power_basis`` ``"asymptotic"``), sparse
-counts the finite-sample binomial risk-ratio decision's rejection probability
-(``"exact"`` or ``"approximate"``), and counts the threshold splits the smaller of
-the two, an ``"approximate"`` figure that leans conservative and is not a proven bound.
+contrast by its counts (``conversion_inference``), planning follows the route: the
+rejection probability of the runtime's union of the delta-method decision on dense counts
+and the finite-sample binomial risk-ratio decision on the rest, summed over the count lattice
+(``power_basis`` ``"exact"``, or ``"approximate"`` when the replay budget leaves mass
+undecided and ``power`` is the certified lower figure), and the closed-form model where the
+counts are dense with near certainty and the lattice is too large to enumerate
+(``"asymptotic"``).
 Segment-pairwise planning deliberately retains its separate baseline-only
 approximation.
 

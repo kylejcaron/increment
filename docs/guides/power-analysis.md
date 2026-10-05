@@ -172,38 +172,55 @@ above 1 is refused. Every such result reports `power_basis="asymptotic"`.
 
 An unadjusted, unclustered, fixed-horizon conversion or retention plan (no CUPED, no
 absorbed factor, no winsorization, no prior) is routed at runtime by its counts
-(`conversion_inference`, default `"auto"`): all four per-arm success and failure counts dense
-for the tail allocation take the delta-method route, the rest the exact Berger-Boos
-risk-ratio test on the raw counts. Planning classifies each plan from the probability that its
-random counts are dense. A `dense` plan is the closed-form model above
-(`power_basis="asymptotic"`, no replay, no cell budget, no arm ceiling); a `sparse` plan
-reports the probability that the unchanged exact decision rejects at the analyzed integer
-counts, integrating the binomial count law over windows that leave out at most about `1e-12`
-of mass; a `borderline` plan reports the smaller of the two powers as `power_basis="approximate"`
-(the runtime's rejection probability there mixes the two routes' decisions, which neither power
-equals, so the figure leans conservative but is not a proven lower bound).
-`ArmPlanningProcedure.standard(..., conversion_inference="finite_sample")` plans the replay at
-every size (refused for a mean, clustered or sequential plan, which the finite-sample route does
-not serve). At 701 units per arm, a 10% baseline and a 50% lift the replayed power is 0.7144
-(the log-ratio model said 0.8004), and the planned size for 80% power is 831 per arm. Power
-depends on the baseline rate alone; `var` does not enter. The replay bullets below describe
-the sparse, borderline and explicit `finite_sample` plans.
+(`conversion_inference`, default `"auto"`): a count pair whose four per-arm success and failure
+counts are all dense for the tail allocation is decided by the delta-method test, every other
+pair by the exact Berger-Boos risk-ratio test on the raw counts. Planning reports the
+probability that this union rejects, summed over the binomial count law at the analyzed integer
+counts: the delta-method decision on the routed rectangle of count pairs (the production
+decision itself, vectorised and settled by the runtime's own row wherever the two could differ
+in rounding) plus the replayed finite-sample decision on the rest. It is neither route's power
+and not a function of the two: a plan whose counts straddle the threshold is not "the smaller
+of the two". The count law is integrated over windows that leave out at most about `1e-12` of
+mass. `ArmPlanningProcedure.standard(..., conversion_inference="finite_sample")` plans the
+replay at every size (refused for a mean, clustered or sequential plan, which the finite-sample
+route does not serve). At 701 units per arm, a 10% baseline and a 50% lift the replayed power
+is 0.7144 (the log-ratio model said 0.8004), and the planned size for 80% power is 831 per arm.
+Power depends on the baseline rate alone; `var` does not enter.
 
-- `power_basis="exact"`: the decision set is built by replaying the runtime's
-  own nuisance search for every count pair that matters; the reported power is
-  the runtime's rejection probability. This route is used when the geometry at
-  the null rate has at most 16,000 (control, treatment) count cells -- a
-  complete call then takes about two seconds or less.
-- `power_basis="approximate"`: larger designs replay the same search with a
-  continuity-corrected Normal tail for the conditional binomial sum, and a `borderline`
-  plan's smaller-of-two figure is reported on this basis whatever its replay's. Measured
-  against the runtime the replay agreed on dense designs to about 0.03 percentage
-  points but understated power by up to 0.8 points with an unequal allocation
-  and a shifted null, and it can misclassify count pairs whose runtime p-value
-  sits near the tail allocation in rare-event designs, which put it up to 2e-5 above the
-  runtime's power in the designs enumerated on the limitations page.
-- Replay bound (a `sparse` or `borderline` plan and every explicit `conversion_inference="finite_sample"`
-  plan replay; a `dense` `auto` plan has none): the replay's work and memory follow the number of (control,
+- `power_basis="exact"`: every pair of the count lattice is decided by the runtime's own
+  decision, so the reported power is the runtime's rejection probability, up to at most about
+  `1e-6` of mass left undecided (counts the rule routes to the delta method with near
+  certainty need no replay of the finite-sample test, and their `~1e-6` is that mass). The
+  production delta decision is also what a dense plan reports while its lattice has at most
+  250,000 cells: the closed form below it understated the enumerated power by up to 0.006 at
+  the smallest dense designs (a 1,236-unit arm at a 50% baseline and a 6% lift: 0.5859 against
+  0.5918 at `alpha=0.2`).
+- `power_basis="approximate"`: the replay of the finite-sample test is budgeted at 150,000
+  directional replays an evaluation (about a hundred to four hundred CPU-microseconds each at
+  the arm sizes where counts reach the routing threshold), the heaviest count pairs first. A
+  plan with more pairs than that leaves the lightest undecided: `power` is then the certified
+  lower figure (the weight of the pairs decided to reject, never above the runtime's
+  rejection probability), and the runtime's probability lies between it and it plus the
+  undecided mass: at 382,230 units per arm and a 1% baseline an evaluation takes 46 s and
+  leaves 0.047 (the pipeline's 0.4125 lies in [0.3904, 0.4370]), and at 1,646,389 it takes
+  140 s and leaves 0.51. Sizes and effects are certified from that lower figure, so a budgeted
+  plan is sized conservatively, not approximately. The Normal-tail replay of an earlier
+  release remains only to propose a size the runtime's decision then verifies; it is never a
+  reported power or a bound.
+- `power_basis="asymptotic"`: the closed-form model above, for counts the rule routes to the
+  delta method with near certainty (unrouted mass at most `1e-6`) in a lattice of more than
+  250,000 cells. It is not an enumeration of the runtime's decision: it agreed with the
+  pipeline's rejection probability to within 0.005 (the repository's ceiling for a normal
+  approximation) at the designs enumerated on the limitations page, and a target called
+  unattainable or an effect certified there is so under this model.
+- A decision the runtime refuses in full on the finite-sample route (an arm above its ceiling,
+  a nuisance budget below the solver's floor, a tail level the float margin dominates) decides
+  no count pair there. A plan that keeps more than half of `1e-6` of its counts on that route
+  is refused with a `power.binomial_*` code instead of reporting zero power for them; a dense
+  plan's smaller share is counted among the undecided mass.
+- Replay bound (every plan enumerated on the count lattice, which is every explicit
+  `conversion_inference="finite_sample"` plan and every `auto` plan except the closed-form
+  `asymptotic` ones): the work and memory follow the number of (control,
   treatment) count cells a solve stores, not the arm size: the control window
   by the treatment windows at the null rate and at every alternative that solve
   evaluates. A supplied effect, an effect search (the union of the windows it
@@ -238,15 +255,20 @@ the sparse, borderline and explicit `finite_sample` plans.
   size, with no bound (the [limitations page](../limitations.md) lists the cells measured). The bound
   limits the planner only: the runtime decides arms of up to a billion units.
 
-The route depends only on the design, never on timing. Every probability here is a computed
+The plan depends only on the design, never on timing. Every probability here is a computed
 value with a numerical error: each binomial weight is a SciPy value within the runtime's
 allowance of `n` units in the last place (the allowance its own float margin is built on) and
-every sum rounds. The planner encloses the rejection probability of the decision set its route
-replays: on the exact route that is the runtime's probability; on the approximate route it is
-the Normal-tail model's. The interval does not cover that model's departure from the runtime.
-The interval is about `1e-12` of the power at 1,000 units per arm
-and `4e-7` of it at a billion (the reported `power` is the computed value inside it, not
-shifted). Power is not monotone in the sample size under this decision, so
+every sum rounds. The planner encloses the runtime's rejection probability in an interval and
+decides from its ends only: the lower end is the weight of the count pairs decided to reject,
+less that error, and the upper end adds the mass of the pairs left undecided and of
+everything outside the windows. The runtime's finite-sample search is bounded and stopped, so
+its rejections need not be monotone in a count the way the supremum it bounds is, and no pair
+is decided by extending a neighbour's decision. A target called unattainable or a size
+certified describes the runtime wherever `power_basis` is `exact` or `approximate`, and the
+delta-method model where it is `asymptotic`; a refusal's context names which. The interval
+is about `1e-12` of the power at 1,000 units per arm
+and `4e-7` of it at a billion, widened by the undecided mass (the reported `power` is the
+computed value inside it, not shifted). Power is not monotone in the sample size under this decision, so
 `required_sample_size` returns a verified size whose power is *certified* to reach the target
 (the lower end of its interval does) while the size one below is not -- not a proof that no
 smaller size reaches it, and a size whose interval straddles the target is not certified, so
@@ -451,7 +473,7 @@ unit-randomized sequential planning.
 | `n_per_arm` | Assigned units in the treatment arm |
 | `n_total` | Assigned units across the two-arm contrast |
 | `power` | Planned power at the returned integer size, under `power_basis` |
-| `power_basis` | `asymptotic` (log-ratio model, including counts the runtime takes the delta-method route at), `exact` (the runtime's finite-sample binomial decision), or `approximate` (that decision with Normal conditional tails) |
+| `power_basis` | `asymptotic` (log-ratio model, for counts the runtime takes the delta-method route at with near certainty in a lattice too large to enumerate), `exact` (the runtime's decision, delta-method on dense counts and finite-sample on the rest, summed over the count lattice), or `approximate` (that sum with the replay budget leaving mass undecided: `power` is the certified lower figure) |
 | `mde_relative` | Detectable relative effect at the target power, rescaled for `compliance`; `None` when no admissible numeric answer is certified |
 | `mde_unavailable_reason` | `unattainable`, `unrepresentable`, or `numerical_resolution` when `mde_relative` is `None`; otherwise `None` |
 | `effective_var` | Per-unit control-arm variance for asymptotic planning, after decision-method reductions and cluster design effect; sensitivity-only CUPED receives no credit, so this can differ from the caller's `Baseline.effective_var`. For a `QuantileBaseline`, its pilot-implied variance. Exact/approximate binomial power uses event rates and counts, not this reported variance. |
