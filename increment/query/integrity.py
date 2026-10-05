@@ -120,7 +120,8 @@ def enforce_mixed_assignments(
     """Raise/warn per policy for mixed and NULL assignment units.
 
     One ``on_mixed_assignment`` policy governs both invalid assignment
-    conditions: units seen in more than one arm and units with no assignment label.
+    conditions: units seen in more than one arm and units with at least one NULL
+    assignment label.
     """
     findings: list[str] = []
     if count:
