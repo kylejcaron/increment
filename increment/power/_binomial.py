@@ -444,8 +444,12 @@ def _replay(batch: _Batch, tails: _ExactTails | _SurrogateTails, *, exact: bool)
     The approximate route runs the first ``_COMMON_SPLITS`` splits of every row together;
     rows still searching then continue in chunks sized for the full split cap, so the few
     rows that need deep searches never keep the whole batch's leaf arrays at that depth.
-    The exact route keeps one pass: its tails register each nuisance point once for the
-    treatment counts of the rows then active, so rows may leave a search but never join one.
+    Their copies are taken before the first stage's arrays are released, and a chunk deepens
+    beside the copies still waiting, so both stages are sized to half the leaf budget
+    (`_approximate_rows`): the copies never exceed the first stage's arrays, whatever share
+    of the rows survive. The exact route keeps one pass: its tails register each nuisance
+    point once for the treatment counts of the rows then active, so rows may leave a search
+    but never join one.
     """
     decision = batch.decision
     beta, u_alpha = decision.beta, decision.tail_alpha
@@ -488,7 +492,7 @@ def _replay(batch: _Batch, tails: _ExactTails | _SurrogateTails, *, exact: bool)
         _finish_unsettled(search, beta)
     else:
         survivors = np.flatnonzero(search.status == _Outcome.SEARCHING)
-        size = _rows_within_budget(rule.max_iter)
+        size = _approximate_rows(rule.max_iter)
         chunks = [survivors[start : start + size] for start in range(0, survivors.size, size)]
         deeper: list[_Search | None] = [search.take(ids) for ids in chunks]
         search.lv = _Leaves.empty(0, 1)  # the first stage's arrays are not needed again
@@ -931,12 +935,22 @@ def _rows_within_budget(splits: int) -> int:
     return max(1, int(_LEAF_BUDGET_BYTES // (leaf_bytes * (splits + 1))))
 
 
+def _approximate_rows(splits: int) -> int:
+    """Rows of one stage of the approximate route after *splits* splits each: half of
+    `_rows_within_budget`, because the route holds the other stage's arrays beside it (the
+    survivors' copies beside the first stage, the waiting copies beside a deepening chunk)
+    and those are as large as the first stage in the worst case, when every row survives."""
+    return max(1, _rows_within_budget(splits) // 2)
+
+
 def _batch_rows(*, exact: bool) -> int:
     """Rows per classification batch, so the replay's leaf arrays stay within the budget
     whatever the data: the exact route's rows may all run to ``NUISANCE_STOP.max_iter``, the
     approximate route's only to ``_COMMON_SPLITS`` before they continue in chunks."""
     max_iter = _rr.NUISANCE_STOP.max_iter
-    return _rows_within_budget(max_iter if exact else min(max_iter, _COMMON_SPLITS))
+    if exact:
+        return _rows_within_budget(max_iter)
+    return _approximate_rows(min(max_iter, _COMMON_SPLITS))
 
 
 def classify(
