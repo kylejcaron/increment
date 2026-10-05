@@ -868,6 +868,14 @@ designs only) cannot read covariates from an artifact; use `from_definitions`.
   `from_unit_day_artifact`, `from_unit_summary`, `from_unit_panel`). Run a
   quantile metric under a randomized design. Fixed-horizon inference does not
   change this: no inference kind has an observational quantile estimator.
+  An observational frame cannot export a quantile cube either (`export()`
+  raises the same code). `from_moments` therefore never receives a genuine
+  quantile: a quantile *declared* over exported scalar moments constructs, and
+  `run()` raises `readout.observational.quantile` before those moments can be
+  used as quantile data, whereas `run_breakout()` raises
+  `facade.analysis.operation` and the day-axis methods
+  `facade.analysis.no_definitions` (source limits). See
+  [Quantiles and portable moments](quantile-metrics.md#quantiles-and-portable-moments).
   `Analysis.planning_baseline` of a quantile metric still reads the control
   arm's per-unit values, since a planning baseline estimates no effect.
 - **Ratio metrics refuse.** IPTW, DML, and AIPW reweight or residualize a

@@ -142,3 +142,25 @@ the same way), and a quantile metric can never report on the absolute
 value scale in the first place (`value_scale="absolute"` is refused
 outright for `type="quantile"`). Quantile metrics output relative lift
 only.
+
+## Quantiles and portable moments
+
+A portable moments cube holds additive moments, never the per-unit values an
+order statistic needs, and two different requests reach it:
+
+- **Exporting a quantile** refuses at `export()` with
+  `source.frame.quantile_no_moments` (a source limit: a quantile has no moments
+  representation), so no quantile cube ever exists to replay. An observational
+  frame refuses earlier, with `readout.observational.quantile`, because no
+  estimator could use the cube.
+- **Declaring a quantile over a cube that already exists** (for example a
+  `MetricSpec(type="quantile")` over exported scalar moments) constructs, then
+  refuses when read. `run()` raises `source.moments.unit_grain` under a
+  randomized design -- those moments are not quantile data -- and
+  `readout.observational.quantile` under an `Observational` design, where the
+  estimator refusal takes precedence because no source could supply it an input.
+  `run_breakout()` raises `facade.analysis.operation`, the day-axis methods
+  (`run_daily`, `run_daily_lift`, `run_asof`, `run_asof_lift`) raise
+  `facade.analysis.no_definitions`, and `planning_baseline` raises
+  `analysis.planning_baseline.quantile_source_unavailable`; these source limits
+  fire before any estimator reads the cube, under either design.
