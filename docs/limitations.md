@@ -315,7 +315,9 @@ subject to the registered sampling and finalized-window contract.
 It also has two further boundaries, both refusals rather than silent degradation:
 
 * **Arm size.** Each arm is capped at `binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE`
-  (1,000,000,000). This is a compute-resource applicability boundary, not a statistical
+  (1,000,000,000; it replaces `binomial_rr.MAX_ARM_SIZE`, which capped arms at 4,000,000 and is
+  removed without an alias -- code that imported the old name imports the new one and gets the
+  new cap). This is a compute-resource applicability boundary, not a statistical
   one: a call with either arm above the cap refuses immediately
   (`estimation.binomial.arm_too_large_for_exact_enumeration`, the cap in `max_arm_size`)
   rather than running a search whose cost keeps growing with the arm. The cap is the
@@ -412,16 +414,20 @@ It also has two further boundaries, both refusals rather than silent degradation
   measured on the production search at 10,000 units per arm with the margin set to the
   ratio a billion-unit arm has (it was not run at a billion): at `alpha >= 1e-4` it does not
   move an interval, at `1e-5` it widens it by about 1%, and from about `3e-6` it degrades
-  it (+2%, then +43% at `1.5e-6`). Planning mirrors both floors: such a decision has power
-  exactly zero without a replay. `required_sample_size` refuses a decision refused even at
-  the smallest design before searching, with `power.binomial_tail_level_unrepresentable`
-  (context `alpha`, `beta`, `tail_alpha`, `margin`, `n_c`, `n_t`, `solver_floor` and `cause`,
-  `solver_floor` or `float_margin`); a float margin that starts dominating only at larger arms
-  ends the search at that size with `power.binomial_size_search_unreachable` (context
-  `power`, `maximum_power`, `n_per_arm`, `max_arm_size`). An allocation so lopsided that the
-  smallest design has an arm above the arm ceiling is refused with
-  `power.binomial_arm_ceiling_below_smallest_design`. There is no exact route at a smaller
-  alpha; use a larger alpha.
+  it (+2%, then +43% at `1.5e-6`). Planning mirrors both floors: a tail level they refuse
+  leaves the runtime deciding no count pair, so it has no power to plan and is refused, not
+  planned as zero. `achieved_power`, `minimum_detectable_effect` and each `power_curve` row
+  refuse it with `power.binomial_tail_level_unrepresentable` (context `alpha`, `beta`,
+  `tail_alpha`, `margin`, `n_c`, `n_t`, `solver_floor`, `cause`, `solver_floor` or
+  `float_margin`, and `scope`, `requested`) and an arm above the ceiling with
+  `power.binomial_arm_ceiling_exceeded` (context `n_c`, `n_t`, `max_arm_size`), before any
+  replay. `required_sample_size` refuses a decision refused even at the smallest design before
+  searching, with `power.binomial_tail_level_unrepresentable` (`scope` `smallest`); a float
+  margin that starts dominating only at larger arms ends the search at that size with
+  `power.binomial_size_search_unreachable` (context `power`, `maximum_power`, `n_per_arm`,
+  `max_arm_size`). An allocation so lopsided that the smallest design has an arm above the arm
+  ceiling is refused with `power.binomial_arm_ceiling_below_smallest_design`. There is no exact
+  route at a smaller alpha; use a larger alpha.
 
 CUPED and unit-grain ratio-denominator conversion/retention retain their log-scale
 guards; their sufficient statistics are not raw Bernoulli count pairs. A clustered
@@ -706,8 +712,23 @@ own replay, except counts the replay's first step would settle: those are
 inferred from a neighbouring count's margin through the step's monotonicity
 in the treatment count, which assumes each computed tail lies within the larger of
 `5e-11` and the decision's float margin (see **Extreme alpha**) of its exact-arithmetic
-value. Sizing returns a verified bracket crossing, not a proven global minimum; effect searches exclude earlier
-effects to within `2e-12` of the target power. Triggered plans use the
+value. Sizing returns a verified bracket crossing, not a proven global minimum.
+
+Every probability planning computes carries the runtime's SciPy error allowance (`n` units in
+the last place of each binomial weight, `2.2e-7` of it at a billion units per arm, `4.5e-13`
+below 2,048) and the rounding of its sums, so a power is enclosed by an interval of about
+`1e-12` of it at 1,000 units per arm and `4e-7` at a billion, and every comparison with the
+target is made at its ends. A size or an effect is reported only when the lower end reaches
+the target; an effect search excludes an interval of effects only when a bound on the
+rejection set, enlarged by the same error, stays below it. One whose interval straddles the
+target is not decided, so the answer can exceed the first that reaches the target by that
+much (measured against the earlier comparisons of the computed values: the effect by a
+relative `1e-12` at 701 to 2,000 units per arm and `4.4e-7` at a billion; a size by 174 of
+489,713,690 units) and its reported `power` exceeds the target by about the interval. A
+target within the interval of the largest admissible effect's power is neither certified nor
+ruled out: the companion `mde_relative` is `None` with `numerical_resolution`. The interval
+covers the integration of the replayed decision set; the approximate route's own error is
+the measured one above. Triggered plans use the
 rounded analyzed counts.
 
 A solve's replay is bounded by the cells it stores: at most 10,000,000 (control, treatment)

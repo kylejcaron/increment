@@ -15,6 +15,7 @@ import sys
 from decimal import Decimal, localcontext
 from fractions import Fraction
 from math import comb
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -2001,3 +2002,30 @@ class TestClopperPearsonOutwardRounding:
                     lo = mid + 1
             first[n] = lo
         assert set(first.values()) == {19}
+
+
+class TestMeasurementScriptPortability:
+    """The oracle-grading helpers this module imports from the measurement script must load on
+    a platform without ``resource`` and ``os.wait4`` (Windows); only the commands that read a
+    child's resource usage need them, and those refuse by name instead of failing late."""
+
+    def test_the_grading_helpers_import_without_the_resource_module(self):
+        import subprocess
+
+        code = (
+            "import sys; sys.modules['resource'] = None; "
+            "from scripts import measure_binomial_ceiling as m; "
+            "assert callable(m._graded) and callable(m._window_check)"
+        )
+        root = Path(__file__).resolve().parents[2]
+        done = subprocess.run(
+            [sys.executable, "-c", code], cwd=root, capture_output=True, text=True, check=False
+        )
+        assert done.returncode == 0, done.stderr
+
+    def test_a_command_refuses_off_posix_by_name(self, monkeypatch):
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(measure, "os", SimpleNamespace(name="nt"))
+        with pytest.raises(SystemExit, match="POSIX"):
+            measure.main(["latency", "--out", "unused.jsonl"])

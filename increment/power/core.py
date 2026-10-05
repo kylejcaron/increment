@@ -93,11 +93,11 @@ from increment.estimation.sequential import GaussianScoreMixture
 from increment.power._binomial import (
     PLANNING_CELL_CEILING,
     BinomialDecision,
+    BinomialPower,
     RejectionGeometry,
     ReplayBoundExceeded,
     Route,
     refused,
-    replay_cells,
     route_for,
     solver_floor,
     solver_refuses,
@@ -711,9 +711,11 @@ class PowerResult(CodedModel, BaseModel):
         decide with the exact binomial risk-ratio test). ``"exact"``: the
         probability that the runtime's unchanged exact binomial decision
         rejects, at the analyzed integer counts (up to at most about ``1e-12``
-        of omitted outer count mass). ``"approximate"``: the same decision
-        replayed with Normal conditional tails, for binomial plans whose
-        exact geometry exceeds the planning cell budget.
+        of omitted outer count mass, and the numerical error of its sum, about
+        ``1e-12`` of it at 1,000 units per arm and ``4e-7`` at a billion).
+        ``"approximate"``: the same decision replayed with Normal conditional
+        tails, for binomial plans whose exact geometry exceeds the planning
+        cell budget.
     mde_relative : float | None
         Minimum detectable relative effect on the complier scale, expressed
         RELATIVE TO the declared null: ``(exp(distance) - 1) /
@@ -2220,15 +2222,16 @@ class _BinomialPlan:
     def rate(self, theta: float) -> float:
         return _alternative_rate(self.log_p_c, theta)
 
-    def power(self, theta: float) -> float:
-        """Power at effect ``theta``; raises `ReplayBoundExceeded` when the cells its alternative
-        window adds would leave the geometry storing more than the planning bound."""
-        return self.geometry.evaluate(self.p_c, self.rate(theta)).power
+    def evaluate(self, theta: float) -> BinomialPower:
+        """The runtime's rejection probability at effect ``theta``, enclosed by its numerical
+        error; raises `ReplayBoundExceeded` when the cells its alternative window adds would
+        leave the geometry storing more than the planning bound."""
+        return self.geometry.evaluate(self.p_c, self.rate(theta))
 
-    def supplied_power(self, theta: float, **sizing: float) -> float:
-        """`power` of an effect the caller supplied: beyond the planning bound it is refused."""
+    def supplied(self, theta: float, **sizing: float) -> BinomialPower:
+        """`evaluate` of an effect the caller supplied: beyond the planning bound it is refused."""
         try:
-            return self.power(theta)
+            return self.evaluate(theta)
         except ReplayBoundExceeded as exceeded:
             decision = self.geometry.decision
             _refuse_replay_bound(
@@ -2236,7 +2239,8 @@ class _BinomialPlan:
             )
 
     def bound(self, theta_a: float, theta_b: float) -> float:
-        """Upper bound on the power of every alternative between two effects."""
+        """Upper bound on the runtime's rejection probability at every alternative between two
+        effects, numerical error included."""
         low, high = sorted((self.rate(theta_a), self.rate(theta_b)))
         return self.geometry.closure_bound(self.p_c, low, high)
 
@@ -2327,12 +2331,15 @@ def _binomial_plan(
     *,
     route: Route | None = None,
 ) -> _BinomialPlan:
-    """The runtime decision at analyzed counts ``(n_T, n_C)``. A decision whose replay would
-    span more than ``PLANNING_CELL_CEILING`` count cells at the null rate is refused before any
-    is built; its geometry refuses an alternative whose window would take it past the bound.
-    ``route`` overrides the budgeted route (sizing proposals only)."""
+    """The runtime decision at analyzed counts ``(n_T, n_C)``. A decision the runtime refuses in
+    full decides no count pair, so it has no power to plan and is refused (`_refuse_undecided`).
+    One whose replay would span more than ``PLANNING_CELL_CEILING`` count cells at the null rate
+    is refused before any is built; its geometry refuses an alternative whose window would take
+    it past the bound. ``route`` overrides the budgeted route (sizing proposals only)."""
     key = _binomial_key(procedure, n_T, n_C)
-    cells = replay_cells(key, baseline.mean)
+    if refused(key):
+        _refuse_undecided(procedure, key, scope="requested")
+    cells = window_cells(key, baseline.mean)
     if cells > PLANNING_CELL_CEILING:
         _refuse_replay_bound(baseline.mean, n_T, n_C, cells)
     route = route_for(cells) if route is None else route
@@ -2351,15 +2358,10 @@ def _analyzed_counts(n_T: int, n_C: int, baseline: Baseline) -> tuple[int, int]:
     return round(n_T * baseline.trigger_rate), round(n_C * baseline.trigger_rate)
 
 
-# Power evaluations and interval exclusions one binomial minimum-detectable-
-# effect search may spend proving its first crossing: each halves an ordinal
-# interval (at most 64 halvings per crossing) or discards one.
+# Evaluations and interval exclusions one binomial minimum-detectable-effect search may spend:
+# each halves an ordinal interval (at most 64 halvings per crossing), discards one, or gallops
+# and halves toward the first certified candidate.
 _BINOMIAL_MDE_EVALUATIONS = 512
-
-# The closure bound and integrated power are different float64 sums of the same probabilities,
-# and the bound adds at most 1e-12 of window edge mass, so near the crossing they cannot order
-# candidates more finely. An interval is discarded once its bound is below target plus this.
-_BINOMIAL_EXCLUSION_RESOLUTION = 2e-12
 
 
 class _SearchBudgetExhausted(Exception):
@@ -2372,13 +2374,29 @@ class _Spent:
 
 
 @dataclass(frozen=True, slots=True)
+class _Standing:
+    """One candidate effect against the target power. ``certified``: the lower end of its
+    enclosed rejection probability reaches the target, so the runtime's does. ``possible``: the
+    closure bound over that single effect (the bound an interval is excluded by) reaches it, so
+    the runtime's may; neither holds only where the target is above the bound."""
+
+    power: BinomialPower
+    certified: bool
+    possible: bool
+
+
+@dataclass(frozen=True, slots=True)
 class _BinomialMdeSearch(_MdeSearch):
     """``_MdeSearch``'s candidate space with power from the runtime binomial
     decision. Power is a polynomial in the treatment rate, not a function of
-    a noncentrality, so crossings are located by ordered exclusion: an
-    ordinal interval is discarded only when ``_BinomialPlan.bound`` (the
-    monotone closure of the rejection set) stays below target across it, to
-    within ``_BINOMIAL_EXCLUSION_RESOLUTION``."""
+    a noncentrality, and every value of it is enclosed by its numerical error (see
+    `BinomialPower`), so a candidate is *certified* when the enclosure's lower end reaches the
+    target and *possible* while the closure bound over it does. Crossings are located by
+    ordered exclusion: an ordinal interval is discarded only when ``_BinomialPlan.bound`` (the
+    monotone closure of the rejection set) stays below target across it. That finds the first
+    possible candidate; the first certified one follows it and is the answer, so the answer's
+    power reaches the target and no earlier candidate can. The candidates between the two are
+    those whose power lies within the numerical error of the target: they are not decided."""
 
     model: _BinomialPlan
     spent: _Spent
@@ -2411,10 +2429,6 @@ class _BinomialMdeSearch(_MdeSearch):
         if self.spent.count > _BINOMIAL_MDE_EVALUATIONS:
             raise _SearchBudgetExhausted
 
-    def power_of(self, point: tuple[float, float]) -> float:
-        self._charge()
-        return self.model.power(point[1])
-
     def overflowed_null(self) -> float | _MdeRefusal:
         """``_MdeSearch.overflowed_null`` with the band's reachable power
         bounded by the rejection set's monotone closure across the band."""
@@ -2436,21 +2450,34 @@ class _BinomialMdeSearch(_MdeSearch):
         assert point is not None, "searched ordinals lie inside the admissible interval"
         return point[1]
 
-    def _passes(self, ordinal: int) -> bool:
-        return self.reaches(float_from_ordinal(ordinal))
+    def stand(self, m: float) -> _Standing:
+        """Candidate ``m``'s enclosed rejection probability and its standing against the target."""
+        self._charge()
+        point = self.candidate(m)
+        assert point is not None, "searched candidates lie inside the admissible interval"
+        theta = point[1]
+        power = self.model.evaluate(theta)
+        return _Standing(
+            power, power.lower >= self.target, self.model.bound(theta, theta) >= self.target
+        )
+
+    def _may_reach(self, ordinal: int) -> bool:
+        return self.stand(float_from_ordinal(ordinal)).possible
+
+    def _certifies(self, ordinal: int) -> bool:
+        return self.stand(float_from_ordinal(ordinal)).certified
 
     def _excluded(self, lo: int, hi: int) -> bool:
         self._charge()
-        bound = self.model.bound(self._theta(lo), self._theta(hi))
-        return bound < self.target + _BINOMIAL_EXCLUSION_RESOLUTION
+        return self.model.bound(self._theta(lo), self._theta(hi)) < self.target
 
-    def first_passing(self, lo: int, hi: int) -> int:
-        """First passing ordinal in ``(lo, hi]``, given ``lo`` fails and ``hi``
-        passes: bisect, and before discarding a failing midpoint's left part
-        prove it holds no passing candidate."""
+    def first_possible(self, lo: int, hi: int) -> int:
+        """First ordinal in ``(lo, hi]`` where the target may be reached, given it cannot be at
+        ``lo`` and may be at ``hi``: bisect, and before discarding the left part of a midpoint
+        that cannot reach it prove that part holds no candidate that may."""
         while abs(hi - lo) > 1:
             mid = lo + (hi - lo) // 2
-            if self._passes(mid):
+            if self._may_reach(mid):
                 hi = mid
                 continue
             earlier = self.first_inside(lo, mid)
@@ -2460,15 +2487,40 @@ class _BinomialMdeSearch(_MdeSearch):
         return hi
 
     def first_inside(self, lo: int, hi: int) -> int | None:
-        """First passing ordinal strictly between two failing ordinals, or
-        ``None`` when the closure bound proves there is none."""
+        """First ordinal strictly between two ordinals where the target cannot be reached at
+        which it may be, or ``None`` when the closure bound proves there is none."""
         if abs(hi - lo) <= 1 or self._excluded(lo, hi):
             return None
         mid = lo + (hi - lo) // 2
-        if self._passes(mid):
-            return self.first_passing(lo, mid)
+        if self._may_reach(mid):
+            return self.first_possible(lo, mid)
         left = self.first_inside(lo, mid)
         return left if left is not None else self.first_inside(mid, hi)
+
+    def first_certified(self, start: int, end: int) -> int:
+        """First ordinal from ``start`` toward ``end`` that certifies the target, given ``end``
+        does. Candidates this close to the first possible one differ in power by about the
+        numerical error, so the search gallops from ``start`` and halves back."""
+        if self._certifies(start):
+            return start
+        direction = 1 if end > start else -1
+        rejected, stride = start, 1
+        accepted = end
+        while True:
+            probe = start + direction * stride
+            if (probe - end) * direction >= 0:
+                break
+            if self._certifies(probe):
+                accepted = probe
+                break
+            rejected, stride = probe, 2 * stride
+        while abs(accepted - rejected) > 1:
+            mid = rejected + (accepted - rejected) // 2
+            if self._certifies(mid):
+                accepted = mid
+            else:
+                rejected = mid
+        return accepted
 
     def unresolved(self, lo: int, hi: int) -> _MdeRefusal:
         low, high = sorted((float_from_ordinal(lo), float_from_ordinal(hi)))
@@ -2484,6 +2536,25 @@ class _BinomialMdeSearch(_MdeSearch):
             },
         )
 
+    def undecided(self, reached: int, end: int, last: BinomialPower) -> _MdeRefusal:
+        """The target lies within the numerical error of the power at the largest admissible
+        effect, so it can neither be certified nor ruled out."""
+        low, high = sorted((float_from_ordinal(reached), float_from_ordinal(end)))
+        return _MdeRefusal(
+            "numerical_resolution",
+            _MDE_NUMERICAL_RESOLUTION,
+            {
+                "target_power": self.target,
+                "direction": self.direction,
+                "unresolved_interval": (low, high),
+                "power_enclosure": (last.lower, last.upper),
+                "stopping_reason": (
+                    "the power at the largest admissible effect lies within its numerical "
+                    "error of the target"
+                ),
+            },
+        )
+
 
 def _solve_binomial_mde(
     plan: _ArmPlan,
@@ -2494,13 +2565,16 @@ def _solve_binomial_mde(
     alternative: Alternative,
 ) -> tuple[float, float] | _MdeRefusal:
     """``_solve_arm_mde``'s contract on the runtime binomial decision: the
-    first admissible effect in distance order reaching ``target``, with its
-    power. Every earlier candidate is excluded by a failing evaluation or by
-    the monotone-closure bound; a target no admissible candidate reaches is
-    unattainable, reporting the power at the direction's far admissible end
-    (the bounded rate ceiling, or the relative-lift floor for a decrease).
-    The geometry keeps each solved search, so effects sharing it (a curve's
-    companions) are solved once."""
+    first admissible effect in distance order whose power is certified to
+    reach ``target`` (see `_BinomialMdeSearch`), with its power. Every earlier
+    candidate is excluded by its own evaluation or by the monotone-closure
+    bound, except those whose power lies within the numerical error of the
+    target. A target no admissible candidate can reach is unattainable,
+    reporting the power at the direction's far admissible end (the bounded
+    rate ceiling, or the relative-lift floor for a decrease); one within the
+    numerical error of that power is unresolved. The geometry keeps each
+    solved search, so effects sharing it (a curve's companions) are solved
+    once."""
     memo = model.geometry.effects
     key = (model.p_c, plan.baseline.compliance, target)
     if key not in memo:
@@ -2538,31 +2612,34 @@ def _search_binomial_mde(
 
 
 def _ordered_exclusion(search: _BinomialMdeSearch) -> tuple[float, float] | _MdeRefusal:
-    model, target = search.model, search.target
     m_min = search.lower_endpoint()
     if isinstance(m_min, _MdeRefusal):
         return m_min
-    low = search.candidate(m_min)
-    assert low is not None
-    power_min = model.power(low[1])
-    if power_min >= target:
-        return m_min, power_min
+    first = search.stand(m_min)
+    if first.certified:
+        return m_min, first.power.power
     m_max = search.upper_endpoint(m_min)
-    high = search.candidate(m_max)
-    assert high is not None
-    power_max = model.power(high[1])
+    last = search.stand(m_max)
     lo, hi = float_ordinal(m_min), float_ordinal(m_max)
     try:
-        found = search.first_passing(lo, hi) if power_max >= target else search.first_inside(lo, hi)
+        if first.possible:
+            reached: int | None = lo
+        elif last.possible:
+            reached = search.first_possible(lo, hi)
+        else:
+            reached = search.first_inside(lo, hi)
+        if reached is None:
+            limiting = "bounded_rate_ceiling" if search.sigma > 0.0 else "relative_lift_floor"
+            return search.unattainable(last.power.power, limiting)
+        if not last.certified:
+            return search.undecided(reached, hi, last.power)
+        found = search.first_certified(reached, hi)
     except _SearchBudgetExhausted:
         return search.unresolved(lo, hi)
-    if found is None:
-        limiting = "bounded_rate_ceiling" if search.sigma > 0.0 else "relative_lift_floor"
-        return search.unattainable(power_max, limiting)
     m = float_from_ordinal(found)
     point = search.candidate(m)
     assert point is not None
-    return m, model.power(point[1])
+    return m, search.model.evaluate(point[1]).power
 
 
 def _fixed_mde(
@@ -2624,6 +2701,7 @@ def _render_tail_level(
     n_t: int,
     solver_floor: float,
     cause: str,
+    scope: str,
 ) -> str:
     if cause == "solver_floor":
         why = (
@@ -2631,14 +2709,24 @@ def _render_tail_level(
             "the Clopper-Pearson endpoint solver"
         )
     else:
-        why = (
-            f"its float margin {margin:.3g} at the smallest plannable design (n_c={n_c}, "
-            f"n_t={n_t} analyzed units) reaches what the tail level {tail_alpha:.3g} leaves "
-            f"after the nuisance budget {beta:.3g}"
+        where = (
+            f"at the smallest plannable design (n_c={n_c}, n_t={n_t} analyzed units)"
+            if scope == "smallest"
+            else f"at n_c={n_c}, n_t={n_t} analyzed units"
         )
+        why = (
+            f"its float margin {margin:.3g} {where} reaches what the tail level {tail_alpha:.3g} "
+            f"leaves after the nuisance budget {beta:.3g}"
+        )
+    way = (
+        "so no arm size has power -- plan a larger alpha"
+        if cause == "solver_floor" or scope == "smallest"
+        else "so this size has no power to plan -- plan fewer analyzed units per arm or a "
+        "larger alpha"
+    )
     return (
         f"the runtime's exact binomial decision refuses every count pair at alpha={alpha}: "
-        f"{why}, so no arm size has power -- plan a larger alpha"
+        f"{why}, {way}"
     )
 
 
@@ -2656,6 +2744,56 @@ _BINOMIAL_ARM_AT_FLOOR = RefusalSpec(
     ),
 )
 
+_BINOMIAL_ARM_CEILING = RefusalSpec(
+    "power.binomial_arm_ceiling_exceeded",
+    InvalidRequestError,
+    template=(
+        "n_c={n_c}/n_t={n_t} analyzed units has an arm above the runtime's ceiling of "
+        "{max_arm_size} analyzed units, where it refuses every count pair, so no power can be "
+        "planned -- plan fewer units per arm"
+    ),
+)
+
+
+def _refuse_undecided(
+    procedure: ArmPlanningProcedure,
+    key: BinomialDecision,
+    *,
+    scope: Literal["smallest", "requested"],
+    allocation: float | None = None,
+) -> NoReturn:
+    """Refuse a decision the runtime refuses in full, by its cause (`refused`): an arm above
+    its ceiling, a nuisance budget below the solver's floor, or a tail level the float margin
+    dominates. ``scope`` is ``smallest`` for the smallest design a size search can plan (then no
+    size has power) and ``requested`` for the analyzed counts a caller asked about."""
+    if max(key.n_c, key.n_t) > FINITE_SAMPLE_MAX_ARM_SIZE:
+        if scope == "smallest":
+            refuse(
+                _BINOMIAL_ARM_AT_FLOOR,
+                n_t=key.n_t,
+                n_c=key.n_c,
+                allocation=allocation,
+                max_arm_size=FINITE_SAMPLE_MAX_ARM_SIZE,
+            )
+        refuse(
+            _BINOMIAL_ARM_CEILING,
+            n_t=key.n_t,
+            n_c=key.n_c,
+            max_arm_size=FINITE_SAMPLE_MAX_ARM_SIZE,
+        )
+    refuse(
+        _BINOMIAL_TAIL_LEVEL,
+        alpha=procedure.compiled_alpha,
+        beta=key.beta,
+        tail_alpha=key.tail_alpha,
+        margin=tail_margin(key),
+        n_c=key.n_c,
+        n_t=key.n_t,
+        solver_floor=solver_floor(),
+        cause="solver_floor" if solver_refuses(key) else "float_margin",
+        scope=scope,
+    )
+
 
 # Proposal, verification and bracketing share one search state.
 def _binomial_size(  # noqa: PLR0915
@@ -2667,18 +2805,19 @@ def _binomial_size(  # noqa: PLR0915
     proposal: int,
     cache: _GeometryCache,
 ) -> tuple[int, int, _BinomialPlan, float]:
-    """Assigned ``(n_T, n_C)`` whose runtime binomial power reaches the target
-    while assigned ``n_T - 1`` does not (or ``n_T`` is the per-arm floor), with
-    that size's plan and power. Each candidate's binomial law uses its
-    analyzed counts (``_analyzed_counts``), exactly as ``achieved_power``
-    evaluates the returned size.
+    """Assigned ``(n_T, n_C)`` whose runtime binomial power is certified to reach
+    the target (the lower end of its numerical enclosure does) while assigned
+    ``n_T - 1`` is not (or ``n_T`` is the per-arm floor), with that size's plan
+    and computed power. Each candidate's binomial law uses its analyzed counts
+    (``_analyzed_counts``), exactly as ``achieved_power`` evaluates the returned
+    size.
 
     Every candidate is evaluated with the route selected at its own size. The
     search starts at ``proposal`` and brackets upward or downward, stepping
     by a probit-secant in ``sqrt(n)`` (power ``~ Phi(b sqrt(n) - z_alpha)``),
     then narrows the bracket to adjacent sizes, halving whenever the secant
     stalls. Power need not be monotone in the sample size, so the answer is
-    the verified smallest size of its bracket, not a global minimum.
+    the verified smallest certified size of its bracket, not a global minimum.
     """
     target = design.power
     floor = _assigned_minimum_per_arm(procedure, baseline)
@@ -2689,31 +2828,31 @@ def _binomial_size(  # noqa: PLR0915
         procedure, baseline, design, floor, _binomial_arm_ceiling(design, floor, baseline)
     )
     ceiling = _binomial_replay_ceiling(procedure, baseline, design, floor, arm_ceiling, rate)
-    powers: dict[int, float] = {}
+    powers: dict[int, BinomialPower] = {}
 
     def plan_at(n: int, route: Route | None = None) -> _BinomialPlan:
         n_T, n_C = _analyzed_counts(*_compute_arms(n, design, minimum_per_arm=floor), baseline)
         return _binomial_plan(procedure, baseline, n_T, n_C, cache, route=route)
 
-    def power_at(n: int) -> float:
+    def power_at(n: int) -> BinomialPower:
         if n not in powers:
-            powers[n] = plan_at(n).supplied_power(theta)
+            powers[n] = plan_at(n).supplied(theta)
         return powers[n]
 
-    def crossing(evaluate: Callable[[int], float], n: int, *, final: bool) -> int:
-        """Smallest passing size of the bracket the search closes from ``n``.
-        A search reaching the arm ceiling without passing refuses when
+    def crossing(evaluate: Callable[[int], BinomialPower], n: int, *, final: bool) -> int:
+        """Smallest certified size of the bracket the search closes from ``n``.
+        A search reaching the arm ceiling without certifying refuses when
         ``final``; a proposal search returns the ceiling instead, leaving the
         refusal to the selected-route search."""
-        values: dict[int, float] = {}
+        values: dict[int, BinomialPower] = {}
 
-        def value(m: int) -> float:
+        def value(m: int) -> BinomialPower:
             if m not in values:
                 values[m] = evaluate(m)
             return values[m]
 
         def probit(m: int) -> float:
-            return float(_ndtri(min(max(values[m], 1e-15), 1.0 - 1e-15)))
+            return float(_ndtri(min(max(values[m].power, 1e-15), 1.0 - 1e-15)))
 
         def secant(a: int, b: int | None) -> float:
             """Size where the probit line through the evaluated sizes reaches
@@ -2732,7 +2871,7 @@ def _binomial_size(  # noqa: PLR0915
         stalls = 0
         while True:
             width = None if lo is None or hi is None else hi - lo
-            if value(n) >= target:
+            if value(n).lower >= target:
                 hi = n if hi is None else min(hi, n)
             else:
                 lo = n if lo is None else max(lo, n)
@@ -2759,7 +2898,7 @@ def _binomial_size(  # noqa: PLR0915
                             cells,
                             p_t=p_t,
                             power=target,
-                            power_reached=values[lo],
+                            power_reached=values[lo].power,
                         )
                     refuse(
                         _BINOMIAL_SIZE_LIMIT,
@@ -2769,7 +2908,7 @@ def _binomial_size(  # noqa: PLR0915
                                 *_compute_arms(arm_ceiling, design, minimum_per_arm=floor), baseline
                             )
                         ),
-                        maximum_power=values[lo],
+                        maximum_power=values[lo].power,
                         n_per_arm=_compute_arms(lo, design, minimum_per_arm=floor)[0],
                     )
                 guess = min(secant(lo, previous), 4.0 * lo + 4.0)
@@ -2798,12 +2937,10 @@ def _binomial_size(  # noqa: PLR0915
         # The approximate replay costs a fraction of the exact one and agrees
         # with it closely; its crossing proposes the size the exact decision
         # then verifies (the proposal and its predecessor) and corrects.
-        start = crossing(
-            lambda m: plan_at(m, "approximate").supplied_power(theta), start, final=False
-        )
+        start = crossing(lambda m: plan_at(m, "approximate").supplied(theta), start, final=False)
     hi = crossing(power_at, start, final=True)
     n_T, n_C = _compute_arms(hi, design, minimum_per_arm=floor)
-    return n_T, n_C, plan_at(hi), powers[hi]
+    return n_T, n_C, plan_at(hi), powers[hi].power
 
 
 def _binomial_arm_ceiling(design: PowerDesign, floor: int, baseline: Baseline) -> int:
@@ -2821,9 +2958,9 @@ def _binomial_arm_ceiling(design: PowerDesign, floor: int, baseline: Baseline) -
 
 
 # The retained-cell count is not monotone in the size (each window's integer edges move
-# independently), so the ceiling stays a fraction under the bisection's crossing and
-# `_binomial_plan` never refuses a proposed size. The predicate is `_sizing_cells`, not
-# `replay_cells`, which is zero where the runtime refuses the tail level and would jump back.
+# independently), so a bisection's crossing is not the largest size that fits: the search
+# ceiling stays a fraction under it, so `_binomial_plan` never refuses a proposed size. The
+# predicate counts the rectangles an evaluation classifies (`_sizing_cells`).
 _REPLAY_CEILING_JITTER = 128
 
 
@@ -2843,8 +2980,9 @@ def _binomial_admitted_ceiling(
     upper: int,
 ) -> int:
     """Largest assigned treatment size at most ``upper`` whose decision the runtime does not
-    refuse in full: from the size where the float margin dominates the tail level, power is zero.
-    A decision refused even at the smallest arms has no such size and is refused."""
+    refuse in full: from the size where the float margin dominates the tail level, the runtime
+    decides no count pair. A decision refused even at the smallest arms has no such size and is
+    refused."""
 
     def key_at(n: int) -> BinomialDecision:
         n_T, n_C = _analyzed_counts(*_compute_arms(n, design, minimum_per_arm=floor), baseline)
@@ -2854,26 +2992,7 @@ def _binomial_admitted_ceiling(
         return not refused(key_at(n))
 
     if not admitted(floor):
-        smallest = key_at(floor)
-        if max(smallest.n_c, smallest.n_t) > FINITE_SAMPLE_MAX_ARM_SIZE:
-            refuse(
-                _BINOMIAL_ARM_AT_FLOOR,
-                n_t=smallest.n_t,
-                n_c=smallest.n_c,
-                allocation=design.allocation,
-                max_arm_size=FINITE_SAMPLE_MAX_ARM_SIZE,
-            )
-        refuse(
-            _BINOMIAL_TAIL_LEVEL,
-            alpha=procedure.compiled_alpha,
-            beta=smallest.beta,
-            tail_alpha=smallest.tail_alpha,
-            margin=tail_margin(smallest),
-            n_c=smallest.n_c,
-            n_t=smallest.n_t,
-            solver_floor=solver_floor(),
-            cause="solver_floor" if solver_refuses(smallest) else "float_margin",
-        )
+        _refuse_undecided(procedure, key_at(floor), scope="smallest", allocation=design.allocation)
     if admitted(upper):
         return upper
     lo, hi = floor, upper - 1
@@ -2894,9 +3013,11 @@ def _binomial_replay_ceiling(
     upper: int,
     rate: float,
 ) -> int:
-    """Largest assigned treatment size at most ``upper`` whose analyzed arms span at most
-    ``PLANNING_CELL_CEILING`` count cells at the null rate and at the supplied effect's
-    treatment ``rate`` (``upper`` itself when none is excluded)."""
+    """The ceiling of a size search: the assigned treatment size at most ``upper`` whose analyzed
+    arms span at most ``PLANNING_CELL_CEILING`` count cells at the null rate and at the supplied
+    effect's treatment ``rate``, found by bisection (``upper`` itself when it fits), less
+    ``1 / _REPLAY_CEILING_JITTER`` of it. The count of cells is not monotone in the size, so that
+    size is not the largest that fits, and sizes above the ceiling may fit too."""
 
     def within(n: int) -> bool:
         n_T, n_C = _analyzed_counts(*_compute_arms(n, design, minimum_per_arm=floor), baseline)
@@ -3259,6 +3380,10 @@ def achieved_power(
     minimum detectable effect at the same size and target under the same
     model; when none exists there it is ``None`` with
     ``mde_unavailable_reason`` set, and the supplied-effect answer stands.
+    A binomial plan whose decision the runtime refuses in full (an arm above
+    its ceiling, a nuisance budget below the endpoint solver's floor, a tail
+    level its float margin dominates) decides no count pair and is refused
+    with a ``power.binomial_*`` code, not given a power.
     The look schedule resolves as in ``required_sample_size``.
     """
     return _achieved_power(
@@ -3311,7 +3436,7 @@ def _achieved_power(
             e_value_dual=e_value_dual,
         )
     elif model is not None:
-        power = model.supplied_power(theta)
+        power = model.supplied(theta).power
         expected_t = None
     else:
         power = plan.power(distance, theta)
@@ -3370,11 +3495,17 @@ def minimum_detectable_effect(
     ``design.power`` under the planning model named by ``power_basis`` (see
     ``achieved_power``); ``power`` is that effect's own power, which exceeds
     the target when the answer is the admissible interval's lower endpoint.
-    For a runtime-binomial plan every earlier candidate is excluded by its
-    own failing power or by the monotone closure of the decision's rejection
-    set, a bound on the runtime's rejection probability over the whole
-    interval. A target no admissible alternative reaches, or whose answer has
-    no float64 representation, is refused with a
+    For a runtime-binomial plan the answer is the first effect whose power is
+    certified to reach the target (the lower end of its numerical enclosure
+    does, so ``power`` exceeds the target by about that error), and every
+    earlier candidate is excluded by its own power or by the monotone closure
+    of the decision's rejection set, a bound on the runtime's rejection
+    probability over the whole interval, except those whose power lies within
+    the enclosure of the target. A target no admissible alternative can reach
+    is ``unattainable``; one within the enclosure of the largest admissible
+    effect's power can neither be certified nor ruled out
+    (``numerical_resolution``). A target whose answer has no float64
+    representation is refused with a
     ``power.minimum_detectable_effect.*`` code. The look schedule resolves
     as in ``required_sample_size``. For fixed-horizon inference, a target at
     or below the null's own crossing probability is also refused: zero

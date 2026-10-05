@@ -224,26 +224,48 @@ rate alone; `var` does not enter.
   [limitations page](../limitations.md) lists the cells measured). The bound
   limits the planner only: the runtime decides arms of up to a billion units.
 
-The route depends only on the design, never on timing. Power is not monotone
-in the sample size under this decision, so `required_sample_size` returns a
-verified size whose power reaches the target while the size one below does
-not -- not a proof that no smaller size reaches it. `minimum_detectable_effect`
-returns the first admissible effect whose power reaches the target; earlier
-effects are excluded by their own power or by a bound on the rejection set,
-to within `2e-12` of the target. A design the runtime refuses in full has power
-0 and is never replayed: an arm beyond its one-billion unit ceiling, a nuisance
-budget (`alpha / 32`) below the endpoint solver's floor (an alpha under `3.2e-8`),
-or a tail level its float margin dominates (a two-sided alpha below about `9.5e-7`
-at a billion units per arm; see the limitations page).
+The route depends only on the design, never on timing. Every probability here is a computed
+value with a numerical error: each binomial weight is a SciPy value within the runtime's
+allowance of `n` units in the last place (the allowance its own float margin is built on) and
+every sum rounds. The planner encloses the runtime's rejection probability in an interval and
+decides from its ends only. The interval is about `1e-12` of the power at 1,000 units per arm
+and `4e-7` of it at a billion (the reported `power` is the computed value inside it, not
+shifted). Power is not monotone in the sample size under this decision, so
+`required_sample_size` returns a verified size whose power is *certified* to reach the target
+(the lower end of its interval does) while the size one below is not -- not a proof that no
+smaller size reaches it, and a size whose interval straddles the target is not certified, so
+the answer can exceed the first size that reaches it by the sizes within that interval of the
+target (none at ordinary sizes; about 170 of 490 million at a 2e-7 baseline).
+`minimum_detectable_effect` returns the first admissible effect whose power is certified to
+reach the target; earlier effects are excluded by their own power or by a bound on the
+rejection set (enlarged by the same error), except those whose power lies within the interval
+of the target, which are not decided: the effect reported can exceed the first that reaches it
+by that much (a relative `1e-12` at 701 to 2,000 units per arm, `4e-7` at a billion) and its
+`power` exceeds the target by about the interval. A target no admissible effect can reach is
+`unattainable`; one inside the interval of the largest admissible effect's power can neither
+be certified nor ruled out, so the companion `mde_relative` is `None` with
+`numerical_resolution` and `minimum_detectable_effect` is refused with
+`power.minimum_detectable_effect.numerical_resolution`, whose context carries that interval as
+`power_enclosure`.
+
+A design the runtime refuses in full decides no count pair, so it has no power to plan, and it
+is never replayed: `achieved_power`, `minimum_detectable_effect` and every `power_curve` row
+that reaches one refuse it, with `power.binomial_arm_ceiling_exceeded` (context `n_c`, `n_t`,
+`max_arm_size`) for an arm beyond the runtime's one-billion unit ceiling and
+`power.binomial_tail_level_unrepresentable` (the context below, `scope="requested"`) for a
+nuisance budget (`alpha / 32`) below the endpoint solver's floor (an alpha under `3.2e-8`) or a
+tail level its float margin dominates (a two-sided alpha below about `9.5e-7` at a billion
+units per arm; see the limitations page). The margin grows with the arm, so a smaller size of
+the same alpha can be planned; the solver floor refuses every size.
 
 `required_sample_size` ends a search it cannot satisfy with one of four codes, each
 with its own context:
 
 | Code | When | Context |
 |---|---|---|
-| `power.binomial_replay_bound_exceeded` | the search reached the largest size whose null and supplied-effect rectangles fit the replay bound (kept 1/128 under it, so a skipped size just above may reach more) | `power`, `power_reached`, `n_c`, `n_t`, `p_c`, `p_t` (when the alternative exceeds), `cells`, `max_cells`, `max_arm_size` |
-| `power.binomial_size_search_unreachable` | the search reached the runtime's arm ceiling, or the size where the float margin starts dominating the tail level, without reaching the target | `power`, `maximum_power`, `n_per_arm`, `max_arm_size` |
-| `power.binomial_tail_level_unrepresentable` | the decision is refused even at the smallest design: the nuisance budget is below the solver floor, or the float margin already dominates the tail level there; raised before any search | `alpha`, `beta`, `tail_alpha`, `margin`, `n_c`, `n_t`, `solver_floor`, `cause` (`solver_floor` or `float_margin`) |
+| `power.binomial_replay_bound_exceeded` | the search reached its ceiling: about 1/128 under the crossing of a bisection for the largest size whose null and supplied-effect rectangles fit the replay bound (the cell count is not monotone in the size, so a size above the ceiling may fit and may reach more) | `power`, `power_reached`, `n_c`, `n_t`, `p_c`, `p_t` (when the alternative exceeds), `cells`, `max_cells`, `max_arm_size` |
+| `power.binomial_size_search_unreachable` | the search reached the runtime's arm ceiling, or the size where the float margin starts dominating the tail level, without certifying the target | `power`, `maximum_power`, `n_per_arm`, `max_arm_size` |
+| `power.binomial_tail_level_unrepresentable` | the decision is refused even at the smallest design: the nuisance budget is below the solver floor, or the float margin already dominates the tail level there; raised before any search | `alpha`, `beta`, `tail_alpha`, `margin`, `n_c`, `n_t`, `solver_floor`, `cause` (`solver_floor` or `float_margin`), `scope` (`smallest`) |
 | `power.binomial_arm_ceiling_below_smallest_design` | the allocation is so lopsided that the smallest design already has an arm above the runtime's ceiling; raised before any search | `n_t`, `n_c`, `allocation`, `max_arm_size` |
 
 The `segment_pairwise_*` solvers are separate: they retain a baseline-only

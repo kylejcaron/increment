@@ -12,12 +12,15 @@ import json
 import math
 import tracemalloc
 import weakref
+from decimal import Decimal
+from fractions import Fraction
 from typing import Any
 
 import numpy as np
 import pytest
 from scipy.stats import binom
 
+from calibration.binomial_oracle import Binomial, precise
 from increment.errors import InvalidRequestError
 from increment.estimation import binomial_rr
 from increment.estimation.arm_contract import ArmPlanningProcedure, RelativeDecisionPolicy
@@ -220,40 +223,74 @@ def test_sizing_is_refused_only_by_the_selected_route(monkeypatch):
     assert achieved_power(sized.n_per_arm - 1, 2.5, baseline, procedure, design).power < target
 
 
-def test_arms_above_the_runtime_ceiling_have_zero_power_without_a_replay():
-    """The runtime refuses every count pair above its ceiling, so a plan's rejection probability
-    is exactly zero; the count windows at these sizes hold ~1e5 counts each, so a replay (or a
-    zero mask over their product) would not fit in memory."""
-    above = binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE + 1
-    result = achieved_power(above, 0.3, Baseline.from_proportion(0.1), _conversion())
-    assert result.power == 0.0
-    assert result.power_basis == "exact"
-
-
-def test_a_tail_level_the_float_margin_dominates_has_zero_power_as_the_runtime_refuses_it(
-    monkeypatch,
-):
-    """Once the margin every certified tail carries reaches what the tail level leaves after the
-    nuisance budget, the runtime refuses every count pair (a ``DecisionFailure``), so none
-    rejects and the power is exactly zero -- decided before any window or replay is built. The
-    same alpha is planned normally on an arm whose margin leaves room."""
+def _forbid_replay(monkeypatch) -> None:
     from increment.power import _binomial
 
+    def forbidden(*args, **kwargs):
+        raise AssertionError("a decision the runtime refuses in full must not be replayed")
+
+    for name in ("classify", "_window_bounds", "_window"):
+        monkeypatch.setattr(_binomial, name, forbidden)
+
+
+@pytest.mark.parametrize("planner", ["achieved_power", "minimum_detectable_effect"])
+def test_arms_above_the_runtime_ceiling_are_refused_not_planned_as_zero_power(monkeypatch, planner):
+    """The runtime refuses every count pair above its ceiling, so it decides nothing there: a
+    plan is refused, coded, instead of reporting a rejection probability for a decision never
+    made. It is refused before any window is built (the windows at these sizes hold ~1e5
+    counts each, whose product would not fit in memory)."""
+    _forbid_replay(monkeypatch)
+    above = binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE + 1
+    baseline, procedure = Baseline.from_proportion(0.1), _conversion()
+    with pytest.raises(InvalidRequestError) as raised:
+        if planner == "achieved_power":
+            achieved_power(above, 0.3, baseline, procedure)
+        else:
+            minimum_detectable_effect(above, baseline, procedure)
+    context: dict[str, Any] = dict(raised.value.context)
+    assert raised.value.code == "power.binomial_arm_ceiling_exceeded"
+    assert (context["n_c"], context["n_t"]) == (above, above)
+    assert context["max_arm_size"] == binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE
+
+
+def test_a_curve_through_a_size_the_runtime_refuses_is_refused_with_the_same_code(monkeypatch):
+    _forbid_replay(monkeypatch)
+    above = binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE + 1
+    with pytest.raises(InvalidRequestError) as raised:
+        power_curve(
+            n_per_arm=[above, 1_000],
+            relative_lift=0.3,
+            baseline=Baseline.from_proportion(0.1),
+            procedure=_conversion(),
+        )
+    assert raised.value.code == "power.binomial_arm_ceiling_exceeded"
+
+
+@pytest.mark.parametrize("planner", ["achieved_power", "minimum_detectable_effect"])
+def test_a_tail_level_the_float_margin_dominates_is_refused_where_the_runtime_refuses_it(
+    monkeypatch, planner
+):
+    """Once the margin every certified tail carries reaches what the tail level leaves after the
+    nuisance budget, the runtime refuses every count pair (a ``DecisionFailure``): planning
+    refuses that size, before any window or replay is built, naming the margin and the sizes it
+    leaves room at. The same alpha is planned normally on an arm whose margin leaves room."""
     n, alpha = 100_000_000, 5e-8
     with pytest.raises(binomial_rr.BinomialDataError) as refused:
         binomial_rr.confidence_interval(100, n, 300, n, alpha=alpha, alternative="two-sided")
     assert refused.value.code == "estimation.binomial.tail_unrepresentable"
 
-    def forbidden(*args, **kwargs):
-        raise AssertionError("a decision the runtime refuses in full must not be replayed")
-
-    monkeypatch.setattr(_binomial, "classify", forbidden)
-    monkeypatch.setattr(_binomial, "_window_bounds", forbidden)
-    monkeypatch.setattr(_binomial, "_window", forbidden)
-    procedure = _conversion(alpha=alpha)
-    result = achieved_power(n, 3.0, Baseline.from_proportion(1e-6), procedure)
-    assert (result.power, result.power_basis) == (0.0, "exact")
-    assert result.mde_relative is None
+    procedure, baseline = _conversion(alpha=alpha), Baseline.from_proportion(1e-6)
+    _forbid_replay(monkeypatch)
+    with pytest.raises(InvalidRequestError) as raised:
+        if planner == "achieved_power":
+            achieved_power(n, 3.0, baseline, procedure)
+        else:
+            minimum_detectable_effect(n, baseline, procedure)
+    context: dict[str, Any] = dict(raised.value.context)
+    assert raised.value.code == "power.binomial_tail_level_unrepresentable"
+    assert (context["cause"], context["scope"]) == ("float_margin", "requested")
+    assert (context["n_c"], context["n_t"], context["alpha"]) == (n, n, alpha)
+    assert context["margin"] >= context["tail_alpha"] - context["beta"]
     monkeypatch.undo()
 
     small = 100_000
@@ -264,15 +301,11 @@ def test_a_tail_level_the_float_margin_dominates_has_zero_power_as_the_runtime_r
 
 class TestATailLevelTheSolverRefuses:
     """A nuisance budget (``alpha / 32``) below the Clopper-Pearson solver's floor is refused for
-    every count, so the runtime decides nothing at any arm size: planning gives power zero
-    without a replay, and a size search says so instead of reporting an arm ceiling."""
+    every count, so the runtime decides nothing at any arm size: a size search, a supplied-size
+    power and an effect search all refuse it with one code, without a replay."""
 
     @pytest.mark.parametrize("alpha", [1e-12, 1e-10, 3e-8])
-    def test_sizing_names_the_tail_level_and_power_is_zero_without_a_replay(
-        self, monkeypatch, alpha
-    ):
-        from increment.power import _binomial
-
+    def test_every_planner_names_the_tail_level_without_a_replay(self, monkeypatch, alpha):
         with pytest.raises(binomial_rr.BinomialDataError) as refused:
             binomial_rr.confidence_interval(
                 5_000, 100_000, 7_500, 100_000, alpha=alpha, alternative="two-sided"
@@ -286,12 +319,14 @@ class TestATailLevelTheSolverRefuses:
         assert context["alpha"] == alpha
         assert context["beta"] < context["solver_floor"] == binomial_rr._CP_BETA_FLOOR
 
-        def forbidden(*args, **kwargs):
-            raise AssertionError("a decision the runtime refuses in full must not be replayed")
-
-        monkeypatch.setattr(_binomial, "classify", forbidden)
-        result = achieved_power(100_000, 0.5, baseline, procedure)
-        assert (result.power, result.power_basis) == (0.0, "exact")
+        _forbid_replay(monkeypatch)
+        with pytest.raises(InvalidRequestError) as requested:
+            achieved_power(100_000, 0.5, baseline, procedure)
+        assert requested.value.code == "power.binomial_tail_level_unrepresentable"
+        assert dict(requested.value.context)["cause"] == "solver_floor"
+        with pytest.raises(InvalidRequestError) as effect:
+            minimum_detectable_effect(100_000, baseline, procedure)
+        assert effect.value.code == "power.binomial_tail_level_unrepresentable"
 
     def test_the_first_alpha_the_solver_admits_is_sized_and_decided(self):
         alpha = 4e-8
@@ -705,7 +740,8 @@ class TestLargeArmsDecideAsTheRuntime:
     def test_achieved_power_at_a_huge_rare_arm_is_the_runtime_rejection_probability(self):
         """Through the public path: 1e8 units per arm expecting 5 and 12.5 events. The power is
         the sum over every retained count pair of the binomial weights where the unchanged
-        runtime decision rejects."""
+        runtime decision rejects, the weights taken from the decimal oracle, which shares no code
+        with SciPy."""
         n, p_c, lift = 100_000_000, 5e-8, 1.5
         procedure = _conversion(alternative="greater")
         result = achieved_power(n, lift, Baseline.from_proportion(p_c), procedure)
@@ -713,17 +749,155 @@ class TestLargeArmsDecideAsTheRuntime:
         tail = procedure.compiled_tail_alpha
         beta = binomial_rr.nuisance_beta(procedure.compiled_alpha)
         p_t = p_c * (1.0 + lift)
-        controls = np.arange(0, 41)
-        treatments = np.arange(0, 71)
-        w_c, w_t = binom.pmf(controls, n, p_c), binom.pmf(treatments, n, p_t)
-        expected = sum(
-            w_c[x_c] * w_t[x_t]
-            for x_c in controls
-            for x_t in treatments
-            if binomial_rr.p_plus(1.0, int(x_c), n, int(x_t), n, beta, tail=tail) < tail
+        with precise():
+            w_c, w_t = Binomial(n, p_c).pmf_range(0, 40), Binomial(n, p_t).pmf_range(0, 70)
+            expected = sum(
+                (
+                    w_c[x_c] * w_t[x_t]
+                    for x_c in range(41)
+                    for x_t in range(71)
+                    if binomial_rr.p_plus(1.0, x_c, n, x_t, n, beta, tail=tail) < tail
+                ),
+                Decimal(0),
+            )
+            assert sum(w_c, Decimal(0)) > 1 - Decimal("1e-12")
+            assert sum(w_t, Decimal(0)) > 1 - Decimal("1e-12")
+        assert result.power == pytest.approx(float(expected), abs=1e-9)
+
+
+def _rational_pmf(n: int, p: float) -> list[Fraction]:
+    """``Bin(n, p)`` at the float ``p`` in exact rational arithmetic."""
+    rate = Fraction(p)
+    return [math.comb(n, k) * rate**k * (1 - rate) ** (n - k) for k in range(n + 1)]
+
+
+def _exact_rejection_probability(geometry: RejectionGeometry, p_c: float, p_t: float) -> Fraction:
+    """The rejection probability of the geometry's decision over every count pair, exactly."""
+    decision = geometry.decision
+    plus, minus = geometry.cells(0, decision.n_c, 0, decision.n_t)
+    w_c, w_t = _rational_pmf(decision.n_c, p_c), _rational_pmf(decision.n_t, p_t)
+    rows, cols = np.nonzero(plus | minus)
+    return sum((w_c[i] * w_t[j] for i, j in zip(rows, cols, strict=True)), Fraction(0))
+
+
+_FAR_END = _conversion(alternative="greater")
+
+
+class TestPlanningNumericalEnclosure:
+    """A computed power is not an exact probability: every pmf it reads is a SciPy value within
+    the runtime's error allowance and every dot product rounds. The planner encloses the
+    runtime's rejection probability, and bounds it across an interval of rates, against exact
+    rational arithmetic and the decimal oracle; a target inside the enclosure is not decided."""
+
+    _CASES = [
+        (15, 20, 1.0, 0.05, 0.025, "two-sided", 0.3, 0.55),
+        (30, 24, 1.2, 0.01, 0.01, "greater", 0.25, 0.5),
+        (24, 30, 0.8, 0.05, 0.05, "less", 0.5, 0.2),
+    ]
+
+    @staticmethod
+    def _geometry(n_c, n_t, null_ratio, alpha, tail, alternative) -> RejectionGeometry:
+        beta = binomial_rr.nuisance_beta(alpha)
+        return RejectionGeometry(
+            BinomialDecision(n_c, n_t, null_ratio, beta, tail, alternative), "exact"
         )
-        assert w_c.sum() > 1.0 - 1e-12 and w_t.sum() > 1.0 - 1e-12
-        assert result.power == pytest.approx(expected, abs=1e-9)
+
+    @pytest.mark.parametrize(
+        ("n_c", "n_t", "null_ratio", "alpha", "tail", "alternative", "p_c", "p_t"), _CASES
+    )
+    def test_the_enclosure_holds_the_exact_rejection_probability(
+        self, n_c, n_t, null_ratio, alpha, tail, alternative, p_c, p_t
+    ):
+        geometry = self._geometry(n_c, n_t, null_ratio, alpha, tail, alternative)
+        result = geometry.evaluate(p_c, p_t)
+        exact = _exact_rejection_probability(geometry, p_c, p_t)
+        assert Fraction(result.lower) <= exact <= Fraction(result.upper)
+        assert result.lower <= result.power <= result.upper
+
+    @pytest.mark.parametrize(
+        ("n_c", "n_t", "null_ratio", "alpha", "tail", "alternative", "p_c", "p_t"), _CASES
+    )
+    def test_the_closure_bound_holds_the_exact_probability_at_every_rate_of_its_interval(
+        self, n_c, n_t, null_ratio, alpha, tail, alternative, p_c, p_t
+    ):
+        geometry = self._geometry(n_c, n_t, null_ratio, alpha, tail, alternative)
+        geometry.cells(0, n_c, 0, n_t)
+        low, high = sorted((0.9 * p_t, 1.1 * p_t))
+        bound = geometry.closure_bound(p_c, low, high)
+        for rate in np.linspace(low, high, 9):
+            exact = _exact_rejection_probability(geometry, p_c, float(rate))
+            assert Fraction(bound) >= exact
+            assert Fraction(geometry.closure_bound(p_c, float(rate), float(rate))) >= exact
+
+    def test_the_enclosure_holds_the_decimal_oracle_at_a_billion_units(self):
+        """1e9 units per arm at rates expecting 200 and 340 events: the retained mass over the
+        evaluated windows and cells, summed from the oracle's pmf, lies inside the enclosure."""
+        n, p_c, p_t = 1_000_000_000, 2e-7, 3.4e-7
+        decision = BinomialDecision(n, n, 1.0, binomial_rr.nuisance_beta(0.05), 0.025, "two-sided")
+        geometry = RejectionGeometry(decision, "approximate")
+        result = geometry.evaluate(p_c, p_t)
+        from increment.power import _binomial
+
+        wc, wt = _binomial._window(n, p_c), _binomial._window(n, p_t)
+        plus, minus = geometry.cells(wc.lo, wc.hi, wt.lo, wt.hi)
+        with precise():
+            a_c = Binomial(n, p_c).pmf_range(wc.lo, wc.hi)
+            b_t = Binomial(n, p_t).pmf_range(wt.lo, wt.hi)
+            retained = sum(
+                (a_c[i] * b_t[j] for i, j in zip(*np.nonzero(plus | minus), strict=True)),
+                Decimal(0),
+            )
+            assert Decimal(result.lower) <= retained <= Decimal(result.upper)
+
+    def test_a_target_inside_the_enclosure_of_the_largest_power_is_not_decided(self):
+        """Six units per arm at a control rate of one half: a treatment rate of one is the
+        largest admissible alternative, and the one-sided power there is exactly 11/32. A target
+        at that value lies inside the enclosure of the computed power, so the effect can
+        neither be certified nor ruled out; a target above the enclosure is unattainable and one
+        below it is certified."""
+        baseline = Baseline.from_proportion(0.5)
+        with pytest.raises(InvalidRequestError) as raised:
+            minimum_detectable_effect(6, baseline, _FAR_END, PowerDesign(power=11 / 32))
+        assert raised.value.code == "power.minimum_detectable_effect.numerical_resolution"
+        context: dict[str, Any] = dict(raised.value.context)
+        lower, upper = context["power_enclosure"]
+        assert Fraction(lower) <= Fraction(11, 32) <= Fraction(upper)
+        assert lower < 11 / 32 < upper
+
+        companion = achieved_power(6, 0.5, baseline, _FAR_END, PowerDesign(power=11 / 32))
+        assert (companion.mde_relative, companion.mde_unavailable_reason) == (
+            None,
+            "numerical_resolution",
+        )
+
+        with pytest.raises(InvalidRequestError) as above:
+            minimum_detectable_effect(6, baseline, _FAR_END, PowerDesign(power=11 / 32 + 1e-9))
+        assert above.value.code == "power.minimum_detectable_effect.unattainable"
+
+        below = minimum_detectable_effect(6, baseline, _FAR_END, PowerDesign(power=11 / 32 - 1e-9))
+        assert below.power >= 11 / 32 - 1e-9
+
+    def test_a_billion_unit_effect_and_size_are_certified_not_merely_computed(self):
+        """At hundreds of millions of units the allowance of one pmf is ``n`` ULPs, 1e-7 of it,
+        so a computed power at the target is not known to reach it: the effect and the size
+        reported are those whose enclosure reaches the target, and a size's predecessor's does
+        not."""
+        eps = float(np.finfo(np.float64).eps)
+        target = PowerDesign().power
+
+        def allowance(units: int) -> float:
+            return binomial_rr._ulp_allowance(units) * eps
+
+        n, p_c = 1_000_000_000, 2e-7
+        baseline, procedure = Baseline.from_proportion(p_c), _conversion()
+        effect = minimum_detectable_effect(n, baseline, procedure)
+        assert effect.power >= target * (1.0 + 2.0 * allowance(n))
+
+        sized = required_sample_size(0.5, baseline, procedure)
+        units = sized.n_per_arm
+        assert units > 10**8 and sized.power >= target * (1.0 + 2.0 * allowance(units))
+        predecessor = achieved_power(units - 1, 0.5, baseline, procedure)
+        assert predecessor.power < target * (1.0 + 3.0 * allowance(units))
 
 
 @pytest.mark.parametrize(

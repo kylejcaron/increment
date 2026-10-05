@@ -35,6 +35,11 @@ versions on every line) and are meant to run serially, one at a time::
     resident set, the retained count cells the replay spans (at the null rate and, for a supplied
     effect, at its alternative) and the power basis -- or the coded refusal a design beyond the
     replay bound raises. ``--rungs`` does not apply: each cell fixes its own design.
+
+The commands read each child's resource usage with ``os.wait4`` and the machine's load and
+memory with ``os.getloadavg`` and ``os.sysconf``, which exist on POSIX only: ``main`` refuses
+elsewhere. The module itself imports everywhere, so its oracle-grading helpers are usable (and
+tested) on any platform.
 """
 
 from __future__ import annotations
@@ -44,7 +49,6 @@ import json
 import math
 import os
 import platform
-import resource
 import shutil
 import subprocess
 import sys
@@ -139,7 +143,8 @@ def _rungs(text: str | None) -> tuple[int, ...]:
     return RUNGS if not text else tuple(int(float(part)) for part in text.split(","))
 
 
-def _peak_rss_mib(usage: resource.struct_rusage) -> float:
+def _peak_rss_mib(usage: Any) -> float:
+    """Peak resident set in MiB of a child's ``os.wait4`` resource usage (a ``struct_rusage``)."""
     return usage.ru_maxrss / (2**20 if sys.platform == "darwin" else 2**10)
 
 
@@ -786,7 +791,7 @@ def _planning_cell(planner: str, rate: float, n: int | None, lift: float | None)
         minimum_detectable_effect,
         required_sample_size,
     )
-    from increment.power._binomial import replay_cells, window_cells
+    from increment.power._binomial import refused, window_cells
     from increment.power.core import _binomial_key
 
     baseline = Baseline.from_proportion(rate)
@@ -818,7 +823,7 @@ def _planning_cell(planner: str, rate: float, n: int | None, lift: float | None)
     cpu = time.process_time() - cpu
     wall = time.perf_counter() - wall
     key = _binomial_key(procedure, units, units) if units else None
-    cells = replay_cells(key, rate) if key else None
+    cells = (0 if refused(key) else window_cells(key, rate)) if key else None
     # The rectangle of the supplied effect's alternative, which the replay classifies as well.
     alternative = (
         window_cells(key, rate, min(1.0, rate * (1.0 + lift))) if key and lift is not None else None
@@ -902,6 +907,11 @@ def _duckdb_options(command: argparse.ArgumentParser) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
+    if os.name != "posix":
+        raise SystemExit(
+            "measure_binomial_ceiling reads per-child resource usage with os.wait4 and needs a "
+            f"POSIX platform, not {os.name!r}"
+        )
     args = _parser().parse_args(argv)
     if args.command == "latency":
         _latency(args)

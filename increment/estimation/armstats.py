@@ -1319,16 +1319,26 @@ class ArmStats(CodedModel, BaseModel):
 # prose: allow-long Bernoulli second-moment tolerance derives from the producer's summation error
 #: `arm.cy2` chains window `AVG` and residual `SUM` passes, but `variance_slack` bounds one
 #: accumulation at its typical `sqrt(n)` drift. A sum of `n` nonnegative terms errs by at most
-#: `(n - 1) * u` of itself in any summation order (`u = 2**-53`), and about `7 * u` more rounds
-#: each term and the expected `successes * (n - successes) / n`: `(n + 8) * u`. Producers
-#: approach it, adding millions of equal tiny residuals onto a growing total that rounds the same
-#: way every time. On the real DuckDB producer path (`scripts/measure_binomial_ceiling.py
-#: recovery`) the error reached 2442x `variance_slack` at 1e9 units and stayed within a quarter
-#: of the bound at every size (at most 0.24 of it, at 4e6 units). `1024 * variance_slack` keeps
-#: >4x headroom up to 4e6 units and exceeds the bound there; above, the bound is the tolerance.
-#: Corrupt or non-binary data misses either by orders of magnitude.
+#: `gamma_(n-1)` of itself in any summation order, where `gamma_k = k u / (1 - k u)` (`u = 2**-53`)
+#: is the error of `k` compounded roundings (the denominator is their second-order growth, which
+#: `k u` alone omits: `(k u)**2`, 1.2e-14 of itself at 1e9 units against `8 u` of headroom, 8.9e-16).
+#: About `7 u` more rounds each term and the expected `successes * (n - successes) / n`, so
+#: `gamma_(n+8)` bounds the error. Producers approach it, adding millions of equal tiny residuals
+#: onto a growing total that rounds the same way every time. On the real DuckDB producer path
+#: (`scripts/measure_binomial_ceiling.py recovery`) the error reached 2442x `variance_slack` at
+#: 1e9 units and stayed within a quarter of the bound at every size (at most 0.24 of it, at 4e6
+#: units). `1024 * variance_slack` keeps >4x headroom up to 4e6 units and exceeds the bound
+#: there; above, the bound is the tolerance. Corrupt or non-binary data misses either by orders
+#: of magnitude.
 _BERNOULLI_CONSISTENCY_SLACK = 1024.0
 _UNIT_ROUNDOFF = 2.0**-53
+
+
+def _rounding_bound(units: int) -> float:
+    """``gamma_k = k u / (1 - k u)``, the relative error of *units* compounded roundings;
+    ``math.inf`` once ``k u`` reaches one, where no relative bound holds."""
+    product = units * _UNIT_ROUNDOFF
+    return product / (1.0 - product) if product < 1.0 else math.inf
 
 
 def binary_counts(arm: ArmStats, metric_type: str) -> tuple[int, int]:
@@ -1380,7 +1390,7 @@ def binary_counts(arm: ArmStats, metric_type: str) -> tuple[int, int]:
     magnitude = max(abs(arm.cy2), abs(expected_cy2), 1.0)
     tolerance = max(
         _BERNOULLI_CONSISTENCY_SLACK * variance_slack(magnitude, arm.n),
-        (arm.n + 8) * _UNIT_ROUNDOFF * magnitude,
+        _rounding_bound(arm.n + 8) * magnitude,
     )
     if abs(arm.cy2 - expected_cy2) > tolerance:
         _raise(

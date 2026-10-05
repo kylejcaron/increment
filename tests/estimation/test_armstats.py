@@ -1343,6 +1343,13 @@ class TestUptakeBoundaryIdentities:
         assert arm.sum_d == 19.2
 
 
+def _gamma(terms: int) -> float:
+    """Higham's ``k u / (1 - k u)``, the largest relative error of summing *terms* nonnegative
+    values in any order, with ``u = 2**-53``."""
+    product = terms * 2.0**-53
+    return product / (1.0 - product)
+
+
 class TestBinaryCountsBernoulliConsistency:
     """`binary_counts` reconstructs `(successes, n)` from the first
     centered moment alone; the second centered moment (`cy2`) must ALSO
@@ -1411,11 +1418,12 @@ class TestBinaryCountsBernoulliConsistency:
     )
     def test_a_summation_drift_within_the_rounding_bound_of_n_terms_is_accepted(self, n, successes):
         """A centered sum of squares adds ``n`` nonnegative terms, which any summation order
-        evaluates within ``(n + 8) * 2**-53`` of itself. Sequential accumulation of equal tiny
-        residuals onto a growing total drifts that far at the largest arm sizes, so a genuine
-        arm whose second moment errs by 90% of the bound is not corrupt."""
+        evaluates within ``gamma_(n+8)`` of itself, ``k u / (1 - k u)`` with ``u = 2**-53``.
+        Sequential accumulation of equal tiny residuals onto a growing total drifts that far at
+        the largest arm sizes, so a genuine arm whose second moment errs by 90% of the bound is
+        not corrupt."""
         expected = successes * (n - successes) / n
-        drift = 0.9 * (n + 8) * 2.0**-53 * expected
+        drift = 0.9 * _gamma(n + 8) * expected
         arm = ArmStats(
             study_id="e",
             metric="conv",
@@ -1424,6 +1432,26 @@ class TestBinaryCountsBernoulliConsistency:
             ref_y=successes / n,
             cy1=0.0,
             cy2=expected + drift,
+        )
+        assert binary_counts(arm, "conversion") == (successes, n)
+
+    def test_a_drift_between_the_first_order_bound_and_the_compounded_one_is_accepted(self):
+        """At a billion terms the compounding of the roundings, ``(k u)**2``, is 1.2e-14 of the
+        sum, fourteen times the eight units of headroom a first-order bound ``k u`` leaves: a
+        genuine second moment that has drifted the full worst case is not corrupt."""
+        n, successes = 1_000_000_000, 2_000_000
+        expected = successes * (n - successes) / n
+        first_order = (n + 8) * 2.0**-53
+        compounded = _gamma(n + 8)
+        assert compounded > first_order
+        arm = ArmStats(
+            study_id="e",
+            metric="conv",
+            group_id="control",
+            n=n,
+            ref_y=successes / n,
+            cy1=0.0,
+            cy2=expected * (1.0 + 0.5 * (first_order + compounded)),
         )
         assert binary_counts(arm, "conversion") == (successes, n)
 
@@ -1522,3 +1550,53 @@ class TestBinaryCountsProducerPathTolerance:
         with pytest.raises(BinomialDataError) as exc_info:
             binary_counts(_producer_arm(n, None), "conversion")
         assert exc_info.value.code == "estimation.binomial.inconsistent_bernoulli_variance"
+
+
+@pytest.mark.slow
+def test_a_unit_frame_and_its_exported_moments_decide_alike_beyond_the_former_arm_ceiling():
+    """A control arm of 4,000,100 units (the exact route once refused above 4,000,000) against
+    a small treatment arm, through the per-unit frame ingress and through the moments cube it
+    exports: both pass the Bernoulli second-moment check, which is the rounding bound of the
+    arm's units from here, and reach the same counts and the same interval. The warehouse
+    producer's own moments are measured above and by ``scripts/measure_binomial_ceiling.py``;
+    a warehouse build at this size costs minutes and gigabytes, beyond the parity harness."""
+    import tempfile
+    from pathlib import Path
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from increment import AnalysisPlan, MetricSpec
+    from increment.analysis import Analysis
+    from tests.analysis_factory import lift_rows
+
+    n_c, n_t, x_c, x_t = 4_000_100, 4_000, 4_000, 80
+    units = np.arange(n_c + n_t, dtype=np.int64)
+    converted = np.zeros(units.size, np.int8)
+    converted[:x_c] = 1
+    converted[n_c : n_c + x_t] = 1
+    frame = pa.table(
+        {
+            "user_id": units,
+            "group_id": pa.array(np.where(units < n_c, "control", "treatment")),
+            "conversion": converted,
+        }
+    )
+    metric = MetricSpec(name="conversion", type="conversion")
+    plan = AnalysisPlan(secondaries=["conversion"])
+    with Analysis.from_unit_summary(
+        frame, unit="user_id", group="group_id", control="control", metrics=[metric], plan=plan
+    ) as summary:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "moments.parquet"
+            summary.export(path)
+            rows = pq.read_table(path).to_pylist()
+        from_frame = list(lift_rows(summary.run()))
+    with Analysis.from_moments(rows, control="control", metrics=[metric]) as replay:
+        from_cube = list(lift_rows(replay.run()))
+    for results in (from_frame, from_cube):
+        (row,) = results
+        assert row.reference_kind == "binomial" and row.binomial_set is not None
+        counts = (row.binomial_set.x_c, row.binomial_set.n_c, row.binomial_set.x_t)
+        assert counts == (x_c, n_c, x_t) and row.binomial_set.n_t == n_t
+    assert from_frame[0].binomial_set == from_cube[0].binomial_set
