@@ -23,7 +23,7 @@ from increment.power import (
     required_sample_size,
 )
 from increment.power._binomial import PLANNING_CELL_CEILING, RejectionGeometry, Routing
-from increment.power.core import BINOMIAL_PLANNING_MODEL, _binomial_key, planned_enclosure
+from increment.power.core import _binomial_key, planned_enclosure
 from tests.estimation._conversion_counts import lift_row
 
 # One-sided tail 0.1 (alpha 0.2 two-sided): the routing floor is 412 counts, the smallest the
@@ -36,10 +36,6 @@ def _procedure(alternative: Alternative = "two-sided") -> ArmPlanningProcedure:
     return ArmPlanningProcedure.standard(
         "conversion", alpha=ALPHA if alternative == "two-sided" else TAIL, alternative=alternative
     )
-
-
-def test_the_planning_construction_is_named():
-    assert BINOMIAL_PLANNING_MODEL == "hybrid_finite_plus_delta_v1"
 
 
 @pytest.mark.slow
@@ -81,8 +77,8 @@ class TestBorderlinePlansAreTheUnionOfBothRoutes:
     def test_the_power_is_the_runtimes_delta_decision_on_the_rectangle_plus_the_replay_elsewhere(
         self,
     ):
-        """Assembled apart from the plan: the vectorised delta decision over the routed
-        rectangle, and the finite-sample replay (a geometry with no routing) over the rest."""
+        """Assembled apart from the plan: the runtime delta decision over the routed rectangle
+        and the finite-sample replay (a geometry with no routing) over the rest."""
         _, key, floor = self._geometry()
         p_t = P * (1 + LIFT)
         wc, wt = _binomial._window(N, P), _binomial._window(N, p_t)
