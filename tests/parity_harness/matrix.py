@@ -460,7 +460,7 @@ _SPECS: dict[str, Spec] = {
         "source_limited",
         "a quantile reads per-unit outcomes and a moments cube holds only arm totals, so a "
         "quantile declared over a real scalar-moments cube has nothing to estimate from",
-        f"{_LIMITATIONS}: quantile rows; {_CATALOG}['from_moments']['quantile'] "
+        f"{_CAPABILITIES}: quantile rows; {_CATALOG}['from_moments']['quantile'] "
         "(needs unit-grain rows)",
     ),
     "REF:source.moments.covariate_unavailable": Spec(
@@ -754,7 +754,6 @@ _OVERRIDES: dict[tuple[str, str], Spec] = {
         f"{_CAPABILITIES}: quantile row; {_METRIC_SPECS}::MetricSpec._check_windowing",
         tracker=_T_WINDOWED_QUANTILE,
     ),
-
     ("from_moments", "REF:sequential.source.invalid"): Spec(
         "source_limited",
         "a cube replays an exported checkpoint; it holds no per-unit source to start a "
