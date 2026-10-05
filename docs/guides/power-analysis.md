@@ -227,8 +227,11 @@ rate alone; `var` does not enter.
 The route depends only on the design, never on timing. Every probability here is a computed
 value with a numerical error: each binomial weight is a SciPy value within the runtime's
 allowance of `n` units in the last place (the allowance its own float margin is built on) and
-every sum rounds. The planner encloses the runtime's rejection probability in an interval and
-decides from its ends only. The interval is about `1e-12` of the power at 1,000 units per arm
+every sum rounds. The planner encloses the rejection probability of the decision set its route
+replays in an interval and decides from its ends only: on the exact route that is the
+runtime's rejection probability, on the approximate route its Normal-tail model's, whose own
+departure from the runtime (above) the interval does not cover, so a size or effect certified
+or called unattainable there is so under that model. The interval is about `1e-12` of the power at 1,000 units per arm
 and `4e-7` of it at a billion (the reported `power` is the computed value inside it, not
 shifted). Power is not monotone in the sample size under this decision, so
 `required_sample_size` returns a verified size whose power is *certified* to reach the target

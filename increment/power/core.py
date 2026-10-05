@@ -2223,9 +2223,10 @@ class _BinomialPlan:
         return _alternative_rate(self.log_p_c, theta)
 
     def evaluate(self, theta: float) -> BinomialPower:
-        """The runtime's rejection probability at effect ``theta``, enclosed by its numerical
-        error; raises `ReplayBoundExceeded` when the cells its alternative window adds would
-        leave the geometry storing more than the planning bound."""
+        """The rejection mass of the replayed decision set at effect ``theta`` (the runtime's
+        rejection probability on the exact route), enclosed by its numerical error; raises
+        `ReplayBoundExceeded` when the cells its alternative window adds would leave the geometry
+        storing more than the planning bound."""
         return self.geometry.evaluate(self.p_c, self.rate(theta))
 
     def supplied(self, theta: float, **sizing: float) -> BinomialPower:
@@ -2239,8 +2240,9 @@ class _BinomialPlan:
             )
 
     def bound(self, theta_a: float, theta_b: float) -> float:
-        """Upper bound on the runtime's rejection probability at every alternative between two
-        effects, numerical error included."""
+        """Upper bound on the replayed decision set's rejection mass (the runtime's rejection
+        probability on the exact route) at every alternative between two effects, numerical
+        error included."""
         low, high = sorted((self.rate(theta_a), self.rate(theta_b)))
         return self.geometry.closure_bound(self.p_c, low, high)
 
@@ -2376,9 +2378,10 @@ class _Spent:
 @dataclass(frozen=True, slots=True)
 class _Standing:
     """One candidate effect against the target power. ``certified``: the lower end of its
-    enclosed rejection probability reaches the target, so the runtime's does. ``possible``: the
-    closure bound over that single effect (the bound an interval is excluded by) reaches it, so
-    the runtime's may; neither holds only where the target is above the bound."""
+    enclosed rejection mass reaches the target, so the decision model's does (the runtime's, on
+    the exact route). ``possible``: the closure bound over that single effect (the bound an
+    interval is excluded by) reaches it, so the model's may; neither holds only where the
+    target is above the bound."""
 
     power: BinomialPower
     certified: bool
@@ -2388,15 +2391,18 @@ class _Standing:
 @dataclass(frozen=True, slots=True)
 class _BinomialMdeSearch(_MdeSearch):
     """``_MdeSearch``'s candidate space with power from the runtime binomial
-    decision. Power is a polynomial in the treatment rate, not a function of
-    a noncentrality, and every value of it is enclosed by its numerical error (see
-    `BinomialPower`), so a candidate is *certified* when the enclosure's lower end reaches the
-    target and *possible* while the closure bound over it does. Crossings are located by
-    ordered exclusion: an ordinal interval is discarded only when ``_BinomialPlan.bound`` (the
-    monotone closure of the rejection set) stays below target across it. That finds the first
-    possible candidate; the first certified one follows it and is the answer, so the answer's
-    power reaches the target and no earlier candidate can. The candidates between the two are
-    those whose power lies within the numerical error of the target: they are not decided."""
+    decision as the geometry's route models it. Power is a polynomial in the treatment rate,
+    not a function of a noncentrality, and every value of it is enclosed by its numerical
+    error (see `BinomialPower`), so a candidate is *certified* when the enclosure's lower end
+    reaches the target and *possible* while the closure bound over it does. Crossings are
+    located by ordered exclusion: an ordinal interval is discarded only when
+    ``_BinomialPlan.bound`` (the monotone closure of the rejection set) stays below target
+    across it. That finds the first possible candidate; the first certified one follows it and
+    is the answer, so the answer's power reaches the target and no earlier candidate can. The
+    candidates between the two are those whose power lies within the numerical error of the
+    target: they are not decided. The enclosure is of the integration, not of the route's
+    decision mask: on the approximate route certified, possible and unattainable describe its
+    Normal-tail model (``power_basis="approximate"``), not a bound on the runtime."""
 
     model: _BinomialPlan
     spent: _Spent
@@ -3499,12 +3505,16 @@ def minimum_detectable_effect(
     certified to reach the target (the lower end of its numerical enclosure
     does, so ``power`` exceeds the target by about that error), and every
     earlier candidate is excluded by its own power or by the monotone closure
-    of the decision's rejection set, a bound on the runtime's rejection
-    probability over the whole interval, except those whose power lies within
-    the enclosure of the target. A target no admissible alternative can reach
-    is ``unattainable``; one within the enclosure of the largest admissible
-    effect's power can neither be certified nor ruled out
-    (``numerical_resolution``). A target whose answer has no float64
+    of the decision's rejection set, a bound on the rejection probability over
+    the whole interval, except those whose power lies within the enclosure of
+    the target. The enclosure is of the numerical integration of the decision
+    set the route replays: for ``power_basis="exact"`` that is the runtime's
+    own decision, for ``"approximate"`` its Normal-tail model, so "certified"
+    and "unattainable" there describe that model and are not bounds on the
+    runtime. A target no admissible alternative can reach is ``unattainable``;
+    one within the enclosure of the largest admissible effect's power can
+    neither be certified nor ruled out (``numerical_resolution``). A target
+    whose answer has no float64
     representation is refused with a
     ``power.minimum_detectable_effect.*`` code. The look schedule resolves
     as in ``required_sample_size``. For fixed-horizon inference, a target at

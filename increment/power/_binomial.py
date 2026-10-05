@@ -24,11 +24,15 @@ It is integrated over outer count windows each omitting at most ``_OUTER_TAIL`` 
 mass; the omitted mass is measured, not renormalized. Every SciPy pmf, cdf and sf value read
 carries the runtime's relative error allowance (``binomial_rr._ulp_allowance``, ``n`` ULPs, the
 same one its float margin is built on) and every dot product rounds, so a computed value is
-never an exact probability: `BinomialPower` encloses the runtime's rejection probability in
-``[lower, upper]`` (the computed power less and plus that error, the omitted mass added to the
-upper end) and `RejectionGeometry.closure_bound` bounds it, with the same error, across an
-interval of treatment rates. A comparison with a target certifies a crossing from the lower
-end and excludes an interval from the upper bound only.
+never an exact probability: `BinomialPower` encloses the weighted mass of the decision set the
+geometry replays in ``[lower, upper]`` (the computed power less and plus that error, the
+omitted mass added to the upper end) and `RejectionGeometry.closure_bound` bounds that mass,
+with the same error, across an interval of treatment rates. The enclosure is of the
+integration only, so it is the runtime's rejection probability only for the ``exact`` route,
+whose mask is the runtime's own decision; the ``approximate`` route's mask is its Normal-tail
+decision model, whose departure from the runtime is the measured approximation of that route
+and is not covered. A comparison with a target certifies a crossing from the lower end and
+excludes an interval from the upper bound only, for the model its route names.
 
 Two routes classify ``D``:
 
@@ -1355,12 +1359,13 @@ def route_for(cells: int) -> Route:
 
 @dataclass(frozen=True, slots=True)
 class BinomialPower:
-    """Rejection probability at one alternative, split into the part from
-    plus-direction rejections (nondecreasing in the treatment rate) and the
+    """Rejection mass at one alternative of the decision set a geometry replays, split into the
+    part from plus-direction rejections (nondecreasing in the treatment rate) and the
     remainder from minus-direction rejections (nonincreasing in it).
     ``power`` sums the retained cells in float64; ``omitted`` bounds what the windows left out
-    and ``inflation`` (at least one) the numerical error of that sum, so the runtime's rejection
-    probability lies in ``[lower, upper]``."""
+    and ``inflation`` (at least one) the numerical error of that sum, so the mass lies in
+    ``[lower, upper]``: the runtime's rejection probability for an ``exact`` geometry, the
+    mass of the Normal-tail decision model for an ``approximate`` one."""
 
     plus: float
     minus: float
@@ -1373,14 +1378,15 @@ class BinomialPower:
 
     @property
     def lower(self) -> float:
-        """No larger than the exact retained mass, hence than the runtime's rejection
-        probability: what the retained cells certify."""
+        """No larger than the exact retained mass of the replayed decision set (the runtime's
+        rejection probability on the ``exact`` route): what the retained cells certify."""
         return max(0.0, _down(self.power / self.inflation))
 
     @property
     def upper(self) -> float:
-        """No smaller than the runtime's rejection probability: the exact retained mass at the
-        most the computed sum allows, plus the omitted mass."""
+        """No smaller than the replayed decision set's rejection probability (the runtime's on
+        the ``exact`` route): the exact retained mass at the most the computed sum allows, plus
+        the omitted mass."""
         return min(1.0, _up(_up(self.power * self.inflation) + self.omitted))
 
 
@@ -1599,7 +1605,8 @@ class RejectionGeometry:
         )
 
     def closure_bound(self, p_c: float, p_lo: float, p_hi: float) -> float:
-        """Upper bound on the runtime's rejection probability at control rate ``p_c`` and every
+        """Upper bound on the replayed decision set's rejection probability (the runtime's on the
+        ``exact`` route) at control rate ``p_c`` and every
         treatment rate ``p`` in ``[p_lo, p_hi]``, numerical error included.
 
         Every evaluation in the interval classifies treatment counts inside ``[L, H]``, the
