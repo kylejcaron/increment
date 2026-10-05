@@ -156,11 +156,15 @@ order statistic needs, and two different requests reach it:
 - **Declaring a quantile over a cube that already exists** (for example a
   `MetricSpec(type="quantile")` over exported scalar moments) constructs, then
   refuses when read. `run()` raises `source.moments.unit_grain` under a
-  randomized design -- those moments are not quantile data -- and
-  `readout.observational.quantile` under an `Observational` design, where the
+  randomized design -- those moments are not quantile data -- unless the request
+  also carries a margin or one-sided test, which refuses first with
+  `readout.metric.quantile_alternative`; under an `Observational` design it
+  raises `readout.observational.quantile`, where the
   estimator refusal takes precedence because no source could supply it an input.
   `run_breakout()` raises `facade.analysis.operation`, the day-axis methods
   (`run_daily`, `run_daily_lift`, `run_asof`, `run_asof_lift`) raise
   `facade.analysis.no_definitions`, and `planning_baseline` raises
   `analysis.planning_baseline.quantile_source_unavailable`; these source limits
-  fire before any estimator reads the cube, under either design.
+  fire before any estimator reads the cube, under either design. A clustered
+  cube cannot be exported for a quantile in the first place
+  (`source.moments.cluster_grain`).
