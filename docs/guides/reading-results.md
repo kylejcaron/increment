@@ -32,7 +32,7 @@ For a `LiftEstimate` row `r`:
 | Is it significant? | `r.stat_sig()` | Honors one-sided tests, nonzero nulls, and the row's own inference. |
 | Was it selected within a family? | `r.role`, `r.discovery`, `r.family_q` | See [Multiplicity](multiplicity.md). |
 | Why is something missing? | `r.relative_unavailable_reason`, `r.relative_confidence_set.point_unavailable_reason`, `r.confidence_set.relative` endpoint `status` and `reason`, `r.sequential_result.point_reason` | The exact persisted reason. |
-| Which inference regime? | `r.inference` | `"fixed"` is a single-look interval. The sequential values are valid at every look. |
+| Which inference regime? | `r.inference` | `"fixed"` is a single-look interval. `"always_valid"` has a finite-sample anytime-valid guarantee; `"asymptotic_mean"` supports repeated monitoring only under its asymptotic assumptions, without a finite-start guarantee. See [Sequential inference](sequential-inference.md). |
 
 For a `ContrastResult` row `c`, read `c.estimate.value`, `c.estimate.lb`,
 `c.estimate.ub`, `c.null_abs`, and `c.alternative`. All are additive.
@@ -95,7 +95,8 @@ each row keeps its remaining evidence, are:
 - A fixed-horizon mean row whose arm mean is not positive:
   `r.relative_unavailable_reason == "nonpositive_arm_mean"`. The log-scale
   relative lift is undefined and there is **no** relative set. The additive
-  difference survives in `r.abs_diff`, `r.abs_lb`, and `r.abs_ub`.
+  difference survives in `r.abs_diff`; `r.abs_lb` and `r.abs_ub` can be `None`,
+  including when both arms are constant. Check the bounds before use.
 - A row whose joint relative covariance is unusable: it cannot be represented as
   a float (extremely large scores) or is not positive semidefinite (a singular
   positive semidefinite covariance is still usable).
@@ -214,8 +215,10 @@ assert winsorized.abs_lb < winsorized.abs_diff < winsorized.abs_ub
 
 A point can exist while its relative interval does not. When the estimated
 variance of the relative contrast is exactly zero, the row keeps the point,
-withholds the bounds and the decision, and names the reason. This happens, for
-example, with clustered data whose values are identical within each arm:
+withholds the relative bounds and relative-scale decision, and names the reason.
+A row with `null_abs` can still decide from available additive bounds. The
+relative interval is unavailable, for example, with clustered data whose
+values are identical within each arm:
 
 ```python
 m = 100
