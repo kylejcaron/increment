@@ -124,9 +124,14 @@ quantile has no mean to adjust; pass `variance_reduction="none"`), or under
 an `Observational` design (`readout.observational.quantile` -- the
 order-statistic interval assumes independently randomized arms, and no
 observational quantile estimator exists; run the metric under a randomized
-design). The observational refusal is the same on `from_definitions`,
-`from_unit_day_artifact`, `from_unit_summary`, and `from_unit_panel`, and
-fixed-horizon inference does not lift it.
+design). Where `readout.observational.quantile` is reached, it is the same on
+`from_definitions`, `from_unit_day_artifact`, `from_unit_summary`, and
+`from_unit_panel`, and fixed-horizon inference does not lift it. It is the
+refusal for a two-sided, zero-null request. A one-sided or shifted-null request
+is refused first by `readout.metric.quantile_alternative` (under an
+`Observational` design only an absolute `margin_abs` can request one), and a
+relative margin never reaches a readout: the observational constructors refuse
+it at construction with `plan.observational.relative_margin`.
 
 A quantile metric also refuses a one-sided `alternative` and a shifted
 null under the single code `readout.metric.quantile_alternative`
@@ -155,12 +160,17 @@ order statistic needs, and two different requests reach it:
   estimator could use the cube.
 - **Declaring a quantile over a cube that already exists** (for example a
   `MetricSpec(type="quantile")` over exported scalar moments) constructs, then
-  refuses when read. `run()` raises `source.moments.unit_grain` under a
-  randomized design -- those moments are not quantile data -- unless the request
-  also carries a margin or one-sided test, which refuses first with
-  `readout.metric.quantile_alternative`; under an `Observational` design it
-  raises `readout.observational.quantile`, where the
-  estimator refusal takes precedence because no source could supply it an input.
+  refuses when read, and the code depends on the request, measured on a real
+  scalar-moments source:
+
+  | Design and request | `run()` raises |
+  |---|---|
+  | randomized, two-sided zero null | `source.moments.unit_grain` (those moments are not quantile data) |
+  | randomized, relative or absolute margin | `readout.metric.quantile_alternative` (refused first) |
+  | `Observational`, two-sided zero null | `readout.observational.quantile` (the estimator refusal takes precedence over the source limit, because no source could supply it an input) |
+  | `Observational`, absolute margin (`margin_abs`) | `readout.metric.quantile_alternative` (the one-sided check precedes the observational refusal) |
+  | `Observational`, relative margin | `plan.observational.relative_margin`, at construction, before any read |
+
   `run_breakout()` raises `facade.analysis.operation`, the day-axis methods
   (`run_daily`, `run_daily_lift`, `run_asof`, `run_asof_lift`) raise
   `facade.analysis.no_definitions`, and `planning_baseline` raises

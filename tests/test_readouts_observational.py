@@ -1937,3 +1937,92 @@ def test_categorical_null_level_refuses_by_name_on_definitions_paths(tmp_path, c
     assert raised.value.code == "adjust.identification.missing_covariates"
     assert raised.value.context["missing_covariates"] == (("region", len(null_units)),)
     assert raised.value.context["n"] == len(units)
+
+
+def _scalar_mean_cube_rows():
+    """Real scalar moments: a randomized unit-summary mean over the quantile's outcome column."""
+    import tempfile
+    from pathlib import Path
+
+    import pyarrow.parquet as pq
+
+    from increment.frame import MetricSpec
+
+    n = 80
+    table = pa.table(
+        {
+            "user_id": [f"u{i}" for i in range(n)],
+            "variant": ["control" if i % 2 == 0 else "treatment" for i in range(n)],
+            "latency": [1.0 + (i % 7) * 0.3 + (0.2 if i % 2 else 0.0) for i in range(n)],
+        }
+    )
+    producer = Analysis.from_unit_summary(
+        table,
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics=[
+            MetricSpec(
+                name="lat", type="mean", value_column="latency", preferred_direction="decrease"
+            )
+        ],
+    )
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "moments.parquet"
+            producer.export(path)
+            return pq.read_table(path).to_pylist()
+    finally:
+        producer.close()
+
+
+@pytest.mark.parametrize(
+    ("design", "margin", "stage", "code"),
+    [
+        (_OBS, None, "run", "readout.observational.quantile"),
+        (_OBS, "margin_abs", "run", "readout.metric.quantile_alternative"),
+        (_OBS, "margin", "construct", "plan.observational.relative_margin"),
+        (None, None, "run", "source.moments.unit_grain"),
+        (None, "margin_abs", "run", "readout.metric.quantile_alternative"),
+        (None, "margin", "run", "readout.metric.quantile_alternative"),
+    ],
+    ids=[
+        "observational-two-sided",
+        "observational-absolute-margin",
+        "observational-relative-margin",
+        "randomized-two-sided",
+        "randomized-absolute-margin",
+        "randomized-relative-margin",
+    ],
+)
+def test_quantile_over_scalar_moments_refuses_in_the_documented_precedence(
+    design, margin, stage, code
+):
+    """A quantile declared over a real scalar-moments cube is refused by whichever gate the
+    request reaches first: the plan's relative-margin construction guard (observational), the
+    engine's one-sided/shifted-null check, the observational estimator seam, then the cube's
+    missing unit grain."""
+    from increment.errors import CodedError
+    from increment.frame import MetricSpec
+    from increment.semantics.models import AnalysisPlan, ExperimentMetric
+
+    rows = _scalar_mean_cube_rows()
+    kwargs = {"design": design} if design is not None else {"control": "control"}
+    if margin is not None:
+        binding = ExperimentMetric(
+            metric="lat", **{margin: 0.5 if margin == "margin_abs" else 0.02}
+        )
+        kwargs["plan"] = AnalysisPlan(guardrails=[binding])
+    spec = [MetricSpec(name="lat", type="quantile", quantile=0.9, preferred_direction="decrease")]
+
+    def construct():
+        return Analysis.from_moments(rows, metrics=spec, **kwargs)
+
+    if stage == "construct":
+        with pytest.raises(CodedError) as raised:
+            construct()
+    else:
+        analysis = construct()
+        with pytest.raises(CodedError) as raised:
+            analysis.run()
+    assert raised.value.code == code

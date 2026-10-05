@@ -865,14 +865,21 @@ designs only) cannot read covariates from an artifact; use `from_definitions`.
   the `metric` context, raised by `run()`, `estimate_ate` and
   `estimate_quantile_lift` before any outcome is read, and identically from
   every path that supports an observational design (`from_definitions`,
-  `from_unit_day_artifact`, `from_unit_summary`, `from_unit_panel`). Run a
+  `from_unit_day_artifact`, `from_unit_summary`, `from_unit_panel`) for a
+  two-sided, zero-null request. A request that carries an absolute
+  `margin_abs` is refused first with `readout.metric.quantile_alternative`
+  (a one-sided tail), and a relative margin never reaches a readout: the
+  constructor refuses it with `plan.observational.relative_margin`. Run a
   quantile metric under a randomized design. Fixed-horizon inference does not
   change this: no inference kind has an observational quantile estimator.
   An observational frame cannot export a quantile cube either (`export()`
   raises the same code). `from_moments` therefore never receives a genuine
   quantile: a quantile *declared* over exported scalar moments constructs, and
-  `run()` raises `readout.observational.quantile` before those moments can be
-  used as quantile data, whereas `run_breakout()` raises
+  a two-sided, zero-null `run()` raises `readout.observational.quantile` before
+  those moments can be used as quantile data (an absolute `margin_abs` raises
+  `readout.metric.quantile_alternative` first; a relative margin raises
+  `plan.observational.relative_margin` at construction), whereas
+  `run_breakout()` raises
   `facade.analysis.operation` and the day-axis methods
   `facade.analysis.no_definitions` (source limits). See
   [Quantiles and portable moments](quantile-metrics.md#quantiles-and-portable-moments).
