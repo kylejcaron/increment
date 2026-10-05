@@ -60,7 +60,7 @@ import multiprocessing
 import multiprocessing.pool
 import sys
 from collections.abc import Iterator, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -69,7 +69,7 @@ from scipy.stats import binom as _binom
 from scipy.stats import norm as _norm
 from scipy.stats import t as _student_t
 
-from increment.estimation.conversion_route import dense_min_count
+from increment.estimation.conversion_route import dense_min_count, routed_share
 from tests.estimation._conversion_counts import lift_row, runtime_rejection_rate
 from tests.mc import (
     scientific_delta,
@@ -78,9 +78,27 @@ from tests.mc import (
 if TYPE_CHECKING:
     from increment.power._binomial import BinomialDecision, _Window
 
-#: One-sided tails the production alphas produce: two-sided ``alpha / 2`` for
-#: ``alpha in {.001, .01, .05, .1}`` and directional ``alpha in {.001, .01, .05, .1}``.
+#: Significance levels of the production requests: each is read two-sided, at one-sided tail
+#: ``alpha / 2``, and directionally (``greater`` or ``less``), at tail ``alpha``.
+PRODUCTION_ALPHAS = (0.001, 0.01, 0.05, 0.1)
+#: The one-sided tails those requests produce.
 TAILS = (0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1)
+Alternative = Literal["two-sided", "greater", "less"]
+
+
+def production_requests(tail: float) -> tuple[tuple[float, Alternative, int], ...]:
+    """``(alpha, alternative, sign)`` of the production requests whose one-sided tail is ``tail``,
+    each with the sign of the lift it is tested against: a two-sided request at ``2 * tail``
+    against a rise, and a directional request at ``tail`` in both directions (``greater``
+    against a rise, ``less`` against a fall). A tail two requests share has both forms."""
+    requests: list[tuple[float, Alternative, int]] = []
+    if 2.0 * tail in PRODUCTION_ALPHAS:
+        requests.append((2.0 * tail, "two-sided", 1))
+    if tail in PRODUCTION_ALPHAS:
+        requests.extend([(tail, "greater", 1), (tail, "less", -1)])
+    return tuple(requests)
+
+
 RISK_RATIOS = (0.5, 1.0, 1.25, 2.0)
 ALLOCATIONS = ((1, 1), (1, 4), (4, 1))
 #: Control sizes at every 1, 2 and 5 of a decade: a boundary cell exists only while its sparsest
@@ -780,7 +798,8 @@ def hybrid(
     """Production-pipeline noncoverage at cells straddling each tail's shipped threshold
     (design counts ``m - 2 .. m + 2``): per-tail and unconditional two-sided noncoverage
     within the repository's tolerance of its nominal level, two-sided at ``alpha = 2 tail`` and
-    directional at ``alpha = tail``. Then ``replicate_tails``: the pipeline run through
+    directional at ``alpha = tail`` (``greater`` and, at a tail a production alpha reaches
+    directionally, ``less``). Then ``replicate_tails``: the pipeline run through
     ``estimate_lift`` on ``replicates(tail)`` seeded draws at the worst cell, which must agree
     with the exact value within four Monte Carlo standard errors."""
     failed = 0
@@ -792,6 +811,8 @@ def hybrid(
                 jobs.append((cell, 2.0 * tail, shipped, "two-sided"))
                 if rank == 0:
                     jobs.append((cell, tail, shipped, "greater"))
+                    if tail in PRODUCTION_ALPHAS:
+                        jobs.append((cell, tail, shipped, "less"))
         results = _pool(workers).imap(_hybrid_job, jobs) if workers > 1 else map(_hybrid_job, jobs)
         for (cell, alpha, _, alternative), result in zip(jobs, results, strict=True):
             delta, level = scientific_delta(tail), 2.0 * tail
@@ -1013,14 +1034,16 @@ def enumerated_power(cell: MirrorCell) -> EnumeratedPower:
 
 
 #: Largest gap between a dense plan's closed-form power and the pipeline's exact rejection
-#: probability: twice the repository's ceiling (``tests.mc.scientific_delta``) for a normal
-#: approximation, which the smallest dense designs (a sparsest count 1.5 times the 0.1-tail
-#: threshold) exceed by a fifth (0.0060 measured).
-DENSE_AGREEMENT = 0.01
+#: probability: the repository's ceiling for a normal approximation
+#: (``tests.mc.scientific_delta``).
+DENSE_AGREEMENT = 0.005
 
-#: Largest amount a sparse plan on the approximate route may understate the exact replay of the
-#: same decision: the 0.8 percentage points ``docs/guides/power-analysis.md`` reports for that
-#: route. It never overstates it, up to rounding.
+#: How far a plan on the approximate replay may sit from the exact decision's power, as
+#: ``docs/guides/power-analysis.md`` reports that route: it agrees to about 0.03 percentage
+#: points, understates by up to 0.8 points (unequal allocation, shifted null), and can
+#: misclassify rare-event count pairs near the tail allocation, which moves it either way. A
+#: plan on that route is an approximation judged by this accuracy, not a bound.
+REPLAY_OVERSTATEMENT = 0.0003
 REPLAY_UNDERSTATEMENT = 0.008
 
 #: Sparsest expected count of a bound cell's design, in units of ``dense_min_count``: below
@@ -1053,42 +1076,31 @@ _EXTENDED_NEGATIVE_SHAPES = ((0.3, -0.05), (0.01, -0.06), (0.6, -0.04))
 
 BoundGrid = Literal["original", "extended", "tails", "window"]
 
-#: One-sided production tails the other grids do not reach, each read as a two-sided level
-#: ``alpha = 2 * tail``.
+#: One-sided production tails the other grids do not reach at their production requests, read
+#: at every ``(alpha, alternative)`` request that produces them (``production_requests``).
 _OTHER_TAILS = (0.0005, 0.001, 0.005, 0.01, 0.05)
 _OTHER_TAIL_FACTORS = (0.9, 1.0, 1.04, 1.1, 1.25)
+#: Control rates of the ``tails`` and ``window`` grids: central, and rare where counts are most
+#: skewed.
+_TAIL_RATES = (0.3, 0.01)
 
 #: Probabilities that all four counts reach the routing threshold, swept by the ``window`` grid:
 #: from just inside the borderline class (``planning_route`` calls a plan sparse at or below
 #: ``1e-6`` and dense at or above ``1 - 1e-6``), where the pipeline is almost the finite-sample
 #: route, to just short of dense, where it is almost the delta method.
 _WINDOW_SHARES = (1e-5, 1e-3, 0.05, 0.3, 0.7, 0.95, 0.999, 1.0 - 1e-5)
-#: Per production tail, ``(control rate, alpha, alternative)`` of the ``window`` grid's shapes:
-#: a central and a rare-event two-sided design, and a central directional one.
-_WINDOW_SHAPES = ((0.3, 2.0, "two-sided"), (0.01, 2.0, "two-sided"), (0.3, 1.0, "greater"))
-_WINDOW_TAILS = (0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1)
 
 
-def _routed_share(n: int, p_c: float, p_t: float, m: int) -> float:
-    """Probability that all four counts of equal arms of ``n`` reach ``m``: the
-    complement of ``planning_route``'s outside mass, which it keeps exact."""
-    from increment.estimation.conversion_route import _outside_mass
-
-    outside_c, outside_t = _outside_mass(n, p_c, m), _outside_mass(n, p_t, m)
-    if outside_c + outside_t < 0.5:
-        return 1.0 - (outside_c + outside_t - outside_c * outside_t)
-    return (1.0 - outside_c) * (1.0 - outside_t)
-
-
-def _window_size(p_c: float, p_t: float, m: int, share: float) -> int:
-    """Least arm size at which ``_routed_share`` reaches ``share``: the share rises with the
-    arm size, from nothing at 0.8 times the size that puts ``m`` expected counts in the
-    sparser arm to one at 1.4 times it."""
+def _window_size(p_c: float, p_t: float, tail: float, share: float) -> int:
+    """Least arm size at which ``routed_share`` reaches ``share`` at one-sided ``tail``: the
+    share rises with the arm size, from nothing at 0.8 times the size that puts
+    ``dense_min_count(tail)`` expected counts in the sparser arm to one at 1.4 times it."""
+    m = dense_min_count(tail)
     q = min(p_c, p_t, 1.0 - p_c, 1.0 - p_t)
     lo, hi = math.ceil(0.8 * m / q), math.ceil(1.4 * m / q)
     while lo < hi:
         mid = (lo + hi) // 2
-        if _routed_share(mid, p_c, p_t, m) >= share:
+        if routed_share(mid, mid, p_c, p_t, tail_alpha=tail) >= share:
             hi = mid
         else:
             lo = mid + 1
@@ -1097,17 +1109,20 @@ def _window_size(p_c: float, p_t: float, m: int, share: float) -> int:
 
 def _window_cells() -> tuple[MirrorCell, ...]:
     out: list[MirrorCell] = []
-    for tail in _WINDOW_TAILS:
+    for tail in TAILS:
         m = dense_min_count(tail)
         z = float(_norm.isf(tail))
-        for p_c, alpha_per_tail, alternative in _WINDOW_SHAPES:
+        for p_c in _TAIL_RATES:
             lift = round(z * math.sqrt(2.0 * (1.0 - p_c) / m), 3)
-            sizes = sorted(
-                {_window_size(p_c, p_c * (1.0 + lift), m, share) for share in _WINDOW_SHARES}
-            )
-            out.extend(
-                MirrorCell("bound", n, p_c, lift, alpha_per_tail * tail, alternative) for n in sizes
-            )
+            for alpha, alternative, sign in production_requests(tail):
+                signed = sign * lift
+                sizes = sorted(
+                    {
+                        _window_size(p_c, p_c * (1.0 + signed), tail, share)
+                        for share in _WINDOW_SHARES
+                    }
+                )
+                out.extend(MirrorCell("bound", n, p_c, signed, alpha, alternative) for n in sizes)
     return tuple(out)
 
 
@@ -1117,9 +1132,11 @@ def bound_cells(grid: BoundGrid = "original") -> tuple[MirrorCell, ...]:
     not saturated at the boundary, at positive and negative lifts; ``tails`` covers the other
     production tails with a central and a rare-event shape whose lift puts the sparsest count's
     power near one half (``z * sqrt(2 (1 - p) / m)`` on the log scale, for tail quantile ``z``),
-    at five distances across the boundary; ``window`` sweeps every production tail through the
-    whole borderline class at those shapes, at the arm sizes where the probability of routing
-    all four counts to the delta method is each of ``_WINDOW_SHARES``."""
+    at five distances across the boundary, at every production request that produces the tail
+    (two-sided against a rise, directional in both directions); ``window`` sweeps every
+    production tail through the whole borderline class at those shapes and requests, at the arm
+    sizes where the probability of routing all four counts to the delta method is each of
+    ``_WINDOW_SHARES``."""
     out: list[MirrorCell] = []
     if grid == "window":
         return _window_cells()
@@ -1127,11 +1144,12 @@ def bound_cells(grid: BoundGrid = "original") -> tuple[MirrorCell, ...]:
         for tail in _OTHER_TAILS:
             m = dense_min_count(tail)
             z = float(_norm.isf(tail))
-            for p_c in (0.3, 0.01):
+            for p_c in _TAIL_RATES:
                 lift = round(z * math.sqrt(2.0 * (1.0 - p_c) / m), 3)
                 for factor in _OTHER_TAIL_FACTORS:
                     n = math.ceil(factor * m / min(p_c, 1.0 - p_c))
-                    out.append(MirrorCell("bound", n, p_c, lift, 2.0 * tail, "two-sided"))
+                    for alpha, alternative, sign in production_requests(tail):
+                        out.append(MirrorCell("bound", n, p_c, sign * lift, alpha, alternative))
         return tuple(out)
     groups = (
         ((_BOUND_LEVELS, _EXTENDED_SHAPES), (_NEGATIVE_LEVELS, _EXTENDED_NEGATIVE_SHAPES))
@@ -1150,23 +1168,93 @@ def bound_cells(grid: BoundGrid = "original") -> tuple[MirrorCell, ...]:
 
 
 def bound_holds(power: EnumeratedPower) -> bool:
-    """Whether a design meets its route's claim. A sparse or borderline plan never exceeds the
-    pipeline's rejection probability (up to the replay's omitted mass): a borderline plan is a
-    bound with no limit on how far below it sits, and a sparse plan is the replay, which
-    understates it by nothing on the exact route and at most ``REPLAY_UNDERSTATEMENT`` on the
-    approximate one. A dense plan's closed form is an approximation rather than a bound, within
-    ``DENSE_AGREEMENT`` of it."""
+    """Whether a design meets its route's claim, which is an accuracy rather than a bound. A
+    dense plan's closed form is within ``DENSE_AGREEMENT`` of the pipeline's rejection
+    probability. A sparse plan is the replay of the decision the pipeline takes on those
+    counts: equal to it up to the omitted mass on the exact route, and on the approximate
+    route within that route's documented accuracy (``REPLAY_OVERSTATEMENT`` above it,
+    ``REPLAY_UNDERSTATEMENT`` below). A borderline plan is the smaller of two figures, neither
+    of which is the pipeline's mixed rejection probability, so it claims no bound: it leans
+    conservative, is judged not to exceed the pipeline's power by more than the replay's own
+    accuracy, and has no limit on how far below it sits."""
     slack = 1e-9 + power.omitted
     if power.route == "dense":
         return abs(power.margin) <= DENSE_AGREEMENT + slack
+    exact = power.basis == "exact"
+    overstatement = 0.0 if exact else REPLAY_OVERSTATEMENT
     if power.route == "sparse":
-        understatement = REPLAY_UNDERSTATEMENT if power.basis == "approximate" else 0.0
-        return -slack <= power.margin <= understatement + slack
-    return power.margin >= -slack
+        understatement = 0.0 if exact else REPLAY_UNDERSTATEMENT
+        return -(overstatement + slack) <= power.margin <= understatement + slack
+    return power.margin >= -(overstatement + slack)
 
 
 def _design_key(cell: MirrorCell) -> list[object]:
     return [cell.n, cell.p_c, cell.lift, cell.alpha, cell.alternative]
+
+
+class CheckpointError(ValueError):
+    """A ``bound`` checkpoint record that cannot be resumed from."""
+
+
+#: Fields of the records written before the pipeline's power was split by deciding route.
+_PRE_SPLIT_FIELDS = frozenset(
+    {
+        "route",
+        "planned",
+        "basis",
+        "asymptotic_share",
+        "asymptotic",
+        "finite_sample",
+        "hybrid",
+        "omitted",
+    }
+)
+
+
+def read_checkpoint(path: Path, grid: BoundGrid) -> dict[str, EnumeratedPower]:
+    """The designs a ``bound`` checkpoint holds, keyed by ``_design_key`` as JSON.
+
+    Records have been written in three layouts. One keyed by the design is read as it is. One
+    keyed by an integer indexes the ``original`` grid, the only grid when records were keyed
+    that way and in the order it still has, so it is read through that grid and refused
+    against any other. One whose power carries ``finite_sample`` and ``hybrid`` predates the
+    split of the pipeline's power by deciding route: its parts are not recoverable from their
+    sum, so it is refused (resume to another ``--out``) and never recomputed unnoticed."""
+    original = bound_cells("original")
+    fields_of_power = frozenset(field.name for field in fields(EnumeratedPower))
+    done: dict[str, EnumeratedPower] = {}
+    for number, line in enumerate(path.read_text().splitlines(), start=1):
+        if not line.strip():
+            continue
+        where = f"{path}:{number}"
+        try:
+            record = json.loads(line)
+            design, power = record["design"], record["power"]
+        except (json.JSONDecodeError, KeyError, TypeError) as error:
+            raise CheckpointError(f"{where}: not a bound checkpoint record") from error
+        if type(design) is int:
+            if grid != "original" or not 0 <= design < len(original):
+                raise CheckpointError(
+                    f"{where}: design index {design} addresses the original grid, "
+                    f"not the {grid!r} grid being resumed"
+                )
+            design = _design_key(original[design])
+        elif not (isinstance(design, list) and len(design) == len(_design_key(original[0]))):
+            raise CheckpointError(f"{where}: design {design!r} is neither an index nor a key")
+        present = frozenset(map(str, power)) if isinstance(power, dict) else frozenset[str]()
+        if present == _PRE_SPLIT_FIELDS:
+            raise CheckpointError(
+                f"{where}: the record predates the split of the pipeline's power by deciding "
+                "route, whose parts cannot be recovered from the recorded total; recompute "
+                "to another --out"
+            )
+        if present != fields_of_power:
+            raise CheckpointError(
+                f"{where}: power fields {sorted(present)} are not those of this checkpoint "
+                "layout; recompute to another --out"
+            )
+        done[json.dumps(design)] = EnumeratedPower(**power)
+    return done
 
 
 def bound(*, workers: int, out: Path | None = None, grid: BoundGrid = "original") -> int:
@@ -1175,11 +1263,7 @@ def bound(*, workers: int, out: Path | None = None, grid: BoundGrid = "original"
     completes, and designs already in ``out`` are not recomputed, so an interrupted run
     resumes."""
     designs = bound_cells(grid)
-    done: dict[str, EnumeratedPower] = {}
-    if out is not None and out.exists():
-        for line in out.read_text().splitlines():
-            record = json.loads(line)
-            done[json.dumps(record["design"])] = EnumeratedPower(**record["power"])
+    done = read_checkpoint(out, grid) if out is not None and out.exists() else {}
     pending = [cell for cell in designs if json.dumps(_design_key(cell)) not in done]
     computed = (
         _pool(workers).imap(enumerated_power, pending)
@@ -1271,7 +1355,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "mirror":
         return mirror(args.reps, args.seed, workers=args.workers)
     if args.command == "bound":
-        return bound(workers=args.workers, out=args.out, grid=args.grid)
+        try:
+            return bound(workers=args.workers, out=args.out, grid=args.grid)
+        except CheckpointError as refusal:
+            print(refusal, file=sys.stderr)
+            return 2
     return hybrid(
         args.tails, workers=args.workers, count=args.count, replicate_tails=args.replicate_tails
     )

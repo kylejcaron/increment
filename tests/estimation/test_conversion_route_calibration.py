@@ -10,6 +10,7 @@ boundary excess at the shipped threshold and the hybrid pipeline across the thre
 
 from __future__ import annotations
 
+import json
 import math
 
 import numpy as np
@@ -274,16 +275,16 @@ class TestLatticeSumsStreamOverBlocks:
 
 @pytest.mark.slow
 @pytest.mark.parameter_recovery
-class TestPlanningBound:
+class TestPlanningAccuracy:
     """Planned power against the pipeline's exact rejection probability, summed over the count
-    lattice: a borderline plan is a bound (no larger), a sparse plan is the replay, and a dense
-    plan is within the closed form's tolerance."""
+    lattice: each route meets its own claim (``bound_holds``). A dense plan is within the closed
+    form's tolerance, a sparse plan is the replay, and a borderline plan leans conservative."""
 
     @pytest.mark.parametrize("factor", [0.5, 0.9, 1.04, 1.25, 1.5, 3.0])
     @pytest.mark.parametrize(
         ("alpha", "alternative"), [(0.2, "two-sided"), (0.1, "greater")], ids=["two", "greater"]
     )
-    def test_planned_power_never_exceeds_the_pipelines_rejection_probability(
+    def test_planned_power_meets_its_routes_claim_against_the_pipelines_rejection_probability(
         self, factor, alpha, alternative
     ):
         tail = alpha / 2.0 if alternative == "two-sided" else alpha
@@ -292,61 +293,214 @@ class TestPlanningBound:
         assert cr.bound_holds(power)
 
 
+def _requests(grid) -> set[tuple[float, float, str, bool, float]]:
+    """``(tail, alpha, alternative, lift is a rise, control rate)`` of each design of ``grid``."""
+    return {
+        (
+            c.alpha / 2.0 if c.alternative == "two-sided" else c.alpha,
+            c.alpha,
+            c.alternative,
+            c.lift > 0.0,
+            c.p_c,
+        )
+        for c in grid
+    }
+
+
 class TestBoundGridAndRule:
     def test_the_enumerated_grids_are_distinct_designs_with_both_signs_of_lift(self):
-        """The original grid is 240 designs; the extended grid adds rare-event and negative-lift
-        designs, each tested at a directional level of its own sign; the tails grid reaches the
-        production tails the others do not."""
-        original, extended, tails = (cr.bound_cells(g) for g in ("original", "extended", "tails"))
-        assert (len(original), len(extended), len(tails)) == (240, 180, 50)
-        for grid in (original, extended, tails):
+        """The original grid is 240 designs and the extended grid 180, the sets the saved
+        checkpoints hold; the extended grid adds rare-event and negative-lift designs, each tested
+        at a directional level of its own sign."""
+        grids = {g: cr.bound_cells(g) for g in ("original", "extended", "tails", "window")}
+        assert (len(grids["original"]), len(grids["extended"])) == (240, 180)
+        for grid in grids.values():
             assert len({(c.n, c.p_c, c.lift, c.alpha, c.alternative) for c in grid}) == len(grid)
-        assert all(c.lift > 0.0 for c in original)
+        assert all(c.lift > 0.0 for c in grids["original"])
+        extended = grids["extended"]
         assert {c.alternative for c in extended if c.lift < 0.0} == {"two-sided", "less"}
         assert {c.alternative for c in extended if c.lift > 0.0} == {"two-sided", "greater"}
-        assert {c.alpha / 2.0 for c in tails} == {0.0005, 0.001, 0.005, 0.01, 0.05}
-        assert all(0.0 < c.lift < 0.5 for c in tails)
+        assert all(0.0 < abs(c.lift) < 0.5 for c in (*grids["tails"], *grids["window"]))
+
+    def test_the_production_requests_produce_the_calibrated_tails(self):
+        tails = {tail for alpha in cr.PRODUCTION_ALPHAS for tail in (alpha / 2.0, alpha)}
+        assert tails == set(cr.TAILS)
+        requests = {(alpha, alt) for t in cr.TAILS for alpha, alt, _ in cr.production_requests(t)}
+        assert requests == {
+            (alpha, alt)
+            for alpha in cr.PRODUCTION_ALPHAS
+            for alt in ("two-sided", "greater", "less")
+        }
+        for tail in cr.TAILS:
+            for _, alternative, sign in cr.production_requests(tail):
+                assert sign == {"two-sided": 1, "greater": 1, "less": -1}[alternative]
+
+    @pytest.mark.parametrize("grid", ["tails", "window"])
+    def test_the_tail_grids_test_the_actual_production_requests_in_their_directions(self, grid):
+        """Each production tail is tested at every request that produces it, never at an alpha
+        invented to reach it: two-sided against a rise, and each directional request against a
+        rise (``greater``) and a fall (``less``), at a central and a rare-event rate."""
+        found = _requests(cr.bound_cells(grid))
+        tails = {tail for tail, *_ in found}
+        assert tails <= set(cr.TAILS)
+        if grid == "window":
+            assert tails == set(cr.TAILS)
+        for tail in tails:
+            expected = {
+                (tail, alpha, alternative, sign > 0, rate)
+                for alpha, alternative, sign in cr.production_requests(tail)
+                for rate in (0.3, 0.01)
+            }
+            assert {entry for entry in found if entry[0] == tail} == expected
+
+    def test_the_grids_together_reach_every_production_request_at_every_tail(self):
+        found = set().union(
+            *(_requests(cr.bound_cells(g)) for g in ("original", "extended", "tails"))
+        )
+        for tail in cr.TAILS:
+            for alpha, alternative, sign in cr.production_requests(tail):
+                assert any(entry[:4] == (tail, alpha, alternative, sign > 0) for entry in found), (
+                    tail,
+                    alpha,
+                    alternative,
+                )
 
     def test_the_window_grid_is_all_borderline_and_sweeps_the_routed_share(self):
-        from increment.estimation.conversion_route import planning_route
+        from increment.estimation.conversion_route import planning_route, routed_share
 
-        window = cr.bound_cells("window")
-        assert len(window) == 168
-        assert len({(c.n, c.p_c, c.lift, c.alpha, c.alternative) for c in window}) == len(window)
-        shares: dict[tuple[float, float, str], list[float]] = {}
-        for c in window:
+        swept: dict[tuple[float, float, str, bool], list[float]] = {}
+        for c in cr.bound_cells("window"):
             tail = c.alpha / 2.0 if c.alternative == "two-sided" else c.alpha
             p_t = c.p_c * (1.0 + c.lift)
             assert planning_route(c.n, c.n, c.p_c, p_t, tail_alpha=tail, mode="auto") == (
                 "borderline"
             )
-            shares.setdefault((tail, c.p_c, c.alternative), []).append(
-                cr._routed_share(c.n, c.p_c, p_t, dense_min_count(tail))
+            swept.setdefault((tail, c.p_c, c.alternative, c.lift > 0.0), []).append(
+                routed_share(c.n, c.n, c.p_c, p_t, tail_alpha=tail)
             )
-        assert len(shares) == 21
-        for swept in shares.values():
-            assert swept == sorted(swept)
-            assert swept[0] < 1e-4
-            assert swept[-1] > 1.0 - 1e-4
-            assert any(0.2 < share < 0.8 for share in swept)
+        assert len(swept) == 2 * sum(len(cr.production_requests(t)) for t in cr.TAILS)
+        for shares in swept.values():
+            assert shares == sorted(shares)
+            assert shares[0] < 1e-4
+            assert shares[-1] > 1.0 - 1e-4
+            assert any(0.2 < share < 0.8 for share in shares)
 
     @pytest.mark.parametrize(
         ("route", "basis", "margin", "holds"),
         [
-            ("dense", "asymptotic", 0.009, True),
+            ("dense", "asymptotic", 0.004, True),
+            ("dense", "asymptotic", -0.004, True),
+            ("dense", "asymptotic", 0.007, False),
             ("dense", "asymptotic", -0.011, False),
             ("sparse", "exact", 1e-6, False),
+            ("sparse", "exact", -1e-6, False),
             ("sparse", "approximate", 5e-3, True),
             ("sparse", "approximate", 0.009, False),
-            ("sparse", "approximate", -1e-6, False),
-            ("borderline", "approximate", -1e-6, False),
+            ("sparse", "approximate", -1e-5, True),
+            ("sparse", "approximate", -1e-3, False),
+            ("borderline", "approximate", -1e-5, True),
+            ("borderline", "approximate", -1e-3, False),
             ("borderline", "approximate", 0.2, True),
+            ("borderline", "exact", -1e-6, False),
         ],
     )
     def test_bound_holds_judges_each_route_by_its_own_claim(self, route, basis, margin, holds):
         power = cr.EnumeratedPower(route, 0.5, basis, 0.5, 0.5, 0.2, 0.3 + margin, 1e-12)
         assert power.margin == pytest.approx(margin)
         assert cr.bound_holds(power) is holds
+
+
+def _power_record(**overrides) -> dict:
+    """A dense design that meets its claim exactly, as a checkpoint line records it."""
+    return {
+        "route": "dense",
+        "planned": 0.5,
+        "basis": "asymptotic",
+        "asymptotic_share": 1.0,
+        "asymptotic": 0.5,
+        "asymptotic_part": 0.5,
+        "finite_part": 0.0,
+        "omitted": 0.0,
+    } | overrides
+
+
+class TestBoundCheckpoint:
+    """``bound --out`` resumes without recomputing a design its file records, from every layout
+    the command has written, and refuses what it cannot read rather than repeating the work."""
+
+    @pytest.fixture
+    def computed(self, monkeypatch):
+        calls: list[cr.MirrorCell] = []
+
+        def fake(cell):
+            calls.append(cell)
+            return cr.EnumeratedPower(**_power_record())
+
+        monkeypatch.setattr(cr, "enumerated_power", fake)
+        return calls
+
+    @staticmethod
+    def _write(path, records) -> None:
+        path.write_text("".join(json.dumps(record) + "\n" for record in records))
+
+    def test_the_original_grid_keeps_the_order_that_index_keyed_checkpoints_use(self):
+        original = cr.bound_cells("original")
+        assert [cr._design_key(original[i]) for i in (0, 1, 119, 239)] == [
+            [3567, 0.3, 0.05, 0.05, "two-sided"],
+            [5707, 0.3, 0.05, 0.05, "two-sided"],
+            [4120, 0.3, 0.1, 0.1, "greater"],
+            [2472, 0.5, 0.06, 0.2, "two-sided"],
+        ]
+
+    def test_an_index_keyed_checkpoint_resumes_without_recomputing(self, tmp_path, computed):
+        path = tmp_path / "bound.jsonl"
+        self._write(path, [{"design": i, "power": _power_record()} for i in range(240)])
+        before = path.read_text()
+        assert cr.bound(workers=1, out=path) == 0
+        assert computed == []
+        assert path.read_text() == before
+
+    def test_a_design_keyed_checkpoint_resumes_only_the_designs_it_lacks(self, tmp_path, computed):
+        designs = cr.bound_cells("extended")
+        path = tmp_path / "bound.jsonl"
+        self._write(
+            path, [{"design": cr._design_key(c), "power": _power_record()} for c in designs[:5]]
+        )
+        assert cr.bound(workers=1, out=path, grid="extended") == 0
+        assert computed == list(designs[5:])
+        computed.clear()
+        assert cr.bound(workers=1, out=path, grid="extended") == 0
+        assert computed == []
+
+    def test_a_checkpoint_of_the_unsplit_power_is_refused_not_recomputed(self, tmp_path, computed):
+        legacy = {
+            "route": "dense",
+            "planned": 0.5,
+            "basis": "asymptotic",
+            "asymptotic_share": 1.0,
+            "asymptotic": 0.5,
+            "finite_sample": 0.4,
+            "hybrid": 0.5,
+            "omitted": 0.0,
+        }
+        path = tmp_path / "bound.jsonl"
+        self._write(path, [{"design": 0, "power": legacy}])
+        with pytest.raises(cr.CheckpointError):
+            cr.bound(workers=1, out=path)
+        assert computed == []
+
+    def test_an_index_keyed_checkpoint_is_refused_for_another_grid(self, tmp_path, computed):
+        path = tmp_path / "bound.jsonl"
+        self._write(path, [{"design": 0, "power": _power_record()}])
+        with pytest.raises(cr.CheckpointError):
+            cr.bound(workers=1, out=path, grid="extended")
+        assert computed == []
+
+    def test_a_command_refuses_an_unreadable_checkpoint_with_a_status(self, tmp_path, capsys):
+        path = tmp_path / "bound.jsonl"
+        path.write_text('{"design": 0, "power"\n')
+        assert cr.main(["bound", "--out", str(path)]) == 2
+        assert str(path) in capsys.readouterr().err
 
 
 # --- the requirement is read only from complete measurements -----------------------------

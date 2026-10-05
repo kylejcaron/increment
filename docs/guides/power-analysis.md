@@ -179,7 +179,9 @@ random counts are dense. A `dense` plan is the closed-form model above
 (`power_basis="asymptotic"`, no replay, no cell budget, no arm ceiling); a `sparse` plan
 reports the probability that the unchanged exact decision rejects at the analyzed integer
 counts, integrating the binomial count law over windows that leave out at most about `1e-12`
-of mass; a `borderline` plan reports the smaller of the two powers with the replay's basis.
+of mass; a `borderline` plan reports the smaller of the two powers as `power_basis="approximate"`
+(the runtime's rejection probability there mixes the two routes' decisions, which neither power
+equals, so the figure leans conservative but is not a proven lower bound).
 `ArmPlanningProcedure.standard(..., conversion_inference="finite_sample")` plans the replay at
 every size (refused for a mean, clustered or sequential plan, which the finite-sample route does
 not serve). At 701 units per arm, a 10% baseline and a 50% lift the replayed power is 0.7144
@@ -193,11 +195,13 @@ the sparse, borderline and explicit `finite_sample` plans.
   the null rate has at most 16,000 (control, treatment) count cells -- a
   complete call then takes about two seconds or less.
 - `power_basis="approximate"`: larger designs replay the same search with a
-  continuity-corrected Normal tail for the conditional binomial sum. Measured
-  against the runtime it agreed on dense designs to about 0.03 percentage
+  continuity-corrected Normal tail for the conditional binomial sum, and a `borderline`
+  plan's smaller-of-two figure is reported on this basis whatever its replay's. Measured
+  against the runtime the replay agreed on dense designs to about 0.03 percentage
   points but understated power by up to 0.8 points with an unequal allocation
   and a shifted null, and it can misclassify count pairs whose runtime p-value
-  sits near the tail allocation in rare-event designs.
+  sits near the tail allocation in rare-event designs, which put it up to 2e-5 above the
+  runtime's power in the designs enumerated on the limitations page.
 - Replay bound (a `sparse` or `borderline` plan and every explicit `conversion_inference="finite_sample"`
   plan replay; a `dense` `auto` plan has none): the replay's work and memory follow the number of (control,
   treatment) count cells a solve stores, not the arm size: the control window

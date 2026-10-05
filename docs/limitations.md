@@ -360,12 +360,16 @@ cell passes (worst excess in tolerance units, at the count and at 1.25 times it)
 
 The 0.1 tail passes by 3% at its floor. `hybrid` sums the production pipeline's noncoverage
 exactly over the count lattice at design counts two below to two above the shipped count (the
-three cells with the most routed noncoverage at each offset, plus a directional level): at the
-0.1 and 0.05 tails every cell stays within tolerance (worst excess +0.50 and +0.34), and the
-production pipeline on 57,601 and 30,400 seeded draws agrees with the exact value within four
-Monte Carlo standard errors; `conformance` finds the vectorised interval within `2.1e-14`
-(relative) of `estimate_lift`'s and the interpolated Student quantile within `1.7e-15` of
-`t.isf`. A bounded grid is evidence at those cells, not a coverage claim for every
+three cells with the most routed noncoverage at each offset, two-sided at `alpha = 2 * tail`,
+plus the worst cell read directionally at `alpha = tail`: `greater`, and `less` at the tails a
+production alpha reaches directionally, run at the 0.1 and 0.05 tails). At every one of the
+seven tails every cell stays within tolerance; the worst excess over each tail's cells is
+0.50 / +0.34 / +0.40 / +0.48 / +0.53 / +0.63 / +0.67 at the 0.1 / 0.05 / 0.025 / 0.01 / 0.005 /
+0.001 / 0.0005 tails. The production pipeline on 57,601, 30,400 and 62,400 seeded draws at the
+0.1, 0.05 and 0.025 tails agrees with the exact value within four Monte Carlo standard errors;
+that check was not run below the 0.025 tail. `conformance` finds the vectorised interval within
+`2.1e-14` (relative) of `estimate_lift`'s and the interpolated Student quantile within
+`1.7e-15` of `t.isf`. A bounded grid is evidence at those cells, not a coverage claim for every
 data-generating process.
 
 A BH-selected row is re-estimated at its own corrected level and routed there, so its label can
@@ -810,14 +814,30 @@ independent, `m = dense_min_count`): `dense` (at least `1 - 1e-6`) is the closed
 model above (`power_basis="asymptotic"`, no replay, no cell budget, no arm ceiling, so a
 dense plan above a billion units per arm is planned), `sparse` (at most `1e-6`) is the replay
 of the finite-sample decision, and `borderline` is the smaller of the replayed and the
-closed-form power, reported with the replay's basis. The minimum keeps the claim
-conservative where the replay happens to exceed the closed form; it is the planning bound
-for the runtime's count-split hybrid, not its exact rejection probability. A minimum
+closed-form power, reported as `power_basis="approximate"` whatever the replay's own basis.
+The runtime's rejection probability there mixes the two routes' decisions (the finite-sample
+test on the draws the rule keeps on it, the delta method on the rest), which neither power
+equals: the minimum is an approximation chosen to lean conservative (the finite-sample test is
+the more conservative of the two where they differ, and the minimum keeps the figure under the
+closed form where the replay happens to exceed it), not a proven lower bound. A minimum
 detectable effect whose whole path from the null is dense is the closed-form one, solved
 without a replay. `conversion_inference="finite_sample"` plans the replay at every size and
 is the only plan the bound below can refuse, so default users plan dense designs in
 milliseconds. The measurements below are for the replay (sparse, borderline and explicit
 `finite_sample` plans).
+
+`python -m calibration.conversion_route bound` compares each route's plan with the pipeline's
+exact rejection probability, summed over the count lattice, and judges each by the claim of its
+route. The 486 designs run so far reach every production tail at central and rare-event rates,
+with falls at the 0.025 and 0.1 tails. A dense plan was within 0.005 of it at 177 of 179
+designs and 0.0060 at the two smallest (1,236 per arm at a 50% baseline and a 6% lift, tail
+0.1, sparsest expected count 1.5 times the threshold), where it understates. A sparse plan on
+the approximate replay was between 1.8e-5 above and 3.3e-4 below it at 110 designs. A
+borderline plan was between 1.6e-5 above and 0.072 below it at 197 designs; its largest
+overshoot is a rare-event design where 1e-5 of the counts take the delta method, so it is the
+approximate replay's own accuracy. These are the accuracy of the closed form and of the
+replay, not a bound: no borderline plan is proven to stay at or below the exact rejection
+probability.
 
 With at most 16,000 retained (control, treatment) cells at the null rate the
 decision set is replayed exactly (`power_basis="exact"`); up to 10,000,000 cells the
@@ -826,7 +846,8 @@ whose rejection probability is what that route reports and encloses: its numeric
 certificates are model-only and do not bound the model's departure from the runtime, measured
 at up to 0.8 percentage points below the runtime's power (unequal allocation,
 shifted null) and able to misclassify rare-event count pairs near the tail
-allocation. The runtime's own control-arm window and floating-point
+allocation, which put it up to 2e-5 above the runtime's power in the rare-event designs
+enumerated above. The runtime's own control-arm window and floating-point
 allowance carry over to both routes. A binomial plan's call takes seconds
 rather than milliseconds. Measured on an Apple M3 Pro: exact route at 701 per
 arm, about 0.8 s for achieved power or MDE and 1.9 s for sizing; approximate
