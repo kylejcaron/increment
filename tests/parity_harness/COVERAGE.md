@@ -24,8 +24,8 @@ A cell's status is its most significant per-ingress verdict (`Disposition.status
 | Status | Cells |
 |---|---|
 | supported | 522 |
-| source_limited | 512 |
-| construction_limited | 1,316 |
+| source_limited | 506 |
+| construction_limited | 1,322 |
 | not_expressible | 960 |
 | unfinished | 274 |
 | unsound | 0 |
@@ -42,7 +42,7 @@ Verdicts are per leg: a day-axis view has a value leg and a lift leg that refuse
 | from_unit_summary | 102 | 1,536 | 1,544 | 1,824 | 370 | 0 |
 | from_unit_panel | 480 | 920 | 1,940 | 1,632 | 404 | 0 |
 | from_switchback_panel | 4 | 2,216 | 1,428 | 1,440 | 288 | 0 |
-| from_moments | 144 | 1,558 | 1,654 | 1,728 | 292 | 0 |
+| from_moments | 144 | 1,522 | 1,690 | 1,728 | 292 | 0 |
 
 Cells where, in at least one leg, an ingress runs and another does not (each non-runner carries a status, reason and authority): 522.
 
@@ -52,7 +52,7 @@ Each tracker is a kata issue linked to t8tc; each cell below carries the code no
 
 | Tracker | Cells | Code now raised, per ingress | What is unfinished |
 |---|---|---|---|
-| `0f6d` | 64 | definitions: breakout.quantile; unit_day_artifact: query.builders.asof_group_summary_metric_type_not_implemented, readout.metric.quantile_grain, source.frame.quantile_no_moments; unit_panel: frame.asof.quantile_unsupported, readout.metric.quantile_grain | the same quantile x day-axis hazard raises the breakout code here, not the catalog's readout.metric.quantile_grain |
+| `0f6d` | 64 | definitions: breakout.quantile; unit_day_artifact: query.builders.asof_group_summary_metric_type_not_implemented, readout.metric.quantile_grain, readout.observational.quantile; unit_panel: frame.asof.quantile_unsupported, readout.metric.quantile_grain | the same quantile x day-axis hazard raises the breakout code here, not the catalog's readout.metric.quantile_grain |
 | `1cr4` | 48 | definitions: sequential.route.unsupported; unit_day_artifact: sequential.route.unsupported; unit_panel: sequential.route.unsupported; unit_summary: sequential.source.invalid | every observation window must be bounded by the common registered reveal window |
 | `66mg` | 36 | definitions: arm.metric.quantile_cluster, arm.metric.quantile_cuped; moments: frame.metric.cuped_does_apply, source.frame.cluster_capability; switchback_panel: frame.metric.cuped_does_apply; unit_day_artifact: arm.metric.quantile_cluster, artifact.extension.invalid; unit_panel: frame.metric.cuped_does_apply; unit_summary: frame.metric.cuped_does_apply, source.frame.cluster_capability | a quantile has no mean to adjust |
 | `6z2f` | 160 | moments: frame.metric.window_days_supported; switchback_panel: frame.metric.window_days_supported; unit_day_artifact: frame.metric.window_days_supported; unit_panel: frame.metric.window_days_supported; unit_summary: frame.metric.window_days_supported | the artifact route reads a windowed quantile through the frame declaration and refuses it, while the definitions route that published it runs |
@@ -60,7 +60,7 @@ Each tracker is a kata issue linked to t8tc; each cell below carries the code no
 
 A hazard that several routes refuse with different codes is unfinished on every route that raises it (`matrix._reconcile_hazards`); `check_disposition` rejects a diverging hazard with no tracker. Tracker `66mg` covers both quantile x CUPED (`arm.metric.quantile_cuped`, `frame.metric.cuped_does_apply`, `artifact.extension.invalid`) and quantile x cluster (`arm.metric.quantile_cluster`, `source.frame.cluster_capability`); `0f6d` and `1cr4` cover the quantile day-axis and unbounded-sequential hazards the same way.
 
-An observational design has no quantile estimator, so an observational quantile `run()` is not a tracked hazard: the readout seam (`increment/estimation/_readout_refusals.py::refuse_quantile_moments`) refuses it with `source.frame.quantile_no_moments` on every ingress that reads it, and `test_observational_quantile_is_refused_with_one_code_on_every_ingress_that_reads_it` pins the one code. A windowed quantile reaches that seam on the warehouse routes only; the frame routes refuse its window declaration first (`6z2f`). The day axis does not reach the seam: its descriptive value legs never call `validate_readout_adjustment`. The artifact's unwindowed `run_asof()` value leg happens to raise the same code from the source's own guard (`_ArtifactFacadeSource._refuse_observational_quantile`), an ordering accident, so it stays under `0f6d` with the other quantile x day-axis codes.
+An observational design has no quantile estimator. The readout seam (`increment/estimation/_readout_refusals.py::refuse_observational_quantile`) refuses `run()` with `readout.observational.quantile` on the definitions, artifact, unit-summary and unit-panel ingresses. The matrix's observational moments producer raises that code during export; its `from_moments` leg never reaches replay. The scenario `observational_quantile_refused_at_the_readout_seam` additionally constructs a portable scalar-moments source, declares the quantile and verifies the estimator refusal before those moments can be used as quantile data. The separate randomized quantile export still raises `source.frame.quantile_no_moments`. A windowed quantile reaches the seam on the warehouse routes only; the frame routes refuse its window declaration first (`6z2f`). Descriptive day-axis value legs do not call `validate_readout_adjustment`; the artifact's unwindowed `run_asof()` value leg raises `readout.observational.quantile` from its source guard and remains under `0f6d` with the other quantile x day-axis ordering discrepancies.
 
 ## Tiers and cost
 
@@ -79,7 +79,7 @@ None. No cell is collapsed into a representative.
 
 ## Existing scenario cases
 
-The 69 `PARITY_CASES` keep their own scenario assertions (sequential families, encouragement/LATE, priors, multiplicity roles, observational covariate shapes, the observational quantile refusal). The matrix does not map them to cells; it executes every cell directly. A row is compared on every public field (`model_dump()` of the emitted row) at 1e-9 relative for floats and exactly otherwise; see `runner.py` for the few path-naming fields it drops.
+The 69 `PARITY_CASES` keep their own scenario assertions (sequential families, encouragement/LATE, priors, multiplicity roles, observational covariate shapes, the observational quantile refusal). The matrix does not map them to cells; it executes every cell directly. A row is compared on every public field (`model_dump()` of the emitted row), with 1e-9 relative tolerance and a 1e-9 absolute floor for floats, and exactly otherwise; see `runner.py` for the few path-naming fields it drops.
 
 ## Fixture choices that bound what a cell proves
 
@@ -94,7 +94,7 @@ The 69 `PARITY_CASES` keep their own scenario assertions (sequential families, e
 ## Unresolved remainder
 
 - Option x option interactions (`PAIRS`, one ingress each) are outside the single `option` axis; not claimed.
-- Sequential family variations (registered rosters, composed compliance, multi-arm), encouragement/LATE, priors and observational covariate missingness stay with the 68 scenario cases and their own tests.
+- Sequential family variations (registered rosters, composed compliance, multi-arm), encouragement/LATE, priors and observational covariate missingness stay with the scenario cases and their own tests.
 - AIPW/DML adjustment, absolute margins and one-sided alternatives other than the margin are not enumerated.
-- Tolerance is the runner's 1e-9 relative; the matrix runs on DuckDB in memory. A divergence found only on PostgreSQL, Snowflake or BigQuery is outside this ticket (CONTRIBUTING, Backend verification).
+- Float tolerance is 1e-9 relative with a 1e-9 absolute floor; the matrix runs on DuckDB in memory. A divergence found only on PostgreSQL, Snowflake or BigQuery is outside this ticket (CONTRIBUTING, Backend verification).
 - Refusal before data load is not asserted per cell; the gate order is pinned by `tests/test_refusal_uniqueness.py` and `tests/test_source_capabilities.py`.

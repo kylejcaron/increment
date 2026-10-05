@@ -24,7 +24,8 @@ field added to a result model is compared without a harness edit: the interval a
 `n_clusters`, the Fieller and binomial sets, null reasons (`unavailable`,
 `relative_unavailable_reason`, `excluded`), family and policy metadata, and a sequential
 row's own evidence (`sequential_result.log_e`/`decision_alpha` and its checkpoint's
-`status`). Floats agree within `TOLERANCE` relative, everything else exactly. Only what
+`status`). Floats agree within `TOLERANCE` relative with the same absolute floor; all other
+values agree exactly. Only what
 names the path rather than the result is dropped (`_PATH_SPECIFIC`): the resolved fact
 `source` (known to warehouse routes only), a sequential row's registration-bearing
 `sequential_result`, and, inside a winsor confidence set's raw pool, `study_id` (the source's

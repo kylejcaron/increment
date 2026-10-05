@@ -4627,10 +4627,9 @@ _OBSERVATIONAL_QUANTILE_PLAN = AnalysisPlan(primary="revenue")
 
 
 def _observational_quantile_case() -> ParityCase:
-    """An observational design has no quantile estimator, so every ingress that can hold a
-    per-unit quantile refuses `run()` with the one readout-seam code; a moments cube cannot
-    hold a quantile at all and refuses at its own source code first. Reuses the observational
-    covariate dataset with `revenue` read as a median."""
+    """The observational quantile estimator refuses before reading outcomes on every
+    ingress that can declare it. The portable case declares a quantile over a real scalar
+    moments cube: those moments cannot estimate a quantile, and must not be used as one."""
     rows, units = _observational_covariate_rows()
     defs_dict: dict[str, Any] = {
         "dialect": "duckdb",
@@ -4725,8 +4724,14 @@ def _observational_quantile_case() -> ParityCase:
         )
 
     def build_moments() -> Analysis:
-        # A quantile has no moments representation: exporting the summary refuses.
-        summary = build_unit_summary()
+        # Export scalar moments, then ask for the unsupported observational quantile.
+        summary = Analysis.from_unit_summary(
+            frame(),
+            unit="user_id",
+            group="variant",
+            metrics=[MetricSpec(name="revenue", type="mean")],
+            design=Randomized(control_group="control"),
+        )
         try:
             with tempfile.TemporaryDirectory() as td:
                 path = Path(td) / "moments.parquet"
@@ -4754,8 +4759,8 @@ def _observational_quantile_case() -> ParityCase:
             "from_unit_summary": f"CONSTRUCTION: no quantile estimator under an observational design ({seam})",
             "from_unit_panel": f"CONSTRUCTION: no quantile estimator under an observational design ({seam})",
             "from_moments": (
-                "SOURCE: a quantile has no moments representation -- export() itself "
-                "refuses before a from_moments cube could ever exist."
+                f"CONSTRUCTION: the quantile declaration over scalar moments must refuse "
+                f"its absent observational estimator before using those moments ({seam})."
             ),
             "from_switchback_panel": (
                 "SOURCE: no design= parameter, and a quantile metric is refused at the "
@@ -4767,7 +4772,7 @@ def _observational_quantile_case() -> ParityCase:
             "from_unit_day_artifact": seam,
             "from_unit_summary": seam,
             "from_unit_panel": seam,
-            "from_moments": "source.frame.quantile_no_moments",
+            "from_moments": seam,
         },
         refusal_only=True,
         # Publishes/adopts a unit-day artifact on every run.

@@ -97,8 +97,9 @@ def test_observational_quantile_is_refused_with_one_code_on_every_ingress_that_r
     can declare the request refuses it with the shared readout-seam code, never a number and
     never a route-specific code. A windowed quantile reaches that seam on the warehouse
     routes only; the frame routes refuse its window declaration first."""
-    seam = "source.frame.quantile_no_moments"
+    seam = "readout.observational.quantile"
     warehouse = ("from_definitions", "from_unit_day_artifact")
+    per_unit = (*warehouse, "from_unit_summary", "from_unit_panel")
     for cell in matrix.iter_cells():
         if not (
             cell.base == "quantile"
@@ -108,12 +109,15 @@ def test_observational_quantile_is_refused_with_one_code_on_every_ingress_that_r
         ):
             continue
         verdicts = matrix.classify(cell).legs["rows"]
-        reaching = warehouse if cell.windowed else matrix_cases.MATCHED
+        reaching = warehouse if cell.windowed else per_unit
         for name in reaching:
             assert verdicts[name].outcome == matrix.Refuses(seam), (
                 f"{cell.id}: {name} -> {verdicts[name].outcome}"
             )
             assert verdicts[name].tracker is None, f"{cell.id}: {name} is tracked as unfinished"
+        if not cell.windowed:
+            assert verdicts["from_moments"].outcome == matrix.Refuses(seam)
+            assert verdicts["from_moments"].status == "construction_limited"
 
 
 @pytest.mark.parametrize("cell", _params())
