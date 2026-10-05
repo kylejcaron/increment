@@ -109,6 +109,11 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
             ),
         ),
         "readout.observational.prior": "mixture priors are only supported on the relative (log-RR) lift scale served by infer_lift/estimate_lift",
+        "readout.observational.quantile": RefusalSpec(
+            "readout.observational.quantile",
+            UnsupportedRequestError,
+            template="quantile metric {metric!r} has no observational estimator: the distribution-free order-statistic interval assumes independently randomized arms, so a confounded contrast would be reported as a causal quantile lift. Run a quantile metric under a randomized design",
+        ),
         "readout.value_scale.invalid": "value_scale[{metric!r}]={value_scale!r} must be 'relative' or 'absolute'",
         "readout.value_scale.null": "value_scale='absolute' cannot combine with a non-zero or absolute null for metric {metric!r}",
         "readout.adjustment.absolute_unadjusted": "Method(name='unadjusted') cannot honor value_scale='absolute': the unadjusted moments path already reports the absolute pair alongside relative lift, and its rows are confounded",
@@ -154,28 +159,16 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
 
 READOUT_REFUSALS: Mapping[str, RefusalSpec] = MappingProxyType(_REFUSALS)
 
-# One hazard, one code across ingress paths: frame sources, artifacts, definitions and
-# the observational readout seam all refuse a quantile metric under this spec.
-FRAME_QUANTILE_NO_MOMENTS = RefusalSpec(
-    "source.frame.quantile_no_moments",
-    CapabilityError,
-    template="quantile metric {metric!r} has no moment representation; it is served through unit_frame. {route}",
-)
 
+def refuse_observational_quantile(metric: object, *, source: object | None = None) -> NoReturn:
+    """Refuse a quantile metric under an observational design, before any evidence is read.
 
-def refuse_quantile_moments(metric: object, design: object) -> NoReturn:
-    """Refuse reading a quantile metric as moments, naming the route for *design*.
-
-    An observational design has no quantile estimator: its adjusted-mean
+    No quantile estimator exists for an observational design: the adjusted-mean
     machinery would otherwise report a mean effect under the quantile metric's name.
+    A *source* that binds metrics to trusted evidence authenticates the caller's metric
+    first (a read-free check), so a tampered binding keeps its own refusal.
     """
-    refuse(
-        FRAME_QUANTILE_NO_MOMENTS,
-        metric=getattr(metric, "name", None),
-        route=(
-            "an observational design has no quantile estimator; quantile metrics "
-            "run under a randomized design"
-            if getattr(design, "mechanism", None) == "observational"
-            else "use readouts.run, which routes quantiles automatically"
-        ),
-    )
+    authenticate = getattr(source, "validated_metric", None)
+    if authenticate is not None:
+        authenticate(metric)
+    refuse(READOUT_REFUSALS["readout.observational.quantile"], metric=getattr(metric, "name", None))

@@ -850,14 +850,26 @@ designs only) cannot read covariates from an artifact; use `from_definitions`.
   metric still refuses by name (`source.frame.unit_frame_panel`). For a
   windowed metric, compute each unit's windowed value upstream and declare it
   as an unwindowed metric on `from_unit_summary`; no frame source serves
-  unit-grain estimators for a retention metric. A quantile metric has no
-  observational estimator: the frame sources, definitions sources and a reopened unit-day artifact
-  refuse it with `source.frame.quantile_no_moments`. A
+  unit-grain estimators for a retention metric. A
   covariate that genuinely varies within a unit refuses by name too
   (`frame.frame_panel.unit_covariate_varies`), naming the offending units.
   A moments-only source (`from_moments`) raises `CapabilityError`
   (`source.moments.covariate_unavailable`) naming the covariates: a
   moments cube has no unit grain to attach weights to.
+- **Quantile metrics refuse.** No observational quantile estimator exists:
+  the distribution-free order-statistic interval assumes independently
+  randomized arms, so a confounded contrast would be reported as a causal
+  quantile lift, and the adjusted-mean machinery would report a mean effect
+  under the quantile metric's name. The refusal is an
+  `UnsupportedRequestError` with code `readout.observational.quantile` and
+  the `metric` context, raised by `run()`, `estimate_ate` and
+  `estimate_quantile_lift` before any outcome is read, and identically from
+  every path that supports an observational design (`from_definitions`,
+  `from_unit_day_artifact`, `from_unit_summary`, `from_unit_panel`). Run a
+  quantile metric under a randomized design. Fixed-horizon inference does not
+  change this: no inference kind has an observational quantile estimator.
+  `Analysis.planning_baseline` of a quantile metric still reads the control
+  arm's per-unit values, since a planning baseline estimates no effect.
 - **Ratio metrics refuse.** IPTW, DML, and AIPW reweight or residualize a
   single per-unit outcome; a ratio's numerator and denominator would need
   the adjustment applied jointly with their covariance retained, which is not

@@ -581,9 +581,10 @@ def test_observational_quantile_metric_refuses_on_every_frame_shape(shape):
         analysis = Analysis.from_unit_panel(
             panel, unit="user_id", group="variant", date="day", metrics=metrics, design=_OBS_TRIM
         )
-    with pytest.raises(CapabilityError) as exc_info:
+    with pytest.raises(UnsupportedRequestError) as exc_info:
         lift_rows(analysis.run())
-    assert exc_info.value.code == "source.frame.quantile_no_moments"
+    assert exc_info.value.code == "readout.observational.quantile"
+    assert exc_info.value.context == {"metric": "revenue"}
 
 
 def test_from_unit_panel_daily_ratio_ignores_observational_adjustment_capability():

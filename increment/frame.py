@@ -75,7 +75,7 @@ from increment._frame_validation import (  # noqa: F401
     _validate_frame_boundary,
     _validate_single_group_per_unit,
     _validate_uptake_binary,
-    refuse_quantile_moments,
+    refuse_observational_quantile,
 )
 from increment._metric_specs import (
     MetricsArg,
@@ -147,6 +147,11 @@ _FRAME_GRAIN = RefusalSpec(
             else ""
         )
     ),
+)
+_FRAME_QUANTILE_NO_MOMENTS = RefusalSpec(
+    "source.frame.quantile_no_moments",
+    CapabilityError,
+    template="quantile metric {metric!r} has no moment representation; it is served through unit_frame. {route}",
 )
 _FRAME_BREAKOUTS_UNSUPPORTED = RefusalSpec(
     "source.frame.breakouts_unsupported",
@@ -435,7 +440,13 @@ class FrameTotalsSource(SequentialSourceMixin):
         if grain != "total":
             refuse(_FRAME_GRAIN, grain=grain, offered=self.capabilities)
         if getattr(metric, "type", None) == "quantile":
-            refuse_quantile_moments(metric, self.design)
+            if getattr(self.design, "mechanism", None) == "observational":
+                refuse_observational_quantile(metric)
+            refuse(
+                _FRAME_QUANTILE_NO_MOMENTS,
+                metric=metric.name,
+                route="use readouts.run, which routes quantiles automatically",
+            )
         if by:
             refuse(
                 _FRAME_BREAKOUTS_UNSUPPORTED,
@@ -1178,7 +1189,7 @@ class FramePanelSource(SequentialSourceMixin):
             and isinstance(metric, QuantileMetric)
             and getattr(self.design, "mechanism", None) == "observational"
         ):
-            refuse_quantile_moments(metric, self.design)
+            refuse_observational_quantile(metric)
         if (
             grain == "asof"
             and completed_windows_only

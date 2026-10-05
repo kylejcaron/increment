@@ -24,12 +24,12 @@ from ibis import Table
 from ibis import to_sql as ibis_to_sql
 
 from increment._analysis_config import effective_methods, overlay_configs, resolve_configs
-from increment._frame_validation import refuse_quantile_moments
 from increment._moment_plan import COMPLIANCE_ARM_FROM_CLUSTER_ROW
 from increment._source_operations import DashboardGroupData
 from increment._window import NO_DATA_SIGNAL, resolve_window_days
 from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec, _safe_error_value
 from increment.errors import refuse as _refuse
+from increment.estimation._readout_refusals import refuse_observational_quantile
 from increment.estimation.armstats import ArmStats
 from increment.query.artifact_contract import ArtifactStore
 from increment.query.artifact_publish import ArtifactPublisher
@@ -2802,9 +2802,10 @@ class DefinitionsMomentSource(SequentialSourceMixin):
 
     def _refuse_observational_quantile(self, metric: Metric) -> None:
         """An observational design has no quantile estimator on any ingress path."""
-        design = self._context.design
-        if metric.type == "quantile" and getattr(design, "mechanism", None) == "observational":
-            refuse_quantile_moments(metric, design)
+        if metric.type == "quantile" and getattr(self._context.design, "mechanism", None) == (
+            "observational"
+        ):
+            refuse_observational_quantile(metric)
 
     def _refuse_quantile_metrics(self, effective: Sequence[Metric], *, operation: str) -> None:
         """A quantile has no moments representation: there is no summary

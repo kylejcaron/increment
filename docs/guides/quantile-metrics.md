@@ -119,8 +119,14 @@ A quantile metric cannot be estimated with a declared `cluster`
 (`arm.metric.quantile_cluster` -- quantiles do not decompose over
 cluster moments), under a `dimension=`/breakout request
 (`readout.metric.quantile_breakout` -- quantiles do not decompose over
-segment moments), or with CUPED (`arm.metric.quantile_cuped` -- a
-quantile has no mean to adjust; pass `variance_reduction="none"`).
+segment moments), with CUPED (`arm.metric.quantile_cuped` -- a
+quantile has no mean to adjust; pass `variance_reduction="none"`), or under
+an `Observational` design (`readout.observational.quantile` -- the
+order-statistic interval assumes independently randomized arms, and no
+observational quantile estimator exists; run the metric under a randomized
+design). The observational refusal is the same on `from_definitions`,
+`from_unit_day_artifact`, `from_unit_summary`, and `from_unit_panel`, and
+fixed-horizon inference does not lift it.
 
 A quantile metric also refuses a one-sided `alternative` and a shifted
 null under the single code `readout.metric.quantile_alternative`

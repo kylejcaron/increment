@@ -25,10 +25,7 @@ from increment.errors import (
     refuse,
     warn,
 )
-from increment.estimation._readout_refusals import (  # noqa: F401
-    FRAME_QUANTILE_NO_MOMENTS,
-    refuse_quantile_moments,
-)
+from increment.estimation._readout_refusals import refuse_observational_quantile  # noqa: F401
 from increment.estimation.armstats import CENTERED_FIELDS
 from increment.plan import (
     bind_automatic_sequential_plan,

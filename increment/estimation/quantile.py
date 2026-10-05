@@ -73,7 +73,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 from increment.estimation._certified import Interval, log_interval, log_rising
-from increment.estimation._readout_refusals import refuse_quantile_moments
+from increment.estimation._readout_refusals import refuse_observational_quantile
 from increment.estimation.diagnostics import ESTIMATION_DIAGNOSTICS_ALPHA
 from increment.estimation.meta import ESTIMATION_META_ALPHA_TOO_SMALL
 
@@ -646,7 +646,7 @@ def estimate_quantile_lift(
     """
     design = getattr(getattr(src, "context", None), "design", None)
     if getattr(design, "mechanism", None) == "observational":
-        refuse_quantile_moments(metric, design)
+        refuse_observational_quantile(metric, source=src)
     if inference is not None:
         from increment.sequential_state import sequential_refuse
 

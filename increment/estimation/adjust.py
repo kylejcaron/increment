@@ -26,7 +26,7 @@ from increment.errors import (
 )
 from increment.estimation._adjust.clustered_unadjusted import estimate_clustered_unadjusted
 from increment.estimation._readout_refusals import READOUT_REFUSALS as _READOUT_REFUSALS
-from increment.estimation._readout_refusals import refuse_quantile_moments
+from increment.estimation._readout_refusals import refuse_observational_quantile
 from increment.estimation.engine import (
     Method,
     _df_to_arms,
@@ -259,6 +259,14 @@ def _reject_unsupported_prior_type(prior: Prior | None) -> None:
     """Refuse a prior whose posterior this path cannot reconstruct."""
     if isinstance(prior, (StudentTPrior, MixturePrior)):
         _refuse("estimation.adjust.prior.type")
+
+
+def _reject_percentile_winsorization(metrics: Sequence[Metric]) -> None:
+    """Refuse a percentile-winsorized metric: its data-derived cutoffs have no adjusted route."""
+    for metric in metrics:
+        config = getattr(metric, "winsorization", None)
+        if config is not None and config.has_percentile:
+            _refuse("adjust.winsorization.percentile_unsupported", metric=metric.name)
 
 
 def _validate_prior_method_scales(
@@ -495,11 +503,13 @@ def judge_shared_prior_scales(
         )
 
 
-def _refuse_observational_quantiles(metrics: Sequence[Metric], design: object) -> None:
+def _refuse_observational_quantiles(
+    metrics: Sequence[Metric], *, source: object | None = None
+) -> None:
     """An observational design has no quantile estimator: refuse before any source read."""
     for metric in metrics:
         if getattr(metric, "type", None) == "quantile":
-            refuse_quantile_moments(metric, design)
+            refuse_observational_quantile(metric, source=source)
 
 
 def validate_readout_adjustment(request: ReadoutRequest) -> None:
@@ -584,7 +594,7 @@ def validate_readout_adjustment(request: ReadoutRequest) -> None:
             _refuse("readout.value_scale.null", metric=name)
     if mechanism == "observational":
         # Request-shape checks above come first; this is the estimator-capability refusal.
-        _refuse_observational_quantiles(metrics, design)
+        _refuse_observational_quantiles(metrics)
         for metric, config, methods in zip(metrics, configs, method_catalog, strict=True):
             prior = config.prior
             if isinstance(prior, (StudentTPrior, MixturePrior)):
@@ -682,9 +692,7 @@ def estimate_ate(  # noqa: PLR0913, PLR0915
     """
     if methods is None:
         methods = [Method(name="iptw")]
-    _reject_unsupported_prior_type(prior)
     _validate_unique_method_names(methods, caller="estimate_ate")
-    _validate_prior_method_scales(methods, prior)
     resolved_method_roles: dict[str, Literal["decision", "sensitivity"]] = dict(method_roles or {})
     if method_roles is None and methods:
         from increment.estimation.engine import resolve_method_roles
@@ -694,7 +702,8 @@ def estimate_ate(  # noqa: PLR0913, PLR0915
         )
     selected = list(src.context.metrics) if metrics is None else list(metrics)
     if methods == []:
-        _refuse_observational_quantiles(selected, design)
+        _refuse_observational_quantiles(selected, source=src)
+        _reject_unsupported_prior_type(prior)
         from increment.estimation.decision_types import (
             ArmHypothesisKey,
             DecisionComputation,
@@ -719,9 +728,10 @@ def estimate_ate(  # noqa: PLR0913, PLR0915
     cluster = src.context.cluster
     if cluster is not None and prior is not None:
         _refuse_compatibility("arm.adjustment.cluster_prior", cluster=cluster)
-    # Pure request-shape validation (mapping keys, scales) precedes the estimator-capability
-    # refusal; method and shared-prior judgments (which can warn) follow it, and both
-    # precede any source read.
+    # Refusal precedence, all before any source read: pure request shape (mapping keys,
+    # scales), then estimator capability (an observational quantile has none, so method and
+    # prior judgments about it are moot), then prior and method judgments and static
+    # winsorization limits, then shared-prior advisories, which can warn and so come last.
     _validate_request_mappings(
         src,
         value_scale=value_scale,
@@ -729,7 +739,10 @@ def estimate_ate(  # noqa: PLR0913, PLR0915
         null_abs=null_abs,
         alternatives=alternatives,
     )
-    _refuse_observational_quantiles(selected, design)
+    _refuse_observational_quantiles(selected, source=src)
+    _reject_unsupported_prior_type(prior)
+    _validate_prior_method_scales(methods, prior)
+    _reject_percentile_winsorization(selected)
     scales = _resolve_value_scales(
         src,
         methods,
@@ -744,13 +757,9 @@ def estimate_ate(  # noqa: PLR0913, PLR0915
     )
 
     winsor_diagnostics: dict[str, dict[str, dict[str, int | float | None]]] = {}
-    for raw_metric in selected:
-        declared_metric = raw_metric
-        metric_config = getattr(declared_metric, "winsorization", None)
-        if metric_config is None:
+    for declared_metric in selected:
+        if getattr(declared_metric, "winsorization", None) is None:
             continue
-        if metric_config.has_percentile:
-            _refuse("adjust.winsorization.percentile_unsupported", metric=declared_metric.name)
         winsor_diagnostics[declared_metric.name] = _winsorization_diagnostics(
             src,
             declared_metric,

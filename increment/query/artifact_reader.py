@@ -1372,7 +1372,9 @@ class ArtifactMomentSource(SequentialSourceMixin):
             return self._builder_total(metric)
         return self._builder_day(metric, grain, completed_windows_only=completed_windows_only)
 
-    def _validated_metric(self, metric: Metric) -> Metric:
+    def validated_metric(self, metric: Metric) -> Metric:
+        """The manifest-bound metric for *metric*'s name, refusing a caller copy whose
+        semantics differ. Reads no evidence, so estimators can authenticate before refusing."""
         trusted = self._metric_specs()
         trusted_spec = next((spec for spec in trusted if spec.name == metric.name), None)
         if trusted_spec is None:
@@ -1425,7 +1427,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 offered=tuple(sorted(self.capabilities)),
                 route="request one of the offered grains",
             )
-        metric = self._validated_metric(metric)
+        metric = self.validated_metric(metric)
         if by:
             _relation_refuse(
                 "artifact.extension.missing", "artifact base has no breakout evidence extension"
@@ -1555,7 +1557,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
             _relation_refuse(
                 "artifact.extension.missing", "artifact base has no covariate evidence"
             )
-        trusted = self._validated_metric(metric)
+        trusted = self.validated_metric(metric)
         if outcome_stage == "transformed":
             spec = next(spec for spec in self._metric_specs() if spec.name == trusted.name)
             if spec.window_days is not None or spec.type == "retention":

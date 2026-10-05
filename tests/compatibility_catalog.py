@@ -205,7 +205,9 @@ MATRIX: dict[str, dict[str, Cell]] = {
         ),
         "retention": R(_SEAM, ValueError),
         "quantile": R(
-            "has no moment representation", CapabilityError, code="source.frame.quantile_no_moments"
+            "has no observational estimator",
+            UnsupportedRequestError,
+            code="readout.observational.quantile",
         ),
         "total": _NA_REPORT_LAYER,
         "active": _NA_REPORT_LAYER,
