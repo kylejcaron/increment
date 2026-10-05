@@ -4,6 +4,7 @@ which one produced it."""
 
 from __future__ import annotations
 
+import inspect
 import math
 from fractions import Fraction
 
@@ -14,6 +15,7 @@ from hypothesis import strategies as st
 from scipy.stats import norm
 
 from increment.errors import CodedError, InvalidRequestError
+from increment.estimation.adjust import estimate_ate
 from increment.estimation.armstats import ArmStats
 from increment.estimation.binomial_rr import FINITE_SAMPLE_MAX_ARM_SIZE
 from increment.estimation.conversion_route import (
@@ -24,6 +26,7 @@ from increment.estimation.conversion_route import (
     planning_route,
     route_for_counts,
 )
+from increment.estimation.encouragement import estimate_encouragement
 from increment.estimation.engine import Method, _estimate_lift, estimate_lift
 from increment.estimation.family import bh_select
 from increment.estimation.inference import Normal
@@ -584,6 +587,14 @@ class TestMultiplicityRoutesAtTheSmallestFamilyLevel:
                 control_group="control",
                 route_alpha=0.05,  # ty: ignore[unknown-argument]
             )
+
+    @pytest.mark.parametrize("keyword", ["route_alpha", "_route_alpha"])
+    @pytest.mark.parametrize("estimator", [estimate_ate, estimate_encouragement, estimate_lift])
+    def test_no_public_estimator_exposes_a_route_level(self, estimator, keyword):
+        """The level a family routes its rows at is carried by the package's own call sites; a
+        caller of any public estimator cannot move a row's ``reference_kind`` apart from its
+        family, under either spelling of the keyword."""
+        assert keyword not in inspect.signature(estimator).parameters
 
 
 # Dense at a 0.1 tail, not at a 0.05 tail: a BH family of two hypotheses at q = 0.2 reads p-values

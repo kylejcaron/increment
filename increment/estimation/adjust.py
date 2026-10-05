@@ -629,7 +629,7 @@ def _winsorization_diagnostics(
 
 
 # Public estimator signature is the API for adjustment results.
-def estimate_ate(  # noqa: PLR0913, PLR0915
+def estimate_ate(  # noqa: PLR0913
     src: MomentSource,
     design: Observational,
     *,
@@ -646,7 +646,6 @@ def estimate_ate(  # noqa: PLR0913, PLR0915
     _raise_if_empty: bool = True,
     _prior_scale_judged: bool = False,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
-    _route_alpha: float | None = None,
 ) -> DecisionComputation[LiftEstimate]:
     """Estimate ATE-scale lift for every declared metric under an
     observational `design`.
@@ -686,12 +685,55 @@ def estimate_ate(  # noqa: PLR0913, PLR0915
     `_resolve_value_scales`'s cross-metric judgments, but not per-mapping
     key validation, which always checks every source-declared name.
 
-    `_raise_if_empty`, `prior_shared`, `_prior_scale_judged` and `_route_alpha` are
+    `_raise_if_empty`, `prior_shared` and `_prior_scale_judged` are
     `readouts.run` plumbing: they let a caller splitting metrics across
     several calls judge "nothing estimated" and prior scale-uniformity
-    once, across every group (see `judge_shared_prior_scales`), and route a multiplicity
-    family's conversion rows at the smallest level its procedure reads a p-value at
-    (see `_estimate_lift`'s `route_alpha`).
+    once, across every group (see `judge_shared_prior_scales`).
+    """
+    return _estimate_ate(
+        src,
+        design,
+        methods=methods,
+        prior=prior,
+        prior_shared=prior_shared,
+        alpha=alpha,
+        alternative=alternative,
+        value_scale=value_scale,
+        null_lifts=null_lifts,
+        null_abs=null_abs,
+        alternatives=alternatives,
+        metrics=metrics,
+        _raise_if_empty=_raise_if_empty,
+        _prior_scale_judged=_prior_scale_judged,
+        method_roles=method_roles,
+    )
+
+
+def _estimate_ate(  # noqa: PLR0913, PLR0915
+    src: MomentSource,
+    design: Observational,
+    *,
+    methods: list[Method] | None = None,
+    prior: Prior | None = None,
+    prior_shared: bool = True,
+    alpha: float = 0.05,
+    alternative: str = "two-sided",
+    value_scale: Mapping[str, ValueScale] | None = None,
+    null_lifts: Mapping[str, float] | None = None,
+    null_abs: Mapping[str, float] | None = None,
+    alternatives: Mapping[str, str] | None = None,
+    metrics: Sequence[Metric] | None = None,
+    _raise_if_empty: bool = True,
+    _prior_scale_judged: bool = False,
+    method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
+    route_alpha: float | None = None,
+) -> DecisionComputation[LiftEstimate]:
+    """``estimate_ate`` with the multiplicity routing level its families pass.
+
+    ``route_alpha`` is the smallest level (in ``alpha``'s convention) a multiplicity procedure
+    reads a p-value at (see ``_estimate_lift``'s ``route_alpha``): the unadjusted conversion
+    rows of a family are routed at it. Only the package's own families set it; the public
+    function never does, so a caller cannot move a row's ``reference_kind`` apart from a family.
     """
     if methods is None:
         methods = [Method(name="iptw")]
@@ -802,7 +844,7 @@ def estimate_ate(  # noqa: PLR0913, PLR0915
                         preferred_direction=metric.declared_preferred_direction,
                         cluster=cluster,
                         method_roles=method_roles,
-                        route_alpha=_route_alpha,
+                        route_alpha=route_alpha,
                     ).results
                 # The docstring promise "labelled accordingly" must be visible
                 # on the row itself, not just the method name, for a report reader.

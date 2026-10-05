@@ -1548,7 +1548,6 @@ def estimate_encouragement(  # noqa: PLR0913
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None = None,
     cluster: str | None = None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
-    _route_alpha: float | None = None,
 ) -> DecisionComputation[LiftEstimate]:
     """Estimate ITT, compliance (first stage), and LATE for an encouragement design.
 
@@ -1595,10 +1594,47 @@ def estimate_encouragement(  # noqa: PLR0913
     Refuses a CUPED method, an informative ``prior`` or sequential
     ``inference``, and any ratio metric on any estimand; withholds the
     complier-relative ``late`` row (unbuilt moment family).
+    """
+    return _estimate_encouragement(
+        metrics,
+        summary,
+        design,
+        estimands=estimands,
+        methods=methods,
+        prior=prior,
+        alpha=alpha,
+        alternative=alternative,
+        null_lift=null_lift,
+        null_abs=null_abs,
+        inference=inference,
+        cluster=cluster,
+        method_roles=method_roles,
+    )
 
-    ``_route_alpha`` is readout plumbing, not a decision input: the smallest level a
-    multiplicity procedure reads an ``itt`` p-value at, at which ``itt`` rows of a conversion
-    metric are routed (see ``_estimate_lift``'s ``route_alpha``).
+
+def _estimate_encouragement(  # noqa: PLR0913
+    metrics: Sequence[Metric],
+    summary: SequentialSnapshot | IntoDataFrame | Iterable[Mapping[str, Any]],
+    design: Encouragement,
+    *,
+    estimands: Sequence[str] = ESTIMANDS,
+    methods: list[Method] | None = None,
+    prior: Prior | None = None,
+    alpha: float | None = None,
+    alternative: str | None = None,
+    null_lift: float | None = None,
+    null_abs: float | None = None,
+    inference: AsymptoticMean | AlwaysValid | MixedFamily | None = None,
+    cluster: str | None = None,
+    method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
+    route_alpha: float | None = None,
+) -> DecisionComputation[LiftEstimate]:
+    """``estimate_encouragement`` with the multiplicity routing level its families pass.
+
+    ``route_alpha`` is the smallest level (in ``alpha``'s convention) a multiplicity procedure
+    reads an ``itt`` p-value at (see ``_estimate_lift``'s ``route_alpha``): the ``itt`` rows of
+    a conversion metric are routed at it. Only the package's own families set it; the public
+    function never does, so a caller cannot move a row's ``reference_kind`` apart from a family.
     """
     _require_exclusion_for_late(design, estimands)
     if inference is not None:
@@ -1667,7 +1703,7 @@ def estimate_encouragement(  # noqa: PLR0913
         inference,
         cluster,
         method_roles,
-        _route_alpha,
+        route_alpha,
     )
     if not isinstance(prepared, _PreparedEncouragementEstimation):
         return prepared
