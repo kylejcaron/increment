@@ -45,6 +45,7 @@ from increment.estimation.armstats import ArmStats, binary_counts, welch_sattert
 from increment.estimation.cuped import AdjustedRatioMoments, fit_cuped, fit_ratio_cuped
 from increment.estimation.inference import LiftGuardError, Prior, infer_lift
 from increment.estimation.results import (
+    BINOMIAL_METHOD,
     BinomialConfidenceSet,
     Estimate,
     LiftEstimate,
@@ -1933,6 +1934,7 @@ def _infer_binomial_lift_result(
         alpha=alpha_eff,
         level=level,
         geometry=ci.geometry,
+        method=BINOMIAL_METHOD,
         x_c=x_c,
         n_c=n_c,
         x_t=x_t,

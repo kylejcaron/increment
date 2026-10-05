@@ -24,7 +24,7 @@ from increment.estimation import binomial_rr as brr
 from increment.estimation._binomial_support import chernoff_support, exponent_lower_bound
 from increment.estimation._tails import SCIPY_BINOMIAL_ULP_ALLOWANCE
 from increment.estimation.binomial_rr import _find_boundary
-from increment.estimation.results import BinomialConfidenceSet
+from increment.estimation.results import BINOMIAL_METHOD, BinomialConfidenceSet
 from tests.estimation._binomial_endpoint_reference import assert_endpoints_contain_finer_reference
 
 # --- Independent decimal oracle for scipy.stats.binom --------------------
@@ -590,6 +590,7 @@ class TestToLiftBounds:
             decision_alpha=0.05,
             level=0.95,
             geometry="central",
+            method=BINOMIAL_METHOD,
             x_c=1,
             n_c=1,
             x_t=1,

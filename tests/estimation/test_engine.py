@@ -2297,6 +2297,26 @@ class TestBinomialDirectionalAlphaConvention:
         else:
             assert lift.ub is not None and lift.ub < null_lift
 
+    @pytest.mark.parametrize("alternative", ["two-sided", "greater", "less"])
+    def test_a_produced_row_round_trips_from_a_dump_without_defaults(self, alternative):
+        """The engine stamps the binomial construction on the set it cuts, so a row dumped
+        without defaults, and the same row after an FCR reinversion, read back unchanged."""
+        from increment.estimation.engine import estimate_lift
+        from increment.estimation.results import LiftEstimate, open_bound_from_two_sided_at_target
+
+        control, treatment = self._binomial_arms()
+        [row] = estimate_lift(
+            metrics=[_conversion_metric()],
+            summary=_summary_df([control, treatment]),
+            control_group="control",
+            alpha=0.025,
+            alternative=alternative,
+        ).results
+
+        for produced in (row, open_bound_from_two_sided_at_target(row)):
+            lean = produced.model_dump_json(exclude_defaults=True)
+            assert LiftEstimate.model_validate_json(lean) == produced
+
     @pytest.mark.parametrize("x_role", ["cluster_size", "uptake_total"])
     def test_non_covariate_x_family_is_not_projected_into_iid_binomial(self, x_role):
         arms = []

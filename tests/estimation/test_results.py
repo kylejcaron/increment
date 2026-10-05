@@ -22,7 +22,12 @@ from scipy.stats import t as _t
 
 from increment.breakout.estimates import to_frame
 from increment.errors import CodedError, InvalidRequestError
-from increment.estimation.results import BinomialConfidenceSet, Estimate, LiftEstimate
+from increment.estimation.results import (
+    BINOMIAL_METHOD,
+    BinomialConfidenceSet,
+    Estimate,
+    LiftEstimate,
+)
 
 
 def test_result_deserialization_rejects_unknown_alternative():
@@ -1114,6 +1119,7 @@ def _binomial_set(**overrides: Any) -> BinomialConfidenceSet:
         "decision_alpha": 0.05,
         "level": 0.95,
         "geometry": "central",
+        "method": BINOMIAL_METHOD,
         "x_c": 3,
         "n_c": 10,
         "x_t": 5,
@@ -1276,7 +1282,10 @@ class TestLiftEstimateBinomialCrossInvariants:
             LiftEstimate.model_validate(payload)
         assert exc_info.value.code == "estimation.results.lift.binomial_lift_availability"
 
-    def test_a_row_cut_under_the_earlier_stop_rule_is_refused_with_a_route_forward(self):
+    @pytest.mark.parametrize(
+        "recorded", ["binomial_bb_difference_v1", "binomial_bb_difference_v3", None, "absent"]
+    )
+    def test_a_row_cut_under_another_construction_or_naming_none_is_refused(self, recorded):
         """5,778 / 57,780 against 5,985 / 57,780 as the 60-split search stored it: an interval
         still containing the null at counts whose p-value the current rule puts under 0.05.
         The row names the earlier construction, so reading it is refused rather than showing
@@ -1323,13 +1332,37 @@ class TestLiftEstimateBinomialCrossInvariants:
             },
             "scale": "linear",
         }
+        if recorded == "absent":
+            del persisted["binomial_set"]["method"]
+        else:
+            persisted["binomial_set"]["method"] = recorded
         with pytest.raises(InvalidRequestError) as row_error:
             LiftEstimate.model_validate_json(json.dumps(persisted))
+        with pytest.raises(InvalidRequestError) as dict_error:
+            LiftEstimate.model_validate(persisted)
         with pytest.raises(InvalidRequestError) as set_error:
             BinomialConfidenceSet.model_validate(persisted["binomial_set"])
-        for exc_info in (row_error, set_error):
+        for exc_info in (row_error, dict_error, set_error):
             assert exc_info.value.code == "estimation.results.binomial.obsolete_construction"
-            assert exc_info.value.context["method"] == "binomial_bb_difference_v1"
+            assert exc_info.value.context["method"] == (None if recorded == "absent" else recorded)
+
+    def test_a_set_built_without_a_construction_is_refused(self):
+        fields = _binomial_set().model_dump()
+        del fields["method"]
+        with pytest.raises(InvalidRequestError) as exc_info:
+            BinomialConfidenceSet(**fields)
+        assert exc_info.value.code == "estimation.results.binomial.obsolete_construction"
+
+    def test_a_row_dumped_without_defaults_keeps_its_construction(self):
+        """The construction is a required marker, not a default a lean dump can drop: every
+        dump of a row round-trips to the same row."""
+        row = LiftEstimate(**_binomial_row())
+        for lean in (
+            row.model_dump_json(exclude_defaults=True),
+            row.model_dump_json(exclude_unset=True),
+            json.dumps(row.model_dump(mode="json", exclude_defaults=True)),
+        ):
+            assert LiftEstimate.model_validate_json(lean) == row
 
     def test_those_counts_cut_by_the_current_rule_agree_with_their_interval(self):
         """The same counts cut now put the null outside the interval, as the verdict recomputed

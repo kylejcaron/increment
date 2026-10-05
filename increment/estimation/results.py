@@ -190,6 +190,12 @@ class Estimate(CodedModel, BaseModel):
         return self.lb > null or self.ub < null
 
 
+BinomialMethod = Literal["binomial_bb_difference_v2"]
+#: The construction `BinomialConfidenceSet` reads: the exact test inversion under its current
+#: nuisance stop rule. A producer stamps it on every set it cuts.
+BINOMIAL_METHOD: BinomialMethod = "binomial_bb_difference_v2"
+
+
 class BinomialConfidenceSet(CodedModel, BaseModel):
     """A typed relative-lift confidence set from the exact independent-
     binomial risk-ratio method (see ``binomial_rr.py``).
@@ -209,10 +215,13 @@ class BinomialConfidenceSet(CodedModel, BaseModel):
     natural floor, ``-1`` (``R = 0``), is always a legitimate finite
     value, attainable and closed.
 
-    ``method`` names the construction the endpoints were cut under, nuisance stop rule
-    included: ``LiftEstimate.stat_sig()``/``p_value()`` recompute from the counts with the
-    current rule, so a set cut under another one would sit beside a verdict its own interval
-    can contradict. Such a set is refused when read, not interpreted with the current rule.
+    ``method`` is required and names the construction the endpoints were cut under, nuisance
+    stop rule included: ``LiftEstimate.stat_sig()``/``p_value()`` recompute from the counts
+    with the current rule, so a set cut under another one would sit beside a verdict its own
+    interval can contradict. A set that names another construction, or none, is refused when
+    read, not interpreted with the current rule. The marker is never a default: a payload
+    dumped without its defaults would otherwise read as the current construction whatever
+    cut it.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -226,24 +235,26 @@ class BinomialConfidenceSet(CodedModel, BaseModel):
     # sitewide central-equivalent display alpha above, so these differ in
     # ordinary inference and coincide after directional FCR reinversion.
     geometry: Literal["central", "lower_bound", "upper_bound"]
-    method: Literal["binomial_bb_difference_v2"] = "binomial_bb_difference_v2"
+    method: BinomialMethod
     x_c: int = Field(ge=0)
     n_c: int = Field(ge=1)
     x_t: int = Field(ge=0)
     n_t: int = Field(ge=1)
     nuisance_beta: float = Field(gt=0.0, lt=1.0, allow_inf_nan=False)
 
-    @field_validator("method", mode="before")
+    @model_validator(mode="before")
     @classmethod
-    def _cut_under_the_current_construction(cls, value: object) -> object:
-        supported = cls.model_fields["method"].default
-        if value != supported:
+    def _cut_under_the_current_construction(cls, data: Any) -> Any:
+        recorded = data.get("method") if isinstance(data, Mapping) else BINOMIAL_METHOD
+        if recorded != BINOMIAL_METHOD:
             _raise(
                 "estimation.results.binomial.obsolete_construction",
-                method=str(value),
-                supported=supported,
+                method=recorded
+                if recorded is None or isinstance(recorded, str)
+                else repr(recorded),
+                supported=BINOMIAL_METHOD,
             )
-        return value
+        return data
 
     @model_validator(mode="after")
     def _validate_binomial_set(self):
@@ -436,7 +447,7 @@ _REFUSALS = refusals(
         "estimation.results.binomial.interval_inverted": "binomial confidence set has lower={lower} > upper={upper}",
         "estimation.results.binomial.counts_out_of_range": "binomial confidence set counts out of range: x_c={x_c}, n_c={n_c}, x_t={x_t}, n_t={n_t}",
         "estimation.results.binomial.decision_metadata": "binomial confidence set has inconsistent decision metadata: {reason}",
-        "estimation.results.binomial.obsolete_construction": "binomial confidence set was cut under method {method!r}; this version reads only {supported!r}. Its endpoints came from a different nuisance stop rule than the p-value recomputed from its counts now uses, so its interval and verdict could disagree. Re-run the analysis to cut the set again.",
+        "estimation.results.binomial.obsolete_construction": "binomial confidence set records method {method!r} (None: none recorded); this version reads only {supported!r}. A set cut under another construction, or persisted without naming one, may hold endpoints from a different nuisance stop rule than the p-value recomputed from its counts now uses, so its interval and verdict could disagree. Re-run the analysis to cut the set again.",
         "estimation.results.binomial.posterior_unavailable": "metric={metric!r} group_id={group_id!r}: no Normal/lognormal posterior exists for a reference_kind='binomial' row -- the exact binomial method is a frequentist test-inversion, not a posterior; chance_to_beat/prob_beyond/prob_within/risk_if_shipped and their favorable variants are unavailable here. Use stat_sig()/p_value() (both binomial-set-aware) or the persisted lift/binomial_set bounds directly.",
         "estimation.results.lift.binomial_lift_availability": "metric={metric!r} group_id={group_id!r}: {reason}",
         "estimation.results.lift.absolute_reference_mismatch": "absolute reference {kind!r} requires df exactly for t, got {df!r}",
