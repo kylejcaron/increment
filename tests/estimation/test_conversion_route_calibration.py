@@ -191,7 +191,10 @@ class TestLatticeSumsStreamOverBlocks:
     footprint does not grow with the arms' windows: the block size moves the footprint, never the
     value (a cell of ten million units per arm has a lattice of tens of millions of cells)."""
 
-    CELL = cr.Cell("central", 300, 600, 0.3, 0.36, 1.2, 20.0)
+    #: Expected counts of the control arm (90) sit at the routing floor, so about half the pairs
+    #: of the lattice are decided by each route.
+    CELL = cr.Cell("central", 300, 600, 0.3, 0.36, 1.2, 90.0)
+    FLOOR = 90
 
     @staticmethod
     def _small_blocks(monkeypatch) -> None:
@@ -199,9 +202,9 @@ class TestLatticeSumsStreamOverBlocks:
 
     def test_boundary_noncoverage_does_not_depend_on_the_block_size(self, monkeypatch):
         tails = (0.025, 0.1)
-        whole = cr.boundary_noncoverage(self.CELL, tails, 20)
+        whole = cr.boundary_noncoverage(self.CELL, tails, self.FLOOR)
         self._small_blocks(monkeypatch)
-        blocked = cr.boundary_noncoverage(self.CELL, tails, 20)
+        blocked = cr.boundary_noncoverage(self.CELL, tails, self.FLOOR)
         for tail in tails:
             assert blocked[tail] == pytest.approx(whole[tail], rel=1e-12, abs=0.0)
 
@@ -209,7 +212,7 @@ class TestLatticeSumsStreamOverBlocks:
     def test_hybrid_noncoverage_does_not_depend_on_the_block_size(self, monkeypatch, alternative):
         def result():
             return cr.hybrid_noncoverage(
-                self.CELL, alpha=0.1, threshold=20, alternative=alternative
+                self.CELL, alpha=0.1, threshold=self.FLOOR, alternative=alternative
             )
 
         whole = result()
@@ -218,7 +221,7 @@ class TestLatticeSumsStreamOverBlocks:
         assert blocked.lower == pytest.approx(whole.lower, rel=1e-12, abs=0.0)
         assert blocked.upper == pytest.approx(whole.upper, rel=1e-12, abs=0.0)
         assert blocked.asymptotic_share == pytest.approx(whole.asymptotic_share, rel=1e-12)
-        assert 0.0 < whole.asymptotic_share < 1.0
+        assert 0.2 < whole.asymptotic_share < 0.8
 
     def test_the_finite_sample_set_does_not_depend_on_the_block_size(self, monkeypatch):
         whole = cr.finite_sample_misses(self.CELL, alpha=0.1, alternative="two-sided")
@@ -229,13 +232,44 @@ class TestLatticeSumsStreamOverBlocks:
 
     @pytest.mark.slow
     def test_enumerated_power_does_not_depend_on_the_block_size(self, monkeypatch):
+        monkeypatch.setattr(cr, "dense_min_count", lambda tail: self.FLOOR)
         design = cr.MirrorCell("bound", 300, 0.3, 0.1, 0.2, "two-sided")
         whole = cr.enumerated_power(design)
         self._small_blocks(monkeypatch)
         blocked = cr.enumerated_power(design)
-        for name in ("asymptotic_share", "asymptotic", "finite_sample", "hybrid"):
+        for name in ("asymptotic_share", "asymptotic", "asymptotic_part", "finite_part", "hybrid"):
             assert getattr(blocked, name) == pytest.approx(getattr(whole, name), rel=1e-12)
         assert blocked.planned == whole.planned
+        assert whole.hybrid == pytest.approx(whole.asymptotic_part + whole.finite_part)
+        assert 0.2 < whole.asymptotic_share < 0.8
+        assert whole.asymptotic_part > 0.0
+        assert whole.finite_part > 0.0
+
+    def test_only_the_pairs_the_finite_route_decides_are_replayed(self):
+        """With a routing floor the replay skips every pair the delta method decides and leaves it
+        unrejecting; at every other pair it is the whole-window replay."""
+        from increment.power._binomial import _window
+
+        cell = self.CELL
+        key = cr._decision_key(cell, alpha=0.1, alternative="two-sided")
+        window_c, window_t = _window(cell.n_c, cell.p_c), _window(cell.n_t, cell.p_t)
+        plus, minus, _, _ = cr.finite_sample_misses(cell, alpha=0.1, alternative="two-sided")
+        skipped = list(cr._finite_blocks(key, window_c, window_t, self.FLOOR))
+        replayed_plus = np.concatenate([p for _, p, _ in skipped])
+        replayed_minus = np.concatenate([m for _, _, m in skipped])
+        x_c = np.arange(window_c.lo, window_c.hi + 1)[:, None]
+        x_t = np.arange(window_t.lo, window_t.hi + 1)[None, :]
+        routed = (
+            np.minimum(np.minimum(x_c, cell.n_c - x_c), np.minimum(x_t, cell.n_t - x_t))
+            >= self.FLOOR
+        )
+        assert routed.any()
+        assert not routed.all()
+        assert plus[~routed].any()
+        np.testing.assert_array_equal(replayed_plus[~routed], plus[~routed])
+        np.testing.assert_array_equal(replayed_minus[~routed], minus[~routed])
+        assert not replayed_plus[routed].any()
+        assert not replayed_minus[routed].any()
 
 
 @pytest.mark.slow

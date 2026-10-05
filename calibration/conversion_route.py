@@ -564,21 +564,52 @@ class HybridNoncoverage:
     omitted: float
 
 
+def _runs(flags: np.ndarray) -> list[tuple[int, int, bool]]:
+    """Maximal runs of equal values in ``flags``: ``(start, stop, value)``."""
+    edges = np.flatnonzero(np.diff(flags.astype(np.int8))) + 1
+    starts = [0, *edges.tolist()]
+    stops = [*edges.tolist(), flags.size]
+    return [(a, b, bool(flags[a])) for a, b in zip(starts, stops, strict=True)]
+
+
 def _finite_blocks(
-    key: BinomialDecision, window_c: _Window, window_t: _Window
+    key: BinomialDecision, window_c: _Window, window_t: _Window, floor: int | None = None
 ) -> Iterator[tuple[slice, np.ndarray, np.ndarray]]:
     """``(rows, plus, minus)`` per block of control counts: where the runtime's finite-sample
     decision rejects, ``rows`` indexing ``window_c``. The planner replays that decision from
     ``RejectionGeometry`` on its ``exact`` route whatever the cell count (the runtime's own
     search, not the surrogate the planner substitutes above its budget). Each count pair has its
-    own replay, so a block is classified by a geometry of its own and decides as the whole
-    window would, while no more than ``_BLOCK_CELLS`` cells are stored."""
+    own replay, so a region is classified by a geometry of its own and decides as the whole
+    window would, while no more than ``_BLOCK_CELLS`` cells are stored.
+
+    With ``floor``, only the pairs with a success or failure count below ``floor`` are
+    classified, the pairs the finite-sample route decides when ``floor`` is the delta-method
+    route's count threshold; every other cell is ``False``, and the caller must read it
+    through its routing mask."""
     from increment.power._binomial import PLANNING_CELL_CEILING, RejectionGeometry
 
-    for rows in _row_blocks(window_c.size, window_t.size):
-        plus, minus = RejectionGeometry(key, "exact", PLANNING_CELL_CEILING).cells(
-            window_c.lo + rows.start, window_c.lo + rows.stop - 1, window_t.lo, window_t.hi
+    x_t = np.arange(window_t.lo, window_t.hi + 1)
+    column_spans = [
+        (a, b)
+        for a, b, undecided in _runs(
+            np.ones(x_t.size, bool) if floor is None else np.minimum(x_t, key.n_t - x_t) < floor
         )
+        if undecided
+    ]
+    for rows in _row_blocks(window_c.size, x_t.size):
+        x_c = np.arange(window_c.lo + rows.start, window_c.lo + rows.stop)
+        plus = np.zeros((x_c.size, x_t.size), bool)
+        minus = np.zeros((x_c.size, x_t.size), bool)
+        undecided_rows = (
+            np.ones(x_c.size, bool) if floor is None else np.minimum(x_c, key.n_c - x_c) < floor
+        )
+        for first, stop, every_column in _runs(undecided_rows):
+            for a, b in [(0, x_t.size)] if every_column else column_spans:
+                region_plus, region_minus = RejectionGeometry(
+                    key, "exact", PLANNING_CELL_CEILING
+                ).cells(int(x_c[first]), int(x_c[stop - 1]), window_t.lo + a, window_t.lo + b - 1)
+                plus[first:stop, a:b] = region_plus
+                minus[first:stop, a:b] = region_minus
         yield rows, plus, minus
 
 
@@ -640,7 +671,7 @@ def hybrid_noncoverage(
     key = _decision_key(cell, alpha=alpha, alternative=alternative)
     x_t = np.arange(window_t.lo, window_t.hi + 1)[None, :]
     lower = upper = share = 0.0
-    for rows, plus, minus in _finite_blocks(key, window_c, window_t):
+    for rows, plus, minus in _finite_blocks(key, window_c, window_t, threshold):
         x_c = np.arange(window_c.lo + rows.start, window_c.lo + rows.stop)[:, None]
         weight = np.outer(window_c.weights[rows], window_t.weights)
         smallest = np.minimum(np.minimum(x_c, cell.n_c - x_c), np.minimum(x_t, cell.n_t - x_t))
@@ -882,18 +913,25 @@ def mirror(reps: int, seed: int, *, workers: int = 1) -> int:
 @dataclass(frozen=True, slots=True)
 class EnumeratedPower:
     """A planned design's power against its exact rejection probabilities, summed over the
-    joint binomial law of the counts: ``asymptotic`` and ``finite_sample`` apply one route to
-    every draw, ``hybrid`` is the production pipeline (each draw decided by the route its
-    counts select)."""
+    joint binomial law of the counts. ``asymptotic`` is the delta-method test applied to every
+    draw; the production pipeline decides each draw by the route its counts select, so its
+    rejection probability ``hybrid`` is the part the delta method decides (``asymptotic_part``,
+    the routed draws it rejects) plus the part the finite-sample test decides
+    (``finite_part``, the draws the rule keeps on it)."""
 
     route: str
     planned: float
     basis: str
     asymptotic_share: float
     asymptotic: float
-    finite_sample: float
-    hybrid: float
+    asymptotic_part: float
+    finite_part: float
     omitted: float
+
+    @property
+    def hybrid(self) -> float:
+        """The production pipeline's rejection probability."""
+        return self.asymptotic_part + self.finite_part
 
     @property
     def margin(self) -> float:
@@ -911,7 +949,8 @@ def enumerated_power(cell: MirrorCell) -> EnumeratedPower:
     (``conformance``). A pair is decided by the delta method iff its four counts reach
     ``dense_min_count``, so the sum over the pairs is the pipeline's rejection probability,
     not a bound on it. Pairs with a zero count are always finite-sample. The sums stream over
-    blocks of control counts (``_finite_blocks``).
+    blocks of control counts, and only the pairs the finite-sample route decides are replayed
+    (``_finite_blocks``).
     """
     from increment.estimation.arm_contract import ArmPlanningProcedure
     from increment.estimation.conversion_route import planning_route
@@ -929,8 +968,8 @@ def enumerated_power(cell: MirrorCell) -> EnumeratedPower:
     window_c, window_t = _window(cell.n, cell.p_c), _window(cell.n, p_t)
     x_t = np.arange(window_t.lo, window_t.hi + 1)[None, :]
     floor = dense_min_count(tail)
-    share = asymptotic = finite_sample = hybrid = 0.0
-    for rows, plus, minus in _finite_blocks(key, window_c, window_t):
+    share = asymptotic = asymptotic_part = finite_part = 0.0
+    for rows, plus, minus in _finite_blocks(key, window_c, window_t, floor):
         x_c = np.arange(window_c.lo + rows.start, window_c.lo + rows.stop)[:, None]
         weight = np.outer(window_c.weights[rows], window_t.weights)
         smallest = np.minimum(np.minimum(x_c, cell.n - x_c), np.minimum(x_t, cell.n - x_t))
@@ -946,20 +985,19 @@ def enumerated_power(cell: MirrorCell) -> EnumeratedPower:
             if cell.alternative == "greater"
             else upper_clear
         ) & (smallest >= 1)
-        finite_rejects = plus | minus
         routed = smallest >= floor
         share += float(weight[routed].sum())
         asymptotic += float(weight[delta_rejects].sum())
-        finite_sample += float(weight[finite_rejects].sum())
-        hybrid += float(weight[np.where(routed, delta_rejects, finite_rejects)].sum())
+        asymptotic_part += float(weight[routed & delta_rejects].sum())
+        finite_part += float(weight[~routed & (plus | minus)].sum())
     return EnumeratedPower(
         planning_route(cell.n, cell.n, cell.p_c, p_t, tail_alpha=tail, mode="auto"),
         planned.power,
         planned.power_basis,
         share,
         asymptotic,
-        finite_sample,
-        hybrid,
+        asymptotic_part,
+        finite_part,
         window_c.omitted + window_t.omitted,
     )
 
@@ -1037,8 +1075,9 @@ def bound(*, workers: int, out: Path | None = None) -> int:
             f"{power.route:<10} n={cell.n:>8} p_c={cell.p_c:<5} lift={cell.lift:<5} "
             f"alpha={cell.alpha:<5} {cell.alternative:<9} share={power.asymptotic_share:.4f} "
             f"planned={power.planned:.6f} ({power.basis}) asym={power.asymptotic:.6f} "
-            f"finite={power.finite_sample:.6f} hybrid={power.hybrid:.6f} "
-            f"margin={power.margin:+.6f} {'ok' if ok else 'FAIL'}",
+            f"asym_part={power.asymptotic_part:.6f} finite_part={power.finite_part:.6f} "
+            f"hybrid={power.hybrid:.6f} margin={power.margin:+.6f} "
+            f"{'ok' if ok else 'FAIL'}",
             flush=True,
         )
     for route, values in sorted(margins.items()):
