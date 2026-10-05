@@ -139,7 +139,9 @@ def main() -> None:
     assert row["lift"] is None and row["lower"] > 0
     assert row["higher"] is None and row["stat_sig"] is True
     assert row["value_scale"] == "relative"
-    (frame_row,) = estimates.to_frame(backend="pyarrow").to_pylist()
+    frame = estimates.to_frame(backend="pyarrow")
+    assert isinstance(frame, pa.Table)
+    (frame_row,) = frame.to_pylist()
     assert frame_row["lift"] is None and frame_row["set_lower"] > 0
     assert frame_row["set_upper"] is None
 
