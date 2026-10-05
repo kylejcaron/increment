@@ -77,6 +77,25 @@ A quantile has no moments representation, so no producer exports a quantile cube
 
 Only `run()` can reach an estimator: breakout and day-axis requests are refused at the source gate before any estimator reads the cube, so they never carry the estimator refusals (`readout.observational.quantile`, `readout.metric.quantile_alternative`). The separate randomized quantile export still raises `source.frame.quantile_no_moments` (scenarios `audit-quantile-family` and `quantile_tied_rounded_outcomes`, `cases.py`); the matrix no longer records it for any cell. The scenario `observational_quantile_refused_at_the_readout_seam` exercises the observational `run()` leg on its own.
 
+## Inference-route variants
+
+The `sequential` option declares exact Bernoulli monitoring (`always_valid`) for conversion and retention and the asymptotic mean for the other metrics. A bounded retention band also runs under the asymptotic scalar-mean route, so every retention and windowed-retention `sequential` cell is enumerated a second time with `Cell.inference = "asymptotic_mean"` (`matrix.iter_asymptotic_retention_cells`; ids end in `-asymptotic_mean`). A variant cell takes the disposition of its default cell, which `test_asymptotic_retention_variant_enumerates_every_retention_sequential_cell` asserts; `test_asymptotic_retention_cell` executes each one on every ingress, holds the ingresses to that disposition, and requires every ingress that captures sequential state to retain the `scalar_mean` law. No other metric or option has a variant.
+
+The variant cells are separate from the 3,584 cells counted above. Counted from `matrix.classify` over `matrix.iter_asymptotic_retention_cells()` when this section was last changed; the enumeration test pins only that the set is the retention `sequential` cells, once each.
+
+Variant cells: 64 (2 metrics x 4 views x 2 day boundaries x 4 missing policies), 96 legs. 12 are supported, 20 construction_limited and 32 not_expressible; none is source_limited as a cell status. 16 read data (slow) and 48 do not (fast).
+
+| Ingress | supported | source_limited | construction_limited | not_expressible | unfinished | unsound |
+|---|---|---|---|---|---|---|
+| from_definitions | 16 | 0 | 8 | 72 | 0 | 0 |
+| from_unit_day_artifact | 16 | 0 | 8 | 72 | 0 | 0 |
+| from_unit_summary | 0 | 36 | 12 | 48 | 0 | 0 |
+| from_unit_panel | 12 | 4 | 32 | 48 | 0 | 0 |
+| from_switchback_panel | 0 | 36 | 12 | 48 | 0 | 0 |
+| from_moments | 8 | 12 | 28 | 48 | 0 | 0 |
+
+The 12 supported cells are unwindowed retention under `run`, `daily` and `asof` with missing `error` or `zero`, on both day boundaries; the unit summary carries no dates and refuses them at its constructor. Every other variant cell (windowed retention, `breakout`, and the `drop` and `impute` missing policies) carries its default cell's recorded dispositions.
+
 ## Tiers and cost
 
 | Tier | Cells | Wall time (`-n 2`, measured on an arm64 laptop) |

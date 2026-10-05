@@ -94,10 +94,15 @@ class Cell:
     option: str
     day_boundary: str
     missing: str
+    # The inference route of a `sequential` cell. "default" is the route `matrix_cases` chooses
+    # per metric (exact Bernoulli monitoring for conversion and retention, asymptotic mean
+    # otherwise); a variant cell names another route and is enumerated by a function below.
+    inference: str = "default"
 
     @property
     def id(self) -> str:
-        return "-".join((self.metric, self.view, self.option, self.day_boundary, self.missing))
+        parts = (self.metric, self.view, self.option, self.day_boundary, self.missing)
+        return "-".join(parts if self.inference == "default" else (*parts, self.inference))
 
     @property
     def windowed(self) -> bool:
@@ -114,6 +119,22 @@ def iter_cells() -> Iterator[Cell]:
         METRICS, VIEWS, OPTIONS, DAY_BOUNDARIES, MISSING
     ):
         yield Cell(metric, view, option, boundary, missing)
+
+
+ASYMPTOTIC_RETENTION = "asymptotic_mean"
+
+
+def iter_asymptotic_retention_cells() -> Iterator[Cell]:
+    """Every retention and windowed-retention `sequential` cell, re-run under the asymptotic
+    scalar-mean route instead of exact Bernoulli monitoring.
+
+    A bounded observation band is the only retention shape either route accepts, and both
+    routes are recorded against the same per-ingress disposition: `classify` of a variant cell
+    is `classify` of its default cell, and the test executes each one to hold it to that.
+    """
+    for cell in iter_cells():
+        if cell.base == "retention" and cell.option == "sequential":
+            yield replace(cell, inference=ASYMPTOTIC_RETENTION)
 
 
 @dataclass(frozen=True)
