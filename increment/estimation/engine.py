@@ -123,6 +123,7 @@ _REFUSALS.update(
     {
         code: _READOUT_REFUSALS[code]
         for code in (
+            "breakout.retention.completion",
             "breakout.retention.unbounded",
             "readout.assignment.estimands",
             "readout.margin.breakout",
@@ -769,6 +770,20 @@ def reject_unbounded_retention(
         )
 
 
+def reject_completed_windows_on_unbounded_retention(
+    metrics: Sequence[Metric], fn_name: str
+) -> None:
+    """Refuse completed windows over a retention band with no completion date.
+
+    No unit's window ever completes, so the completion gate would admit nothing.
+    Like `reject_unbounded_retention`, the shared readout gate and the day-axis
+    facade both call this, so every route raises one code before any source read.
+    """
+    open_bands = [m.name for m in metrics if isinstance(m, RetentionMetric) and m.band[1] is None]
+    if open_bands:
+        _refuse("breakout.retention.completion", fn_name=fn_name, names=open_bands)
+
+
 def validate_readout_engine(request: ReadoutRequest) -> None:
     """Validate metric/method compatibility before source moments are read."""
     metrics = tuple(request.metrics)
@@ -798,6 +813,9 @@ def validate_readout_engine(request: ReadoutRequest) -> None:
         )
         # Daily values are descriptive; skip inferential compatibility rules.
         return
+
+    if view == "asof" and request.completion_policy:
+        reject_completed_windows_on_unbounded_retention(metrics, view)
 
     percentile_names = [
         metric.name

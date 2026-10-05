@@ -27,7 +27,6 @@ from increment.breakout.estimates import (
     DayAxisView,
     _asof_monitoring_note,
     _slice_reference_kind,
-    reject_contradictory_completed_windows,
     reject_quantile_metrics,
     reject_retention_under_encouragement,
     reject_winsorized_day_axis,
@@ -44,6 +43,7 @@ from increment.estimation.encouragement import ESTIMANDS, estimate_compliance
 from increment.estimation.engine import (
     UNBOUNDED_RETENTION_DAILY_REMEDY,
     _validate_methods,
+    reject_completed_windows_on_unbounded_retention,
     reject_unbounded_retention,
 )
 from increment.estimation.inference import validate_readout_inference
@@ -244,7 +244,7 @@ def validate_day_axis(
     if req.caller == "run_asof_lift" and isinstance(design, Encouragement):
         reject_retention_under_encouragement(list(req.metrics), req.caller)
     if req.grain == "asof" and req.completed_windows_only:
-        reject_contradictory_completed_windows(list(req.metrics), req.caller)
+        reject_completed_windows_on_unbounded_retention(list(req.metrics), req.caller)
     if req.caller == "run_daily_lift" and isinstance(design, Encouragement):
         refuse(_ENCOURAGEMENT_DAILY_LATE, experiment=getattr(experiment, "name", None))
     if (

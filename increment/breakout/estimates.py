@@ -120,7 +120,6 @@ _REFUSALS = refusals(
     InvalidRequestError,
     {
         "breakout.retention.daily": "{fn_name}: RetentionMetric(s) {names!r} have no valid independent-per-day snapshot -- 'returned within the observation band' is not a property of a single day. Use the as-of view (run_asof/run_asof_lift, calendar axis) or the cohort view (run_daily/run_daily_lift on a retention metric, indexed by exposure date), or pass metrics= to exclude it.",
-        "breakout.retention.completion": "{fn_name}: completed_windows_only=True is contradictory for retention metric(s) {names!r} -- their bands are open on the right, so no unit's window ever completes and the gate would admit nothing. Drop completed_windows_only to get the cumulative monitoring series, or declare threshold_days: [a, b] to bound the band.",
         "breakout.quantile": RefusalSpec(
             "breakout.quantile",
             CapabilityError,
@@ -175,6 +174,7 @@ _REFUSALS = refusals(
 )
 
 _REFUSALS["breakout.retention.unbounded"] = READOUT_REFUSALS["breakout.retention.unbounded"]
+_REFUSALS["breakout.retention.completion"] = READOUT_REFUSALS["breakout.retention.completion"]
 _REFUSALS["estimation.meta.alpha_too_small"] = ESTIMATION_META_ALPHA_TOO_SMALL
 _REFUSALS["estimation.diagnostics.alpha"] = ESTIMATION_DIAGNOSTICS_ALPHA
 _REFUSALS["breakout.run_breakout_bh_excludes_prior"] = BH_EXCLUDES_PRIOR
@@ -333,17 +333,6 @@ def reject_quantile_metrics(
             method=method,
             reason=reason,
             remedy=remedy,
-        )
-
-
-def reject_contradictory_completed_windows(metrics: Sequence[Metric], fn_name: str) -> None:
-    """Raise when completed windows meet an unbounded retention band."""
-    open_bands = [m.name for m in metrics if isinstance(m, RetentionMetric) and m.band[1] is None]
-    if open_bands:
-        _refuse(
-            "breakout.retention.completion",
-            fn_name=fn_name,
-            names=open_bands,
         )
 
 

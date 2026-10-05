@@ -624,9 +624,10 @@ def test_unbounded_retention_dimensioned_artifact_analysis_refuses_before_any_ar
 def test_unbounded_retention_hazard_covers_every_adapter_that_serves_the_daily_axis(
     tmp_path,
 ) -> None:
-    """A substrate that cannot serve the day axis never reaches the hazard (the
-    gate raises ``readout.source.grain`` first); every other registered adapter
-    must appear in the same-code test above."""
+    """Every registered adapter that can read the daily axis must appear in the
+    same-code test above. The engine rule precedes the source's grain validation,
+    so an adapter without the daily grain raises the same code; the policy sweep in
+    `test_source_capabilities.py` declares that for every registered substrate."""
     from tests.source_conformance import arm_adapters
 
     daily_adapters = {
@@ -635,6 +636,53 @@ def test_unbounded_retention_hazard_covers_every_adapter_that_serves_the_daily_a
         if "daily" in adapter.build()[0].capabilities
     }
     assert daily_adapters == set(_UNBOUNDED_RETENTION_SUBSTRATES)
+
+
+@pytest.mark.parametrize("substrate", _UNBOUNDED_RETENTION_SUBSTRATES)
+def test_completed_windows_over_unbounded_retention_raises_one_code_from_every_source(
+    substrate: str, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No unit's window over an unbounded retention band ever completes, so
+    `completed_windows_only=True` is contradictory on every as-of entry point. The
+    direct readout and both Analysis as-of methods raise one code before any source
+    read, rather than each adapter's own refusal."""
+    from increment import readouts
+    from increment.errors import CodedError
+
+    if substrate == "unit_day_artifact":
+        import ibis
+
+        from tests.parity_harness.cases import _publish_and_adopt
+
+        con = ibis.duckdb.connect()
+        analysis = _publish_and_adopt(
+            con, _native_day_axis_analysis(tmp_path, "unbounded_retention", con=con)
+        )
+    else:
+        con = None
+        analysis = (
+            _native_day_axis_analysis(tmp_path, "unbounded_retention")
+            if substrate == "definitions"
+            else _frame_panel_day_axis_analysis("unbounded_retention")
+        )
+    try:
+        source = _moment_source(analysis)
+        _trap_source_reads(monkeypatch, source)
+        entry_points = {
+            "Analysis.run_asof": lambda: analysis.run_asof(completed_windows_only=True),
+            "Analysis.run_asof_lift": lambda: analysis.run_asof_lift(completed_windows_only=True),
+            "readouts.asof_lift": lambda: readouts.asof_lift(source, completed_windows_only=True),
+        }
+        codes = {}
+        for name, call in entry_points.items():
+            with pytest.raises(CodedError) as raised:
+                call()
+            codes[name] = raised.value.code
+        assert set(codes.values()) == {"breakout.retention.completion"}, codes
+    finally:
+        analysis.close()
+        if con is not None:
+            con.disconnect()
 
 
 # The facade guards every day-axis method (including run_asof, which the readouts serve

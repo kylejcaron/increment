@@ -107,9 +107,10 @@ def test_require_operation_rejects_declaration_drift() -> None:
     }
 
 
-# Capability policy at the validation seam: metric type x view x option x substrate.
-# Construction rules are raised by the shared gate (`GATE_POLICY`); source limits derive
-# from each source's declared `capabilities` and `breakouts`. Axes are read from code.
+# Capability policy at the validation seam: metric type x view x option x completion x
+# substrate. The shared gate raises construction rules (`GATE_POLICY`, plus
+# `_COMPLETION_POLICY`); source limits derive from each source's declared `capabilities`
+# and `breakouts`. Metric-level options are enumerated in `_OPTIONS`.
 
 _VIEW_GRAIN: dict[ReadoutView, Grain] = {
     "run": "total",
@@ -135,6 +136,7 @@ _QUANTILE_BREAKOUT = "readout.metric.quantile_breakout"
 _QUANTILE_CLUSTER = "arm.metric.quantile_cluster"
 _QUANTILE_CUPED = "arm.metric.quantile_cuped"
 _UNBOUNDED_RETENTION = "breakout.retention.unbounded"
+_COMPLETED_UNBOUNDED_RETENTION = "breakout.retention.completion"
 # The gate accepts the request; an explicit decision, distinct from an undeclared cell.
 _ACCEPTED = "accepted"
 
@@ -199,6 +201,13 @@ GATE_POLICY: dict[str, dict[str, dict[str, str]] | None] = {
     # Report-layer types cannot be held by a source (`MATRIX["estimate"]` is NA).
     "total": None,
     "active": None,
+}
+
+# (metric type, option, view) -> the code `completed_windows_only=True` adds to that
+# cell. Every other completed-windows cell raises its `GATE_POLICY` outcome: the flag
+# gates the as-of read and changes nothing a request without it would have been refused for.
+_COMPLETION_POLICY: dict[tuple[str, str, ReadoutView], str] = {
+    ("retention", "unbounded_band", "asof"): _COMPLETED_UNBOUNDED_RETENTION,
 }
 
 # `MATRIX` capability column -> the (view, option) cell of this seam it also declares.
@@ -268,7 +277,9 @@ def _synthetic_metric(metric_type: str, option: str) -> Metric:
     )
 
 
-def _gate_request(source, metric_type: str, view: ReadoutView, option: str):
+def _gate_request(
+    source, metric_type: str, view: ReadoutView, option: str, *, completed: bool = False
+):
     import dataclasses
 
     from increment._analysis_config import ResolvedMetricConfig
@@ -306,6 +317,7 @@ def _gate_request(source, metric_type: str, view: ReadoutView, option: str):
         grain=_VIEW_GRAIN[view],
         by=(dimension,) if dimension else (),
         dimension=dimension,
+        completion_policy=completed,
     )
     return dataclasses.replace(
         request,
@@ -320,11 +332,15 @@ def _gate_request(source, metric_type: str, view: ReadoutView, option: str):
     )
 
 
-def _declared_gate_outcome(source, metric_type: str, view: ReadoutView, option: str) -> str | None:
+def _declared_gate_outcome(
+    source, metric_type: str, view: ReadoutView, option: str, *, completed: bool = False
+) -> str | None:
     """The code `validate_request` must raise: construction rules, else the source's limit."""
     policy = GATE_POLICY[metric_type]
     assert policy is not None
     declared = policy[option][view]
+    if completed:
+        declared = _COMPLETION_POLICY.get((metric_type, option, view), declared)
     construction = None if declared == _ACCEPTED else declared
     request_by = tuple(getattr(source, "breakouts", ()))
     if _VIEW_GRAIN[view] not in source.capabilities:
@@ -367,6 +383,13 @@ def _policy_gaps() -> list[tuple[object, ...]]:
         for option, outcomes in options.items():
             gaps.extend((metric_type, option, view, "undeclared") for view in views - set(outcomes))
             gaps.extend((metric_type, option, view, "stale") for view in set(outcomes) - views)
+    gaps.extend(
+        (*cell, "stale completion declaration")
+        for cell in _COMPLETION_POLICY
+        if (policy := GATE_POLICY.get(cell[0])) is None
+        or cell[1] not in policy
+        or cell[2] not in policy[cell[1]]
+    )
     return gaps
 
 
@@ -399,12 +422,14 @@ def test_gate_outcome_matches_declared_policy_on_every_substrate(
 ) -> None:
     """Every registered substrate raises the declared code, or its own grain/dimension limit.
 
-    A new metric type fails on its missing builder or `GATE_POLICY` entry, a new view or
-    option on its missing declarations, and a new substrate is swept with the derived
-    rules. Options a source fixes at construction (sequential inference, observational and
-    encouragement designs) are not request-level variants; the arm-contract sweeps in
-    `test_refusal_uniqueness.py` and the pair cells in `tests/compatibility_catalog.py`
-    own them.
+    Each metric x view x option cell is swept with and without `completed_windows_only`,
+    so an option intersection the flag changes is declared in `_COMPLETION_POLICY`. A new
+    metric type fails on its missing builder or `GATE_POLICY` entry, a new view on its
+    missing declarations, and a new substrate is swept with the derived rules. A new
+    metric-level option is enumerated in `_OPTIONS`. Options a source fixes at construction
+    (sequential inference, observational and encouragement designs) are not request-level
+    variants; the arm-contract sweeps in `test_refusal_uniqueness.py` and the pair cells in
+    `tests/compatibility_catalog.py` own them.
     """
     from increment._readout_request import validate_request
     from increment.errors import CodedError
@@ -418,16 +443,22 @@ def test_gate_outcome_matches_declared_policy_on_every_substrate(
             for option in _OPTIONS:
                 if not _option_applies(metric_type, option):
                     continue
-                expected = _declared_gate_outcome(source, metric_type, view, option)
-                try:
-                    validate_request(_gate_request(source, metric_type, view, option))
-                    actual = None
-                except CodedError as error:
-                    actual = error.code
-                if actual != expected:
-                    mismatches.append((name, view, option, actual, expected))
+                for completed in (False, True):
+                    expected = _declared_gate_outcome(
+                        source, metric_type, view, option, completed=completed
+                    )
+                    try:
+                        validate_request(
+                            _gate_request(source, metric_type, view, option, completed=completed)
+                        )
+                        actual = None
+                    except CodedError as error:
+                        actual = error.code
+                    if actual != expected:
+                        mismatches.append((name, view, option, completed, actual, expected))
     assert not mismatches, (
-        f"{metric_type}: (substrate, view, option, actual, declared) differ: {mismatches}"
+        f"{metric_type}: (substrate, view, option, completed, actual, declared) differ: "
+        f"{mismatches}"
     )
 
 
