@@ -1855,7 +1855,8 @@ def open_bound_from_two_sided_at_target(estimate: LiftEstimate) -> LiftEstimate:
     certified sequential rows are already inverted at their exact tail and
     are returned unchanged. A
     ``reference_kind="binomial"`` row instead reinverts the relevant
-    Berger-Boos tail directly at the full stored alpha (never a Normal/t
+    Berger-Boos tail directly at the full stored alpha, placing its endpoint
+    against the row's own ``null_lift`` as the first pass did (never a Normal/t
     endpoint reconstruction -- that would silently drop the exact method's
     coverage guarantee). Alpha and its nominal level remain unchanged.
     Absolute sidecars retain their central parent intervals. Two-sided,
@@ -1926,6 +1927,7 @@ def open_bound_from_two_sided_at_target(estimate: LiftEstimate) -> LiftEstimate:
                 "lower": ci_lower,
                 "upper": ci_upper,
                 "geometry": ci.geometry,
+            null_r=1.0 + estimate.null_lift,
                 "decision_alpha": bset.alpha,
                 "nuisance_beta": _nuisance_beta(bset.alpha),
             }
