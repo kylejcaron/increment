@@ -2287,19 +2287,30 @@ class _BinomialPlan:
     replay's own basis.
     """
 
-    geometry: RejectionGeometry
+    geometry: RejectionGeometry | None
     arm: _ArmPlan
     p_c: float
     log_p_c: float
     mode: ConversionInference
     tail_alpha: float
+    key: BinomialDecision
+    procedure: ArmPlanningProcedure
+
+    def replay(self) -> RejectionGeometry:
+        """The geometry replaying the runtime's decision. Under ``auto`` a decision the runtime
+        refuses in full (an arm above its ceiling, a tail level its float margin dominates) has
+        none: counts it routes to the delta method are planned in closed form, and an effect the
+        finite-sample route would decide is refused like any other undecided decision."""
+        if self.geometry is None:
+            _refuse_undecided(self.procedure, self.key, scope="requested")
+        return self.geometry
 
     def rate(self, theta: float) -> float:
         return _alternative_rate(self.log_p_c, theta)
 
     def route(self, theta: float) -> PlanningRoute:
         """How the runtime routes counts drawn at effect ``theta``."""
-        decision = self.geometry.decision
+        decision = self.key
         return planning_route(
             decision.n_c,
             decision.n_t,
@@ -2314,7 +2325,7 @@ class _BinomialPlan:
         route = self.route(theta)
         if route == "borderline":
             return "approximate"
-        return "asymptotic" if route == "dense" else self.geometry.route
+        return "asymptotic" if route == "dense" else self.replay().route
 
     def evaluate(self, theta: float, distance: float) -> BinomialPower:
         """The rejection mass at effect ``theta``, ``distance`` from the null on the log scale,
@@ -2325,7 +2336,7 @@ class _BinomialPlan:
         route = self.route(theta)
         if route == "dense":
             return _modelled(self.arm.power(distance, theta))
-        replay = self.geometry.evaluate(self.p_c, self.rate(theta))
+        replay = self.replay().evaluate(self.p_c, self.rate(theta))
         if route == "sparse":
             return replay
         closed = _modelled(self.arm.power(distance, theta))
@@ -2343,7 +2354,7 @@ class _BinomialPlan:
         try:
             return self.evaluate(theta, distance)
         except ReplayBoundExceeded as exceeded:
-            decision = self.geometry.decision
+            decision = self.key
             _refuse_replay_bound(
                 self.p_c,
                 decision.n_t,
@@ -2357,7 +2368,7 @@ class _BinomialPlan:
     def dense_extent(self, theta_a: float, theta_b: float) -> tuple[bool, bool]:
         """Whether some, and whether every, effect between two is routed dense."""
         low, high = sorted((self.rate(theta_a), self.rate(theta_b)))
-        decision = self.geometry.decision
+        decision = self.key
         return dense_extent(
             decision.n_c,
             decision.n_t,
@@ -2373,7 +2384,7 @@ class _BinomialPlan:
         probability on the exact route) at every alternative between two effects, numerical
         error included, and whether the set is closed there."""
         low, high = sorted((self.rate(theta_a), self.rate(theta_b)))
-        return self.geometry.closure(self.p_c, low, high)
+        return self.replay().closure(self.p_c, low, high)
 
     def bound(self, theta_a: float, theta_b: float) -> float:
         """Upper bound on every computed point power between the effects."""
@@ -2496,10 +2507,12 @@ def _binomial_plan(
     if mode == "finite_sample" and cells > PLANNING_CELL_CEILING:
         _refuse_replay_bound(baseline.mean, n_T, n_C, cells, conversion_inference=mode)
     route = route_for(cells) if route is None else route
-    geometry = cache.get((key, route))
-    if geometry is None:
-        geometry = cache[key, route] = RejectionGeometry(key, route, PLANNING_CELL_CEILING)
-    geometry.begin_solve()
+    geometry: RejectionGeometry | None = None
+    if not refused(key):
+        geometry = cache.get((key, route))
+        if geometry is None:
+            geometry = cache[key, route] = RejectionGeometry(key, route, PLANNING_CELL_CEILING)
+        geometry.begin_solve()
     return _BinomialPlan(
         geometry,
         arm,
@@ -2507,6 +2520,8 @@ def _binomial_plan(
         math.log(baseline.mean),
         mode,
         procedure.compiled_tail_alpha,
+        key,
+        procedure,
     )
 
 
@@ -2735,12 +2750,21 @@ def _solve_binomial_mde(
     null_lift: float,
     alternative: Alternative,
 ) -> tuple[float, float] | _MdeRefusal:
-    """Earliest detectable region to numerical effect tolerance, with point power.
-
-    Wider unresolved earlier intervals refuse instead of being skipped.
-    Solved searches are memoized for a curve's companion effects.
-    """
-    memo = model.geometry.effects
+    """``_solve_arm_mde``'s contract on the runtime binomial decision: the
+    first admissible effect in distance order whose power is certified to
+    reach ``target`` (see `_BinomialMdeSearch`), with its power. Every earlier
+    candidate is excluded by its own evaluation or by the monotone-closure
+    bound, except those whose power lies within the numerical error of the
+    target; certification is never assumed monotone, so an earlier band of
+    effects that reaches the target is found whether or not the far end of
+    the interval does. A target no admissible candidate can reach is
+    unattainable, reporting the power at the direction's far admissible end
+    (the bounded rate ceiling, or the relative-lift floor for a decrease);
+    when the closure bound cannot exclude every candidate and none is
+    certified, the target is unresolved, enclosed by the greatest power any
+    candidate may reach. The geometry keeps each solved search, so effects
+    sharing it (a curve's companions) are solved once."""
+    memo = model.geometry.effects if model.geometry is not None else {}
     key = (model.p_c, plan.baseline.compliance, target, plan.baseline.effective_var, model.mode)
     if key not in memo:
         memo[key] = _search_binomial_mde(
@@ -2793,13 +2817,17 @@ def _search_binomial_mde(
     search = _BinomialMdeSearch.of(
         plan, model, target=target, null_lift=null_lift, alternative=alternative
     )
+    # The effect search is a solve of its own: the cells a supplied effect left on the geometry
+    # are a cache it may drop, so its answer never depends on the effect it accompanies.
+    if model.geometry is not None:
+        model.geometry.begin_solve()
     try:
         return _ordered_exclusion(search)
     except ReplayBoundExceeded as exceeded:
         # A candidate's alternative window takes the replay past the planning bound: the search
         # ends unresolved, so a companion effect is unavailable (``numerical_resolution``) and a
         # direct request is refused with the bound.
-        decision = model.geometry.decision
+        decision = model.key
         context = _replay_bound_context(
             model.p_c,
             decision.n_t,
