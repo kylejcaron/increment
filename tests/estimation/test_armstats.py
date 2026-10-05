@@ -1554,7 +1554,7 @@ class TestBinaryCountsProducerPathTolerance:
 
 @pytest.mark.slow
 def test_a_unit_frame_and_its_exported_moments_decide_alike_beyond_the_former_arm_ceiling():
-    """Frame and exported-moments decisions agree above four million units per arm.
+    """Frame and exported-moments decisions agree with one arm above four million units.
     The parity harness's ``exact_binomial_beyond_the_former_arm_ceiling`` case also
     checks definitions, unit-day artifacts and unit panels at this scale."""
     import tempfile
