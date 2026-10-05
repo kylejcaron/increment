@@ -10,9 +10,24 @@ fork, and open a pull request into `main`.
 A pull request can merge only when CI (`ci-ok`) and the CLA check pass and a
 code owner has approved it. Commits are squash-merged.
 
-Release notes are generated from merged PR titles. Label your PR so it lands in
-the right section: `breaking`, `feature`, `fix`, `stats`/`inference`, `docs`,
-or `internal`. Use `skip-changelog` to omit it.
+Release notes are generated from merged PR titles. Choose one change category:
+
+| Label | Use |
+| --- | --- |
+| `feature` | Adds or extends supported behavior. |
+| `bug` | Corrects behavior that violates the documented contract, including statistical errors. |
+| `documentation` | Documentation-only changes. |
+| `internal` | Maintenance without an intended public contract change. |
+
+Add `breaking` when a promised public contract changes and consumers need a
+migration, such as a removed API, changed result schema, or changed stable
+refusal code. It supplements the change category and takes precedence in release
+notes. Include the affected paths and migration route in the PR description.
+Rejecting previously invalid inputs earlier does not alone warrant `breaking`.
+
+Use `skip-changelog` to omit a PR from release notes. The automation labels
+`dependencies`, `python:uv`, and `weekly-failure` are not contributor categories;
+dependency updates are excluded from release notes.
 
 ## License and the CLA
 
