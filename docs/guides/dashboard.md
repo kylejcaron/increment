@@ -274,11 +274,14 @@ experiment's unit that the experiment does not declare (report-only
 offered metric is read in the same pinned snapshot and its eligible cells are
 counted in the exploratory family; the shown ones also appear in the
 Overview's Exploratory group and in Time series. None enters the Readout or the
-Report. Offered metrics are read together: one read per Explore state and scope
-(five states for the whole experiment and for each declared breakout, plus
-segments per breakout) and one overview read for the whole experiment and per
-breakout, however many metrics are offered. A read the source refuses is
-repeated one metric at a time, so each metric keeps its own refusal.
+Report. Offered metrics are read together where their corrections never span
+metrics: one read per time-series state and scope (five states for the whole
+experiment and for each declared breakout) and one overview read for the whole
+experiment and per breakout, however many metrics are offered. Segment views
+are read one metric at a time, because under a Benjamini-Hochberg breakout
+policy a joint read would correct every metric's segments as one family. A
+read the source refuses is repeated one metric at a time, so each metric keeps
+its own refusal.
 `metric_units` may name any
 offered metric. A name the definitions do not offer is refused with
 `dashboard.invalid_config` before any read. In Explore, **Added metrics** lists

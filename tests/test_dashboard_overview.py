@@ -353,14 +353,25 @@ def _rows(collection) -> list[dict[str, object]]:
 
 
 @pytest.mark.slow
-def test_offered_metrics_read_together_match_each_metric_read_alone(tmp_path):
+@pytest.mark.parametrize("correction", ["bonferroni", "bh"])
+def test_offered_metrics_read_together_match_each_metric_read_alone(
+    tmp_path, monkeypatch, correction
+):
+    import tests.test_dashboard_capture as capture
     from increment.dashboard import load_explore
     from increment.dashboard._data import ExploreView
 
-    with _workspace(tmp_path, metrics=_TWO_SAVED) as (_, analysis):
+    monkeypatch.setattr(
+        capture,
+        "_PLAN",
+        capture._PLAN.replace("correction: bonferroni", f"correction: {correction}"),
+    )
+    # Enough units that a segment is a BH discovery, so a joint family would move its threshold.
+    with _workspace(tmp_path, metrics=_TWO_SAVED, units=2000) as (_, analysis):
         snapshot = prepare_dashboard(analysis, config=_config(ADDED, SECOND))
         (declared,) = analysis.experiment.breakouts
         segments = analysis.dashboard_breakout_reads(declared)
+        discoveries = 0
         for name in (ADDED, SECOND):
             alone: dict[tuple[ExploreView, tuple[str, str] | None], Any] = {
                 ("cumulative_lift", None): analysis.run_asof_lift(
@@ -382,3 +393,6 @@ def test_offered_metrics_read_together_match_each_metric_read_alone(tmp_path):
                 assert len(got) == len(want) > 0
                 for row, reference in zip(got, want, strict=True):
                     assert row == pytest.approx(reference, rel=1e-9, abs=1e-12)
+                if view == "segments":
+                    discoveries += sum(bool(getattr(row, "discovery", None)) for row in captured)
+        assert discoveries > 0 or correction == "bonferroni"

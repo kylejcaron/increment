@@ -830,6 +830,10 @@ _CAPTURED_STATES: tuple[tuple[str, bool], ...] = (
 )
 # Absolute per-arm values are computed per metric, with no cross-metric correction.
 _INDEPENDENT_VIEWS = frozenset({"cumulative_values", "daily_values"})
+# Views whose correction never spans metrics, so one read serves every added metric: values have
+# none, and the segmented as-of Bonferroni divisor counts segments only (BH there is refused).
+# Segments are excluded: under a BH breakout policy one read is one metric x arm x segment family.
+_BATCHED_VIEWS = frozenset({"cumulative_lift", "cumulative_values", "daily_values"})
 # The overview's inputs, read for its exploratory family and never served by ``load_explore``:
 # the added metrics' whole-window rows, and every metric's uncorrected segment rows for one
 # declared breakout.
@@ -964,11 +968,13 @@ def _capture_explore(
     is refused is each metric asked alone, so one metric's refusal never hides another's series.
     Temporal views are read for the whole experiment and through each declared breakout's own
     reads, as are segments, so one breakout's refusal never hides another source of the same
-    property. Source refusals are kept as the original coded errors. ``added`` metrics join no
-    family, so one read per view and scope serves them all, never inside the declared metrics'
-    joint family; a refused read, or a metric it returns nothing for, is asked alone. Each
-    declared breakout also captures uncorrected segment rows for every declared and ``added``
-    metric, the overview's exploratory family.
+    property. Source refusals are kept as the original coded errors. ``added`` metrics are never
+    read inside the declared metrics' joint family. Where a view's correction never spans
+    metrics (``_BATCHED_VIEWS``) one read per scope serves them all, and a refused read, or a
+    metric it returns nothing for, is asked alone; segments, whose BH family would span every
+    metric in the read, are read one metric at a time. Each declared breakout also captures
+    uncorrected segment rows for every declared and ``added`` metric, the overview's
+    exploratory family.
     """
     captures: dict[ExploreKey, DashboardExploreCapture] = {}
 
@@ -1012,8 +1018,12 @@ def _capture_explore(
                     ask(reader, view, name, complete=complete, breakout=breakout)
             if not added:
                 continue
-            # Added metrics join no family, so one read serves them all; a refused read, or a
-            # metric it returns nothing for, is asked alone to keep that metric's own answer.
+            if view not in _BATCHED_VIEWS:
+                for name in added:
+                    ask(reader, view, name, complete=complete, breakout=breakout)
+                continue
+            # One read serves every added metric; a refused read, or a metric it returns nothing
+            # for, is asked alone to keep that metric's own answer.
             try:
                 batch = _read_view(reader, view, list(added), complete=complete, added=added)
             except CodedError:
