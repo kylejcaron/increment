@@ -21,7 +21,9 @@ and an authority independent of the refusal itself. The statuses are
 ``construction_limited`` the estimator or readout is not defined for the combination
                          (``CONSTRUCTION:``/``COMBINATION:``)
 ``not_expressible``      the axis value cannot be declared on that ingress; the outcome is
-                         the declaration-time refusal
+                         the declaration-time refusal, or, where the constructor has no
+                         parameter or schema field for it, the ``TypeError`` or pydantic
+                         ``ValidationError`` it raises (no refusal code exists)
 ``unfinished``           supportable or unifiable but not implemented; carries a tracker
                          (``UNFINISHED(<ref>):``)
 ``unsound``              mathematically invalid; carries a derivation
@@ -367,7 +369,7 @@ _SPECS: dict[str, Spec] = {
         fact="no Definitions metric has a missing field",
     ),
     "EXC:TypeError#cluster": Spec(
-        "source_limited",
+        "not_expressible",
         "from_switchback_panel takes no cluster= parameter: a switchback contrast has no "
         "arm-cluster shape",
         f"Analysis.from_switchback_panel signature; {_CAPABILITIES} clustered rows",

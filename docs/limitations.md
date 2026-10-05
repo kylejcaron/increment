@@ -23,12 +23,13 @@ refusal comes from, not whether it is permanent.
 Not every unavailable capability is a refusal. Where the entry point has no parameter or
 constructor for the request, the table says **not expressible**: the call cannot be written, so
 Python raises `TypeError` (or there is nothing to call) and there is no `.code` to branch on.
-`from_switchback_panel(..., design=...)` is the example.
+`from_switchback_panel(..., design=...)` and `from_switchback_panel(..., cluster=...)` are
+examples, as is every logged-policy request made through an `Analysis` entry point.
 
 - **SOURCE**: the entry point's input does not carry what the capability needs, as when a
   moments cube carries no per-unit rows to attach a covariate to. This is a current absence
-  unless the text says structural, as the `from_switchback_panel` encouragement and
-  observational rows (not expressible) and quantile requests (a coded refusal) do.
+  unless the text says structural, as the `from_switchback_panel` encouragement, observational
+  and cluster rows (not expressible) and quantile requests (a coded refusal) do.
 - **CONSTRUCTION**: no admissible construction exists for the request on that path. Five
   reasons are stated: filling an outcome with its pooled mean shrinks variance; the margin
   verdict is carried by `itt`; JSON object keys are strings; windowed and retention metrics
@@ -282,7 +283,8 @@ continuity correction:
 An Encouragement design's ITT on a conversion metric keeps
 this route (ITT and LATE readouts of a retention metric under an Encouragement design are refused
 with `readout.encouragement.retention`; a compliance-only request, `estimands=("compliance",)`,
-ignores outcome configuration and succeeds where the constructor accepts the declaration): the
+ignores the retention outcome and is measured to succeed on `from_definitions` only, see the
+[capabilities table](reference/capabilities-by-entry-point.md#what-runs-where)): the
 design's uptake (first-stage compliance) moments are a
 different random variable over the same units and do not change the
 ITT's own sufficient statistics, so they are stripped before this route
