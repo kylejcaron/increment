@@ -19,6 +19,7 @@ shared between cells, so a cell never depends on test order or on a sibling havi
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Iterable
 from dataclasses import replace
 
@@ -191,15 +192,26 @@ def test_cell(cell: matrix.Cell) -> None:
 def test_asymptotic_retention_variant_enumerates_every_retention_sequential_cell():
     """The variant is an enumerated set, not a one-off: every retention and windowed-retention
     `sequential` cell of the matrix, once, on the asymptotic route, with the same disposition
-    as its default cell."""
-    variants = list(matrix.iter_asymptotic_retention_cells())
-    assert len(variants) == (
-        sum(1 for metric in matrix.METRICS if metric.removeprefix("windowed_") == "retention")
-        * len(matrix.VIEWS)
-        * len(matrix.DAY_BOUNDARIES)
-        * len(matrix.MISSING)
+    as its default cell. The expected set is spelled out here from the axes' literal values, so
+    a generator that returned another metric's cells (the conversion `sequential` cells have
+    the same count and uniqueness) or dropped one retention cell fails."""
+    expected = sorted(
+        itertools.product(
+            ("retention", "windowed_retention"),
+            ("run", "breakout", "daily", "asof"),
+            ("sequential",),
+            ("utc", "fixed_offset"),
+            ("error", "zero", "drop", "impute"),
+            ("asymptotic_mean",),
+        )
     )
-    assert len({cell.id for cell in variants}) == len(variants)
+    variants = list(matrix.iter_asymptotic_retention_cells())
+    assert (
+        sorted(
+            (c.metric, c.view, c.option, c.day_boundary, c.missing, c.inference) for c in variants
+        )
+        == expected
+    )
     for cell in variants:
         default = replace(cell, inference="default")
         assert matrix.classify(cell) == matrix.classify(default)
