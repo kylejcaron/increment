@@ -174,10 +174,21 @@ RESOLUTION = 1e-6
 #: leaves, lightest first, are undecided and add their mass to the upper end of the enclosure.
 EVALUATION_REPLAY_BUDGET = 150_000
 
-#: Cells below which a plan the count rule routes to the delta method with near certainty is
-#: still enumerated (the production delta decision summed over the count lattice) instead of
-#: read from the closed-form model. The closed form is exact only as counts grow: it understated
-#: the enumerated power by up to 0.006 at the smallest dense designs. Past this size it stands.
+#: Runtime rows (`conversion_delta.production_decision`, about a millisecond each) one evaluation
+#: may run for the routed pairs the vectorised delta decision cannot certify: the pairs whose
+#: interval end lies within its rounding radius of the null, about one per control count and
+#: direction. The rest stay undecided.
+EVALUATION_ROW_BUDGET = 20_000
+
+# prose: allow-long derivation of a constant
+#: Lattice cells up to which a plan the count rule routes to the delta method with near
+#: certainty is enumerated (the production delta decision summed over the count lattice) rather
+#: than read from the closed-form model. It is a cost route, the same for every design: the
+#: vectorised decision costs about 0.1 CPU-microsecond a cell plus a runtime row for each pair
+#: it cannot certify (about one per control count), which keeps an evaluation under a second here
+#: and grows with the lattice; beyond it the closed form is used and its figures are the
+#: model's, not an enumeration of the runtime (the closed form's error shrinks with the counts,
+#: it was 0.006 at the smallest dense designs).
 ENUMERATION_CELLS = 250_000
 
 #: Planning bound in (control, treatment) count cells a geometry may store, about 10-15
@@ -1600,6 +1611,7 @@ class RejectionGeometry:
         # The current solve's rows and its treatment spans, merged as the segments are.
         self._footprint: tuple[int, int, list[tuple[int, int]]] | None = None
         self._replayed = 0
+        self._rows_run = 0
 
     def begin_solve(self) -> None:
         """Start a solve: the cells stored so far become a cache, outside its footprint."""
@@ -1759,11 +1771,12 @@ class RejectionGeometry:
         delta = unknown & routed
         pending = unknown & ~routed
         replay_cells = self._affordable(pending, weights) if replay else np.zeros_like(pending)
+        decided = np.zeros_like(delta)
         if delta.any():
-            self._decide_routed(segment, rows, cols, (x_lo, j_lo), delta, row_in, col_in)
+            decided = self._decide_routed(segment, rows, cols, (x_lo, j_lo), delta, row_in, col_in)
         if replay_cells.any():
             self._replay(segment, rows, cols, (x_lo, j_lo), replay_cells)
-        segment.known[rows, cols] |= delta | replay_cells
+        segment.known[rows, cols] |= decided | replay_cells
 
     def _affordable(
         self, pending: np.ndarray, weights: tuple[np.ndarray, np.ndarray] | None
@@ -1820,12 +1833,16 @@ class RejectionGeometry:
         delta: np.ndarray,
         row_in: np.ndarray,
         col_in: np.ndarray,
-    ) -> None:
-        """Write the delta decision of the *delta* cells, all inside the routed rectangle.
-        A pair the vectorised rule leaves open is decided by the runtime row itself."""
+    ) -> np.ndarray:
+        """Write the delta decision of the *delta* cells, all inside the routed rectangle, and
+        return the mask of those decided. A pair `delta_decision` cannot certify is decided by
+        the runtime row itself while the evaluation's row budget (`EVALUATION_ROW_BUDGET`)
+        lasts; once it is spent the remaining pairs stay undecided (ambiguous mass), never
+        assumed."""
         decision, routing = self.decision, self.routing
         assert routing is not None
         x_lo, j_lo = origin
+        decided = np.zeros_like(delta)
         r_idx, c_idx = np.flatnonzero(row_in), np.flatnonzero(col_in)
         c0, c1 = int(c_idx[0]), int(c_idx[-1]) + 1
         x_t = (j_lo + np.arange(c0, c1))[None, :]
@@ -1846,7 +1863,11 @@ class RejectionGeometry:
                 null_lift=routing.null_lift,
             )
             plus, minus = out.plus.copy(), out.minus.copy()
+            kept = block & out.settled
             for a, b in np.argwhere(~out.settled & block):
+                if self._rows_run >= EVALUATION_ROW_BUDGET:
+                    break
+                self._rows_run += 1
                 plus[a, b], minus[a, b] = production_decision(
                     int(x_c[a, 0]),
                     decision.n_c,
@@ -1856,12 +1877,15 @@ class RejectionGeometry:
                     alternative=decision.alternative,
                     null_lift=routing.null_lift,
                 )
+                kept[a, b] = True
             target = (
                 slice(rows.start + start, rows.start + stop),
                 slice(cols.start + c0, cols.start + c1),
             )
-            segment.plus[target] = np.where(block, plus, segment.plus[target])
-            segment.minus[target] = np.where(block, minus, segment.minus[target])
+            segment.plus[target] = np.where(kept, plus, segment.plus[target])
+            segment.minus[target] = np.where(kept, minus, segment.minus[target])
+            decided[start:stop, c0:c1] = kept
+        return decided
 
     def _replay(
         self,
@@ -1907,6 +1931,7 @@ class RejectionGeometry:
         full and the count pairs it would decide carry more than half of `RESOLUTION`."""
         decision = self.decision
         self._replayed = 0
+        self._rows_run = 0
         if not self.finite:
             # The count pairs the runtime keeps on the route it refuses are known in closed form,
             # before any cell is stored.

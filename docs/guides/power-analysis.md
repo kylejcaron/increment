@@ -192,9 +192,14 @@ Power depends on the baseline rate alone; `var` does not enter.
   `1e-6` of mass left undecided (counts the rule routes to the delta method with near
   certainty need no replay of the finite-sample test, and their `~1e-6` is that mass). The
   production delta decision is also what a dense plan reports while its lattice has at most
-  250,000 cells: the closed form below it understated the enumerated power by up to 0.006 at
-  the smallest dense designs (a 1,236-unit arm at a 50% baseline and a 6% lift: 0.5859 against
-  0.5918 at `alpha=0.2`).
+  250,000 cells. That limit is a cost route, the same for every design: enumerating costs about
+  a tenth of a CPU-microsecond a cell and the closed form's error shrinks with the counts, so
+  the closed form is used once the lattice is too large to enumerate. Below it the closed
+  form understated the enumerated power by up to 0.006 (a 1,236-unit arm at a 50% baseline and
+  a 6% lift: 0.5859 against 0.5918 at `alpha=0.2`). A vectorised pair is taken as the
+  runtime's decision only beyond a rounding radius derived from the runtime's own arithmetic
+  (its per-arm moments and reference quantile are called, not restated); a pair inside it is
+  decided by the runtime's own row, and left undecided if the evaluation's row budget is spent.
 - `power_basis="approximate"`: the replay of the finite-sample test is budgeted at 150,000
   directional replays an evaluation (about a hundred to four hundred CPU-microseconds each at
   the arm sizes where counts reach the routing threshold), the heaviest count pairs first. A
@@ -209,7 +214,7 @@ Power depends on the baseline rate alone; `var` does not enter.
   reported power or a bound.
 - `power_basis="asymptotic"`: the closed-form model above, for counts the rule routes to the
   delta method with near certainty (unrouted mass at most `1e-6`) in a lattice of more than
-  250,000 cells. It is not an enumeration of the runtime's decision: it agreed with the
+  250,000 cells; its figures are the model's only. It is not an enumeration of the runtime's decision: it agreed with the
   pipeline's rejection probability to within 0.005 (the repository's ceiling for a normal
   approximation) at the designs enumerated on the limitations page, and a target called
   unattainable or an effect certified there is so under this model.
