@@ -38,12 +38,16 @@ of dense, sparse and borderline designs with the production pipeline's exact rej
 probability, summed over the count lattice; ``mirror`` compares it with the simulated rejection
 rate of ``estimate_lift`` (``tests.estimation._conversion_counts.runtime_rejection_rate``).
 
+Every lattice sum streams over blocks of control counts (``_BLOCK_CELLS`` cells each), so a
+worker's footprint stays near a gibibyte whatever the arm sizes: the largest boundary cell has
+a count lattice of tens of millions of cells.
+
     python -m calibration.conversion_route select --out /tmp/route-scan.jsonl
     python -m calibration.conversion_route verify
     python -m calibration.conversion_route conformance
-    python -m calibration.conversion_route hybrid --workers 8
-    python -m calibration.conversion_route bound --workers 8
-    python -m calibration.conversion_route mirror --reps 20000
+    python -m calibration.conversion_route hybrid --workers 4 --tails 0.025 0.01
+    python -m calibration.conversion_route bound --workers 4 --out /tmp/route-bound.jsonl
+    python -m calibration.conversion_route mirror --reps 3000 --workers 4
 """
 
 from __future__ import annotations
@@ -55,7 +59,7 @@ import math
 import multiprocessing
 import multiprocessing.pool
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -72,7 +76,7 @@ from tests.mc import (
 )
 
 if TYPE_CHECKING:
-    from increment.power._binomial import _Window
+    from increment.power._binomial import BinomialDecision, _Window
 
 #: One-sided tails the production alphas produce: two-sided ``alpha / 2`` for
 #: ``alpha in {.001, .01, .05, .1}`` and directional ``alpha in {.001, .01, .05, .1}``.
@@ -154,6 +158,21 @@ def _lattice(n: int, p: float) -> tuple[np.ndarray, np.ndarray]:
     return counts, _binom.pmf(counts, n, p)
 
 
+#: Cells of the joint count lattice held at once. Every sum over a lattice streams over blocks of
+#: control counts of at most this many cells, so a worker's footprint is set by the block and not
+#: by the arms' windows: a cell of ten million units per arm at a central rate has a window of
+#: tens of thousands of counts, and its whole lattice is tens of millions of cells.
+_BLOCK_CELLS = 1 << 21
+
+
+def _row_blocks(rows: int, width: int) -> Iterator[slice]:
+    """Slices of ``rows`` control counts holding at most ``_BLOCK_CELLS`` cells at ``width``
+    treatment counts each, and at least one row."""
+    step = max(1, _BLOCK_CELLS // max(1, width))
+    for start in range(0, rows, step):
+        yield slice(start, min(rows, start + step))
+
+
 def _statistic(
     x_c: np.ndarray, n_c: int, x_t: np.ndarray, n_t: int
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -219,25 +238,28 @@ def boundary_noncoverage(
     or a count per tail."""
     x_c, w_c = _lattice(cell.n_c, cell.p_c)
     x_t, w_t = _lattice(cell.n_t, cell.p_t)
-    grid_c, grid_t = np.meshgrid(x_c, x_t, indexing="ij")
-    weight = np.outer(w_c, w_t)
-    smallest = np.minimum.reduce([grid_c, cell.n_c - grid_c, grid_t, cell.n_t - grid_t])
-    defined = smallest >= 1
-    log_rr, se, df = _statistic(grid_c, cell.n_c, grid_t, cell.n_t)
-    out: dict[float, tuple[float, float, float, float]] = {}
-    for tail in tails:
-        crit = _critical(df, tail)
-        floor = threshold[tail] if isinstance(threshold, dict) else threshold
-        routed = defined & (smallest >= floor)
-        low_miss = defined & (log_rr - crit * se > cell.truth)
-        up_miss = defined & (log_rr + crit * se < cell.truth)
-        out[tail] = (
-            float((weight * low_miss).sum()),
-            float((weight * up_miss).sum()),
-            float((weight * (low_miss & routed)).sum()),
-            float((weight * (up_miss & routed)).sum()),
+    totals = {tail: np.zeros(4) for tail in tails}
+    for rows in _row_blocks(x_c.size, x_t.size):
+        grid_c = x_c[rows, None]
+        weight = np.outer(w_c[rows], w_t)
+        smallest = np.minimum(
+            np.minimum(grid_c, cell.n_c - grid_c), np.minimum(x_t, cell.n_t - x_t)[None, :]
         )
-    return out
+        defined = smallest >= 1
+        log_rr, se, df = _statistic(grid_c, cell.n_c, x_t[None, :], cell.n_t)
+        for tail in tails:
+            crit = _critical(df, tail)
+            floor = threshold[tail] if isinstance(threshold, dict) else threshold
+            routed = defined & (smallest >= floor)
+            low_miss = defined & (log_rr - crit * se > cell.truth)
+            up_miss = defined & (log_rr + crit * se < cell.truth)
+            totals[tail] += (
+                weight[low_miss].sum(),
+                weight[up_miss].sum(),
+                weight[low_miss & routed].sum(),
+                weight[up_miss & routed].sum(),
+            )
+    return {tail: (float(a), float(b), float(c), float(d)) for tail, (a, b, c, d) in totals.items()}
 
 
 @dataclass(frozen=True, slots=True)
@@ -542,31 +564,59 @@ class HybridNoncoverage:
     omitted: float
 
 
+def _finite_blocks(
+    key: BinomialDecision, window_c: _Window, window_t: _Window
+) -> Iterator[tuple[slice, np.ndarray, np.ndarray]]:
+    """``(rows, plus, minus)`` per block of control counts: where the runtime's finite-sample
+    decision rejects, ``rows`` indexing ``window_c``. The planner replays that decision from
+    ``RejectionGeometry`` on its ``exact`` route whatever the cell count (the runtime's own
+    search, not the surrogate the planner substitutes above its budget). Each count pair has its
+    own replay, so a block is classified by a geometry of its own and decides as the whole
+    window would, while no more than ``_BLOCK_CELLS`` cells are stored."""
+    from increment.power._binomial import PLANNING_CELL_CEILING, RejectionGeometry
+
+    for rows in _row_blocks(window_c.size, window_t.size):
+        plus, minus = RejectionGeometry(key, "exact", PLANNING_CELL_CEILING).cells(
+            window_c.lo + rows.start, window_c.lo + rows.stop - 1, window_t.lo, window_t.hi
+        )
+        yield rows, plus, minus
+
+
+def _decision_key(
+    cell: Cell, *, alpha: float, alternative: Literal["two-sided", "greater", "less"]
+) -> BinomialDecision:
+    """The runtime's finite-sample decision of ``cell``'s contrast at its true ratio."""
+    from increment.estimation.binomial_rr import nuisance_beta
+    from increment.power._binomial import BinomialDecision
+
+    tail = alpha / 2.0 if alternative == "two-sided" else alpha
+    return BinomialDecision(
+        cell.n_c, cell.n_t, cell.p_t / cell.p_c, nuisance_beta(alpha), tail, alternative
+    )
+
+
 def finite_sample_misses(
     cell: Cell, *, alpha: float, alternative: Literal["two-sided", "greater", "less"]
 ) -> tuple[np.ndarray, np.ndarray, _Window, _Window]:
     """``(plus, minus, window_c, window_t)``: over the count lattice of ``cell``, where the
     finite-sample set misses the true ratio. Its miss is the rejection of the test at that
-    ratio, which the planner replays from the runtime decision (``RejectionGeometry``, on its
-    ``exact`` route whatever the cell count: the runtime's own search, not the surrogate the
-    planner substitutes above its budget): a ``plus`` rejection puts the set wholly above the
-    truth, a ``minus`` one wholly below."""
-    from increment.estimation.binomial_rr import nuisance_beta
-    from increment.power._binomial import (
-        PLANNING_CELL_CEILING,
-        BinomialDecision,
-        RejectionGeometry,
-        _window,
-    )
+    ratio (``_finite_blocks``): a ``plus`` rejection puts the set wholly above the truth, a
+    ``minus`` one wholly below. The whole lattice is held, so this is for cells whose windows
+    are small."""
+    from increment.power._binomial import _window
 
-    tail = alpha / 2.0 if alternative == "two-sided" else alpha
-    key = BinomialDecision(
-        cell.n_c, cell.n_t, cell.p_t / cell.p_c, nuisance_beta(alpha), tail, alternative
-    )
-    geometry = RejectionGeometry(key, "exact", PLANNING_CELL_CEILING)
     window_c, window_t = _window(cell.n_c, cell.p_c), _window(cell.n_t, cell.p_t)
-    plus, minus = geometry.cells(window_c.lo, window_c.hi, window_t.lo, window_t.hi)
-    return plus, minus, window_c, window_t
+    blocks = list(
+        _finite_blocks(
+            _decision_key(cell, alpha=alpha, alternative=alternative), window_c, window_t
+        )
+    )
+    return (
+        np.concatenate([plus for _, plus, _ in blocks]),
+        np.concatenate([minus for _, _, minus in blocks]),
+        window_c,
+        window_t,
+    )
 
 
 def hybrid_noncoverage(
@@ -579,33 +629,30 @@ def hybrid_noncoverage(
     """Exact noncoverage of the pipeline at ``cell``, summed over the joint binomial law of its
     counts: a pair whose four counts reach ``threshold`` is covered by the delta-method
     interval (the vectorised production interval, ``conformance``), every other pair by the
-    finite-sample set (``finite_sample_misses``, checked against ``estimate_lift`` by
+    finite-sample set (``_finite_blocks``, checked against ``estimate_lift`` by
     ``conformance``). Counts are not drawn, so there is no sampling error; the lattice omits at
-    most the windows' ``omitted`` mass."""
+    most the windows' ``omitted`` mass. The sums stream over blocks of control counts, so the
+    footprint does not grow with the windows."""
+    from increment.power._binomial import _window
+
     tail = alpha / 2.0 if alternative == "two-sided" else alpha
-    plus, minus, window_c, window_t = finite_sample_misses(
-        cell, alpha=alpha, alternative=alternative
-    )
-    grid_c, grid_t = np.meshgrid(
-        np.arange(window_c.lo, window_c.hi + 1),
-        np.arange(window_t.lo, window_t.hi + 1),
-        indexing="ij",
-    )
-    weight = np.outer(window_c.weights, window_t.weights)
-    smallest = np.minimum.reduce([grid_c, cell.n_c - grid_c, grid_t, cell.n_t - grid_t])
-    log_rr, se, df = _statistic(
-        np.clip(grid_c, 1, cell.n_c - 1), cell.n_c, np.clip(grid_t, 1, cell.n_t - 1), cell.n_t
-    )
-    crit = _critical(df, tail)
-    routed = smallest >= threshold
-    lower_asymptotic = (log_rr - crit * se > cell.truth) & routed
-    upper_asymptotic = (log_rr + crit * se < cell.truth) & routed
-    return HybridNoncoverage(
-        float((weight * np.where(routed, lower_asymptotic, plus)).sum()),
-        float((weight * np.where(routed, upper_asymptotic, minus)).sum()),
-        float((weight * routed).sum()),
-        window_c.omitted + window_t.omitted,
-    )
+    window_c, window_t = _window(cell.n_c, cell.p_c), _window(cell.n_t, cell.p_t)
+    key = _decision_key(cell, alpha=alpha, alternative=alternative)
+    x_t = np.arange(window_t.lo, window_t.hi + 1)[None, :]
+    lower = upper = share = 0.0
+    for rows, plus, minus in _finite_blocks(key, window_c, window_t):
+        x_c = np.arange(window_c.lo + rows.start, window_c.lo + rows.stop)[:, None]
+        weight = np.outer(window_c.weights[rows], window_t.weights)
+        smallest = np.minimum(np.minimum(x_c, cell.n_c - x_c), np.minimum(x_t, cell.n_t - x_t))
+        log_rr, se, df = _statistic(
+            np.clip(x_c, 1, cell.n_c - 1), cell.n_c, np.clip(x_t, 1, cell.n_t - 1), cell.n_t
+        )
+        crit = _critical(df, tail)
+        routed = smallest >= threshold
+        lower += float(weight[np.where(routed, log_rr - crit * se > cell.truth, plus)].sum())
+        upper += float(weight[np.where(routed, log_rr + crit * se < cell.truth, minus)].sum())
+        share += float(weight[routed].sum())
+    return HybridNoncoverage(lower, upper, share, window_c.omitted + window_t.omitted)
 
 
 #: Distance from the true lift within which a production endpoint and the replayed test at
@@ -704,10 +751,7 @@ def hybrid(
                 jobs.append((cell, 2.0 * tail, shipped, "two-sided"))
                 if rank == 0:
                     jobs.append((cell, tail, shipped, "greater"))
-        if workers > 1:
-            results = _pool(workers).map(_hybrid_job, jobs)
-        else:
-            results = [_hybrid_job(job) for job in jobs]
+        results = _pool(workers).imap(_hybrid_job, jobs) if workers > 1 else map(_hybrid_job, jobs)
         for (cell, alpha, _, alternative), result in zip(jobs, results, strict=True):
             delta, level = scientific_delta(tail), 2.0 * tail
             ok = max(result.lower, result.upper) <= tail + delta + result.omitted
@@ -780,50 +824,58 @@ def mirror_cells() -> tuple[MirrorCell, ...]:
     return tuple(cells)
 
 
-def mirror(reps: int, seed: int) -> int:
-    """Planned power against the simulated production rejection rate, per design: a dense plan
-    within ``4 * se + 0.003``; a sparse plan within ``4 * se`` (its replay is exact up to the
-    window mass); a borderline plan no larger than the simulated rate plus ``4 * se``."""
+def _mirror_job(args: tuple[MirrorCell, int, int]) -> tuple[str, bool]:
+    """One mirror design's report line and whether it passes."""
     from increment.estimation.arm_contract import ArmPlanningProcedure
     from increment.estimation.conversion_route import planning_route
     from increment.power import Baseline, achieved_power
 
+    cell, reps, seed = args
+    tail = cell.alpha / 2.0 if cell.alternative == "two-sided" else cell.alpha
+    route = planning_route(
+        cell.n, cell.n, cell.p_c, cell.p_c * (1.0 + cell.lift), tail_alpha=tail, mode="auto"
+    )
+    procedure = ArmPlanningProcedure.standard(
+        "conversion", alpha=cell.alpha, alternative=cell.alternative
+    )
+    planned = achieved_power(cell.n, cell.lift, Baseline.from_proportion(cell.p_c), procedure)
+    rate, se, share = runtime_rejection_rate(
+        cell.n,
+        cell.n,
+        cell.p_c,
+        cell.p_c * (1.0 + cell.lift),
+        alpha=cell.alpha,
+        alternative=cell.alternative,
+        reps=reps,
+        seed=seed,
+    )
+    gap = planned.power - rate
+    ok = (
+        abs(gap) <= 4 * se + 0.003
+        if route == "dense"
+        else abs(gap) <= 4 * se
+        if route == "sparse"
+        else gap <= 4 * se
+    )
+    return (
+        f"{cell.label:<10} route={route:<10} n={cell.n:>8} p_c={cell.p_c:<5} "
+        f"lift={cell.lift:<5} alpha={cell.alpha:<5} {cell.alternative:<9} "
+        f"planned={planned.power:.4f} ({planned.power_basis}) simulated={rate:.4f} "
+        f"se={se:.4f} asym_share={share:.2f} {'ok' if ok else 'FAIL'}",
+        ok,
+    )
+
+
+def mirror(reps: int, seed: int, *, workers: int = 1) -> int:
+    """Planned power against the simulated production rejection rate, per design: a dense plan
+    within ``4 * se + 0.003``; a sparse plan within ``4 * se`` (its replay is exact up to the
+    window mass); a borderline plan no larger than the simulated rate plus ``4 * se``."""
+    jobs = [(cell, reps, seed) for cell in mirror_cells()]
+    results = _pool(workers).imap(_mirror_job, jobs) if workers > 1 else map(_mirror_job, jobs)
     failed = 0
-    for cell in mirror_cells():
-        tail = cell.alpha / 2.0 if cell.alternative == "two-sided" else cell.alpha
-        route = planning_route(
-            cell.n, cell.n, cell.p_c, cell.p_c * (1.0 + cell.lift), tail_alpha=tail, mode="auto"
-        )
-        procedure = ArmPlanningProcedure.standard(
-            "conversion", alpha=cell.alpha, alternative=cell.alternative
-        )
-        planned = achieved_power(cell.n, cell.lift, Baseline.from_proportion(cell.p_c), procedure)
-        rate, se, share = runtime_rejection_rate(
-            cell.n,
-            cell.n,
-            cell.p_c,
-            cell.p_c * (1.0 + cell.lift),
-            alpha=cell.alpha,
-            alternative=cell.alternative,
-            reps=reps,
-            seed=seed,
-        )
-        gap = planned.power - rate
-        ok = (
-            abs(gap) <= 4 * se + 0.003
-            if route == "dense"
-            else abs(gap) <= 4 * se
-            if route == "sparse"
-            else gap <= 4 * se
-        )
+    for line, ok in results:
         failed += not ok
-        print(
-            f"{cell.label:<10} route={route:<10} n={cell.n:>8} p_c={cell.p_c:<5} "
-            f"lift={cell.lift:<5} alpha={cell.alpha:<5} {cell.alternative:<9} "
-            f"planned={planned.power:.4f} ({planned.power_basis}) simulated={rate:.4f} "
-            f"se={se:.4f} asym_share={share:.2f} {'ok' if ok else 'FAIL'}",
-            flush=True,
-        )
+        print(line, flush=True)
     return 1 if failed else 0
 
 
@@ -858,12 +910,13 @@ def enumerated_power(cell: MirrorCell) -> EnumeratedPower:
     approximation; the delta-method decision is the vectorised production interval
     (``conformance``). A pair is decided by the delta method iff its four counts reach
     ``dense_min_count``, so the sum over the pairs is the pipeline's rejection probability,
-    not a bound on it. Pairs with a zero count are always finite-sample.
+    not a bound on it. Pairs with a zero count are always finite-sample. The sums stream over
+    blocks of control counts (``_finite_blocks``).
     """
     from increment.estimation.arm_contract import ArmPlanningProcedure
     from increment.estimation.conversion_route import planning_route
     from increment.power import Baseline, achieved_power
-    from increment.power._binomial import PLANNING_CELL_CEILING, RejectionGeometry, _window
+    from increment.power._binomial import _window
     from increment.power.core import _binomial_key
 
     procedure = ArmPlanningProcedure.standard(
@@ -873,38 +926,40 @@ def enumerated_power(cell: MirrorCell) -> EnumeratedPower:
     p_t = cell.p_c * (1.0 + cell.lift)
     planned = achieved_power(cell.n, cell.lift, Baseline.from_proportion(cell.p_c), procedure)
     key = _binomial_key(procedure, cell.n, cell.n)
-    geometry = RejectionGeometry(key, "exact", PLANNING_CELL_CEILING)
     window_c, window_t = _window(cell.n, cell.p_c), _window(cell.n, p_t)
-    plus, minus = geometry.cells(window_c.lo, window_c.hi, window_t.lo, window_t.hi)
-    finite = plus | minus
-    grid_c, grid_t = np.meshgrid(
-        np.arange(window_c.lo, window_c.hi + 1),
-        np.arange(window_t.lo, window_t.hi + 1),
-        indexing="ij",
-    )
-    weight = np.outer(window_c.weights, window_t.weights)
-    smallest = np.minimum.reduce([grid_c, cell.n - grid_c, grid_t, cell.n - grid_t])
-    log_rr, se, df = _statistic(
-        np.clip(grid_c, 1, cell.n - 1), cell.n, np.clip(grid_t, 1, cell.n - 1), cell.n
-    )
-    crit = _critical(df, tail)
-    lower_clear, upper_clear = log_rr - crit * se > 0.0, log_rr + crit * se < 0.0
-    asymptotic = (
-        lower_clear | upper_clear
-        if cell.alternative == "two-sided"
-        else lower_clear
-        if cell.alternative == "greater"
-        else upper_clear
-    ) & (smallest >= 1)
-    routed = smallest >= dense_min_count(tail)
+    x_t = np.arange(window_t.lo, window_t.hi + 1)[None, :]
+    floor = dense_min_count(tail)
+    share = asymptotic = finite_sample = hybrid = 0.0
+    for rows, plus, minus in _finite_blocks(key, window_c, window_t):
+        x_c = np.arange(window_c.lo + rows.start, window_c.lo + rows.stop)[:, None]
+        weight = np.outer(window_c.weights[rows], window_t.weights)
+        smallest = np.minimum(np.minimum(x_c, cell.n - x_c), np.minimum(x_t, cell.n - x_t))
+        log_rr, se, df = _statistic(
+            np.clip(x_c, 1, cell.n - 1), cell.n, np.clip(x_t, 1, cell.n - 1), cell.n
+        )
+        crit = _critical(df, tail)
+        lower_clear, upper_clear = log_rr - crit * se > 0.0, log_rr + crit * se < 0.0
+        delta_rejects = (
+            lower_clear | upper_clear
+            if cell.alternative == "two-sided"
+            else lower_clear
+            if cell.alternative == "greater"
+            else upper_clear
+        ) & (smallest >= 1)
+        finite_rejects = plus | minus
+        routed = smallest >= floor
+        share += float(weight[routed].sum())
+        asymptotic += float(weight[delta_rejects].sum())
+        finite_sample += float(weight[finite_rejects].sum())
+        hybrid += float(weight[np.where(routed, delta_rejects, finite_rejects)].sum())
     return EnumeratedPower(
         planning_route(cell.n, cell.n, cell.p_c, p_t, tail_alpha=tail, mode="auto"),
         planned.power,
         planned.power_basis,
-        float((weight * routed).sum()),
-        float((weight * asymptotic).sum()),
-        float((weight * finite).sum()),
-        float((weight * np.where(routed, asymptotic, finite)).sum()),
+        share,
+        asymptotic,
+        finite_sample,
+        hybrid,
         window_c.omitted + window_t.omitted,
     )
 
@@ -941,19 +996,33 @@ def bound_cells() -> tuple[MirrorCell, ...]:
     return tuple(out)
 
 
-def bound(*, workers: int) -> int:
+def bound(*, workers: int, out: Path | None = None) -> int:
     """Planned power against the pipeline's exact rejection probability at every design of
     ``bound_cells``: a sparse plan equal to it up to the replay's omitted mass, a borderline
     plan no larger than it (the planning bound), and a dense plan, whose closed form is an
-    approximation rather than a bound, within ``DENSE_AGREEMENT`` of it."""
+    approximation rather than a bound, within ``DENSE_AGREEMENT`` of it. Each design is appended
+    to ``out`` as it completes, and designs already in ``out`` are not recomputed, so an
+    interrupted run resumes."""
     designs = bound_cells()
-    if workers > 1:
-        results = _pool(workers).map(enumerated_power, designs)
-    else:
-        results = [enumerated_power(design) for design in designs]
+    results: dict[int, EnumeratedPower] = {}
+    if out is not None and out.exists():
+        for line in out.read_text().splitlines():
+            record = json.loads(line)
+            results[record["design"]] = EnumeratedPower(**record["power"])
+    pending = [index for index in range(len(designs)) if index not in results]
+    jobs = [designs[index] for index in pending]
+    computed = (
+        _pool(workers).imap(enumerated_power, jobs) if workers > 1 else map(enumerated_power, jobs)
+    )
+    for index, power in zip(pending, computed, strict=True):
+        results[index] = power
+        if out is not None:
+            with out.open("a") as handle:
+                handle.write(json.dumps({"design": index, "power": asdict(power)}) + "\n")
     failed = 0
     margins: dict[str, list[float]] = {}
-    for cell, power in zip(designs, results, strict=True):
+    for index, cell in enumerate(designs):
+        power = results[index]
         slack = 1e-9 + power.omitted
         ok = (
             abs(power.margin) <= DENSE_AGREEMENT + slack
@@ -1002,8 +1071,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     hybrid_parser.add_argument("--count", type=int, default=3)
     bound_parser = sub.add_parser("bound", help="planned power against the exact pipeline power")
     bound_parser.add_argument("--workers", type=int, default=1)
+    bound_parser.add_argument("--out", type=Path, default=None)
     mirror_parser = sub.add_parser("mirror", help="planned power against the production route")
     mirror_parser.add_argument("--reps", type=int, default=20_000)
+    mirror_parser.add_argument("--workers", type=int, default=1)
     mirror_parser.add_argument("--seed", type=int, default=20261004)
     args = parser.parse_args(argv)
     if args.command == "select":
@@ -1027,9 +1098,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0 if gap < 1e-9 and interpolation < _CRITICAL_AGREEMENT and not hard else 1
     if args.command == "mirror":
-        return mirror(args.reps, args.seed)
+        return mirror(args.reps, args.seed, workers=args.workers)
     if args.command == "bound":
-        return bound(workers=args.workers)
+        return bound(workers=args.workers, out=args.out)
     return hybrid(
         args.tails, workers=args.workers, count=args.count, replicate_tails=args.replicate_tails
     )

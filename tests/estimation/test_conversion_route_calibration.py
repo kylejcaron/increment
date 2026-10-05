@@ -186,6 +186,58 @@ class TestHybridPipelineAcrossTheThreshold:
             assert kind == ("t" if route == "asymptotic" else "binomial")
 
 
+class TestLatticeSumsStreamOverBlocks:
+    """Every sum over a count lattice streams over blocks of control counts so that a worker's
+    footprint does not grow with the arms' windows: the block size moves the footprint, never the
+    value (a cell of ten million units per arm has a lattice of tens of millions of cells)."""
+
+    CELL = cr.Cell("central", 300, 600, 0.3, 0.36, 1.2, 20.0)
+
+    @staticmethod
+    def _small_blocks(monkeypatch) -> None:
+        monkeypatch.setattr(cr, "_BLOCK_CELLS", 700)
+
+    def test_boundary_noncoverage_does_not_depend_on_the_block_size(self, monkeypatch):
+        tails = (0.025, 0.1)
+        whole = cr.boundary_noncoverage(self.CELL, tails, 20)
+        self._small_blocks(monkeypatch)
+        blocked = cr.boundary_noncoverage(self.CELL, tails, 20)
+        for tail in tails:
+            assert blocked[tail] == pytest.approx(whole[tail], rel=1e-12, abs=0.0)
+
+    @pytest.mark.parametrize("alternative", ["two-sided", "greater"])
+    def test_hybrid_noncoverage_does_not_depend_on_the_block_size(self, monkeypatch, alternative):
+        def result():
+            return cr.hybrid_noncoverage(
+                self.CELL, alpha=0.1, threshold=20, alternative=alternative
+            )
+
+        whole = result()
+        self._small_blocks(monkeypatch)
+        blocked = result()
+        assert blocked.lower == pytest.approx(whole.lower, rel=1e-12, abs=0.0)
+        assert blocked.upper == pytest.approx(whole.upper, rel=1e-12, abs=0.0)
+        assert blocked.asymptotic_share == pytest.approx(whole.asymptotic_share, rel=1e-12)
+        assert 0.0 < whole.asymptotic_share < 1.0
+
+    def test_the_finite_sample_set_does_not_depend_on_the_block_size(self, monkeypatch):
+        whole = cr.finite_sample_misses(self.CELL, alpha=0.1, alternative="two-sided")
+        self._small_blocks(monkeypatch)
+        blocked = cr.finite_sample_misses(self.CELL, alpha=0.1, alternative="two-sided")
+        np.testing.assert_array_equal(blocked[0], whole[0])
+        np.testing.assert_array_equal(blocked[1], whole[1])
+
+    @pytest.mark.slow
+    def test_enumerated_power_does_not_depend_on_the_block_size(self, monkeypatch):
+        design = cr.MirrorCell("bound", 300, 0.3, 0.1, 0.2, "two-sided")
+        whole = cr.enumerated_power(design)
+        self._small_blocks(monkeypatch)
+        blocked = cr.enumerated_power(design)
+        for name in ("asymptotic_share", "asymptotic", "finite_sample", "hybrid"):
+            assert getattr(blocked, name) == pytest.approx(getattr(whole, name), rel=1e-12)
+        assert blocked.planned == whole.planned
+
+
 @pytest.mark.slow
 @pytest.mark.parameter_recovery
 class TestPlanningBound:
