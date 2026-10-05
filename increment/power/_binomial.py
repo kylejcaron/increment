@@ -1783,13 +1783,28 @@ class RejectionGeometry:
             self._replay(segment, rows, cols, (x_lo, j_lo), replay_cells)
         segment.known[rows, cols] |= todo
 
-    def _off_route_mass(self, wc: _Window, wt: _Window) -> float:
-        """The probability, within the two windows, of the count pairs off the routed rectangle:
-        those the runtime keeps on the finite-sample route."""
+    def _off_route_bound(self, wc: _Window, wt: _Window) -> float:
+        """Upper bound on the probability, within the two windows, of the count pairs off the
+        routed rectangle: those the runtime keeps on the finite-sample route.
+
+        It is ``out_c * T_t + in_c * out_t``, the control weights outside the routed rows times
+        every treatment weight plus those inside them times the treatment weights outside the
+        routed columns. Each factor is a sum of nonnegative weights taken directly, never a total
+        less an inside sum, which would lose a small tail to cancellation. Every term carries the
+        weights' relative allowance and the rounding of its two sums, product and the final
+        addition, so one outward-rounded inflation encloses the exact mass of the true laws."""
         row_in, col_in = self._routed_flags(wc.lo, wc.hi, wt.lo, wt.hi)
-        total_c, total_t = float(wc.weights.sum()), float(wt.weights.sum())
-        inside_c, inside_t = float(wc.weights[row_in].sum()), float(wt.weights[col_in].sum())
-        return (total_c - inside_c) * total_t + inside_c * (total_t - inside_t)
+        out_c, in_c = float(wc.weights[~row_in].sum()), float(wc.weights[row_in].sum())
+        out_t, total_t = float(wt.weights[~col_in].sum()), float(wt.weights.sum())
+        inflation = _inflation(
+            wc.error,
+            wt.error,
+            _compounded(wc.size),
+            _compounded(wt.size),
+            _UNIT_ROUNDOFF,
+            _UNIT_ROUNDOFF,
+        )
+        return _up((out_c * total_t + in_c * out_t) * inflation)
 
     def _selected(self, wc: _Window, wt: _Window) -> np.ndarray:
         """The cells of the rectangle ``wc`` by ``wt`` an evaluation decides, a function of the
@@ -1799,14 +1814,14 @@ class RejectionGeometry:
 
         Every routed pair is chosen from while `EVALUATION_ROW_BUDGET` pays for it, and every
         pair off the routed rectangle (none when the runtime refuses the finite-sample decision
-        in full, nor when those pairs weigh at most half of `RESOLUTION`) while
-        `EVALUATION_REPLAY_BUDGET` does, the heaviest first (`_heaviest`). A pair outside the
-        choice is undecided in this evaluation, even if an earlier one decided it."""
+        in full, nor when `_off_route_bound` of those pairs is at most half of `RESOLUTION`)
+        while `EVALUATION_REPLAY_BUDGET` does, the heaviest first (`_heaviest`). A pair outside
+        the choice is undecided in this evaluation, even if an earlier one decided it."""
         row_in, col_in = self._routed_flags(wc.lo, wc.hi, wt.lo, wt.hi)
         routed = row_in[:, None] & col_in[None, :]
         weights = (wc.weights, wt.weights)
         selected = self._heaviest(routed, weights, EVALUATION_ROW_BUDGET)
-        if not self.finite or self._off_route_mass(wc, wt) <= RESOLUTION / 2.0:
+        if not self.finite or self._off_route_bound(wc, wt) <= RESOLUTION / 2.0:
             return selected
         pending = ~routed
         if self.route == "exact":
@@ -1935,6 +1950,14 @@ class RejectionGeometry:
             segment, rows, cols = self._reserve(wc.lo, wc.hi, wt.lo, wt.hi)
         except ReplayBoundExceeded as exceeded:
             raise ReplayBoundExceeded(exceeded.cells, p_t) from None
+        if not self.finite:
+            # The closed-form share above bounds the whole distribution; this is the mass of the
+            # pairs the plan's windows hold, summed from their weights with outward rounding.
+            # Routed pairs the row budget leaves out are ambiguous mass of the enclosure, not a
+            # refusal.
+            refused_mass = self._off_route_bound(wc, wt)
+            if refused_mass > RESOLUTION / 2.0:
+                raise FiniteRouteUnavailable(refused_mass)
         selected = self._selected(wc, wt)
         self._decide(segment, rows, cols, (wc.lo, wc.hi, wt.lo, wt.hi), selected)
         # Only the evaluation's own selection is read: a cell an earlier evaluation of this
@@ -1947,12 +1970,6 @@ class RejectionGeometry:
             wc.error, wt.error, _compounded(wc.size), _compounded(wt.size), _UNIT_ROUNDOFF
         )
         undecided = float(wc.weights @ ~selected @ wt.weights)
-        if not self.finite:
-            # Only the pairs the refused route would decide make the plan unavailable. Routed
-            # pairs the row budget leaves out are ambiguous mass of the enclosure, not a refusal.
-            refused_mass = self._off_route_mass(wc, wt) * inflation
-            if refused_mass > RESOLUTION / 2.0:
-                raise FiniteRouteUnavailable(refused_mass)
         return BinomialPower(
             float(wc.weights @ plus @ wt.weights),
             float(wc.weights @ (minus & ~plus) @ wt.weights),

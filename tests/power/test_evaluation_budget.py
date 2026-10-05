@@ -10,10 +10,13 @@ replay); only the budgets are shrunk so that they bind at a size that runs in se
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 import pytest
 
+from calibration.binomial_oracle import Binomial, precise
 from increment.estimation import binomial_rr
 from increment.estimation.arm_contract import ArmPlanningProcedure
 from increment.estimation.conversion_delta import production_decision
@@ -41,9 +44,56 @@ N, P_C, FLOOR, TAIL = 120, 0.3, 20, 0.025
 ROW_BUDGET, REPLAY_BUDGET = 300, 500
 
 
+def _decision(n: int, *, refused: bool = False) -> BinomialDecision:
+    """The two-sided runtime decision of ``n`` units per arm; ``refused`` gives it a nuisance
+    budget below the endpoint solver's floor, which refuses the finite-sample route in full."""
+    beta = _binomial.solver_floor() / 10.0 if refused else binomial_rr.nuisance_beta(2.0 * TAIL)
+    decision = BinomialDecision(n, n, 1.0, beta, TAIL, "two-sided")
+    assert _binomial.refused(decision) == refused
+    return decision
+
+
 def _geometry() -> RejectionGeometry:
-    decision = BinomialDecision(N, N, 1.0, binomial_rr.nuisance_beta(2.0 * TAIL), TAIL, "two-sided")
-    return RejectionGeometry(decision, "exact", PLANNING_CELL_CEILING, Routing(FLOOR, 0.0))
+    return _routed_geometry(N, FLOOR)
+
+
+@dataclass(frozen=True)
+class _OffRoute:
+    """A geometry routed at ``floor``, the windows of a rate pair, and the mass of the count
+    pairs of those windows off the routed rectangle, summed over the pairs from the decimal
+    oracle's weights (which share no code with the planner's)."""
+
+    geometry: RejectionGeometry
+    wc: _binomial._Window
+    wt: _binomial._Window
+    mass: Decimal
+
+
+def _routed_geometry(n: int, floor: int, *, refused: bool = False) -> RejectionGeometry:
+    return RejectionGeometry(
+        _decision(n, refused=refused), "exact", PLANNING_CELL_CEILING, Routing(floor, 0.0)
+    )
+
+
+def _off_route(
+    n: int, floor: int, *, p_c: float = P_C, p_t: float = 0.4, refused: bool = False
+) -> _OffRoute:
+    geometry = _routed_geometry(n, floor, refused=refused)
+    wc, wt = _binomial._window(n, p_c), _binomial._window(n, p_t)
+    row_in, col_in = geometry._routed_flags(wc.lo, wc.hi, wt.lo, wt.hi)
+    with precise():
+        w_c = Binomial(n, p_c).pmf_range(wc.lo, wc.hi)
+        w_t = Binomial(n, p_t).pmf_range(wt.lo, wt.hi)
+        mass = sum(
+            (
+                x * y
+                for i, x in enumerate(w_c)
+                for j, y in enumerate(w_t)
+                if not (row_in[i] and col_in[j])
+            ),
+            Decimal(0),
+        )
+    return _OffRoute(geometry, wc, wt, mass)
 
 
 def _known(geometry: RejectionGeometry) -> int:
@@ -156,24 +206,17 @@ class TestABudgetLeavesAmbiguousMassNotAnUnavailableRoute:
     when the pairs that route would decide carry probability. Routed pairs the row budget leaves
     out are ambiguous mass of an approximate enclosure, whatever their weight."""
 
-    @staticmethod
-    def _refused(floor: int) -> RejectionGeometry:
-        beta = _binomial.solver_floor() / 10.0
-        decision = BinomialDecision(N, N, 1.0, beta, TAIL, "two-sided")
-        assert _binomial.refused(decision)
-        return RejectionGeometry(decision, "exact", PLANNING_CELL_CEILING, Routing(floor, 0.0))
-
     def test_routed_pairs_the_row_budget_leaves_out_are_ambiguous_not_a_refusal(
         self, monkeypatch
     ):
-        """A floor of 10 leaves the finite route about 1e-7 of the probability here, far below
+        """A floor of 10 leaves the finite route about 2e-9 of the probability here, far below
         half of `RESOLUTION`, so the default budgets decide every routed pair and report ``exact``;
         the shrunken row budget leaves most of the mass ambiguous and the enclosure holds it."""
-        reference = self._refused(10).evaluate(P_C, 0.4)
+        reference = _routed_geometry(N, 10, refused=True).evaluate(P_C, 0.4)
         assert reference.ambiguous <= RESOLUTION / 2.0
         assert reference.basis == "exact"
         monkeypatch.setattr(_binomial, "EVALUATION_ROW_BUDGET", ROW_BUDGET)
-        geometry = self._refused(10)
+        geometry = _routed_geometry(N, 10, refused=True)
         limited = geometry.evaluate(P_C, 0.4)
         assert limited.ambiguous > RESOLUTION
         assert limited.basis == "approximate"
@@ -181,9 +224,71 @@ class TestABudgetLeavesAmbiguousMassNotAnUnavailableRoute:
         assert geometry.evaluate(P_C, 0.4) == limited
 
     def test_pairs_the_refused_route_would_decide_still_leave_the_plan_unavailable(self):
-        """A floor of 20 leaves the finite route about 5e-4 of the probability here."""
+        """A floor of 20 leaves the finite route about 3e-4 of the probability here."""
         with pytest.raises(_binomial.FiniteRouteUnavailable):
-            self._refused(20).evaluate(P_C, 0.4)
+            _routed_geometry(N, 20, refused=True).evaluate(P_C, 0.4)
+
+
+# Off-route masses from 5e-11 to 2e-4 over both arms' tails, small and large arms.
+MASS_CASES = [
+    pytest.param(120, 0.3, 0.4, 20, id="n120-floor20"),
+    pytest.param(120, 0.3, 0.4, 12, id="n120-floor12"),
+    pytest.param(120, 0.3, 0.4, 8, id="n120-floor8"),
+    pytest.param(120, 0.5, 0.5, 30, id="n120-centre-floor30"),
+    pytest.param(120, 0.5, 0.5, 28, id="n120-centre-floor28"),
+    pytest.param(300, 0.5, 0.55, 100, id="n300-floor100"),
+]
+
+
+@pytest.mark.parametrize(("n", "p_c", "p_t", "floor"), MASS_CASES)
+class TestTheOffRouteMassIsASumOfNonnegativeWeights:
+    """The mass of the pairs the finite-sample route keeps is read from the outside weights
+    directly. A total less the routed part loses a small tail to the 1e-16 rounding of the
+    total (a relative error of 4e-7 at the smallest mass here, far above the 1e-12 the bound
+    carries). The bound is compared with the mass of those pairs summed over the pairs
+    themselves from the decimal oracle's weights of the same rates."""
+
+    def test_the_bound_encloses_the_direct_mass_and_exceeds_it_by_rounding_only(
+        self, n, p_c, p_t, floor
+    ):
+        case = _off_route(n, floor, p_c=p_c, p_t=p_t)
+        bound = Decimal(case.geometry._off_route_bound(case.wc, case.wt))
+        assert case.mass <= bound <= case.mass * (1 + Decimal("1e-11"))
+
+    def test_replay_is_chosen_unless_the_bound_is_within_half_of_the_resolution(
+        self, monkeypatch, n, p_c, p_t, floor
+    ):
+        """With half of the resolution at the direct mass the bound is above it, so the
+        finite-sample pairs are replayed; a hair above the bound (relative 1e-10, which a
+        cancelled tail's error can exceed) they are left undecided."""
+        case = _off_route(n, floor, p_c=p_c, p_t=p_t)
+        wc, wt = case.wc, case.wt
+        row_in, col_in = case.geometry._routed_flags(wc.lo, wc.hi, wt.lo, wt.hi)
+        off_route = ~(row_in[:, None] & col_in[None, :])
+        monkeypatch.setattr(_binomial, "RESOLUTION", 2.0 * float(case.mass))
+        assert (case.geometry._selected(case.wc, case.wt) & off_route).any()
+        monkeypatch.setattr(_binomial, "RESOLUTION", 2.0 * float(case.mass) * (1.0 + 1e-10))
+        assert not (case.geometry._selected(case.wc, case.wt) & off_route).any()
+
+
+class TestARefusedRouteIsUnavailableAtTheBoundOfItsDirectMass:
+    """At 120 units per arm and a floor of 12 the refused route keeps 3.5e-8 of the probability,
+    which the plan is refused at when half of the resolution is not above it."""
+
+    @pytest.mark.parametrize(("scale", "unavailable"), [(1.0, True), (1.05, False)])
+    def test_the_plan_is_unavailable_when_half_of_the_resolution_is_not_above_the_mass(
+        self, monkeypatch, scale, unavailable
+    ):
+        monkeypatch.setattr(_binomial, "EVALUATION_ROW_BUDGET", ROW_BUDGET)
+        case = _off_route(N, 12, p_c=P_C, p_t=0.4, refused=True)
+        monkeypatch.setattr(_binomial, "RESOLUTION", 2.0 * float(case.mass) * scale)
+        if unavailable:
+            with pytest.raises(_binomial.FiniteRouteUnavailable) as raised:
+                case.geometry.evaluate(P_C, 0.4)
+            assert raised.value.mass >= float(case.mass)
+            return
+        enclosure = case.geometry.evaluate(P_C, 0.4)
+        assert enclosure.ambiguous >= float(case.mass)
 
 
 def _conversion() -> ArmPlanningProcedure:
