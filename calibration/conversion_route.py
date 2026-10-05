@@ -661,6 +661,7 @@ def finite_conformance(
                     continue
                 found = produced.binomial_set
                 assert found is not None
+                assert found.lower is not None and found.upper is not None
                 gap = min(abs(found.lower - lift), abs(found.upper - lift))
                 edge += gap <= _ENDPOINT_TOLERANCE
                 hard += gap > _ENDPOINT_TOLERANCE

@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Mapping
-from typing import Annotated, Any, Literal, NoReturn
+from typing import Annotated, Any, Literal, NoReturn, cast
 
 from pydantic import (
     BaseModel,
@@ -710,10 +710,11 @@ def _with_legacy_conversion_inference(
     if not isinstance(procedures, Mapping):
         return payload
     resolved: dict[str, object] = {}
-    for name, procedure in procedures.items():
-        if not isinstance(procedure, Mapping):
-            resolved[name] = procedure
+    for name, stored in cast("Mapping[str, Any]", procedures).items():
+        if not isinstance(stored, Mapping):
+            resolved[name] = stored
             continue
+        procedure = cast("Mapping[str, Any]", stored)
         metric_type = (metric_types or {}).get(str(procedure.get("metric", name)))
 
         def fill(method: object, procedure=procedure, metric_type=metric_type) -> object:
@@ -722,7 +723,7 @@ def _with_legacy_conversion_inference(
             return {
                 **method,
                 "conversion_inference": _legacy_conversion_inference(
-                    procedure, method, metric_type
+                    procedure, cast("Mapping[str, Any]", method), metric_type
                 ),
             }
 

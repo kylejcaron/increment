@@ -578,11 +578,11 @@ class TestMultiplicityRoutesAtTheSmallestFamilyLevel:
 
     def test_the_public_estimator_takes_no_route_level(self):
         with pytest.raises(TypeError):
-            estimate_lift(  # ty: ignore[unknown-argument]
+            estimate_lift(
                 metrics=[CONVERSION_METRIC],
                 summary=count_summary(300, 10_000, 330, 10_000),
                 control_group="control",
-                route_alpha=0.05,
+                route_alpha=0.05,  # ty: ignore[unknown-argument]
             )
 
 

@@ -516,6 +516,12 @@ def test_a_legacy_absolute_margin_plan_replays_on_the_route_it_ran():
     assert _method_row_kinds(Method(name="unadjusted"), "conversion", null_abs=margin) == ["t"]
 
 
+def _lift_kinds(rows) -> dict[str, str | None]:
+    from increment.estimation.results import LiftEstimate
+
+    return {row.metric: row.reference_kind for row in rows if isinstance(row, LiftEstimate)}
+
+
 def test_a_cube_exported_before_the_field_existed_replays_on_every_metric_type(tmp_path):
     """The stored-plan seam end to end: an exported moments cube whose embedded plan lacks
     ``conversion_inference`` rehydrates and runs. Its conversion metric keeps the finite-sample
@@ -554,9 +560,8 @@ def test_a_cube_exported_before_the_field_existed_replays_on_every_metric_type(t
                 del method["conversion_inference"]
         row["decision_plan"] = json.dumps(stored)
     replay = Analysis.from_moments(rows, metrics=metrics, control="control")
-    kinds = {row.metric: row.reference_kind for row in replay.run()}
-    assert kinds == {"conv": "binomial", "rev": "t"}
-    assert {row.metric: row.reference_kind for row in current.run()} == {"conv": "t", "rev": "t"}
+    assert _lift_kinds(replay.run()) == {"conv": "binomial", "rev": "t"}
+    assert _lift_kinds(current.run()) == {"conv": "t", "rev": "t"}
 
 
 def test_the_same_counts_under_a_new_default_method_take_the_delta_method_route():

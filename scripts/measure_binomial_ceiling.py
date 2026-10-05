@@ -61,7 +61,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest import mock
 
 RUNGS = (4_000_000, 16_000_000, 64_000_000, 100_000_000, 1_000_000_000)
@@ -800,6 +800,7 @@ def _planning_cell(
     """One cold planning call: ``achieved_power``, ``minimum_detectable_effect`` or
     ``required_sample_size`` at a conversion baseline under ``conversion_inference``, or the
     coded refusal it raised."""
+    from increment._literals import ConversionInference
     from increment.errors import CodedError
     from increment.estimation.arm_contract import ArmPlanningProcedure
     from increment.power import (
@@ -813,7 +814,7 @@ def _planning_cell(
 
     baseline = Baseline.from_proportion(rate)
     procedure = ArmPlanningProcedure.standard(
-        "conversion", conversion_inference=conversion_inference
+        "conversion", conversion_inference=cast("ConversionInference", conversion_inference)
     )
     wall = time.perf_counter()
     cpu = time.process_time()
