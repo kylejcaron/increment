@@ -2007,16 +2007,20 @@ def test_quantile_over_scalar_moments_refuses_in_the_documented_precedence(
     from increment.semantics.models import AnalysisPlan, ExperimentMetric
 
     rows = _scalar_mean_cube_rows()
-    kwargs = {"design": design} if design is not None else {"control": "control"}
+    plan = None
     if margin is not None:
-        binding = ExperimentMetric(
-            metric="lat", **{margin: 0.5 if margin == "margin_abs" else 0.02}
+        binding = (
+            ExperimentMetric(metric="lat", margin_abs=0.5)
+            if margin == "margin_abs"
+            else ExperimentMetric(metric="lat", margin=0.02)
         )
-        kwargs["plan"] = AnalysisPlan(guardrails=[binding])
+        plan = AnalysisPlan(guardrails=[binding])
     spec = [MetricSpec(name="lat", type="quantile", quantile=0.9, preferred_direction="decrease")]
 
     def construct():
-        return Analysis.from_moments(rows, metrics=spec, **kwargs)
+        if design is not None:
+            return Analysis.from_moments(rows, metrics=spec, design=design, plan=plan)
+        return Analysis.from_moments(rows, metrics=spec, control="control", plan=plan)
 
     if stage == "construct":
         with pytest.raises(CodedError) as raised:
