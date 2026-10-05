@@ -241,9 +241,14 @@ def validate_day_axis(
             remedy=UNBOUNDED_RETENTION_DAILY_REMEDY,
             supported_view="asof",
         )
-    if req.caller == "run_asof_lift" and isinstance(design, Encouragement):
+    # A registered checkpoint's compliance-only request reads uptake and no outcome
+    # moments, so retention metrics in the catalog are not part of what it consumes.
+    reads_outcomes = not (
+        checkpoint_asof and req.estimands is not None and set(req.estimands) == {"compliance"}
+    )
+    if reads_outcomes and req.caller == "run_asof_lift" and isinstance(design, Encouragement):
         reject_retention_under_encouragement(list(req.metrics), req.caller)
-    if req.grain == "asof" and req.completed_windows_only:
+    if reads_outcomes and req.grain == "asof" and req.completed_windows_only:
         reject_completed_windows_on_unbounded_retention(list(req.metrics), req.caller)
     if req.caller == "run_daily_lift" and isinstance(design, Encouragement):
         refuse(_ENCOURAGEMENT_DAILY_LATE, experiment=getattr(experiment, "name", None))

@@ -1073,24 +1073,49 @@ def test_native_uptake_only_capture_and_wire_never_need_the_outcome_table(tmp_pa
 
 
 @pytest.mark.slow
-def test_uptake_checkpoint_ignores_unbounded_outcome_retention_in_the_catalog():
-    """A compliance-only checkpoint reads uptake, never the outcome table, so an
-    unbounded retention metric in the source catalog cannot make its completed
-    windows contradictory."""
-    from increment import readouts
+def test_uptake_checkpoint_ignores_unbounded_outcome_retention_in_the_catalog(tmp_path):
+    """A compliance-only checkpoint reads uptake, never the outcome table, so a
+    retention metric in the source catalog neither makes the facade's completed
+    windows contradictory nor trips its encouragement guard; any request that
+    consumes outcomes keeps both refusals."""
+    import pyarrow.parquet as pq
+
+    from increment.errors import CodedError
 
     connection, _, native = _native_fixture("bernoulli", uptake_only=True, unbounded_retention=True)
     try:
         assert "events" not in connection.list_tables()
         as_of = date(2025, 1, 16)
-        native.capture_sequential(finalized=True, as_of=as_of)
-        (row,) = readouts.asof_lift(
-            _native_source(native), estimands=("compliance",), completed_windows_only=True
-        )
+        snapshot = native.capture_sequential(finalized=True, as_of=as_of)
+        (row,) = native.run_asof_lift(estimands=("compliance",), completed_windows_only=True)
         assert row.estimand == "compliance" and row.ds == as_of
-        checkpoint = row.require_sequential_result().checkpoint
+        assert row.sequential_result is not None
+        checkpoint = row.sequential_result.checkpoint
         assert checkpoint.control.n == checkpoint.treatment.n == 96
         assert checkpoint.control.successes == 24 and checkpoint.treatment.successes == 72
+        daily = native.run_asof_lift(estimands=("compliance",), completed_windows_only=True)
+
+        path = tmp_path / "uptake-retention-catalog.parquet"
+        native.export(path)
+        replay = Analysis.from_moments(
+            pq.read_table(path).to_pylist(),
+            metrics=[],
+            design=_native_source(native).context.design,
+        )
+        assert replay.sequential_snapshot() == snapshot
+        assert list(
+            replay.run_asof_lift(estimands=("compliance",), completed_windows_only=True)
+        ) == list(daily)
+
+        # Every request that reads outcomes still meets the retention guards.
+        for kwargs in (
+            {"estimands": ("itt",), "completed_windows_only": True},
+            {"estimands": ("itt", "compliance"), "completed_windows_only": True},
+            {"completed_windows_only": True},
+        ):
+            with pytest.raises(CodedError) as refused:
+                native.run_asof_lift(**kwargs)
+            assert refused.value.code == "breakout.retention.encouragement", kwargs
     finally:
         native.close()
 
