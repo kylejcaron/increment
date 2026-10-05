@@ -12,11 +12,14 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import asdict
+from fractions import Fraction
 
 import numpy as np
 import pytest
 
 from calibration import conversion_route as cr
+from increment.estimation.conversion_delta import CRITICAL_AGREEMENT
 from increment.estimation.conversion_route import dense_min_count, route_for_counts
 from tests.estimation._conversion_counts import lift_row
 from tests.mc import scientific_delta
@@ -28,7 +31,7 @@ def test_the_vectorised_interval_is_the_production_interval():
     gap, compared, interpolation = cr.conformance(samples=60)
     assert compared == 60
     assert gap < 1e-9
-    assert interpolation < cr._CRITICAL_AGREEMENT
+    assert interpolation < CRITICAL_AGREEMENT
 
 
 # --- fast smoke: labels and coverage -----------------------------------------------------
@@ -231,16 +234,15 @@ class TestLatticeSumsStreamOverBlocks:
         np.testing.assert_array_equal(blocked[0], whole[0])
         np.testing.assert_array_equal(blocked[1], whole[1])
 
-    @pytest.mark.slow
-    def test_enumerated_power_does_not_depend_on_the_block_size(self, monkeypatch):
+    def test_enumeration_does_not_depend_on_the_block_size(self, monkeypatch):
         monkeypatch.setattr(cr, "dense_min_count", lambda tail: self.FLOOR)
         design = cr.MirrorCell("bound", 300, 0.3, 0.1, 0.2, "two-sided")
-        whole = cr.enumerated_power(design)
+        whole = cr.enumerate_design(design)
         self._small_blocks(monkeypatch)
-        blocked = cr.enumerated_power(design)
+        blocked = cr.enumerate_design(design)
         for name in ("asymptotic_share", "asymptotic", "asymptotic_part", "finite_part", "hybrid"):
             assert getattr(blocked, name) == pytest.approx(getattr(whole, name), rel=1e-12)
-        assert blocked.planned == whole.planned
+        assert whole.floor == self.FLOOR
         assert whole.hybrid == pytest.approx(whole.asymptotic_part + whole.finite_part)
         assert 0.2 < whole.asymptotic_share < 0.8
         assert whole.asymptotic_part > 0.0
@@ -386,115 +388,310 @@ class TestBoundGridAndRule:
             assert any(0.2 < share < 0.8 for share in shares)
 
     @pytest.mark.parametrize(
-        ("route", "basis", "margin", "holds"),
+        ("alpha", "alternative"),
+        [(a, alt) for a in cr.PRODUCTION_ALPHAS for alt in ("two-sided", "greater", "less")],
+    )
+    def test_the_recorded_routing_level_is_the_level_the_procedure_compiles(
+        self, alpha, alternative
+    ):
+        from increment.estimation.arm_contract import ArmPlanningProcedure
+
+        procedure = ArmPlanningProcedure.standard(
+            "conversion", alpha=alpha, alternative=alternative
+        )
+        assert cr._tail(alpha, alternative) == procedure.compiled_tail_alpha
+
+
+def _power(
+    planned,
+    hybrid,
+    *,
+    lower=0.0,
+    upper=1.0,
+    closed_form=False,
+    certified=True,
+    omitted=1e-12,
+    inflation=1.0,
+):
+    """A design whose pipeline mass sums to ``hybrid``, planned at ``planned`` with the
+    enclosure ``[lower, upper]``."""
+    plan = cr.Plan(
+        "model", "borderline", "approximate", planned, lower, upper, 0.0, closed_form, certified
+    )
+    return cr.EnumeratedPower(
+        plan,
+        cr.Enumeration(
+            "construction", 412, 0.5, 0.5, hybrid / 2, hybrid / 2, omitted, inflation, 0
+        ),
+    )
+
+
+class TestBoundRule:
+    """A closed-form plan is judged to ``DENSE_AGREEMENT``, every other plan by whether its
+    enclosure meets the pipeline's interval at the enumeration's own numerical error and no
+    more."""
+
+    @pytest.mark.parametrize(
+        ("margin", "holds"), [(0.004, True), (-0.004, True), (0.007, False), (-0.011, False)]
+    )
+    def test_a_closed_form_plan_is_within_the_closed_forms_agreement(self, margin, holds):
+        assert cr.bound_holds(_power(0.5, 0.5 + margin, closed_form=True)) is holds
+
+    @pytest.mark.parametrize(
+        ("lower", "upper", "holds"),
         [
-            ("dense", "asymptotic", 0.004, True),
-            ("dense", "asymptotic", -0.004, True),
-            ("dense", "asymptotic", 0.007, False),
-            ("dense", "asymptotic", -0.011, False),
-            ("sparse", "exact", 1e-6, False),
-            ("sparse", "exact", -1e-6, False),
-            ("sparse", "approximate", 5e-3, True),
-            ("sparse", "approximate", 0.009, False),
-            ("sparse", "approximate", -1e-5, True),
-            ("sparse", "approximate", -1e-3, False),
-            ("borderline", "approximate", -1e-5, True),
-            ("borderline", "approximate", -1e-3, False),
-            ("borderline", "approximate", 0.2, True),
-            ("borderline", "exact", -1e-6, False),
+            (0.5, 0.5 + 1e-9, True),
+            (0.1, 0.9, True),
+            (0.5 + 5e-13, 0.9, True),  # within the omitted mass
+            (0.5 + 1e-10, 0.9, False),
+            (0.5 + 1e-5, 0.9, False),  # inside the 3e-4 allowance this rule replaced
+            (0.1, 0.4, False),
         ],
     )
-    def test_bound_holds_judges_each_route_by_its_own_claim(self, route, basis, margin, holds):
-        power = cr.EnumeratedPower(route, 0.5, basis, 0.5, 0.5, 0.2, 0.3 + margin, 1e-12)
-        assert power.margin == pytest.approx(margin)
-        assert cr.bound_holds(power) is holds
+    def test_an_enumerated_plan_must_enclose_the_pipeline_without_an_allowance(
+        self, lower, upper, holds
+    ):
+        assert cr.bound_holds(_power(0.5, 0.5, lower=lower, upper=upper)) is holds
+
+    def test_a_plan_that_is_not_certified_makes_no_claim_to_hold(self):
+        assert not cr.bound_holds(_power(0.5, 0.5, lower=0.0, upper=1.0, certified=False))
+
+    def test_the_numerical_error_of_the_enumeration_is_the_only_slack(self):
+        lower = 0.5 * (1.0 + 5e-10)
+        assert not cr.bound_holds(_power(lower, 0.5, lower=lower, upper=0.9))
+        inflated = _power(lower, 0.5, lower=lower, upper=0.9, inflation=1.0 + 1e-9)
+        assert cr.bound_holds(inflated)
+
+    def test_the_interval_is_around_the_summed_mass(self):
+        power = _power(0.5, 0.5, inflation=1.0 + 1e-9, omitted=1e-6)
+        runtime = power.enumeration
+        assert runtime.lower < 0.5 < runtime.upper
+        assert runtime.upper >= 0.5 * (1.0 + 1e-9) + 1e-6
+        assert runtime.lower <= 0.5 / (1.0 + 1e-9)
 
 
-def _power_record(**overrides) -> dict:
+class TestEnumerationEnclosesTheExactMass:
+    """The pipeline's rejection probability over the lattice, in exact rational arithmetic,
+    lies in the interval the enumeration reports; the interval is not vacuous."""
+
+    @staticmethod
+    def _exact_pmf(n: int, p: float, lo: int, hi: int) -> list[Fraction]:
+        rate = Fraction(p)
+        return [math.comb(n, k) * rate**k * (1 - rate) ** (n - k) for k in range(lo, hi + 1)]
+
+    @pytest.mark.parametrize(
+        "design",
+        [
+            cr.MirrorCell("bound", 300, 0.3, 0.1, 0.2, "two-sided"),
+            cr.MirrorCell("bound", 240, 0.05, 0.4, 0.1, "greater"),
+        ],
+        ids=["central", "rare"],
+    )
+    def test_the_interval_holds_the_exact_rational_mass(self, monkeypatch, design):
+        monkeypatch.setattr(cr, "dense_min_count", lambda tail: 14)
+        lattice = cr._design_lattice(design)
+        window_c, window_t = lattice.window_c, lattice.window_t
+        exact_c = self._exact_pmf(design.n, design.p_c, window_c.lo, window_c.hi)
+        exact_t = self._exact_pmf(
+            design.n, design.p_c * (1.0 + design.lift), window_t.lo, window_t.hi
+        )
+        mass = Fraction(0)
+        row = 0
+        for block in cr._decided_blocks(design, lattice):
+            decided = np.where(block.routed, block.delta_routed, block.plus | block.minus)
+            for i, j in zip(*np.nonzero(decided), strict=True):
+                mass += exact_c[row + i] * exact_t[j]
+            row += block.weight.shape[0]
+        omitted = 1 - sum(exact_c) * sum(exact_t)
+        enumeration = cr.enumerate_design(design)
+        assert 0.0 < enumeration.asymptotic_share < 1.0
+        assert Fraction(enumeration.lower) <= mass
+        assert mass + omitted <= Fraction(enumeration.upper)
+        assert omitted <= Fraction(enumeration.omitted)
+        assert abs(float(mass) - enumeration.hybrid) <= (enumeration.inflation - 1.0) * mass
+        assert enumeration.upper - enumeration.lower < 1e-9
+
+
+def _record(cell: cr.MirrorCell, *, enumeration=None, plan=None) -> dict:
     """A dense design that meets its claim exactly, as a checkpoint line records it."""
+    from increment.estimation.results import BINOMIAL_METHOD
+    from increment.power.core import BINOMIAL_PLANNING_MODEL
+
     return {
-        "route": "dense",
-        "planned": 0.5,
-        "basis": "asymptotic",
-        "asymptotic_share": 1.0,
-        "asymptotic": 0.5,
-        "asymptotic_part": 0.5,
-        "finite_part": 0.0,
-        "omitted": 0.0,
-    } | overrides
+        "design": cr._design_key(cell),
+        "enumeration": {
+            "construction": BINOMIAL_METHOD,
+            "floor": dense_min_count(cr._tail(cell.alpha, cell.alternative)),
+            "asymptotic_share": 1.0,
+            "asymptotic": 0.5,
+            "asymptotic_part": 0.5,
+            "finite_part": 0.0,
+            "omitted": 0.0,
+            "inflation": 1.0,
+            "deferred": 0,
+        }
+        | (enumeration or {}),
+        "planner": {
+            "model": BINOMIAL_PLANNING_MODEL,
+            "route": "dense",
+            "basis": "exact",
+            "planned": 0.5,
+            "lower": 0.5,
+            "upper": 0.5,
+            "ambiguous": 0.0,
+            "closed_form": False,
+            "certified": True,
+        }
+        | (plan or {}),
+    }
 
 
 class TestBoundCheckpoint:
-    """``bound --out`` resumes without recomputing a design its file records, from every layout
-    the command has written, and refuses what it cannot read rather than repeating the work."""
+    """``bound --out`` keeps what its file records of an enumeration that was summed under this
+    runtime, plans again what a retired planner model planned, and refuses what names neither
+    rather than reusing or relabelling it."""
 
     @pytest.fixture
-    def computed(self, monkeypatch):
-        calls: list[cr.MirrorCell] = []
+    def calls(self, monkeypatch):
+        from increment.power.core import BINOMIAL_PLANNING_MODEL
 
-        def fake(cell):
-            calls.append(cell)
-            return cr.EnumeratedPower(**_power_record())
+        enumerated: list[cr.MirrorCell] = []
+        planned: list[cr.MirrorCell] = []
 
-        monkeypatch.setattr(cr, "enumerated_power", fake)
-        return calls
+        def fake_plan(cell):
+            planned.append(cell)
+            return cr.Plan(
+                BINOMIAL_PLANNING_MODEL, "dense", "exact", 0.5, 0.5, 0.5, 0.0, False, True
+            )
+
+        def fake_enumerated(cell):
+            enumerated.append(cell)
+            record = _record(cell)
+            return cr.EnumeratedPower(fake_plan(cell), cr.Enumeration(**record["enumeration"]))
+
+        monkeypatch.setattr(cr, "plan_design", fake_plan)
+        monkeypatch.setattr(cr, "enumerated_power", fake_enumerated)
+        return enumerated, planned
 
     @staticmethod
     def _write(path, records) -> None:
         path.write_text("".join(json.dumps(record) + "\n" for record in records))
 
-    def test_the_original_grid_keeps_the_order_that_index_keyed_checkpoints_use(self):
-        original = cr.bound_cells("original")
-        assert [cr._design_key(original[i]) for i in (0, 1, 119, 239)] == [
-            [3567, 0.3, 0.05, 0.05, "two-sided"],
-            [5707, 0.3, 0.05, 0.05, "two-sided"],
-            [4120, 0.3, 0.1, 0.1, "greater"],
-            [2472, 0.5, 0.06, 0.2, "two-sided"],
-        ]
-
-    def test_an_index_keyed_checkpoint_resumes_without_recomputing(self, tmp_path, computed):
+    def test_a_checkpoint_of_the_current_model_resumes_without_recomputing(self, tmp_path, calls):
         path = tmp_path / "bound.jsonl"
-        self._write(path, [{"design": i, "power": _power_record()} for i in range(240)])
+        self._write(path, [_record(cell) for cell in cr.bound_cells("original")])
         before = path.read_text()
         assert cr.bound(workers=1, out=path) == 0
-        assert computed == []
+        assert calls == ([], [])
         assert path.read_text() == before
 
-    def test_a_design_keyed_checkpoint_resumes_only_the_designs_it_lacks(self, tmp_path, computed):
+    def test_only_the_designs_a_checkpoint_lacks_are_enumerated(self, tmp_path, calls):
+        enumerated, planned = calls
         designs = cr.bound_cells("extended")
         path = tmp_path / "bound.jsonl"
-        self._write(
-            path, [{"design": cr._design_key(c), "power": _power_record()} for c in designs[:5]]
-        )
+        self._write(path, [_record(cell) for cell in designs[:5]])
         assert cr.bound(workers=1, out=path, grid="extended") == 0
-        assert computed == list(designs[5:])
-        computed.clear()
+        assert enumerated == list(designs[5:])
+        enumerated.clear()
+        planned.clear()
         assert cr.bound(workers=1, out=path, grid="extended") == 0
-        assert computed == []
+        assert (enumerated, planned) == ([], [])
 
-    def test_a_checkpoint_of_the_unsplit_power_is_refused_not_recomputed(self, tmp_path, computed):
-        legacy = {
-            "route": "dense",
-            "planned": 0.5,
-            "basis": "asymptotic",
-            "asymptotic_share": 1.0,
-            "asymptotic": 0.5,
-            "finite_sample": 0.4,
-            "hybrid": 0.5,
-            "omitted": 0.0,
-        }
+    def test_a_retired_model_keeps_the_enumeration_and_plans_again(
+        self, tmp_path, calls, monkeypatch
+    ):
+        enumerated, planned = calls
+        designs = cr.bound_cells("extended")[:4]
+        monkeypatch.setattr(cr, "bound_cells", lambda grid: designs)
+        kept = {"asymptotic_part": 0.1234, "finite_part": 0.4321, "inflation": 1.0 + 1e-12}
+        stale = {"model": "borderline_minimum", "planned": 0.4, "basis": "exact"}
         path = tmp_path / "bound.jsonl"
-        self._write(path, [{"design": 0, "power": legacy}])
+        self._write(path, [_record(cell, enumeration=kept, plan=stale) for cell in designs])
+        cr.bound(workers=1, out=path)
+        assert enumerated == []
+        assert planned == list(designs)
+        resumed = cr.read_checkpoint(path)
+        for cell in designs:
+            power = resumed[json.dumps(cr._design_key(cell))]
+            assert power.plan.model != "borderline_minimum"
+            assert power.plan.planned == 0.5
+            assert power.enumeration == cr.Enumeration(
+                **_record(cell, enumeration=kept)["enumeration"]
+            )
+        planned.clear()
+        cr.bound(workers=1, out=path)
+        assert (enumerated, planned) == ([], [])
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"enumeration": {"construction": "binomial_bb_difference_v2"}},
+            {"enumeration": {"floor": 411}},
+            {"plan": {"model": "an_unrecorded_model"}},
+            {"plan": {"model": None}},
+            {"enumeration": {"inflation": "1"}},
+        ],
+        ids=["other_construction", "other_routing_floor", "unknown_model", "no_model", "mistyped"],
+    )
+    def test_a_record_of_another_runtime_or_an_unknown_model_is_refused(
+        self, tmp_path, calls, change
+    ):
+        path = tmp_path / "bound.jsonl"
+        self._write(path, [_record(cr.bound_cells("original")[0], **change)])
         with pytest.raises(cr.CheckpointError):
             cr.bound(workers=1, out=path)
-        assert computed == []
+        assert calls == ([], [])
 
-    def test_an_index_keyed_checkpoint_is_refused_for_another_grid(self, tmp_path, computed):
+    @pytest.mark.parametrize(
+        "power",
+        [
+            {
+                "route": "dense",
+                "planned": 0.5,
+                "basis": "asymptotic",
+                "asymptotic_share": 1.0,
+                "asymptotic": 0.5,
+                "asymptotic_part": 0.5,
+                "finite_part": 0.0,
+                "omitted": 0.0,
+            },
+            {
+                "route": "dense",
+                "planned": 0.5,
+                "basis": "asymptotic",
+                "asymptotic_share": 1.0,
+                "asymptotic": 0.5,
+                "finite_sample": 0.4,
+                "hybrid": 0.5,
+                "omitted": 0.0,
+            },
+        ],
+        ids=["split_power", "unsplit_power"],
+    )
+    @pytest.mark.parametrize("design", [0, [3567, 0.3, 0.05, 0.05, "two-sided"]])
+    def test_a_record_naming_neither_runtime_nor_planner_is_refused_not_adopted(
+        self, tmp_path, calls, power, design
+    ):
+        """A line of an earlier layout holds one undated power section. Nothing in it says what
+        planned it or which runtime summed it, so none of it is reused or relabelled."""
         path = tmp_path / "bound.jsonl"
-        self._write(path, [{"design": 0, "power": _power_record()}])
+        self._write(path, [{"design": design, "power": power}])
         with pytest.raises(cr.CheckpointError):
-            cr.bound(workers=1, out=path, grid="extended")
-        assert computed == []
+            cr.bound(workers=1, out=path)
+        assert calls == ([], [])
+
+    def test_a_plans_enclosure_and_its_certification_survive_a_checkpoint(self, tmp_path):
+        designs = cr.bound_cells("original")[:2]
+        path = tmp_path / "bound.jsonl"
+        held = {"route": "borderline", "lower": 0.25, "upper": 0.5, "ambiguous": 1.5e-7}
+        heuristic = {"lower": 0.0, "upper": 1.0, "certified": False, "closed_form": True}
+        self._write(path, [_record(designs[0], plan=held), _record(designs[1], plan=heuristic)])
+        resumed = cr.read_checkpoint(path)
+        first, second = (resumed[json.dumps(cr._design_key(cell))].plan for cell in designs)
+        assert (first.lower, first.upper, first.ambiguous) == (0.25, 0.5, 1.5e-7)
+        assert first.certified and not first.closed_form
+        assert (second.lower, second.upper) == (0.0, 1.0)
+        assert not second.certified and second.closed_form
 
     def test_a_command_refuses_an_unreadable_checkpoint_with_a_status(self, tmp_path, capsys):
         path = tmp_path / "bound.jsonl"
@@ -503,31 +700,80 @@ class TestBoundCheckpoint:
         assert str(path) in capsys.readouterr().err
 
 
+@pytest.mark.slow
+@pytest.mark.parameter_recovery
+class TestResumedPlanEqualsAFreshOne:
+    """Planning again from a retired model's checkpoint gives the plan a fresh run of the same
+    design gives, on the enumeration the checkpoint kept."""
+
+    def test_a_resumed_design_matches_a_fresh_one(self, tmp_path, monkeypatch):
+        design = cr.MirrorCell("bound", 300, 0.3, 0.1, 0.2, "two-sided")
+        monkeypatch.setattr(cr, "bound_cells", lambda grid: (design,))
+        fresh = cr.enumerated_power(design)
+        stale = {"model": "borderline_minimum", "planned": 0.01, "basis": "exact"}
+        path = tmp_path / "bound.jsonl"
+        path.write_text(
+            json.dumps(_record(design, enumeration=asdict(fresh.enumeration), plan=stale)) + "\n"
+        )
+
+        def refuse(cell):
+            raise AssertionError("a kept enumeration must not be summed again")
+
+        monkeypatch.setattr(cr, "enumerate_design", refuse)
+        cr.bound(workers=1, out=path)
+        resumed = cr.read_checkpoint(path)[json.dumps(cr._design_key(design))]
+        assert resumed.plan == fresh.plan
+        assert resumed.enumeration == fresh.enumeration
+        assert resumed.margin == fresh.margin
+
+
 # --- the requirement is read only from complete measurements -----------------------------
 
 
-def _rows(excess: dict[int, float], tail: float = 0.01) -> dict[int, dict[float, cr.Excess]]:
-    return {m: {tail: cr.Excess(tail, m, value, value, None)} for m, value in excess.items()}
+def _scan(start: float, excess: dict[int, float], tail: float = 0.01, *, stop: float = 40_000.0):
+    """Rows a ``select`` scan of ``ladder(start, stop)`` holds at ``tail`` for the steps of
+    ``excess``."""
+    anchor = cr.Anchor.recorded(start, stop)
+    return {
+        m: {tail: cr.Measured(cr.Excess(tail, m, value, value, None), anchor)}
+        for m, value in excess.items()
+    }
+
+
+def _merged(*scans):
+    rows: dict[int, dict[float, cr.Measured]] = {}
+    for scan in scans:
+        for m, by_tail in scan.items():
+            rows.setdefault(m, {}).update(by_tail)
+    return rows
 
 
 class TestRequiredCount:
-    LADDER = (1000, 1150, 1323, 1521, 1749)
+    LADDER = tuple(cr.ladder(1000.0, 2400.0))
+
+    def _from_ladder(self, values):
+        return _scan(1000.0, dict(zip(self.LADDER, values, strict=False)))
+
+    def test_the_default_ladder_is_the_rounded_geometric_one(self):
+        assert self.LADDER == (1000, 1150, 1322, 1521, 1749, 2011, 2313)
+        assert cr.ladder(10.0, 60.0)[:3] == [10, 12, 13]
 
     def test_a_complete_scan_returns_the_first_step_from_which_every_step_passes(self):
-        rows = _rows(dict(zip(self.LADDER, (1.4, 1.2, 0.9, 0.8, 0.7), strict=True)))
-        assert cr.required_count(rows, 0.01) == 1323
+        rows = self._from_ladder((1.4, 1.2, 0.9, 0.8, 0.7, 0.6, 0.5))
+        assert cr.required_count(rows, 0.01) == 1322
 
     def test_a_passing_step_the_scan_stops_at_is_not_a_requirement(self):
-        """1,749 passes but nothing above it was measured through ``MARGIN`` times it."""
-        rows = _rows(dict(zip(self.LADDER, (1.4, 1.2, 1.1, 1.05, 0.7), strict=True)))
+        """1,749 passes but its window reaches 2,011, which was never measured."""
+        rows = self._from_ladder((1.4, 1.2, 1.1, 1.05, 0.7))
         assert cr.required_count(rows, 0.01) is None
+        assert "2011" in cr.unmet(rows, 0.01)
 
     def test_a_gap_in_the_measured_steps_is_not_bridged(self):
-        rows = _rows({1000: 1.4, 1150: 0.9, 1749: 0.8, 2011: 0.7, 2313: 0.6})
+        rows = _scan(1000.0, {1000: 1.4, 1150: 0.9, 1749: 0.8, 2011: 0.7, 2313: 0.6})
         assert cr.required_count(rows, 0.01) == 1749
 
     def test_steps_missing_from_a_merged_row_set_leave_no_requirement(self):
-        rows = _rows(dict(zip(self.LADDER, (0.9, 0.8, 0.7, 0.6, 0.5), strict=True)))
+        rows = self._from_ladder((0.9, 0.8, 0.7, 0.6, 0.5))
         rows[1150] = {}
         rows[1521] = {}
         assert cr.required_count(rows, 0.01) is None
@@ -535,14 +781,210 @@ class TestRequiredCount:
     def test_a_scan_interrupted_at_its_first_default_step_leaves_no_requirement(self):
         """Step 10 of the default ladder is followed by 12, which lies inside ``MARGIN`` times 10:
         a scan that stopped at 10 has measured nothing of that window."""
-        assert cr.ladder(10.0, 60.0)[:3] == [10, 12, 13]
-        rows = _rows({10: 0.5})
-        assert cr.required_count(rows, 0.01) is None
+        assert cr.required_count(_scan(10.0, {10: 0.5}), 0.01) is None
 
     def test_a_default_ladder_step_the_scan_skipped_is_not_bridged(self):
-        """The rounding allowance between steps must not hide a skipped step at the small
-        counts the default ladder starts at."""
         ladder = cr.ladder(10.0, 60.0)
-        assert cr.required_count(_rows(dict.fromkeys(ladder, 0.5)), 0.01) == 10
-        rows = _rows(dict.fromkeys([step for step in ladder if step != 12], 0.5))
+        assert cr.required_count(_scan(10.0, dict.fromkeys(ladder, 0.5)), 0.01) == 10
+        rows = _scan(10.0, dict.fromkeys([step for step in ladder if step != 12], 0.5))
         assert cr.required_count(rows, 0.01) == 13
+
+    def test_rows_of_another_start_do_not_stand_in_for_a_step_the_default_ladder_skipped(self):
+        """The default ladder runs 10, 12, 13 and a ladder from 11 runs 11, 13, 15: measured
+        steps 10, 11 and 13 leave 12 unmeasured for the default ladder's window at 10."""
+        assert cr.ladder(11.0, 40.0)[:3] == [11, 13, 15]
+        default, shifted = _scan(10.0, {10: 0.5}), _scan(11.0, {11: 0.5, 13: 0.5})
+        assert cr.required_count(default, 0.01) is None
+        assert cr.required_count(_merged(default, shifted), 0.01) == 11
+
+    def test_a_rung_measured_by_any_scan_counts_for_every_ladder_that_has_it(self):
+        """The rung 12 of ladders from 10.0 and from 10.2 is one count, measured once."""
+        assert cr.ladder(10.2, 40.0)[:3] == [10, 12, 13]
+        rows = _merged(_scan(10.0, {10: 0.5, 13: 0.5}), _scan(10.2, {12: 0.5}))
+        assert cr.required_count(rows, 0.01) == 10
+
+
+class TestAnchor:
+    def test_a_recorded_start_gives_its_ladder_through_a_limit(self):
+        anchor = cr.Anchor.recorded(10.0, 40_000.0)
+        assert anchor.window(12, 15.0) == (12, 13, 15)
+        assert anchor.window(11, 13.75) is None  # 11 is no step of this ladder
+
+    def test_a_ladder_needs_a_positive_start_below_its_stop(self):
+        for start, stop in ((0.0, 10.0), (-1.0, 10.0), (10.0, 10.0), (math.inf, math.inf)):
+            with pytest.raises(ValueError, match="start < stop"):
+                cr.Anchor.recorded(start, stop)
+
+    @pytest.mark.parametrize("start", [10.0, 10.3, 1637.0, 2489.5, 12345.6])
+    def test_the_steps_of_a_ladder_determine_the_starts_that_made_them(self, start):
+        steps = cr.ladder(start, 20 * start)[:12]
+        anchor = cr.anchor_of(steps)
+        assert anchor is not None
+        assert anchor.low <= start <= anchor.high
+        for edge in (anchor.low, anchor.high):
+            assert cr.ladder(edge, 20 * start)[:12] == steps
+        below, above = math.nextafter(anchor.low, 0.0), math.nextafter(anchor.high, math.inf)
+        assert cr.ladder(below, 20 * start)[:12] != steps
+        assert cr.ladder(above, 20 * start)[:12] != steps
+
+    @pytest.mark.parametrize(
+        "steps",
+        [[10, 13], [10, 12, 15], [10, 12, 12], [1637, 1883, 2165, 2490, 2863, 3292, 3786, 4354]],
+        ids=["skips_a_rung", "skips_a_later_rung", "repeats_a_rung", "two_phases"],
+    )
+    def test_steps_that_no_single_start_makes_have_no_ladder(self, steps):
+        assert cr.anchor_of(steps) is None
+
+    def test_the_same_steps_can_be_one_ladder_or_two(self):
+        """10, 11, 13 are a ladder from just under 10 (9.6), whose next rung after 10 is 11."""
+        anchor = cr.anchor_of([10, 11, 13])
+        assert anchor is not None
+        assert anchor.window(10, 12.5) == (10, 11)
+
+    def test_later_rungs_are_those_every_start_of_the_ladder_agrees_on(self):
+        anchor = cr.anchor_of([1637, 1883, 2165])
+        assert anchor is not None
+        assert anchor.window(2165, 2706.25) == (2165, 2490)
+        assert anchor.window(2490, 3112.5) is None  # 2863 or 2864, by start
+
+
+class TestScanFiles:
+    """``select`` files are read as the steps of ladders: a record names its ladder, and a file
+    of records that name none is placed on the ladder its own steps determine."""
+
+    TAILS = (0.01, 0.005)
+    # Worst-excess columns in the shape of the saved scans of the 0.01 and 0.005 tails: a first
+    # scan interrupted at 2,165 and a continuation from 2,490 on another rounding of the ladder.
+    FIRST = {0.01: [1.03, 1.01, 0.99], 0.005: [1.37, 1.34, 1.31]}
+    CONTINUATION = {
+        0.01: [0.97, 0.73, 0.72, 0.71, 0.69],
+        0.005: [1.29, 0.97, 0.96, 0.94, 0.92],
+    }
+
+    @staticmethod
+    def _write(path, steps, excess, ladder=None):
+        records = []
+        for index, m in enumerate(steps):
+            for tail, values in excess.items():
+                record = {
+                    "m": m,
+                    "tail": tail,
+                    "delta": 0.001,
+                    "wald_excess": values[index],
+                    "routed_excess": values[index],
+                    "cell": None,
+                }
+                if ladder is not None:
+                    record["ladder"] = {"start": ladder[0], "stop": ladder[1]}
+                records.append(record)
+        path.write_text("".join(json.dumps(record) + "\n" for record in records))
+
+    def _saved_shapes(self, tmp_path, *, record_ladder):
+        first, continuation = tmp_path / "first.jsonl", tmp_path / "continuation.jsonl"
+        self._write(
+            first,
+            cr.ladder(1637.0, 16_000.0)[:3],
+            self.FIRST,
+            (1637.0, 16_000.0) if record_ladder else None,
+        )
+        self._write(
+            continuation,
+            cr.ladder(2489.5, 16_000.0)[:5],
+            self.CONTINUATION,
+            (2489.5, 16_000.0) if record_ladder else None,
+        )
+        return first, continuation
+
+    @pytest.mark.parametrize("record_ladder", [False, True], ids=["unnamed", "named"])
+    def test_a_continuation_on_another_rounding_completes_the_window_it_continues(
+        self, tmp_path, record_ladder
+    ):
+        """The continuation's first two steps are the first scan's next rungs (2,490 and 2,863
+        or 2,864), and its later ones are another rounding of the ladder (3,292 against 3,293):
+        each requirement is read on the ladder of the step that is its candidate."""
+        first, continuation = self._saved_shapes(tmp_path, record_ladder=record_ladder)
+        assert cr.ladder(2489.5, 16_000.0)[:5] == [2490, 2863, 3292, 3786, 4354]
+        assert cr.ladder(1637.0, 16_000.0)[:7] == [1637, 1883, 2165, 2490, 2863, 3293, 3786]
+        rows = cr.read_rows([first, continuation])
+        assert cr.required_count(rows, 0.01) == 2165
+        assert cr.required_count(rows, 0.005) == 2863
+        alone = cr.read_rows([first])
+        assert cr.required_count(alone, 0.01) is None
+        assert "2490" in cr.unmet(alone, 0.01)
+
+    def test_a_named_ladder_and_one_derived_from_the_steps_give_the_same_rows(self, tmp_path):
+        named = cr.read_rows(list(self._saved_shapes(tmp_path, record_ladder=True)))
+        unnamed = cr.read_rows(list(self._saved_shapes(tmp_path, record_ladder=False)))
+        for rows in (named, unnamed):
+            for m, by_tail in rows.items():
+                for tail, measured in by_tail.items():
+                    assert measured.anchor.window(m, cr.MARGIN * m) is not None, (m, tail)
+        assert {(m, t): v.excess for m, bt in named.items() for t, v in bt.items()} == {
+            (m, t): v.excess for m, bt in unnamed.items() for t, v in bt.items()
+        }
+
+    def test_steps_that_are_no_ladder_are_refused(self, tmp_path):
+        path = tmp_path / "skipped.jsonl"
+        self._write(path, [10, 12, 15, 17], {0.01: [1.0] * 4})
+        with pytest.raises(cr.ScanError, match=r"skipped\.jsonl.*first 2 do.*step 15"):
+            cr.read_rows([path])
+
+    def test_a_file_of_two_scans_that_name_no_ladder_is_refused(self, tmp_path):
+        path = tmp_path / "joined.jsonl"
+        self._write(path, [10, 12, 13, 10, 12], {0.01: [1.0] * 5})
+        with pytest.raises(cr.ScanError, match="recurs"):
+            cr.read_rows([path])
+
+    def test_a_step_that_is_not_on_the_ladder_it_names_is_refused(self, tmp_path):
+        path = tmp_path / "forged.jsonl"
+        self._write(path, [10, 11], {0.01: [1.0, 1.0]}, ladder=(10.0, 40_000.0))
+        with pytest.raises(cr.ScanError, match="step 11 is not a step of the ladder it names"):
+            cr.read_rows([path])
+
+    @pytest.mark.parametrize("ladder", [{"start": 10.0}, {"start": "x", "stop": 4.0}, 7])
+    def test_a_ladder_that_is_not_a_start_and_a_stop_is_refused(self, tmp_path, ladder):
+        path = tmp_path / "named.jsonl"
+        record = {"m": 10, "tail": 0.01, "wald_excess": 1.0, "routed_excess": 1.0, "cell": None}
+        path.write_text(json.dumps(record | {"ladder": ladder}) + "\n")
+        with pytest.raises(cr.ScanError, match="not a start and a stop"):
+            cr.read_rows([path])
+
+    def test_a_scan_writes_its_ladder_with_every_step_and_reads_back(self, tmp_path, monkeypatch):
+        def measured(m, tails, workers=1):
+            return {tail: cr.Excess(tail, m, 0.5, 0.25, None) for tail in tails}
+
+        monkeypatch.setattr(cr, "worst_excess", measured)
+        path = tmp_path / "scan.jsonl"
+        assert cr.select(path, workers=1, start=10.0, stop=60.0, tails=(0.01,)) == 0
+        records = [json.loads(line) for line in path.read_text().splitlines()]
+        assert [record["m"] for record in records] == cr.ladder(10.0, 60.0)
+        assert {json.dumps(record["ladder"]) for record in records} == {
+            json.dumps({"start": 10.0, "stop": 60.0})
+        }
+        rows = cr.read_rows([path])
+        assert set(rows) == set(cr.ladder(10.0, 60.0))
+        assert rows[12][0.01].anchor == cr.Anchor.recorded(10.0, 60.0)
+
+    def test_the_required_command_reports_a_requirement_or_why_there_is_none(
+        self, tmp_path, capsys
+    ):
+        first, continuation = self._saved_shapes(tmp_path, record_ladder=False)
+        assert cr.main(["required", str(first), str(continuation)]) == 0
+        found = {
+            line["tail"]: line for line in map(json.loads, capsys.readouterr().out.splitlines())
+        }
+        assert found[0.01]["required_wald"] == 2165
+        assert found[0.005]["required_wald"] == 2863
+        assert "unmet" not in found[0.01]
+        assert cr.main(["required", str(first)]) == 0
+        alone = {
+            line["tail"]: line for line in map(json.loads, capsys.readouterr().out.splitlines())
+        }
+        assert alone[0.01]["required_wald"] is None
+        assert "2490" in alone[0.01]["unmet"]["wald"]
+
+    def test_the_required_command_refuses_an_unreadable_scan_with_a_status(self, tmp_path, capsys):
+        path = tmp_path / "skipped.jsonl"
+        self._write(path, [10, 13], {0.01: [1.0, 1.0]})
+        assert cr.main(["required", str(path)]) == 2
+        assert str(path) in capsys.readouterr().err

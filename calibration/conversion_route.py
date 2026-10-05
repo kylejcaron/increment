@@ -22,20 +22,34 @@ only to draws the rule routes asymptotic; the rest are the finite-sample route's
 valid at every count. The excess of either over the tail is read against
 ``tests.mc.scientific_delta(tail)``, the repository's tolerance (a tenth of the tail below
 0.05, 0.005 at and above it). ``required_count(tail)`` is the smallest ``m`` whose ``wald``
-excess is within tolerance at ``m`` and at every larger ladder step through ``1.25 * m``; the
-shipped law is checked against it by ``verify``. ``wald`` is the stricter of the two and the
+excess is within tolerance at ``m`` and at every larger measured step, with every step of
+``m``'s own ladder through ``1.25 * m`` measured; the shipped law is checked against it by
+``verify``. ``wald`` is the stricter of the two and the
 one the threshold follows: a draw the rule sends to the finite-sample route cannot make the
 combined interval worse than the finite-sample route's own, which is valid, but the combined
 noncoverage is only known from the finite-sample route's behaviour in the routed-away region,
 which ``hybrid`` measures through the production route.
 
-The vectorised delta-method interval here is the production formula (arm moments, Welch-
-Satterthwaite ``t`` reference); ``conformance`` checks it against ``estimate_lift`` on sampled
-count pairs before any table is trusted.
+A scan measures the steps of ``ladder(start, stop)`` and writes that ladder beside each step,
+so the steps a window needs are exactly the rungs of its own ladder: a row of another start's
+ladder stands in for none of them, while a rung any scan measured counts. A file written
+before steps named their ladder is placed on the ladder its own steps determine (every start
+whose ladder opens with them) and refused when no ladder does; a rung past its last step
+counts only where every such start agrees on it.
 
-Planning is validated against the same production route. ``bound`` compares the planned power
-of dense, sparse and borderline designs with the production pipeline's exact rejection
-probability, summed over the count lattice; ``mirror`` compares it with the simulated rejection
+The vectorised delta-method interval is ``increment.estimation.conversion_delta``'s, the
+production formula (arm moments, Welch-Satterthwaite ``t`` reference) over arrays of counts;
+``conformance`` checks it against ``estimate_lift`` on sampled count pairs before any table is
+trusted, and an enumeration defers to the runtime's own row any routed pair it leaves open.
+
+Planning is validated against the same production route. ``bound`` compares the plan of
+dense, sparse and borderline designs with the production pipeline's exact rejection
+probability, summed over the count lattice, at the enumeration's own numerical error: a
+dense plan's closed form to within ``DENSE_AGREEMENT``, any other plan's enclosure meeting the
+pipeline's interval with no further allowance. A checkpoint records each design's
+enumeration beside the runtime it was summed under, and its plan beside the planner model, so
+a resumed run keeps an enumeration of this runtime, plans again under a retired model, and
+refuses what names neither. ``mirror`` compares the plan with the simulated rejection
 rate of ``estimate_lift`` (``tests.estimation._conversion_counts.runtime_rejection_rate``).
 
 Every lattice sum streams over blocks of control counts (``_BLOCK_CELLS`` cells each), so a
@@ -43,10 +57,15 @@ worker's footprint stays near a gibibyte whatever the arm sizes: the largest bou
 a count lattice of tens of millions of cells.
 
     python -m calibration.conversion_route select --out /tmp/route-scan.jsonl
+    python -m calibration.conversion_route required /tmp/route-scan.jsonl
     python -m calibration.conversion_route verify
     python -m calibration.conversion_route conformance
     python -m calibration.conversion_route hybrid --workers 4 --tails 0.025 0.01
     python -m calibration.conversion_route bound --workers 4 --out /tmp/route-bound.jsonl
+    python -m calibration.conversion_route audit --revision a6f8f1a
+    python -m calibration.conversion_route adopt saved.jsonl --out /tmp/route-bound.jsonl \\
+        --revision a6f8f1a --construction binomial_bb_difference_v3 \\
+        --route-law "max(412, ceil(145 z^4))"
     python -m calibration.conversion_route mirror --reps 3000 --workers 4
 """
 
@@ -54,21 +73,28 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import itertools
 import json
 import math
 import multiprocessing
 import multiprocessing.pool
 import sys
-from collections.abc import Iterator, Sequence
-from dataclasses import asdict, dataclass, fields
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast, get_args, get_type_hints
 
 import numpy as np
 from scipy.stats import binom as _binom
 from scipy.stats import norm as _norm
 from scipy.stats import t as _student_t
 
+from increment.estimation.conversion_delta import (
+    CRITICAL_AGREEMENT,
+    critical_values,
+    delta_log_bounds,
+    delta_statistic,
+)
 from increment.estimation.conversion_route import dense_min_count, routed_share
 from tests.estimation._conversion_counts import lift_row, runtime_rejection_rate
 from tests.mc import (
@@ -191,62 +217,6 @@ def _row_blocks(rows: int, width: int) -> Iterator[slice]:
         yield slice(start, min(rows, start + step))
 
 
-def _statistic(
-    x_c: np.ndarray, n_c: int, x_t: np.ndarray, n_t: int
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """``(log_rr, se, df)`` of the delta-method route for count arrays with ``0 < x < n``: each
-    arm's centered moments give ``mean = x / n`` and ``var = x (n - x) / (n (n - 1))``, its
-    log standard error is ``sqrt(var / (n mean ** 2))``, the combined one their hypotenuse,
-    and the reference's degrees of freedom are Welch-Satterthwaite."""
-    with np.errstate(all="ignore"):
-        mean_c, mean_t = x_c / n_c, x_t / n_t
-        var_c = x_c * (n_c - x_c) / (n_c * (n_c - 1.0))
-        var_t = x_t * (n_t - x_t) / (n_t * (n_t - 1.0))
-        se_c = np.sqrt(var_c / (n_c * mean_c**2))
-        se_t = np.sqrt(var_t / (n_t * mean_t**2))
-        log_rr = np.log(mean_t) - np.log(mean_c)
-        se = np.hypot(se_c, se_t)
-        scale = np.maximum(se_c, se_t)
-        a, b = se_t / scale, se_c / scale
-        df = (a * a + b * b) ** 2 / (a**4 / (n_t - 1) + b**4 / (n_c - 1))
-    return log_rr, se, df
-
-
-#: Degree-of-freedom floor and node count of the Chebyshev interpolation in ``1 / df`` that
-#: stands in for a per-point ``t`` quantile; above the floor the quantile is analytic in
-#: ``1 / df`` over a lattice's narrow range and the interpolant agrees with ``t.isf`` to
-#: ``_CRITICAL_AGREEMENT`` (checked by ``conformance``).
-_INTERPOLATION_DF_FLOOR = 30.0
-_INTERPOLATION_NODES = 24
-_CRITICAL_AGREEMENT = 1e-12
-
-
-def _critical(df: np.ndarray, tail: float) -> np.ndarray:
-    """Student ``t`` upper-tail critical values at ``df``."""
-    finite = df[np.isfinite(df)]
-    if finite.size < 4096 or finite.min() < _INTERPOLATION_DF_FLOOR:
-        return _student_t.isf(tail, df)
-    lo, hi = 1.0 / finite.max(), 1.0 / finite.min()
-    nodes = np.cos(np.pi * (np.arange(_INTERPOLATION_NODES) + 0.5) / _INTERPOLATION_NODES)
-    inverse = 0.5 * (lo + hi) + 0.5 * (hi - lo) * nodes
-    coefficients = np.polynomial.chebyshev.chebfit(
-        nodes, _student_t.isf(tail, 1.0 / inverse), _INTERPOLATION_NODES - 1
-    )
-    with np.errstate(all="ignore"):
-        position = (1.0 / df - 0.5 * (lo + hi)) * (2.0 / (hi - lo)) if hi > lo else 0.0 * df
-    return np.polynomial.chebyshev.chebval(position, coefficients)
-
-
-def delta_method_bounds(
-    x_c: np.ndarray, n_c: int, x_t: np.ndarray, n_t: int, tail: float
-) -> tuple[np.ndarray, np.ndarray]:
-    """Log risk-ratio interval bounds the production delta-method route reports at
-    one-sided ``tail``, for count arrays with ``0 < x < n``."""
-    log_rr, se, df = _statistic(x_c, n_c, x_t, n_t)
-    crit = _critical(df, tail)
-    return log_rr - crit * se, log_rr + crit * se
-
-
 def boundary_noncoverage(
     cell: Cell, tails: Sequence[float], threshold: dict[float, int] | int
 ) -> dict[float, tuple[float, float, float, float]]:
@@ -264,9 +234,9 @@ def boundary_noncoverage(
             np.minimum(grid_c, cell.n_c - grid_c), np.minimum(x_t, cell.n_t - x_t)[None, :]
         )
         defined = smallest >= 1
-        log_rr, se, df = _statistic(grid_c, cell.n_c, x_t[None, :], cell.n_t)
+        log_rr, se, df = delta_statistic(grid_c, cell.n_c, x_t[None, :], cell.n_t)
         for tail in tails:
-            crit = _critical(df, tail)
+            crit = critical_values(df, tail)
             floor = threshold[tail] if isinstance(threshold, dict) else threshold
             routed = defined & (smallest >= floor)
             low_miss = defined & (log_rr - crit * se > cell.truth)
@@ -352,66 +322,172 @@ def worst_excess(
     return worst
 
 
+def _rungs(start: float) -> Iterator[tuple[float, int]]:
+    """The ladder from ``start`` without end: each step's geometric value, built by repeated
+    multiplication, and that value rounded."""
+    value = start
+    while True:
+        yield value, round(value)
+        value *= LADDER_STEP
+
+
 def ladder(start: float = 10.0, stop: float = 40_000.0) -> list[int]:
-    steps: list[int] = []
-    m = start
-    while m < stop:
-        steps.append(round(m))
-        m *= LADDER_STEP
-    return steps
+    """The steps from ``start`` whose geometric value is below ``stop``."""
+    return [step for _, step in itertools.takewhile(lambda rung: rung[0] < stop, _rungs(start))]
 
 
-#: A step is a rounded geometric value, so consecutive steps satisfy
-#: ``|b - LADDER_STEP * a| <= _LADDER_ROUNDING``, while a scan that skipped a step has
-#: ``b >= LADDER_STEP ** 2 * (a - 0.5) - 0.5``, beyond that bound from ``a = 10`` on (where
-#: ``ladder`` starts).
-_LADDER_ROUNDING = 0.5 * (LADDER_STEP + 1.0)
+@dataclass(frozen=True, slots=True)
+class Anchor:
+    """The starts a scan's ladder may have had: its steps are those of ``ladder(start, stop)``
+    for every ``start`` in ``[low, high]``. A scan records its one start (``low == high``). Steps
+    read from records that name no start have every start whose ladder opens with them
+    (``anchor_of``, with ``stop`` unknown and therefore infinite); the later steps of such a
+    ladder are the ones every one of those starts gives."""
+
+    low: float
+    high: float
+    stop: float
+
+    def __post_init__(self) -> None:
+        if not (0.0 < self.low <= self.high < math.inf and self.low < self.stop):
+            raise ValueError(
+                f"a ladder needs 0 < start < stop; got starts [{self.low}, {self.high}], "
+                f"stop {self.stop}"
+            )
+
+    @classmethod
+    def recorded(cls, start: float, stop: float) -> Anchor:
+        return cls(start, start, stop)
+
+    def window(self, step: int, limit: float) -> tuple[int, ...] | None:
+        """The steps of the ladder from ``step`` through ``limit``, or ``None`` when ``step`` is
+        not one of its steps or its starts give different steps within that range. Each rung is
+        nondecreasing in the start, so the ladders of the lowest and the highest start bound
+        those of every start between."""
+        steps: list[int] = []
+        for (_, low), (_, high) in zip(_rungs(self.low), _rungs(self.high), strict=False):
+            if low > limit:
+                break
+            if high < step:
+                continue
+            if low != high:
+                return None
+            steps.append(low)
+        return tuple(steps) if steps and steps[0] == step else None
 
 
-def _adjacent(a: int, b: int) -> bool:
-    """Whether no ladder step lies between consecutive measured steps ``a < b``."""
-    return b <= LADDER_STEP * a + _LADDER_ROUNDING
+#: Relative margin around the starts the rounding of each step allows, within which the starts
+#: whose ladder opens with given steps are searched for.
+_ANCHOR_SLACK = 1e-9
 
 
-def _covers(steps: Sequence[int], limit: float) -> bool:
-    """Whether ``steps`` (ascending, the first being a candidate) measure every ladder step
-    through ``limit``: no ladder step skipped between them, and after the last step within
-    ``limit`` either a measured step adjacent to it or a next ladder step that cannot lie
-    within ``limit``."""
-    within = [step for step in steps if step <= limit]
-    beyond = [step for step in steps if step > limit]
-    if not all(_adjacent(a, b) for a, b in zip(within, within[1:], strict=False)):
-        return False
-    last = within[-1]
-    return LADDER_STEP * last - _LADDER_ROUNDING > limit or (
-        bool(beyond) and _adjacent(last, beyond[0])
+def anchor_of(steps: Sequence[int]) -> Anchor | None:
+    """The starts whose ladder opens with exactly ``steps`` (the first ``len(steps)`` rungs, in
+    order), or ``None`` when no start's does: the steps skip a rung, repeat one, or come from
+    scans of different starts. A rung within half a unit of ``start * LADDER_STEP ** k`` bounds
+    the start, and the set of starts that reproduce every step is an interval because each
+    rung is nondecreasing in the start, so its ends are found by bisection on the ladder itself."""
+    wanted = list(steps)
+    if not wanted:
+        return None
+
+    def opens(start: float) -> bool:
+        return [step for _, step in itertools.islice(_rungs(start), len(wanted))] == wanted
+
+    lowest = max((step - 0.5) / LADDER_STEP**k for k, step in enumerate(wanted))
+    highest = min((step + 0.5) / LADDER_STEP**k for k, step in enumerate(wanted))
+    outer_low, outer_high = lowest * (1.0 - _ANCHOR_SLACK), highest * (1.0 + _ANCHOR_SLACK)
+    inside = next(
+        (
+            start
+            for start in (0.5 * (lowest + highest), lowest, highest)
+            if outer_low <= start <= outer_high and opens(start)
+        ),
+        None,
+    )
+    if inside is None or outer_low <= 0.0:
+        return None
+
+    def edge(outside: float) -> float:
+        near = inside
+        while not opens(outside):
+            middle = 0.5 * (outside + near)
+            if middle in (outside, near):
+                return near
+            outside, near = (outside, middle) if opens(middle) else (middle, near)
+        return outside
+
+    return Anchor(edge(outer_low), edge(outer_high), math.inf)
+
+
+@dataclass(frozen=True, slots=True)
+class Measured:
+    """A tail's worst excess at one ladder step, and the ladder the scan took that step from."""
+
+    excess: Excess
+    anchor: Anchor
+
+
+Rows = dict[int, dict[float, Measured]]
+
+
+def _unmeasured(rows: Rows, tail: float, step: int) -> tuple[int, ...] | None:
+    """The steps of ``step``'s own ladder through ``MARGIN * step`` that ``rows`` lacks at
+    ``tail``: a step counts only as the rung of the ladder it was scheduled on, so a row of
+    another ladder's rung stands in for none. ``None`` when that ladder is not determined
+    across the range."""
+    window = rows[step][tail].anchor.window(step, MARGIN * step)
+    return None if window is None else tuple(s for s in window if tail not in rows.get(s, {}))
+
+
+def _passing_from(rows: Rows, tail: float, key: str) -> list[int]:
+    """Measured steps at ``tail`` that are within tolerance and below only steps that are."""
+    ms = sorted(m for m in rows if tail in rows[m])
+    passing = [getattr(rows[m][tail].excess, key) <= 1.0 for m in ms]
+    return [m for index, m in enumerate(ms) if all(passing[index:])]
+
+
+def required_count(rows: Rows, tail: float, *, key: str = "wald") -> int | None:
+    """Smallest measured ``m`` whose excess is within tolerance at ``m`` and at every larger
+    measured step, with every rung of ``m``'s own ladder through ``MARGIN * m`` measured at that
+    tail; ``None`` when no candidate has that coverage."""
+    return next(
+        (m for m in _passing_from(rows, tail, key) if _unmeasured(rows, tail, m) == ()), None
     )
 
 
-def required_count(
-    rows: dict[int, dict[float, Excess]], tail: float, *, key: str = "wald"
-) -> int | None:
-    """Smallest measured ``m`` whose excess is within tolerance at ``m`` and at every larger
-    measured step, with every ladder step through ``MARGIN * m`` measured at that tail;
-    ``None`` when no candidate has that coverage."""
-    ms = sorted(m for m in rows if tail in rows[m])
-    passing = [getattr(rows[m][tail], key) <= 1.0 for m in ms]
-    for index, m in enumerate(ms):
-        if all(passing[index:]) and _covers(ms[index:], MARGIN * m):
-            return m
-    return None
+def unmet(rows: Rows, tail: float, *, key: str = "wald") -> str:
+    """Why ``required_count`` finds no requirement at ``tail``."""
+    if not any(tail in by_tail for by_tail in rows.values()):
+        return "no step was measured at this tail"
+    candidates = _passing_from(rows, tail, key)
+    if not candidates:
+        return "no measured step is within tolerance with every larger measured step"
+    gaps = _unmeasured(rows, tail, candidates[0])
+    if gaps is None:
+        return (
+            f"step {candidates[0]} passes, but the steps recorded do not determine the rungs "
+            f"of its ladder through {MARGIN * candidates[0]:g}"
+        )
+    return (
+        f"step {candidates[0]} passes, but rungs {list(gaps)} of its ladder through "
+        f"{MARGIN * candidates[0]:g} were not measured"
+    )
 
 
 def select(
     out: Path | None, *, workers: int, start: float, stop: float, tails: Sequence[float] = TAILS
 ) -> int:
     """Measure every ladder step and report the required count per tail and the shipped law.
-    Each step is appended to ``out`` as it completes, so an interrupted run keeps its steps."""
-    rows: dict[int, dict[float, Excess]] = {}
+    Each step is appended to ``out`` as it completes, with the ladder it belongs to, so an
+    interrupted run keeps its steps and their ladder."""
+    anchor = Anchor.recorded(start, stop)
+    rows: Rows = {}
     if out is not None:
         out.write_text("")
     for m in ladder(start, stop):
-        rows[m] = worst_excess(m, tails, workers=workers)
+        measured = worst_excess(m, tails, workers=workers)
+        rows[m] = {tail: Measured(excess, anchor) for tail, excess in measured.items()}
         lines = [
             {
                 "m": m,
@@ -420,8 +496,9 @@ def select(
                 "wald_excess": excess.wald,
                 "routed_excess": excess.routed,
                 "cell": asdict(excess.cell) if excess.cell else None,
+                "ladder": {"start": start, "stop": stop},
             }
-            for tail, excess in rows[m].items()
+            for tail, excess in measured.items()
         ]
         if out is not None:
             with out.open("a") as handle:
@@ -429,42 +506,119 @@ def select(
         print(
             f"m={m:>6}  "
             + "  ".join(
-                f"{tail:g}:{rows[m][tail].wald:6.2f}/{rows[m][tail].routed:6.2f}" for tail in tails
+                f"{tail:g}:{measured[tail].wald:6.2f}/{measured[tail].routed:6.2f}"
+                for tail in tails
             ),
             flush=True,
         )
     return required(rows, tails)
 
 
-def required(rows: dict[int, dict[float, Excess]], tails: Sequence[float] = TAILS) -> int:
-    """Print the required count per tail beside the shipped law."""
+def required(rows: Rows, tails: Sequence[float] = TAILS) -> int:
+    """Print the required count per tail beside the shipped law, with the reason for each
+    that is not established."""
     for tail in tails:
-        print(
-            json.dumps(
-                {
-                    "tail": tail,
-                    "z": float(_norm.isf(tail)),
-                    "required_wald": required_count(rows, tail),
-                    "required_routed": required_count(rows, tail, key="routed"),
-                    "shipped": dense_min_count(tail),
-                }
-            )
-        )
+        found = {key: required_count(rows, tail, key=key) for key in ("wald", "routed")}
+        reasons = {key: unmet(rows, tail, key=key) for key, count in found.items() if count is None}
+        report: dict[str, object] = {
+            "tail": tail,
+            "z": float(_norm.isf(tail)),
+            "required_wald": found["wald"],
+            "required_routed": found["routed"],
+            "shipped": dense_min_count(tail),
+        }
+        print(json.dumps(report | ({"unmet": reasons} if reasons else {})))
     return 0
 
 
-def read_rows(paths: Sequence[Path]) -> dict[int, dict[float, Excess]]:
-    """The ladder rows ``select`` wrote to ``paths``, merged (a later file replaces an earlier
-    one at the same ``m`` and tail)."""
-    rows: dict[int, dict[float, Excess]] = {}
-    for path in paths:
-        for line in path.read_text().splitlines():
+class ScanError(ValueError):
+    """A ``select`` file that cannot be read as the steps of ladders."""
+
+
+def _scan_records(path: Path) -> list[tuple[int, dict]]:
+    """``(line number, record)`` of the step records in ``path``."""
+    records: list[tuple[int, dict]] = []
+    for number, line in enumerate(path.read_text().splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
             record = json.loads(line)
             if "m" not in record:
                 continue
+            int(record["m"]), float(record["tail"]), float(record["wald_excess"])
+            float(record["routed_excess"]), record["cell"]
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+            raise ScanError(f"{path}:{number}: not a scan record") from error
+        records.append((number, record))
+    return records
+
+
+def _recorded_anchor(where: str, record: dict) -> Anchor:
+    """The ladder a record names, which must contain the record's own step."""
+    try:
+        anchor = Anchor.recorded(float(record["ladder"]["start"]), float(record["ladder"]["stop"]))
+    except (KeyError, TypeError, ValueError) as error:
+        raise ScanError(
+            f"{where}: the ladder {record['ladder']!r} is not a start and a stop"
+        ) from error
+    if record["m"] not in ladder(anchor.low, anchor.stop):
+        raise ScanError(
+            f"{where}: step {record['m']} is not a step of the ladder it names, "
+            f"ladder({anchor.low:g}, {anchor.stop:g})"
+        )
+    return anchor
+
+
+def _derived_anchor(path: Path, records: list[tuple[int, dict]]) -> Anchor | None:
+    """The ladder of the records that name none, from the steps they measured in file order:
+    one scan writes each step's tails together, so a step recurring after another is a second
+    scan. ``None`` when there are no such records; a refusal when no single ladder opens with
+    the steps."""
+    steps: list[int] = []
+    for number, record in records:
+        if not steps or steps[-1] != record["m"]:
+            if record["m"] in steps:
+                raise ScanError(
+                    f"{path}:{number}: step {record['m']} recurs after other steps, so the file "
+                    "is more than one scan and names no ladder for either"
+                )
+            steps.append(record["m"])
+    if not steps:
+        return None
+    anchor = anchor_of(steps)
+    if anchor is None:
+        prefix = max(k for k in range(len(steps) + 1) if k == 0 or anchor_of(steps[:k]))
+        raise ScanError(
+            f"{path}: no single ladder opens with its {len(steps)} steps ({steps[0]} .. "
+            f"{steps[-1]}); the first {prefix} do, and step {steps[prefix]} is not the next "
+            "rung of any start's ladder. The file names no ladder, so its steps cannot be "
+            "placed on one; split it into one file per scan, or rescan with the ladder recorded"
+        )
+    return anchor
+
+
+def read_rows(paths: Sequence[Path]) -> Rows:
+    """The ladder rows ``select`` wrote to ``paths``, merged (a later file replaces an earlier
+    one at the same ``m`` and tail). A record names the ladder it came from; a file whose
+    records name none is placed on the ladder its own steps determine (``anchor_of``) or
+    refused."""
+    rows: Rows = {}
+    for path in paths:
+        records = _scan_records(path)
+        derived = _derived_anchor(path, [(n, r) for n, r in records if "ladder" not in r])
+        for number, record in records:
+            anchor = _recorded_anchor(f"{path}:{number}", record) if "ladder" in record else derived
+            assert anchor is not None
             cell = Cell(**record["cell"]) if record["cell"] else None
-            rows.setdefault(record["m"], {})[record["tail"]] = Excess(
-                record["tail"], record["m"], record["wald_excess"], record["routed_excess"], cell
+            rows.setdefault(record["m"], {})[record["tail"]] = Measured(
+                Excess(
+                    record["tail"],
+                    record["m"],
+                    record["wald_excess"],
+                    record["routed_excess"],
+                    cell,
+                ),
+                anchor,
             )
     return rows
 
@@ -501,7 +655,7 @@ def row_misses(row, truth_ratio: float) -> tuple[bool, bool]:
 
 def conformance(samples: int = 200, seed: int = 20261004) -> tuple[float, int, float]:
     """``(gap, compared, interpolation_gap)``: the largest relative gap between
-    ``delta_method_bounds`` and the delta-method row ``estimate_lift`` returns over ``compared``
+    ``delta_log_bounds`` and the delta-method row ``estimate_lift`` returns over ``compared``
     sampled count pairs the rule routes asymptotic at their tail, and the largest relative gap
     between the interpolated and the direct ``t`` quantile over sampled degrees of freedom."""
     rng = np.random.default_rng(seed)
@@ -515,7 +669,7 @@ def conformance(samples: int = 200, seed: int = 20261004) -> tuple[float, int, f
         x_t = int(rng.integers(m, n_t - m + 1))
         row = lift_row((x_c, n_c, x_t, n_t), alpha=2.0 * tail)
         assert row.reference_kind == "t", (x_c, n_c, x_t, n_t, tail)
-        lower, upper = delta_method_bounds(np.array([x_c]), n_c, np.array([x_t]), n_t, tail)
+        lower, upper = delta_log_bounds(np.array([x_c]), n_c, np.array([x_t]), n_t, tail)
         compared += 1
         lift = row.require_lift()
         assert lift.lb is not None and lift.ub is not None
@@ -530,7 +684,7 @@ def conformance(samples: int = 200, seed: int = 20261004) -> tuple[float, int, f
             df = rng.uniform(df_lo, df_hi, size=5000)
             interpolation = max(
                 interpolation,
-                float(np.max(np.abs(_critical(df, tail) / _student_t.isf(tail, df) - 1.0))),
+                float(np.max(np.abs(critical_values(df, tail) / _student_t.isf(tail, df) - 1.0))),
             )
     return worst, compared, interpolation
 
@@ -702,10 +856,10 @@ def hybrid_noncoverage(
         x_c = np.arange(window_c.lo + rows.start, window_c.lo + rows.stop)[:, None]
         weight = np.outer(window_c.weights[rows], window_t.weights)
         smallest = np.minimum(np.minimum(x_c, cell.n_c - x_c), np.minimum(x_t, cell.n_t - x_t))
-        log_rr, se, df = _statistic(
+        log_rr, se, df = delta_statistic(
             np.clip(x_c, 1, cell.n_c - 1), cell.n_c, np.clip(x_t, 1, cell.n_t - 1), cell.n_t
         )
-        crit = _critical(df, tail)
+        crit = critical_values(df, tail)
         routed = smallest >= threshold
         lower += float(weight[np.where(routed, log_rr - crit * se > cell.truth, plus)].sum())
         upper += float(weight[np.where(routed, log_rr + crit * se < cell.truth, minus)].sum())
@@ -872,6 +1026,11 @@ class MirrorCell:
     alternative: Literal["two-sided", "greater", "less"]
 
 
+def _tail(alpha: float, alternative: str) -> float:
+    """The one-sided level a request at ``alpha`` tests at."""
+    return alpha / 2.0 if alternative == "two-sided" else alpha
+
+
 def mirror_cells() -> tuple[MirrorCell, ...]:
     """Designs whose planning route is dense, sparse and borderline at the production tails."""
     cells: list[MirrorCell] = []
@@ -887,19 +1046,8 @@ def mirror_cells() -> tuple[MirrorCell, ...]:
 
 def _mirror_job(args: tuple[MirrorCell, int, int]) -> tuple[str, bool]:
     """One mirror design's report line and whether it passes."""
-    from increment.estimation.arm_contract import ArmPlanningProcedure
-    from increment.estimation.conversion_route import planning_route
-    from increment.power import Baseline, achieved_power
-
     cell, reps, seed = args
-    tail = cell.alpha / 2.0 if cell.alternative == "two-sided" else cell.alpha
-    route = planning_route(
-        cell.n, cell.n, cell.p_c, cell.p_c * (1.0 + cell.lift), tail_alpha=tail, mode="auto"
-    )
-    procedure = ArmPlanningProcedure.standard(
-        "conversion", alpha=cell.alpha, alternative=cell.alternative
-    )
-    planned = achieved_power(cell.n, cell.lift, Baseline.from_proportion(cell.p_c), procedure)
+    plan = plan_design(cell)
     rate, se, share = runtime_rejection_rate(
         cell.n,
         cell.n,
@@ -910,18 +1058,14 @@ def _mirror_job(args: tuple[MirrorCell, int, int]) -> tuple[str, bool]:
         reps=reps,
         seed=seed,
     )
-    gap = planned.power - rate
-    ok = (
-        abs(gap) <= 4 * se + 0.003
-        if route == "dense"
-        else abs(gap) <= 4 * se
-        if route == "sparse"
-        else gap <= 4 * se
-    )
+    if plan.closed_form:
+        ok = abs(plan.planned - rate) <= 4 * se + 0.003
+    else:
+        ok = plan.certified and plan.lower <= rate + 4 * se and rate - 4 * se <= plan.upper
     return (
-        f"{cell.label:<10} route={route:<10} n={cell.n:>8} p_c={cell.p_c:<5} "
+        f"{cell.label:<10} route={plan.route:<10} n={cell.n:>8} p_c={cell.p_c:<5} "
         f"lift={cell.lift:<5} alpha={cell.alpha:<5} {cell.alternative:<9} "
-        f"planned={planned.power:.4f} ({planned.power_basis}) simulated={rate:.4f} "
+        f"planned={plan.planned:.4f} ({plan.basis}) simulated={rate:.4f} "
         f"se={se:.4f} asym_share={share:.2f} {'ok' if ok else 'FAIL'}",
         ok,
     )
@@ -929,8 +1073,8 @@ def _mirror_job(args: tuple[MirrorCell, int, int]) -> tuple[str, bool]:
 
 def mirror(reps: int, seed: int, *, workers: int = 1) -> int:
     """Planned power against the simulated production rejection rate, per design: a dense plan
-    within ``4 * se + 0.003``; a sparse plan within ``4 * se`` (its replay is exact up to the
-    window mass); a borderline plan no larger than the simulated rate plus ``4 * se``."""
+    within ``4 * se + 0.003``; any other plan's enclosure, widened by ``4 * se``, holds the
+    simulated rate."""
     jobs = [(cell, reps, seed) for cell in mirror_cells()]
     results = _pool(workers).imap(_mirror_job, jobs) if workers > 1 else map(_mirror_job, jobs)
     failed = 0
@@ -940,51 +1084,143 @@ def mirror(reps: int, seed: int, *, workers: int = 1) -> int:
     return 1 if failed else 0
 
 
-@dataclass(frozen=True, slots=True)
-class EnumeratedPower:
-    """A planned design's power against its exact rejection probabilities, summed over the
-    joint binomial law of the counts. ``asymptotic`` is the delta-method test applied to every
-    draw; the production pipeline decides each draw by the route its counts select, so its
-    rejection probability ``hybrid`` is the part the delta method decides (``asymptotic_part``,
-    the routed draws it rejects) plus the part the finite-sample test decides
-    (``finite_part``, the draws the rule keeps on it)."""
+def _next_up(x: float) -> float:
+    return math.nextafter(x, math.inf)
 
-    route: str
-    planned: float
-    basis: str
+
+def _next_down(x: float) -> float:
+    return math.nextafter(x, -math.inf)
+
+
+@dataclass(frozen=True, slots=True)
+class Enumeration:
+    """A design's exact rejection probabilities, summed over the joint binomial law of the
+    counts, with the runtime they were summed under. ``asymptotic`` is the delta-method test
+    applied to every draw; the production pipeline decides each draw by the route its counts
+    select, so its rejection probability ``hybrid`` is the part the delta method decides
+    (``asymptotic_part``, the routed draws it rejects) plus the part the finite-sample test
+    decides (``finite_part``, the draws the rule keeps on it). ``construction`` is the
+    finite-sample construction and ``floor`` the routing threshold of that runtime.
+    ``deferred`` counts the routed pairs the vectorised delta decision left to the runtime's
+    own row. ``omitted`` bounds the mass outside the windows and ``inflation`` (at least one)
+    the numerical error of the sums, so the pipeline's rejection probability lies in
+    ``[lower, upper]``."""
+
+    construction: str
+    floor: int
     asymptotic_share: float
     asymptotic: float
     asymptotic_part: float
     finite_part: float
     omitted: float
+    inflation: float
+    deferred: int
 
     @property
     def hybrid(self) -> float:
-        """The production pipeline's rejection probability."""
+        """The pipeline's rejection probability over the retained cells, as summed."""
         return self.asymptotic_part + self.finite_part
 
     @property
+    def lower(self) -> float:
+        """No larger than the exact mass of the retained cells the pipeline rejects."""
+        return max(0.0, _next_down(self.hybrid / self.inflation))
+
+    @property
+    def upper(self) -> float:
+        """No smaller than the pipeline's rejection probability: the retained mass at the most
+        the summation allows, plus the omitted mass."""
+        return min(1.0, _next_up(_next_up(self.hybrid * self.inflation) + self.omitted))
+
+
+@dataclass(frozen=True, slots=True)
+class Plan:
+    """What the planner reports for a design, under the model that produced it. ``planned`` is
+    the plan's power, the certified lower figure of a hybrid plan; ``lower`` and ``upper``
+    enclose the pipeline's rejection probability and ``ambiguous`` is the mass of the counts the
+    plan could not decide. A ``closed_form`` plan is the delta-method model and encloses only
+    itself; a plan that is not ``certified`` is a heuristic with no claim on the pipeline."""
+
+    model: str
+    route: str
+    basis: str
+    planned: float
+    lower: float
+    upper: float
+    ambiguous: float
+    closed_form: bool
+    certified: bool
+
+
+@dataclass(frozen=True, slots=True)
+class EnumeratedPower:
+    """A design's plan against the pipeline's exact rejection probability. ``adopted`` is the
+    digest of the adoption manifest that vouches for an enumeration saved before records named
+    their runtime (``calibration.route_adoption``), carried by every later record of the design."""
+
+    plan: Plan
+    enumeration: Enumeration
+    adopted: str | None = None
+
+    @property
     def margin(self) -> float:
-        """How far the planned power sits below the hybrid rejection probability."""
-        return self.hybrid - self.planned
+        """How far the planned power sits below the pipeline's rejection probability."""
+        return self.enumeration.hybrid - self.plan.planned
 
 
-def enumerated_power(cell: MirrorCell) -> EnumeratedPower:
-    """Exact rejection probabilities of ``cell``'s design by enumerating its count lattice.
+#: Planner models a checkpoint may still name. Resuming keeps their designs' enumerations and
+#: plans each design again under the current model. ``borderline_minimum`` is the smaller of the
+#: replay and the closed form that preceded ``increment.power.core.BINOMIAL_PLANNING_MODEL``.
+RETIRED_PLANNER_MODELS = frozenset({"borderline_minimum"})
 
-    The finite-sample decision of each count pair is the runtime's decision replayed on the
-    ``exact`` rejection geometry whatever the cell count, never the surrogate the planner
-    substitutes above its budget, so the planned side alone carries the planner's
-    approximation; the delta-method decision is the vectorised production interval
-    (``conformance``). A pair is decided by the delta method iff its four counts reach
-    ``dense_min_count``, so the sum over the pairs is the pipeline's rejection probability,
-    not a bound on it. Pairs with a zero count are always finite-sample. The sums stream over
-    blocks of control counts, and only the pairs the finite-sample route decides are replayed
-    (``_finite_blocks``).
-    """
+
+def plan_design(cell: MirrorCell) -> Plan:
+    """The planner's report for ``cell``'s design under the current model: the plan's power,
+    basis and enclosure of the pipeline's rejection probability, and its route."""
     from increment.estimation.arm_contract import ArmPlanningProcedure
     from increment.estimation.conversion_route import planning_route
-    from increment.power import Baseline, achieved_power
+    from increment.power import Baseline
+    from increment.power.core import BINOMIAL_PLANNING_MODEL, planned_enclosure
+
+    procedure = ArmPlanningProcedure.standard(
+        "conversion", alpha=cell.alpha, alternative=cell.alternative
+    )
+    route = planning_route(
+        cell.n,
+        cell.n,
+        cell.p_c,
+        cell.p_c * (1.0 + cell.lift),
+        tail_alpha=procedure.compiled_tail_alpha,
+        mode="auto",
+    )
+    enclosure = planned_enclosure(cell.n, cell.lift, Baseline.from_proportion(cell.p_c), procedure)
+    return Plan(
+        BINOMIAL_PLANNING_MODEL,
+        route,
+        enclosure.basis,
+        enclosure.power,
+        enclosure.lower,
+        enclosure.upper,
+        enclosure.ambiguous,
+        enclosure.closed_form,
+        enclosure.certified,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _DesignLattice:
+    """The runtime's decision of a design and the count windows it is summed over."""
+
+    tail: float
+    floor: int
+    key: BinomialDecision
+    window_c: _Window
+    window_t: _Window
+    x_t: np.ndarray
+
+
+def _design_lattice(cell: MirrorCell) -> _DesignLattice:
+    from increment.estimation.arm_contract import ArmPlanningProcedure
     from increment.power._binomial import _window
     from increment.power.core import _binomial_key
 
@@ -993,56 +1229,161 @@ def enumerated_power(cell: MirrorCell) -> EnumeratedPower:
     )
     tail = procedure.compiled_tail_alpha
     p_t = cell.p_c * (1.0 + cell.lift)
-    planned = achieved_power(cell.n, cell.lift, Baseline.from_proportion(cell.p_c), procedure)
     key = _binomial_key(procedure, cell.n, cell.n)
     window_c, window_t = _window(cell.n, cell.p_c), _window(cell.n, p_t)
     x_t = np.arange(window_t.lo, window_t.hi + 1)[None, :]
     floor = dense_min_count(tail)
-    share = asymptotic = asymptotic_part = finite_part = 0.0
+    return _DesignLattice(tail, floor, key, window_c, window_t, x_t)
+
+
+def _delta_rejects(
+    cell: MirrorCell,
+    lattice: _DesignLattice,
+    x_c: np.ndarray,
+    smallest: np.ndarray,
+    routed: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """``(every, routed_rejects, deferred)``: where the delta method rejects a pair, applied to
+    every pair with positive counts, and to the routed pairs with the runtime's own row
+    deciding the ``deferred`` ones the vectorised decision leaves open."""
+    from increment.estimation.conversion_delta import delta_decision, production_decision
+
+    x_t = lattice.x_t
+    decision = delta_decision(
+        np.clip(x_c, 1, cell.n - 1),
+        cell.n,
+        np.clip(x_t, 1, cell.n - 1),
+        cell.n,
+        tail=lattice.tail,
+        alternative=cell.alternative,
+        null_lift=0.0,
+    )
+    every = (decision.plus | decision.minus) & (smallest >= 1)
+    rejects = every.copy()
+    open_pairs = np.argwhere(routed & ~decision.settled)
+    for i, j in open_pairs:
+        plus, minus = production_decision(
+            int(x_c[i, 0]),
+            cell.n,
+            int(x_t[0, j]),
+            cell.n,
+            tail=lattice.tail,
+            alternative=cell.alternative,
+            null_lift=0.0,
+        )
+        rejects[i, j] = plus or minus
+    return every, rejects, len(open_pairs)
+
+
+@dataclass(frozen=True, slots=True)
+class _Block:
+    """One block of control counts of a lattice: each pair's joint weight, whether the rule
+    routes it to the delta method, where the delta method rejects it (applied to every pair
+    and to the routed ones), the finite-sample replay's ``plus`` and ``minus`` rejections of
+    the pairs the route keeps, and the routed pairs left to the runtime's row."""
+
+    weight: np.ndarray
+    routed: np.ndarray
+    delta_every: np.ndarray
+    delta_routed: np.ndarray
+    plus: np.ndarray
+    minus: np.ndarray
+    deferred: int
+
+
+def _decided_blocks(cell: MirrorCell, lattice: _DesignLattice) -> Iterator[_Block]:
+    """The blocks of ``lattice``, streaming over control counts. The finite-sample decision is
+    the runtime's decision replayed on the ``exact`` rejection geometry whatever the cell
+    count, never the surrogate the planner substitutes above its budget; only the pairs the
+    finite-sample route decides are replayed (``_finite_blocks``), so ``plus`` and ``minus``
+    are read where ``routed`` is false."""
+    floor, key = lattice.floor, lattice.key
+    window_c, window_t, x_t = lattice.window_c, lattice.window_t, lattice.x_t
     for rows, plus, minus in _finite_blocks(key, window_c, window_t, floor):
         x_c = np.arange(window_c.lo + rows.start, window_c.lo + rows.stop)[:, None]
         weight = np.outer(window_c.weights[rows], window_t.weights)
         smallest = np.minimum(np.minimum(x_c, cell.n - x_c), np.minimum(x_t, cell.n - x_t))
-        log_rr, se, df = _statistic(
-            np.clip(x_c, 1, cell.n - 1), cell.n, np.clip(x_t, 1, cell.n - 1), cell.n
-        )
-        crit = _critical(df, tail)
-        lower_clear, upper_clear = log_rr - crit * se > 0.0, log_rr + crit * se < 0.0
-        delta_rejects = (
-            lower_clear | upper_clear
-            if cell.alternative == "two-sided"
-            else lower_clear
-            if cell.alternative == "greater"
-            else upper_clear
-        ) & (smallest >= 1)
         routed = smallest >= floor
+        every, delta_routed, deferred = _delta_rejects(cell, lattice, x_c, smallest, routed)
+        yield _Block(weight, routed, every, delta_routed, plus, minus, deferred)
+
+
+def delta_sums(cell: MirrorCell) -> tuple[float, float, float, int]:
+    """``(asymptotic_share, asymptotic, asymptotic_part, deferred)`` of ``cell``'s design as
+    ``enumerate_design`` sums them, without replaying the finite-sample decision."""
+    lattice = _design_lattice(cell)
+    window_c, window_t, floor = lattice.window_c, lattice.window_t, lattice.floor
+    share = asymptotic = asymptotic_part = 0.0
+    deferred = 0
+    for rows in _row_blocks(window_c.size, lattice.x_t.size):
+        x_c = np.arange(window_c.lo + rows.start, window_c.lo + rows.stop)[:, None]
+        weight = np.outer(window_c.weights[rows], window_t.weights)
+        smallest = np.minimum(
+            np.minimum(x_c, cell.n - x_c), np.minimum(lattice.x_t, cell.n - lattice.x_t)
+        )
+        routed = smallest >= floor
+        every, delta_routed, open_pairs = _delta_rejects(cell, lattice, x_c, smallest, routed)
         share += float(weight[routed].sum())
-        asymptotic += float(weight[delta_rejects].sum())
-        asymptotic_part += float(weight[routed & delta_rejects].sum())
+        asymptotic += float(weight[every].sum())
+        asymptotic_part += float(weight[routed & delta_routed].sum())
+        deferred += open_pairs
+    return share, asymptotic, asymptotic_part, deferred
+
+
+def enumerate_design(cell: MirrorCell) -> Enumeration:
+    """Exact rejection probabilities of ``cell``'s design by enumerating its count lattice.
+
+    A pair is decided by the delta method iff its four counts reach ``dense_min_count``, so
+    the sum over the pairs (``_decided_blocks``) is the pipeline's rejection probability, not a
+    bound on it. Pairs with a zero count are always finite-sample. The sums stream over blocks
+    of control counts.
+
+    Every pmf weight is within its relative allowance, the products round once, and the
+    nonnegative cell terms are summed in some order, whose relative error is at most
+    ``gamma_k`` for ``k`` additions (the cells, one per block, and the two parts' sum); these
+    compose into ``inflation`` as the planner's own enclosure does.
+    """
+    from increment.estimation.results import BINOMIAL_METHOD
+    from increment.power._binomial import _UNIT_ROUNDOFF, _compounded, _inflation
+
+    lattice = _design_lattice(cell)
+    share = asymptotic = asymptotic_part = finite_part = 0.0
+    blocks = deferred = 0
+    for block in _decided_blocks(cell, lattice):
+        weight, routed, plus, minus = block.weight, block.routed, block.plus, block.minus
+        blocks += 1
+        deferred += block.deferred
+        share += float(weight[routed].sum())
+        asymptotic += float(weight[block.delta_every].sum())
+        asymptotic_part += float(weight[routed & block.delta_routed].sum())
         finite_part += float(weight[~routed & (plus | minus)].sum())
-    return EnumeratedPower(
-        planning_route(cell.n, cell.n, cell.p_c, p_t, tail_alpha=tail, mode="auto"),
-        planned.power,
-        planned.power_basis,
+    return Enumeration(
+        BINOMIAL_METHOD,
+        lattice.floor,
         share,
         asymptotic,
         asymptotic_part,
         finite_part,
-        window_c.omitted + window_t.omitted,
+        _next_up(lattice.window_c.omitted + lattice.window_t.omitted),
+        _inflation(
+            lattice.window_c.error,
+            lattice.window_t.error,
+            _UNIT_ROUNDOFF,
+            _compounded(lattice.window_c.size * lattice.window_t.size + blocks + 2),
+        ),
+        deferred,
     )
+
+
+def enumerated_power(cell: MirrorCell) -> EnumeratedPower:
+    """``cell``'s plan against the pipeline's exact rejection probability."""
+    return EnumeratedPower(plan_design(cell), enumerate_design(cell))
 
 
 #: Largest gap between a dense plan's closed-form power and the pipeline's exact rejection
 #: probability: the repository's ceiling for a normal approximation
 #: (``tests.mc.scientific_delta``).
 DENSE_AGREEMENT = 0.005
-
-#: Accuracy of a plan on the approximate replay, as ``docs/guides/power-analysis.md`` reports it:
-#: about 0.03 percentage points, up to 0.8 points below (unequal allocation, shifted null), and
-#: either way where rare-event count pairs near the tail allocation are misclassified. Such a
-#: plan is an approximation judged by this accuracy, not a bound.
-REPLAY_OVERSTATEMENT = 0.0003
-REPLAY_UNDERSTATEMENT = 0.008
 
 #: Sparsest expected count of a bound cell's design, in units of ``dense_min_count``: below
 #: the boundary, across it, and above it.
@@ -1166,24 +1507,16 @@ def bound_cells(grid: BoundGrid = "original") -> tuple[MirrorCell, ...]:
 
 
 def bound_holds(power: EnumeratedPower) -> bool:
-    """Whether a design meets its route's claim, which is an accuracy rather than a bound. A
-    dense plan's closed form is within ``DENSE_AGREEMENT`` of the pipeline's rejection
-    probability. A sparse plan is the replay of the decision the pipeline takes on those
-    counts: equal to it up to the omitted mass on the exact route, and on the approximate
-    route within that route's documented accuracy (``REPLAY_OVERSTATEMENT`` above it,
-    ``REPLAY_UNDERSTATEMENT`` below). A borderline plan is the smaller of two figures, neither
-    of which is the pipeline's mixed rejection probability, so it claims no bound: it leans
-    conservative, is judged not to exceed the pipeline's power by more than the replay's own
-    accuracy, and has no limit on how far below it sits."""
-    slack = 1e-9 + power.omitted
-    if power.route == "dense":
-        return abs(power.margin) <= DENSE_AGREEMENT + slack
-    exact = power.basis == "exact"
-    overstatement = 0.0 if exact else REPLAY_OVERSTATEMENT
-    if power.route == "sparse":
-        understatement = 0.0 if exact else REPLAY_UNDERSTATEMENT
-        return -(overstatement + slack) <= power.margin <= understatement + slack
-    return power.margin >= -(overstatement + slack)
+    """Whether a design meets its plan's claim, judged at the numerical error of the
+    enumeration (the pipeline's rejection probability lies in ``[lower, upper]``) and no
+    looser. A closed-form plan is within ``DENSE_AGREEMENT`` of it. Any other plan encloses it:
+    the plan's certified lower end does not exceed the pipeline's rejection probability, and the
+    pipeline's does not exceed the plan's upper end. A plan that is not certified makes no claim
+    to hold."""
+    plan, runtime = power.plan, power.enumeration
+    if plan.closed_form:
+        return runtime.lower - DENSE_AGREEMENT <= plan.planned <= runtime.upper + DENSE_AGREEMENT
+    return plan.certified and plan.lower <= runtime.upper and runtime.lower <= plan.upper
 
 
 def _design_key(cell: MirrorCell) -> list[object]:
@@ -1194,101 +1527,182 @@ class CheckpointError(ValueError):
     """A ``bound`` checkpoint record that cannot be resumed from."""
 
 
-#: Fields of the records written before the pipeline's power was split by deciding route.
-_PRE_SPLIT_FIELDS = frozenset(
-    {
-        "route",
-        "planned",
-        "basis",
-        "asymptotic_share",
-        "asymptotic",
-        "finite_sample",
-        "hybrid",
-        "omitted",
-    }
-)
+def _conforms(hint: object, value: object) -> bool:
+    """Whether a record's JSON ``value`` is of the annotated type ``hint`` (a number is an int
+    or a float but never a bool, and a bool only where a bool is annotated)."""
+    options = get_args(hint) or (hint,)
+    if value is None:
+        return type(None) in options
+    return any(
+        isinstance(value, (int, float) if option is float else option)
+        and (option is bool or not isinstance(value, bool))
+        for option in options
+        if isinstance(option, type) and option is not type(None)
+    )
 
 
-def read_checkpoint(path: Path, grid: BoundGrid) -> dict[str, EnumeratedPower]:
-    """The designs a ``bound`` checkpoint holds, keyed by ``_design_key`` as JSON.
+def _section[T](cls: type[T], value: object, where: str) -> T:
+    """``cls`` read from a record's section, which must hold exactly its fields, typed."""
+    hints = get_type_hints(cls)
+    if isinstance(value, dict):
+        section = {str(name): item for name, item in value.items()}
+        if section.keys() == hints.keys() and all(
+            _conforms(hint, section[name]) for name, hint in hints.items()
+        ):
+            return cls(**section)
+    raise CheckpointError(
+        f"{where}: the {cls.__name__.lower()} section is not exactly {sorted(hints)} "
+        "with the types of this checkpoint layout; recompute to another --out"
+    )
 
-    Records have been written in three layouts. One keyed by the design is read as it is. One
-    keyed by an integer indexes the ``original`` grid, the only grid when records were keyed
-    that way and in the order it still has, so it is read through that grid and refused
-    against any other. One whose power carries ``finite_sample`` and ``hybrid`` predates the
-    split of the pipeline's power by deciding route: its parts are not recoverable from their
-    sum, so it is refused (resume to another ``--out``) and never recomputed unnoticed."""
-    original = bound_cells("original")
-    fields_of_power = frozenset(field.name for field in fields(EnumeratedPower))
-    done: dict[str, EnumeratedPower] = {}
+
+def _checkpoint_record(
+    where: str, record: Mapping[str, object], manifests: Mapping[str, Mapping[str, object]]
+) -> tuple[list[object], EnumeratedPower]:
+    """The design and the enumerated power one checkpoint record holds, refused unless the
+    enumeration was summed under this runtime (or adopted for it under a manifest that still
+    holds) and the plan's model is one it can be resumed from."""
+    from calibration import route_adoption
+    from increment.estimation.results import BINOMIAL_METHOD
+    from increment.power.core import BINOMIAL_PLANNING_MODEL
+
+    design = record.get("design")
+    if not (
+        isinstance(design, list)
+        and len(design) == 5
+        and _conforms(int, design[0])
+        and all(_conforms(float, value) for value in design[1:4])
+        and design[4] in ("two-sided", "greater", "less")
+    ):
+        raise CheckpointError(f"{where}: design {design!r} is not a design key")
+    if record.keys() - {"adopted"} != {"design", "enumeration", "planner"}:
+        raise CheckpointError(
+            f"{where}: the record names neither the runtime it was summed under nor the planner "
+            "model that planned it (it holds one undated `power` section), so neither can be "
+            "established; recompute to another --out, or audit and adopt the file "
+            "(`adopt`)"
+        )
+    enumeration = _section(Enumeration, record["enumeration"], where)
+    plan = _section(Plan, record["planner"], where)
+    floor = dense_min_count(_tail(cast("float", design[3]), cast("str", design[4])))
+    if enumeration.construction != BINOMIAL_METHOD or enumeration.floor != floor:
+        raise CheckpointError(
+            f"{where}: the enumeration was summed under {enumeration.construction} with routing "
+            f"floor {enumeration.floor}, and this runtime is {BINOMIAL_METHOD} with floor "
+            f"{floor} at this design's tail; recompute to another --out"
+        )
+    if plan.model != BINOMIAL_PLANNING_MODEL and plan.model not in RETIRED_PLANNER_MODELS:
+        raise CheckpointError(
+            f"{where}: planner model {plan.model!r} is neither {BINOMIAL_PLANNING_MODEL!r} nor a "
+            "retired model this checkpoint can be re-planned from"
+        )
+    adopted = record.get("adopted")
+    if adopted is not None:
+        try:
+            route_adoption.validate_adoption(
+                manifests, str(adopted), json.dumps(design), asdict(enumeration)
+            )
+        except route_adoption.AdoptionError as refusal:
+            raise CheckpointError(f"{where}: adopted enumeration refused: {refusal}") from refusal
+    return list(design), EnumeratedPower(
+        plan, enumeration, None if adopted is None else str(adopted)
+    )
+
+
+def read_checkpoint(path: Path) -> dict[str, EnumeratedPower]:
+    """The designs a ``bound`` checkpoint holds, keyed by ``_design_key`` as JSON (a design
+    recorded again is its last record). A record holds the design, its enumeration with the
+    runtime it was summed under, and its plan with the planner model that made it. A record
+    that names neither (one undated `power` section, as every earlier layout wrote), or an
+    enumeration of another runtime, or a model that is neither current nor retired, is refused
+    and never reused or relabelled; a retired model's plan is replaced when the run resumes
+    (``bound``) and its enumeration kept. An enumeration saved before records named their
+    runtime is read only as ``adopt`` wrote it: beside a manifest, cited by its digest, that
+    still describes this runtime and decision path."""
+    from calibration import route_adoption
+
+    parsed: list[tuple[str, Mapping[str, object]]] = []
+    manifests: dict[str, Mapping[str, object]] = {}
     for number, line in enumerate(path.read_text().splitlines(), start=1):
         if not line.strip():
             continue
         where = f"{path}:{number}"
         try:
             record = json.loads(line)
-            design, power = record["design"], record["power"]
-        except (json.JSONDecodeError, KeyError, TypeError) as error:
+            record.keys()
+        except (json.JSONDecodeError, AttributeError) as error:
             raise CheckpointError(f"{where}: not a bound checkpoint record") from error
-        if type(design) is int:
-            if grid != "original" or not 0 <= design < len(original):
-                raise CheckpointError(
-                    f"{where}: design index {design} addresses the original grid, "
-                    f"not the {grid!r} grid being resumed"
-                )
-            design = _design_key(original[design])
-        elif not (isinstance(design, list) and len(design) == len(_design_key(original[0]))):
-            raise CheckpointError(f"{where}: design {design!r} is neither an index nor a key")
-        present = frozenset(map(str, power)) if isinstance(power, dict) else frozenset[str]()
-        if present == _PRE_SPLIT_FIELDS:
-            raise CheckpointError(
-                f"{where}: the record predates the split of the pipeline's power by deciding "
-                "route, whose parts cannot be recovered from the recorded total; recompute "
-                "to another --out"
-            )
-        if present != fields_of_power:
-            raise CheckpointError(
-                f"{where}: power fields {sorted(present)} are not those of this checkpoint "
-                "layout; recompute to another --out"
-            )
-        done[json.dumps(design)] = EnumeratedPower(**power)
+        if record.keys() == {"adoption"}:
+            manifests[route_adoption.manifest_digest(record["adoption"])] = record["adoption"]
+        else:
+            parsed.append((where, record))
+    done: dict[str, EnumeratedPower] = {}
+    for where, record in parsed:
+        design, power = _checkpoint_record(where, record, manifests)
+        done[json.dumps(design)] = power
     return done
+
+
+def _append(handle, cell: MirrorCell, power: EnumeratedPower) -> None:
+    record = {
+        "design": _design_key(cell),
+        "enumeration": asdict(power.enumeration),
+        "planner": asdict(power.plan),
+    }
+    if power.adopted is not None:
+        record["adopted"] = power.adopted
+    handle.write(json.dumps(record) + "\n")
 
 
 def bound(*, workers: int, out: Path | None = None, grid: BoundGrid = "original") -> int:
     """Planned power against the pipeline's exact rejection probability at every design of
     ``bound_cells``, each judged by ``bound_holds``. Each design is appended to ``out`` as it
-    completes, and designs already in ``out`` are not recomputed, so an interrupted run
-    resumes."""
-    designs = bound_cells(grid)
-    done = read_checkpoint(out, grid) if out is not None and out.exists() else {}
-    pending = [cell for cell in designs if json.dumps(_design_key(cell)) not in done]
-    computed = (
-        _pool(workers).imap(enumerated_power, pending)
-        if workers > 1
-        else map(enumerated_power, pending)
-    )
-    for cell, power in zip(pending, computed, strict=True):
-        done[json.dumps(_design_key(cell))] = power
+    completes, and designs already in ``out`` are not enumerated again, so an interrupted run
+    resumes. A recorded design planned under a retired model keeps its enumeration and is
+    planned again under the current one, appended as that design's newest record."""
+    from increment.power.core import BINOMIAL_PLANNING_MODEL
+
+    def run(function, cells):
+        return _pool(workers).imap(function, cells) if workers > 1 else map(function, cells)
+
+    def key(cell: MirrorCell) -> str:
+        return json.dumps(_design_key(cell))
+
+    def record(cell: MirrorCell, power: EnumeratedPower) -> None:
+        done[key(cell)] = power
         if out is not None:
             with out.open("a") as handle:
-                handle.write(
-                    json.dumps({"design": _design_key(cell), "power": asdict(power)}) + "\n"
-                )
+                _append(handle, cell, power)
+
+    designs = bound_cells(grid)
+    done = read_checkpoint(out) if out is not None and out.exists() else {}
+    replanned = [
+        cell
+        for cell in designs
+        if key(cell) in done and done[key(cell)].plan.model != BINOMIAL_PLANNING_MODEL
+    ]
+    pending = [cell for cell in designs if key(cell) not in done]
+    for cell, plan in zip(replanned, run(plan_design, replanned), strict=True):
+        kept = done[key(cell)]
+        record(cell, EnumeratedPower(plan, kept.enumeration, kept.adopted))
+    for cell, power in zip(pending, run(enumerated_power, pending), strict=True):
+        record(cell, power)
     failed = 0
     margins: dict[str, list[float]] = {}
     for cell in designs:
-        power = done[json.dumps(_design_key(cell))]
+        power = done[key(cell)]
+        plan, runtime = power.plan, power.enumeration
         ok = bound_holds(power)
         failed += not ok
-        margins.setdefault(power.route, []).append(power.margin)
+        margins.setdefault(plan.route, []).append(power.margin)
+        enclosure = f"[{plan.lower:.6f}, {plan.upper:.6f}]"
         print(
-            f"{power.route:<10} n={cell.n:>8} p_c={cell.p_c:<5} lift={cell.lift:<5} "
-            f"alpha={cell.alpha:<5} {cell.alternative:<9} share={power.asymptotic_share:.4f} "
-            f"planned={power.planned:.6f} ({power.basis}) asym={power.asymptotic:.6f} "
-            f"asym_part={power.asymptotic_part:.6f} finite_part={power.finite_part:.6f} "
-            f"hybrid={power.hybrid:.6f} margin={power.margin:+.6f} "
-            f"{'ok' if ok else 'FAIL'}",
+            f"{plan.route:<10} n={cell.n:>8} p_c={cell.p_c:<5} lift={cell.lift:<5} "
+            f"alpha={cell.alpha:<5} {cell.alternative:<9} share={runtime.asymptotic_share:.4f} "
+            f"planned={plan.planned:.6f} ({plan.basis}) enclosure={enclosure} "
+            f"asym={runtime.asymptotic:.6f} asym_part={runtime.asymptotic_part:.6f} "
+            f"finite_part={runtime.finite_part:.6f} hybrid={runtime.hybrid:.6f} "
+            f"margin={power.margin:+.6f} {'ok' if ok else 'FAIL'}",
             flush=True,
         )
     for route, values in sorted(margins.items()):
@@ -1297,6 +1711,47 @@ def bound(*, workers: int, out: Path | None = None, grid: BoundGrid = "original"
             f"greatest margin={max(values):+.6f}"
         )
     return 1 if failed else 0
+
+
+def _add_adoption_commands(sub) -> None:
+    audit_parser = sub.add_parser(
+        "audit", help="compare the decision path of the revisions a saved campaign ran at"
+    )
+    audit_parser.add_argument("--revision", action="append", required=True)
+    adopt_parser = sub.add_parser(
+        "adopt", help="adopt a saved bound checkpoint under an audited manifest"
+    )
+    adopt_parser.add_argument("source", type=Path)
+    adopt_parser.add_argument("--out", type=Path, required=True)
+    adopt_parser.add_argument("--revision", action="append", required=True)
+    adopt_parser.add_argument("--construction", required=True)
+    adopt_parser.add_argument("--route-law", required=True)
+    adopt_parser.add_argument("--grid", choices=("original",), default=None)
+    adopt_parser.add_argument("--evidence", default="")
+    adopt_parser.add_argument("--workers", type=int, default=1)
+
+
+def _run_adoption_command(args: argparse.Namespace) -> int:
+    from calibration import route_adoption
+
+    try:
+        if args.command == "audit":
+            return route_adoption.report(args.revision)
+        manifest = route_adoption.adopt(
+            args.source,
+            args.out,
+            revisions=args.revision,
+            construction=args.construction,
+            law=args.route_law,
+            grid=args.grid,
+            evidence=args.evidence,
+            workers=args.workers,
+        )
+    except route_adoption.AdoptionError as refusal:
+        print(refusal, file=sys.stderr)
+        return 2
+    print(f"adopted {manifest['source']['records']} records into {args.out}")
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1329,13 +1784,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     mirror_parser.add_argument("--reps", type=int, default=20_000)
     mirror_parser.add_argument("--workers", type=int, default=1)
     mirror_parser.add_argument("--seed", type=int, default=20261004)
+    _add_adoption_commands(sub)
     args = parser.parse_args(argv)
+    if args.command in ("audit", "adopt"):
+        return _run_adoption_command(args)
     if args.command == "select":
         return select(
             args.out, workers=args.workers, start=args.start, stop=args.stop, tails=args.tails
         )
     if args.command == "required":
-        return required(read_rows(args.paths))
+        try:
+            return required(read_rows(args.paths))
+        except ScanError as refusal:
+            print(refusal, file=sys.stderr)
+            return 2
     if args.command == "verify":
         return verify(workers=args.workers, tails=args.tails)
     if args.command == "conformance":
@@ -1349,7 +1811,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"finite-sample misses at {sets} count pairs on the decision's edge: {edge} differ "
             f"from the production set within its endpoint resolution, {hard} beyond it"
         )
-        return 0 if gap < 1e-9 and interpolation < _CRITICAL_AGREEMENT and not hard else 1
+        return 0 if gap < 1e-9 and interpolation < CRITICAL_AGREEMENT and not hard else 1
     if args.command == "mirror":
         return mirror(args.reps, args.seed, workers=args.workers)
     if args.command == "bound":
