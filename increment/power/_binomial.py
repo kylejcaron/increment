@@ -362,7 +362,7 @@ def _advance(
         if act.size == 0:
             break
         if iteration + 2 > lv.u.shape[1]:
-            lv.grow(min(rule.max_iter + 1, 2 * lv.u.shape[1]))
+            lv.grow(min(splits.stop + 1, 2 * lv.u.shape[1]))  # no wider than the stage needs
         leaves = iteration + 1  # every row still searching has split once per past iteration
         bnd = lv.bound[:, :leaves][act]
         top = bnd.max(axis=1)
@@ -442,11 +442,12 @@ def _replay(batch: _Batch, tails: _ExactTails | _SurrogateTails, *, exact: bool)
     AMBIGUOUS.
 
     The approximate route runs the first ``_COMMON_SPLITS`` splits of every row together;
-    rows still searching then continue in chunks sized for the full split cap, so the few
-    rows that need deep searches never keep the whole batch's leaf arrays at that depth.
-    Their copies are taken before the first stage's arrays are released, and a chunk deepens
-    beside the copies still waiting, so both stages are sized to half the leaf budget
-    (`_approximate_rows`): the copies never exceed the first stage's arrays, whatever share
+    rows still searching then continue in chunks sized for the full split cap
+    (`_chunk_rows`), so the few rows that need deep searches never keep the whole batch's
+    leaf arrays at that depth. The root's arrays are released once the searching rows have
+    copied theirs, the chunks' copies are taken before the first stage's arrays are released,
+    and a chunk deepens beside the copies still waiting; `_batch_rows` and `_chunk_rows` size
+    the stages so that none of those moments holds more than the leaf budget, whatever share
     of the rows survive. The exact route keeps one pass: its tails register each nuisance
     point once for the treatment counts of the rows then active, so rows may leave a search
     but never join one.
@@ -479,20 +480,21 @@ def _replay(batch: _Batch, tails: _ExactTails | _SurrogateTails, *, exact: bool)
     rule = _rr.NUISANCE_STOP
     search = _Search(
         rows,
-        lv.take(rows, capacity=8),
+        lv.take(rows, capacity=_START_SLOTS),
         best[rows],
         batch.delta[rows],
         batch.guard[rows],
         np.full(rows.size, _Outcome.SEARCHING, np.int64),
         np.full(rows.size, np.nan),
     )
-    common = rule.max_iter if exact else min(rule.max_iter, _COMMON_SPLITS)
+    del lv  # the root's arrays are not needed again
+    common = _common_splits(rule.max_iter, exact=exact)
     _advance(batch, tails, search, range(common), exact=exact, rule=rule)
     if common == rule.max_iter:
         _finish_unsettled(search, beta)
     else:
         survivors = np.flatnonzero(search.status == _Outcome.SEARCHING)
-        size = _approximate_rows(rule.max_iter)
+        size = _chunk_rows(rule.max_iter)
         chunks = [survivors[start : start + size] for start in range(0, survivors.size, size)]
         deeper: list[_Search | None] = [search.take(ids) for ids in chunks]
         search.lv = _Leaves.empty(0, 1)  # the first stage's arrays are not needed again
@@ -922,35 +924,68 @@ def _runtime_rejects(decision: BinomialDecision, kind: Kind, x_c: int, x_t: int)
     return p < decision.tail_alpha
 
 
-#: Leaf-array bytes a replay may hold at once: it stores nine eight-byte fields per leaf slot,
-#: and a row holds ``splits + 1`` leaves after that many splits.
+#: Bytes of leaf arrays (`_Leaves`) one replay may hold at once, whatever the data: every
+#: `_Leaves` alive together, counting the field `_Leaves.grow` holds beside its replacement.
+#: A search's other arrays (its per-row bookkeeping, one iteration's temporaries) are not counted.
 _LEAF_BUDGET_BYTES = 350e6
 #: Splits the approximate route runs for every row of a batch together.
 _COMMON_SPLITS = 63
+#: Leaf slots a search's arrays start with; `_advance` widens them only as far as its splits need.
+_START_SLOTS = 8
 
 
-def _rows_within_budget(splits: int) -> int:
-    """Rows whose leaf arrays fit ``_LEAF_BUDGET_BYTES`` after *splits* splits each."""
-    leaf_bytes = 8 * len(_Leaves._FIELDS)
-    return max(1, int(_LEAF_BUDGET_BYTES // (leaf_bytes * (splits + 1))))
+def _stage_slots(splits: int) -> int:
+    """Leaf slots a search's arrays hold after a stage of *splits* splits: a row holds
+    ``splits + 1`` leaves after that many splits, and the arrays never start narrower than
+    `_START_SLOTS`."""
+    return max(_START_SLOTS, splits + 1)
 
 
-def _approximate_rows(splits: int) -> int:
-    """Rows of one stage of the approximate route after *splits* splits each: half of
-    `_rows_within_budget`, because the route holds the other stage's arrays beside it (the
-    survivors' copies beside the first stage, the waiting copies beside a deepening chunk)
-    and those are as large as the first stage in the worst case, when every row survives."""
-    return max(1, _rows_within_budget(splits) // 2)
+def _leaf_bytes(slots: int) -> int:
+    """Bytes of one row's leaf arrays of *slots* slots: an eight-byte value per field
+    (`_Leaves._FIELDS`) and slot, and the row's eight-byte count."""
+    return 8 * (len(_Leaves._FIELDS) * slots + 1)
+
+
+def _widening_bytes(slots: int) -> int:
+    """Most bytes of one row's leaf arrays while `_Leaves.grow` widens them to *slots* slots.
+    `grow` replaces one field at a time, so beside the fields it has widened it holds the one
+    it is replacing, which is narrower than its replacement."""
+    return _leaf_bytes(slots) + 8 * slots
+
+
+def _common_splits(max_iter: int, *, exact: bool) -> int:
+    """Splits every row of a batch runs together before any continue alone: all *max_iter* on the
+    exact route, whose rows are never copied, at most ``_COMMON_SPLITS`` on the approximate."""
+    return max_iter if exact else min(max_iter, _COMMON_SPLITS)
+
+
+def _chunk_rows(max_iter: int) -> int:
+    """Rows of a chunk the approximate route deepens to *max_iter* splits while the copies of
+    the other chunks wait: half the leaf budget, the copies keeping the other half
+    (`_batch_rows`)."""
+    return max(1, int(_LEAF_BUDGET_BYTES // 2 // _widening_bytes(_stage_slots(max_iter))))
 
 
 def _batch_rows(*, exact: bool) -> int:
-    """Rows per classification batch, so the replay's leaf arrays stay within the budget
-    whatever the data: the exact route's rows may all run to ``NUISANCE_STOP.max_iter``, the
-    approximate route's only to ``_COMMON_SPLITS`` before they continue in chunks."""
+    """Rows per classification batch, so the replay's leaf arrays stay within the leaf budget
+    however many of its rows keep searching.
+
+    A one-stage replay (the exact route, or an approximate one capped at its common splits)
+    is largest as `_Leaves.grow` widens the batch's arrays to their last width. A two-stage
+    replay is largest in one of two moments. Having copied the rows still searching beside the
+    first stage's arrays, which the copies equal when every row survives, it holds both and the
+    one field `_Leaves.take` gathers of the chunk it is copying: the batch takes half the
+    budget less that gather. Then the copies wait beside a chunk that deepens, which takes the
+    other half (`_chunk_rows`). The moments before these, the root's arrays beside the first
+    rows' and the first stage widening, hold less."""
     max_iter = _rr.NUISANCE_STOP.max_iter
-    if exact:
-        return _rows_within_budget(max_iter)
-    return _approximate_rows(min(max_iter, _COMMON_SPLITS))
+    common = _common_splits(max_iter, exact=exact)
+    if common == max_iter:
+        return max(1, int(_LEAF_BUDGET_BYTES // _widening_bytes(_stage_slots(max_iter))))
+    first = _stage_slots(common)
+    gather = 8 * first * _chunk_rows(max_iter)
+    return max(1, int((_LEAF_BUDGET_BYTES - gather) // (2 * _leaf_bytes(first))))
 
 
 def classify(

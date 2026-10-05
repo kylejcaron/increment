@@ -409,15 +409,17 @@ class TestReplayFollowsTheRuntimeStopContract:
         assert gained > 0  # the cap binds somewhere on this design
 
     def test_deep_searches_continued_in_several_chunks_decide_as_one_pass_does(self, monkeypatch):
-        """Rows still searching after the common splits continue in chunks and batches sized from
-        the leaf budget: forcing both to a handful of rows changes no decision."""
+        """Rows still searching after the common splits continue in chunks sized from the leaf
+        budget: with few common splits, many rows continue, and a budget cut to one row a chunk
+        spreads them over several chunks without changing a decision."""
         from increment.power import _binomial
 
         decision = BinomialDecision(
             300, 300, 1.0, binomial_rr.nuisance_beta(0.05), 0.025, "two-sided"
         )
         whole = RejectionGeometry(decision, "approximate").cells(20, 40, 0, 300)
-        monkeypatch.setattr(_binomial, "_rows_within_budget", lambda splits: 8)
+        monkeypatch.setattr(_binomial, "_COMMON_SPLITS", 6)
+        monkeypatch.setattr(_binomial, "_LEAF_BUDGET_BYTES", 1e5)
         chunked = RejectionGeometry(decision, "approximate").cells(20, 40, 0, 300)
         for one_pass, in_chunks in zip(whole, chunked, strict=True):
             assert np.array_equal(one_pass, in_chunks)
