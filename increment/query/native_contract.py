@@ -1,8 +1,8 @@
 """Evidence shapes and capability protocols of the native warehouse path.
 
-A leaf: ``DefinitionsMomentSource`` (``native_source``) implements these
-protocols and builds these shapes, while ``Analysis``, the day-axis readouts and
-the artifact source depend on them without importing the warehouse adapter.
+``DefinitionsMomentSource`` (``native_source``) implements these protocols and
+builds these shapes. Consumers import the contracts here; ``Analysis`` still
+imports the concrete warehouse adapter for construction.
 Nothing here may import an adapter module.
 """
 
