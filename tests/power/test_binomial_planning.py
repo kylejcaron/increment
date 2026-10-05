@@ -355,7 +355,7 @@ class _LeafMeter:
 
         self.live = 0
         self.peak = 0
-        self.searching: list[tuple[int, str, int]] = []
+        self.searching: list[tuple[int, _binomial.Kind, int]] = []
         self._refs: dict[int, Any] = {}
         self._batch: Any = None
         leaves = _binomial._Leaves
