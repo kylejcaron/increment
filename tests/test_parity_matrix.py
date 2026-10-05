@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import replace
+
 import pytest
 
 from tests.parity_harness import matrix, matrix_cases
