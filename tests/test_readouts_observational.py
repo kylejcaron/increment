@@ -1940,7 +1940,10 @@ def test_categorical_null_level_refuses_by_name_on_definitions_paths(tmp_path, c
 
 
 def _scalar_mean_cube_rows():
-    """Real scalar moments: a randomized unit-summary mean over the quantile's outcome column."""
+    """Real scalar moments: a randomized unit-summary mean over the quantile's outcome column.
+
+    The arms are ``"C"``/``"T"`` so the one cube is a valid source for both the
+    observational design (``_OBS``, control group ``"C"``) and a randomized read."""
     import tempfile
     from pathlib import Path
 
@@ -1952,7 +1955,7 @@ def _scalar_mean_cube_rows():
     table = pa.table(
         {
             "user_id": [f"u{i}" for i in range(n)],
-            "variant": ["control" if i % 2 == 0 else "treatment" for i in range(n)],
+            "variant": ["C" if i % 2 == 0 else "T" for i in range(n)],
             "latency": [1.0 + (i % 7) * 0.3 + (0.2 if i % 2 else 0.0) for i in range(n)],
         }
     )
@@ -1960,7 +1963,7 @@ def _scalar_mean_cube_rows():
         table,
         unit="user_id",
         group="variant",
-        control="control",
+        control="C",
         metrics=[
             MetricSpec(
                 name="lat", type="mean", value_column="latency", preferred_direction="decrease"
@@ -1977,50 +1980,58 @@ def _scalar_mean_cube_rows():
 
 
 @pytest.mark.parametrize(
-    ("design", "margin", "stage", "code"),
+    ("design", "request_kind", "stage", "code"),
     [
-        (_OBS, None, "run", "readout.observational.quantile"),
+        (_OBS, "two-sided", "run", "readout.observational.quantile"),
+        (_OBS, "alternative", "run", "readout.metric.quantile_alternative"),
+        (_OBS, "guardrail", "run", "readout.metric.quantile_alternative"),
         (_OBS, "margin_abs", "run", "readout.metric.quantile_alternative"),
         (_OBS, "margin", "construct", "plan.observational.relative_margin"),
-        (None, None, "run", "source.moments.unit_grain"),
+        (None, "two-sided", "run", "source.moments.unit_grain"),
+        (None, "alternative", "run", "readout.metric.quantile_alternative"),
+        (None, "guardrail", "run", "readout.metric.quantile_alternative"),
         (None, "margin_abs", "run", "readout.metric.quantile_alternative"),
         (None, "margin", "run", "readout.metric.quantile_alternative"),
     ],
     ids=[
         "observational-two-sided",
+        "observational-one-sided-alternative",
+        "observational-marginless-guardrail",
         "observational-absolute-margin",
         "observational-relative-margin",
         "randomized-two-sided",
+        "randomized-one-sided-alternative",
+        "randomized-marginless-guardrail",
         "randomized-absolute-margin",
         "randomized-relative-margin",
     ],
 )
 def test_quantile_over_scalar_moments_refuses_in_the_documented_precedence(
-    design, margin, stage, code
+    design, request_kind, stage, code
 ):
     """A quantile declared over a real scalar-moments cube is refused by whichever gate the
     request reaches first: the plan's relative-margin construction guard (observational), the
-    engine's one-sided/shifted-null check, the observational estimator seam, then the cube's
-    missing unit grain."""
+    engine's one-sided/shifted-null check (any one-sided request: a standalone alternative, a
+    marginless guardrail's adverse tail, or a margin), the observational estimator seam, then
+    the cube's missing unit grain."""
     from increment.errors import CodedError
     from increment.frame import MetricSpec
     from increment.semantics.models import AnalysisPlan, ExperimentMetric
 
     rows = _scalar_mean_cube_rows()
-    plan = None
-    if margin is not None:
-        binding = (
-            ExperimentMetric(metric="lat", margin_abs=0.5)
-            if margin == "margin_abs"
-            else ExperimentMetric(metric="lat", margin=0.02)
-        )
-        plan = AnalysisPlan(guardrails=[binding])
+    plan = {
+        "two-sided": None,
+        "alternative": AnalysisPlan(alternative="greater", primary="lat"),
+        "guardrail": AnalysisPlan(guardrails=[ExperimentMetric(metric="lat")]),
+        "margin_abs": AnalysisPlan(guardrails=[ExperimentMetric(metric="lat", margin_abs=0.5)]),
+        "margin": AnalysisPlan(guardrails=[ExperimentMetric(metric="lat", margin=0.02)]),
+    }[request_kind]
     spec = [MetricSpec(name="lat", type="quantile", quantile=0.9, preferred_direction="decrease")]
 
     def construct():
         if design is not None:
             return Analysis.from_moments(rows, metrics=spec, design=design, plan=plan)
-        return Analysis.from_moments(rows, metrics=spec, control="control", plan=plan)
+        return Analysis.from_moments(rows, metrics=spec, control="C", plan=plan)
 
     if stage == "construct":
         with pytest.raises(CodedError) as raised:
