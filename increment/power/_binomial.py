@@ -1783,6 +1783,14 @@ class RejectionGeometry:
             self._replay(segment, rows, cols, (x_lo, j_lo), replay_cells)
         segment.known[rows, cols] |= todo
 
+    def _off_route_mass(self, wc: _Window, wt: _Window) -> float:
+        """The probability, within the two windows, of the count pairs off the routed rectangle:
+        those the runtime keeps on the finite-sample route."""
+        row_in, col_in = self._routed_flags(wc.lo, wc.hi, wt.lo, wt.hi)
+        total_c, total_t = float(wc.weights.sum()), float(wt.weights.sum())
+        inside_c, inside_t = float(wc.weights[row_in].sum()), float(wt.weights[col_in].sum())
+        return (total_c - inside_c) * total_t + inside_c * (total_t - inside_t)
+
     def _selected(self, wc: _Window, wt: _Window) -> np.ndarray:
         """The cells of the rectangle ``wc`` by ``wt`` an evaluation decides, a function of the
         request alone: the decision, its routing and route, and the count laws of the two
@@ -1798,10 +1806,7 @@ class RejectionGeometry:
         routed = row_in[:, None] & col_in[None, :]
         weights = (wc.weights, wt.weights)
         selected = self._heaviest(routed, weights, EVALUATION_ROW_BUDGET)
-        total_c, total_t = float(wc.weights.sum()), float(wt.weights.sum())
-        inside_c, inside_t = float(wc.weights[row_in].sum()), float(wt.weights[col_in].sum())
-        finite_mass = (total_c - inside_c) * total_t + inside_c * (total_t - inside_t)
-        if not self.finite or finite_mass <= RESOLUTION / 2.0:
+        if not self.finite or self._off_route_mass(wc, wt) <= RESOLUTION / 2.0:
             return selected
         pending = ~routed
         if self.route == "exact":
@@ -1942,8 +1947,12 @@ class RejectionGeometry:
             wc.error, wt.error, _compounded(wc.size), _compounded(wt.size), _UNIT_ROUNDOFF
         )
         undecided = float(wc.weights @ ~selected @ wt.weights)
-        if not self.finite and undecided * inflation > RESOLUTION / 2.0:
-            raise FiniteRouteUnavailable(undecided * inflation)
+        if not self.finite:
+            # Only the pairs the refused route would decide make the plan unavailable. Routed
+            # pairs the row budget leaves out are ambiguous mass of the enclosure, not a refusal.
+            refused_mass = self._off_route_mass(wc, wt) * inflation
+            if refused_mass > RESOLUTION / 2.0:
+                raise FiniteRouteUnavailable(refused_mass)
         return BinomialPower(
             float(wc.weights @ plus @ wt.weights),
             float(wc.weights @ (minus & ~plus) @ wt.weights),

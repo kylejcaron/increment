@@ -151,6 +151,41 @@ class TestAnEvaluationDecidesTheCellsOfItsRequest:
                     assert (bool(plus[i, j]), bool(minus[i, j])) == runtime, (x_c, x_t)
 
 
+class TestABudgetLeavesAmbiguousMassNotAnUnavailableRoute:
+    """Where the runtime refuses the finite-sample decision in full, the plan has no power only
+    when the pairs that route would decide carry probability. Routed pairs the row budget leaves
+    out are ambiguous mass of an approximate enclosure, whatever their weight."""
+
+    @staticmethod
+    def _refused(floor: int) -> RejectionGeometry:
+        beta = _binomial.solver_floor() / 10.0
+        decision = BinomialDecision(N, N, 1.0, beta, TAIL, "two-sided")
+        assert _binomial.refused(decision)
+        return RejectionGeometry(decision, "exact", PLANNING_CELL_CEILING, Routing(floor, 0.0))
+
+    def test_routed_pairs_the_row_budget_leaves_out_are_ambiguous_not_a_refusal(
+        self, monkeypatch
+    ):
+        """A floor of 10 leaves the finite route about 1e-7 of the probability here, far below
+        half of `RESOLUTION`, so the default budgets decide every routed pair and report ``exact``;
+        the shrunken row budget leaves most of the mass ambiguous and the enclosure holds it."""
+        reference = self._refused(10).evaluate(P_C, 0.4)
+        assert reference.ambiguous <= RESOLUTION / 2.0
+        assert reference.basis == "exact"
+        monkeypatch.setattr(_binomial, "EVALUATION_ROW_BUDGET", ROW_BUDGET)
+        geometry = self._refused(10)
+        limited = geometry.evaluate(P_C, 0.4)
+        assert limited.ambiguous > RESOLUTION
+        assert limited.basis == "approximate"
+        assert limited.lower <= reference.power <= limited.upper
+        assert geometry.evaluate(P_C, 0.4) == limited
+
+    def test_pairs_the_refused_route_would_decide_still_leave_the_plan_unavailable(self):
+        """A floor of 20 leaves the finite route about 5e-4 of the probability here."""
+        with pytest.raises(_binomial.FiniteRouteUnavailable):
+            self._refused(20).evaluate(P_C, 0.4)
+
+
 def _conversion() -> ArmPlanningProcedure:
     """A randomized conversion plan pinned to ``finite_sample``: no routed rectangle at this
     size, so the replay budget is the one that binds."""
