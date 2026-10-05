@@ -361,11 +361,10 @@ def ladder(start: float = 10.0, stop: float = 40_000.0) -> list[int]:
     return steps
 
 
-#: A ladder step is the rounded value of a geometric sequence, so it sits at most half a unit from
-#: its unrounded value, and the next step at most half a unit from ``LADDER_STEP`` times the next
-#: unrounded value: consecutive steps ``a < b`` satisfy ``|b - LADDER_STEP * a| <= _LADDER_ROUNDING``.
-#: A scan that skips a step has ``b >= LADDER_STEP ** 2 * (a - 0.5) - 0.5``, beyond the bound from
-#: ``a = 10`` on, the smallest step ``ladder`` starts at.
+#: A step is a rounded geometric value, so consecutive steps satisfy
+#: ``|b - LADDER_STEP * a| <= _LADDER_ROUNDING``, while a scan that skipped a step has
+#: ``b >= LADDER_STEP ** 2 * (a - 0.5) - 0.5``, beyond that bound from ``a = 10`` on (where
+#: ``ladder`` starts).
 _LADDER_ROUNDING = 0.5 * (LADDER_STEP + 1.0)
 
 
@@ -1038,11 +1037,10 @@ def enumerated_power(cell: MirrorCell) -> EnumeratedPower:
 #: (``tests.mc.scientific_delta``).
 DENSE_AGREEMENT = 0.005
 
-#: How far a plan on the approximate replay may sit from the exact decision's power, as
-#: ``docs/guides/power-analysis.md`` reports that route: it agrees to about 0.03 percentage
-#: points, understates by up to 0.8 points (unequal allocation, shifted null), and can
-#: misclassify rare-event count pairs near the tail allocation, which moves it either way. A
-#: plan on that route is an approximation judged by this accuracy, not a bound.
+#: Accuracy of a plan on the approximate replay, as ``docs/guides/power-analysis.md`` reports it:
+#: about 0.03 percentage points, up to 0.8 points below (unequal allocation, shifted null), and
+#: either way where rare-event count pairs near the tail allocation are misclassified. Such a
+#: plan is an approximation judged by this accuracy, not a bound.
 REPLAY_OVERSTATEMENT = 0.0003
 REPLAY_UNDERSTATEMENT = 0.008
 

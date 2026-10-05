@@ -525,6 +525,7 @@ expose = [
   "IncrementWarning",
   "InvalidRequestError",
   "RefusalSpec",
+  "PACKAGE_FRAMES",
   "RETIRED_CODES",
   "UnsupportedRequestError",
   "WarningSpec",
