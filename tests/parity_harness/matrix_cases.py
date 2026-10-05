@@ -421,42 +421,67 @@ class _Ingress:
             return self.definitions
         return self.panel if needs_dates else self.summary
 
-    def _scalar_moments_producer(self) -> Callable[[], Analysis]:
-        """A real scalar-moments cube over the quantile's outcome column.
+    def _scalar_moments_producer(self) -> Analysis:
+        """A real scalar-moments source over the quantile's outcome column.
 
-        A quantile has no moments representation, and an observational frame cannot export
-        one (it refuses at the readout seam during export). The portable ingress therefore
-        replays an ordinary randomized mean over the same column, then declares the
-        observational quantile on replay: the request reaches whatever the portable source
-        and facade do with a scalar cube they were asked to read as a quantile.
+        A quantile has no moments representation, so no producer can export one. The
+        portable ingress is therefore classified by what it does with an ordinary mean cube
+        over the same column when the request declares a quantile on replay. The producer
+        carries the request's levers where a mean can (a cluster column, a sequential
+        registration); a lever the producer cannot carry refuses here, at its own stage and
+        code, exactly as it does for a mean cube.
         """
         cell = self.cell
+        mean = MetricSpec(
+            name=METRIC_NAME,
+            type="mean",
+            value_column="latency",
+            preferred_direction="increase",
+            missing=cell.missing,
+        )
+        kwargs: dict[str, Any] = {
+            "unit": "user_id",
+            "group": "variant",
+            "metrics": [mean],
+            "plan": self.plan,
+        }
+        if cell.option == "sequential":
+            kwargs |= {
+                "design": _RANDOMIZED,
+                "experiment_id": "exp",
+                "exposure_date": "exposed_on",
+            }
+        else:
+            kwargs["control"] = "control"
+        if cell.option == "cluster":
+            kwargs["cluster"] = "cluster_id"
+        producer = Analysis.from_unit_summary(
+            md.frame(md.summary_rows(cell.day_boundary, nulls=self.nulls)), **kwargs
+        )
+        if cell.option == "sequential":
+            producer.capture_sequential(finalized=True, as_of=_SEQUENTIAL_AS_OF)
+        return producer
 
-        def produce() -> Analysis:
-            mean = MetricSpec(
-                name=METRIC_NAME,
-                type="mean",
-                value_column="latency",
-                preferred_direction="increase",
-                missing=cell.missing,
-            )
-            return Analysis.from_unit_summary(
-                md.frame(md.summary_rows(cell.day_boundary, nulls=self.nulls)),
-                unit="user_id",
-                group="variant",
-                metrics=[mean],
-                control="control",
-                plan=self.plan,
-            )
+    def _quantile_moments(self) -> Analysis:
+        """Export a real scalar-moments cube, then declare the cell's quantile on replay.
 
-        return produce
+        The quantile declaration is built first: a quantile that cannot be declared (a
+        window, CUPED, winsorization or an impute policy) is refused by the portable
+        constructor's own metric declaration, before any cube is read.
+        """
+        cell = self.cell
+        metrics = _replay_metrics(cell)
+        producer = self._scalar_moments_producer()
+        if cell.option == "observational":
+            return _export_and_replay_observational(producer, metrics, self.plan)
+        return _export_and_replay(
+            producer, metrics, plan=self.plan if cell.option == "ni_margin" else None
+        )
 
     def moments(self) -> Analysis:
         cell = self.cell
-        if cell.option == "observational" and cell.metric == "quantile":
-            return _export_and_replay_observational(
-                self._scalar_moments_producer()(), _replay_metrics(cell), self.plan
-            )
+        if cell.base == "quantile":
+            return self._quantile_moments()
         exported = self._moments_producer()()
         if cell.option == "sequential":
             # A cube replays a captured checkpoint; it cannot start a sequential process.

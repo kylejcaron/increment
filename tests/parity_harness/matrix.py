@@ -413,23 +413,6 @@ _SPECS: dict[str, Spec] = {
         "Analysis.from_unit_summary and Analysis.from_moments docstrings; "
         f"{_LIMITATIONS}: breakout rows",
     ),
-    "REF:facade.analysis.no_definitions#observational_quantile": Spec(
-        "source_limited",
-        "a scalar-moments cube replayed with a declared observational quantile has no day axis: "
-        "the day-axis gate refuses before any estimator reads the cube, so the quantile "
-        "refusal run() raises is not reached on this view",
-        "Analysis.from_moments docstring (day-axis methods raise CapabilityError); measured "
-        "on a real scalar-moments source (matrix_cases.py::_Ingress._scalar_moments_producer)",
-    ),
-    "REF:facade.analysis.operation#observational_quantile": Spec(
-        "source_limited",
-        "a scalar-moments cube replayed with a declared observational quantile carries no "
-        "breakout catalog: run_breakout refuses at the source gate before any estimator "
-        "reads the cube, so the quantile refusal run() raises is not reached on this view",
-        "Analysis.from_moments docstring; "
-        f"{_LIMITATIONS}: breakout rows; measured on a real scalar-moments source "
-        "(matrix_cases.py::_Ingress._scalar_moments_producer)",
-    ),
     "REF:source.moments.grain": Spec(
         "source_limited",
         "a moments cube offers only the grains it was exported with: total, not asof",
@@ -449,6 +432,13 @@ _SPECS: dict[str, Spec] = {
         "the collapse is ambiguous on this shape",
         f"{_LIMITATIONS}: clustered rows (from_unit_panel(cluster=...) refuses)",
         "declaration",
+    ),
+    "REF:source.moments.unit_grain": Spec(
+        "source_limited",
+        "a quantile reads per-unit outcomes and a moments cube holds only arm totals, so a "
+        "quantile declared over a real scalar-moments cube has nothing to estimate from",
+        f"{_LIMITATIONS}: quantile rows; {_CATALOG}['from_moments']['quantile'] "
+        "(needs unit-grain rows)",
     ),
     "REF:source.moments.covariate_unavailable": Spec(
         "source_limited",
@@ -739,13 +729,6 @@ _OVERRIDES: dict[tuple[str, str], Spec] = {
         "it, while the definitions route that published it runs",
         f"{_LIMITATIONS}: quantile row; {_METRIC_SPECS}::MetricSpec._check_windowing",
         tracker=_T_WINDOWED_QUANTILE,
-    ),
-    ("from_moments", "REF:source.frame.quantile_no_moments"): Spec(
-        "source_limited",
-        "a quantile has no moments representation and a cube holds no per-unit rows to serve one",
-        f"{_LIMITATIONS}: quantile rows (source.frame.quantile_no_moments); "
-        f"{_CATALOG}['from_moments']['quantile']",
-        "declaration",
     ),
     ("from_moments", "REF:sequential.source.invalid"): Spec(
         "source_limited",
@@ -1135,19 +1118,17 @@ RULES: dict[str, tuple[Box, ...]] = {
         box("REF:frame.metric.winsorization_applies_type", "conversion ratio retention quantile windowed_conversion windowed_ratio windowed_retention windowed_quantile", "run breakout", "winsor_fixed winsor_percentile", "*", "rows"),
         box("REF:frame.validation.from_unit_panel", "retention windowed_mean windowed_conversion windowed_ratio", "run breakout", "cuped", "drop", "rows"),
         box("REF:sequential.route.unsupported#breakout", "retention windowed_mean windowed_conversion windowed_ratio", "breakout", "sequential", "error zero", "rows"),
-        box("REF:sequential.route.unsupported#drop", "mean conversion ratio retention windowed_mean windowed_conversion windowed_ratio", "run breakout", "sequential", "drop", "rows"),
-        box("REF:sequential.route.unsupported#metric_type", "quantile", "run breakout", "sequential", "error zero drop", "rows"),
-        box("REF:sequential.source.invalid", "mean conversion ratio", "run breakout", "sequential", "error zero", "rows"),
-        box("REF:source.frame.cluster_capability", "quantile", "run breakout", "cluster", "error zero drop", "rows"),
+        box("REF:sequential.route.unsupported#drop", "mean conversion ratio quantile retention windowed_mean windowed_conversion windowed_ratio", "run breakout", "sequential", "drop", "rows"),
+        box("REF:sequential.source.invalid", "mean conversion ratio quantile", "run breakout", "sequential", "error zero", "rows"),
         box("REF:readout.observational.quantile", "quantile", "run", "observational", "error zero drop", "rows"),
-        box("REF:facade.analysis.operation#observational_quantile", "quantile", "breakout", "observational", "error zero drop", "rows"),
-        box("REF:source.frame.quantile_no_moments", "quantile", "run breakout", "none ni_margin", "error zero drop", "rows"),
-        box("REF:source.moments.cluster_grain", "mean conversion ratio", "run breakout", "cluster", "error zero drop", "rows"),
+        box("REF:source.moments.unit_grain", "quantile", "run", "none", "error zero drop", "rows"),
+        box("REF:readout.metric.quantile_alternative", "quantile", "run", "ni_margin", "error zero drop", "rows"),
+        box("REF:source.moments.cluster_grain", "mean conversion ratio quantile", "run breakout", "cluster", "error zero drop", "rows"),
         box("REF:frame.metric.missing_impute", "mean conversion ratio retention quantile windowed_mean windowed_conversion windowed_ratio", "run breakout", "*", "impute", "rows"),
         box("REF:frame.missing_policy.panel_drop", "retention windowed_mean windowed_conversion windowed_ratio", "run breakout", "none winsor_fixed winsor_percentile observational ni_margin", "drop", "rows"),
         box("REF:estimation.adjust_common.supported_ratio_metric", "ratio windowed_ratio", "run", "observational", "error zero drop", "rows"),
         box("REF:estimation.winsor.raw_state_required", "mean windowed_mean", "run", "winsor_percentile", "error zero drop", "rows"),
-        box("REF:facade.analysis.operation", "mean conversion ratio retention windowed_mean windowed_conversion windowed_ratio", "breakout", "none cuped winsor_fixed winsor_percentile observational ni_margin", "error zero drop", "rows"),
+        box("REF:facade.analysis.operation", "mean conversion ratio quantile retention windowed_mean windowed_conversion windowed_ratio", "breakout", "none cuped winsor_fixed winsor_percentile observational ni_margin", "error zero drop", "rows"),
         box("REF:source.frame_panel.cluster_grain", "retention windowed_mean windowed_conversion windowed_ratio windowed_total windowed_active", "run breakout", "cluster", "*", "rows"),
         box("REF:source.moments.covariate_unavailable", "mean conversion retention windowed_mean windowed_conversion", "run", "observational", "error zero drop", "rows"),
         box("RUNS", "mean conversion ratio retention windowed_mean windowed_conversion windowed_ratio", "run", "none cuped winsor_fixed sequential ni_margin", "error zero drop", "rows"),
@@ -1157,17 +1138,13 @@ RULES: dict[str, tuple[Box, ...]] = {
         box("REF:frame.metric.window_days_supported", "windowed_quantile", "daily asof", "none cluster sequential observational ni_margin", "*", "values"),
         box("REF:frame.metric.winsorization_applies_type", "conversion ratio retention quantile windowed_conversion windowed_ratio windowed_retention windowed_quantile", "daily asof", "winsor_fixed winsor_percentile", "*", "values"),
         box("REF:frame.validation.from_unit_panel", "retention windowed_mean windowed_conversion windowed_ratio", "daily asof", "cuped", "drop", "values"),
-        box("REF:sequential.route.unsupported#drop", "mean conversion ratio retention windowed_mean windowed_conversion windowed_ratio", "daily asof", "sequential", "drop", "values"),
-        box("REF:sequential.route.unsupported#metric_type", "quantile", "daily asof", "sequential", "error zero drop", "values"),
-        box("REF:sequential.source.invalid", "mean conversion ratio", "daily asof", "sequential", "error zero", "values"),
-        box("REF:source.frame.cluster_capability", "quantile", "daily asof", "cluster", "error zero drop", "values"),
-        box("REF:facade.analysis.no_definitions#observational_quantile", "quantile", "daily asof", "observational", "error zero drop", "values"),
-        box("REF:source.frame.quantile_no_moments", "quantile", "daily asof", "none ni_margin", "error zero drop", "values"),
-        box("REF:source.moments.cluster_grain", "mean conversion ratio", "daily asof", "cluster", "error zero drop", "values"),
+        box("REF:sequential.route.unsupported#drop", "mean conversion ratio quantile retention windowed_mean windowed_conversion windowed_ratio", "daily asof", "sequential", "drop", "values"),
+        box("REF:sequential.source.invalid", "mean conversion ratio quantile", "daily asof", "sequential", "error zero", "values"),
+        box("REF:source.moments.cluster_grain", "mean conversion ratio quantile", "daily asof", "cluster", "error zero drop", "values"),
         box("REF:source.moments.grain", "retention windowed_mean windowed_conversion windowed_ratio", "asof", "sequential", "error zero", "values"),
         box("REF:frame.metric.missing_impute", "mean conversion ratio retention quantile windowed_mean windowed_conversion windowed_ratio", "daily asof", "*", "impute", "values"),
         box("REF:frame.missing_policy.panel_drop", "retention windowed_mean windowed_conversion windowed_ratio", "daily asof", "none winsor_fixed winsor_percentile observational ni_margin", "drop", "values"),
-        box("REF:facade.analysis.no_definitions", "mean conversion ratio retention windowed_mean windowed_conversion windowed_ratio", "daily asof", "none cuped winsor_fixed winsor_percentile sequential observational ni_margin", "error zero drop", "values"),
+        box("REF:facade.analysis.no_definitions", "mean conversion ratio quantile retention windowed_mean windowed_conversion windowed_ratio", "daily asof", "none cuped winsor_fixed winsor_percentile sequential observational ni_margin", "error zero drop", "values"),
         box("REF:source.frame_panel.cluster_grain", "retention windowed_mean windowed_conversion windowed_ratio windowed_total windowed_active", "daily asof", "cluster", "*", "values"),
         box("REF:frame.metric_unknown_type", "total active windowed_total windowed_active", "daily asof", "*", "*", "values"),
         box("REF:definition.retention.metric_window_days", "windowed_retention", "daily asof", "none cuped cluster sequential observational ni_margin", "*", "lift"),
@@ -1175,17 +1152,13 @@ RULES: dict[str, tuple[Box, ...]] = {
         box("REF:frame.metric.window_days_supported", "windowed_quantile", "daily asof", "none cluster sequential observational ni_margin", "*", "lift"),
         box("REF:frame.metric.winsorization_applies_type", "conversion ratio retention quantile windowed_conversion windowed_ratio windowed_retention windowed_quantile", "daily asof", "winsor_fixed winsor_percentile", "*", "lift"),
         box("REF:frame.validation.from_unit_panel", "retention windowed_mean windowed_conversion windowed_ratio", "daily asof", "cuped", "drop", "lift"),
-        box("REF:sequential.route.unsupported#drop", "mean conversion ratio retention windowed_mean windowed_conversion windowed_ratio", "daily asof", "sequential", "drop", "lift"),
-        box("REF:sequential.route.unsupported#metric_type", "quantile", "daily asof", "sequential", "error zero drop", "lift"),
-        box("REF:sequential.source.invalid", "mean conversion ratio", "daily asof", "sequential", "error zero", "lift"),
-        box("REF:source.frame.cluster_capability", "quantile", "daily asof", "cluster", "error zero drop", "lift"),
-        box("REF:facade.analysis.no_definitions#observational_quantile", "quantile", "daily asof", "observational", "error zero drop", "lift"),
-        box("REF:source.frame.quantile_no_moments", "quantile", "daily asof", "none ni_margin", "error zero drop", "lift"),
-        box("REF:source.moments.cluster_grain", "mean conversion ratio", "daily asof", "cluster", "error zero drop", "lift"),
+        box("REF:sequential.route.unsupported#drop", "mean conversion ratio quantile retention windowed_mean windowed_conversion windowed_ratio", "daily asof", "sequential", "drop", "lift"),
+        box("REF:sequential.source.invalid", "mean conversion ratio quantile", "daily asof", "sequential", "error zero", "lift"),
+        box("REF:source.moments.cluster_grain", "mean conversion ratio quantile", "daily asof", "cluster", "error zero drop", "lift"),
         box("RUNS", "retention windowed_mean windowed_conversion windowed_ratio", "asof", "sequential", "error zero", "lift"),
         box("REF:frame.metric.missing_impute", "mean conversion ratio retention quantile windowed_mean windowed_conversion windowed_ratio", "daily asof", "*", "impute", "lift"),
         box("REF:frame.missing_policy.panel_drop", "retention windowed_mean windowed_conversion windowed_ratio", "daily asof", "none winsor_fixed winsor_percentile observational ni_margin", "drop", "lift"),
-        box("REF:facade.analysis.no_definitions", "mean conversion ratio retention windowed_mean windowed_conversion windowed_ratio", "daily asof", "none cuped winsor_fixed winsor_percentile sequential observational ni_margin", "error zero drop", "lift"),
+        box("REF:facade.analysis.no_definitions", "mean conversion ratio quantile retention windowed_mean windowed_conversion windowed_ratio", "daily asof", "none cuped winsor_fixed winsor_percentile sequential observational ni_margin", "error zero drop", "lift"),
         box("REF:source.frame_panel.cluster_grain", "retention windowed_mean windowed_conversion windowed_ratio windowed_total windowed_active", "daily asof", "cluster", "*", "lift"),
         box("REF:frame.metric_unknown_type", "total active windowed_total windowed_active", "daily asof", "*", "*", "lift"),
     ),

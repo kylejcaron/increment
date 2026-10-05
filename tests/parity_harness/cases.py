@@ -245,7 +245,9 @@ def _publish_and_adopt(
         raise
 
 
-def _export_and_replay(analysis: Analysis, metrics: list[MetricSpec]) -> Analysis:
+def _export_and_replay(
+    analysis: Analysis, metrics: list[MetricSpec], *, plan: AnalysisPlan | None = None
+) -> Analysis:
     """Export `analysis`'s moments and replay them through `from_moments`.
     `analysis` (the caller's already-built source, e.g. a from_unit_summary
     Analysis) is a throwaway intermediate once its export completes --
@@ -256,7 +258,8 @@ def _export_and_replay(analysis: Analysis, metrics: list[MetricSpec]) -> Analysi
             path = Path(td) / "moments.parquet"
             analysis.export(path)
             rows = pq.read_table(path).to_pylist()
-        return Analysis.from_moments(rows, control="control", metrics=metrics)
+        plan_kwargs = {} if plan is None else {"plan": plan}
+        return Analysis.from_moments(rows, control="control", metrics=metrics, **plan_kwargs)
     finally:
         _close_parity_analysis(analysis)
 
