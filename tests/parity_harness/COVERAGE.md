@@ -24,8 +24,8 @@ A cell's status is its most significant per-ingress verdict (`Disposition.status
 | Status | Cells |
 |---|---|
 | supported | 522 |
-| source_limited | 506 |
-| construction_limited | 1,322 |
+| source_limited | 512 |
+| construction_limited | 1,316 |
 | not_expressible | 960 |
 | unfinished | 274 |
 | unsound | 0 |
@@ -42,7 +42,7 @@ Verdicts are per leg: a day-axis view has a value leg and a lift leg that refuse
 | from_unit_summary | 102 | 1,536 | 1,544 | 1,824 | 370 | 0 |
 | from_unit_panel | 480 | 920 | 1,940 | 1,632 | 404 | 0 |
 | from_switchback_panel | 4 | 2,216 | 1,428 | 1,440 | 288 | 0 |
-| from_moments | 144 | 1,522 | 1,690 | 1,728 | 292 | 0 |
+| from_moments | 144 | 1,552 | 1,660 | 1,728 | 292 | 0 |
 
 Cells where, in at least one leg, an ingress runs and another does not (each non-runner carries a status, reason and authority): 522.
 
@@ -60,7 +60,7 @@ Each tracker is a kata issue linked to t8tc; each cell below carries the code no
 
 A hazard that several routes refuse with different codes is unfinished on every route that raises it (`matrix._reconcile_hazards`); `check_disposition` rejects a diverging hazard with no tracker. Tracker `66mg` covers both quantile x CUPED (`arm.metric.quantile_cuped`, `frame.metric.cuped_does_apply`, `artifact.extension.invalid`) and quantile x cluster (`arm.metric.quantile_cluster`, `source.frame.cluster_capability`); `0f6d` and `1cr4` cover the quantile day-axis and unbounded-sequential hazards the same way.
 
-An observational design has no quantile estimator. The readout seam (`increment/estimation/_readout_refusals.py::refuse_observational_quantile`) refuses `run()` with `readout.observational.quantile` on the definitions, artifact, unit-summary and unit-panel ingresses. The matrix's observational moments producer raises that code during export; its `from_moments` leg never reaches replay. The scenario `observational_quantile_refused_at_the_readout_seam` additionally constructs a portable scalar-moments source, declares the quantile and verifies the estimator refusal before those moments can be used as quantile data. The separate randomized quantile export still raises `source.frame.quantile_no_moments`. A windowed quantile reaches the seam on the warehouse routes only; the frame routes refuse its window declaration first (`6z2f`). Descriptive day-axis value legs do not call `validate_readout_adjustment`; the artifact's unwindowed `run_asof()` value leg raises `readout.observational.quantile` from its source guard and remains under `0f6d` with the other quantile x day-axis ordering discrepancies.
+An observational design has no quantile estimator. The readout seam (`increment/estimation/_readout_refusals.py::refuse_observational_quantile`) refuses `run()` with `readout.observational.quantile` on the definitions, artifact, unit-summary, unit-panel and portable (`from_moments`) ingresses. The matrix's `from_moments` leg for an unwindowed observational quantile is built, not inferred: an observational frame cannot export a quantile cube (the producer refuses during export), so the leg exports a real randomized scalar mean over the quantile's outcome column, replays it with the observational design and a declared quantile, and reads the request. Measured on that source, the refusal is view-specific: `run()` raises `readout.observational.quantile`; `run_breakout()` raises `facade.analysis.operation` (a cube carries no breakout catalog); `run_daily()`, `run_daily_lift()`, `run_asof()` and `run_asof_lift()` raise `facade.analysis.no_definitions` (a cube has no day axis). All of these are request-stage refusals at the source gate, before any estimator reads the cube, so the breakout and day-axis verdicts are `source_limited` and only the `run()` verdict is the estimator refusal (`construction_limited`). The scenario `observational_quantile_refused_at_the_readout_seam` exercises the same portable construction for `run()` alone. The separate randomized quantile export still raises `source.frame.quantile_no_moments`. A windowed quantile reaches the seam on the warehouse routes only; the frame routes refuse its window declaration first (`6z2f`). Descriptive day-axis value legs do not call `validate_readout_adjustment`; the artifact's unwindowed `run_asof()` value leg raises `readout.observational.quantile` from its source guard and remains under `0f6d` with the other quantile x day-axis ordering discrepancies.
 
 ## Tiers and cost
 
@@ -89,7 +89,7 @@ The 69 `PARITY_CASES` keep their own scenario assertions (sequential families, e
 - Edge units are exposed at 03:00Z (22:00 the previous day under `UTC-05:00`); retention and window cells carry events whose band or window day differs by boundary, so a route bucketing in UTC fails them.
 - `observational` is declared IPTW with one numeric pre-exposure covariate; `sequential` uses `asymptotic_mean` (mean, ratio) or `always_valid` (conversion, retention) with a 50/50 allocation and no explicit registration; `ni_margin` is a relative margin on a guardrail; `cluster` is 40 clusters per arm of one or two units.
 - The switchback sub-case uses one fixed schedule (8 units, 2 cycles, 2 periods, washout 1) and a shared frame carrying every metric column.
-- A `from_moments` cube is exported by a producer and replayed. A retention or windowed mean, conversion or ratio metric reads dates, so the dataframe panel produces it; the panel refuses a pre-period covariate there, so a CUPED retention (unwindowed), windowed mean, windowed conversion or windowed ratio cube under `error`/`zero` is exported from `from_definitions` instead and the cell records what `from_moments` does with that cube. An unwindowed CUPED mean, conversion or ratio cube is exported from `from_unit_summary` as before. Windowed retention stops at declaration (`definition.retention.metric_window_days`) on every ingress before any cube exists. Under `drop` the warehouse route cannot declare the policy, so no producer exists and the panel's refusal stands.
+- A `from_moments` cube is exported by a producer and replayed. A retention or windowed mean, conversion or ratio metric reads dates, so the dataframe panel produces it; the panel refuses a pre-period covariate there, so a CUPED retention (unwindowed), windowed mean, windowed conversion or windowed ratio cube under `error`/`zero` is exported from `from_definitions` instead and the cell records what `from_moments` does with that cube. An unwindowed CUPED mean, conversion or ratio cube is exported from `from_unit_summary` as before. An unwindowed observational quantile cube is exported from `from_unit_summary` as a randomized scalar mean over the quantile's outcome column (`matrix_cases.py::_Ingress._scalar_moments_producer`), because no quantile cube exists to export. Windowed retention stops at declaration (`definition.retention.metric_window_days`) on every ingress before any cube exists. Under `drop` the warehouse route cannot declare the policy, so no producer exists and the panel's refusal stands.
 
 ## Unresolved remainder
 

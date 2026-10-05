@@ -23,14 +23,16 @@ field added to a result model is compared without a harness edit: the interval a
 `alpha`/`log_mean`/`log_se`, winsorization thresholds, counts and `confidence_set`,
 `n_clusters`, the Fieller and binomial sets, null reasons (`unavailable`,
 `relative_unavailable_reason`, `excluded`), family and policy metadata, and a sequential
-row's own evidence (`sequential_result.log_e`/`decision_alpha` and its checkpoint's
-`status`). Floats agree within `TOLERANCE` relative with the same absolute floor; all other
-values agree exactly. Only what
-names the path rather than the result is dropped (`_PATH_SPECIFIC`): the resolved fact
-`source` (known to warehouse routes only), a sequential row's registration-bearing
-`sequential_result`, and, inside a winsor confidence set's raw pool, `study_id` (the source's
-identity) and `missingness` (a frame names its declared policy, a warehouse its inclusion
-rule); the pool's outcome multisets, quantile, support and inference are compared.
+row's own evidence (the whole `sequential_result`: `alpha_ceiling`, `decision_alpha`,
+`point_reason`, the certificate, the bounds and the checkpoint's model, cell, arm states and
+`status`, plus its derived `log_e`). Floats agree within `TOLERANCE` relative with the same
+absolute floor; all other values (including exact rationals) agree exactly. Only what names
+the path rather than the result is dropped (`_PATH_SPECIFIC`): the resolved fact `source`
+(known to warehouse routes only), the three identifiers a sequential checkpoint derives from
+its registration (`registration_id`, `filtration_id`, `prefix_id`; they hash the path's
+observation mapping, see below) and, inside a winsor confidence set's raw pool, `study_id`
+(the source's identity) and `missingness` (a frame names its declared policy, a warehouse its
+inclusion rule); the pool's outcome multisets, quantile, support and inference are compared.
 Failure/refusal codes are covered by strict
 row-SET equality (a per-cell failure that silently drops a row on one path
 but not another IS a row-set mismatch) plus `waived_refusal_codes`'
@@ -93,12 +95,15 @@ from .cases import CONSTRUCTORS, Absence, ParityCase, _close_parity_analysis
 from .comparison import nested_close
 
 # Dropped from the compared payload because they name the path, not the result (see the
-# module docstring): the fact `source`, a sequential row's registration-bearing
-# `sequential_result`, and the path labels of a winsor confidence set's raw pool.
+# module docstring): the fact `source`, the identifiers a sequential row's checkpoint derives
+# from its registration (`registration_id`, `filtration_id` and `prefix_id` hash the
+# path's observation mapping), and the path labels of a winsor confidence set's raw pool.
 _POOL_LABELS = {"raw": {"study_id": True, "missingness": True}}
 _PATH_SPECIFIC: dict[str, Any] = {
     "source": True,
-    "sequential_result": True,
+    "sequential_result": {
+        "checkpoint": {"registration_id": True, "filtration_id": True, "prefix_id": True}
+    },
     "confidence_set": {**_POOL_LABELS, "reference": _POOL_LABELS},
 }
 
@@ -124,16 +129,11 @@ def _row_payload(row: Any) -> dict[str, Any]:
     payload = row.model_dump(mode="python", exclude=_PATH_SPECIFIC)
     prior_shrunk = getattr(row, "prior_shrunk", False)
     payload["posterior_prob_favorable"] = row.prob_favorable() if prior_shrunk else None
-    # `sequential_result` is None on a non-sequential row: both sides then compare as None.
+    # `log_e` is a property of the result, not a dumped field. `sequential_result` is None on
+    # a non-sequential row: both sides then compare as None.
     sequential_result = getattr(row, "sequential_result", None)
     payload["sequential_log_e"] = (
         float(sequential_result.log_e) if sequential_result is not None else None
-    )
-    payload["sequential_decision_alpha"] = (
-        float(sequential_result.decision_alpha) if sequential_result is not None else None
-    )
-    payload["sequential_checkpoint_status"] = (
-        sequential_result.checkpoint.status if sequential_result is not None else None
     )
     return payload
 

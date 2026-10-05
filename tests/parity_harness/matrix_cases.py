@@ -421,8 +421,42 @@ class _Ingress:
             return self.definitions
         return self.panel if needs_dates else self.summary
 
+    def _scalar_moments_producer(self) -> Callable[[], Analysis]:
+        """A real scalar-moments cube over the quantile's outcome column.
+
+        A quantile has no moments representation, and an observational frame cannot export
+        one (it refuses at the readout seam during export). The portable ingress therefore
+        replays an ordinary randomized mean over the same column, then declares the
+        observational quantile on replay: the request reaches whatever the portable source
+        and facade do with a scalar cube they were asked to read as a quantile.
+        """
+        cell = self.cell
+
+        def produce() -> Analysis:
+            mean = MetricSpec(
+                name=METRIC_NAME,
+                type="mean",
+                value_column="latency",
+                preferred_direction="increase",
+                missing=cell.missing,
+            )
+            return Analysis.from_unit_summary(
+                md.frame(md.summary_rows(cell.day_boundary, nulls=self.nulls)),
+                unit="user_id",
+                group="variant",
+                metrics=[mean],
+                control="control",
+                plan=self.plan,
+            )
+
+        return produce
+
     def moments(self) -> Analysis:
         cell = self.cell
+        if cell.option == "observational" and cell.metric == "quantile":
+            return _export_and_replay_observational(
+                self._scalar_moments_producer()(), _replay_metrics(cell), self.plan
+            )
         exported = self._moments_producer()()
         if cell.option == "sequential":
             # A cube replays a captured checkpoint; it cannot start a sequential process.

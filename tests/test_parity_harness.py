@@ -676,3 +676,59 @@ def test_keyword_absence_must_name_a_keyword_the_signature_does_not_accept():
         )
         with pytest.raises(AssertionError, match=message):
             run_case(case)
+
+
+def _sequential_row():
+    """A real sequential row from the asymptotic-mean scenario's frame ingress."""
+    case = next(c for c in PARITY_CASES if c.id == "sequential_asymptotic_mean_revenue")
+    analysis = case.build["from_unit_summary"]()
+    try:
+        as_of = getattr(analysis, "_sequential_as_of", None)
+        analysis.capture_sequential(finalized=True, **({"as_of": as_of} if as_of else {}))
+        rows = [r for r in analysis.run() if getattr(r, "sequential_result", None) is not None]
+    finally:
+        analysis.close()
+    assert rows
+    return rows[0]
+
+
+def _with_checkpoint(row, **changed):
+    result = row.sequential_result
+    checkpoint = result.checkpoint.model_copy(update=changed)
+    return row.model_copy(
+        update={"sequential_result": result.model_copy(update={"checkpoint": checkpoint})}
+    )
+
+
+@pytest.mark.slow
+def test_sequential_rows_compare_every_public_field_except_route_identifiers():
+    """A sequential row's evidence is compared whole: a different valid `alpha_ceiling`, a
+    different `point_reason` or different checkpoint metadata is a different result. Only the
+    three identifiers hashed from the path's observation mapping name the route, not the result."""
+    from fractions import Fraction
+
+    from increment.estimation.sequential_runtime import evaluate_checkpoint
+
+    row = _sequential_row()
+    result = row.sequential_result
+    ceiling = Fraction(1, 2)
+    assert result.alpha_ceiling < ceiling
+    widened = evaluate_checkpoint(result.checkpoint, alpha=result.decision_alpha, ceiling=ceiling)
+    assert widened.log_e == result.log_e
+    assert widened.bounds == result.bounds
+    for different in (
+        row.model_copy(update={"sequential_result": widened}),
+        row.model_copy(
+            update={"sequential_result": result.model_copy(update={"point_reason": "other"})}
+        ),
+        _with_checkpoint(row, revealed_units=result.checkpoint.revealed_units + 1),
+        _with_checkpoint(row, cell=result.checkpoint.cell.model_copy(update={"family": True})),
+    ):
+        with pytest.raises(AssertionError):
+            _assert_lift_rows_equal(row, different)
+
+    renamed = _with_checkpoint(
+        row, registration_id="other", filtration_id="other", prefix_id="other"
+    )
+    assert renamed.sequential_result.checkpoint.prefix_id != result.checkpoint.prefix_id
+    _assert_lift_rows_equal(row, renamed)
