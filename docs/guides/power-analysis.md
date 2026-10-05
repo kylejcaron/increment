@@ -177,8 +177,7 @@ counts are all dense for the tail allocation is decided by the delta-method test
 pair by the exact Berger-Boos risk-ratio test on the raw counts. Planning reports the
 probability that this union rejects, summed over the binomial count law at the analyzed integer
 counts: the delta-method decision on the routed rectangle of count pairs (the production
-decision itself, vectorised and settled by the runtime's own row wherever the two could differ
-in rounding) plus the replayed finite-sample decision on the rest. It is neither route's power
+decision itself, each pair decided by the runtime's own calculation) plus the replayed finite-sample decision on the rest. It is neither route's power
 and not a function of the two: a plan whose counts straddle the threshold is not "the smaller
 of the two". The count law is integrated over windows that leave out at most about `1e-12` of
 mass. `ArmPlanningProcedure.standard(..., conversion_inference="finite_sample")` plans the
@@ -192,14 +191,13 @@ Power depends on the baseline rate alone; `var` does not enter.
   `1e-6` of mass left undecided (counts the rule routes to the delta method with near
   certainty need no replay of the finite-sample test, and their `~1e-6` is that mass). The
   production delta decision is also what a dense plan reports while its lattice has at most
-  250,000 cells. That limit is a cost route, the same for every design: enumerating costs about
-  a tenth of a CPU-microsecond a cell and the closed form's error shrinks with the counts, so
-  the closed form is used once the lattice is too large to enumerate. Below it the closed
+  100,000 cells. That limit is a cost route, the same for every design: each routed pair costs
+  about 0.2 CPU-milliseconds (it is decided by the runtime's own calculation, not a restatement)
+  and the closed form's error shrinks with the counts, so the closed form is used once the
+  lattice is too large to enumerate. Below it the closed
   form understated the enumerated power by up to 0.006 (a 1,236-unit arm at a 50% baseline and
-  a 6% lift: 0.5859 against 0.5918 at `alpha=0.2`). A vectorised pair is taken as the
-  runtime's decision only beyond a rounding radius derived from the runtime's own arithmetic
-  (its per-arm moments and reference quantile are called, not restated); a pair inside it is
-  decided by the runtime's own row, and left undecided if the evaluation's row budget is spent.
+  a 6% lift: 0.5859 against 0.5918 at `alpha=0.2`). Past 100,000 pairs an
+  evaluation leaves the rest undecided (ambiguous mass) rather than assume them.
 - `power_basis="approximate"`: the replay of the finite-sample test is budgeted at 150,000
   directional replays an evaluation (about a hundred to four hundred CPU-microseconds each at
   the arm sizes where counts reach the routing threshold), the heaviest count pairs first. A
@@ -214,7 +212,7 @@ Power depends on the baseline rate alone; `var` does not enter.
   reported power or a bound.
 - `power_basis="asymptotic"`: the closed-form model above, for counts the rule routes to the
   delta method with near certainty (unrouted mass at most `1e-6`) in a lattice of more than
-  250,000 cells; its figures are the model's only. It is not an enumeration of the runtime's decision: it agreed with the
+  100,000 cells; its figures are the model's only. It is not an enumeration of the runtime's decision: it agreed with the
   pipeline's rejection probability to within 0.005 (the repository's ceiling for a normal
   approximation) at the designs enumerated on the limitations page, and a target called
   unattainable or an effect certified there is so under this model.

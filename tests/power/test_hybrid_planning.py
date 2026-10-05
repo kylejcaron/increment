@@ -42,6 +42,7 @@ def test_the_planning_construction_is_named():
     assert BINOMIAL_PLANNING_MODEL == "hybrid_finite_plus_delta_v1"
 
 
+@pytest.mark.slow
 class TestDensePlansNearTheThresholdAreEnumerated:
     """The closed form understated the pipeline's rejection probability by 0.006 at the two
     smallest dense designs; the enumerated production decision has no such error."""

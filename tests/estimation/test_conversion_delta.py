@@ -10,7 +10,6 @@ rest.
 from __future__ import annotations
 
 import math
-from typing import Any
 
 import numpy as np
 import pytest
@@ -21,7 +20,6 @@ from increment.estimation.conversion_delta import (
     CRITICAL_AGREEMENT,
     CRITICAL_RELATIVE_ACCURACY,
     ROUNDING_UNITS,
-    _crit,
     critical_values,
     delta_decision,
     delta_log_bounds,
@@ -231,64 +229,22 @@ class TestUnroutedShare:
         assert unrouted_share(n, n, p, p, floor=floor) == pytest.approx(expected, rel=1e-9)
 
 
-def test_a_pair_the_count_rule_keeps_on_the_finite_sample_route_has_no_delta_row():
-    kwargs: dict[str, Any] = {"tail": 0.025, "alternative": "two-sided", "null_lift": 0.0}
-    with pytest.raises(ValueError, match="finite-sample route"):
-        production_decision(0, 10_000, 12, 10_000, **kwargs)
-
-
-class TestTheQuantileBracket:
-    """The certificate brackets the reference quantile between its values at the smallest and
-    largest degrees of freedom of a run, which relies on the runtime's own quantile decreasing in
-    the degrees of freedom to within `CRITICAL_RELATIVE_ACCURACY`."""
-
-    @pytest.mark.parametrize("tail", [0.1, 0.025, 0.0005])
-    def test_the_runtimes_quantile_decreases_in_the_degrees_of_freedom(self, tail):
-        df = np.geomspace(400.0, 2e7, 4_000)
-        values = np.array([_crit(float(d), tail) for d in df])
-        steps = values[1:] / values[:-1] - 1.0
-        assert steps.max() <= CRITICAL_RELATIVE_ACCURACY
-        assert np.all(np.abs(values / student_t.isf(tail, df) - 1.0) < CRITICAL_RELATIVE_ACCURACY)
-
-
-class TestEveryCertifiedPairIsTheRuntimes:
-    """Over a whole window of count pairs around the rejection boundary, every pair the
-    vectorised rule certifies is decided as the runtime row decides it, and the pairs it leaves
-    open are a thin band, not a region."""
+class TestThePairCalculationIsTheRuntimes:
+    """`delta_interval` calls the runtime's own functions, so its interval equals the one
+    ``estimate_lift`` reports bit for bit, on every route of the cases the planner enumerates."""
 
     @pytest.mark.parametrize("alternative", _ALTERNATIVES)
-    def test_a_window_of_pairs_agrees_with_the_runtime_row(self, alternative):
-        n, tail, null = 1_236, 0.1, 0.0
-        x_c = np.arange(560, 600)[:, None]
-        x_t = np.arange(590, 680)[None, :]
-        decided = delta_decision(x_c, n, x_t, n, tail=tail, alternative=alternative, null_lift=null)
-        rng = np.random.default_rng(11)
-        settled = np.argwhere(decided.settled)
-        for a, b in settled[rng.choice(len(settled), 120, replace=False)]:
-            plus, minus = production_decision(
-                int(x_c[a, 0]),
-                n,
-                int(x_t[0, b]),
-                n,
-                tail=tail,
-                alternative=alternative,
-                null_lift=null,
+    @pytest.mark.parametrize(
+        ("n", "p_c", "p_t", "tail"),
+        [(1_236, 0.5, 0.53, 0.1), (20_000, 0.3, 0.33, 0.025), (300_000, 0.1, 0.105, 0.0005)],
+    )
+    def test_the_interval_equals_the_runtime_rows_exactly(self, alternative, n, p_c, p_t, tail):
+        from increment.estimation.conversion_delta import delta_interval
+
+        for c, t in _routed_pairs(n, p_c, p_t, tail=tail, count=25, seed=n + 5):
+            row = _runtime_row((c, n, t, n), tail=tail, alternative=alternative, null_lift=0.0)
+            assert row.lift is not None
+            assert delta_interval(c, n, t, n, tail=tail, alternative=alternative) == (
+                row.lift.lb,
+                row.lift.ub,
             )
-            assert (plus or minus) == bool(decided.plus[a, b] or decided.minus[a, b])
-        # The cells next to a change of the vectorised decision are where the boundary is.
-        rejects = decided.plus | decided.minus
-        edge = np.argwhere(rejects[:, 1:] != rejects[:, :-1])
-        for a, b in edge[:: max(1, len(edge) // 25)]:
-            for c in (b, b + 1):
-                plus, minus = production_decision(
-                    int(x_c[a, 0]),
-                    n,
-                    int(x_t[0, c]),
-                    n,
-                    tail=tail,
-                    alternative=alternative,
-                    null_lift=null,
-                )
-                if decided.settled[a, c]:
-                    assert (plus or minus) == bool(rejects[a, c])
-        assert (~decided.settled).mean() < 0.05

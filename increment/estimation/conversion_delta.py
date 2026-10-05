@@ -15,8 +15,10 @@ from its monotonicity in the degrees of freedom; nothing is calibrated against t
 output. Every pair it cannot certify is left to `production_decision`, the unchanged runtime
 row, or to the caller's ambiguous mass when the rows are not affordable.
 
-`delta_statistic`, `critical_values` and `delta_log_bounds` are the vectorised interval ends the
-calibration campaigns measure noncoverage with (an accuracy measurement, never a decision).
+`delta_interval` and `production_decision` are the runtime's own calculation for one pair, and
+the only decision planning uses. `delta_decision`, `delta_statistic`, `critical_values` and
+`delta_log_bounds` are vectorised approximations for the calibration campaigns' enumerations and
+noncoverage tables: a measurement, never a planning decision and never a certificate.
 """
 
 from __future__ import annotations
@@ -224,6 +226,41 @@ def delta_decision(
     return DeltaDecision(plus & settled, minus & settled, settled)
 
 
+def delta_interval(
+    x_c: int, n_c: int, x_t: int, n_t: int, *, tail: float, alternative: Alternative
+) -> tuple[float, float] | None:
+    """The relative-lift interval ``(lb, ub)`` the runtime reports for a routed count pair, or
+    ``None`` when the runtime guards refuse it (a decision failure, never a rejection).
+
+    This is the runtime's own calculation, call for call: the arms' moments and log standard
+    errors (`_arm`, as ``_compute_lift_arm_moments`` forms them for a mean metric),
+    ``stable_log_ratio``, and ``infer_lift`` with the Welch reference ``arm_ns=(n_t, n_c)`` at
+    the row's alpha. Nothing is restated, so the interval is the runtime's to the last bit."""
+    from increment.estimation.inference import LiftGuardError, infer_lift
+    from increment.estimation.variance import stable_log_ratio
+
+    mean_c, se_c = _arm(x_c, n_c)
+    mean_t, se_t = _arm(x_t, n_t)
+    try:
+        estimate = infer_lift(
+            metric="conv",
+            group_id="treatment",
+            method="unadjusted",
+            log_rr=stable_log_ratio(mean_c, mean_t),
+            se_t=se_t,
+            se_c=se_c,
+            alpha=2.0 * tail if alternative == "two-sided" else tail,
+            alternative=alternative,
+            arm_ns=(n_t, n_c),
+            method_role="decision",
+        )
+    except LiftGuardError:
+        return None
+    lift = estimate.lift
+    assert lift is not None and lift.lb is not None and lift.ub is not None
+    return lift.lb, lift.ub
+
+
 def production_decision(
     x_c: int,
     n_c: int,
@@ -234,49 +271,15 @@ def production_decision(
     alternative: Alternative,
     null_lift: float,
 ) -> tuple[bool, bool]:
-    """``(plus, minus)`` of one count pair as the runtime decides it: ``estimate_lift`` on the
-    contrast, whose interval end lies above (``plus``) or below (``minus``) the null, each only
-    for an alternative that reads it. Only a pair the count rule routes to the delta method has
-    that row (``ValueError`` otherwise); one the runtime cannot form a row for rejects in neither
-    direction."""
-    from increment.estimation.armstats import ArmStats
-    from increment.estimation.engine import Method, estimate_lift
-    from increment.semantics.models import ConversionMetric
-
-    rows = []
-    for group_id, n, x in (("control", n_c, x_c), ("treatment", n_t, x_t)):
-        arm = ArmStats.from_raw_sums(
-            study_id="e", metric="conv", group_id=group_id, n=n, sum_y=float(x), sum_y2=float(x)
-        )
-        rows.append(
-            {
-                "experiment_id": "e",
-                "metric": "conv",
-                "group_id": group_id,
-                "n": float(arm.n),
-                "ref_y": arm.ref_y,
-                "cy1": arm.cy1,
-                "cy2": arm.cy2,
-            }
-        )
-    computation = estimate_lift(
-        metrics=[ConversionMetric(name="conv", entity="user", fact="conv")],
-        summary=rows,
-        control_group="control",
-        methods=[Method(name="unadjusted", conversion_inference="auto")],
-        alpha=2.0 * tail if alternative == "two-sided" else tail,
-        alternative=alternative,
-        null_lift=null_lift,
-    )
-    if computation.failures or not computation.results:
+    """``(plus, minus)`` of one count pair as the runtime decides it: the interval of
+    `delta_interval` lies above (``plus``) or below (``minus``) ``null_lift``, each only for an
+    alternative that reads it (``LiftEstimate.stat_sig``'s comparisons). A pair the runtime
+    guards refuse rejects in neither direction."""
+    interval = delta_interval(x_c, n_c, x_t, n_t, tail=tail, alternative=alternative)
+    if interval is None:
         return False, False
-    (row,) = computation.results
-    if row.reference_kind != "t":
-        raise ValueError(
-            f"counts {(x_c, n_c, x_t, n_t)} are not decided by the delta method: the count rule "
-            "keeps them on the finite-sample route"
-        )
-    assert row.lift is not None
-    plus = alternative != "less" and row.lift.lb is not None and row.lift.lb > null_lift
-    minus = alternative != "greater" and row.lift.ub is not None and row.lift.ub < null_lift
-    return bool(plus), bool(minus)
+    lower, upper = interval
+    return (
+        alternative != "less" and lower > null_lift,
+        alternative != "greater" and upper < null_lift,
+    )

@@ -36,8 +36,7 @@ on) and every dot product rounds, so a computed value is never an exact probabil
 of the pairs decided to reject, less and plus that error, with the mass of the pairs no
 decision was made for (``ambiguous``) and of everything outside the windows (``omitted``) added
 to the upper end only. A pair is decided by the unchanged runtime: the delta decision on ``R``
-(`conversion_delta.delta_decision`, settled by the runtime's own row wherever the vectorised
-rule is within its agreement), the replay of the finite-sample search below elsewhere. The
+(`conversion_delta.production_decision`, the runtime's own calculation pair by pair), the replay of the finite-sample search below elsewhere. The
 runtime's finite-sample search is bounded and stopped (a split cap, a relative-gap stop), so
 its rejection set need not be monotone in the treatment count the way the supremum it bounds
 is; no pair is decided by extending a neighbour's decision. `RejectionGeometry.closure_bound`
@@ -96,7 +95,7 @@ from scipy.stats import binom as _binom
 
 from increment._literals import Alternative
 from increment.estimation import binomial_rr as _rr
-from increment.estimation.conversion_delta import delta_decision, production_decision
+from increment.estimation.conversion_delta import production_decision
 from increment.estimation.conversion_route import unrouted_share
 
 Kind = Literal["plus", "minus"]
@@ -174,22 +173,20 @@ RESOLUTION = 1e-6
 #: leaves, lightest first, are undecided and add their mass to the upper end of the enclosure.
 EVALUATION_REPLAY_BUDGET = 150_000
 
-#: Runtime rows (`conversion_delta.production_decision`, about a millisecond each) one evaluation
-#: may run for the routed pairs the vectorised delta decision cannot certify: the pairs whose
-#: interval end lies within its rounding radius of the null, about one per control count and
-#: direction. The rest stay undecided.
-EVALUATION_ROW_BUDGET = 20_000
+#: Runtime calculations (`conversion_delta.production_decision`, about 0.2 CPU-milliseconds each:
+#: a pair is decided exactly as the runtime decides it) one evaluation may run for the routed
+#: pairs. The rest stay undecided.
+EVALUATION_ROW_BUDGET = 100_000
 
 # prose: allow-long derivation of a constant
 #: Lattice cells up to which a plan the count rule routes to the delta method with near
-#: certainty is enumerated (the production delta decision summed over the count lattice) rather
-#: than read from the closed-form model. It is a cost route, the same for every design: the
-#: vectorised decision costs about 0.1 CPU-microsecond a cell plus a runtime row for each pair
-#: it cannot certify (about one per control count), which keeps an evaluation under a second here
-#: and grows with the lattice; beyond it the closed form is used and its figures are the
-#: model's, not an enumeration of the runtime (the closed form's error shrinks with the counts,
-#: it was 0.006 at the smallest dense designs).
-ENUMERATION_CELLS = 250_000
+#: certainty is enumerated (the runtime's own delta calculation on every routed pair) rather than
+#: read from the closed-form model. It is a cost route, the same for every design: it equals
+#: `EVALUATION_ROW_BUDGET`, so an enumerated dense plan never leaves a routed pair undecided,
+#: and costs about twenty CPU-seconds at the limit. Beyond it the closed form is used and its
+#: figures are the model's, not an enumeration of the runtime (its error shrinks with the
+#: counts; it was 0.006 at the smallest dense designs).
+ENUMERATION_CELLS = 100_000
 
 #: Planning bound in (control, treatment) count cells a geometry may store, about 10-15
 #: CPU-microseconds each. It bounds every evaluation's rectangle (the control window by the
@@ -1563,7 +1560,7 @@ class RejectionGeometry:
     Under ``auto`` the runtime decides a count pair by the delta method inside the routed
     rectangle (`Routing`) and by the finite-sample test everywhere else, so the geometry holds the
     union of the two: the production delta decision (`delta_decision`, settled by the runtime row
-    itself wherever the vectorised rule is within its agreement) on the rectangle and the
+    itself) on the rectangle and the
     finite-sample replay on the rest. Without a routing every pair takes the finite-sample
     route. A pair the replay was not run for (the lightest ones once an evaluation's budget is spent, or
     all of them when the runtime refuses the finite-sample decision in full) stays undecided; its
@@ -1835,10 +1832,10 @@ class RejectionGeometry:
         col_in: np.ndarray,
     ) -> np.ndarray:
         """Write the delta decision of the *delta* cells, all inside the routed rectangle, and
-        return the mask of those decided. A pair `delta_decision` cannot certify is decided by
-        the runtime row itself while the evaluation's row budget (`EVALUATION_ROW_BUDGET`)
-        lasts; once it is spent the remaining pairs stay undecided (ambiguous mass), never
-        assumed."""
+        return the mask of those decided. Every pair is decided by the runtime's own calculation
+        (`conversion_delta.production_decision`) while the evaluation's row budget
+        (`EVALUATION_ROW_BUDGET`) lasts; once it is spent the remaining pairs stay undecided
+        (ambiguous mass), never assumed."""
         decision, routing = self.decision, self.routing
         assert routing is not None
         x_lo, j_lo = origin
@@ -1853,18 +1850,10 @@ class RejectionGeometry:
             block = delta[start:stop, c0:c1]
             if not block.any():
                 continue
-            out = delta_decision(
-                x_c,
-                decision.n_c,
-                x_t,
-                decision.n_t,
-                tail=decision.tail_alpha,
-                alternative=decision.alternative,
-                null_lift=routing.null_lift,
-            )
-            plus, minus = out.plus.copy(), out.minus.copy()
-            kept = block & out.settled
-            for a, b in np.argwhere(~out.settled & block):
+            plus = np.zeros_like(block)
+            minus = np.zeros_like(block)
+            kept = np.zeros_like(block)
+            for a, b in np.argwhere(block):
                 if self._rows_run >= EVALUATION_ROW_BUDGET:
                     break
                 self._rows_run += 1
