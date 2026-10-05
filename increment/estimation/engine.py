@@ -46,7 +46,12 @@ from increment.errors import (
 from increment.estimation import binomial_rr
 from increment.estimation._readout_refusals import READOUT_REFUSALS as _READOUT_REFUSALS
 from increment.estimation._tails import two_sided_critical_value, wald_bounds
-from increment.estimation.armstats import ArmStats, binary_counts, welch_satterthwaite_df
+from increment.estimation.armstats import (
+    ArmStats,
+    binary_counts,
+    canonical_bernoulli_arm,
+    welch_satterthwaite_df,
+)
 from increment.estimation.conversion_route import (
     finite_sample_blocker,
     refuse_finite_sample_unavailable,
@@ -249,10 +254,11 @@ class Method(CodedModel, BaseModel):
     * ``"auto"`` (the default): rows whose four per-arm success and failure
       counts are all dense for the requested tail take the approximate
       delta-method route every unadjusted mean uses (``reference_kind="t"``,
-      ``scale="log"``, no ``binomial_set``); every other row takes the
-      finite-sample route. The route is fixed from those counts before any
-      interval is computed and is labelled on each row, and only rows with
-      ``reference_kind="binomial"`` carry the finite-sample guarantee.
+      ``scale="log"``, no ``binomial_set``), on arm moments formed from those
+      counts; every other row takes the finite-sample route. The route is fixed
+      from those counts before any interval is computed and is labelled on each
+      row, and only rows with ``reference_kind="binomial"`` carry the
+      finite-sample guarantee.
     * ``"finite_sample"``: every row takes the finite-sample independent-
       binomial route (``reference_kind="binomial"``), valid at any count and
       validated to ``binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE`` units per arm.
@@ -1983,19 +1989,34 @@ def _validate_binomial_request(
     return alternative, alpha_eff
 
 
+def _binomial_arm(arm: ArmStats) -> ArmStats:
+    """``arm`` as the binomial reading sees it: its unused covariate and uptake moments dropped."""
+    return _without_unused_binomial_uptake(_without_unused_binomial_covariate(arm))
+
+
 def _contrast_counts(
     treatment: ArmStats, control: ArmStats, metric_type: str
 ) -> tuple[int, int, int, int]:
     """``(x_c, n_c, x_t, n_t)`` of an eligible conversion contrast, reconstructed from its
     arm moments before any route is chosen, so a corrupted arm refuses identically under
     every ``conversion_inference``."""
-    control_binomial = _without_unused_binomial_uptake(_without_unused_binomial_covariate(control))
-    treatment_binomial = _without_unused_binomial_uptake(
-        _without_unused_binomial_covariate(treatment)
-    )
-    x_c, n_c = binary_counts(control_binomial, metric_type)
-    x_t, n_t = binary_counts(treatment_binomial, metric_type)
+    x_c, n_c = binary_counts(_binomial_arm(control), metric_type)
+    x_t, n_t = binary_counts(_binomial_arm(treatment), metric_type)
     return x_c, n_c, x_t, n_t
+
+
+def _contrast_of_counts(
+    treatment: ArmStats, control: ArmStats, counts: tuple[int, int, int, int]
+) -> tuple[ArmStats, ArmStats]:
+    """The ``(treatment, control)`` arms of an eligible contrast the delta method reads: the
+    binomial arms with their y family formed from the counts (`canonical_bernoulli_arm`), so a
+    producer's accepted rounding in the stored moments never reaches the interval, and the
+    interval is a function of the four counts alone."""
+    x_c, _, x_t, _ = counts
+    return (
+        canonical_bernoulli_arm(_binomial_arm(treatment), x_t),
+        canonical_bernoulli_arm(_binomial_arm(control), x_c),
+    )
 
 
 def _binomial_data_failure(
@@ -2602,7 +2623,8 @@ def _lift_for_method(  # noqa: PLR0913
     informative prior chooses its route from its four reconstructed counts and the tail
     allocation alone (``conversion_route.route_for_counts``): the finite-sample
     independent-binomial inversion, or the delta-method contrast every unadjusted mean
-    takes. Every other contrast takes the delta-method contrast, and an explicit
+    takes, here on arms formed from those counts (`_contrast_of_counts`). Every other contrast
+    takes the delta-method contrast on its stored moments, and an explicit
     ``finite_sample`` request on one is refused rather than served by it.
     """
     treatment, control = contrast
@@ -2673,7 +2695,7 @@ def _lift_for_method(  # noqa: PLR0913
             preferred_direction,
         )
     return _asymptotic_lift_outcome(
-        contrast,
+        _contrast_of_counts(treatment, control, counts),
         method_strategy,
         strategy,
         method_role,
@@ -2736,7 +2758,9 @@ def estimate_lift(  # noqa: PLR0913
     (``reference_kind="t"``, ``scale="log"``), and any other counts the
     finite-sample independent-binomial inversion (``reference_kind="binomial"``).
     The row's ``reference_kind`` labels which; only the ``"binomial"`` rows
-    carry the finite-sample guarantee.
+    carry the finite-sample guarantee. A delta-method row of such a contrast is a function of
+    the four counts alone: the arms' moments are formed from the counts, not read as the
+    producer stored them, so the same counts give the same interval through every ingress.
 
     ``control_group`` is required - the engine never guesses by sort
     order. ``prior``/``alpha``/``alternative``/``null_lift``/``null_abs``/

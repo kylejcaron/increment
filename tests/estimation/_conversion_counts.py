@@ -1,5 +1,5 @@
-"""Four-count conversion contrasts through ``estimate_lift``, shared by the conversion-route
-tests and ``calibration.conversion_route``."""
+"""Four-count conversion contrasts through ``estimate_lift``, and the arms they or a producer
+give, shared by the conversion-route tests and ``calibration.conversion_route``."""
 
 from __future__ import annotations
 
@@ -16,26 +16,68 @@ from increment.semantics.models import ConversionMetric
 CONVERSION_METRIC = ConversionMetric(name="conv", entity="user", fact="conv")
 
 
+def arm_row(arm: ArmStats) -> dict[str, Any]:
+    """The centered ``group_summary`` row of one arm's stored moments."""
+    return {
+        "experiment_id": arm.study_id,
+        "metric": arm.metric,
+        "group_id": arm.group_id,
+        "n": float(arm.n),
+        "ref_y": arm.ref_y,
+        "cy1": arm.cy1,
+        "cy2": arm.cy2,
+    }
+
+
+def count_arms(x_c: int, n_c: int, x_t: int, n_t: int) -> tuple[ArmStats, ArmStats]:
+    """``(control, treatment)`` arms of ``x_c`` of ``n_c`` and ``x_t`` of ``n_t`` conversions,
+    centered exactly from their counts."""
+    control, treatment = (
+        ArmStats.from_raw_sums(
+            study_id="e", metric="conv", group_id=group_id, n=n, sum_y=float(x), sum_y2=float(x)
+        )
+        for group_id, n, x in (("control", n_c, x_c), ("treatment", n_t, x_t))
+    )
+    return control, treatment
+
+
 def count_summary(x_c: int, n_c: int, x_t: int, n_t: int) -> list[dict[str, Any]]:
     """Centered ``group_summary`` rows of a control arm with ``x_c`` of ``n_c`` conversions
     and a treatment arm with ``x_t`` of ``n_t``."""
-    rows: list[dict[str, Any]] = []
-    for group_id, n, x in (("control", n_c, x_c), ("treatment", n_t, x_t)):
-        arm = ArmStats.from_raw_sums(
-            study_id="e", metric="conv", group_id=group_id, n=n, sum_y=float(x), sum_y2=float(x)
+    return [arm_row(arm) for arm in count_arms(x_c, n_c, x_t, n_t)]
+
+
+def producer_arm(n: int, successes: int | None, *, group_id: str = "control") -> ArmStats:
+    """The ``ArmStats`` the production producer (``group_summary``) emits for an arm built
+    inside DuckDB from ``range()``: ``successes`` ones scattered by a bijection of the row index
+    (``None``: every unit's outcome is the constant 0.5). No row is materialized outside DuckDB."""
+    import ibis
+
+    from increment.query.builders import group_summary
+
+    if successes is None:
+        outcome = "CAST(0.5 AS DOUBLE)"
+    else:
+        multiplier = next(m for m in range(2654435761, 2654435761 + 1000, 2) if math.gcd(m, n) == 1)
+        outcome = (
+            f"CAST(CASE WHEN ((range::HUGEINT * {multiplier} + 12345) % {n}) < {successes} "
+            "THEN 1 ELSE 0 END AS DOUBLE)"
         )
-        rows.append(
-            {
-                "experiment_id": "e",
-                "metric": "conv",
-                "group_id": group_id,
-                "n": float(arm.n),
-                "ref_y": arm.ref_y,
-                "cy1": arm.cy1,
-                "cy2": arm.cy2,
-            }
-        )
-    return rows
+    totals = ibis.duckdb.connect().sql(
+        f"SELECT 'u' AS unit_id, 'e' AS experiment_id, '{group_id}' AS group_id, 'conv' AS metric, "
+        f"{outcome} AS y, CAST(NULL AS DOUBLE) AS x, CAST(NULL AS DOUBLE) AS y_den "
+        f"FROM range({n})"
+    )
+    row = group_summary(totals).execute().iloc[0]
+    return ArmStats(
+        study_id="e",
+        metric="conv",
+        group_id=group_id,
+        n=int(row["n"]),
+        ref_y=float(row["ref_y"]),
+        cy1=float(row["cy1"]),
+        cy2=float(row["cy2"]),
+    )
 
 
 def lift_computation(

@@ -1406,6 +1406,30 @@ def binary_counts(arm: ArmStats, metric_type: str) -> tuple[int, int]:
     return successes, arm.n
 
 
+def canonical_bernoulli_arm(arm: ArmStats, successes: int) -> ArmStats:
+    """``arm`` with its y family replaced by the exact moments of ``successes`` ones among its
+    ``arm.n`` units, every other field kept.
+
+    A declared 0/1 arm that `binary_counts` accepts is determined by its counts: its mean is
+    ``successes / n`` and its centered sum of squares ``successes * (n - successes) / n``. The
+    moments it stores add the producer's summation error up to the bounds `binary_counts`
+    admits (a first moment within an absolute 1e-6 of an integer sum, a second within the
+    rounding of adding its units), which differs between producers and moves an interval end
+    by that relative amount. Forming the y family from the counts, as ``from_raw_sums`` does,
+    makes every estimate read from the arm a function of its counts alone. The same counts then
+    reach the same interval through any ingress, and a planner enumerating counts decides what
+    the runtime decides."""
+    exact = ArmStats.from_raw_sums(
+        study_id=arm.study_id,
+        metric=arm.metric,
+        group_id=arm.group_id,
+        n=arm.n,
+        sum_y=float(successes),
+        sum_y2=float(successes),
+    )
+    return arm.model_copy(update={"ref_y": exact.ref_y, "cy1": exact.cy1, "cy2": exact.cy2})
+
+
 def centered_row_from_raw_sums(row: Mapping[str, Any]) -> dict[str, Any]:
     """Adapt one format-1 wire row (raw additive sums) to format 2.
 

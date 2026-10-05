@@ -28,6 +28,7 @@ from increment import SequentialCell
 from increment._analysis_config import UNSET, _Unset
 from increment.analysis import Analysis
 from increment.errors import CodedError, IncrementWarning
+from increment.estimation.conversion_delta import delta_interval
 from increment.estimation.conversion_route import dense_min_count
 from increment.estimation.inference import Normal, Prior
 from increment.estimation.priors import MixturePrior, StudentTPrior
@@ -7226,7 +7227,9 @@ def _conversion_route_case() -> ParityCase:
     """Conversion counts one below, at and one above the dense threshold, on the success and
     the failure side, plus dense and sparse neighbors: every ingress must route each metric the
     same way and report the same interval and p-value, with the route label the count rule
-    assigns (`reference_kind="t"` dense, `"binomial"` otherwise)."""
+    assigns (`reference_kind="t"` dense, `"binomial"` otherwise). A delta-method row is a
+    function of its counts alone, so every ingress, whichever way its producer rounds the
+    arms' stored moments, reports the very interval the planner's pair decision uses."""
     assert len(_route_conversions()) == _ROUTE_FAMILY_SIZE
     definitions = Definitions.model_validate(_route_defs_dict())
     plan = AnalysisPlan(alpha=_ROUTE_ALPHA, q=_ROUTE_ALPHA, secondaries=tuple(_route_conversions()))
@@ -7291,6 +7294,13 @@ def _conversion_route_case() -> ParityCase:
             assert row.reference_kind == kind, name
             assert (row.binomial_set is None) == (kind == "t"), name
             assert row.scale == ("log" if kind == "t" else "linear"), name
+            if kind == "t":
+                x_c, x_t, _ = _route_conversions()[name]
+                n = _route_n_per_arm()
+                assert row.lift is not None
+                assert (row.lift.lb, row.lift.ub) == delta_interval(
+                    x_c, n, x_t, n, tail=_ROUTE_ALPHA / 2, alternative="two-sided"
+                ), name
 
     return ParityCase(
         id="conversion_route_straddles_the_dense_threshold",

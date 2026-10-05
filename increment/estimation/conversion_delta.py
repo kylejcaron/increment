@@ -4,9 +4,11 @@ runtime makes it.
 Counts whose four per-arm success and failure counts all reach ``dense_min_count(tail)`` are
 decided by the delta method (``conversion_route``): the log risk ratio against a
 Welch-Satterthwaite ``t`` reference, rejecting when the interval of the row's alternative lies
-beyond the null (``LiftEstimate.stat_sig``). `delta_interval` and `production_decision` are the
-runtime's own calculation for one count pair, call for call (the arms' moments and log standard
-errors, ``stable_log_ratio``, ``infer_lift``); planning decides every routed pair with them.
+beyond the null (``LiftEstimate.stat_sig``). The runtime forms such a row's arms from the
+counts (``armstats.canonical_bernoulli_arm``), so the row is a function of the counts alone.
+`delta_interval` and `production_decision` are the runtime's own calculation for one count pair,
+call for call (the arms' moments and log standard errors, ``stable_log_ratio``, ``infer_lift``);
+planning decides every routed pair with them.
 """
 
 from __future__ import annotations
@@ -19,14 +21,13 @@ from increment._literals import Alternative
 @lru_cache(maxsize=1 << 18)
 def _arm(x: int, n: int) -> tuple[float, float]:
     """``(mean, log standard error)`` of an arm of ``x`` successes in ``n`` units as the runtime
-    forms them: the centered moments of ``ArmStats.from_raw_sums``, ``to_summary``, and
-    ``se_log_mean`` -- the shared primitive, not a restatement of it."""
-    from increment.estimation.armstats import ArmStats
+    forms them: the moments of ``canonical_bernoulli_arm``, ``to_summary``, and
+    ``se_log_mean`` -- the shared primitives, not a restatement of them."""
+    from increment.estimation.armstats import ArmStats, canonical_bernoulli_arm
     from increment.estimation.variance import se_log_mean
 
-    summary = ArmStats.from_raw_sums(
-        study_id="e", metric="conv", group_id="g", n=n, sum_y=float(x), sum_y2=float(x)
-    ).to_summary()
+    counted = ArmStats(study_id="e", metric="conv", group_id="g", n=n, ref_y=0.0, cy1=0.0, cy2=0.0)
+    summary = canonical_bernoulli_arm(counted, x).to_summary()
     return summary.mean, se_log_mean(summary.var, summary.mean, summary.n)
 
 

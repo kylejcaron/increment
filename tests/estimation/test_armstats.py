@@ -14,11 +14,13 @@ from increment.estimation.armstats import (
     ScoreStats,
     SummaryStats,
     binary_counts,
+    canonical_bernoulli_arm,
     centered_row_from_raw_sums,
 )
 from increment.estimation.engine import _df_to_arms, estimate_lift
 from increment.estimation.results import Estimate, LiftEstimate
 from increment.semantics.models import MeanMetric
+from tests.estimation._conversion_counts import producer_arm
 from tests.warning_codes import warning_codes
 
 
@@ -1473,37 +1475,85 @@ class TestBinaryCountsBernoulliConsistency:
         assert exc_info.value.code == "estimation.binomial.inconsistent_bernoulli_variance"
 
 
-def _producer_arm(n: int, successes: int | None) -> ArmStats:
-    """The ``ArmStats`` the production producer (``group_summary``) emits for an arm built
-    inside DuckDB from ``range()``: ``successes`` ones scattered by a bijection of the row index
-    (``None``: every unit's outcome is the constant 0.5). No row is materialized outside DuckDB."""
-    import ibis
+class TestCanonicalBernoulliArm:
+    """An arm `binary_counts` accepts, re-formed from its counts: the y family is the exact
+    one of a 0/1 arm, and the rest of the record is the arm's own."""
 
-    from increment.query.builders import group_summary
+    N, SUCCESSES = 200_000, 60_000
 
-    if successes is None:
-        outcome = "CAST(0.5 AS DOUBLE)"
-    else:
-        multiplier = next(m for m in range(2654435761, 2654435761 + 1000, 2) if math.gcd(m, n) == 1)
-        outcome = (
-            f"CAST(CASE WHEN ((range::HUGEINT * {multiplier} + 12345) % {n}) < {successes} "
-            "THEN 1 ELSE 0 END AS DOUBLE)"
+    def _drifted(self) -> ArmStats:
+        """The arm with the largest second-moment drift `binary_counts` still admits."""
+        expected = self.SUCCESSES * (self.N - self.SUCCESSES) / self.N
+        admitted = None
+        for step in (2.0**-k for k in range(60, 20, -1)):
+            arm = ArmStats(
+                study_id="e",
+                metric="conv",
+                group_id="control",
+                n=self.N,
+                ref_y=self.SUCCESSES / self.N,
+                cy1=4e-7,
+                cy2=expected * (1.0 + step),
+            )
+            try:
+                binary_counts(arm, "conversion")
+            except BinomialDataError:
+                break
+            admitted = arm
+        assert admitted is not None and admitted.cy2 != expected
+        return admitted
+
+    def test_the_y_family_is_the_exact_one_of_a_0_1_arm(self):
+        arm = canonical_bernoulli_arm(self._drifted(), self.SUCCESSES)
+        summary = arm.to_summary()
+        n, x = self.N, self.SUCCESSES
+        assert summary.mean == pytest.approx(x / n, rel=1e-15, abs=0.0)
+        assert summary.var == pytest.approx(x * (n - x) / (n * (n - 1)), rel=1e-15, abs=0.0)
+
+    def test_the_counts_do_not_move(self):
+        drifted = self._drifted()
+        assert binary_counts(drifted, "conversion") == (self.SUCCESSES, self.N)
+        canonical = canonical_bernoulli_arm(drifted, self.SUCCESSES)
+        assert binary_counts(canonical, "conversion") == (self.SUCCESSES, self.N)
+        assert canonical_bernoulli_arm(canonical, self.SUCCESSES) == canonical
+
+    def test_it_is_the_arm_the_counts_alone_give(self):
+        exact = ArmStats.from_raw_sums(
+            study_id="e",
+            metric="conv",
+            group_id="control",
+            n=self.N,
+            sum_y=float(self.SUCCESSES),
+            sum_y2=float(self.SUCCESSES),
         )
-    totals = ibis.duckdb.connect().sql(
-        "SELECT 'u' AS unit_id, 'e' AS experiment_id, 'control' AS group_id, 'conv' AS metric, "
-        f"{outcome} AS y, CAST(NULL AS DOUBLE) AS x, CAST(NULL AS DOUBLE) AS y_den "
-        f"FROM range({n})"
-    )
-    row = group_summary(totals).execute().iloc[0]
-    return ArmStats(
-        study_id="e",
-        metric="conv",
-        group_id="control",
-        n=int(row["n"]),
-        ref_y=float(row["ref_y"]),
-        cy1=float(row["cy1"]),
-        cy2=float(row["cy2"]),
-    )
+        assert canonical_bernoulli_arm(self._drifted(), self.SUCCESSES) == exact
+
+    def test_every_other_field_of_the_record_is_kept(self):
+        arm = ArmStats(
+            study_id="exp",
+            metric="conv",
+            group_id="treatment",
+            n=1_000,
+            ref_y=0.3,
+            cy1=0.0,
+            cy2=210.0 * (1.0 + 1e-12),
+            ref_x=0.5,
+            cx1=0.0,
+            cx2=250.0,
+            cxy=3.0,
+            x_role="covariate",
+            sum_d=400.0,
+            cyd=1.5,
+            cy2d=80.0,
+            winsor_n=1_000,
+            winsor_n_lower=0,
+            winsor_n_upper=0,
+        )
+        kept = canonical_bernoulli_arm(arm, 300).model_dump()
+        original = arm.model_dump()
+        for field in ("ref_y", "cy1", "cy2"):
+            kept.pop(field), original.pop(field)
+        assert kept == original
 
 
 @pytest.mark.slow
@@ -1541,14 +1591,14 @@ class TestBinaryCountsProducerPathTolerance:
     )
     def test_producer_path_tolerance_grid(self, n, success_frac):
         successes = max(1, round(n * success_frac))
-        assert binary_counts(_producer_arm(n, successes), "conversion") == (successes, n)
+        assert binary_counts(producer_arm(n, successes), "conversion") == (successes, n)
 
     @pytest.mark.parametrize("n", [4_000_000, 16_000_000])
     def test_producer_path_corrupted_input_still_refuses_at_scale(self, n):
         """A constant y=0.5 arm shares a genuine 50% conversion rate's mean but has zero actual
         spread (cy2 == 0 instead of the Bernoulli-consistent n/4) -- must still refuse."""
         with pytest.raises(BinomialDataError) as exc_info:
-            binary_counts(_producer_arm(n, None), "conversion")
+            binary_counts(producer_arm(n, None), "conversion")
         assert exc_info.value.code == "estimation.binomial.inconsistent_bernoulli_variance"
 
 
