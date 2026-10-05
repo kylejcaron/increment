@@ -18,6 +18,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from scipy.optimize import brentq, minimize_scalar
 from scipy.stats import binom
 
 from calibration.binomial_oracle import Binomial, precise
@@ -898,6 +899,248 @@ class TestPlanningNumericalEnclosure:
         assert units > 10**8 and sized.power >= target * (1.0 + 2.0 * allowance(units))
         predecessor = achieved_power(units - 1, 0.5, baseline, procedure)
         assert predecessor.power < target * (1.0 + 3.0 * allowance(units))
+
+
+_LATTICE_ARM, _LATTICE_RATE = 300, 0.05
+
+
+def _lattice_rows(*fractions: float) -> list[tuple[int, int]]:
+    """Consecutive control-count ranges holding the given fractions of the control arm's mass."""
+    cumulative = np.cumsum(binom.pmf(np.arange(_LATTICE_ARM + 1), _LATTICE_ARM, _LATTICE_RATE))
+    ranges: list[tuple[int, int]] = []
+    first, total = 0, 0.0
+    for fraction in fractions:
+        total += fraction
+        last = int(np.searchsorted(cumulative, total - 1e-12))
+        ranges.append((first, last))
+        first = last + 1
+    ranges[-1] = (ranges[-1][0], _LATTICE_ARM)
+    return ranges
+
+
+def _decide_by_rows(monkeypatch, rules: list[tuple[int, int, str, int]]) -> None:
+    """Replace the runtime decision by a hand-built set: a control row in ``(first, last)``
+    rejects the treatment counts at or above ``threshold`` (kind ``plus``) or at or below it
+    (``minus``) -- the shape of every binomial decision, with thresholds of this set's own."""
+    from increment.power import _binomial
+
+    def classify(decision, route, requests):
+        masks = []
+        for request in requests:
+            counts = np.arange(request.j0, request.j1 + 1)
+            mask = np.zeros(counts.size, bool)
+            for first, last, kind, threshold in rules:
+                if first <= request.x_c <= last and kind == request.kind:
+                    mask = counts >= threshold if kind == "plus" else counts <= threshold
+            masks.append(mask)
+        return masks
+
+    monkeypatch.setattr(_binomial, "classify", classify)
+
+
+def _lattice_power(rate: float, rules: list[tuple[int, int, str, int]]) -> float:
+    """Rejection probability of the hand-built set at treatment rate ``rate``, from the
+    binomial laws alone (it shares no code with the planner)."""
+    weights = binom.pmf(np.arange(_LATTICE_ARM + 1), _LATTICE_ARM, _LATTICE_RATE)
+    total = 0.0
+    for first, last, kind, threshold in rules:
+        if kind == "plus":
+            tail = binom.sf(threshold - 1, _LATTICE_ARM, rate)
+        else:
+            tail = binom.cdf(threshold, _LATTICE_ARM, rate)
+        total += float(weights[first : last + 1].sum()) * float(tail)
+    return total
+
+
+def _lattice_crossing(rules: list[tuple[int, int, str, int]], target: float) -> float:
+    """The first effect, scanning from the null, at which the hand-built set's power crosses
+    ``target`` upward, found by a dense scan and a root solve of the independent power."""
+    effects = np.linspace(0.0, 1.0 / _LATTICE_RATE - 1.0, 6001)[1:]
+    power = np.array([_lattice_power(_LATTICE_RATE * (1.0 + m), rules) for m in effects])
+    above = int(np.argmax(power > target * (1.0 + 1e-9)))
+    assert power[above] > target * (1.0 + 1e-9)
+    below = max(k for k in range(above) if power[k] <= target)
+    return float(
+        brentq(
+            lambda m: _lattice_power(_LATTICE_RATE * (1.0 + m), rules) - target,
+            effects[below],
+            effects[below + 1],
+            xtol=1e-15,
+            rtol=1e-14,
+        )
+    )
+
+
+def _lattice_effect(target: float) -> PowerResult:
+    return minimum_detectable_effect(
+        _LATTICE_ARM,
+        Baseline.from_proportion(_LATTICE_RATE),
+        _conversion(),
+        PowerDesign(power=target),
+    )
+
+
+class TestEarliestCertifiedEffectOnANonMonotoneLattice:
+    """Power along the effects is not monotone for a decision whose control rows reject different
+    treatment counts: plus rejections lift it and minus rejections lower it, each from where its
+    row's threshold sits. The effect search reports the first effect whose power is certified to
+    reach the target and, where none is, refuses with the target enclosed at the effects it
+    could not exclude. The expected effects below come from a dense scan and a root solve of the
+    set's power from the binomial laws alone."""
+
+    def test_a_target_within_the_nulls_enclosure_is_refused_there_when_power_falls_from_it(self):
+        """A 90% baseline tested against a null lift of -25% at 10 units per arm and a 35%
+        treatment share: power falls from its null value (0.01985) to a trough and ends at 0.0086
+        at a rate of one. A target at the null's own power lies in the enclosure of the null's
+        power, which the refusal encloses -- not that of the far end, which the target is above.
+        A target below the enclosure is the null itself; one above it is unattainable."""
+        baseline = Baseline.from_proportion(0.9)
+        procedure = _conversion(null_lift=-0.25)
+        allocation = 0.35
+        at_null = achieved_power(10, -0.25, baseline, procedure, PowerDesign(allocation=allocation))
+        at_top = achieved_power(10, 0.11, baseline, procedure, PowerDesign(allocation=allocation))
+        assert at_top.power < at_null.power / 2
+
+        def effect(target: float) -> PowerResult:
+            design = PowerDesign(power=target, allocation=allocation)
+            return minimum_detectable_effect(10, baseline, procedure, design)
+
+        with pytest.raises(InvalidRequestError) as raised:
+            effect(at_null.power)
+        context: dict[str, Any] = dict(raised.value.context)
+        assert raised.value.code == "power.minimum_detectable_effect.numerical_resolution"
+        lower, upper = context["power_enclosure"]
+        assert lower < at_null.power <= upper
+        assert upper - lower < 1e-9
+        low, high = context["unresolved_interval"]
+        assert low == 0.0 < high < 1e-6
+
+        with pytest.raises(InvalidRequestError) as below:
+            effect(at_null.power * (1.0 - 1e-9))
+        assert below.value.code == "power.minimum_detectable_effect.design_search_minimum"
+        with pytest.raises(InvalidRequestError) as above:
+            effect(at_null.power * (1.0 + 1e-9))
+        assert above.value.code == "power.minimum_detectable_effect.unattainable"
+
+    def test_a_band_of_effects_is_found_when_the_far_end_does_not_reach_the_target(
+        self, monkeypatch
+    ):
+        """Half the control mass rejects from 90 treatment counts and the other half stops
+        rejecting above 180: power rises to one near a 30% treatment rate, falls to 0.568 by
+        60%, and stays there to a rate of one. The target 0.8 is reached only inside that band,
+        so the far end fails it."""
+        rises, falls = _lattice_rows(0.5, 0.5)
+        rules = [(*rises, "plus", 90), (*falls, "minus", 180)]
+        _decide_by_rows(monkeypatch, rules)
+        assert _lattice_power(1.0, rules) < 0.8 < _lattice_power(0.35, rules)
+        expected = _lattice_crossing(rules, 0.8)
+
+        found = _lattice_effect(0.8)
+
+        assert found.mde_relative == pytest.approx(expected, rel=1e-9)
+        assert found.power >= 0.8
+
+    @pytest.mark.parametrize(
+        ("target", "band"),
+        [(None, "first"), (0.33, "first"), (0.40, "second")],
+    )
+    def test_the_first_of_two_bands_is_found_across_the_trough_between_them(
+        self, monkeypatch, target, band
+    ):
+        """Four row groups: one rejects below 19 counts (falling by a 9% rate), one from 30
+        (rising at 10%), one below 36 (falling at 12%) and one from 180 (rising at 60%). Power
+        starts at 0.309, falls to 0.246 and comes back to a first band that peaks at 0.338, drops
+        to 0.246 and climbs to 0.678 for the second. With the null's own power as target the null
+        is undecided and the first band starts at an effect near 0.94: a search that leaps from
+        the null over a stretch where nothing certifies lands in the second band (10.4). The
+        first band is the answer for 0.33; it does not reach 0.40, so the second is."""
+        rows = _lattice_rows(0.10, 0.25, 0.20, 0.45)
+        rules = [
+            (*rows[0], "minus", 19),
+            (*rows[1], "plus", 30),
+            (*rows[2], "minus", 36),
+            (*rows[3], "plus", 180),
+        ]
+        _decide_by_rows(monkeypatch, rules)
+        target = _lattice_power(_LATTICE_RATE, rules) if target is None else target
+        expected = _lattice_crossing(rules, target)
+        assert (expected < 2.0) == (band == "first")
+
+        found = _lattice_effect(target)
+
+        assert found.mde_relative == pytest.approx(expected, rel=1e-9)
+        assert found.power >= target
+
+    def test_a_target_at_the_peak_of_a_band_is_neither_answered_nor_called_unattainable(
+        self, monkeypatch
+    ):
+        """The first three row groups above, without the one that rises at 60%: power peaks at
+        0.338 near an 11% treatment rate and ends at 0.25. A target at the peak's power lies
+        within the enclosure of the powers there, and the closure bound over the flat top
+        (where the plus and minus rejections it adds cancel) cannot show that no effect there
+        reaches it: the search ends on its evaluation budget and refuses with
+        ``numerical_resolution``, naming no effect and not calling the target unattainable. A
+        target a thousandth above the peak is unattainable and one three percent below it is
+        reached on the band's rising side."""
+        rows = _lattice_rows(0.10, 0.25, 0.20, 0.45)
+        rules = [(*rows[0], "minus", 19), (*rows[1], "plus", 30), (*rows[2], "minus", 36)]
+        _decide_by_rows(monkeypatch, rules)
+        top = minimize_scalar(
+            lambda rate: -_lattice_power(rate, rules),
+            bounds=(0.09, 0.14),
+            method="bounded",
+            options={"xatol": 1e-12},
+        )
+        peak, peak_effect = -float(top.fun), float(top.x) / _LATTICE_RATE - 1.0
+        assert _lattice_power(1.0, rules) < _lattice_power(_LATTICE_RATE, rules) < peak
+
+        with pytest.raises(InvalidRequestError) as raised:
+            _lattice_effect(peak)
+        assert raised.value.code == "power.minimum_detectable_effect.numerical_resolution"
+        enclosure = raised.value.context["power_enclosure"]
+        assert enclosure is None or enclosure[0] < peak <= enclosure[1]
+
+        with pytest.raises(InvalidRequestError) as above:
+            _lattice_effect(peak * 1.001)
+        assert above.value.code == "power.minimum_detectable_effect.unattainable"
+        reached = _lattice_effect(peak * 0.97)
+        assert reached.mde_relative == pytest.approx(
+            _lattice_crossing(rules, peak * 0.97), rel=1e-9
+        )
+        assert reached.mde_relative < peak_effect
+
+    def test_the_closure_is_tight_over_a_runtime_decision_and_still_valid_over_a_gapped_set(
+        self, monkeypatch
+    ):
+        """Every row of the runtime's decision rejects a run of treatment counts that reaches
+        the window's end, so its closure is closed. A set that rejects only a band of counts
+        is not: its closure counts the counts above the band too, so it bounds the band's
+        probability (checked against the binomial law) without being tight and says it is open."""
+        from increment.power import _binomial
+
+        decision = BinomialDecision(40, 40, 1.0, binomial_rr.nuisance_beta(0.05), 0.025, "greater")
+        runtime = RejectionGeometry(decision, "exact")
+        runtime.evaluate(0.2, 0.4)
+        assert runtime.closure(0.2, 0.4, 0.4).closed
+
+        band = np.arange(14, 19)
+        monkeypatch.setattr(
+            _binomial,
+            "classify",
+            lambda decision, route, requests: [
+                np.isin(np.arange(r.j0, r.j1 + 1), band)
+                if r.kind == "plus"
+                else np.zeros(r.j1 - r.j0 + 1, bool)
+                for r in requests
+            ],
+        )
+        gapped = RejectionGeometry(decision, "exact")
+        gapped.evaluate(0.2, 0.4)
+        closure = gapped.closure(0.2, 0.4, 0.4)
+        exact = float(binom.pmf(band, 40, 0.4).sum())
+        assert not closure.closed
+        assert closure.bound >= exact
+        assert closure.bound > exact + 0.1
 
 
 @pytest.mark.parametrize(

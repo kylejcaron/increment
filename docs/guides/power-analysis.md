@@ -174,10 +174,11 @@ An unadjusted, unclustered, fixed-horizon conversion or retention plan (no
 CUPED, no absorbed factor, no winsorization, no prior) is analyzed at runtime
 by the exact Berger-Boos risk-ratio test on the raw counts. For these plans
 `achieved_power`, `minimum_detectable_effect`, `required_sample_size` and
-`power_curve` report the probability that this unchanged decision rejects at
-the analyzed integer counts, integrating the binomial count law over windows
-that leave out at most about `1e-12` of mass. At 701 units per arm, a 10%
-baseline and a 50% lift this is 0.7144 (the log-ratio model said 0.8004), and
+`power_curve` integrate a binomial count law over windows that leave out at
+most about `1e-12` of mass. Only `power_basis="exact"` integrates the unchanged
+runtime decision; `"approximate"` uses a Normal-conditional-tail decision
+model, whose numerical certificates are model-only. At 701 units per arm, a 10%
+baseline and a 50% lift the exact power is 0.7144 (the log-ratio model said 0.8004), and
 the planned size for 80% power is 831 per arm. Power depends on the baseline
 rate alone; `var` does not enter.
 
@@ -240,16 +241,22 @@ smaller size reaches it, and a size whose interval straddles the target is not c
 the answer can exceed the first size that reaches it by the sizes within that interval of the
 target (none at ordinary sizes; about 170 of 490 million at a 2e-7 baseline).
 `minimum_detectable_effect` returns the first admissible effect whose power is certified to
-reach the target; earlier effects are excluded by their own power or by a bound on the
-rejection set (enlarged by the same error), except those whose power lies within the interval
-of the target, which are not decided: the effect reported can exceed the first that reaches it
-by that much (a relative `1e-12` at 701 to 2,000 units per arm, `4e-7` at a billion) and its
-`power` exceeds the target by about the interval. A target no admissible effect can reach is
-`unattainable`; one inside the interval of the largest admissible effect's power can neither
-be certified nor ruled out, so the companion `mde_relative` is `None` with
-`numerical_resolution` and `minimum_detectable_effect` is refused with
-`power.minimum_detectable_effect.numerical_resolution`, whose context carries that interval as
-`power_enclosure`.
+reach the target, whatever the shape of power along the effects (two-sided power can fall from
+the null before it rises, and a decision's rows can lift and lower it in turn): earlier effects
+are excluded by their own power or by a bound on the rejection set (enlarged by the same
+error), except those whose power lies within the interval of the target, which are not
+decided, so a band of effects that reaches the target is found whether or not the largest
+effect does. The effect reported can exceed the first that reaches it by that much (a relative
+`1e-12` at 701 to 2,000 units per arm, `4e-7` at a billion) and its `power` exceeds the target
+by about the interval. A target no admissible effect can reach is `unattainable`; one that no
+effect certifies, while the bound cannot exclude every effect, lies within the interval of the
+greatest power any effect may reach and can neither be certified nor ruled out, so the
+companion `mde_relative` is `None` with `numerical_resolution` and `minimum_detectable_effect`
+is refused with `power.minimum_detectable_effect.numerical_resolution`, whose context carries
+that interval as `power_enclosure` and the effects the bound could not exclude as
+`unresolved_interval`. Where the bound cannot exclude a stretch of effects (the effect search's
+own 512-evaluation budget ends, as it does when the target is the power of a flat peak) the
+same code is raised with `power_enclosure` of `None`.
 
 A design the runtime refuses in full decides no count pair, so it has no power to plan, and it
 is never replayed: `achieved_power`, `minimum_detectable_effect` and every `power_curve` row
@@ -427,7 +434,7 @@ unit-randomized sequential planning.
 | `n_per_arm` | Assigned units in the treatment arm |
 | `n_total` | Assigned units across the two-arm contrast |
 | `power` | Planned power at the returned integer size, under `power_basis` |
-| `power_basis` | `asymptotic` (log-ratio model), `exact` (the runtime's binomial decision), or `approximate` (that decision with Normal conditional tails) |
+| `power_basis` | `asymptotic` (log-ratio model), `exact` (runtime binomial decision), or `approximate` (Normal-conditional-tail decision model; numerical certificates are model-only) |
 | `mde_relative` | Detectable relative effect at the target power, rescaled for `compliance`; `None` when no admissible numeric answer is certified |
 | `mde_unavailable_reason` | `unattainable`, `unrepresentable`, or `numerical_resolution` when `mde_relative` is `None`; otherwise `None` |
 | `effective_var` | Per-unit control-arm variance for asymptotic planning, after decision-method reductions and cluster design effect; sensitivity-only CUPED receives no credit, so this can differ from the caller's `Baseline.effective_var`. For a `QuantileBaseline`, its pilot-implied variance. Exact/approximate binomial power uses event rates and counts, not this reported variance. |

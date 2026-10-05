@@ -727,8 +727,9 @@ target is not decided, so the answer can exceed the first that reaches the targe
 much (measured against the earlier comparisons of the computed values: the effect by a
 relative `1e-12` at 701 to 2,000 units per arm and `4.4e-7` at a billion; a size by 174 of
 489,713,690 units) and its reported `power` exceeds the target by about the interval. A
-target within the interval of the largest admissible effect's power is neither certified nor
-ruled out: the companion `mde_relative` is `None` with `numerical_resolution`. The interval
+target that no effect certifies, while the bound cannot exclude every effect, lies within the
+interval of the greatest power any effect may reach and is neither certified nor ruled out: the
+companion `mde_relative` is `None` with `numerical_resolution`. The interval
 covers the integration of the replayed decision set; the approximate route's own error is
 the measured one above. Triggered plans use the
 rounded analyzed counts.
