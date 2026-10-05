@@ -545,7 +545,7 @@ def test_exported_checkpoint_replays_exact_rationals_and_refuses_mutated_ones(
     assert "1e50000" not in str(wrapped.value)
 
 
-def _native_fixture(law, *, uptake_only=False):
+def _native_fixture(law, *, uptake_only=False, unbounded_retention=False):
     from datetime import UTC, datetime
 
     # All declarations precede construction or reading of either source table.
@@ -598,6 +598,17 @@ def _native_fixture(law, *, uptake_only=False):
             }
         ],
     }
+    if unbounded_retention:
+        definition["metrics"].append(
+            {
+                "name": "stay",
+                "type": "retention",
+                "entity": "unit_id",
+                "fact": "outcome_event",
+                "threshold_days": 1,
+                "preferred_direction": "increase",
+            }
+        )
     from increment import SequentialCell, SequentialModel
     from increment.semantics.design import Encouragement
 
@@ -715,7 +726,13 @@ def _native_fixture(law, *, uptake_only=False):
     else:
         connection.create_table("events", pd.DataFrame(events))
     try:
-        analysis = make_analysis(connection, defs, experiment=experiment, _design=design)
+        analysis = make_analysis(
+            connection,
+            defs,
+            experiment=experiment,
+            _design=design,
+            metrics=list(defs.metrics) if unbounded_retention else None,
+        )
     except BaseException:
         connection.disconnect()
         raise
@@ -1051,6 +1068,29 @@ def test_native_uptake_only_capture_and_wire_never_need_the_outcome_table(tmp_pa
             assert list(
                 replay.run_asof_lift(estimands=("compliance",), completed_windows_only=True)
             ) == list(daily)
+    finally:
+        native.close()
+
+
+@pytest.mark.slow
+def test_uptake_checkpoint_ignores_unbounded_outcome_retention_in_the_catalog():
+    """A compliance-only checkpoint reads uptake, never the outcome table, so an
+    unbounded retention metric in the source catalog cannot make its completed
+    windows contradictory."""
+    from increment import readouts
+
+    connection, _, native = _native_fixture("bernoulli", uptake_only=True, unbounded_retention=True)
+    try:
+        assert "events" not in connection.list_tables()
+        as_of = date(2025, 1, 16)
+        native.capture_sequential(finalized=True, as_of=as_of)
+        (row,) = readouts.asof_lift(
+            _native_source(native), estimands=("compliance",), completed_windows_only=True
+        )
+        assert row.estimand == "compliance" and row.ds == as_of
+        checkpoint = row.require_sequential_result().checkpoint
+        assert checkpoint.control.n == checkpoint.treatment.n == 96
+        assert checkpoint.control.successes == 24 and checkpoint.treatment.successes == 72
     finally:
         native.close()
 

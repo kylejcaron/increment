@@ -462,6 +462,39 @@ def test_gate_outcome_matches_declared_policy_on_every_substrate(
     )
 
 
+@pytest.mark.parametrize(
+    ("estimands", "reads_outcomes"),
+    [(("compliance",), False), (None, True), (("itt",), True), (("itt", "compliance"), True)],
+)
+def test_completed_windows_gate_covers_only_requests_that_read_outcomes(
+    estimands: tuple[str, ...] | None, reads_outcomes: bool, _substrates: dict[str, object]
+) -> None:
+    """A compliance-only request reads uptake, never outcome moments, so an unbounded
+    outcome band cannot make its completion contradictory; every request that also
+    reads outcomes is still refused with the declared code."""
+    import dataclasses
+
+    from increment._readout_request import validate_request
+    from increment.errors import CodedError
+
+    for name, source in _substrates.items():
+        request = dataclasses.replace(
+            _gate_request(source, "retention", "asof", "unbounded_band", completed=True),
+            estimands=estimands,
+        )
+        try:
+            validate_request(request)
+            actual = None
+        except CodedError as error:
+            actual = error.code
+        if reads_outcomes:
+            assert actual == _declared_gate_outcome(
+                source, "retention", "asof", "unbounded_band", completed=True
+            ), name
+        else:
+            assert actual != _COMPLETED_UNBOUNDED_RETENTION, name
+
+
 def test_gate_declarations_agree_with_the_composition_matrix() -> None:
     """`MATRIX` cells for the day-axis and breakout capabilities name the same code the
     gate raises; a supported cell means the gate accepts the plain request."""

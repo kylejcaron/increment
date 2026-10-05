@@ -814,7 +814,11 @@ def validate_readout_engine(request: ReadoutRequest) -> None:
         # Daily values are descriptive; skip inferential compatibility rules.
         return
 
-    if view == "asof" and request.completion_policy:
+    # A compliance-only request never reads outcome moments, so an outcome band's
+    # completion date is irrelevant to it.
+    estimands = request.estimands
+    compliance_only = estimands is not None and set(estimands) == {"compliance"}
+    if view == "asof" and request.completion_policy and not compliance_only:
         reject_completed_windows_on_unbounded_retention(metrics, view)
 
     percentile_names = [
@@ -890,7 +894,6 @@ def validate_readout_engine(request: ReadoutRequest) -> None:
                     selected=selected,
                 )
 
-    estimands = request.estimands
     if estimands is not None and tuple(estimands) != ("itt",) and mechanism != "encouragement":
         _refuse(
             "readout.assignment.estimands",
