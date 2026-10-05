@@ -428,8 +428,10 @@ class _Ingress:
         portable ingress is therefore classified by what it does with an ordinary mean cube
         over the same column when the request declares a quantile on replay. The producer
         carries the request's levers where a mean can (a cluster column, a sequential
-        registration); a lever the producer cannot carry refuses here, at its own stage and
-        code, exactly as it does for a mean cube.
+        registration whose construction-time checkpoint the export carries as it is: a unit
+        summary cannot recapture at an as-of horizon); a lever the producer cannot carry
+        refuses here, at its own stage and code, exactly as it does for a mean cube (a
+        sequential `drop` policy).
         """
         cell = self.cell
         mean = MetricSpec(
@@ -455,12 +457,9 @@ class _Ingress:
             kwargs["control"] = "control"
         if cell.option == "cluster":
             kwargs["cluster"] = "cluster_id"
-        producer = Analysis.from_unit_summary(
+        return Analysis.from_unit_summary(
             md.frame(md.summary_rows(cell.day_boundary, nulls=self.nulls)), **kwargs
         )
-        if cell.option == "sequential":
-            producer.capture_sequential(finalized=True, as_of=_SEQUENTIAL_AS_OF)
-        return producer
 
     def _quantile_moments(self) -> Analysis:
         """Export a real scalar-moments cube, then declare the cell's quantile on replay.

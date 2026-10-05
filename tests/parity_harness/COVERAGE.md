@@ -42,7 +42,7 @@ Verdicts are per leg: a day-axis view has a value leg and a lift leg that refuse
 | from_unit_summary | 102 | 1,536 | 1,544 | 1,824 | 370 | 0 |
 | from_unit_panel | 480 | 920 | 1,940 | 1,632 | 404 | 0 |
 | from_switchback_panel | 4 | 2,216 | 1,428 | 1,440 | 288 | 0 |
-| from_moments | 144 | 1,606 | 1,604 | 1,728 | 294 | 0 |
+| from_moments | 144 | 1,582 | 1,628 | 1,728 | 294 | 0 |
 
 Cells where, in at least one leg, an ingress runs and another does not (each non-runner carries a status, reason and authority): 522.
 
@@ -64,7 +64,7 @@ An observational design has no quantile estimator. The readout seam (`increment/
 
 ### Portable quantile cells
 
-A quantile has no moments representation, so no producer exports a quantile cube. Every `from_moments` quantile verdict is therefore measured on a real scalar-moments source, not on a producer's refusal to export a quantile: `matrix_cases.py::_Ingress._quantile_moments` declares the cell's quantile for replay first, exports a real randomized scalar mean over the quantile's outcome column (carrying a cluster column or a sequential registration where the cell declares one), replays it with the cell's design/plan, and reads the cell's actual `run`/`run_breakout`/`run_daily`/`run_daily_lift`/`run_asof`/`run_asof_lift`. Unwindowed quantile, `error`/`zero`/`drop` (`impute` is refused by the mean producer's declaration, `frame.metric.missing_impute`), measured:
+A quantile has no moments representation, so no producer exports a quantile cube. Every `from_moments` quantile verdict is therefore measured on a real scalar-moments source, not on a producer's refusal to export a quantile: `matrix_cases.py::_Ingress._quantile_moments` declares the cell's quantile for replay first, exports a real randomized scalar mean over the quantile's outcome column (carrying a cluster column or a sequential registration where the cell declares one; a unit-summary producer holds its construction-time checkpoint, so the export carries that checkpoint and is never recaptured at an as-of horizon), replays it with the cell's design/plan, and reads the cell's actual `run`/`run_breakout`/`run_daily`/`run_daily_lift`/`run_asof`/`run_asof_lift`. A verdict is attributed to the stage that raised it, measured per cell: the replay's quantile `MetricSpec` declaration (built first), the mean producer's construction, the producer's export, or `from_moments`. Unwindowed quantile, `error`/`zero`/`drop`, measured (`impute` is refused by the replay's quantile declaration, `frame.metric.missing_impute`, before any producer is built, on every option):
 
 | Option | `run()` | `run_breakout()` | day-axis (4 methods) |
 |---|---|---|---|
@@ -72,7 +72,7 @@ A quantile has no moments representation, so no producer exports a quantile cube
 | ni_margin | `readout.metric.quantile_alternative` (`r3bg`) | `facade.analysis.operation` | `facade.analysis.no_definitions` |
 | observational | `readout.observational.quantile` (estimator refusal) | `facade.analysis.operation` | `facade.analysis.no_definitions` |
 | cluster | `source.moments.cluster_grain` (the producer cannot export a clustered cube) | same | same |
-| sequential | `sequential.source.invalid` under `error`/`zero` (no bounded window to capture a checkpoint), `sequential.route.unsupported` under `drop` | same | same |
+| sequential | `sequential.route.unsupported` from `from_moments` under `error`/`zero` (the exported construction-time checkpoint is replayed under a quantile declaration: scalar mean inference requires a mean, conversion or retention metric); `sequential.route.unsupported` under `drop` is raised earlier, by the mean producer's own registration (outcome-dependent row deletion), before any cube exists | same | same |
 | cuped, winsorization, any window | declaration: `frame.metric.cuped_does_apply`, `frame.metric.winsorization_applies_type`, `frame.metric.window_days_supported` (the replay's own `MetricSpec`) | same | same |
 
 Only `run()` can reach an estimator: breakout and day-axis requests are refused at the source gate before any estimator reads the cube, so they never carry the estimator refusals (`readout.observational.quantile`, `readout.metric.quantile_alternative`). The separate randomized quantile export still raises `source.frame.quantile_no_moments` (scenarios `audit-quantile-family` and `quantile_tied_rounded_outcomes`, `cases.py`); the matrix no longer records it for any cell. The scenario `observational_quantile_refused_at_the_readout_seam` exercises the observational `run()` leg on its own.
