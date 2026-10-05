@@ -13,7 +13,7 @@ import pytest
 from increment._literals import Alternative
 from increment.errors import InvalidRequestError
 from increment.estimation.arm_contract import ArmPlanningProcedure
-from increment.estimation.conversion_delta import delta_decision
+from increment.estimation.conversion_delta import production_decision
 from increment.estimation.conversion_route import dense_min_count, planning_route
 from increment.power import (
     Baseline,
@@ -78,7 +78,9 @@ class TestBorderlinePlansAreTheUnionOfBothRoutes:
         result = achieved_power(N, LIFT, Baseline.from_proportion(P), _procedure())
         assert result.power_basis == "exact"
 
-    def test_the_power_is_the_delta_decision_on_the_rectangle_plus_the_replay_elsewhere(self):
+    def test_the_power_is_the_runtimes_delta_decision_on_the_rectangle_plus_the_replay_elsewhere(
+        self,
+    ):
         """Assembled apart from the plan: the vectorised delta decision over the routed
         rectangle, and the finite-sample replay (a geometry with no routing) over the rest."""
         _, key, floor = self._geometry()
@@ -89,11 +91,17 @@ class TestBorderlinePlansAreTheUnionOfBothRoutes:
         x_t = np.arange(wt.lo, wt.hi + 1)[None, :]
         routed = (x_c >= floor) & (x_c <= N - floor) & (x_t >= floor) & (x_t <= N - floor)
         rejects = np.zeros(weights.shape, bool)
-        decided = delta_decision(
-            x_c, N, x_t, N, tail=key.tail_alpha, alternative=key.alternative, null_lift=0.0
-        )
-        assert decided.settled[routed].all()
-        rejects[routed] = (decided.plus | decided.minus)[routed]
+        for i, j in np.argwhere(routed):
+            plus, minus = production_decision(
+                int(x_c[i, 0]),
+                N,
+                int(x_t[0, j]),
+                N,
+                tail=key.tail_alpha,
+                alternative=key.alternative,
+                null_lift=0.0,
+            )
+            rejects[i, j] = plus or minus
         finite = RejectionGeometry(key, "exact")
         for rows in (
             slice(0, floor - wc.lo),

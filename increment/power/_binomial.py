@@ -1559,7 +1559,7 @@ class RejectionGeometry:
 
     Under ``auto`` the runtime decides a count pair by the delta method inside the routed
     rectangle (`Routing`) and by the finite-sample test everywhere else, so the geometry holds the
-    union of the two: the production delta decision (`delta_decision`, settled by the runtime row
+    union of the two: the production delta decision (`production_decision`, the runtime row
     itself) on the rectangle and the
     finite-sample replay on the rest. Without a routing every pair takes the finite-sample
     route. A pair the replay was not run for (the lightest ones once an evaluation's budget is spent, or

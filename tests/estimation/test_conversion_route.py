@@ -24,6 +24,7 @@ from increment.estimation.conversion_route import (
     planning_route,
     route_for_counts,
     routed_share,
+    unrouted_share,
 )
 from increment.estimation.engine import Method, _estimate_lift, estimate_lift
 from increment.estimation.family import bh_select
@@ -745,3 +746,29 @@ class TestBenjaminiHochbergFamilyRoutesAtItsSmallestLevel:
             AnalysisPlan(alpha=0.2, primary="a"), design=design, decision_method=unadjusted
         ).run()
         assert _kinds(alone)["a"] == "t"
+
+
+class TestUnroutedShare:
+    @pytest.mark.parametrize(
+        ("n_c", "n_t", "p_c", "p_t", "tail"),
+        [
+            (1_000, 1_000, 0.45, 0.47, 0.1),
+            (5_000, 5_000, 0.3, 0.32, 0.025),
+            (900, 700, 0.5, 0.6, 0.1),
+        ],
+    )
+    def test_it_is_the_complement_of_the_routed_share(self, n_c, n_t, p_c, p_t, tail):
+        floor = dense_min_count(tail)
+        routed = routed_share(n_c, n_t, p_c, p_t, tail_alpha=tail)
+        assert unrouted_share(n_c, n_t, p_c, p_t, floor=floor) == pytest.approx(
+            1.0 - routed, abs=1e-12
+        )
+
+    def test_it_keeps_its_relative_precision_where_it_is_small(self):
+        """Ten standard deviations short of the floor, the unrouted mass is about 1e-22: a
+        complement of the routed share would round it to zero."""
+        n, p, floor = 1_500, 0.4, dense_min_count(0.1)
+        arm = binom.cdf(floor - 1, n, p) + binom.sf(n - floor, n, p)
+        expected = 2.0 * arm - arm * arm
+        assert 0.0 < expected < 1e-15
+        assert unrouted_share(n, n, p, p, floor=floor) == pytest.approx(expected, rel=1e-9)

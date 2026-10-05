@@ -1,10 +1,9 @@
-"""The vectorised delta-method decision of count pairs is the runtime's decision.
+"""The planner's delta decision of a count pair is the runtime's own.
 
-Planning sums the delta-method rule over count lattices and the runtime applies it to one
-contrast at a time, so the two derive the same rejection independently. At matched counts,
-alternatives, tails and nulls they must agree pair for pair: the vectorised rule settles a pair
-only where its derived radius certifies the side of the null, and the runtime row decides the
-rest.
+Planning decides every routed count pair with `production_decision`, which calls the runtime's
+functions (``infer_lift`` on the arms' moments); the runtime applies the same rule to one
+contrast at a time through ``estimate_lift``. At matched counts, alternatives, tails and nulls
+the interval and the verdict are equal, bit for bit, including at a null on the interval's end.
 """
 
 from __future__ import annotations
@@ -13,23 +12,11 @@ import math
 
 import numpy as np
 import pytest
-from scipy.stats import binom
-from scipy.stats import t as student_t
 
-from increment.estimation.conversion_delta import (
-    CRITICAL_AGREEMENT,
-    CRITICAL_RELATIVE_ACCURACY,
-    ROUNDING_UNITS,
-    critical_values,
-    delta_decision,
-    delta_log_bounds,
-    production_decision,
-)
+from increment.estimation.conversion_delta import delta_interval, production_decision
 from increment.estimation.conversion_route import (
     dense_min_count,
     route_for_counts,
-    routed_share,
-    unrouted_share,
 )
 from increment.estimation.engine import Method, estimate_lift
 from increment.estimation.results import LiftEstimate
@@ -87,81 +74,50 @@ _CASES: list[tuple[int, float, float, float, str, float]] = [
 ]
 
 
-class TestAgreementWithTheRuntimeRow:
+class TestTheRuntimesDecision:
     @pytest.mark.parametrize(
         ("n", "p_c", "p_t", "tail", "alternative", "null_lift"),
         _CASES,
         ids=[f"{c[0]}-{c[4]}-{c[5]}" for c in _CASES],
     )
-    def test_the_vectorised_decision_and_the_runtime_row_agree_pair_for_pair(
+    def test_production_decision_is_the_runtime_rows_verdict(
         self, n, p_c, p_t, tail, alternative, null_lift
     ):
-        pairs = _routed_pairs(n, p_c, p_t, tail=tail, count=25, seed=n + len(alternative))
-        x_c = np.array([[c] for c, _ in pairs])
-        x_t = np.array([[t] for _, t in pairs])
-        decided = delta_decision(
-            x_c, n, x_t.T, n, tail=tail, alternative=alternative, null_lift=null_lift
-        )
-        for index, (c, t) in enumerate(pairs):
+        for c, t in _routed_pairs(n, p_c, p_t, tail=tail, count=25, seed=n + len(alternative)):
             row = _runtime_row(
                 (c, n, t, n), tail=tail, alternative=alternative, null_lift=null_lift
             )
-            # The row's own verdict is what the runtime reports; the two directions it reads
-            # are the ends of the same interval.
-            runtime = row.stat_sig()
-            deferred = production_decision(
+            plus, minus = production_decision(
                 c, n, t, n, tail=tail, alternative=alternative, null_lift=null_lift
             )
-            assert (deferred[0] or deferred[1]) == runtime, (c, t)
-            if decided.settled[index, index]:
-                vectorised = (decided.plus[index, index], decided.minus[index, index])
-                assert vectorised == deferred, (c, t)
+            assert (plus or minus) == row.stat_sig(), (c, t)
 
+    @pytest.mark.parametrize("alternative", _ALTERNATIVES)
     @pytest.mark.parametrize(
         ("n", "p_c", "p_t", "tail"),
         [(1_236, 0.5, 0.53, 0.1), (20_000, 0.3, 0.33, 0.025), (300_000, 0.1, 0.105, 0.0005)],
     )
-    def test_the_interval_ends_are_the_runtimes_to_rounding(self, n, p_c, p_t, tail):
-        """The vectorised and the runtime's log-scale ends differ by rounding, orders of
-        magnitude inside the agreement the decision defers within."""
-        gaps = []
-        for c, t in _routed_pairs(n, p_c, p_t, tail=tail, count=20, seed=n):
-            row = _runtime_row((c, n, t, n), tail=tail, alternative="two-sided", null_lift=0.0)
-            assert row.lift is not None and row.lift.lb is not None and row.lift.ub is not None
-            lower, upper = delta_log_bounds(np.array([c]), n, np.array([t]), n, tail)
-            gaps.append(abs(math.log1p(row.lift.lb) - lower[0]))
-            gaps.append(abs(math.log1p(row.lift.ub) - upper[0]))
-        assert max(gaps) < 1e-12
-
-    @pytest.mark.parametrize(
-        ("n", "p_c", "p_t", "tail"), [(1_236, 0.5, 0.53, 0.1), (20_000, 0.3, 0.33, 0.025)]
-    )
-    def test_the_vectorised_margin_stays_inside_its_derived_radius_of_the_runtimes(
-        self, n, p_c, p_t, tail
-    ):
-        """The radius a pair is certified beyond covers the actual disagreement between the
-        vectorised interval ends and the runtime row's, with orders of magnitude to spare."""
-        u = 2.0**-53
-        for c, t in _routed_pairs(n, p_c, p_t, tail=tail, count=30, seed=3 * n):
-            row = _runtime_row((c, n, t, n), tail=tail, alternative="two-sided", null_lift=0.0)
-            assert row.lift is not None and row.lift.lb is not None
-            lower, _ = delta_log_bounds(np.array([c]), n, np.array([t]), n, tail)
-            se = row.lift.value  # scale only
-            scale = abs(math.log1p(row.lift.lb)) + abs(lower[0]) + abs(se)
-            allowed = ROUNDING_UNITS * u * scale + CRITICAL_RELATIVE_ACCURACY * 10.0
-            assert abs(math.log1p(row.lift.lb) - lower[0]) < allowed
+    def test_the_interval_equals_the_runtime_rows_exactly(self, alternative, n, p_c, p_t, tail):
+        """`delta_interval` calls the runtime's own functions, so its interval is the one
+        ``estimate_lift`` reports, bit for bit."""
+        for c, t in _routed_pairs(n, p_c, p_t, tail=tail, count=25, seed=n + 5):
+            row = _runtime_row((c, n, t, n), tail=tail, alternative=alternative, null_lift=0.0)
+            assert row.lift is not None
+            assert delta_interval(c, n, t, n, tail=tail, alternative=alternative) == (
+                row.lift.lb,
+                row.lift.ub,
+            )
 
 
 class TestAnExactBorderlineNull:
-    """A null that equals the runtime's own interval end to the last bit, shifted off zero, is a
-    pair the vectorised rule cannot settle: the runtime row decides it, and decides it on the
-    strict inequality the row's verdict uses."""
+    """A null that equals the runtime's own interval end to the last bit, shifted off zero, is
+    decided on the strict inequality the row's verdict uses."""
 
     COUNTS = (6_100, 20_000, 6_700, 20_000)
     TAIL = 0.025
 
     @pytest.mark.parametrize("alternative", _ALTERNATIVES)
-    def test_the_pair_is_left_to_the_runtime_and_decided_as_it_decides(self, alternative):
+    def test_the_pair_is_decided_as_the_runtime_decides_it(self, alternative):
         x_c, n_c, x_t, n_t = self.COUNTS
         first = _runtime_row(self.COUNTS, tail=self.TAIL, alternative=alternative, null_lift=0.0)
         assert first.lift is not None and first.lift.lb is not None and first.lift.ub is not None
@@ -171,18 +127,6 @@ class TestAnExactBorderlineNull:
             ):
                 continue
             for null in (end, math.nextafter(end, -math.inf), math.nextafter(end, math.inf)):
-                decided = delta_decision(
-                    np.array([[x_c]]),
-                    n_c,
-                    np.array([[x_t]]),
-                    n_t,
-                    tail=self.TAIL,
-                    alternative=alternative,
-                    null_lift=null,
-                )
-                # Within the radius of the null: the vectorised rule must not decide it.
-                assert not decided.settled[0, 0]
-                assert not decided.plus[0, 0] and not decided.minus[0, 0]
                 runtime = _runtime_row(
                     self.COUNTS, tail=self.TAIL, alternative=alternative, null_lift=null
                 )
@@ -193,58 +137,3 @@ class TestAnExactBorderlineNull:
                 # The strict inequality: an interval end equal to the null does not reject.
                 if null == end:
                     assert (plus if reads == "plus" else minus) is False
-
-
-class TestCriticalValues:
-    def test_the_interpolated_reference_agrees_with_the_inverse_survival(self):
-        df = 2_000.0 + 40.0 * np.linspace(0.0, 1.0, 9_000)
-        for tail in (0.1, 0.0005):
-            exact = student_t.isf(tail, df)
-            assert np.max(np.abs(critical_values(df, tail) / exact - 1.0)) < CRITICAL_AGREEMENT
-
-
-class TestUnroutedShare:
-    @pytest.mark.parametrize(
-        ("n_c", "n_t", "p_c", "p_t", "tail"),
-        [
-            (1_000, 1_000, 0.45, 0.47, 0.1),
-            (5_000, 5_000, 0.3, 0.32, 0.025),
-            (900, 700, 0.5, 0.6, 0.1),
-        ],
-    )
-    def test_it_is_the_complement_of_the_routed_share(self, n_c, n_t, p_c, p_t, tail):
-        floor = dense_min_count(tail)
-        routed = routed_share(n_c, n_t, p_c, p_t, tail_alpha=tail)
-        assert unrouted_share(n_c, n_t, p_c, p_t, floor=floor) == pytest.approx(
-            1.0 - routed, abs=1e-12
-        )
-
-    def test_it_keeps_its_relative_precision_where_it_is_small(self):
-        """Ten standard deviations short of the floor, the unrouted mass is about 1e-22: a
-        complement of the routed share would round it to zero."""
-        n, p, floor = 1_500, 0.4, dense_min_count(0.1)
-        arm = binom.cdf(floor - 1, n, p) + binom.sf(n - floor, n, p)
-        expected = 2.0 * arm - arm * arm
-        assert 0.0 < expected < 1e-15
-        assert unrouted_share(n, n, p, p, floor=floor) == pytest.approx(expected, rel=1e-9)
-
-
-class TestThePairCalculationIsTheRuntimes:
-    """`delta_interval` calls the runtime's own functions, so its interval equals the one
-    ``estimate_lift`` reports bit for bit, on every route of the cases the planner enumerates."""
-
-    @pytest.mark.parametrize("alternative", _ALTERNATIVES)
-    @pytest.mark.parametrize(
-        ("n", "p_c", "p_t", "tail"),
-        [(1_236, 0.5, 0.53, 0.1), (20_000, 0.3, 0.33, 0.025), (300_000, 0.1, 0.105, 0.0005)],
-    )
-    def test_the_interval_equals_the_runtime_rows_exactly(self, alternative, n, p_c, p_t, tail):
-        from increment.estimation.conversion_delta import delta_interval
-
-        for c, t in _routed_pairs(n, p_c, p_t, tail=tail, count=25, seed=n + 5):
-            row = _runtime_row((c, n, t, n), tail=tail, alternative=alternative, null_lift=0.0)
-            assert row.lift is not None
-            assert delta_interval(c, n, t, n, tail=tail, alternative=alternative) == (
-                row.lift.lb,
-                row.lift.ub,
-            )
