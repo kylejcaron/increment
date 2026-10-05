@@ -289,13 +289,38 @@ class TestPlanningBound:
         tail = alpha / 2.0 if alternative == "two-sided" else alpha
         n = math.ceil(factor * dense_min_count(tail) / 0.3)
         power = cr.enumerated_power(cr.MirrorCell("bound", n, 0.3, 0.1, alpha, alternative))
-        slack = 1e-9 + power.omitted
-        if power.route == "dense":
-            assert abs(power.margin) <= cr.DENSE_AGREEMENT + slack
-        elif power.route == "sparse":
-            assert abs(power.margin) <= slack
-        else:
-            assert power.margin >= -slack
+        assert cr.bound_holds(power)
+
+
+class TestBoundGridAndRule:
+    def test_the_enumerated_grids_are_distinct_designs_with_both_signs_of_lift(self):
+        """The original grid is 240 designs; the extended grid adds rare-event and negative-lift
+        designs, each tested at a directional level of its own sign."""
+        original, extended = cr.bound_cells(), cr.bound_cells(extended=True)
+        assert len(original) == 240
+        assert len(extended) == 180
+        for grid in (original, extended):
+            assert len({(c.n, c.p_c, c.lift, c.alpha, c.alternative) for c in grid}) == len(grid)
+        assert all(c.lift > 0.0 for c in original)
+        assert {c.alternative for c in extended if c.lift < 0.0} == {"two-sided", "less"}
+        assert {c.alternative for c in extended if c.lift > 0.0} == {"two-sided", "greater"}
+
+    @pytest.mark.parametrize(
+        ("route", "basis", "margin", "holds"),
+        [
+            ("dense", "asymptotic", 0.004, True),
+            ("dense", "asymptotic", -0.006, False),
+            ("sparse", "exact", 1e-6, False),
+            ("sparse", "approximate", 2e-4, True),
+            ("sparse", "approximate", -4e-4, False),
+            ("borderline", "approximate", -1e-6, False),
+            ("borderline", "approximate", 0.02, True),
+        ],
+    )
+    def test_bound_holds_judges_each_route_by_its_own_claim(self, route, basis, margin, holds):
+        power = cr.EnumeratedPower(route, 0.5, basis, 0.5, 0.5, 0.2, 0.3 + margin, 1e-12)
+        assert power.margin == pytest.approx(margin)
+        assert cr.bound_holds(power) is holds
 
 
 # --- the requirement is read only from complete measurements -----------------------------
