@@ -419,13 +419,15 @@ code owners; the conditions below decide whether an approved addition is
 complete. They gate new methods only and do not hold up fixes to behavior that
 already ships. A new method needs all of the following:
 
-1. **A documented need.** A real user scenario or a published source, not
-   breadth for its own sake.
+1. **A documented need.** A concrete user workflow or maintenance burden,
+   not breadth for its own sake. A published source supports the method's
+   provenance; it does not substitute for that need.
 2. **An approved design.** The estimand, the identification argument, the
    assumptions, and the guarantee class it is derived to have (`exact`,
-   `asymptotic`, `planning approximation`, or `experimental`, as defined under
-   [evidence status](docs/validation.md#evidence-status)). State assumptions
-   and the strength of the guarantee in the public documentation.
+   `asymptotic`, `planning approximation`, `experimental`, or `none stated`,
+   as defined under [evidence status](docs/validation.md#evidence-status)).
+   State assumptions and guarantee strength publicly; `none stated` does
+   not imply coverage or calibration.
 3. **Interactions classified.** For CUPED, ratio metrics, clustering,
    sequential inference, winsorization, breakouts, and multiplicity roles, give
    every applicable combination one status: `supported`, `source_limited`,
@@ -454,12 +456,14 @@ already ships. A new method needs all of the following:
    with its status, guarantee, basis, and ingress coverage, and add an
    [unvalidated regimes](docs/validation.md#unvalidated-regimes) entry where a
    specific regime remains unstated, rather than leaving the gap unstated.
-7. **Stable refusals and bounds.** A coded refusal for each unsupported
-   variant, raised before data is loaded. A hazard that does not depend on the
-   source gets the same code on every ingress path; a limitation specific to
-   one adapter (`source_limited`) keeps that adapter's own `source.*` code.
-   Add measured, enforced operational bounds (input size, latency, memory)
-   with a refusal at the bound.
+7. **Stable refusals and bounds.** A coded refusal for each expressible
+   unsupported variant, raised before data is loaded. A hazard that does not
+   depend on the source gets the same code on every ingress path; a limitation
+   specific to one adapter (`source_limited`) keeps its own `source.*` code.
+   Enforce deterministic operational ceilings where complexity, numerical
+   validity, or resource safety justifies them. Report measured latency and
+   memory with their environment and input scope; measurements alone do not
+   justify arbitrary wall-clock or memory refusals for every method.
 8. **A complete change.** Examples, guides, the
    [compatibility reference](docs/guides/compatibility.md), the path-by-capability
    table, and fixtures updated together, following
