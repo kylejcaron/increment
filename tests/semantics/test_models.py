@@ -2698,6 +2698,42 @@ def test_a_finite_sample_binding_on_a_mean_metric_is_refused_at_definition_load(
     assert exc_info.value.context == {"metric_type": "mean", "metric": "orders"}
 
 
+@pytest.mark.parametrize(
+    "metric",
+    [
+        {"type": "total", "name": "orders", "fact": "purchase", "aggregation": "sum"},
+        {"type": "active", "name": "orders", "entity": "user_id", "fact": "purchase"},
+    ],
+    ids=["total", "active"],
+)
+def test_a_finite_sample_binding_on_a_report_only_metric_reports_the_report_only_error(metric):
+    """A report-only metric cannot join an experiment at all, so that is what a definition
+    consumer sees - not advice to switch the metric's inference to ``auto``."""
+    definitions = _finite_sample_definitions("conversion")
+    definitions["metrics"] = [metric]
+    with pytest.raises(DefinitionError) as exc_info:
+        Definitions.model_validate(definitions)
+    assert exc_info.value.code == "definition.invalid"
+    assert "definition.validate_experiment.metric_report_type" in {
+        code
+        for code, _ in exc_info.value.context["errors"]  # ty: ignore[not-iterable]
+    }
+
+
+def test_a_finite_sample_metric_type_refusal_does_not_mask_other_definition_errors():
+    """The shared refusal is the code for an otherwise eligible experiment; once another
+    definition error exists, every error is reported together instead of only the first."""
+    definitions = _finite_sample_definitions("mean")
+    definitions["experiments"][0]["exposure"] = "nope"
+    with pytest.raises(DefinitionError) as exc_info:
+        Definitions.model_validate(definitions)
+    assert exc_info.value.code == "definition.invalid"
+    assert "definition.validate_experiment.references_unknown_exposure" in {
+        code
+        for code, _ in exc_info.value.context["errors"]  # ty: ignore[not-iterable]
+    }
+
+
 def test_one_hazard_has_one_code_and_context_across_every_layer():
     """A ``finite_sample`` request on a metric that is not a conversion or retention rate, and
     on a CUPED-adjusted method, is refused with the same code and typed context whether a

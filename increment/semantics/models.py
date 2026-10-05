@@ -2641,6 +2641,7 @@ class Definitions(CodedModel, _Base):
         self._validate_exposures(index, errors)
         self._validate_experiments(index, errors)
         self._raise_errors(errors)
+        self._refuse_finite_sample_on_unsupported_metrics(index)
         return self
 
     def _index_sources_and_validate_names(self, errors: list[tuple[str, str]]) -> _DefinitionIndex:
@@ -3006,14 +3007,25 @@ class Definitions(CodedModel, _Base):
                 index,
                 errors,
             )
-        for name, binding in experiment.bindings.items():
-            metric = index.metric_by_name.get(name)
-            if (
-                binding.wants_finite_sample
-                and metric is not None
-                and metric.type not in ("conversion", "retention")
-            ):
-                refuse_finite_sample_metric_type(metric.type, metric=name)
+
+    def _refuse_finite_sample_on_unsupported_metrics(self, index: _DefinitionIndex) -> None:
+        """Raise the shared finite-sample metric-type refusal for the first binding that
+        requests it on a metric that is not a conversion or retention rate.
+
+        Runs only once the definition is otherwise consistent: a metric the experiment
+        cannot serve at all (report-only, unknown, wrong entity) is the more fundamental
+        error and is reported with the rest of the aggregated definition errors, instead
+        of being masked by advice to switch to ``auto``.
+        """
+        for experiment in self.experiments:
+            for name, binding in experiment.bindings.items():
+                metric = index.metric_by_name.get(name)
+                if (
+                    binding.wants_finite_sample
+                    and metric is not None
+                    and metric.type not in ("conversion", "retention")
+                ):
+                    refuse_finite_sample_metric_type(metric.type, metric=name)
 
     @staticmethod
     def _validate_experiment_metric(
