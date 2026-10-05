@@ -21,11 +21,12 @@ The log risk ratio's Wald interval is skewed at small counts: a count ``s`` give
 the log-scale statistic skewness of order ``s ** -0.5``, which moves a one-sided
 tail at standard normal quantile ``z`` by roughly ``(z ** 2 - 1) * phi(z) / Q(z)``
 times that skewness, a relative error that grows like ``z ** 3``. Holding that error
-inside ``scientific_delta(tail)`` (a tenth of the tail) therefore needs a count that
-grows like ``z ** 6`` asymptotically and, over the tails this package computes, like
-``z ** 4``. ``dense_min_count`` is that fitted law with its two constants set from
-the boundary coverage table in ``calibration.conversion_route``, which records the
-measured excess per tail and the rule's margin over it.
+inside ``scientific_delta(tail)`` (a tenth of the tail below 0.05, 0.005 at and above
+it) therefore needs a count that grows like ``z ** 6`` asymptotically. Over the tails
+this package computes, the measured requirement grows more slowly, and
+``dense_min_count`` is a ``z ** 4`` envelope of it: its two constants keep it at least
+1.25 times that requirement at every production tail, as the boundary coverage scan in
+``calibration.conversion_route`` measures it (``docs/limitations.md`` tabulates both).
 
 Every routed-asymptotic cell has all four counts at least ``dense_min_count >= 9``,
 so the combined log-scale standard error is below ``sqrt(2 / 9) < 0.5`` and neither
@@ -59,11 +60,9 @@ PLANNING_ROUTE_CERTAINTY = 1e-6
 _GUARD_FLOOR = 9
 
 #: ``dense_min_count(tail) = max(_DENSE_FLOOR, ceil(_DENSE_SLOPE * z ** 4))``, ``z = Phi^{-1}(1 - tail)``:
-#: at least 1.25 times the count the boundary coverage scan requires at every production tail
-#: (``python -m calibration.conversion_route select``; ``docs/limitations.md`` tabulates the
-#: requirement and the law against it). The floor is 1.25 times the requirement at the 0.1 tail,
-#: where the tolerance is the tightest fraction of the tail; the slope is 1.25 times the largest
-#: requirement over ``z ** 4``, which the 0.0005 tail sets.
+#: at least 1.25 times the requirement ``calibration.conversion_route`` measures at each production
+#: tail (``docs/limitations.md``); the floor is set by the 0.1 tail, the slope by the 0.0005 tail.
+#: A tail below 0.0005 is extrapolated by the same formula, not measured.
 _DENSE_FLOOR = 412
 _DENSE_SLOPE = 145
 

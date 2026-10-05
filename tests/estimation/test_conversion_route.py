@@ -5,6 +5,7 @@ which one produced it."""
 from __future__ import annotations
 
 import math
+from fractions import Fraction
 
 import numpy as np
 import pytest
@@ -19,6 +20,7 @@ from increment.estimation.conversion_route import (
     PLANNING_ROUTE_CERTAINTY,
     dense_extent,
     dense_min_count,
+    family_route_alpha,
     planning_route,
     route_for_counts,
 )
@@ -56,16 +58,16 @@ class TestDenseMinCount:
             0.1: 412,
         }
 
-    # tail: the least count whose all-draw noncoverage excess is within `scientific_delta(tail)`
-    # there and at every larger step, measured by `python -m calibration.conversion_route select`
-    # on the cell family `calibration.conversion_route.cells` (the larger of the 1-2-5 control
-    # size grid's and the original grid's step).
+    # tail: the least step of a geometric ladder (ratio 1.15, anchored by `select` at 10 for the
+    # tails from 0.025 up and at 1,637 below) whose all-draw noncoverage excess stays within
+    # `scientific_delta(tail)` there and at every larger step, measured by
+    # `python -m calibration.conversion_route select` on `calibration.conversion_route.cells`.
     MEASURED_REQUIREMENT = {
         0.0005: 13320,
         0.001: 10072,
         0.005: 2863,
         0.01: 2165,
-        0.025: 615,
+        0.025: 576,
         0.05: 286,
         0.1: 329,
     }
@@ -476,6 +478,27 @@ class TestPlanningRoute:
 
     def test_the_certainty_threshold_is_a_probability_budget(self):
         assert 0.0 < PLANNING_ROUTE_CERTAINTY < 1e-3
+
+
+class TestFamilyRouteLevel:
+    """The level a BH family routes its rows at is the smallest threshold selection reads, rounded
+    downward as selection rounds it, so a row is never routed at a looser level."""
+
+    @given(
+        st.floats(min_value=1e-12, max_value=1.0),
+        st.integers(min_value=1, max_value=10**6),
+    )
+    def test_the_level_is_never_looser_than_q_over_the_hypotheses_and_within_an_ulp_of_it(
+        self, q, hypotheses
+    ):
+        level = family_route_alpha(q, hypotheses)
+        assert level is not None
+        exact = Fraction(q) / hypotheses
+        assert Fraction(level) <= exact
+        assert float(exact) - level <= 2.0 * math.ulp(float(exact))
+
+    def test_a_family_without_hypotheses_has_no_level(self):
+        assert family_route_alpha(0.1, 0) is None
 
 
 class TestMultiplicityRoutesAtTheSmallestFamilyLevel:

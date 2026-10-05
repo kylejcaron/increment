@@ -33,14 +33,16 @@ The vectorised delta-method interval here is the production formula (arm moments
 Satterthwaite ``t`` reference); ``conformance`` checks it against ``estimate_lift`` on sampled
 count pairs before any table is trusted.
 
-Planning is validated against the same production route: ``mirror`` compares the planned
-power of dense, sparse and borderline designs with the simulated rejection rate of
-``estimate_lift`` (``tests.estimation._conversion_counts.runtime_rejection_rate``).
+Planning is validated against the same production route. ``bound`` compares the planned power
+of dense, sparse and borderline designs with the production pipeline's exact rejection
+probability, summed over the count lattice; ``mirror`` compares it with the simulated rejection
+rate of ``estimate_lift`` (``tests.estimation._conversion_counts.runtime_rejection_rate``).
 
-    python -m calibration.conversion_route select --out /tmp/rsf0-route.jsonl
+    python -m calibration.conversion_route select --out /tmp/route-scan.jsonl
     python -m calibration.conversion_route verify
     python -m calibration.conversion_route conformance
-    python -m calibration.conversion_route hybrid --reps 20000
+    python -m calibration.conversion_route hybrid --workers 8
+    python -m calibration.conversion_route bound --workers 8
     python -m calibration.conversion_route mirror --reps 20000
 """
 
@@ -319,16 +321,34 @@ def ladder(start: float = 10.0, stop: float = 40_000.0) -> list[int]:
     return steps
 
 
+#: Ladder steps are rounded to integers, so a measured step may sit this far above one ladder
+#: step over its predecessor.
+_LADDER_ROUNDING = 2
+
+
+def _covers(steps: Sequence[int], limit: float) -> bool:
+    """Whether ``steps`` (ascending, the first being a candidate) measure every ladder step
+    through ``limit``: no gap wider than one ladder step, and a last step the next ladder step
+    above which exceeds ``limit``."""
+    within = [step for step in steps if step <= limit]
+    gaps_closed = all(
+        b <= LADDER_STEP * a + _LADDER_ROUNDING
+        for a, b in zip(steps, steps[1:], strict=False)
+        if b <= limit
+    )
+    return gaps_closed and LADDER_STEP * within[-1] + _LADDER_ROUNDING > limit
+
+
 def required_count(
     rows: dict[int, dict[float, Excess]], tail: float, *, key: str = "wald"
 ) -> int | None:
-    """Smallest ladder ``m`` whose excess is within tolerance at ``m`` and at every larger
-    ladder step through ``MARGIN * m``; ``None`` when the ladder ends before one does."""
+    """Smallest measured ``m`` whose excess is within tolerance at ``m`` and at every larger
+    measured step, with every ladder step through ``MARGIN * m`` measured at that tail;
+    ``None`` when no candidate has that coverage."""
     ms = sorted(m for m in rows if tail in rows[m])
     passing = [getattr(rows[m][tail], key) <= 1.0 for m in ms]
     for index, m in enumerate(ms):
-        window = [i for i, other in enumerate(ms) if i >= index and other <= MARGIN * m]
-        if window and all(passing[i] for i in window) and all(passing[index:]):
+        if all(passing[index:]) and _covers(ms[index:], MARGIN * m):
             return m
     return None
 
@@ -400,10 +420,10 @@ def read_rows(paths: Sequence[Path]) -> dict[int, dict[float, Excess]]:
     return rows
 
 
-def verify(*, workers: int) -> int:
+def verify(*, workers: int, tails: Sequence[float] = TAILS) -> int:
     """The shipped threshold at each tail passes at its own count and at ``MARGIN`` times it."""
     failed = 0
-    for tail in TAILS:
+    for tail in tails:
         shipped = dense_min_count(tail)
         for m in (shipped, math.ceil(MARGIN * shipped)):
             excess = worst_excess(m, (tail,), workers=workers)[tail]
@@ -831,22 +851,18 @@ class EnumeratedPower:
 def enumerated_power(cell: MirrorCell) -> EnumeratedPower:
     """Exact rejection probabilities of ``cell``'s design by enumerating its count lattice.
 
-    The finite-sample decision of each count pair is the planner's own replay geometry (the
-    runtime's decision, replayed); the delta-method decision is the vectorised production
-    interval (``conformance``). A pair is decided by the delta method iff its four counts
-    reach ``dense_min_count``, so the sum over the pairs is the pipeline's rejection
-    probability, not a bound on it. Pairs with a zero count are always finite-sample.
+    The finite-sample decision of each count pair is the runtime's decision replayed on the
+    ``exact`` rejection geometry whatever the cell count, never the surrogate the planner
+    substitutes above its budget, so the planned side alone carries the planner's
+    approximation; the delta-method decision is the vectorised production interval
+    (``conformance``). A pair is decided by the delta method iff its four counts reach
+    ``dense_min_count``, so the sum over the pairs is the pipeline's rejection probability,
+    not a bound on it. Pairs with a zero count are always finite-sample.
     """
     from increment.estimation.arm_contract import ArmPlanningProcedure
     from increment.estimation.conversion_route import planning_route
     from increment.power import Baseline, achieved_power
-    from increment.power._binomial import (
-        PLANNING_CELL_CEILING,
-        RejectionGeometry,
-        _window,
-        replay_cells,
-        route_for,
-    )
+    from increment.power._binomial import PLANNING_CELL_CEILING, RejectionGeometry, _window
     from increment.power.core import _binomial_key
 
     procedure = ArmPlanningProcedure.standard(
@@ -856,7 +872,7 @@ def enumerated_power(cell: MirrorCell) -> EnumeratedPower:
     p_t = cell.p_c * (1.0 + cell.lift)
     planned = achieved_power(cell.n, cell.lift, Baseline.from_proportion(cell.p_c), procedure)
     key = _binomial_key(procedure, cell.n, cell.n)
-    geometry = RejectionGeometry(key, route_for(replay_cells(key, cell.p_c)), PLANNING_CELL_CEILING)
+    geometry = RejectionGeometry(key, "exact", PLANNING_CELL_CEILING)
     window_c, window_t = _window(cell.n, cell.p_c), _window(cell.n, p_t)
     plus, minus = geometry.cells(window_c.lo, window_c.hi, window_t.lo, window_t.hi)
     finite = plus | minus
@@ -976,6 +992,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     required_parser.add_argument("paths", type=Path, nargs="+")
     verify_parser = sub.add_parser("verify", help="check the shipped threshold at every tail")
     verify_parser.add_argument("--workers", type=int, default=1)
+    verify_parser.add_argument("--tails", type=float, nargs="+", default=list(TAILS))
     sub.add_parser("conformance", help="compare the vectorised decisions with estimate_lift")
     hybrid_parser = sub.add_parser("hybrid", help="pipeline noncoverage at the boundary")
     hybrid_parser.add_argument("--workers", type=int, default=1)
@@ -995,7 +1012,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "required":
         return required(read_rows(args.paths))
     if args.command == "verify":
-        return verify(workers=args.workers)
+        return verify(workers=args.workers, tails=args.tails)
     if args.command == "conformance":
         gap, compared, interpolation = conformance()
         print(

@@ -763,9 +763,8 @@ def _recovery(args: argparse.Namespace) -> None:
 
 #: ``(cell, planner, control rate, units per arm, relative lift)``. Planning costs the cells its
 #: geometry stores, not the arm size: a supplied effect reaches `PLANNING_CELL_CEILING` near a
-#: million units per arm at 5% and an effect search (the union of its windows) sooner; the rare
-#: and sparse cells expect about a hundred events per arm; the dense cells from 5e6 units per arm
-#: are beyond the bound, which the finite-sample replay refuses and the count-routed plan does not.
+#: million units per arm at 5% and an effect search sooner; the rare and sparse cells expect about
+#: a hundred events per arm; the dense cells from 5e6 are beyond the bound a replay is refused at.
 PLANNING_CELLS = (
     ("dense-1e5", "power", 0.05, 100_000, 0.05),
     ("dense-2.5e5", "power", 0.05, 250_000, 0.03),

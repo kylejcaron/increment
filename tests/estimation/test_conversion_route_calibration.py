@@ -210,3 +210,33 @@ class TestPlanningBound:
             assert abs(power.margin) <= slack
         else:
             assert power.margin >= -slack
+
+
+# --- the requirement is read only from complete measurements -----------------------------
+
+
+def _rows(excess: dict[int, float], tail: float = 0.01) -> dict[int, dict[float, cr.Excess]]:
+    return {m: {tail: cr.Excess(tail, m, value, value, None)} for m, value in excess.items()}
+
+
+class TestRequiredCount:
+    LADDER = (1000, 1150, 1323, 1521, 1749)
+
+    def test_a_complete_scan_returns_the_first_step_from_which_every_step_passes(self):
+        rows = _rows(dict(zip(self.LADDER, (1.4, 1.2, 0.9, 0.8, 0.7), strict=True)))
+        assert cr.required_count(rows, 0.01) == 1323
+
+    def test_a_passing_step_the_scan_stops_at_is_not_a_requirement(self):
+        """1,749 passes but nothing above it was measured through ``MARGIN`` times it."""
+        rows = _rows(dict(zip(self.LADDER, (1.4, 1.2, 1.1, 1.05, 0.7), strict=True)))
+        assert cr.required_count(rows, 0.01) is None
+
+    def test_a_gap_in_the_measured_steps_is_not_bridged(self):
+        rows = _rows({1000: 1.4, 1150: 0.9, 1749: 0.8, 2011: 0.7, 2313: 0.6})
+        assert cr.required_count(rows, 0.01) == 1749
+
+    def test_steps_missing_from_a_merged_row_set_leave_no_requirement(self):
+        rows = _rows(dict(zip(self.LADDER, (0.9, 0.8, 0.7, 0.6, 0.5), strict=True)))
+        rows[1150] = {}
+        rows[1521] = {}
+        assert cr.required_count(rows, 0.01) is None
