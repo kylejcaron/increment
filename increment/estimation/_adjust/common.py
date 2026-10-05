@@ -23,6 +23,7 @@ import numpy as np
 
 from increment._literals import PreferredDirection, ValueScale
 from increment.errors import (
+    PACKAGE_FRAMES,
     IncrementWarning,
     InvalidRequestError,
     RefusalSpec,
@@ -102,9 +103,21 @@ def _register_warning(
     return spec
 
 
-def _warn(code: str, /, *, stacklevel: int = 2, **context: object) -> None:
+def _warn(
+    code: str,
+    /,
+    *,
+    stacklevel: int = 2,
+    skip_file_prefixes: tuple[str, ...] = (),
+    **context: object,
+) -> None:
     # +1 absorbs this helper's own frame; errors.warn() absorbs its own.
-    warn(_WARNINGS[code], stacklevel=stacklevel + 1, context=context)
+    warn(
+        _WARNINGS[code],
+        stacklevel=stacklevel + 1,
+        skip_file_prefixes=skip_file_prefixes,
+        context=context,
+    )
 
 
 _register_warning(
@@ -789,9 +802,7 @@ def _crossfit_splits(
     if data.labels is not None:
         total_clusters = _cohort_clusters(data).k
         assert cohort.lead.cluster is not None and total_clusters is not None
-        check_total_clusters(
-            metric_name, cohort.lead.cluster, total_clusters, warn=False, stacklevel=4
-        )
+        check_total_clusters(metric_name, cohort.lead.cluster, total_clusters, warn=False)
     fold = _fold_ids(data.unit_id, data.arm, folds, cluster_ids=data.labels)
     splits: list[tuple[int, np.ndarray, np.ndarray]] = []
     for j in range(folds):
@@ -1006,7 +1017,7 @@ def _disclose_unseen_levels(
         control_group=cohort.control_group,
         unseen=summary,
         n=unseen.n,
-        stacklevel=5,
+        skip_file_prefixes=PACKAGE_FRAMES,
     )
 
 
@@ -1227,7 +1238,7 @@ def _validate_contrast(
                 control_group=request.control_group,
                 named=named,
                 detail=detail,
-                stacklevel=4,
+                skip_file_prefixes=PACKAGE_FRAMES,
             )
     if isinstance(rows, slice):
         support = clusters
@@ -1242,7 +1253,7 @@ def _validate_contrast(
         return support
     assert cohort.lead.cluster is not None and support.k is not None
     _validate_pair_cluster_support(support.inv, support.k, data.indicator(a)[rows])
-    check_total_clusters(cohort.metric.name, cohort.lead.cluster, support.k, stacklevel=5)
+    check_total_clusters(cohort.metric.name, cohort.lead.cluster, support.k)
     return support
 
 

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from increment._literals import VALUE_SCALE_VALUES, ValueScale
 from increment.compatibility import ARM_COMPATIBILITY_REFUSALS
 from increment.errors import (
+    PACKAGE_FRAMES,
     CapabilityError,
     IncrementWarning,
     InvalidRequestError,
@@ -182,9 +183,21 @@ def _register_warning(
     return spec
 
 
-def _warn(code: str, /, *, stacklevel: int = 2, **context: object) -> None:
+def _warn(
+    code: str,
+    /,
+    *,
+    stacklevel: int = 2,
+    skip_file_prefixes: tuple[str, ...] = (),
+    **context: object,
+) -> None:
     # +1 absorbs this helper's own frame; errors.warn() absorbs its own.
-    warn(_WARNINGS[code], stacklevel=stacklevel + 1, context=context)
+    warn(
+        _WARNINGS[code],
+        stacklevel=stacklevel + 1,
+        skip_file_prefixes=skip_file_prefixes,
+        context=context,
+    )
 
 
 _register_warning(
@@ -459,7 +472,6 @@ def judge_shared_prior_scales(
     selected_names: Container[str],
     prior: Prior | None,
     value_scale: Mapping[str, ValueScale] | None,
-    stacklevel: int = 4,
 ) -> None:
     """Refuse (or warn about) ONE scalar `prior=` spanning metrics whose
     reporting scales are not commensurable.
@@ -499,7 +511,7 @@ def judge_shared_prior_scales(
             "estimation.adjust.prior_absolute_scale_spans_metrics",
             n_metrics=len(estimable),
             names=sorted(estimable),
-            stacklevel=stacklevel,
+            skip_file_prefixes=PACKAGE_FRAMES,
         )
 
 
@@ -911,7 +923,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                         metric_name=metric.name,
                         method_name=method.name,
                         exc=exc,
-                        stacklevel=2,
+                        skip_file_prefixes=PACKAGE_FRAMES,
                     )
                     if resolved_method_roles.get(method.name, "decision") == "decision":
                         from increment.estimation.decision_types import (

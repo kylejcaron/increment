@@ -1007,9 +1007,7 @@ def _prepare_encouragement_estimation(  # noqa: PLR0913
             control_group=design.control_group,
         )
     if inference is not None and "late" in estimands and "itt" not in estimands:
-        _warn_if_open_ended_sequential(
-            (m for m in metrics if m.name in {a.metric for a in arms}), stacklevel=4
-        )
+        _warn_if_open_ended_sequential(m for m in metrics if m.name in {a.metric for a in arms})
     itt_bundle: DecisionComputation[LiftEstimate] | None = None
     results: tuple[LiftEstimate, ...] = ()
     if "itt" in estimands:
@@ -1061,7 +1059,7 @@ def _first_stage_context(
     dof: float | None = None
     if cluster is not None:
         n_clusters = t.n + c.n
-        check_total_clusters(t.metric, cluster, n_clusters, stacklevel=4)
+        check_total_clusters(t.metric, cluster, n_clusters)
         if t.n < 2 or c.n < 2:
             refuse(
                 ARM_NEEDS_TWO,

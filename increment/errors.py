@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import os
 import string
 import sys
 import warnings
@@ -398,6 +399,11 @@ class WarningSpec:
                 f"WarningSpec {self.code!r} cannot bind required positional-only "
                 f"renderer parameters by keyword: {required_positional_only!r}"
             )
+
+
+#: ``skip_file_prefixes`` that attribute a warning to the first frame outside this package: the
+#: caller of the public API, however many private layers the call passes through.
+PACKAGE_FRAMES: tuple[str, ...] = (os.path.join(os.path.dirname(os.path.abspath(__file__)), ""),)
 
 
 def warn(
@@ -902,6 +908,7 @@ __all__ = [
     "IncrementWarning",
     "InvalidRequestError",
     "MODEL_FIELD_REFUSALS",
+    "PACKAGE_FRAMES",
     "RETIRED_CODES",
     "RefusalSpec",
     "UnsupportedRequestError",

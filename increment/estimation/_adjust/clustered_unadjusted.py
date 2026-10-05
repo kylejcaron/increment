@@ -449,7 +449,7 @@ def estimate_clustered_unadjusted(
         treatment_rows = groups[treatment]
         ids_t = {row["cluster_id"] for row in treatment_rows}
         ids_c = {row["cluster_id"] for row in control_rows}
-        check_total_clusters(metric.name, cluster, len(ids_t | ids_c), stacklevel=4)
+        check_total_clusters(metric.name, cluster, len(ids_t | ids_c))
         if len(ids_t) < 2 or len(ids_c) < 2:
             refuse(
                 ARM_NEEDS_TWO,

@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from increment._literals import Alternative, ConversionInference, PreferredDirection
 from increment._moment_plan import CORE_SLOTS, OPTIONAL_SLOTS, X_ROLE_VARIABLES
 from increment.errors import (
+    PACKAGE_FRAMES,
     CapabilityError,
     CodedError,
     CodedModel,
@@ -157,9 +158,21 @@ def _register_warning(
     return spec
 
 
-def _warn(code: str, /, *, stacklevel: int = 2, **context: object) -> None:
+def _warn(
+    code: str,
+    /,
+    *,
+    stacklevel: int = 2,
+    skip_file_prefixes: tuple[str, ...] = (),
+    **context: object,
+) -> None:
     # +1 absorbs this helper's own frame; errors.warn() absorbs its own.
-    warn(_WARNINGS[code], stacklevel=stacklevel + 1, context=context)
+    warn(
+        _WARNINGS[code],
+        stacklevel=stacklevel + 1,
+        skip_file_prefixes=skip_file_prefixes,
+        context=context,
+    )
 
 
 _register_warning(
@@ -196,13 +209,13 @@ def check_total_clusters(
     n_clusters: int,
     *,
     warn: bool = True,
-    stacklevel: int = 3,
 ) -> None:
     """Emit the small-K advisory without imposing an arbitrary floor.
 
     Estimator-specific support and positive-df requirements remain enforced
     by each admitted path; generic cluster sandwiches are explicitly
-    qualified as working asymptotic references.
+    qualified as working asymptotic references. The warning names the first caller outside
+    the package, whatever private layers the estimate passed through.
     """
     if warn and n_clusters < _WARN_TOTAL_CLUSTERS:
         _warn(
@@ -211,7 +224,7 @@ def check_total_clusters(
             n_clusters=n_clusters,
             cluster=cluster,
             floor=_WARN_TOTAL_CLUSTERS,
-            stacklevel=stacklevel,
+            skip_file_prefixes=PACKAGE_FRAMES,
         )
 
 
@@ -977,7 +990,7 @@ def _is_open_ended(metric: Metric) -> bool:
     return metric.window_days is None
 
 
-def _warn_if_open_ended_sequential(metrics: Iterable[Metric], *, stacklevel: int = 3) -> None:
+def _warn_if_open_ended_sequential(metrics: Iterable[Metric]) -> None:
     """Warn per open-ended metric that the sequential guarantee is approximate.
 
     Shared by every sequential entry point that estimates from arm moments:
@@ -1004,7 +1017,7 @@ def _warn_if_open_ended_sequential(metrics: Iterable[Metric], *, stacklevel: int
             metric_name=m.name,
             windows=windows,
             fix=fix,
-            stacklevel=stacklevel,
+            skip_file_prefixes=PACKAGE_FRAMES,
         )
 
 
@@ -1699,7 +1712,7 @@ def _prepare_lift_estimation(
             metric_types=sorted(metric_types),
         )
     if inference is not None:
-        _warn_if_open_ended_sequential((m for m in metrics if m.name in arm_metrics), stacklevel=4)
+        _warn_if_open_ended_sequential(m for m in metrics if m.name in arm_metrics)
     control_arms = [a for a in arms if a.group_id == control_group]
     if not control_arms:
         known_groups = sorted({a.group_id for a in arms})
@@ -1744,7 +1757,7 @@ def _select_lift_variance_strategy(
         variance_model = VARIANCE_MODELS.get("cluster")
         k_t, k_c = treatment.n, control.n
         n_clusters = k_t + k_c
-        check_total_clusters(treatment.metric, cluster, n_clusters, stacklevel=4)
+        check_total_clusters(treatment.metric, cluster, n_clusters)
         if k_t < 2 or k_c < 2:
             from increment.estimation.encouragement import ARM_NEEDS_TWO
 

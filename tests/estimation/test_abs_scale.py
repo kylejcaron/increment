@@ -419,6 +419,49 @@ def test_uniform_absolute_multi_metric_prior_warns_about_incommensurable_units()
     assert "estimation.adjust.prior_absolute_scale_spans_metrics" in warning_codes(rec)
 
 
+def test_the_multi_metric_prior_advisory_names_the_estimate_ate_caller():
+    table = _oracle_table(n=600)
+    table = table.append_column("second", pa.array(np.asarray(table["revenue"].to_numpy())))
+    src = _src(table, metrics={"revenue": "mean", "second": "mean"})
+    with pytest.warns(IncrementWarning) as rec:
+        estimate_ate(
+            src,
+            _DESIGN,
+            value_scale={"revenue": "absolute", "second": "absolute"},
+            prior=Normal(mu=0.0, sigma=1.0),
+        )
+    advisories = [
+        w
+        for w in rec
+        if getattr(w.message, "code", None)
+        == "estimation.adjust.prior_absolute_scale_spans_metrics"
+    ]
+    assert advisories
+    assert all(w.filename == __file__ for w in advisories)
+
+
+@pytest.mark.filterwarnings("ignore:(IPTW|DML|AIPW) covariate balance advisory:UserWarning")
+def test_the_skipped_metric_advisory_names_the_estimate_ate_caller():
+    table = _oracle_table(n=200)
+    table = table.append_column("orders", pa.array(np.ones(200)))
+    src = _src(
+        table,
+        metrics=[
+            MetricSpec(name="revenue", type="mean"),
+            MetricSpec(name="rpo", type="ratio", numerator="revenue", denominator="orders"),
+        ],
+    )
+    with pytest.warns(IncrementWarning) as rec:
+        estimate_ate(src, _DESIGN, value_scale={"revenue": "absolute"})
+    advisories = [
+        w
+        for w in rec
+        if getattr(w.message, "code", None) == "estimation.adjust.skip_unsupported_metric"
+    ]
+    assert advisories
+    assert all(w.filename == __file__ for w in advisories)
+
+
 def test_prior_shared_false_skips_the_mixed_scale_refusal():
     """Two metrics on different value_scale (one relative, one absolute)
     each carrying their OWN declared prior must not trip the cross-
