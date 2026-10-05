@@ -10,6 +10,7 @@ boundary excess at the shipped threshold and the hybrid pipeline across the thre
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 from dataclasses import asdict
@@ -19,7 +20,6 @@ import numpy as np
 import pytest
 
 from calibration import conversion_route as cr
-from increment.estimation.conversion_delta import CRITICAL_AGREEMENT
 from increment.estimation.conversion_route import dense_min_count, route_for_counts
 from tests.estimation._conversion_counts import lift_row
 from tests.mc import scientific_delta
@@ -31,7 +31,7 @@ def test_the_vectorised_interval_is_the_production_interval():
     gap, compared, interpolation = cr.conformance(samples=60)
     assert compared == 60
     assert gap < 1e-9
-    assert interpolation < CRITICAL_AGREEMENT
+    assert interpolation < cr.CRITICAL_AGREEMENT
 
 
 # --- fast smoke: labels and coverage -----------------------------------------------------
@@ -240,7 +240,7 @@ class TestLatticeSumsStreamOverBlocks:
         whole = cr.enumerate_design(design)
         self._small_blocks(monkeypatch)
         blocked = cr.enumerate_design(design)
-        for name in ("asymptotic_share", "asymptotic", "asymptotic_part", "finite_part", "hybrid"):
+        for name in ("asymptotic_share", "asymptotic_part", "finite_part", "hybrid"):
             assert getattr(blocked, name) == pytest.approx(getattr(whole, name), rel=1e-12)
         assert whole.floor == self.FLOOR
         assert whole.hybrid == pytest.approx(whole.asymptotic_part + whole.finite_part)
@@ -420,9 +420,7 @@ def _power(
     )
     return cr.EnumeratedPower(
         plan,
-        cr.Enumeration(
-            "construction", 412, 0.5, 0.5, hybrid / 2, hybrid / 2, omitted, inflation, 0
-        ),
+        cr.Enumeration("construction", 412, 0.5, hybrid / 2, hybrid / 2, omitted, inflation),
     )
 
 
@@ -468,6 +466,44 @@ class TestBoundRule:
         assert runtime.lower < 0.5 < runtime.upper
         assert runtime.upper >= 0.5 * (1.0 + 1e-9) + 1e-6
         assert runtime.lower <= 0.5 / (1.0 + 1e-9)
+
+
+class TestRoutedPairsAreDecidedByTheRuntimesOwnRow:
+    """An enumeration restates no part of the delta-method decision: each routed pair is the row
+    ``estimate_lift`` reports at that pair's counts."""
+
+    @pytest.mark.parametrize(
+        ("alpha", "alternative", "lift"),
+        [(0.2, "two-sided", 0.1), (0.1, "greater", 0.1), (0.1, "less", -0.06)],
+    )
+    def test_the_decision_of_a_routed_pair_is_the_estimate_lift_row(self, alpha, alternative, lift):
+        design = cr.MirrorCell("bound", 1500, 0.3, lift, alpha, alternative)
+        lattice = cr._design_lattice(design)
+        x_c = np.arange(430, 471)[:, None]
+        x_t = lattice.x_t[:, ::5]
+        floor = lattice.floor
+        routed = np.minimum(np.minimum(x_c, 1500 - x_c), np.minimum(x_t, 1500 - x_t)) >= floor
+        sub = dataclasses.replace(lattice, x_t=x_t)
+        rejects = cr._delta_rejects(design, sub, x_c, routed)
+        assert routed.any() and not routed.all()
+        assert rejects[routed].any() and not rejects[routed].all()
+        assert not rejects[~routed].any()
+        for i, j in np.argwhere(routed)[::7]:
+            counts = (int(x_c[i, 0]), 1500, int(x_t[0, j]), 1500)
+            lift_estimate = lift_row(counts, alpha=alpha, alternative=alternative).require_lift()
+            expected = (
+                alternative != "less" and lift_estimate.lb is not None and lift_estimate.lb > 0.0
+            ) or (
+                alternative != "greater" and lift_estimate.ub is not None and lift_estimate.ub < 0.0
+            )
+            assert bool(rejects[i, j]) is expected, counts
+
+    def test_a_pair_that_is_not_routed_is_never_a_delta_rejection(self):
+        design = cr.MirrorCell("bound", 300, 0.3, 0.1, 0.2, "two-sided")
+        lattice = cr._design_lattice(design)
+        x_c = np.arange(60, 70)[:, None]
+        routed = np.zeros((x_c.size, lattice.x_t.size), bool)
+        assert not cr._delta_rejects(design, lattice, x_c, routed).any()
 
 
 class TestEnumerationEnclosesTheExactMass:
@@ -523,12 +559,10 @@ def _record(cell: cr.MirrorCell, *, enumeration=None, plan=None) -> dict:
             "construction": BINOMIAL_METHOD,
             "floor": dense_min_count(cr._tail(cell.alpha, cell.alternative)),
             "asymptotic_share": 1.0,
-            "asymptotic": 0.5,
             "asymptotic_part": 0.5,
             "finite_part": 0.0,
             "omitted": 0.0,
             "inflation": 1.0,
-            "deferred": 0,
         }
         | (enumeration or {}),
         "planner": {
@@ -669,16 +703,19 @@ class TestBoundCheckpoint:
         ids=["split_power", "unsplit_power"],
     )
     @pytest.mark.parametrize("design", [0, [3567, 0.3, 0.05, 0.05, "two-sided"]])
-    def test_a_record_naming_neither_runtime_nor_planner_is_refused_not_adopted(
+    def test_a_record_naming_neither_runtime_nor_planner_is_refused_with_the_way_forward(
         self, tmp_path, calls, power, design
     ):
         """A line of an earlier layout holds one undated power section. Nothing in it says what
-        planned it or which runtime summed it, so none of it is reused or relabelled."""
+        planned it or which runtime summed it, so none of it is reused, relabelled or silently
+        enumerated again: the refusal names the file line and tells how to proceed."""
         path = tmp_path / "bound.jsonl"
         self._write(path, [{"design": design, "power": power}])
-        with pytest.raises(cr.CheckpointError):
+        before = path.read_text()
+        with pytest.raises(cr.CheckpointError, match=r"bound\.jsonl:1: .*undated .*--out"):
             cr.bound(workers=1, out=path)
         assert calls == ([], [])
+        assert path.read_text() == before
 
     def test_a_plans_enclosure_and_its_certification_survive_a_checkpoint(self, tmp_path):
         designs = cr.bound_cells("original")[:2]

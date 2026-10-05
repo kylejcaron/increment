@@ -37,10 +37,11 @@ before steps named their ladder is placed on the ladder its own steps determine 
 whose ladder opens with them) and refused when no ladder does; a rung past its last step
 counts only where every such start agrees on it.
 
-The vectorised delta-method interval is ``increment.estimation.conversion_delta``'s, the
-production formula (arm moments, Welch-Satterthwaite ``t`` reference) over arrays of counts;
-``conformance`` checks it against ``estimate_lift`` on sampled count pairs before any table is
-trusted, and an enumeration defers to the runtime's own row any routed pair it leaves open.
+The vectorised delta-method interval (``delta_statistic``, ``critical_values`` and
+``delta_log_bounds``) measures the asymptotic formula over a whole lattice: the ``wald``
+noncoverage tables. ``conformance`` checks it against ``estimate_lift`` on sampled count pairs
+before any table is trusted. It decides no rejection of an enumeration: ``bound`` asks the
+runtime's own row, one routed pair at a time.
 
 Planning is validated against the same production route. ``bound`` compares the plan of
 dense, sparse and borderline designs with the production pipeline's exact rejection
@@ -62,10 +63,6 @@ a count lattice of tens of millions of cells.
     python -m calibration.conversion_route conformance
     python -m calibration.conversion_route hybrid --workers 4 --tails 0.025 0.01
     python -m calibration.conversion_route bound --workers 4 --out /tmp/route-bound.jsonl
-    python -m calibration.conversion_route audit --revision a6f8f1a
-    python -m calibration.conversion_route adopt saved.jsonl --out /tmp/route-bound.jsonl \\
-        --revision a6f8f1a --construction binomial_bb_difference_v3 \\
-        --route-law "max(412, ceil(145 z^4))"
     python -m calibration.conversion_route mirror --reps 3000 --workers 4
 """
 
@@ -89,12 +86,6 @@ from scipy.stats import binom as _binom
 from scipy.stats import norm as _norm
 from scipy.stats import t as _student_t
 
-from increment.estimation.conversion_delta import (
-    CRITICAL_AGREEMENT,
-    critical_values,
-    delta_log_bounds,
-    delta_statistic,
-)
 from increment.estimation.conversion_route import dense_min_count, routed_share
 from tests.estimation._conversion_counts import lift_row, runtime_rejection_rate
 from tests.mc import (
@@ -200,6 +191,60 @@ def _lattice(n: int, p: float) -> tuple[np.ndarray, np.ndarray]:
     hi = min(n, int(_binom.isf(_OMITTED_MASS, n, p)))
     counts = np.arange(lo, hi + 1)
     return counts, _binom.pmf(counts, n, p)
+
+
+#: Degree-of-freedom floor and node count of the Chebyshev interpolation in ``1 / df`` that
+#: stands in for a per-point ``t`` quantile in the vectorised measurements below (they decide
+#: no rejection); above the floor the interpolant agrees with ``t.isf`` to
+#: ``CRITICAL_AGREEMENT`` over a lattice's narrow range.
+INTERPOLATION_DF_FLOOR = 30.0
+INTERPOLATION_NODES = 24
+CRITICAL_AGREEMENT = 1e-12
+_INTERPOLATION_MIN_POINTS = 4096
+
+
+def delta_statistic(
+    x_c: np.ndarray, n_c: int, x_t: np.ndarray, n_t: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(log_rr, se, df)`` of the delta-method route for count arrays with ``0 < x < n``."""
+    with np.errstate(all="ignore"):
+        mean_c, mean_t = x_c / n_c, x_t / n_t
+        var_c = x_c * (n_c - x_c) / (n_c * (n_c - 1.0))
+        var_t = x_t * (n_t - x_t) / (n_t * (n_t - 1.0))
+        se_c = np.sqrt(var_c / (n_c * mean_c**2))
+        se_t = np.sqrt(var_t / (n_t * mean_t**2))
+        log_rr = np.log(mean_t) - np.log(mean_c)
+        se = np.hypot(se_c, se_t)
+        scale = np.maximum(se_c, se_t)
+        a, b = se_t / scale, se_c / scale
+        df = (a * a + b * b) ** 2 / (a**4 / (n_t - 1) + b**4 / (n_c - 1))
+    return log_rr, se, df
+
+
+def critical_values(df: np.ndarray, tail: float) -> np.ndarray:
+    """Student ``t`` upper-tail critical values at ``df``."""
+    finite = df[np.isfinite(df)]
+    if finite.size < _INTERPOLATION_MIN_POINTS or finite.min() < INTERPOLATION_DF_FLOOR:
+        return _student_t.isf(tail, df)
+    lo, hi = 1.0 / finite.max(), 1.0 / finite.min()
+    nodes = np.cos(np.pi * (np.arange(INTERPOLATION_NODES) + 0.5) / INTERPOLATION_NODES)
+    inverse = 0.5 * (lo + hi) + 0.5 * (hi - lo) * nodes
+    coefficients = np.polynomial.chebyshev.chebfit(
+        nodes, _student_t.isf(tail, 1.0 / inverse), INTERPOLATION_NODES - 1
+    )
+    with np.errstate(all="ignore"):
+        position = (1.0 / df - 0.5 * (lo + hi)) * (2.0 / (hi - lo)) if hi > lo else 0.0 * df
+    return np.polynomial.chebyshev.chebval(position, coefficients)
+
+
+def delta_log_bounds(
+    x_c: np.ndarray, n_c: int, x_t: np.ndarray, n_t: int, tail: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Log risk-ratio interval bounds the production delta-method route reports at one-sided
+    ``tail``, for count arrays with ``0 < x < n``."""
+    log_rr, se, df = delta_statistic(x_c, n_c, x_t, n_t)
+    crit = critical_values(df, tail)
+    return log_rr - crit * se, log_rr + crit * se
 
 
 #: Cells of the joint count lattice held at once. Every sum over a lattice streams over blocks of
@@ -1095,26 +1140,22 @@ def _next_down(x: float) -> float:
 @dataclass(frozen=True, slots=True)
 class Enumeration:
     """A design's exact rejection probabilities, summed over the joint binomial law of the
-    counts, with the runtime they were summed under. ``asymptotic`` is the delta-method test
-    applied to every draw; the production pipeline decides each draw by the route its counts
-    select, so its rejection probability ``hybrid`` is the part the delta method decides
-    (``asymptotic_part``, the routed draws it rejects) plus the part the finite-sample test
-    decides (``finite_part``, the draws the rule keeps on it). ``construction`` is the
-    finite-sample construction and ``floor`` the routing threshold of that runtime.
-    ``deferred`` counts the routed pairs the vectorised delta decision left to the runtime's
-    own row. ``omitted`` bounds the mass outside the windows and ``inflation`` (at least one)
-    the numerical error of the sums, so the pipeline's rejection probability lies in
-    ``[lower, upper]``."""
+    counts, with the runtime they were summed under. The production pipeline decides each draw
+    by the route its counts select, so its rejection probability ``hybrid`` is the part the
+    delta method decides (``asymptotic_part``, the routed draws the runtime's own row rejects)
+    plus the part the finite-sample test decides (``finite_part``, the draws the rule keeps on
+    it). ``construction`` is the finite-sample construction and ``floor`` the routing
+    threshold of that runtime. ``omitted`` bounds the mass outside the windows and
+    ``inflation`` (at least one) the numerical error of the sums, so the pipeline's rejection
+    probability lies in ``[lower, upper]``."""
 
     construction: str
     floor: int
     asymptotic_share: float
-    asymptotic: float
     asymptotic_part: float
     finite_part: float
     omitted: float
     inflation: float
-    deferred: int
 
     @property
     def hybrid(self) -> float:
@@ -1154,13 +1195,10 @@ class Plan:
 
 @dataclass(frozen=True, slots=True)
 class EnumeratedPower:
-    """A design's plan against the pipeline's exact rejection probability. ``adopted`` is the
-    digest of the adoption manifest that vouches for an enumeration saved before records named
-    their runtime (``calibration.route_adoption``), carried by every later record of the design."""
+    """A design's plan against the pipeline's exact rejection probability."""
 
     plan: Plan
     enumeration: Enumeration
-    adopted: str | None = None
 
     @property
     def margin(self) -> float:
@@ -1237,58 +1275,39 @@ def _design_lattice(cell: MirrorCell) -> _DesignLattice:
 
 
 def _delta_rejects(
-    cell: MirrorCell,
-    lattice: _DesignLattice,
-    x_c: np.ndarray,
-    smallest: np.ndarray,
-    routed: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, int]:
-    """``(every, routed_rejects, deferred)``: where the delta method rejects a pair, applied to
-    every pair with positive counts, and to the routed pairs with the runtime's own row
-    deciding the ``deferred`` ones the vectorised decision leaves open."""
-    from increment.estimation.conversion_delta import delta_decision, production_decision
+    cell: MirrorCell, lattice: _DesignLattice, x_c: np.ndarray, routed: np.ndarray
+) -> np.ndarray:
+    """Where the runtime's own row (`production_decision`, one call per pair) rejects a routed
+    pair; every other pair is ``False``. Slow by design: nothing restates the runtime's
+    calculation."""
+    from increment.estimation.conversion_delta import production_decision
 
-    x_t = lattice.x_t
-    decision = delta_decision(
-        np.clip(x_c, 1, cell.n - 1),
-        cell.n,
-        np.clip(x_t, 1, cell.n - 1),
-        cell.n,
-        tail=lattice.tail,
-        alternative=cell.alternative,
-        null_lift=0.0,
-    )
-    every = (decision.plus | decision.minus) & (smallest >= 1)
-    rejects = every.copy()
-    open_pairs = np.argwhere(routed & ~decision.settled)
-    for i, j in open_pairs:
+    rejects = np.zeros(routed.shape, bool)
+    for i, j in np.argwhere(routed):
         plus, minus = production_decision(
             int(x_c[i, 0]),
             cell.n,
-            int(x_t[0, j]),
+            int(lattice.x_t[0, j]),
             cell.n,
             tail=lattice.tail,
             alternative=cell.alternative,
             null_lift=0.0,
         )
         rejects[i, j] = plus or minus
-    return every, rejects, len(open_pairs)
+    return rejects
 
 
 @dataclass(frozen=True, slots=True)
 class _Block:
     """One block of control counts of a lattice: each pair's joint weight, whether the rule
-    routes it to the delta method, where the delta method rejects it (applied to every pair
-    and to the routed ones), the finite-sample replay's ``plus`` and ``minus`` rejections of
-    the pairs the route keeps, and the routed pairs left to the runtime's row."""
+    routes it to the delta method, where the runtime's row rejects the routed pairs, and the
+    finite-sample replay's ``plus`` and ``minus`` rejections of the pairs the route keeps."""
 
     weight: np.ndarray
     routed: np.ndarray
-    delta_every: np.ndarray
     delta_routed: np.ndarray
     plus: np.ndarray
     minus: np.ndarray
-    deferred: int
 
 
 def _decided_blocks(cell: MirrorCell, lattice: _DesignLattice) -> Iterator[_Block]:
@@ -1304,30 +1323,7 @@ def _decided_blocks(cell: MirrorCell, lattice: _DesignLattice) -> Iterator[_Bloc
         weight = np.outer(window_c.weights[rows], window_t.weights)
         smallest = np.minimum(np.minimum(x_c, cell.n - x_c), np.minimum(x_t, cell.n - x_t))
         routed = smallest >= floor
-        every, delta_routed, deferred = _delta_rejects(cell, lattice, x_c, smallest, routed)
-        yield _Block(weight, routed, every, delta_routed, plus, minus, deferred)
-
-
-def delta_sums(cell: MirrorCell) -> tuple[float, float, float, int]:
-    """``(asymptotic_share, asymptotic, asymptotic_part, deferred)`` of ``cell``'s design as
-    ``enumerate_design`` sums them, without replaying the finite-sample decision."""
-    lattice = _design_lattice(cell)
-    window_c, window_t, floor = lattice.window_c, lattice.window_t, lattice.floor
-    share = asymptotic = asymptotic_part = 0.0
-    deferred = 0
-    for rows in _row_blocks(window_c.size, lattice.x_t.size):
-        x_c = np.arange(window_c.lo + rows.start, window_c.lo + rows.stop)[:, None]
-        weight = np.outer(window_c.weights[rows], window_t.weights)
-        smallest = np.minimum(
-            np.minimum(x_c, cell.n - x_c), np.minimum(lattice.x_t, cell.n - lattice.x_t)
-        )
-        routed = smallest >= floor
-        every, delta_routed, open_pairs = _delta_rejects(cell, lattice, x_c, smallest, routed)
-        share += float(weight[routed].sum())
-        asymptotic += float(weight[every].sum())
-        asymptotic_part += float(weight[routed & delta_routed].sum())
-        deferred += open_pairs
-    return share, asymptotic, asymptotic_part, deferred
+        yield _Block(weight, routed, _delta_rejects(cell, lattice, x_c, routed), plus, minus)
 
 
 def enumerate_design(cell: MirrorCell) -> Enumeration:
@@ -1347,21 +1343,18 @@ def enumerate_design(cell: MirrorCell) -> Enumeration:
     from increment.power._binomial import _UNIT_ROUNDOFF, _compounded, _inflation
 
     lattice = _design_lattice(cell)
-    share = asymptotic = asymptotic_part = finite_part = 0.0
-    blocks = deferred = 0
+    share = asymptotic_part = finite_part = 0.0
+    blocks = 0
     for block in _decided_blocks(cell, lattice):
         weight, routed, plus, minus = block.weight, block.routed, block.plus, block.minus
         blocks += 1
-        deferred += block.deferred
         share += float(weight[routed].sum())
-        asymptotic += float(weight[block.delta_every].sum())
-        asymptotic_part += float(weight[routed & block.delta_routed].sum())
+        asymptotic_part += float(weight[block.delta_routed].sum())
         finite_part += float(weight[~routed & (plus | minus)].sum())
     return Enumeration(
         BINOMIAL_METHOD,
         lattice.floor,
         share,
-        asymptotic,
         asymptotic_part,
         finite_part,
         _next_up(lattice.window_c.omitted + lattice.window_t.omitted),
@@ -1371,7 +1364,6 @@ def enumerate_design(cell: MirrorCell) -> Enumeration:
             _UNIT_ROUNDOFF,
             _compounded(lattice.window_c.size * lattice.window_t.size + blocks + 2),
         ),
-        deferred,
     )
 
 
@@ -1557,16 +1549,22 @@ def _section[T](cls: type[T], value: object, where: str) -> T:
 
 
 def _checkpoint_record(
-    where: str, record: Mapping[str, object], manifests: Mapping[str, Mapping[str, object]]
+    where: str, record: Mapping[str, object]
 ) -> tuple[list[object], EnumeratedPower]:
     """The design and the enumerated power one checkpoint record holds, refused unless the
-    enumeration was summed under this runtime (or adopted for it under a manifest that still
-    holds) and the plan's model is one it can be resumed from."""
-    from calibration import route_adoption
+    enumeration was summed under this runtime and the plan's model is one it can be resumed
+    from."""
     from increment.estimation.results import BINOMIAL_METHOD
     from increment.power.core import BINOMIAL_PLANNING_MODEL
 
-    design = record.get("design")
+    if record.keys() != {"design", "enumeration", "planner"}:
+        raise CheckpointError(
+            f"{where}: the record names neither the runtime it was summed under nor the planner "
+            "model that planned it (it holds one undated `power` section), so neither can be "
+            "established and the record is not reused, relabelled or enumerated again "
+            "unnoticed; enumerate to a new --out"
+        )
+    design = record["design"]
     if not (
         isinstance(design, list)
         and len(design) == 5
@@ -1575,13 +1573,6 @@ def _checkpoint_record(
         and design[4] in ("two-sided", "greater", "less")
     ):
         raise CheckpointError(f"{where}: design {design!r} is not a design key")
-    if record.keys() - {"adopted"} != {"design", "enumeration", "planner"}:
-        raise CheckpointError(
-            f"{where}: the record names neither the runtime it was summed under nor the planner "
-            "model that planned it (it holds one undated `power` section), so neither can be "
-            "established; recompute to another --out, or audit and adopt the file "
-            "(`adopt`)"
-        )
     enumeration = _section(Enumeration, record["enumeration"], where)
     plan = _section(Plan, record["planner"], where)
     floor = dense_min_count(_tail(cast("float", design[3]), cast("str", design[4])))
@@ -1596,17 +1587,7 @@ def _checkpoint_record(
             f"{where}: planner model {plan.model!r} is neither {BINOMIAL_PLANNING_MODEL!r} nor a "
             "retired model this checkpoint can be re-planned from"
         )
-    adopted = record.get("adopted")
-    if adopted is not None:
-        try:
-            route_adoption.validate_adoption(
-                manifests, str(adopted), json.dumps(design), asdict(enumeration)
-            )
-        except route_adoption.AdoptionError as refusal:
-            raise CheckpointError(f"{where}: adopted enumeration refused: {refusal}") from refusal
-    return list(design), EnumeratedPower(
-        plan, enumeration, None if adopted is None else str(adopted)
-    )
+    return list(design), EnumeratedPower(plan, enumeration)
 
 
 def read_checkpoint(path: Path) -> dict[str, EnumeratedPower]:
@@ -1616,13 +1597,8 @@ def read_checkpoint(path: Path) -> dict[str, EnumeratedPower]:
     that names neither (one undated `power` section, as every earlier layout wrote), or an
     enumeration of another runtime, or a model that is neither current nor retired, is refused
     and never reused or relabelled; a retired model's plan is replaced when the run resumes
-    (``bound``) and its enumeration kept. An enumeration saved before records named their
-    runtime is read only as ``adopt`` wrote it: beside a manifest, cited by its digest, that
-    still describes this runtime and decision path."""
-    from calibration import route_adoption
-
-    parsed: list[tuple[str, Mapping[str, object]]] = []
-    manifests: dict[str, Mapping[str, object]] = {}
+    (``bound``) and its enumeration kept."""
+    done: dict[str, EnumeratedPower] = {}
     for number, line in enumerate(path.read_text().splitlines(), start=1):
         if not line.strip():
             continue
@@ -1632,13 +1608,7 @@ def read_checkpoint(path: Path) -> dict[str, EnumeratedPower]:
             record.keys()
         except (json.JSONDecodeError, AttributeError) as error:
             raise CheckpointError(f"{where}: not a bound checkpoint record") from error
-        if record.keys() == {"adoption"}:
-            manifests[route_adoption.manifest_digest(record["adoption"])] = record["adoption"]
-        else:
-            parsed.append((where, record))
-    done: dict[str, EnumeratedPower] = {}
-    for where, record in parsed:
-        design, power = _checkpoint_record(where, record, manifests)
+        design, power = _checkpoint_record(where, record)
         done[json.dumps(design)] = power
     return done
 
@@ -1649,8 +1619,6 @@ def _append(handle, cell: MirrorCell, power: EnumeratedPower) -> None:
         "enumeration": asdict(power.enumeration),
         "planner": asdict(power.plan),
     }
-    if power.adopted is not None:
-        record["adopted"] = power.adopted
     handle.write(json.dumps(record) + "\n")
 
 
@@ -1683,8 +1651,7 @@ def bound(*, workers: int, out: Path | None = None, grid: BoundGrid = "original"
     ]
     pending = [cell for cell in designs if key(cell) not in done]
     for cell, plan in zip(replanned, run(plan_design, replanned), strict=True):
-        kept = done[key(cell)]
-        record(cell, EnumeratedPower(plan, kept.enumeration, kept.adopted))
+        record(cell, EnumeratedPower(plan, done[key(cell)].enumeration))
     for cell, power in zip(pending, run(enumerated_power, pending), strict=True):
         record(cell, power)
     failed = 0
@@ -1700,7 +1667,7 @@ def bound(*, workers: int, out: Path | None = None, grid: BoundGrid = "original"
             f"{plan.route:<10} n={cell.n:>8} p_c={cell.p_c:<5} lift={cell.lift:<5} "
             f"alpha={cell.alpha:<5} {cell.alternative:<9} share={runtime.asymptotic_share:.4f} "
             f"planned={plan.planned:.6f} ({plan.basis}) enclosure={enclosure} "
-            f"asym={runtime.asymptotic:.6f} asym_part={runtime.asymptotic_part:.6f} "
+            f"asym_part={runtime.asymptotic_part:.6f} "
             f"finite_part={runtime.finite_part:.6f} hybrid={runtime.hybrid:.6f} "
             f"margin={power.margin:+.6f} {'ok' if ok else 'FAIL'}",
             flush=True,
@@ -1711,47 +1678,6 @@ def bound(*, workers: int, out: Path | None = None, grid: BoundGrid = "original"
             f"greatest margin={max(values):+.6f}"
         )
     return 1 if failed else 0
-
-
-def _add_adoption_commands(sub) -> None:
-    audit_parser = sub.add_parser(
-        "audit", help="compare the decision path of the revisions a saved campaign ran at"
-    )
-    audit_parser.add_argument("--revision", action="append", required=True)
-    adopt_parser = sub.add_parser(
-        "adopt", help="adopt a saved bound checkpoint under an audited manifest"
-    )
-    adopt_parser.add_argument("source", type=Path)
-    adopt_parser.add_argument("--out", type=Path, required=True)
-    adopt_parser.add_argument("--revision", action="append", required=True)
-    adopt_parser.add_argument("--construction", required=True)
-    adopt_parser.add_argument("--route-law", required=True)
-    adopt_parser.add_argument("--grid", choices=("original",), default=None)
-    adopt_parser.add_argument("--evidence", default="")
-    adopt_parser.add_argument("--workers", type=int, default=1)
-
-
-def _run_adoption_command(args: argparse.Namespace) -> int:
-    from calibration import route_adoption
-
-    try:
-        if args.command == "audit":
-            return route_adoption.report(args.revision)
-        manifest = route_adoption.adopt(
-            args.source,
-            args.out,
-            revisions=args.revision,
-            construction=args.construction,
-            law=args.route_law,
-            grid=args.grid,
-            evidence=args.evidence,
-            workers=args.workers,
-        )
-    except route_adoption.AdoptionError as refusal:
-        print(refusal, file=sys.stderr)
-        return 2
-    print(f"adopted {manifest['source']['records']} records into {args.out}")
-    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1784,10 +1710,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mirror_parser.add_argument("--reps", type=int, default=20_000)
     mirror_parser.add_argument("--workers", type=int, default=1)
     mirror_parser.add_argument("--seed", type=int, default=20261004)
-    _add_adoption_commands(sub)
     args = parser.parse_args(argv)
-    if args.command in ("audit", "adopt"):
-        return _run_adoption_command(args)
     if args.command == "select":
         return select(
             args.out, workers=args.workers, start=args.start, stop=args.stop, tails=args.tails
