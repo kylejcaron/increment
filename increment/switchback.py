@@ -12,14 +12,18 @@ import math
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
-from numbers import Real
 from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 import narwhals as nw
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from increment._study import SwitchbackStudyEnvelope
+from increment._study import (
+    SWITCHBACK_IDENTIFICATION,
+    SwitchbackStudyEnvelope,
+    allocation_defect,
+    refuse_allocation_defect,
+)
 from increment._unit_cycle import (
     _refuse as _unit_refuse,
 )
@@ -76,11 +80,6 @@ _SWITCHBACK_ASSIGNMENT = RefusalSpec(
     InvalidRequestError,
     _render_message,
 )
-_SWITCHBACK_IDENTIFICATION = RefusalSpec(
-    "source.frame.switchback.identification",
-    InvalidRequestError,
-    _render_message,
-)
 _SWITCHBACK_METRIC = RefusalSpec(
     "source.frame.switchback.metric",
     CapabilityError,
@@ -132,7 +131,7 @@ def _reject_assignment(*, message: str, **context: object) -> NoReturn:
 
 
 def _reject_identification(*, message: str, **context: object) -> NoReturn:
-    _reject(_SWITCHBACK_IDENTIFICATION, message=message, **context)
+    _reject(SWITCHBACK_IDENTIFICATION, message=message, **context)
 
 
 def _reject_metric(*, message: str, **context: object) -> NoReturn:
@@ -728,36 +727,10 @@ def _switchback_groups(identification: Randomized) -> tuple[str, str]:
             reason="invalid_allocation",
         )
     treatment = str(treatment_arms[0])
-    control_weight = allocation[control]
-    treatment_weight = allocation[treatment]
-    if (
-        not isinstance(control_weight, Real)
-        or not isinstance(treatment_weight, Real)
-        or not math.isfinite(float(control_weight))
-        or not math.isfinite(float(treatment_weight))
-        or float(control_weight) < 0.0
-        or float(treatment_weight) < 0.0
-    ):
-        _reject_identification(
-            message="switchback allocation weights must be finite and nonnegative",
-            allocation=allocation,
-            reason="invalid_allocation",
-        )
-    control_weight = float(control_weight)
-    treatment_weight = float(treatment_weight)
-    if not math.isclose(control_weight + treatment_weight, 1.0, rel_tol=0.0, abs_tol=1e-12):
-        _reject_identification(
-            message="switchback allocation weights must sum to one",
-            allocation=allocation,
-            reason="invalid_allocation",
-        )
-    if control_weight != 0.5 or treatment_weight != 0.5:
-        _reject_identification(
-            message="switchback allocation requires exact 0.5/0.5 control/treatment weights",
-            allocation=allocation,
-            control_group=control,
-            treatment_group=treatment,
-            reason="unequal_allocation",
+    defect = allocation_defect(allocation[control], allocation[treatment])
+    if defect is not None:
+        refuse_allocation_defect(
+            defect, allocation=allocation, control_group=control, treatment_group=treatment
         )
     return control, treatment
 

@@ -1308,6 +1308,63 @@ class Winsorization(_Base):
         return self
 
 
+def _reject_bool_days(v: Any) -> Any:
+    """``_reject_bool`` over a day count or a ``(a, b)`` band: a ``bool`` is
+    never a day count. Shared by ``RetentionMetric`` and ``MetricSpec`` so both
+    ingresses refuse with the same code."""
+    if isinstance(v, list | tuple):
+        return tuple(_reject_bool(item) for item in v)
+    return _reject_bool(v)
+
+
+def _validate_retention_declaration(
+    name: str, threshold_days: int | tuple[int, int], window_days: int | None
+) -> None:
+    """Refuse an unusable retention declaration: ``window_days`` set (both band
+    edges live in ``threshold_days``), a negative edge, or an empty band. The
+    one source of these refusals for ``RetentionMetric`` and ``MetricSpec``."""
+    if window_days is not None:
+        _definition_refusal(
+            "definition.retention.metric_window_days",
+            f"retention metric '{name}': window_days is not a retention "
+            f"field -- the observation band, both edges, lives in threshold_days. "
+            f"Declare threshold_days: [a, b] instead of threshold_days: a + "
+            f"window_days: b.",
+            name=name,
+        )
+    band = threshold_days
+    if isinstance(band, int):
+        if band < 0:
+            _definition_refusal(
+                "definition.retention.threshold_days_non_negative",
+                f"retention metric '{name}': threshold_days={band} must be "
+                f">= 0 -- days are counted from exposure (day 0)",
+                name=name,
+                band=band,
+            )
+        return
+    a, b = band
+    if a < 0:
+        _definition_refusal(
+            "definition.retention.threshold_days_lower_bound_non_negative",
+            f"retention metric '{name}': threshold_days=[{a}, {b}] must have "
+            f"a >= 0 -- days are counted from exposure (day 0)",
+            name=name,
+            a=a,
+            b=b,
+        )
+    if b <= a:
+        _definition_refusal(
+            "definition.retention.threshold_days_upper_exceeds_lower",
+            f"retention metric '{name}': threshold_days=[{a}, {b}] must have "
+            f"b > a -- the half-open observation band [a, b) would otherwise be "
+            f"empty and every unit would score 0",
+            name=name,
+            a=a,
+            b=b,
+        )
+
+
 class MeanMetric(MetricBase, Measure):
     type: Literal["mean"] = "mean"
     winsorization: Winsorization | None = None
@@ -1330,13 +1387,15 @@ class RetentionMetric(MetricBase, FactRef):
 
     type: Literal["retention"] = "retention"
     threshold_days: int | tuple[int, int]
+    # Not bounded (``FactRef`` requires ``ge=1``): any declared value, zero or
+    # negative included, reaches ``_validate_retention_declaration`` and its
+    # coded refusal, the same one ``MetricSpec`` raises.
+    window_days: int | None = None
 
     @field_validator("threshold_days", mode="before")
     @classmethod
     def _validate_threshold_days(cls, v: Any) -> Any:
-        if isinstance(v, list | tuple):
-            return tuple(_reject_bool(item) for item in v)
-        return _reject_bool(v)
+        return _reject_bool_days(v)
 
     @property
     def band(self) -> tuple[int, int | None]:
@@ -1351,46 +1410,7 @@ class RetentionMetric(MetricBase, FactRef):
 
     @model_validator(mode="after")
     def _band_is_non_empty(self):
-        if self.window_days is not None:
-            _definition_refusal(
-                "definition.retention.metric_window_days",
-                f"retention metric '{self.name}': window_days is not a retention "
-                f"field -- the observation band, both edges, lives in threshold_days. "
-                f"Declare threshold_days: [a, b] instead of threshold_days: a + "
-                f"window_days: b.",
-                name=self.name,
-            )
-        band = self.threshold_days
-        if isinstance(band, int):
-            if band < 0:
-                _definition_refusal(
-                    "definition.retention.threshold_days_non_negative",
-                    f"retention metric '{self.name}': threshold_days={band} must be "
-                    f">= 0 -- days are counted from exposure (day 0)",
-                    name=self.name,
-                    band=band,
-                )
-            return self
-        a, b = band
-        if a < 0:
-            _definition_refusal(
-                "definition.retention.threshold_days_lower_bound_non_negative",
-                f"retention metric '{self.name}': threshold_days=[{a}, {b}] must have "
-                f"a >= 0 -- days are counted from exposure (day 0)",
-                name=self.name,
-                a=a,
-                b=b,
-            )
-        if b <= a:
-            _definition_refusal(
-                "definition.retention.threshold_days_upper_exceeds_lower",
-                f"retention metric '{self.name}': threshold_days=[{a}, {b}] must have "
-                f"b > a -- the half-open observation band [a, b) would otherwise be "
-                f"empty and every unit would score 0",
-                name=self.name,
-                a=a,
-                b=b,
-            )
+        _validate_retention_declaration(self.name, self.threshold_days, self.window_days)
         return self
 
 

@@ -1285,6 +1285,22 @@ def test_retention_metric_rejects_window_days():
     assert exc_info.value.code == "definition.retention.metric_window_days"
 
 
+@pytest.mark.parametrize("window_days", [0, -1])
+def test_retention_metric_rejects_non_positive_window_days_with_the_coded_refusal(window_days):
+    """A zero or negative ``window_days`` is the same retention hazard as a
+    positive one, so ``RetentionMetric`` refuses it with the same code as
+    ``MetricSpec`` rather than a raw ``ge=1`` field error."""
+    with pytest.raises(DefinitionError) as exc_info:
+        RetentionMetric(
+            name="d7_retention",
+            entity="user_id",
+            fact="page_view",
+            threshold_days=7,
+            window_days=window_days,
+        )
+    assert exc_info.value.code == "definition.retention.metric_window_days"
+
+
 def test_retention_metric_band_normalizes_both_shapes():
     """`band` is the single normalizer every band reader goes through."""
     bounded = RetentionMetric(
