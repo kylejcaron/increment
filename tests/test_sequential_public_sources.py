@@ -1077,7 +1077,10 @@ def test_uptake_checkpoint_ignores_unbounded_outcome_retention_in_the_catalog(tm
     """A compliance-only checkpoint reads uptake, never the outcome table, so a
     retention metric in the source catalog neither makes the facade's completed
     windows contradictory nor trips its encouragement guard; any request that
-    consumes outcomes keeps both refusals."""
+    consumes outcomes keeps both refusals. The portable replay keeps that same
+    catalog (an empty one would not exercise the exemption); the unit-day
+    artifact route is the parity case
+    `audit-compliance-only-sequential-unbounded-retention-catalog`."""
     import pyarrow.parquet as pq
 
     from increment.errors import CodedError
@@ -1099,23 +1102,24 @@ def test_uptake_checkpoint_ignores_unbounded_outcome_retention_in_the_catalog(tm
         native.export(path)
         replay = Analysis.from_moments(
             pq.read_table(path).to_pylist(),
-            metrics=[],
+            metrics=[
+                MetricSpec(name="outcome", type="conversion", window_days=2),
+                MetricSpec(name="stay", type="retention", threshold_days=1),
+            ],
             design=_native_source(native).context.design,
         )
+        assert [metric.name for metric in replay.metrics] == ["outcome", "stay"]
         assert replay.sequential_snapshot() == snapshot
         assert list(
             replay.run_asof_lift(estimands=("compliance",), completed_windows_only=True)
         ) == list(daily)
 
         # Every request that reads outcomes still meets the retention guards.
-        for kwargs in (
-            {"estimands": ("itt",), "completed_windows_only": True},
-            {"estimands": ("itt", "compliance"), "completed_windows_only": True},
-            {"completed_windows_only": True},
-        ):
-            with pytest.raises(CodedError) as refused:
-                native.run_asof_lift(**kwargs)
-            assert refused.value.code == "breakout.retention.encouragement", kwargs
+        for source in (native, replay):
+            for estimands in (("itt",), ("itt", "compliance"), None):
+                with pytest.raises(CodedError) as refused:
+                    source.run_asof_lift(estimands=estimands, completed_windows_only=True)
+                assert refused.value.code == "breakout.retention.encouragement", estimands
     finally:
         native.close()
 

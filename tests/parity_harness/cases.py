@@ -1943,6 +1943,229 @@ def _sequential_composed_itt_and_uptake_case(
     )
 
 
+def _retained_catalog_probes() -> tuple[Callable[[str, Analysis], None], Callable[[], None]]:
+    """The per-constructor probe and the cross-constructor agreement check for
+    `_sequential_unbounded_retention_catalog_case`."""
+    checkpoints: dict[str, list[tuple[Any, ...]]] = {}
+
+    def probe_retained_catalog(constructor: str, analysis: Analysis) -> None:
+        # An empty catalog would make the exemption vacuous, so the retained
+        # catalog is asserted, then the compliance-only checkpoint recorded.
+        assert [m.name for m in analysis.metrics] == ["returned"], constructor
+        checkpoint_rows = analysis.run_asof_lift(
+            estimands=("compliance",), completed_windows_only=True
+        )
+        # `prefix_id` depends on reveal order, so compare the evidence itself.
+        checkpoints[constructor] = []
+        for row in checkpoint_rows:
+            assert row.sequential_result is not None
+            checkpoints[constructor].append(
+                (
+                    row.metric,
+                    row.group_id,
+                    row.estimand,
+                    row.ds,
+                    row.lift,
+                    row.sequential_result.log_e,
+                    row.sequential_result.decision_alpha,
+                )
+            )
+        assert len(checkpoints[constructor]) == 1, constructor
+        for completed_windows_only in (False, True):
+            with pytest.raises(CodedError) as refused:
+                analysis.run_asof_lift(
+                    estimands=("itt",), completed_windows_only=completed_windows_only
+                )
+            assert refused.value.code == "breakout.retention.encouragement", (
+                constructor,
+                completed_windows_only,
+            )
+
+    def assert_checkpoints_agree() -> None:
+        assert set(checkpoints) == {"from_definitions", "from_unit_day_artifact", "from_moments"}
+        for constructor, observed in checkpoints.items():
+            assert observed == checkpoints["from_definitions"], constructor
+
+    return probe_retained_catalog, assert_checkpoints_agree
+
+
+def _sequential_unbounded_retention_catalog_case() -> ParityCase:
+    """A registered compliance-only checkpoint that keeps an unbounded retention
+    metric in its outcome catalog.
+
+    The checkpoint reads uptake and never that outcome, so the catalog must
+    survive each ingress unchanged; the empty-catalog case above says nothing
+    about a nonempty one. An automatic registration monitors every catalog
+    metric and cannot reveal an unbounded band, so the uptake-only registration
+    is declared explicitly over the full catalog, in the definitions an
+    artifact adopts. `from_unit_summary` cannot declare a retention metric and
+    `from_unit_panel` refuses one under an Encouragement design at construction,
+    so neither carries the catalog; `from_moments` replays the definitions
+    export with the metric kept in `metrics=`. Outcome-consuming requests keep
+    refusing the retention metric on every path that carries it.
+    """
+    from increment.semantics.sequential import SequentialRegistration
+    from increment.sequential_source import sequential_definition_id
+
+    # Extra treatment-arm uptake gives the compliance checkpoint a nonzero effect.
+    rows = ds.event_rows() + _extra_treatment_purchases(11)
+    returned = MetricSpec(name="returned", type="retention", threshold_days=1)
+    plan = AnalysisPlan(
+        primary=None,
+        secondaries=["returned"],
+        inference={"kind": "always_valid", "baseline_rate": 0.25},
+        compliance=SequentialCompliancePolicy(alpha=0.05),
+    )
+    justification = "the in-window purchase mediates the revenue effect"
+    defs_dict = ds.definitions_dict(plan=plan, allocation={"control": 0.5, "treatment": 0.5})
+    defs_dict["metrics"] = [
+        {
+            "type": "retention",
+            "name": "returned",
+            "entity": "user_id",
+            "fact": "purchase",
+            "threshold_days": 1,
+            "preferred_direction": "increase",
+        }
+    ]
+    defs_dict["experiments"][0]["design"] = {
+        "mechanism": "encouragement",
+        "uptake": {"fact": "purchase", "window_days": 1},
+        "exclusion_restriction": {"acknowledged": True, "justification": justification},
+    }
+    declared = Definitions.model_validate(defs_dict)
+    exp = declared.experiment("exp")
+    assert exp is not None
+    exclusion = ExclusionRestriction(acknowledged=True, justification=justification)
+    native_design = Encouragement(
+        control_group="control",
+        uptake=UptakeSpec(fact="purchase", window_days=1),
+        exclusion_restriction=exclusion,
+        allocation={"control": 0.5, "treatment": 0.5},
+    )
+    frame_design = native_design.model_copy(
+        update={"uptake": UptakeSpec(fact="converted", window_days=1)}
+    )
+    mapping = native_observation_mapping(declared, exp, on_mixed_assignment="error")
+    automatic = bind_automatic_sequential_plan(
+        exp.plan.model_copy(update={"secondaries": ()}),
+        [],
+        design=native_design,
+        source_id=exp.name,
+        source_mapping=mapping,
+        pre_period_covariate=exp.n_pre_periods > 0,
+    )
+    assert automatic is not None and automatic.inference.registration is not None  # ty: ignore[unresolved-attribute]
+    registration = SequentialRegistration.model_validate(
+        {
+            **automatic.inference.registration.model_dump(),  # ty: ignore[unresolved-attribute]
+            "definitions_id": sequential_definition_id(
+                list(declared.metrics), native_design, source_mapping=mapping
+            ),
+        }
+    )
+    registered = exp.plan.model_copy(
+        update={"inference": InferenceSpec(kind="always_valid", registration=registration)}
+    )
+    defs = declared.model_copy(
+        update={"experiments": (exp.model_copy(update={"plan": registered}),)}
+    )
+    as_of = ds._EXPOSURE_AT.date() + dt.timedelta(days=1)
+
+    def build_definitions() -> Analysis:
+        con = ds.duckdb_connection(rows)
+        analysis = make_analysis(con, defs, experiment="exp", plan=registered)
+        analysis._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        return _track_connection(analysis, con)
+
+    def build_artifact() -> Analysis:
+        con = ds.duckdb_connection(rows)
+        adopted = _publish_and_adopt(
+            con, make_analysis(con, defs, experiment="exp", plan=registered)
+        )
+        adopted._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        return adopted
+
+    def build_unit_summary() -> Analysis:
+        con = ds.duckdb_connection(rows)
+        summary = ds.unit_summary_frame(con)
+        con.disconnect()
+        return Analysis.from_unit_summary(
+            summary,
+            unit="user_id",
+            group="variant",
+            design=frame_design,
+            metrics=[returned],
+            uptake="converted",
+            plan=plan,
+            experiment_id="exp",
+            exposure_date="exposure_date",
+        )
+
+    def build_unit_panel() -> Analysis:
+        con = ds.duckdb_connection(rows)
+        panel = ds.sequential_unit_panel_frame(con)
+        con.disconnect()
+        panel["uptake"] = (panel["revenue"] > 0).astype(int)
+        return Analysis.from_unit_panel(
+            panel,
+            unit="user_id",
+            group="variant",
+            date="date",
+            design=frame_design,
+            metrics=[returned],
+            plan=plan,
+            experiment_id="exp",
+            exposure_date="exposure_date",
+            uptake="uptake",
+        )
+
+    def build_moments() -> Analysis:
+        source = build_definitions()
+        try:
+            source.capture_sequential(finalized=True, as_of=as_of)
+            with tempfile.TemporaryDirectory() as td:
+                path = Path(td) / "moments.parquet"
+                source.export(path)
+                replay_rows = pq.read_table(path).to_pylist()
+            return Analysis.from_moments(replay_rows, metrics=[returned], design=native_design)
+        finally:
+            _close_parity_analysis(source)
+
+    probe_retained_catalog, assert_checkpoints_agree = _retained_catalog_probes()
+
+    return ParityCase(
+        id="audit-compliance-only-sequential-unbounded-retention-catalog",
+        build={
+            "from_definitions": build_definitions,
+            "from_unit_day_artifact": build_artifact,
+            "from_unit_summary": build_unit_summary,
+            "from_unit_panel": build_unit_panel,
+            "from_moments": build_moments,
+        },
+        estimands=("compliance",),
+        sequential=True,
+        source_probe=probe_retained_catalog,
+        sequential_probe=assert_checkpoints_agree,
+        waive={
+            **_SWITCHBACK_WAIVE,
+            "from_unit_summary": (
+                "SOURCE: a one-row-per-unit summary has no per-unit dates to resolve "
+                "a retention band against, so the catalog cannot be declared."
+            ),
+            "from_unit_panel": (
+                "COMBINATION: a unit panel refuses a retention metric under an "
+                "Encouragement design at construction, before any request is read."
+            ),
+        },
+        waived_refusal_codes={
+            "from_unit_summary": "source.frame.constructor",
+            "from_unit_panel": "readout.encouragement.retention",
+        },
+        slow=True,
+    )
+
+
 def _extra_treatment_purchases(n: int) -> list[dict[str, Any]]:
     """`n` additional in-window purchase events for treatment units
     `event_rows` otherwise leaves as genuine non-purchasers (`i % 3 == 0`)
@@ -6272,6 +6495,7 @@ PARITY_CASES: tuple[ParityCase, ...] = (
     _sequential_composed_itt_and_uptake_case(),
     _sequential_composed_itt_and_uptake_case(exclusion_declared=False),
     _sequential_composed_itt_and_uptake_case(metric_free=True),
+    _sequential_unbounded_retention_catalog_case(),
     _sequential_composed_family_ebh_case(),
     _sequential_registered_breakout_discrete_case(),
     _sequential_registered_breakout_continuous_case(),
