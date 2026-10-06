@@ -1628,7 +1628,9 @@ def estimate_encouragement(  # noqa: PLR0913
             c.estimand == "compliance" for c in summary.registration.roster
         ):
             sequential_refuse(
-                "route.unsupported", "structural-zero uptake needs the existing C03 rate target"
+                "route.unsupported",
+                "structural-zero uptake is a rate target; use fixed-horizon compliance "
+                "(valid for one planned analysis, not repeated looks)",
             )
         from increment.estimation.sequential_runtime import validate_engine_request
 

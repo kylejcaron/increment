@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from fractions import Fraction
 from numbers import Integral, Real
 from pathlib import Path
@@ -150,7 +150,7 @@ _MOMENTS_COVARIATE_UNAVAILABLE = _RefusalSpec(
 _MOMENTS_COUNTS = _RefusalSpec(
     "source.moments.assignment_counts",
     _CapabilityError,
-    template="trustworthy source-level assignment counts; use Analysis.export() from a source or artifact containing assignment-count evidence, or provide a complete v7 cube.",
+    template="trustworthy source-level assignment counts; use Analysis.export() from a source or artifact that carries assignment-count evidence, or supply a cube whose rows carry the assignment_counts field.",
 )
 _MOMENTS_CLUSTER_GRAIN = _RefusalSpec(
     "source.moments.cluster_grain",
@@ -186,6 +186,44 @@ def refuse_cluster_grain_transport(
         design=mechanism,
         mechanism=mechanism,
         route_forward=route_forward,
+    )
+
+
+SOURCE_QUANTILE_NO_MOMENTS = _RefusalSpec(
+    "source.frame.quantile_no_moments",
+    _CapabilityError,
+    template="quantile metric {metric!r} has no moment representation; it is served through unit_frame. {route}",
+)
+
+
+def refuse_quantile_moments_export(
+    metrics: Sequence[Any],
+    *,
+    design: object | None,
+    observational_refusal: Callable[[Any], object],
+) -> None:
+    """Refuse exporting a quantile: a moments cube holds additive moments, never the per-unit
+    values an order statistic needs, so a quantile exported there would carry mean moments
+    under the quantile's name. Runs on catalog metadata alone, before any count or moment is
+    read or a file written.
+
+    Under an observational design the estimator refusal (``readout.observational.quantile``)
+    takes precedence, because no estimator could use the cube. It lives below this module, so
+    the caller supplies it as ``observational_refusal``; that callable owns any source
+    authentication and raises for the first quantile in catalog order.
+    """
+    quantile = next(
+        (metric for metric in metrics if getattr(metric, "type", None) == "quantile"), None
+    )
+    if quantile is None:
+        return
+    if getattr(design, "mechanism", None) == "observational":
+        observational_refusal(quantile)
+        return
+    _refuse(
+        SOURCE_QUANTILE_NO_MOMENTS,
+        metric=quantile.name,
+        route="estimate the quantile with run(), or export a cube of the non-quantile metrics",
     )
 
 
@@ -410,7 +448,7 @@ def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]
 
 
 def _parse_assignment_counts(payload: object) -> dict[str, int] | None:
-    """Decode a v7 source-level assignment-count payload."""
+    """Decode a source-level assignment-count payload."""
     if isinstance(payload, str):
         try:
             payload = json.loads(payload, object_pairs_hook=_reject_duplicate_keys)
@@ -1029,7 +1067,7 @@ class MomentsSource(SequentialSourceMixin):
         _refuse(_MOMENTS_UNIT_GRAIN, method="unit_frame")
 
     def unit_counts(self) -> dict[str, int]:
-        """Return source-level enrolled counts carried by v7 cubes."""
+        """Return source-level enrolled counts carried by supported cubes."""
         if self._assignment_counts is None:
             _refuse(_MOMENTS_COUNTS)
         return dict(self._assignment_counts)
@@ -1111,8 +1149,19 @@ def _design_summary_row(
     }
 
 
-def export_source_moments(source: MomentSource, path: str | Path) -> None:
-    """Export total moments and immutable source-level compliance identity."""
+def export_source_moments(
+    source: MomentSource,
+    path: str | Path,
+    *,
+    observational_refusal: Callable[[Any], object],
+) -> None:
+    """Export total moments and immutable source-level compliance identity.
+
+    A registered sequential plan exports its finalized checkpoint, which holds unit-record
+    proofs and the declaration, never moments rows, so an unmodeled catalog quantile is not
+    refused there. Every moments export refuses a catalog quantile before reading evidence
+    (see :func:`refuse_quantile_moments_export` for ``observational_refusal``).
+    """
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -1156,6 +1205,9 @@ def export_source_moments(source: MomentSource, path: str | Path) -> None:
                 "preserves cluster-grain degrees of freedom and counts"
             ),
         )
+    refuse_quantile_moments_export(
+        context.metrics, design=context.design, observational_refusal=observational_refusal
+    )
     compliance = (
         source.compliance_summary(context.design)
         if isinstance(context.design, Encouragement)
@@ -1353,11 +1405,13 @@ __all__ = [
     "MOMENTS_FORMAT",
     "MomentSource",
     "MomentsSource",
+    "SOURCE_QUANTILE_NO_MOMENTS",
     "SourceContext",
     "SourceOperation",
     "UNASSIGNED_LABEL",
     "WINSORIZATION_MOMENT_FIELDS",
     "require_operation",
     "refuse_cluster_grain_transport",
+    "refuse_quantile_moments_export",
     "validate_readout_source",
 ]

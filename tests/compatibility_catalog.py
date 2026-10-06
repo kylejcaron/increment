@@ -205,7 +205,9 @@ MATRIX: dict[str, dict[str, Cell]] = {
         ),
         "retention": R(_SEAM, ValueError),
         "quantile": R(
-            "has no moment representation", CapabilityError, code="source.frame.quantile_no_moments"
+            "has no observational estimator",
+            UnsupportedRequestError,
+            code="readout.observational.quantile",
         ),
         "total": _NA_REPORT_LAYER,
         "active": _NA_REPORT_LAYER,
@@ -321,7 +323,9 @@ MATRIX: dict[str, dict[str, Cell]] = {
         "conversion": S(),
         "ratio": S(),
         "retention": S(note="guardrail rows ride the export"),
-        "quantile": R("no moments representation", CapabilityError, code="source.native.operation"),
+        "quantile": R(
+            "no moments representation", CapabilityError, code="source.frame.quantile_no_moments"
+        ),
         "total": _NA_REPORT_LAYER,
         "active": _NA_REPORT_LAYER,
     },
@@ -616,7 +620,9 @@ SCENARIOS = (
         explanation=(
             "Quantile sequential inference has no matching raw likelihood and is refused before data."
         ),
-        alternative="Use fixed-horizon quantile inference.",
+        alternative=(
+            "Use fixed-horizon quantile inference (valid for one planned analysis, not repeated looks)."
+        ),
         evidence=(
             EvidenceRef(
                 kind="integration",
@@ -645,7 +651,9 @@ SCENARIOS = (
         explanation=(
             "The unsupported quantile likelihood refuses the analysis before family evidence."
         ),
-        alternative=("Use fixed-horizon quantile inference for family participation."),
+        alternative=(
+            "Use fixed-horizon quantile inference for family participation (valid for one planned analysis, not repeated looks)."
+        ),
         evidence=(
             EvidenceRef(
                 kind="unit",

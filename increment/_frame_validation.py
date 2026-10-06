@@ -25,6 +25,7 @@ from increment.errors import (
     refuse,
     warn,
 )
+from increment.estimation._readout_refusals import refuse_observational_quantile  # noqa: F401
 from increment.estimation.armstats import CENTERED_FIELDS
 from increment.plan import (
     bind_automatic_sequential_plan,
@@ -42,14 +43,12 @@ if TYPE_CHECKING:
 CAPABILITY_TABLE: dict[str, str] = {
     "window_days": (
         "window_days is not supported on from_unit_summary -- a one-row-per-unit "
-        "summary carries no dates to window against; use from_unit_panel for a "
-        "windowed metric."
+        "summary carries no dates to window against."
     ),
     "type=retention": (
         "type='retention' is not supported on from_unit_summary -- a retention "
         "metric needs threshold_days and a date to compute the observation band "
-        "against, and a one-row-per-unit summary has neither; use from_unit_panel "
-        "for a retention metric."
+        "against, and a one-row-per-unit summary has neither."
     ),
 }
 
@@ -292,13 +291,25 @@ _REFUSALS = refusals(
         "frame.validation.from_unit_panel": RefusalSpec(
             "frame.validation.from_unit_panel",
             InvalidRequestError,
-            lambda *, covered: (
+            lambda *, covered, retention: (
                 f"from_unit_panel does not support a CUPED covariate on a windowed "
                 f"or retention metric: {', '.join(map(repr, covered))}. Those "
                 f"metrics have no per-unit collapse this frame can attach a "
-                f"pre-period covariate to. Aggregate to one row per unit yourself "
-                f"(taking the pre-period value once) and use from_unit_summary "
-                f"instead."
+                f"pre-period covariate to."
+                + (
+                    " For a windowed metric, compute each unit's windowed value upstream "
+                    "(taking the pre-period covariate once) and declare it as an "
+                    "unwindowed metric on from_unit_summary."
+                    if len(retention) < len(covered)
+                    else ""
+                )
+                + (
+                    " No frame source serves a per-unit retention value "
+                    f"({', '.join(map(repr, retention))}): remove the covariate to run "
+                    "retention without CUPED."
+                    if retention
+                    else ""
+                )
             ),
         ),
         "frame.validation.duplicate_breakout_column": "duplicate breakout column(s): {duplicates!r}",
@@ -556,7 +567,11 @@ def _reject_windowed_specs(specs: Sequence[MetricSpec]) -> None:
                 metric=spec.name,
                 capability="window_days",
                 value=spec.window_days,
-                route="use from_unit_panel for a windowed metric",
+                route=(
+                    "use from_unit_panel for a windowed metric in a randomized analysis; a "
+                    "panel source does not serve observational estimators or CATE for a "
+                    "windowed metric"
+                ),
             )
         if spec.type == "retention":
             refuse(
@@ -564,7 +579,12 @@ def _reject_windowed_specs(specs: Sequence[MetricSpec]) -> None:
                 metric=spec.name,
                 capability="type=retention",
                 value=spec.type,
-                route="use from_unit_panel for a retention metric",
+                route=(
+                    "use from_unit_panel for a retention metric in a randomized analysis; a "
+                    "panel source does not serve observational estimators or CATE for a "
+                    "retention metric, and retention is not supported under an encouragement "
+                    "design"
+                ),
             )
 
 
@@ -1223,8 +1243,9 @@ def _reject_covariates(specs: Sequence[MetricSpec]) -> None:
         for s in specs
         if s.covariate is not None and (s.window_days is not None or s.type == "retention")
     ]
+    retention = [s.name for s in specs if s.name in covered and s.type == "retention"]
     if covered:
-        _raise("frame.validation.from_unit_panel", covered=covered)
+        _raise("frame.validation.from_unit_panel", covered=covered, retention=retention)
 
 
 def _normalize_breakout_names(

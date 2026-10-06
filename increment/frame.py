@@ -75,6 +75,7 @@ from increment._frame_validation import (  # noqa: F401
     _validate_frame_boundary,
     _validate_single_group_per_unit,
     _validate_uptake_binary,
+    refuse_observational_quantile,
 )
 from increment._metric_specs import (
     MetricsArg,
@@ -107,6 +108,7 @@ from increment.semantics.models import (
 )
 from increment.sequential_source import SequentialSourceMixin
 from increment.sources import (
+    SOURCE_QUANTILE_NO_MOMENTS,
     UNASSIGNED_LABEL,
     ComplianceArm,
     ComplianceSummary,
@@ -146,11 +148,6 @@ _FRAME_GRAIN = RefusalSpec(
             else ""
         )
     ),
-)
-_FRAME_QUANTILE_NO_MOMENTS = RefusalSpec(
-    "source.frame.quantile_no_moments",
-    CapabilityError,
-    template="quantile metric {metric!r} has no moment representation; it is served through unit_frame. {route}",
 )
 _FRAME_BREAKOUTS_UNSUPPORTED = RefusalSpec(
     "source.frame.breakouts_unsupported",
@@ -439,8 +436,10 @@ class FrameTotalsSource(SequentialSourceMixin):
         if grain != "total":
             refuse(_FRAME_GRAIN, grain=grain, offered=self.capabilities)
         if getattr(metric, "type", None) == "quantile":
+            if getattr(self.design, "mechanism", None) == "observational":
+                refuse_observational_quantile(metric)
             refuse(
-                _FRAME_QUANTILE_NO_MOMENTS,
+                SOURCE_QUANTILE_NO_MOMENTS,
                 metric=metric.name,
                 route="use readouts.run, which routes quantiles automatically",
             )
@@ -683,7 +682,7 @@ class FrameTotalsSource(SequentialSourceMixin):
     def export_moments(self, path: str | Path) -> None:
         from increment.sources import export_source_moments
 
-        export_source_moments(self, path)
+        export_source_moments(self, path, observational_refusal=refuse_observational_quantile)
 
     def sql(self, *, grain: Grain = "total") -> dict[str, str]:
         refuse(
@@ -1169,7 +1168,10 @@ class FramePanelSource(SequentialSourceMixin):
             refuse(
                 _FRAME_WINDOWED_ENCOURAGEMENT_TOTAL,
                 metric=metric.name,
-                route="use grain='asof' or collapse to one row per unit and use from_unit_summary",
+                route=(
+                    "use grain='asof', or compute each unit's windowed value upstream and "
+                    "declare it as an unwindowed metric on from_unit_summary"
+                ),
             )
         breakout = self._breakout_key(by)
         if grain == "daily" and isinstance(metric, RetentionMetric):
@@ -1178,6 +1180,12 @@ class FramePanelSource(SequentialSourceMixin):
             refuse(_FRAME_QUANTILE_DAILY, metric=metric.name, route="read the total grain instead")
         if grain == "asof" and isinstance(metric, QuantileMetric):
             refuse(_ASOF_QUANTILE_UNSUPPORTED, metric=metric.name)
+        if (
+            grain == "total"
+            and isinstance(metric, QuantileMetric)
+            and getattr(self.design, "mechanism", None) == "observational"
+        ):
+            refuse_observational_quantile(metric)
         if (
             grain == "asof"
             and completed_windows_only
@@ -1306,7 +1314,9 @@ class FramePanelSource(SequentialSourceMixin):
         stays refused by name: a retention row's per-unit value depends
         on evaluating its band against the full day axis, and a windowed
         metric has no per-unit window/censoring concept in this sum --
-        collapse to one row per unit and use from_unit_summary.
+        compute each unit's windowed value upstream and declare it as an unwindowed
+        metric on from_unit_summary. No frame source serves unit-grain estimators
+        for a retention metric.
         """
         if outcome_stage == "raw":
             from increment.winsor import winsor_refuse
@@ -1322,7 +1332,12 @@ class FramePanelSource(SequentialSourceMixin):
                 FRAME_UNIT_FRAME_PANEL,
                 metric=metric.name,
                 shape="a unit panel",
-                route="collapse to one row per unit and use from_unit_summary",
+                route=(
+                    "compute each unit's windowed value upstream and declare it as an "
+                    "unwindowed metric on from_unit_summary"
+                    if spec.window_days is not None
+                    else "no frame source serves unit-grain estimators for a retention metric"
+                ),
             )
         admitted = _admit_panel_totals(
             self._sparse_panel,
@@ -1478,7 +1493,7 @@ class FramePanelSource(SequentialSourceMixin):
     def export_moments(self, path: str | Path) -> None:
         from increment.sources import export_source_moments
 
-        export_source_moments(self, path)
+        export_source_moments(self, path, observational_refusal=refuse_observational_quantile)
 
     def sql(self, *, grain: Grain = "total") -> dict[str, str]:
         refuse(
@@ -1752,8 +1767,11 @@ def from_unit_panel(  # noqa: PLR0913
         As :func:`from_unit_summary`. An unwindowed mean, ratio or conversion
         metric may declare a CUPED covariate that is constant within each
         unit; a covariate that varies within a unit refuses. Windowed and
-        retention metrics refuse a panel covariate - use
-        :func:`from_unit_summary` for those. Sequential CUPED is not
+        retention metrics refuse a panel covariate: for a windowed metric,
+        compute each unit's windowed value upstream and declare it as an
+        unwindowed metric on :func:`from_unit_summary`; no frame source
+        serves a per-unit retention value, so remove the covariate to run
+        retention without CUPED. Sequential CUPED is not
         available from this constructor.
     breakouts : Sequence[str]
         Unit-stable reporting columns; nulls normalize to ``"__null__"``.
@@ -1809,7 +1827,8 @@ def from_unit_panel(  # noqa: PLR0913
                 "the panel is collapsed to one row per unit before clustering "
                 "could apply, and the collapse is ambiguous on this shape. "
                 "Aggregate to one row per unit yourself and use "
-                "from_unit_summary(cluster=...) instead"
+                "from_unit_summary(cluster=...) instead (clustered inference is "
+                "total-grain only, so the day axis is given up)"
             ),
             operation="from_unit_panel(cluster=...)",
             cluster=cluster,

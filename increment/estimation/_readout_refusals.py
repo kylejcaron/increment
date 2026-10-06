@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from types import MappingProxyType
+from typing import NoReturn
 
 from increment.errors import (
     CapabilityError,
@@ -15,6 +16,7 @@ from increment.errors import (
     RefusalSpec,
     UnsupportedRequestError,
     refusals,
+    refuse,
 )
 
 
@@ -92,7 +94,7 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
             "readout.metric.quantile_breakout",
             CapabilityError,
             lambda *, metric, route=None, **_: _with_route(
-                f"{_quantile_subject(metric)}: breakout dimensions are deferred -- "
+                f"{_quantile_subject(metric)}: breakout dimensions are not supported -- "
                 "quantiles do not decompose over segment moments",
                 route,
             ),
@@ -102,11 +104,16 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
             UnsupportedRequestError,
             lambda *, metric, route=None, **_: _with_route(
                 f"{_quantile_subject(metric)}: one-sided alternative is not supported "
-                "for quantile metrics yet",
+                "for quantile metrics",
                 route,
             ),
         ),
         "readout.observational.prior": "mixture priors are only supported on the relative (log-RR) lift scale served by infer_lift/estimate_lift",
+        "readout.observational.quantile": RefusalSpec(
+            "readout.observational.quantile",
+            UnsupportedRequestError,
+            template="quantile metric {metric!r} has no observational estimator: the distribution-free order-statistic interval assumes independently randomized arms, so a confounded contrast would be reported as a causal quantile lift. Run a quantile metric under a randomized design",
+        ),
         "readout.value_scale.invalid": "value_scale[{metric!r}]={value_scale!r} must be 'relative' or 'absolute'",
         "readout.value_scale.null": "value_scale='absolute' cannot combine with a non-zero or absolute null for metric {metric!r}",
         "readout.adjustment.absolute_unadjusted": "Method(name='unadjusted') cannot honor value_scale='absolute': the unadjusted moments path already reports the absolute pair alongside relative lift, and its rows are confounded",
@@ -151,3 +158,17 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
 )
 
 READOUT_REFUSALS: Mapping[str, RefusalSpec] = MappingProxyType(_REFUSALS)
+
+
+def refuse_observational_quantile(metric: object, *, source: object | None = None) -> NoReturn:
+    """Refuse a quantile metric under an observational design, before any evidence is read.
+
+    No quantile estimator exists for an observational design: the adjusted-mean
+    machinery would otherwise report a mean effect under the quantile metric's name.
+    A *source* that binds metrics to trusted evidence authenticates the caller's metric
+    first (a read-free check), so a tampered binding keeps its own refusal.
+    """
+    authenticate = getattr(source, "validated_metric", None)
+    if authenticate is not None:
+        authenticate(metric)
+    refuse(READOUT_REFUSALS["readout.observational.quantile"], metric=getattr(metric, "name", None))

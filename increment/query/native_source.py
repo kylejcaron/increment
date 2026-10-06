@@ -35,6 +35,7 @@ from increment.errors import (
     _safe_error_value,
 )
 from increment.errors import refuse as _refuse
+from increment.estimation._readout_refusals import refuse_observational_quantile
 from increment.estimation.armstats import ArmStats
 from increment.query.artifact_contract import ArtifactStore
 from increment.query.artifact_publish import ArtifactPublisher
@@ -2864,11 +2865,21 @@ class DefinitionsMomentSource(SequentialSourceMixin):
         if require_uptake:
             self._resolve_uptake(None, operation=operation)
 
+    def _refuse_observational_quantile(self, metric: Metric) -> None:
+        """An observational design has no quantile estimator on any ingress path."""
+        if metric.type == "quantile" and getattr(self._context.design, "mechanism", None) == (
+            "observational"
+        ):
+            refuse_observational_quantile(metric)
+
     def _refuse_quantile_metrics(self, effective: Sequence[Metric], *, operation: str) -> None:
         """A quantile has no moments representation: there is no summary
         SQL to introspect and nothing an exported moments cube could carry.
         """
         non_additive = [m.name for m in effective if m.type == "quantile"]
+        if operation == "moments":
+            for metric in effective:
+                self._refuse_observational_quantile(metric)
         if non_additive:
             _refuse_operation(
                 operation=operation,
@@ -3846,7 +3857,9 @@ class DefinitionsMomentSource(SequentialSourceMixin):
         if getattr(self.context.plan.inference, "registration", None) is not None:
             from increment.sources import export_source_moments
 
-            return export_source_moments(self, path)
+            return export_source_moments(
+                self, path, observational_refusal=self._refuse_observational_quantile
+            )
 
         if self._experiment.cluster is not None and not isinstance(
             self._context.design, Encouragement
@@ -3863,10 +3876,19 @@ class DefinitionsMomentSource(SequentialSourceMixin):
                     "preserves cluster-grain degrees of freedom and counts"
                 ),
             )
+        from increment.sources import refuse_quantile_moments_export
+
+        refuse_quantile_moments_export(
+            self._metrics,
+            design=self._context.design,
+            observational_refusal=self._refuse_observational_quantile,
+        )
         if not self._metrics:
             from increment.sources import export_source_moments
 
-            return export_source_moments(self, path)
+            return export_source_moments(
+                self, path, observational_refusal=self._refuse_observational_quantile
+            )
         # Import lazily because parquet export requires the live ibis session.
         import pyarrow as pa
         import pyarrow.parquet as pq

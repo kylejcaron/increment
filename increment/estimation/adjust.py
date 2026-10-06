@@ -26,6 +26,7 @@ from increment.errors import (
 )
 from increment.estimation._adjust.clustered_unadjusted import estimate_clustered_unadjusted
 from increment.estimation._readout_refusals import READOUT_REFUSALS as _READOUT_REFUSALS
+from increment.estimation._readout_refusals import refuse_observational_quantile
 from increment.estimation.engine import (
     Method,
     _df_to_arms,
@@ -89,15 +90,15 @@ _REFUSALS = (
                 "margins_abs/null_abs cannot target metric {metric!r}: its rows are absolute-native"
                 " (value_scale='absolute'), so the abs_diff/abs_se fields the absolute-margin decision"
                 " reads are None by design. A shifted null for an absolute-native row is a null_lift in"
-                " the metric's own units -- deferred to the relative/shifted-null pass; until then test"
-                " against 0 with alternative=."
+                " the metric's own units, which this row does not support. Testing against 0 with"
+                " alternative= runs but drops the margin, so it answers a different question."
             ),
             "estimation.adjust.resolve_value_scales_null_lift_on_absolute_metric": (
                 "null_lifts/margins cannot target metric {metric!r} with a nonzero value: its rows are"
                 " absolute-native (value_scale='absolute'), so `lift` is in the metric's own units and"
-                " a unitless relative null would be compared against an additive interval. A shifted"
-                " null in additive units is deferred to the shifted-null pass; until then test against"
-                " 0 with alternative=."
+                " a unitless relative null would be compared against an additive interval. A nonzero"
+                " shifted null is not available on an absolute-native row. Testing against 0 with"
+                " alternative= runs but drops the margin, so it answers a different question."
             ),
             "estimation.adjust.method_name_unadjusted": (
                 "Method(name='unadjusted') cannot honor value_scale='absolute': the unadjusted moments"
@@ -260,6 +261,14 @@ def _reject_unsupported_prior_type(prior: Prior | None) -> None:
         _refuse("estimation.adjust.prior.type")
 
 
+def _reject_percentile_winsorization(metrics: Sequence[Metric]) -> None:
+    """Refuse a percentile-winsorized metric: its data-derived cutoffs have no adjusted route."""
+    for metric in metrics:
+        config = getattr(metric, "winsorization", None)
+        if config is not None and config.has_percentile:
+            _refuse("adjust.winsorization.percentile_unsupported", metric=metric.name)
+
+
 def _validate_prior_method_scales(
     methods: Sequence[Method],
     prior: Prior | None,
@@ -347,6 +356,31 @@ def _reject_unusable_value_scales(
             _refuse("estimation.adjust.value_scale_names", metric_type=metric_type, name=name)
 
 
+def _validate_request_mappings(
+    src: MomentSource,
+    *,
+    value_scale: Mapping[str, ValueScale] | None,
+    null_lifts: Mapping[str, float] | None,
+    null_abs: Mapping[str, float] | None,
+    alternatives: Mapping[str, str] | None,
+) -> dict[str, Metric]:
+    """Pure request-shape checks on the per-metric mappings; returns the declared metrics.
+
+    Idempotent and warning-free, so `estimate_ate` can run it ahead of the
+    observational-quantile refusal and leave method and shared-prior judgments after it.
+    """
+    by_name = {m.name: m for m in src.context.metrics}
+    for label, mapping in (
+        ("value_scale", value_scale),
+        ("null_lifts", null_lifts),
+        ("null_abs", null_abs),
+        ("alternatives", alternatives),
+    ):
+        _reject_unknown_metric_keys(by_name, label, mapping)
+    _reject_unusable_value_scales(by_name, value_scale)
+    return by_name
+
+
 def _resolve_value_scales(
     src: MomentSource,
     methods: list[Method],
@@ -380,15 +414,13 @@ def _resolve_value_scales(
     otherwise see only a fragment) skip the re-check here.
     """
     _reject_unsupported_prior_type(prior)
-    by_name = {m.name: m for m in src.context.metrics}
-    for label, mapping in (
-        ("value_scale", value_scale),
-        ("null_lifts", null_lifts),
-        ("null_abs", null_abs),
-        ("alternatives", alternatives),
-    ):
-        _reject_unknown_metric_keys(by_name, label, mapping)
-    _reject_unusable_value_scales(by_name, value_scale)
+    by_name = _validate_request_mappings(
+        src,
+        value_scale=value_scale,
+        null_lifts=null_lifts,
+        null_abs=null_abs,
+        alternatives=alternatives,
+    )
 
     for name, requested in (value_scale or {}).items():
         if requested == "absolute" and name in (null_abs or {}):
@@ -469,6 +501,15 @@ def judge_shared_prior_scales(
             names=sorted(estimable),
             stacklevel=stacklevel,
         )
+
+
+def _refuse_observational_quantiles(
+    metrics: Sequence[Metric], *, source: object | None = None
+) -> None:
+    """An observational design has no quantile estimator: refuse before any source read."""
+    for metric in metrics:
+        if getattr(metric, "type", None) == "quantile":
+            refuse_observational_quantile(metric, source=source)
 
 
 def validate_readout_adjustment(request: ReadoutRequest) -> None:
@@ -552,6 +593,8 @@ def validate_readout_adjustment(request: ReadoutRequest) -> None:
         ):
             _refuse("readout.value_scale.null", metric=name)
     if mechanism == "observational":
+        # Request-shape checks above come first; this is the estimator-capability refusal.
+        _refuse_observational_quantiles(metrics)
         for metric, config, methods in zip(metrics, configs, method_catalog, strict=True):
             prior = config.prior
             if isinstance(prior, (StudentTPrior, MixturePrior)):
@@ -649,9 +692,7 @@ def estimate_ate(  # noqa: PLR0913, PLR0915
     """
     if methods is None:
         methods = [Method(name="iptw")]
-    _reject_unsupported_prior_type(prior)
     _validate_unique_method_names(methods, caller="estimate_ate")
-    _validate_prior_method_scales(methods, prior)
     resolved_method_roles: dict[str, Literal["decision", "sensitivity"]] = dict(method_roles or {})
     if method_roles is None and methods:
         from increment.estimation.engine import resolve_method_roles
@@ -661,6 +702,8 @@ def estimate_ate(  # noqa: PLR0913, PLR0915
         )
     selected = list(src.context.metrics) if metrics is None else list(metrics)
     if methods == []:
+        _refuse_observational_quantiles(selected, source=src)
+        _reject_unsupported_prior_type(prior)
         from increment.estimation.decision_types import (
             ArmHypothesisKey,
             DecisionComputation,
@@ -685,20 +728,21 @@ def estimate_ate(  # noqa: PLR0913, PLR0915
     cluster = src.context.cluster
     if cluster is not None and prior is not None:
         _refuse_compatibility("arm.adjustment.cluster_prior", cluster=cluster)
-    winsor_diagnostics: dict[str, dict[str, dict[str, int | float | None]]] = {}
-    for raw_metric in selected:
-        declared_metric = raw_metric
-        metric_config = getattr(declared_metric, "winsorization", None)
-        if metric_config is None:
-            continue
-        if metric_config.has_percentile:
-            _refuse("adjust.winsorization.percentile_unsupported", metric=declared_metric.name)
-        winsor_diagnostics[declared_metric.name] = _winsorization_diagnostics(
-            src,
-            declared_metric,
-            design.control_group,
-        )
-
+    # Refusal precedence, all before any source read: pure request shape (mapping keys,
+    # scales), then estimator capability (an observational quantile has none, so method and
+    # prior judgments about it are moot), then prior and method judgments and static
+    # winsorization limits, then shared-prior advisories, which can warn and so come last.
+    _validate_request_mappings(
+        src,
+        value_scale=value_scale,
+        null_lifts=null_lifts,
+        null_abs=null_abs,
+        alternatives=alternatives,
+    )
+    _refuse_observational_quantiles(selected, source=src)
+    _reject_unsupported_prior_type(prior)
+    _validate_prior_method_scales(methods, prior)
+    _reject_percentile_winsorization(selected)
     scales = _resolve_value_scales(
         src,
         methods,
@@ -711,6 +755,16 @@ def estimate_ate(  # noqa: PLR0913, PLR0915
         alternatives=alternatives,
         prior_scale_judged=_prior_scale_judged,
     )
+
+    winsor_diagnostics: dict[str, dict[str, dict[str, int | float | None]]] = {}
+    for declared_metric in selected:
+        if getattr(declared_metric, "winsorization", None) is None:
+            continue
+        winsor_diagnostics[declared_metric.name] = _winsorization_diagnostics(
+            src,
+            declared_metric,
+            design.control_group,
+        )
 
     results: list[LiftEstimate] = []
     refused_failures: dict[Any, DecisionFailure] = {}

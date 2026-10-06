@@ -31,6 +31,7 @@ from increment.errors import (
     _safe_error_value,
     refuse,
 )
+from increment.estimation._readout_refusals import refuse_observational_quantile
 from increment.query.artifact_contract import (
     REFUSALS as _ARTIFACT_REFUSALS,
 )
@@ -859,7 +860,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
     ) -> list[dict[str, Any]]:
         self._preflight_cluster_grain(grain, operation="moments")
         # Dimensioned callers can be the first read on a fresh artifact source.
-        metric = self._validated_metric(metric)
+        metric = self.validated_metric(metric)
         extension = self._extension(
             {
                 "kind": kind,
@@ -883,7 +884,9 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             completed_windows_only=completed_windows_only,
         )
 
-    def _validated_metric(self, metric: Metric) -> Metric:
+    def validated_metric(self, metric: Metric) -> Metric:
+        """The manifest-bound metric for *metric*'s name, refusing a caller copy whose
+        semantics differ. Reads no evidence, so estimators can authenticate before refusing."""
         specs = self._metric_specs()
         spec = next((candidate for candidate in specs if candidate.name == metric.name), None)
         if spec is None:
@@ -918,6 +921,13 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             )
         return trusted
 
+    def _refuse_observational_quantile(self, metric: Metric) -> None:
+        """An observational design has no quantile estimator on any ingress path."""
+        if getattr(metric, "type", None) == "quantile" and (
+            getattr(self.context.design, "mechanism", None) == "observational"
+        ):
+            refuse_observational_quantile(metric)
+
     def unit_frame(
         self,
         metric: Metric,
@@ -933,7 +943,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         # A requested declared cluster column reuses the attached metadata column.
         requested = [name for name in dict.fromkeys(covariates) if name != "cluster_id"]
         extensions = {name: self._covariate_extension(name) for name in requested}
-        metric = self._validated_metric(metric)
+        metric = self.validated_metric(metric)
         base = self._unit_frame(
             metric,
             cluster=cluster,
@@ -1004,7 +1014,8 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 offered=tuple(sorted(self.capabilities)),
                 route="request one of the source's supported grains",
             )
-        metric = self._validated_metric(metric)
+        metric = self.validated_metric(metric)
+        self._refuse_observational_quantile(metric)
         if not include_covariate:
             config = next(
                 (
@@ -1328,7 +1339,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         from increment.estimation.engine import _df_to_arms
         from increment.query.native_source import SitewideEvidence
 
-        metric = self._validated_metric(metric)
+        metric = self.validated_metric(metric)
         entries = unit_day_artifact_extension_catalog(self._expected_context)
         entry = next(
             (

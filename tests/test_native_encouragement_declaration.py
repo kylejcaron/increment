@@ -489,6 +489,222 @@ def test_observational_artifact_publish_and_reopen_restores_design(con, tmp_path
     assert reopened_design.control_group == "control"
 
 
+def _observational_quantile_defs() -> dict:
+    """An observational experiment whose plan lists a supported mean before a quantile."""
+    return {
+        "dialect": "duckdb",
+        "fact_sources": [
+            {
+                "name": "events",
+                "sql": "select *, 30.0 as tenure from native_encouragement_events",
+                "timestamp_column": "ts",
+                "entities": ["user_id"],
+                "facts": [
+                    {"name": "exposed", "column": None},
+                    {"name": "purchase", "column": "revenue"},
+                ],
+                "properties": [
+                    {"name": "tenure", "column": "tenure", "dtype": "float", "as_of": "static"}
+                ],
+            }
+        ],
+        "exposures": [{"name": "e", "fact": "exposed"}],
+        "metrics": [
+            {
+                "type": "mean",
+                "name": "spend",
+                "entity": "user_id",
+                "fact": "purchase",
+                "aggregation": "sum",
+                "window_days": 7,
+            },
+            {
+                "type": "quantile",
+                "name": "revenue",
+                "entity": "user_id",
+                "fact": "purchase",
+                "aggregation": "sum",
+                "quantile": 0.5,
+            },
+        ],
+        "experiments": [
+            {
+                "name": "native_observational_quantile_exp",
+                "exposure": "e",
+                "unit": "user_id",
+                "start": "2025-01-01",
+                "end": "2025-01-31",
+                "control_group": "control",
+                "plan": {"secondaries": ["spend", "revenue"]},
+                "design": {
+                    "mechanism": "observational",
+                    "covariates": [{"property": "tenure", "source": "events"}],
+                },
+            }
+        ],
+    }
+
+
+def test_observational_quantile_refuses_on_definitions_and_reopened_artifact(con, tmp_path):
+    """A quantile metric has no observational estimator: the definitions source and a reopened
+    artifact both refuse it with the observational-quantile code instead of reporting an IPTW
+    mean effect under the quantile name, even when a supported mean precedes it in the request."""
+    from increment.errors import UnsupportedRequestError
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+
+    _seed(con)
+    defs_dict = _observational_quantile_defs()
+    defs = Definitions.model_validate(defs_dict)
+    experiment = defs.experiment("native_observational_quantile_exp")
+    assert experiment is not None
+    defs_path = _write_defs_yaml(defs_dict, tmp_path)
+    native = Analysis.from_definitions(
+        "native_observational_quantile_exp", defs_path, con, store="none"
+    )
+    with pytest.raises(UnsupportedRequestError) as definitions_error:
+        lift_rows(native.run())
+    assert definitions_error.value.code == "readout.observational.quantile"
+    assert definitions_error.value.context == {"metric": "revenue"}
+    store = WarehouseArtifactStore(con, schema_name="artifacts")
+    ref = native.publish_unit_day_artifact(store)
+    reopened = Analysis.from_unit_day_artifact(
+        store, ref, expected_context=artifact_context(defs, experiment, "error")
+    )
+    with pytest.raises(UnsupportedRequestError) as exc_info:
+        lift_rows(reopened.run())
+    assert exc_info.value.code == "readout.observational.quantile"
+
+
+def test_observational_quantile_refuses_before_a_leading_metric_is_read(con, tmp_path):
+    """The refusal is request preflight: the leading mean metric reads a table that does not
+    exist, so any read of it would surface a warehouse error instead of the quantile refusal."""
+    from increment.errors import UnsupportedRequestError
+
+    _seed(con)
+    defs_dict = _observational_quantile_defs()
+    defs_dict["fact_sources"].append(
+        {
+            "name": "ghost",
+            "sql": "select * from table_that_does_not_exist",
+            "timestamp_column": "ts",
+            "entities": ["user_id"],
+            "facts": [{"name": "ghost_value", "column": "v"}],
+        }
+    )
+    defs_dict["metrics"][0]["fact"] = "ghost_value"
+    native = Analysis.from_definitions(
+        "native_observational_quantile_exp",
+        _write_defs_yaml(defs_dict, tmp_path),
+        con,
+        store="none",
+    )
+    with pytest.raises(UnsupportedRequestError) as exc_info:
+        lift_rows(native.run())
+    assert exc_info.value.code == "readout.observational.quantile"
+
+
+@pytest.mark.parametrize("ingress", ["definitions", "artifact"])
+def test_estimate_quantile_lift_refuses_an_observational_source(con, tmp_path, ingress):
+    """The quantile estimator never reports a randomized Woodruff lift for observational data,
+    whichever source hands it the per-unit rows."""
+    from increment.errors import UnsupportedRequestError
+    from increment.estimation.quantile import estimate_quantile_lift
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+
+    _seed(con)
+    defs_dict = _observational_quantile_defs()
+    defs = Definitions.model_validate(defs_dict)
+    experiment = defs.experiment("native_observational_quantile_exp")
+    assert experiment is not None
+    native = Analysis.from_definitions(
+        "native_observational_quantile_exp",
+        _write_defs_yaml(defs_dict, tmp_path),
+        con,
+        store="none",
+    )
+    analysis = native
+    if ingress == "artifact":
+        store = WarehouseArtifactStore(con, schema_name="artifacts")
+        ref = native.publish_unit_day_artifact(store)
+        analysis = Analysis.from_unit_day_artifact(
+            store, ref, expected_context=artifact_context(defs, experiment, "error")
+        )
+    source = _native_source(analysis)
+    quantile = next(metric for metric in source.context.metrics if metric.name == "revenue")
+    with pytest.raises(UnsupportedRequestError) as exc_info:
+        estimate_quantile_lift(source, quantile, "control")
+    assert exc_info.value.code == "readout.observational.quantile"
+
+
+def test_observational_quantile_planning_baseline_reads_control_values(con, tmp_path):
+    """Planning baselines use a quantile's per-unit control values without estimating an
+    observational effect, so the observational refusal must not reach them."""
+    from increment.power.core import QuantileBaseline
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+
+    _seed(con)
+    defs_dict = _observational_quantile_defs()
+    defs = Definitions.model_validate(defs_dict)
+    experiment = defs.experiment("native_observational_quantile_exp")
+    assert experiment is not None
+    defs_path = _write_defs_yaml(defs_dict, tmp_path)
+    native = Analysis.from_definitions(
+        "native_observational_quantile_exp", defs_path, con, store="none"
+    )
+    store = WarehouseArtifactStore(con, schema_name="artifacts")
+    ref = native.publish_unit_day_artifact(store)
+    reopened = Analysis.from_unit_day_artifact(
+        store, ref, expected_context=artifact_context(defs, experiment, "error")
+    )
+    for analysis in (native, reopened):
+        assert isinstance(analysis.planning_baseline("revenue"), QuantileBaseline)
+
+
+@pytest.mark.parametrize("entry", ["moments", "estimate_quantile_lift", "estimate_ate"])
+def test_reopened_observational_artifact_validates_a_mutated_quantile_before_refusing(
+    con, tmp_path, entry
+):
+    """Caller-supplied quantile semantics are checked against the trusted manifest before the
+    observational classification applies, through every entry that receives a metric."""
+    from increment.estimation.adjust import estimate_ate
+    from increment.estimation.quantile import estimate_quantile_lift
+    from increment.query.artifact_contract import ArtifactContractError
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+    from increment.semantics.design import Observational
+
+    _seed(con)
+    defs_dict = _observational_quantile_defs()
+    defs = Definitions.model_validate(defs_dict)
+    experiment = defs.experiment("native_observational_quantile_exp")
+    assert experiment is not None
+    defs_path = _write_defs_yaml(defs_dict, tmp_path)
+    native = Analysis.from_definitions(
+        "native_observational_quantile_exp", defs_path, con, store="none"
+    )
+    store = WarehouseArtifactStore(con, schema_name="artifacts")
+    ref = native.publish_unit_day_artifact(store)
+    reopened = Analysis.from_unit_day_artifact(
+        store, ref, expected_context=artifact_context(defs, experiment, "error")
+    )
+    source = _native_source(reopened)
+    design = source.context.design
+    assert isinstance(design, Observational)
+    quantile = next(metric for metric in source.context.metrics if metric.name == "revenue")
+    mutated = quantile.model_copy(update={"quantile": 0.9})
+    calls = {
+        "moments": lambda: source.moments(mutated),
+        "estimate_quantile_lift": lambda: estimate_quantile_lift(source, mutated, "control"),
+        "estimate_ate": lambda: estimate_ate(source, design, metrics=[mutated]),
+    }
+    with pytest.raises(ArtifactContractError) as exc_info:
+        calls[entry]()
+    assert exc_info.value.code == "artifact.metric.binding_mismatch"
+
+
 def test_compile_unit_day_artifact_context_refuses_conflicting_encouragement_uptake():
     """A caller-supplied encouragement_uptake= that disagrees with the
     experiment's own declared design is a genuine contradiction, refused

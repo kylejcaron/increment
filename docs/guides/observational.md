@@ -846,14 +846,47 @@ designs only) cannot read covariates from an artifact; use `from_definitions`.
 - **`from_unit_panel` covers unwindowed metrics only.** It collapses to a
   per-unit total for an unwindowed mean/conversion metric (the same
   collapse `moments(grain="total")` already uses) and reads a covariate
-  that is constant across each unit's own rows; a windowed, retention, or
-  quantile metric still refuses by name (`source.frame.unit_frame_panel`;
-  collapse to one row per unit and use `from_unit_summary`), and a
+  that is constant across each unit's own rows; a windowed or retention
+  metric still refuses by name (`source.frame.unit_frame_panel`). For a
+  windowed metric, compute each unit's windowed value upstream and declare it
+  as an unwindowed metric on `from_unit_summary`; no frame source serves
+  unit-grain estimators for a retention metric. A
   covariate that genuinely varies within a unit refuses by name too
   (`frame.frame_panel.unit_covariate_varies`), naming the offending units.
   A moments-only source (`from_moments`) raises `CapabilityError`
   (`source.moments.covariate_unavailable`) naming the covariates: a
   moments cube has no unit grain to attach weights to.
+- **Quantile metrics refuse.** No observational quantile estimator exists:
+  the distribution-free order-statistic interval assumes independently
+  randomized arms, so a confounded contrast would be reported as a causal
+  quantile lift, and the adjusted-mean machinery would report a mean effect
+  under the quantile metric's name. The refusal is an
+  `UnsupportedRequestError` with code `readout.observational.quantile` and
+  the `metric` context, raised by `run()`, `estimate_ate` and
+  `estimate_quantile_lift` before any outcome is read, and identically from
+  every path that supports an observational design (`from_definitions`,
+  `from_unit_day_artifact`, `from_unit_summary`, `from_unit_panel`) for a
+  two-sided, zero-null request. A request that carries an absolute
+  `margin_abs` is refused first with `readout.metric.quantile_alternative`
+  (a one-sided tail), and a relative margin never reaches a readout: the
+  constructor refuses it with `plan.observational.relative_margin`. Run a
+  quantile metric under a randomized design. Fixed-horizon inference does not
+  change this: no inference kind has an observational quantile estimator.
+  No observational ingress can export a quantile cube either (`export()`
+  raises the same code on definitions, a reopened artifact, and both frames,
+  before any earlier metric in the catalog is read). `from_moments` therefore
+  never receives a genuine
+  quantile: a quantile *declared* over exported scalar moments constructs, and
+  a two-sided, zero-null `run()` raises `readout.observational.quantile` before
+  those moments can be used as quantile data (an absolute `margin_abs` raises
+  `readout.metric.quantile_alternative` first; a relative margin raises
+  `plan.observational.relative_margin` at construction), whereas
+  `run_breakout()` raises
+  `facade.analysis.operation` and the day-axis methods
+  `facade.analysis.no_definitions` (source limits). See
+  [Quantiles and portable moments](quantile-metrics.md#quantiles-and-portable-moments).
+  `Analysis.planning_baseline` of a quantile metric still reads the control
+  arm's per-unit values, since a planning baseline estimates no effect.
 - **Ratio metrics refuse.** IPTW, DML, and AIPW reweight or residualize a
   single per-unit outcome; a ratio's numerator and denominator would need
   the adjustment applied jointly with their covariance retained, which is not

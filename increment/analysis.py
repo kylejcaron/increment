@@ -865,7 +865,10 @@ class Analysis:
         An unwindowed mean, ratio or conversion metric may declare a CUPED
         covariate that is constant within each unit; a covariate that
         varies within a unit refuses. Windowed and retention metrics
-        refuse a panel covariate - use :meth:`from_unit_summary` for those.
+        refuse a panel covariate: for a windowed metric, compute each unit's
+        windowed value upstream and declare it as an unwindowed metric on
+        :meth:`from_unit_summary`; no frame source serves a per-unit retention
+        value, so remove the covariate to run retention without CUPED.
         Sequential CUPED is not available from this constructor.
 
         *on_unassigned* controls an unusable unit (null *group*, or a
@@ -1349,6 +1352,13 @@ class Analysis:
         stamp; :meth:`from_moments` validates and strips it, and
         refuses a file written in a future wire format instead of
         misreading it.
+
+        A fixed-horizon export refuses a quantile metric on every source with
+        ``source.frame.quantile_no_moments`` (``readout.observational.quantile``
+        under an observational design), from the metric catalog alone before any
+        evidence is read: a moments cube holds no per-unit values. A registered
+        sequential checkpoint holds unit-record proofs, not moments rows, so it
+        still exports when a catalog quantile is not among its registered models.
         """
         src = _require_analysis_operation(
             self._src,

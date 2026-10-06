@@ -348,7 +348,7 @@ companion MDE through `mde_unavailable_reason`.
 
 Combining a CUPED method with non-fixed inference is not supported. Such a
 procedure is refused with `arm.adjustment.sequential_cuped`. Clustered
-sequential planning is also refused; use fixed-horizon clustered planning or
+sequential planning is also refused; use fixed-horizon clustered planning (valid for one planned analysis, not repeated looks) or
 unit-randomized sequential planning.
 
 ## Reading `PowerResult`

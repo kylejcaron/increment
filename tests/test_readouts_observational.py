@@ -183,6 +183,33 @@ def test_run_dispatches_clustered_dml_with_arm_atomic_folds():
     assert estimate.n_clusters is not None and estimate.n_clusters >= 10
 
 
+def test_clustered_observational_cuped_sensitivity_refuses_and_dropping_it_keeps_iptw():
+    """A CUPED-configured sensitivity refuses under a declared cluster; the remedy keeps the
+    causal iptw decision and removes only the CUPED method."""
+    tbl = _confounded_table(200, seed=13)
+    seen = {"C": 0, "T": 0}
+    geo_ids = []
+    for variant in tbl["variant"].to_pylist():
+        geo_ids.append(f"{variant}-geo-{seen[variant] // 2}")
+        seen[variant] += 1
+    analysis = Analysis.from_unit_summary(
+        tbl.append_column("geo_id", pa.array(geo_ids)),
+        unit="user_id",
+        group="variant",
+        metrics={"revenue": "mean"},
+        cluster="geo_id",
+        design=_OBS_TRIM,
+    )
+    cuped_unadjusted = Method(name="unadjusted", variance_reduction="cuped")
+    with pytest.raises(CapabilityError) as exc_info:
+        analysis.run(decision_method=Method(name="iptw"), sensitivity_methods=[cuped_unadjusted])
+    assert exc_info.value.code == "arm.adjustment.cluster_cuped"
+    assert exc_info.value.context["cluster"] == "geo_id"
+    with pytest.warns(IncrementWarning):
+        (estimate,) = lift_rows(analysis.run(decision_method=Method(name="iptw")))
+    assert (estimate.method, estimate.method_role) == ("iptw", "decision")
+
+
 def test_run_refuses_a_control_only_observational_source():
     """The arm gate covers the observational branch too: a control-only
     source refuses with the stable code instead of an estimator error."""
@@ -535,6 +562,29 @@ def test_from_unit_panel_observational_missing_covariate_column():
     with pytest.raises(InvalidRequestError) as exc_info:
         lift_rows(an.run())
     assert exc_info.value.code == "frame.frame_panel.unit_covariate_column"
+
+
+@pytest.mark.parametrize("shape", ["summary", "panel"])
+def test_observational_quantile_metric_refuses_on_every_frame_shape(shape):
+    """A quantile metric has no observational estimator: both frame shapes refuse it by name
+    instead of reporting an adjusted mean effect under the quantile metric's name."""
+    from increment.frame import MetricSpec
+
+    table = _confounded_table(200, seed=11)
+    metrics = [MetricSpec(name="revenue", type="quantile", quantile=0.5)]
+    if shape == "summary":
+        analysis = Analysis.from_unit_summary(
+            table, unit="user_id", group="variant", metrics=metrics, design=_OBS_TRIM
+        )
+    else:
+        panel = table.append_column("day", pa.array(["2025-01-01"] * table.num_rows))
+        analysis = Analysis.from_unit_panel(
+            panel, unit="user_id", group="variant", date="day", metrics=metrics, design=_OBS_TRIM
+        )
+    with pytest.raises(UnsupportedRequestError) as exc_info:
+        lift_rows(analysis.run())
+    assert exc_info.value.code == "readout.observational.quantile"
+    assert exc_info.value.context == {"metric": "revenue"}
 
 
 def test_from_unit_panel_daily_ratio_ignores_observational_adjustment_capability():
@@ -1887,3 +1937,107 @@ def test_categorical_null_level_refuses_by_name_on_definitions_paths(tmp_path, c
     assert raised.value.code == "adjust.identification.missing_covariates"
     assert raised.value.context["missing_covariates"] == (("region", len(null_units)),)
     assert raised.value.context["n"] == len(units)
+
+
+def _scalar_mean_cube_rows():
+    """Real scalar moments: a randomized unit-summary mean over the quantile's outcome column.
+
+    The arms are ``"C"``/``"T"`` so the one cube is a valid source for both the
+    observational design (``_OBS``, control group ``"C"``) and a randomized read."""
+    import tempfile
+    from pathlib import Path
+
+    import pyarrow.parquet as pq
+
+    from increment.frame import MetricSpec
+
+    n = 80
+    table = pa.table(
+        {
+            "user_id": [f"u{i}" for i in range(n)],
+            "variant": ["C" if i % 2 == 0 else "T" for i in range(n)],
+            "latency": [1.0 + (i % 7) * 0.3 + (0.2 if i % 2 else 0.0) for i in range(n)],
+        }
+    )
+    producer = Analysis.from_unit_summary(
+        table,
+        unit="user_id",
+        group="variant",
+        control="C",
+        metrics=[
+            MetricSpec(
+                name="lat", type="mean", value_column="latency", preferred_direction="decrease"
+            )
+        ],
+    )
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "moments.parquet"
+            producer.export(path)
+            return pq.read_table(path).to_pylist()
+    finally:
+        producer.close()
+
+
+@pytest.mark.parametrize(
+    ("design", "request_kind", "stage", "code"),
+    [
+        (_OBS, "two-sided", "run", "readout.observational.quantile"),
+        (_OBS, "alternative", "run", "readout.metric.quantile_alternative"),
+        (_OBS, "guardrail", "run", "readout.metric.quantile_alternative"),
+        (_OBS, "margin_abs", "run", "readout.metric.quantile_alternative"),
+        (_OBS, "margin", "construct", "plan.observational.relative_margin"),
+        (None, "two-sided", "run", "source.moments.unit_grain"),
+        (None, "alternative", "run", "readout.metric.quantile_alternative"),
+        (None, "guardrail", "run", "readout.metric.quantile_alternative"),
+        (None, "margin_abs", "run", "readout.metric.quantile_alternative"),
+        (None, "margin", "run", "readout.metric.quantile_alternative"),
+    ],
+    ids=[
+        "observational-two-sided",
+        "observational-one-sided-alternative",
+        "observational-marginless-guardrail",
+        "observational-absolute-margin",
+        "observational-relative-margin",
+        "randomized-two-sided",
+        "randomized-one-sided-alternative",
+        "randomized-marginless-guardrail",
+        "randomized-absolute-margin",
+        "randomized-relative-margin",
+    ],
+)
+def test_quantile_over_scalar_moments_refuses_in_the_documented_precedence(
+    design, request_kind, stage, code
+):
+    """A quantile declared over a real scalar-moments cube is refused by whichever gate the
+    request reaches first: the plan's relative-margin construction guard (observational), the
+    engine's one-sided/shifted-null check (any one-sided request: a standalone alternative, a
+    marginless guardrail's adverse tail, or a margin), the observational estimator seam, then
+    the cube's missing unit grain."""
+    from increment.errors import CodedError
+    from increment.frame import MetricSpec
+    from increment.semantics.models import AnalysisPlan, ExperimentMetric
+
+    rows = _scalar_mean_cube_rows()
+    plan = {
+        "two-sided": None,
+        "alternative": AnalysisPlan(alternative="greater", primary="lat"),
+        "guardrail": AnalysisPlan(guardrails=[ExperimentMetric(metric="lat")]),
+        "margin_abs": AnalysisPlan(guardrails=[ExperimentMetric(metric="lat", margin_abs=0.5)]),
+        "margin": AnalysisPlan(guardrails=[ExperimentMetric(metric="lat", margin=0.02)]),
+    }[request_kind]
+    spec = [MetricSpec(name="lat", type="quantile", quantile=0.9, preferred_direction="decrease")]
+
+    def construct():
+        if design is not None:
+            return Analysis.from_moments(rows, metrics=spec, design=design, plan=plan)
+        return Analysis.from_moments(rows, metrics=spec, control="C", plan=plan)
+
+    if stage == "construct":
+        with pytest.raises(CodedError) as raised:
+            construct()
+    else:
+        analysis = construct()
+        with pytest.raises(CodedError) as raised:
+            analysis.run()
+    assert raised.value.code == code

@@ -126,7 +126,8 @@ def _render_compatibility_refusal(
     if code == "arm.inference.cluster":
         return (
             f"sequential inference is not supported with a declared cluster "
-            f"('{context.get('cluster')}') -- use fixed-horizon inference."
+            f"('{context.get('cluster')}') -- use fixed-horizon inference (valid for one "
+            "planned analysis, not repeated looks)."
         )
     if code == "arm.adjustment.cluster_cuped":
         encouragement = bool(context.get("encouragement"))
@@ -134,7 +135,13 @@ def _render_compatibility_refusal(
             f"CUPED is not supported with a declared cluster "
             f"('{context.get('cluster')}')"
             + (" under an encouragement design" if encouragement else "")
-            + " -- clustered moments carry no per-unit covariate evidence."
+            + " -- clustered moments carry no per-unit covariate evidence. Keep a "
+            "decision method that does not use CUPED (variance_reduction='none') and "
+            "remove or replace every method that requests CUPED: an observational "
+            "decision such as iptw stays as it is, keeping its adjustment covariates, "
+            "and for randomized or encouragement designs Method(name='unadjusted') is "
+            "such a method. The clustered analysis then keeps the same estimand "
+            "without CUPED variance reduction."
         )
     if code == "arm.adjustment.cluster_prior":
         return (
@@ -156,8 +163,8 @@ def _render_compatibility_refusal(
             "sequential route's error control is frequentist and route-specific -- "
             "exact for the always-valid e-process, asymptotic for the scalar-mean "
             "route -- and a prior-shifted posterior center would void it. Drop "
-            "prior= for these metrics, or use fixed-horizon inference instead of a "
-            "sequential kind."
+            "prior= for these metrics, or use fixed-horizon inference (valid for one "
+            "planned analysis, not repeated looks) instead of a sequential kind."
         )
     if code == "arm.metric.quantile_cuped":
         return (
@@ -168,8 +175,9 @@ def _render_compatibility_refusal(
     if code == "arm.metric.quantile_sequential":
         return (
             f"quantile metric {context.get('metric')!r}: no sequential boundary is defined "
-            "for a per-arm order statistic. Use fixed-horizon quantile inference, which "
-            "needs no sample-size commitment."
+            "for a per-arm order statistic. Use fixed-horizon quantile inference (valid "
+            "for one planned analysis, not repeated looks), which needs no sample-size "
+            "commitment."
         )
     if (
         code

@@ -58,6 +58,20 @@ def sequential_refuse(code: str, reason: str) -> NoReturn:
     refuse(_REFUSALS[code], reason=reason)
 
 
+def fixed_horizon_alternative(metrics, supports: str, quantile_limit: str) -> str:
+    """The fixed-horizon route, qualified when a quantile metric has no such estimator."""
+    route = (
+        f"use fixed-horizon inference, which supports {supports} (valid for one planned "
+        "analysis, not repeated looks)"
+    )
+    if any(getattr(metric, "type", None) == "quantile" for metric in metrics):
+        route += (
+            f"; a quantile metric has no {quantile_limit} estimator under any inference "
+            "kind, so it needs a randomized, unclustered design"
+        )
+    return route
+
+
 def validate_sequential_transform(metric) -> None:
     """Admit only outcome transforms that are predictable when each unit is revealed.
 
@@ -70,7 +84,8 @@ def validate_sequential_transform(metric) -> None:
     if metric.type == "quantile":
         sequential_refuse(
             "route.unsupported",
-            "quantiles need a matching sequential sampling proof; use fixed-horizon inference",
+            "quantiles need a matching sequential sampling proof; use fixed-horizon inference "
+            "(valid for one planned analysis, not repeated looks)",
         )
     winsorization = getattr(metric, "winsorization", None)
     if winsorization is not None and winsorization.has_percentile:
@@ -81,7 +96,9 @@ def validate_sequential_transform(metric) -> None:
             "and re-weights past increments with information unavailable when they were "
             "revealed. Fix the threshold from pre-period data (lower_value/upper_value), "
             "after which it is a fixed threshold applied per unit as it arrives, or use "
-            "fixed-horizon inference",
+            "fixed-horizon inference (single look only, with no repeated-look guarantee; "
+            "the percentile-winsor method is experimental and its confidence set supplies "
+            "no decision evidence)",
         )
 
 

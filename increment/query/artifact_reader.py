@@ -38,6 +38,7 @@ from increment.errors import (
     refusals,
     refuse,
 )
+from increment.estimation._readout_refusals import refuse_observational_quantile
 from increment.query.artifact_contract import (
     REFUSALS,
     ArtifactSnapshot,
@@ -1372,7 +1373,9 @@ class ArtifactMomentSource(SequentialSourceMixin):
             return self._builder_total(metric)
         return self._builder_day(metric, grain, completed_windows_only=completed_windows_only)
 
-    def _validated_metric(self, metric: Metric) -> Metric:
+    def validated_metric(self, metric: Metric) -> Metric:
+        """The manifest-bound metric for *metric*'s name, refusing a caller copy whose
+        semantics differ. Reads no evidence, so estimators can authenticate before refusing."""
         trusted = self._metric_specs()
         trusted_spec = next((spec for spec in trusted if spec.name == metric.name), None)
         if trusted_spec is None:
@@ -1425,7 +1428,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 offered=tuple(sorted(self.capabilities)),
                 route="request one of the offered grains",
             )
-        metric = self._validated_metric(metric)
+        metric = self.validated_metric(metric)
         if by:
             _relation_refuse(
                 "artifact.extension.missing", "artifact base has no breakout evidence extension"
@@ -1541,8 +1544,10 @@ class ArtifactMomentSource(SequentialSourceMixin):
         runs, executed on the pinned snapshot -- the one deliberate unit-level
         materialization this reader performs. The transformed stage covers
         unwindowed mean/ratio/conversion/quantile metrics; a windowed or
-        retention metric refuses by name (collapse to one row per unit and use
-        ``from_unit_summary``). This reader carries no covariate evidence, so
+        retention metric refuses by name (compute each unit's windowed value
+        upstream and declare it as an unwindowed metric on ``from_unit_summary``;
+        no frame source serves unit-grain estimators for a retention metric).
+        This reader carries no covariate evidence, so
         any requested covariate refuses.
         """
         if outcome_stage not in ("raw", "transformed"):
@@ -1553,7 +1558,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
             _relation_refuse(
                 "artifact.extension.missing", "artifact base has no covariate evidence"
             )
-        trusted = self._validated_metric(metric)
+        trusted = self.validated_metric(metric)
         if outcome_stage == "transformed":
             spec = next(spec for spec in self._metric_specs() if spec.name == trusted.name)
             if spec.window_days is not None or spec.type == "retention":
@@ -1561,7 +1566,11 @@ class ArtifactMomentSource(SequentialSourceMixin):
                     FRAME_UNIT_FRAME_PANEL,
                     metric=metric.name,
                     shape="an artifact of a windowed or retention metric",
-                    route="Collapse to one row per unit and use from_unit_summary.",
+                    route=(
+                        "For a windowed metric, compute each unit's windowed value upstream "
+                        "and declare it as an unwindowed metric on from_unit_summary; no "
+                        "frame source serves unit-grain estimators for a retention metric."
+                    ),
                 )
         return self._unit_frame(
             trusted,
@@ -1869,11 +1878,17 @@ class ArtifactMomentSource(SequentialSourceMixin):
             arms=tuple(ComplianceArm(**row) for row in rows.values()),
         )
 
+    def _refuse_bound_observational_quantile(self, metric: Metric) -> NoReturn:
+        """Authenticate the metric against the artifact binding, then refuse it observationally."""
+        refuse_observational_quantile(metric, source=self)
+
     def export_moments(self, path: str | Path) -> None:
         if getattr(self.context.plan.inference, "registration", None) is not None:
             from increment.sources import export_source_moments
 
-            return export_source_moments(self, path)
+            return export_source_moments(
+                self, path, observational_refusal=self._refuse_bound_observational_quantile
+            )
         if self.context.cluster is not None and not isinstance(self.context.design, Encouragement):
             from increment.sources import refuse_cluster_grain_transport
 
@@ -1887,10 +1902,19 @@ class ArtifactMomentSource(SequentialSourceMixin):
                     "preserves cluster-grain degrees of freedom and counts"
                 ),
             )
+        from increment.sources import refuse_quantile_moments_export
+
+        refuse_quantile_moments_export(
+            self.context.metrics,
+            design=self.context.design,
+            observational_refusal=self._refuse_bound_observational_quantile,
+        )
         if not self._manifest.metric_measures:
             from increment.sources import export_source_moments
 
-            return export_source_moments(self, path)
+            return export_source_moments(
+                self, path, observational_refusal=self._refuse_bound_observational_quantile
+            )
         import pyarrow as pa
         import pyarrow.parquet as pq
 

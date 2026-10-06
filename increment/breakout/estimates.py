@@ -149,7 +149,7 @@ _REFUSALS = refusals(
         "readout.inference.disjoint_slices": RefusalSpec(
             "readout.inference.disjoint_slices",
             UnsupportedRequestError,
-            template="run_daily_lift: per-day/per-cohort slices are disjoint, so a sequential guarantee ({inference}) cannot apply to them -- an always-valid sequence does apply to the cumulative as-of view, so pass view='asof' (Analysis.run_asof_lift) or drop inference",
+            template="run_daily_lift: per-day/per-cohort slices are disjoint, so a sequential guarantee ({inference}) cannot apply to them -- an always-valid sequence does apply to the cumulative as-of view, so pass view='asof' (Analysis.run_asof_lift), or drop inference for per-slice fixed-horizon intervals (each valid for one planned analysis, not repeated looks)",
             keys=frozenset({"view"}),
         ),
         "breakout.breakout.exactly_one_lift": RefusalSpec(
@@ -3894,7 +3894,9 @@ def _snapshot_daily_lift(
         and "compliance" in requested_estimands
     ):
         sequential_refuse(
-            "route.unsupported", "structural-zero uptake requires the C03 fixed-horizon rate target"
+            "route.unsupported",
+            "structural-zero uptake is a rate target; use fixed-horizon compliance "
+            "(valid for one planned analysis, not repeated looks)",
         )
     if context.plan is not None:
         if context.plan.inference != context.inference:
