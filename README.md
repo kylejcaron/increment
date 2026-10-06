@@ -74,6 +74,9 @@ results = Analysis.from_unit_summary(
 ).run()
 
 for result in results:
+    if result.lift is None:  # e.g. an exact conversion row with zero control events
+        print(repr(result))  # the repr shows the row's set or its unavailable reason
+        continue
     print(f"{result.metric}: lift={result.lift.value:+.1%}")
 ```
 

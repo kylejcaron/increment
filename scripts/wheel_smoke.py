@@ -119,6 +119,35 @@ def main() -> None:
     previous = achieved_power(sized.n_per_arm - 1, 0.1, baseline, procedure, design=design)
     assert previous.power < design.power <= reached.power, "sizing failed the target crossing"
 
+    import pyarrow as pa
+
+    from increment import Analysis
+    from increment.tables import estimates_to_readout
+
+    data = pa.table(
+        {
+            "unit": list(range(200)),
+            "arm": ["control"] * 100 + ["treatment"] * 100,
+            "converted": [0] * 100 + [1] * 40 + [0] * 60,
+        }
+    )
+    estimates = Analysis.from_unit_summary(
+        data,
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics={"converted": "conversion"},
+    ).run()
+    (row,) = estimates_to_readout(estimates)
+    assert row["lift"] is None and row["lower"] > 0
+    assert row["higher"] is None and row["stat_sig"] is True
+    assert row["value_scale"] == "relative"
+    frame = estimates.to_frame(backend="pyarrow")
+    assert isinstance(frame, pa.Table)
+    (frame_row,) = frame.to_pylist()
+    assert frame_row["lift"] is None and frame_row["set_lower"] > 0
+    assert frame_row["set_upper"] is None
+
     print(f"wheel_smoke: OK (package={increment.__file__}; cwd={pathlib.Path.cwd()})")
 
 

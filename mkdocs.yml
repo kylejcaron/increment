@@ -67,6 +67,7 @@ nav:
       - Which Method Should I Use?: guides/choose-a-method.md
       - Method Compatibility Reference: guides/compatibility.md
       - Quickstart: guides/quickstart.md
+      - Reading Results: guides/reading-results.md
       - Data Model & YAML Definitions: guides/data-model.md
       - Metric Types: guides/metric-types.md
       - CUPED: guides/cuped.md
