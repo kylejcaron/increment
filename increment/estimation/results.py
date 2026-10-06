@@ -327,7 +327,10 @@ class BinomialConfidenceSet(CodedModel, BaseModel):
         """The exact p-value for ``H0: R = 1 + null_lift`` under *alternative*, from these
         persisted counts and nuisance budget, refined against the level the verdict compares
         it with (``decision_alpha``, halved for the two-sided test): the recompute behind
-        ``LiftEstimate.stat_sig()``/``p_value()`` and the tables' twin of them."""
+        ``LiftEstimate.stat_sig()``/``p_value()`` and the tables' twin of them. Refused with
+        ``estimation.binomial.tail_unrepresentable`` exactly where a fresh inversion of these
+        counts at this null and level is: a set admitted because its own null was rejected on
+        the nuisance domain alone does not answer a null the float margin leaves undecidable."""
         from increment.estimation.binomial_rr import null_p_value
 
         tail = self.decision_alpha / 2.0 if alternative == "two-sided" else self.decision_alpha

@@ -12,8 +12,10 @@ tests/estimation/test_inference.py and test_engine.py.
 
 from __future__ import annotations
 
+import copy
 import json
 import math
+import pickle
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -1398,6 +1400,69 @@ class TestLiftEstimateBinomialCrossInvariants:
         assert row.stat_sig()
         assert row.p_value() < 0.05
         assert LiftEstimate.model_validate_json(row.model_dump_json()) == row
+
+    @pytest.mark.parametrize("alternative", ["two-sided", "less"])
+    def test_a_row_admitted_at_a_structural_null_is_refused_when_retested_at_another(
+        self, alternative
+    ):
+        """At a billion units per arm and ``alpha = 1e-7`` the float margin dominates the tail
+        level, and a control arm of all successes rejects a null ratio of two on its
+        Clopper-Pearson bound alone, so that row is cut and persisted. Its ``stat_sig()`` and
+        ``p_value()`` re-read the persisted counts at the row's null: the same shifted null
+        answers as it was cut, and the unshifted null, whose nuisance domain is not empty,
+        refuses exactly as a fresh inversion at that null does -- not the margin-floored
+        non-rejection its tails would read."""
+        from increment.estimation import binomial_rr
+
+        n, alpha = binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE, 1e-7
+        alpha_eff = alpha if alternative == "two-sided" else 2.0 * alpha
+        ci = binomial_rr.confidence_interval(
+            n, n, 5, n, alpha=alpha, alternative=alternative, null_r=2.0
+        )
+        lower, upper = binomial_rr.to_lift_bounds(ci)
+        bset = _binomial_set(
+            lower=lower,
+            upper=upper,
+            alpha=alpha_eff,
+            level=math.fsum((1.0, -alpha_eff)),
+            decision_alpha=alpha,
+            geometry=ci.geometry,
+            x_c=n,
+            n_c=n,
+            x_t=5,
+            n_t=n,
+            nuisance_beta=binomial_rr.nuisance_beta(alpha),
+        )
+        lift = Estimate(value=5 / n - 1.0, lb=lower, ub=upper, level=bset.level, alpha=alpha_eff)
+        persisted = LiftEstimate.model_validate_json(
+            LiftEstimate(
+                **_binomial_row(
+                    alternative=alternative, null_lift=1.0, lift=lift, binomial_set=bset
+                )
+            ).model_dump_json()
+        )
+        assert persisted.stat_sig()
+        assert persisted.p_value() == ci.p_value_null
+
+        with pytest.raises(binomial_rr.BinomialDataError) as fresh:
+            binomial_rr.confidence_interval(
+                n, n, 5, n, alpha=alpha, alternative=alternative, null_r=1.0
+            )
+        retested = persisted.model_copy(update={"null_lift": 0.0})
+        with pytest.raises(binomial_rr.BinomialDataError) as verdict:
+            retested.stat_sig()
+        with pytest.raises(binomial_rr.BinomialDataError) as p_value:
+            retested.p_value()
+        for refused in (verdict.value, p_value.value):
+            assert refused.code == fresh.value.code == "estimation.binomial.tail_unrepresentable"
+            assert dict(refused.context) == dict(fresh.value.context)
+        with pytest.raises(TypeError):
+            verdict.value.context["alpha"] = 0.5  # ty: ignore[invalid-assignment]
+        for copied in (pickle.loads(pickle.dumps(verdict.value)), copy.deepcopy(verdict.value)):
+            assert copied.code == verdict.value.code
+            assert dict(copied.context) == dict(verdict.value.context)
+            with pytest.raises(TypeError):
+                copied.context["alpha"] = 0.5  # ty: ignore[invalid-assignment]
 
 
 def _registered_sequential_row():

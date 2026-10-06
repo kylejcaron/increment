@@ -510,6 +510,47 @@ class TestLiftEstimateToRowBinomialSetOnly:
         assert row["higher"] == lift_est.binomial_set.upper
         assert row["level"] == pytest.approx(lift_est.binomial_set.level)
 
+    def test_a_set_admitted_at_a_structural_null_refuses_another_null_in_every_adapter(self):
+        """At a billion units per arm and ``alpha = 1e-7`` the float margin dominates the tail
+        level; a control arm of all successes still rejects a null ratio of two on its
+        Clopper-Pearson bound alone, so production cuts and persists that row. Re-read at the
+        unshifted null -- a ``LiftEstimate`` copy, or a ``BreakoutEstimate`` twin carrying the
+        same set -- every adapter raises the refusal a fresh inversion at that null raises,
+        rather than reporting the margin-floored non-rejection its tails would read."""
+        from increment.estimation.binomial_rr import FINITE_SAMPLE_MAX_ARM_SIZE, BinomialDataError
+
+        n = FINITE_SAMPLE_MAX_ARM_SIZE
+        est = _binomial_lift_estimate(
+            x_c=n, n_c=n, x_t=5, n_t=n, alpha=1e-7, alternative="less", null_lift=1.0
+        )
+        assert est.binomial_set is not None and est.binomial_set.decision_alpha == 1e-7
+        assert est.stat_sig() is True
+        assert estimates_to_readout([est])[0]["stat_sig"] is True
+
+        retested = est.model_copy(update={"null_lift": 0.0})
+        twin = BreakoutEstimate(
+            metric=est.metric,
+            group_id=est.group_id,
+            method=est.method,
+            method_role=est.method_role,
+            alternative="less",
+            dimension="country",
+            dimension_value="US",
+            reference_kind="binomial",
+            lift=est.lift,
+            binomial_set=est.binomial_set,
+        )
+        codes = set()
+        for consumer in (retested.stat_sig, retested.p_value):
+            with pytest.raises(BinomialDataError) as exc_info:
+                consumer()
+            codes.add(exc_info.value.code)
+        for row in (retested, twin):
+            with pytest.raises(BinomialDataError) as exc_info:
+                estimates_to_readout([row])
+            codes.add(exc_info.value.code)
+        assert codes == {"estimation.binomial.tail_unrepresentable"}
+
 
 class TestNullAbsPrecedesBinomialSet:
     """A row can carry BOTH a persisted ``binomial_set`` (exact-binomial

@@ -1947,6 +1947,38 @@ class TestMarginDominatedAlpha:
         with pytest.raises(brr.BinomialDataError):
             brr.confidence_interval(lo, n, 5, n, alpha=alpha, alternative="less", null_r=null_r)
 
+    @pytest.mark.parametrize("alternative", ["two-sided", "less"])
+    def test_counts_admitted_at_a_structural_null_are_refused_at_another_null(self, alternative):
+        """`null_p_value` is the recompute a persisted set makes at any null, so it shares the
+        guard: the counts a null ratio of two admits on the structure alone are refused at the
+        unshifted null, whose domain is not empty, with the refusal a fresh inversion at that
+        null raises -- not the margin-floored non-rejection their tails would read."""
+        n, alpha = brr.FINITE_SAMPLE_MAX_ARM_SIZE, 1e-7
+        beta = brr.nuisance_beta(alpha)
+        tail = alpha / 2.0 if alternative == "two-sided" else alpha
+        admitted = brr.confidence_interval(
+            n, n, 5, n, alpha=alpha, alternative=alternative, null_r=2.0
+        )
+        assert admitted.p_value_null == brr.null_p_value(
+            2.0, n, n, 5, n, beta, alternative=alternative, tail=tail
+        )
+        with pytest.raises(brr.BinomialDataError) as fresh:
+            brr.confidence_interval(n, n, 5, n, alpha=alpha, alternative=alternative, null_r=1.0)
+        with pytest.raises(brr.BinomialDataError) as retested:
+            brr.null_p_value(1.0, n, n, 5, n, beta, alternative=alternative, tail=tail)
+        assert fresh.value.code == retested.value.code == "estimation.binomial.tail_unrepresentable"
+        assert dict(retested.value.context) == dict(fresh.value.context)
+        assert retested.value.context["alpha"] == alpha
+        assert retested.value.context["margin"] == brr._eps_margin(1, n, n)
+
+    def test_the_recompute_is_unguarded_where_the_margin_leaves_room(self):
+        """Small arms leave the tail level room below the margin at the same alpha: the
+        recompute reads its tails as before, at a null the structure does not reject."""
+        beta = brr.nuisance_beta(1e-7)
+        assert not brr.margin_dominates_tail(5e-8, beta, 10_000, 10_000)
+        p = brr.null_p_value(1.0, 3, 10_000, 5, 10_000, beta, alternative="two-sided", tail=5e-8)
+        assert p == brr.p_two(1.0, 3, 10_000, 5, 10_000, beta, tail=5e-8)
+
 
 @pytest.mark.slow
 class TestLargeArmValidation:

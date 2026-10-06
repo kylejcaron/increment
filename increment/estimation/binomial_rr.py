@@ -269,8 +269,9 @@ def margin_dominates_tail(tail: float, beta: float, n_c: int, n_t: int) -> bool:
     *beta*. Every evaluated tail carries `_eps_margin`, so then no p-value read from one can be
     certified below *tail*: a numerically evaluated null never rejects, and the set extends to
     wherever the structure alone stops it (``r = 0`` below, the empty nuisance domain just above
-    ``1/a`` above). `confidence_interval` refuses such a count pair unless its null is rejected on
-    the structure alone (`structural_rejection`); planning shares both predicates."""
+    ``1/a`` above). `confidence_interval` and `null_p_value` refuse such a count pair unless its
+    null is rejected on the structure alone (`structural_rejection`; `validate_decidable_null`
+    combines the two); planning shares both predicates."""
     return tail - beta <= _eps_margin(1, n_c, n_t)
 
 
@@ -848,6 +849,33 @@ def structural_rejection(
     return minus_domain_upper(null_r, b) < a
 
 
+def validate_decidable_null(
+    alternative: Alternative,
+    null_r: float,
+    x_c: int,
+    n_c: int,
+    n_t: int,
+    beta: float,
+    tail: float,
+) -> None:
+    """Refuse ``H0: R = null_r`` read against the tail level *tail* once the float margin every
+    evaluated tail carries dominates what *tail* leaves after the nuisance budget *beta*
+    (`margin_dominates_tail`), unless the nuisance domain alone rejects the null
+    (`structural_rejection`); neither predicate evaluates a tail. `confidence_interval` and
+    `null_p_value` share this guard, so counts persisted from an admitted inversion are
+    refused at another null exactly where a fresh inversion at that null is."""
+    if margin_dominates_tail(tail, beta, n_c, n_t) and not structural_rejection(
+        alternative, null_r, x_c, n_c, beta
+    ):
+        _raise(
+            "estimation.binomial.tail_unrepresentable",
+            alpha=2.0 * tail if alternative == "two-sided" else tail,
+            margin=_eps_margin(1, n_c, n_t),
+            n_c=n_c,
+            n_t=n_t,
+        )
+
+
 def _p_minus_impl(
     r: float,
     x_c: int,
@@ -982,10 +1010,13 @@ def null_p_value(
     """The p-value for ``H0: R = r`` under *alternative*, as `confidence_interval` reports it:
     `p_plus` for "greater", `p_minus` for "less" and `p_two` for "two-sided", read against the
     *tail* level the caller compares it with, and equal to them without the work of the test
-    that cannot be the smaller."""
+    that cannot be the smaller. Refused where `confidence_interval` refuses the same null
+    (`validate_decidable_null`): a margin-dominated *tail* reads a p-value only from a null the
+    nuisance domain alone rejects."""
     if r < 0.0:
         _raise("estimation.binomial.tail_unrepresentable", r=r)
     validated = validate_alternative(alternative)
+    validate_decidable_null(validated, r, x_c, n_c, n_t, beta, tail)
     certificates = _null_certificates(r, x_c, n_c, x_t, n_t, beta, NUISANCE_STOP, validated, tail)
     return _smallest_p(certificates, validated)
 
@@ -1401,9 +1432,10 @@ def confidence_interval(
 
     Once the float margin every evaluated tail carries dominates the tail level
     (`margin_dominates_tail`) the call is refused unless the null is rejected on the nuisance
-    domain alone (`structural_rejection`): then no reported value reads a tail, the p-value is
-    ``beta`` (doubled two-sided) and the set is ``[0, r]`` with ``r`` the first candidate that
-    empties the domain, just above ``1/a``, which the control arm certifies by itself.
+    domain alone (`structural_rejection`; `validate_decidable_null` is the guard, shared with
+    `null_p_value`): then no reported value reads a tail, the p-value is ``beta`` (doubled
+    two-sided) and the set is ``[0, r]`` with ``r`` the first candidate that empties the domain,
+    just above ``1/a``, which the control arm certifies by itself.
     """
     validate_counts(x_c, n_c)
     validate_counts(x_t, n_t)
@@ -1423,17 +1455,9 @@ def confidence_interval(
     # certified below `target` once the margin reaches what `target` leaves after the nuisance
     # budget. A null the empty nuisance domain rejects reads none.
     target = alpha / 2.0 if validated_alternative == "two-sided" else alpha
-    beta = nuisance_beta(alpha)
-    if margin_dominates_tail(target, beta, n_c, n_t) and not structural_rejection(
-        validated_alternative, null_r, x_c, n_c, beta
-    ):
-        _raise(
-            "estimation.binomial.tail_unrepresentable",
-            alpha=alpha,
-            margin=_eps_margin(1, n_c, n_t),
-            n_c=n_c,
-            n_t=n_t,
-        )
+    validate_decidable_null(
+        validated_alternative, null_r, x_c, n_c, n_t, nuisance_beta(alpha), target
+    )
     arguments = (x_c, n_c, x_t, n_t, alpha, validated_alternative, null_r, NUISANCE_STOP)
     try:
         hash(arguments)
