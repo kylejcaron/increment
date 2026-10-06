@@ -519,18 +519,17 @@ The finite-sample route also has three boundaries, each a refusal rather than si
   level leaves after the nuisance budget (`alpha / 2 - min(1e-6, alpha / 32)` two-sided,
   `alpha - min(1e-6, alpha / 32)` one-sided) no p-value read from an evaluated tail can be
   certified below the tail, and the call refuses with the same code (context `alpha`,
-  `margin`, `n_c`, `n_t`) instead of returning a set that extends to wherever
-  the structure alone stops it. The one exception is a null the structure alone rejects: a
-  two-sided or "less" test of a null ratio above `1 / a`, `a` the control arm's
-  Clopper-Pearson lower bound at the nuisance budget, has an empty nuisance domain, so its
-  p-value is the budget itself (doubled two-sided) with no tail evaluated, and the upper
-  endpoint is the first candidate above `1 / a`, which the control arm certifies by itself;
-  that call is answered, the lower endpoint at zero. A row persisted from such a call
-  carries that guard: `stat_sig()`/`p_value()` and the table adapters recompute its verdict
-  from the persisted counts, so re-reading them at a null the structure does not reject (the
-  unshifted null, for one) refuses with the same code and context a fresh call at that null
-  does, never a margin-floored non-rejection. For equal arms the two-sided threshold is
-  about `3.8e-9` at 4,000,000 per arm, `9.5e-8` at 100,000,000 and `9.5e-7` at
+  `margin`, `n_c`, `n_t`) instead of returning a set that extends to wherever the structure
+  alone stops it. The one exception is a null the structure alone rejects: a two-sided or
+  "less" test of a null ratio above `1 / a`, `a` the control arm's Clopper-Pearson lower
+  bound at the nuisance budget, has an empty nuisance domain, so its p-value is the budget
+  itself (doubled two-sided) with no tail evaluated, and the upper endpoint is the first
+  candidate above `1 / a`, which the control arm certifies by itself; that call is answered,
+  the lower endpoint at zero. Persisted rows retain that guard: `stat_sig()`/`p_value()` and
+  table adapters refuse a non-structural null with the same code and context as fresh
+  inference, rather than reporting a margin-floored non-rejection. For equal arms the
+  two-sided threshold is about `3.8e-9` at
+  4,000,000 per arm, `9.5e-8` at 100,000,000 and `9.5e-7` at
   1,000,000,000 (one-sided, about half of that); it passes the `3.2e-8` solver floor at
   about 34,000,000 per arm, so below that size the solver floor binds. The margin is
   absent from ordinary levels. Its effect depends on its ratio to the tail level, so it was
@@ -541,7 +540,8 @@ The finite-sample route also has three boundaries, each a refusal rather than si
   leaves the runtime deciding no count pair, so it has no power to plan and is refused, not
   planned as zero. Under a dominating margin the runtime decides only the count pairs whose
   control count rejects the null on its Clopper-Pearson bound alone, and refuses the rest;
-  a plan whose control window at the baseline rate holds a refused count is refused too, never
+  a `finite_sample` plan whose control window at the baseline rate holds a refused count is
+  refused too, and an `auto` plan whose refused pairs carry more than half of `1e-6`, never
   planned with those pairs as non-rejections. `achieved_power`, `minimum_detectable_effect`
   and each `power_curve` row refuse it with `power.binomial_tail_level_unrepresentable`
   (context `alpha`, `beta`, `tail_alpha`, `margin`, `n_c`, `n_t`, `p_c`, `decided_from` -- the
@@ -860,7 +860,11 @@ no cell budget, no arm ceiling, so a dense plan above a billion units per arm is
 Its figures have the measured 0.005 agreement criterion, not a runtime lower-bound guarantee.
 A decision the runtime refuses in full on the finite-sample
 route (a tail level its margin dominates, an arm above its ceiling) is refused for a plan that
-keeps more than half of `1e-6` of its counts there, never reported as zero power. A minimum
+keeps more than half of `1e-6` of its counts there, never reported as zero power; under a
+dominating margin the finite-sample route still decides the count pairs whose control count
+alone rejects a shifted null (see **Extreme alpha**), and a plan is refused only when the
+counts it keeps on that route *below* that control count carry more than half of `1e-6`, the
+context's `decided_from` naming the count. A minimum
 detectable effect whose whole path from the null is closed-form is solved without a lattice.
 Every enumerated plan is subject to the cell bound below, including sparse and borderline
 `auto` plans. `conversion_inference="finite_sample"` always uses enumeration; sufficiently

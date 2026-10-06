@@ -445,6 +445,51 @@ def test_a_legacy_free_form_method_label_replays_on_the_route_it_ran(label):
     assert _method_row_kinds(Method(name=label), "conversion") == ["t"]
 
 
+@pytest.mark.parametrize("label", ["ols", "custom"])
+def test_legacy_decoding_does_not_depend_on_the_live_adjustment_registry(monkeypatch, label):
+    """The same stored payload means the same thing before and after an adjustment plugin
+    registers the method's label, through every decoder: the registry is mutable plugin state,
+    the stored plan's meaning is fixed history."""
+    from increment.estimation.adjust import ADJUSTMENTS
+
+    payload = _legacy_unadjusted_plan(method=Method(name=label))
+    types = {_METRIC_A: "conversion"}
+    expected = Method(name=label, conversion_inference="finite_sample")
+
+    def decoded() -> list[Method]:
+        return [
+            _decision_method(compiled_plan_from_dict(payload, metric_types=types)),
+            _decision_method(compiled_plan_from_dict(payload)),
+            _decision_method(compiled_plan_from_json(json.dumps(payload))),
+        ]
+
+    before = list(decoded())
+    snapshot = dict(ADJUSTMENTS._entries)
+    monkeypatch.setitem(ADJUSTMENTS._entries, label, lambda *_args, **_kwargs: [])
+    assert label in ADJUSTMENTS
+    after = decoded()
+    monkeypatch.delitem(ADJUSTMENTS._entries, label)
+    assert dict(ADJUSTMENTS._entries) == snapshot
+    assert before == after == [expected] * 3
+
+
+@pytest.mark.parametrize("name", ["iptw", "dml", "aipw"])
+def test_legacy_historical_adjustments_stay_auto_whether_or_not_they_are_registered(
+    monkeypatch, name
+):
+    """The historically adjusting names are a frozen classification: unregistering one cannot
+    turn a stored adjustment into the binomial route."""
+    from increment.estimation.adjust import ADJUSTMENTS
+
+    payload = _legacy_unadjusted_plan(method=Method(name=name))
+    registered = _decision_method(compiled_plan_from_dict(payload))
+    monkeypatch.delitem(ADJUSTMENTS._entries, name)
+    assert name not in ADJUSTMENTS
+    unregistered = _decision_method(compiled_plan_from_dict(payload))
+    assert registered == unregistered == Method(name=name)
+    assert unregistered.conversion_inference == "auto"
+
+
 @pytest.mark.parametrize(
     "method",
     [

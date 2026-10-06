@@ -460,8 +460,10 @@ class TestAShiftedNullTheControlArmAloneRejects:
         key = self._key("less")
         floor = _binomial.structural_floor(key)
         assert floor is not None and not _binomial.window_decided(key, 0.5)
-        with pytest.raises(AssertionError):
+        # Every pair of the window is refused: the finite route is unavailable for all its mass.
+        with pytest.raises(_binomial.FiniteRouteUnavailable) as unavailable:
             _binomial.RejectionGeometry(key, "exact").evaluate(0.5, 1.0)
+        assert unavailable.value.mass > 0.999
 
         procedure = _conversion(alpha=self.ALPHA, alternative="less", null_lift=1.0)
         baseline = Baseline.from_proportion(0.5)

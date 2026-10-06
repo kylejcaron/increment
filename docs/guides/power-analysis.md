@@ -272,9 +272,11 @@ tail level its float margin dominates (a two-sided alpha below about `9.5e-7` at
 units per arm; see the limitations page). Under a dominating margin the runtime still decides
 a count pair whose control count alone rejects a shifted null (its Clopper-Pearson lower bound
 above `1 / (1 + null_lift)`, for a two-sided or "less" test); the context's `decided_from` is
-the smallest such count (`None` when there is none), and a plan whose control window at the
-baseline rate holds smaller counts, which the runtime refuses, is refused rather than planned
-with them as non-rejections. The margin grows with the arm, so a smaller size of
+the smallest such count (`None` when there is none). A `finite_sample` plan whose control
+window at the baseline rate holds smaller counts, which the runtime refuses, is refused rather
+than planned with them as non-rejections; an `auto` plan is refused when the counts the count
+rule keeps on the finite-sample route below `decided_from` carry more than half of `1e-6`, and
+otherwise carries them as undecided mass. The margin grows with the arm, so a smaller size of
 the same alpha can be planned; the solver floor refuses every size.
 
 In addition to numerical-resolution refusals, `required_sample_size` can end a

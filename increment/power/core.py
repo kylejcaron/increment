@@ -2520,13 +2520,15 @@ def _binomial_plan(
 ) -> _BinomialPlan:
     """The runtime decision at the analyzed integer counts of ``arm``. An explicitly
     ``finite_sample`` decision the runtime refuses in full decides no count pair, so it has no
-    power to plan and is refused (`_refuse_undecided`), and one whose replay would span more than
-    ``PLANNING_CELL_CEILING`` count cells at the null rate is refused before any is built. Under
-    ``auto`` both are charged where the finite-sample route is used: the counts the runtime takes
-    the delta-method route at need no replay, and the counts it keeps on a route it refuses are
-    undecided (`FiniteRouteUnavailable`). The geometry refuses an alternative whose window would
-    take it past the bound. ``route`` selects the heuristic replay a size search proposes
-    from; it is never a claim on the runtime."""
+    power to plan and is refused (`_refuse_undecided`); so is one whose control window at the
+    baseline rate holds a count the runtime refuses under a dominating float margin
+    (`window_decided`), and one whose replay would span more than ``PLANNING_CELL_CEILING``
+    count cells at the null rate is refused before any is built. Under ``auto`` all three are
+    charged where the finite-sample route is used: the counts the runtime takes the
+    delta-method route at need no replay, and the counts it keeps on a route it refuses, in
+    full or below `finite_floor`, are undecided (`FiniteRouteUnavailable`). The geometry
+    refuses an alternative whose window would take it past the bound. ``route`` selects the
+    heuristic replay a size search proposes from; it is never a claim on the runtime."""
     n_T, n_C = int(arm.n_T), int(arm.n_C)
     mode = _conversion_mode(procedure)
     key = _binomial_key(procedure, n_T, n_C)
@@ -3013,13 +3015,23 @@ def _render_tail_level(
         f"a control count of at least {decided_from} rejects the null on its Clopper-Pearson "
         "bound alone and every smaller count is refused"
     )
-    way = (
-        "whatever the treatment arm shows, so no size can be sized for an effect -- plan a "
-        "larger alpha"
-        if scope == "smallest"
-        else f"and the plan's control window at a {p_c:.6g} control rate holds smaller counts, "
-        "so this size has no power to plan -- plan fewer analyzed units per arm or a larger alpha"
-    )
+    if scope == "smallest":
+        way = (
+            "whatever the treatment arm shows, so no size can be sized for an effect -- plan a "
+            "larger alpha"
+        )
+    elif conversion_inference == "finite_sample":
+        way = (
+            f"and the plan's control window at a {p_c:.6g} control rate holds smaller counts, "
+            "so this size has no power to plan -- plan fewer analyzed units per arm or a larger "
+            "alpha"
+        )
+    else:
+        way = (
+            f"and at a {p_c:.6g} control rate the counts the count rule keeps on the "
+            "finite-sample route below it carry more than the planning resolution, so this size "
+            "has no power to plan -- plan fewer analyzed units per arm or a larger alpha"
+        )
     return (
         f"the runtime's finite-sample binomial decision at alpha={alpha} decides a count pair on "
         f"its control arm alone: {why}; {structural}, {way}"
@@ -3374,12 +3386,13 @@ def _binomial_admitted_ceiling(
     floor: int,
     upper: int,
 ) -> int:
-    """Largest assigned treatment size at most ``upper`` whose decision the runtime decides on
-    both arms: from the size where the float margin dominates the tail level, the runtime
-    evaluates no tail, and a count pair is decided, if at all, on the control arm's structural
-    certificate alone (`structural_floor`), which no treatment effect moves, so no size there
-    can be sized for an effect. A decision the margin dominates even at the smallest arms has
-    no such size and is refused."""
+    """Largest assigned treatment size at most ``upper`` whose finite-sample decision the
+    runtime decides on both arms: from the size where the float margin dominates the tail level,
+    that route evaluates no tail, and a count pair is decided, if at all, on the control arm's
+    structural certificate alone (`structural_floor`), which no treatment effect moves, so no
+    size there can be sized for an effect on that route. A decision the margin dominates even
+    at the smallest arms has no such size and is refused. A size search that is dense from some
+    size on (`_dense_size`) does not consult this ceiling."""
 
     def key_at(n: int) -> BinomialDecision:
         n_T, n_C = _analyzed_counts(*_compute_arms(n, design, minimum_per_arm=floor), baseline)

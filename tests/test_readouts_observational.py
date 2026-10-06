@@ -2308,3 +2308,45 @@ def test_native_observational_readout_is_one_snapshot_when_arms_land_mid_readout
         live.close()
         clean_con.disconnect()
         live_con.disconnect()
+
+
+def test_native_observational_empty_selection_touches_no_source(tmp_path, monkeypatch):
+    """An empty metric selection owns no evidence: it neither opens a snapshot (a definitions
+    capture writes TEMP tables) nor reads moments or unit frames, through the facade and
+    through the readout entry points that skip the facade's early return. A nonempty selection
+    still reads inside one source-owned snapshot."""
+    from increment import readouts
+    from increment.query.native_source import DefinitionsMomentSource
+
+    con, analysis = _snapshot_analysis(tmp_path, "empty")
+    touched: list[str] = []
+
+    def spy(name):
+        original = getattr(DefinitionsMomentSource, name)
+
+        def wrapped(self, *args, **kwargs):
+            touched.append(name)
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(DefinitionsMomentSource, name, wrapped)
+
+    try:
+        for name in ("readout_snapshot", "_pinned_source_execution", "moments", "unit_frame"):
+            spy(name)
+        source = analysis._state.source
+        assert source.design.mechanism == "observational"
+
+        assert list(analysis.run(metrics=[])) == []
+        assert readouts.run(source, metrics=[]) == []
+        assert readouts.arm_moments(source, metrics=[]) == []
+        assert touched == []
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            rows = list(lift_rows(analysis.run()))
+        assert len(rows) == 1
+        assert touched.count("readout_snapshot") == 1
+        assert "moments" in touched
+    finally:
+        analysis.close()
+        con.disconnect()

@@ -76,11 +76,15 @@ Its exits are the same non-rejection
 stop and a rejection stop from interval bounds of the Normal tail over each
 leaf (``_SurrogateTails.reach``).
 
-A decision the runtime refuses in full (an arm
-above its ceiling, a nuisance budget below the endpoint solver's floor, or a tail level its
-float margin dominates; see `refused`) decides no count pair on the finite-sample route. Under
-``finite_sample`` planning refuses it rather than report a power; under ``auto`` the pairs it
-would decide stay ambiguous, and a plan that keeps more than half of `RESOLUTION` of its mass
+A decision the runtime refuses in full (an arm above its ceiling, a nuisance budget below the
+endpoint solver's floor, or a tail level its float margin dominates with no count pair rejected
+on the nuisance domain alone; see `refused`) decides no count pair on the finite-sample route.
+Under a dominating margin the runtime evaluates no tail there, so it decides only the count
+pairs whose control count empties the minus certificate's domain at the null
+(`structural_floor`; every such pair rejects) and refuses the rest. Under ``finite_sample``
+planning refuses a decision refused in full, and a plan whose control window holds a refused
+count (`window_decided`), rather than report a power; under ``auto`` the pairs the finite-sample
+route refuses stay ambiguous, and a plan that keeps more than half of `RESOLUTION` of its mass
 on them raises `FiniteRouteUnavailable` instead of reporting a power. A geometry never stores
 more than ``PLANNING_CELL_CEILING`` cells: a decision whose null rectangle exceeds it is not
 planned, and an evaluation whose own rectangle (the control window at the control rate by the
@@ -1430,28 +1434,35 @@ def structural_floor(decision: BinomialDecision) -> int | None:
     return hi
 
 
-def refused(decision: BinomialDecision) -> bool:
-    """Whether the runtime refuses every count pair of this decision, so none rejects: an arm
-    above the finite-sample ceiling, a nuisance budget below the solver's floor, or a tail
-    level the float margin dominates (`margin_dominates`) with no control count that rejects
-    the null on the nuisance domain alone (`structural_floor`). The runtime applies the same
-    rule to each count pair in `confidence_interval`."""
+def finite_floor(decision: BinomialDecision) -> int:
+    """The smallest control count from which the runtime's finite-sample route decides a count
+    pair: zero while the float margin leaves room (every pair is decided), `structural_floor`
+    once it dominates (the pairs the control arm alone rejects; every smaller count is refused),
+    and one past the control arm when the route refuses every pair (an arm above the
+    finite-sample ceiling, a nuisance budget below the solver's floor, or a dominating margin
+    with no structural count). The runtime applies the same rule to each count pair in
+    `confidence_interval`."""
     if max(decision.n_c, decision.n_t) > _rr.FINITE_SAMPLE_MAX_ARM_SIZE or solver_refuses(decision):
-        return True
-    return margin_dominates(decision) and structural_floor(decision) is None
+        return decision.n_c + 1
+    if not margin_dominates(decision):
+        return 0
+    floor = structural_floor(decision)
+    return decision.n_c + 1 if floor is None else floor
+
+
+def refused(decision: BinomialDecision) -> bool:
+    """Whether the runtime's finite-sample route refuses every count pair of this decision, so
+    none rejects: `finite_floor` lies past the control arm."""
+    return finite_floor(decision) > decision.n_c
 
 
 def window_decided(decision: BinomialDecision, p_c: float) -> bool:
-    """Whether the runtime decides every count pair of the control window at ``p_c``, the rows
-    every evaluation of a plan at that rate integrates: always while the margin leaves room;
-    once it dominates, only when the window starts at or above `structural_floor`, so the
-    count pairs the runtime refuses carry at most the window's omitted mass, which the
-    enclosure already holds. A plan whose window holds a refused count is refused, not planned
-    with those pairs as non-rejections."""
-    if not margin_dominates(decision):
-        return True
-    floor = structural_floor(decision)
-    return floor is not None and _window_bounds(decision.n_c, p_c)[0] >= floor
+    """Whether the runtime's finite-sample route decides every count pair of the control window
+    at ``p_c``, the rows every evaluation of a plan at that rate integrates: the window starts
+    at or above `finite_floor`, so the count pairs the route refuses carry at most the window's
+    omitted mass, which the enclosure already holds. A ``finite_sample`` plan whose window holds
+    a refused count is refused, not planned with those pairs as non-rejections."""
+    return _window_bounds(decision.n_c, p_c)[0] >= finite_floor(decision)
 
 
 def window_cells(decision: BinomialDecision, p_c: float, p_t: float | None = None) -> int:
@@ -1491,9 +1502,10 @@ class ReplayBoundExceeded(Exception):
 
 
 class FiniteRouteUnavailable(Exception):
-    """The runtime refuses the finite-sample decision in full (`refused`) while the count pairs
-    the count rule keeps on it carry ``mass``, more than half of `RESOLUTION`: their decisions do
-    not exist, so the plan has no power to report for them."""
+    """The runtime's finite-sample route refuses the count pairs below `finite_floor` (every pair
+    when the decision is refused in full) while those of them the count rule keeps on that route
+    carry ``mass``, more than half of `RESOLUTION`: their decisions do not exist, so the plan has
+    no power to report for them."""
 
     def __init__(self, mass: float) -> None:
         super().__init__(mass)
@@ -1627,11 +1639,11 @@ class RejectionGeometry:
     itself) on the rectangle and the finite-sample replay on the rest. Without a routing every
     pair takes the finite-sample route. An evaluation decides the pairs of its own request
     (`_selected`): the heaviest ones its row and replay budgets pay for, whatever the geometry
-    already holds. A pair outside them stays undecided in that evaluation (all of the pairs off
-    the routed rectangle when the runtime refuses the finite-sample decision in full); its mass
-    is reported, never counted as a rejection or a non-rejection. What the geometry holds is
-    the runtime's own decisions kept for reuse: they save an evaluation's work and never change
-    its enclosure.
+    already holds. A pair outside them stays undecided in that evaluation (every pair off the
+    routed rectangle whose control count is below `finite_floor`: all of them when the runtime
+    refuses the finite-sample decision in full); its mass is reported, never counted as a
+    rejection or a non-rejection. What the geometry holds is the runtime's own decisions kept
+    for reuse: they save an evaluation's work and never change its enclosure.
 
     Control counts ``[x0, x0 + rows)`` index every block; treatment counts
     are stored in disjoint column segments, merged whenever a request
@@ -1662,10 +1674,14 @@ class RejectionGeometry:
         self.route = route
         self.max_cells = max_cells
         self.routing = routing
-        # The runtime's finite-sample decision exists unless it refuses every count pair; under
-        # ``auto`` the pairs it would decide stay undecided then.
-        self.finite = not refused(decision)
-        assert self.finite or routing is not None, "a refused decision has no rejection geometry"
+        # The smallest control count the runtime's finite-sample route decides from: every count
+        # while the float margin leaves room, the structural floor once it dominates, none when
+        # it refuses every pair. Under ``auto`` the pairs below it stay undecided; without a
+        # routing the plan is built only where its control window starts at or above it.
+        self.finite_from = finite_floor(decision)
+        assert self.finite_from <= decision.n_c or routing is not None, (
+            "a refused decision has no rejection geometry"
+        )
         self.x0 = 0
         self.rows = 0
         self.segments: list[_Segment] = []
@@ -1809,11 +1825,17 @@ class RejectionGeometry:
         lo_t, hi_t = self.routing.counts(self.decision.n_t)
         return (x >= lo_c) & (x <= hi_c), (j >= lo_t) & (j <= hi_t)
 
+    def _finite_rows(self, x_lo: int, x_hi: int) -> np.ndarray:
+        """Which control counts of ``[x_lo, x_hi]`` the runtime's finite-sample route decides:
+        those at or above `finite_floor`."""
+        return np.arange(x_lo, x_hi + 1) >= self.finite_from
+
     def ensure(self, x_lo: int, x_hi: int, j_lo: int, j_hi: int) -> None:
         """Decide every cell of ``[x_lo, x_hi] x [j_lo, j_hi]`` not yet decided that a route
         decides at all: the delta decision inside the routed rectangle, the finite-sample replay
-        elsewhere (nowhere when the runtime refuses that decision in full). No budget applies;
-        an evaluation decides the cells of its own request instead (`_selected`)."""
+        elsewhere at a control count it decides (`_finite_rows`; nowhere when the runtime
+        refuses that decision in full). No budget applies; an evaluation decides the cells of
+        its own request instead (`_selected`)."""
         segment, rows, cols = self._reserve(x_lo, x_hi, j_lo, j_hi)
         self._decide(segment, rows, cols, (x_lo, x_hi, j_lo, j_hi), None)
 
@@ -1831,7 +1853,7 @@ class RejectionGeometry:
         row_in, col_in = self._routed_flags(x_lo, x_hi, j_lo, j_hi)
         routed = row_in[:, None] & col_in[None, :]
         if select is None:
-            select = np.ones_like(routed) if self.finite else routed
+            select = routed | self._finite_rows(x_lo, x_hi)[:, None]
         todo = select & ~segment.known[rows, cols]
         if not todo.any():
             return
@@ -1843,9 +1865,10 @@ class RejectionGeometry:
             self._replay(segment, rows, cols, (x_lo, j_lo), replay_cells)
         segment.known[rows, cols] |= todo
 
-    def _off_route_bound(self, wc: _Window, wt: _Window) -> float:
+    def _off_route_bound(self, wc: _Window, wt: _Window, rows: np.ndarray | None = None) -> float:
         """Upper bound on the probability, within the two windows, of the count pairs off the
-        routed rectangle: those the runtime keeps on the finite-sample route.
+        routed rectangle: those the runtime keeps on the finite-sample route. With *rows*, only
+        the pairs at those control counts of ``wc`` count.
 
         It is ``out_c * T_t + in_c * out_t``, the control weights outside the routed rows times
         every treatment weight plus those inside them times the treatment weights outside the
@@ -1854,7 +1877,9 @@ class RejectionGeometry:
         weights' relative allowance and the rounding of its two sums, product and the final
         addition, so one outward-rounded inflation encloses the exact mass of the true laws."""
         row_in, col_in = self._routed_flags(wc.lo, wc.hi, wt.lo, wt.hi)
-        out_c, in_c = float(wc.weights[~row_in].sum()), float(wc.weights[row_in].sum())
+        counted = np.ones(wc.size, bool) if rows is None else rows
+        out_c = float(wc.weights[counted & ~row_in].sum())
+        in_c = float(wc.weights[counted & row_in].sum())
         out_t, total_t = float(wt.weights[~col_in].sum()), float(wt.weights.sum())
         inflation = _inflation(
             wc.error,
@@ -1873,17 +1898,19 @@ class RejectionGeometry:
         another evaluation has used and one on a fresh geometry decide the same cells.
 
         Every routed pair is chosen from while `EVALUATION_ROW_BUDGET` pays for it, and every
-        pair off the routed rectangle (none when the runtime refuses the finite-sample decision
-        in full, nor when `_off_route_bound` of those pairs is at most half of `RESOLUTION`)
-        while `EVALUATION_REPLAY_BUDGET` does, the heaviest first (`_heaviest`). A pair outside
+        pair off the routed rectangle at a control count the finite-sample route decides
+        (`_finite_rows`: none when the runtime refuses that decision in full), unless
+        `_off_route_bound` of those pairs is at most half of `RESOLUTION`, while
+        `EVALUATION_REPLAY_BUDGET` does, the heaviest first (`_heaviest`). A pair outside
         the choice is undecided in this evaluation, even if an earlier one decided it."""
         row_in, col_in = self._routed_flags(wc.lo, wc.hi, wt.lo, wt.hi)
         routed = row_in[:, None] & col_in[None, :]
         weights = (wc.weights, wt.weights)
         selected = self._heaviest(routed, weights, EVALUATION_ROW_BUDGET)
-        if not self.finite or self._off_route_bound(wc, wt) <= RESOLUTION / 2.0:
+        finite = self._finite_rows(wc.lo, wc.hi)
+        if self._off_route_bound(wc, wt, finite) <= RESOLUTION / 2.0:
             return selected
-        pending = ~routed
+        pending = ~routed & finite[:, None]
         if self.route == "exact":
             kinds = len(self.decision.kinds)
             pending = self._heaviest(pending, weights, EVALUATION_REPLAY_BUDGET, kinds)
@@ -1990,30 +2017,33 @@ class RejectionGeometry:
     ) -> tuple[_Window, _Window, _Segment, slice, slice, np.ndarray]:
         """Reserve and decide the evaluation's own selected cells, with `evaluate`'s refusals."""
         decision = self.decision
-        if not self.finite:
-            # The count pairs the runtime keeps on the route it refuses are known in closed form,
-            # before any cell is stored.
-            assert self.routing is not None
+        refusing = self.finite_from > 0
+        if refusing and self.routing is not None:
+            # The count pairs the runtime keeps on the finite-sample route at a control count it
+            # refuses are known in closed form, before any cell is stored.
             unrouted = unrouted_share(
-                decision.n_c, decision.n_t, p_c, p_t, floor=self.routing.floor
+                decision.n_c,
+                decision.n_t,
+                p_c,
+                p_t,
+                floor=self.routing.floor,
+                control_below=self.finite_from,
             )
             if unrouted > RESOLUTION / 2.0:
                 raise FiniteRouteUnavailable(unrouted)
         wc = _window(decision.n_c, p_c)
         wt = _window(decision.n_t, p_t)
+        if refusing:
+            # Bound refused window mass outward before storing cells. Routed pairs omitted
+            # by the row budget remain ambiguous enclosure mass, not a refusal.
+            refused_mass = self._off_route_bound(wc, wt, ~self._finite_rows(wc.lo, wc.hi))
+            if refused_mass > RESOLUTION / 2.0:
+                raise FiniteRouteUnavailable(refused_mass)
         # The bound on stored cells refuses an oversized window before any mask is allocated.
         try:
             segment, rows, cols = self._reserve(wc.lo, wc.hi, wt.lo, wt.hi)
         except ReplayBoundExceeded as exceeded:
             raise ReplayBoundExceeded(exceeded.cells, p_t) from None
-        if not self.finite:
-            # The closed-form share above bounds the whole distribution; this is the mass of the
-            # pairs the plan's windows hold, summed from their weights with outward rounding.
-            # Routed pairs the row budget leaves out are ambiguous mass of the enclosure, not a
-            # refusal.
-            refused_mass = self._off_route_bound(wc, wt)
-            if refused_mass > RESOLUTION / 2.0:
-                raise FiniteRouteUnavailable(refused_mass)
         selected = self._selected(wc, wt)
         self._decide(segment, rows, cols, (wc.lo, wc.hi, wt.lo, wt.hi), selected)
         return wc, wt, segment, rows, cols, selected

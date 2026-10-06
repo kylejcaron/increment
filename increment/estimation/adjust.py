@@ -787,6 +787,19 @@ def estimate_ate(  # noqa: PLR0913
     )
 
 
+def _validate_adjustment_methods(methods: Sequence[Method]) -> None:
+    for method in methods:
+        if method.name == "unadjusted":
+            continue
+        ADJUSTMENTS.get(method.name)
+        if method.variance_reduction != "none":
+            _refuse(
+                "adjust.variance_reduction.unsupported",
+                method=method.name,
+                variance_reduction=method.variance_reduction,
+            )
+
+
 def _estimate_ate(  # noqa: PLR0913, PLR0915
     src: MomentSource,
     design: Observational,
@@ -816,7 +829,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
 
     ``evidence`` is the moment rows a readout already reduced (and sized its family from): every
     method, diagnostic, failed cell and FCR re-estimate of this call reads them. Absent, the call
-    reduces each selected metric once itself.
+    reduces required metric moments once itself; clustered unadjusted inference uses unit frames.
     """
     if methods is None:
         methods = [Method(name="iptw")]
@@ -866,16 +879,21 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
         alternatives=alternatives,
         prior_scale_judged=_prior_scale_judged,
     )
+    _validate_adjustment_methods(methods)
     if evidence is None:
-        evidence = observational_evidence(src, selected)
+        moment_metrics = selected
+        if cluster is not None and all(method.name == "unadjusted" for method in methods):
+            # Joint clustered inference consumes unit frames; only winsor diagnostics need moments.
+            moment_metrics = [
+                metric for metric in selected if getattr(metric, "winsorization", None) is not None
+            ]
+        evidence = observational_evidence(src, moment_metrics)
     winsor_diagnostics: dict[str, dict[str, dict[str, int | float | None]]] = {}
     for raw_metric in selected:
         declared_metric = raw_metric
         metric_config = getattr(declared_metric, "winsorization", None)
         if metric_config is None:
             continue
-        if metric_config.has_percentile:
-            _refuse("adjust.winsorization.percentile_unsupported", metric=declared_metric.name)
         winsor_diagnostics[declared_metric.name] = _winsorization_diagnostics(
             evidence.metric_rows(declared_metric),
             design.control_group,
@@ -949,12 +967,6 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
         else:
             adjust_fn = ADJUSTMENTS.get(method.name)
             adjust_kwargs = _adjust_kwargs(method)
-            if method.variance_reduction != "none":
-                _refuse(
-                    "adjust.variance_reduction.unsupported",
-                    method=method.name,
-                    variance_reduction=method.variance_reduction,
-                )
             for metric in selected:
                 row_kwargs = _evidence_kwargs(method, evidence, metric)
                 try:

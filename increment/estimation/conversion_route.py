@@ -191,12 +191,45 @@ def routed_share(n_c: int, n_t: int, p_c: float, p_t: float, *, tail_alpha: floa
     return _routed(_outside_mass(n_c, p_c, m), _outside_mass(n_t, p_t, m))
 
 
-def unrouted_share(n_c: int, n_t: int, p_c: float, p_t: float, *, floor: int) -> float:
+def _mass_between(n: int, p: float, lo: int, hi: int) -> float:
+    """``P(lo <= X <= hi)`` for ``X ~ Bin(n, p)``, zero for an empty range, taken from the tail
+    the range sits in so the two tails subtracted are the smaller ones."""
+    from increment.estimation import binomial_rr
+
+    lo, hi = max(lo, 0), min(hi, n)
+    if lo > hi:
+        return 0.0
+    if lo > n * p:
+        below = float(binomial_rr._fast_binom_sf(np.asarray(lo - 1), n, p))
+        above = float(binomial_rr._fast_binom_sf(np.asarray(hi), n, p))
+        return max(0.0, below - above)
+    upper = float(binomial_rr._fast_binom_cdf(np.asarray(hi), n, p))
+    lower = float(binomial_rr._fast_binom_cdf(np.asarray(lo - 1), n, p)) if lo > 0 else 0.0
+    return max(0.0, upper - lower)
+
+
+def unrouted_share(
+    n_c: int, n_t: int, p_c: float, p_t: float, *, floor: int, control_below: int | None = None
+) -> float:
     """Probability that the runtime rule keeps a draw on the finite-sample route: some arm's
     success or failure count falls below ``floor``. The complement of ``routed_share``, summed
-    from the arms' outside masses so it keeps its relative precision where it is small."""
-    outside_c, outside_t = _outside_mass(n_c, p_c, floor), _outside_mass(n_t, p_t, floor)
-    return min(1.0, outside_c + outside_t - outside_c * outside_t)
+    from the arms' outside masses so it keeps its relative precision where it is small.
+
+    With ``control_below`` only draws whose control count is below it count: those the
+    finite-sample route refuses when it decides from that count on. The control arm's own
+    off-route mass below it (below ``floor``, or above ``n_c - floor`` yet below the count) is
+    taken whole, its routed mass below the count times the treatment arm's off-route mass; each
+    term is a tail or a range read from its nearer tail, never a total less an inside sum.
+    """
+    outside_t = _outside_mass(n_t, p_t, floor)
+    if control_below is None:
+        outside_c = _outside_mass(n_c, p_c, floor)
+        return min(1.0, outside_c + outside_t - outside_c * outside_t)
+    control_off = _mass_between(n_c, p_c, 0, min(control_below, floor) - 1) + _mass_between(
+        n_c, p_c, max(n_c - floor + 1, floor), control_below - 1
+    )
+    control_in = _mass_between(n_c, p_c, floor, min(control_below - 1, n_c - floor))
+    return min(1.0, control_off + control_in * outside_t)
 
 
 def planning_route(

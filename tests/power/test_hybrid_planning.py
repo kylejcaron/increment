@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from scipy.stats import binom
 
 from increment._literals import Alternative
 from increment.errors import InvalidRequestError
+from increment.estimation import binomial_rr
 from increment.estimation.arm_contract import ArmPlanningProcedure
 from increment.estimation.conversion_delta import production_decision
-from increment.estimation.conversion_route import dense_min_count, planning_route
+from increment.estimation.conversion_route import dense_min_count, planning_route, unrouted_share
 from increment.power import (
     Baseline,
     _binomial,
@@ -186,6 +188,114 @@ class TestPlansTheRuntimeCannotDecide:
         procedure = ArmPlanningProcedure.standard("conversion", alpha=1e-9)
         enclosure = planned_enclosure(400_000_000, 0.01, Baseline.from_proportion(0.3), procedure)
         assert enclosure.closed_form or enclosure.ambiguous <= _binomial.RESOLUTION
+
+
+class TestAStructuralFiniteRouteUnderAuto:
+    """At a billion units per arm and an alpha of 1e-7 the float margin dominates the tail level,
+    so the finite-sample route evaluates no tail; a "less" test of a doubled null still rejects
+    on the control arm alone once its Clopper-Pearson lower bound passes one half (a count of
+    500,094,182), and refuses every smaller count. Under ``auto`` the pairs the count rule keeps
+    on that route are decided from that count on and undecided below it: a plan whose refused
+    pairs weigh more than half the resolution is refused, naming the count, never given zero
+    power; one whose control window lies above it is decided without a replay."""
+
+    N, ALPHA = 1_000_000_000, 1e-7
+
+    @staticmethod
+    def _procedure() -> ArmPlanningProcedure:
+        return ArmPlanningProcedure.standard(
+            "conversion", alpha=1e-7, alternative="less", null_lift=1.0
+        )
+
+    def _geometry(self, route: _binomial.Route = "exact") -> RejectionGeometry:
+        key = _binomial_key(self._procedure(), self.N, self.N)
+        routing = Routing(dense_min_count(key.tail_alpha), 1.0)
+        return RejectionGeometry(key, route, routing=routing)
+
+    def test_the_finite_floor_is_the_runtimes_structural_threshold(self):
+        key = _binomial_key(self._procedure(), self.N, self.N)
+        floor = _binomial.finite_floor(key)
+        assert _binomial.margin_dominates(key) and not _binomial.refused(key)
+        assert floor == _binomial.structural_floor(key)
+        assert 0 < floor < self.N
+        with pytest.raises(binomial_rr.BinomialDataError):
+            binomial_rr.confidence_interval(
+                floor - 1, self.N, 5, self.N, alpha=self.ALPHA, alternative="less", null_r=2.0
+            )
+        decided = binomial_rr.confidence_interval(
+            floor, self.N, 5, self.N, alpha=self.ALPHA, alternative="less", null_r=2.0
+        )
+        assert decided.p_value_null < self.ALPHA
+
+    def test_a_window_of_decided_counts_is_the_runtime_power_without_a_replay(self, monkeypatch):
+        geometry = self._geometry()
+        p_c, p_t = 1.0 - 1e-7, 1e-7
+        wc, wt = _binomial._window(self.N, p_c), _binomial._window(self.N, p_t)
+        assert wc.lo >= geometry.finite_from
+        monkeypatch.setattr(_binomial, "_classify_live", self._forbidden)
+        power = geometry.evaluate(p_c, p_t)
+        mass = float(wc.weights.sum()) * float(wt.weights.sum())
+        assert power.power == pytest.approx(mass, rel=1e-12)
+        assert power.ambiguous == 0.0 and power.resolved and power.basis == "exact"
+        assert power.lower <= mass <= power.upper
+
+    @staticmethod
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("a count pair decided on the control arm alone must not be replayed")
+
+    def test_refused_pairs_are_undecided_mass_and_refuse_the_plan_when_material(self):
+        geometry = self._geometry()
+        floor = geometry.finite_from
+        # A control window straddling the floor: about half its mass is refused.
+        p_c = floor / self.N
+        wc = _binomial._window(self.N, p_c)
+        assert wc.lo < floor <= wc.hi
+        with pytest.raises(_binomial.FiniteRouteUnavailable) as straddling:
+            geometry.evaluate(p_c, 1e-7)
+        assert 0.4 < straddling.value.mass < 0.6
+        # A window entirely below the floor off the routed rectangle: everything is refused.
+        with pytest.raises(_binomial.FiniteRouteUnavailable) as below:
+            geometry.evaluate(0.5, 1e-7)
+        assert below.value.mass > 0.999
+
+    def test_the_public_plan_refuses_with_the_structural_count_in_its_context(self):
+        procedure, baseline = self._procedure(), Baseline.from_proportion(0.5)
+        with pytest.raises(InvalidRequestError) as raised:
+            achieved_power(self.N, 1e-7 / 0.5 - 1.0, baseline, procedure)
+        context = dict(raised.value.context)
+        assert raised.value.code == "power.binomial_tail_level_unrepresentable"
+        assert (context["cause"], context["scope"]) == ("float_margin", "requested")
+        assert context["conversion_inference"] == "auto"
+        assert context["decided_from"] == _binomial.finite_floor(
+            _binomial_key(procedure, self.N, self.N)
+        )
+        assert context["p_c"] == 0.5
+        # The same size and baseline at a dense alternative is planned by the count rule.
+        dense = achieved_power(self.N, -0.5, baseline, procedure)
+        assert dense.power_basis == "asymptotic"
+
+    @pytest.mark.parametrize(
+        ("n_c", "below"), [(100, 60), (822, 412), (823, 413), (824, 412), (2_000, 700)]
+    )
+    def test_the_refused_share_below_a_control_count_is_the_mass_of_those_pairs(self, n_c, below):
+        """`unrouted_share` with ``control_below`` is the whole off-route share at a count past
+        the arm and otherwise the off-route mass of the control counts below the count."""
+        n_t, floor = 1_500, 412
+        for p_c, p_t in ((0.3, 0.2), (0.05, 0.5), (0.5, 0.01)):
+            whole = unrouted_share(n_c, n_t, p_c, p_t, floor=floor)
+            assert unrouted_share(
+                n_c, n_t, p_c, p_t, floor=floor, control_below=n_c + 1
+            ) == pytest.approx(whole, rel=1e-12, abs=1e-300)
+            w_c = binom.pmf(np.arange(n_c + 1), n_c, p_c)
+            w_t = binom.pmf(np.arange(n_t + 1), n_t, p_t)
+            x = np.arange(n_c + 1)[:, None]
+            j = np.arange(n_t + 1)[None, :]
+            routed = (x >= floor) & (x <= n_c - floor) & (j >= floor) & (j <= n_t - floor)
+            refused_pairs = ~routed & (x < below)
+            expected = float(w_c @ refused_pairs @ w_t)
+            assert unrouted_share(
+                n_c, n_t, p_c, p_t, floor=floor, control_below=below
+            ) == pytest.approx(expected, rel=1e-9, abs=1e-15)
 
 
 class TestPublicSolversAgree:

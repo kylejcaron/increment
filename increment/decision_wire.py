@@ -676,6 +676,12 @@ def _refuse_legacy_plan(payload: Mapping[str, object]) -> None:
         refuse_legacy_asymptotic_family(inference.get("registration"))
 
 
+# The observational estimators that adjusted before ``conversion_inference`` existed. Frozen at
+# that wire shape: the live ``ADJUSTMENTS`` registry is mutable plugin state, and decoding a
+# stored plan must mean the same thing whatever is registered when it is read.
+_HISTORICAL_ADJUSTMENT_NAMES = frozenset(("iptw", "dml", "aipw"))
+
+
 def _legacy_conversion_inference(
     procedure: Mapping[str, Any], method: Mapping[str, Any], metric_type: str | None
 ) -> ConversionInference:
@@ -684,16 +690,16 @@ def _legacy_conversion_inference(
     Before the field existed a fixed-horizon, prior-free conversion or retention row ran the
     finite-sample route on either value scale (an absolute margin reads the same binomial set
     through its additive sidecar) unless its method adjusted: only CUPED
-    (``variance_reduction == "cuped"``) and an observational estimator (a name registered in
-    ``ADJUSTMENTS``) did. ``Method.name`` is otherwise a free-form label that never gated the
-    route, so a method of that kind is ``"finite_sample"`` whatever it is called. Every other
-    stored method never had that route (a CUPED method, an observational adjustment, an
-    informative prior, sequential inference, or a metric that is not a conversion or retention
-    rate) and is ``"auto"``, which leaves it on the route it always took. ``metric_type`` is
-    the stored metric's declared type when the caller knows it; without it a metric is taken to
-    be a conversion rate."""
-    from increment.estimation.adjust import ADJUSTMENTS
-
+    (``variance_reduction == "cuped"``) and the observational estimators in
+    ``_HISTORICAL_ADJUSTMENT_NAMES`` did. ``Method.name`` is otherwise a free-form label that
+    never gated the route, so a method of that kind is ``"finite_sample"`` whatever it is
+    called, including a name an adjustment plugin registers later. Every other stored method
+    never had that route (a CUPED method, an observational adjustment, an informative prior,
+    sequential inference, or a metric that is not a conversion or retention rate) and is
+    ``"auto"``, which leaves it on the route it always took. ``metric_type`` is the stored
+    metric's declared type when the caller knows it; without it a metric is taken to be a
+    conversion rate. The wire carries no design, so a legacy method named for a plugin
+    estimator reads as a free-form label; a stored ``conversion_inference`` always wins."""
     inference = procedure.get("inference")
     kind = inference.get("kind", "fixed") if isinstance(inference, Mapping) else "fixed"
     name = method.get("name")
@@ -701,7 +707,7 @@ def _legacy_conversion_inference(
         procedure.get("prior") is None
         and kind == "fixed"
         and method.get("variance_reduction", "none") != "cuped"
-        and not (isinstance(name, str) and name in ADJUSTMENTS)
+        and not (isinstance(name, str) and name in _HISTORICAL_ADJUSTMENT_NAMES)
         and metric_type in (None, "conversion", "retention")
     )
     return "finite_sample" if historically_exact else "auto"
