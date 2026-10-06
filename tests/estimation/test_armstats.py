@@ -1475,6 +1475,50 @@ class TestBinaryCountsBernoulliConsistency:
             binary_counts(arm, "conversion")
         assert exc_info.value.code == "estimation.binomial.inconsistent_bernoulli_variance"
 
+    @staticmethod
+    def _stored_arm(n: int, successes: int, *, residual_shift: float = 0.0) -> ArmStats:
+        """The arm as a producer that centers on the correctly rounded rate stores it: that rate
+        as the reference, the exact residual of the integer sum from it, and the exact centered
+        sum of squares, with ``residual_shift`` of aggregation error on the residual."""
+        ref_y = successes / n
+        return ArmStats(
+            study_id="e",
+            metric="conv",
+            group_id="control",
+            n=n,
+            ref_y=ref_y,
+            cy1=float(Fraction(successes) - n * Fraction(ref_y)) + residual_shift,
+            cy2=float(Fraction(successes * (n - successes), n)),
+        )
+
+    @pytest.mark.parametrize("n", [2**54 + 2, 2**58, 2**61, 10**18])
+    @pytest.mark.parametrize("rare", [513, 514, 641, 777, 1027, 2561, 3001])
+    @pytest.mark.parametrize("rare_side", ["failures", "successes"])
+    def test_counts_beyond_the_spacing_of_floats_are_recovered_exactly(self, n, rare, rare_side):
+        """Above ``2**53`` units a float sum ``n * ref_y + cy1`` is a multiple of 128 or more
+        (256 at ``2**61``), so a few failures that are not on that grid were read as the
+        neighboring multiple: 513 of 2**61 as 512. The reference and residual are exact floats
+        whose sum is exactly the integer count."""
+        successes = rare if rare_side == "successes" else n - rare
+        arm = self._stored_arm(n, successes)
+        assert binary_counts(arm, "conversion") == (successes, n)
+
+    @pytest.mark.parametrize("shift", [5e-7, -5e-7])
+    def test_the_aggregation_tolerance_on_the_first_moment_holds_at_any_scale(self, shift):
+        n = 2**61
+        arm = self._stored_arm(n, n - 513, residual_shift=shift)
+        assert binary_counts(arm, "conversion") == (n - 513, n)
+
+    @pytest.mark.parametrize("shift", [1e-3, -1e-3, 0.4, -0.4])
+    def test_a_first_moment_off_the_integer_beyond_the_tolerance_is_refused_at_any_scale(
+        self, shift
+    ):
+        """A float sum at this scale rounds the offset away; the exact sum keeps it."""
+        n = 2**61
+        with pytest.raises(BinomialDataError) as exc_info:
+            binary_counts(self._stored_arm(n, n - 513, residual_shift=shift), "conversion")
+        assert exc_info.value.code == "estimation.binomial.reconstructed_counts_not_binary"
+
 
 class TestCanonicalBernoulliArm:
     """An arm `binary_counts` accepts, re-formed from its counts: the y family is the exact

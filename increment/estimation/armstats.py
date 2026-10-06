@@ -1333,6 +1333,18 @@ class ArmStats(CodedModel, BaseModel):
 _BERNOULLI_CONSISTENCY_SLACK = 1024.0
 _UNIT_ROUNDOFF = 2.0**-53
 
+#: Largest distance of ``n * ref_y + cy1`` from an integer that `binary_counts` still reads as
+#: that count: the aggregation error a producer's residual first moment may carry.
+_COUNT_RECOVERY_TOLERANCE = Fraction(1e-6)
+
+
+def _float_or_inf(value: Fraction) -> float:
+    """``float(value)``, an infinity of its sign where the value exceeds float64."""
+    try:
+        return float(value)
+    except OverflowError:
+        return math.inf if value > 0 else -math.inf
+
 
 def _rounding_bound(units: int) -> float:
     """``gamma_k = k u / (1 - k u)``, the relative error of *units* compounded roundings;
@@ -1360,9 +1372,12 @@ def binary_counts(arm: ArmStats, metric_type: str) -> tuple[int, int]:
     uptake-mask family: those describe an adjusted or non-unit-grain
     quantity, not independent per-unit Bernoulli draws.
 
-    ``sum(y) == n*ref_y + cy1`` recovers exactly (see the class docstring),
-    so for genuinely 0/1 data this is always within float rounding of an
-    integer; a value that isn't is treated as corrupt/mismatched input.
+    ``sum(y) == n*ref_y + cy1`` recovers exactly (see the class docstring): the sum is formed
+    in exact rational arithmetic over the stored floats, so it is never rounded to the spacing
+    of floats at the arm's scale (above ``2**53`` units a float sum cannot hold every integer,
+    and the neighboring counts a few units apart would be read as one). For genuinely 0/1 data
+    it is within the producer's accumulation error of an integer; a value that isn't is
+    treated as corrupt/mismatched input.
     """
     if metric_type not in ("conversion", "retention"):
         _raise("estimation.binomial.binary_provenance_required", metric_type=metric_type)
@@ -1372,16 +1387,14 @@ def binary_counts(arm: ArmStats, metric_type: str) -> tuple[int, int]:
             metric=arm.metric,
             group_id=arm.group_id,
         )
-    sum_y = arm.n * arm.ref_y + arm.cy1
+    sum_y = arm.n * Fraction(arm.ref_y) + Fraction(arm.cy1)
     successes = round(sum_y)
-    if not math.isclose(sum_y, successes, rel_tol=0.0, abs_tol=1e-6) or not (
-        0 <= successes <= arm.n
-    ):
+    if abs(sum_y - successes) > _COUNT_RECOVERY_TOLERANCE or not (0 <= successes <= arm.n):
         _raise(
             "estimation.binomial.reconstructed_counts_not_binary",
             metric=arm.metric,
             group_id=arm.group_id,
-            sum_y=sum_y,
+            sum_y=_float_or_inf(sum_y),
             n=arm.n,
         )
     # A mean alone cannot distinguish 0/1 draws from, e.g., constant 0.5 outcomes. Bernoulli

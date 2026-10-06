@@ -264,7 +264,9 @@ class TestAcceptedProducerMoments:
 
     @pytest.mark.parametrize("alternative", _ALTERNATIVES)
     def test_the_verdict_at_an_interval_end_is_the_one_of_the_counts(self, producer, alternative):
-        lower, upper = delta_interval(*_DRIFT_COUNTS, tail=_DRIFT_TAIL, alternative=alternative)
+        interval = delta_interval(*_DRIFT_COUNTS, tail=_DRIFT_TAIL, alternative=alternative)
+        assert interval is not None
+        lower, upper = interval
         for end, reads in ((lower, "plus"), (upper, "minus")):
             if (reads == "plus" and alternative == "less") or (
                 reads == "minus" and alternative == "greater"
@@ -356,6 +358,7 @@ class TestIntervalEndsNearTotalLoss:
     @pytest.mark.parametrize("alternative", _ALTERNATIVES)
     def test_the_pair_is_decided_as_the_runtime_decides_it(self, alternative):
         interval = delta_interval(*self.COUNTS, tail=self.TAIL, alternative=alternative)
+        assert interval is not None
         lower, upper = interval
         assert -1.0 < lower < upper < -1.0 + 1e-9
         for end, reads in ((lower, "plus"), (upper, "minus")):
@@ -394,12 +397,18 @@ class TestLargeArmsNearSaturation:
     the log standard error and log ratio the counts give in closed form."""
 
     N = 2**61
-    # (tail, control successes, treatment successes); failures are multiples of 256, the spacing
-    # of float64 below 2**61, so that `binary_counts` recovers the counts from float moments.
+    # (tail, control successes, treatment successes). Float64 below 2**61 holds multiples of 256
+    # only: the counts of the first three cases lie on that grid, the rest do not, so a count
+    # is recovered from the stored reference and residual or it is read as a neighboring one.
     CASES = {
         "both_near_saturation": (0.025, N - 2560, N - 3584),
         "control_near_saturation_at_the_dense_floor": (0.1, N - 512, N // 2),
         "treatment_near_saturation": (0.025, N // 2, N - 4096),
+        "control_513_failures": (0.1, N - 513, N // 2),
+        "treatment_777_failures": (0.1, N // 2, N - 777),
+        "both_off_the_grid": (0.1, N - 1027, N - 641),
+        "both_off_the_grid_at_a_tighter_tail": (0.025, N - 2561, N - 3001),
+        "control_at_the_dense_floor_off_the_grid": (0.025, N - 2140, N // 2),
     }
     STORED = ("counted", "clamped", "inflated")
 
@@ -410,20 +419,22 @@ class TestLargeArmsNearSaturation:
 
     @classmethod
     def _arm(cls, successes: int, group_id: str, stored: str) -> ArmStats:
-        """The arm as a producer might store it: the exact centered sum of squares, that sum
-        lost to the noise floor of a raw-sum centering, or 1% above it."""
+        """The arm as a producer might store it: the correctly rounded rate as the reference and
+        the exact residual of the integer sum from it, with the exact centered sum of squares,
+        that sum lost to the noise floor of a raw-sum centering, or 1% above it."""
         failures = cls.N - successes
         exact = successes * failures / cls.N
         cy2 = exact * 1.01 if stored == "inflated" else exact
         if stored == "clamped" and failures < cls._noise_floor():
             cy2 = 0.0
+        ref_y = successes / cls.N
         return ArmStats(
             study_id="e",
             metric="conv",
             group_id=group_id,
             n=cls.N,
-            ref_y=successes / cls.N,
-            cy1=0.0,
+            ref_y=ref_y,
+            cy1=float(Fraction(successes) - cls.N * Fraction(ref_y)),
             cy2=cy2,
         )
 
@@ -445,6 +456,35 @@ class TestLargeArmsNearSaturation:
             "asymptotic"
         )
 
+    @pytest.mark.parametrize("stored", STORED)
+    def test_the_dense_floor_is_decided_on_the_exact_failure_count(self, stored):
+        """Failures at the floor take the delta method and one fewer the finite-sample route,
+        which refuses above its arm ceiling: a count read as the nearest multiple of 256 would
+        put the floor's 2140 on the sparse side (2048) and decide it by the wrong route."""
+        tail = 0.025
+        floor = dense_min_count(tail)
+        assert floor % 256 != 0
+        for failures, route in ((floor, "asymptotic"), (floor - 1, "finite_sample")):
+            x_c, x_t = self.N - failures, self.N // 2
+            assert route_for_counts(x_c, self.N, x_t, self.N, tail_alpha=tail, mode="auto") == route
+            computation = estimate_lift(
+                metrics=[CONVERSION_METRIC],
+                summary=[
+                    arm_row(self._arm(x_c, "control", stored)),
+                    arm_row(self._arm(x_t, "treatment", stored)),
+                ],
+                control_group="control",
+                methods=[Method(name="unadjusted")],
+                alpha=2.0 * tail,
+            )
+            if route == "asymptotic":
+                (row,) = computation.results
+                assert row.reference_kind == "t"
+            else:
+                assert not computation.results
+                (failure,) = computation.failures.values()
+                assert failure.code == "estimation.binomial.finite_sample_arm_ceiling_exceeded"
+
     @pytest.mark.parametrize("alternative", _ALTERNATIVES)
     @pytest.mark.parametrize("stored", STORED)
     @pytest.mark.parametrize("case", CASES)
@@ -462,7 +502,9 @@ class TestLargeArmsNearSaturation:
     @pytest.mark.parametrize("case", CASES)
     def test_the_log_ratio_and_its_standard_error_are_the_closed_form_of_the_counts(self, case):
         """Independent of the estimator: ``log(p_t / p_c)`` to 60 digits, and the delta-method
-        variance of each arm's log mean, ``failures / (successes * (n - 1))``."""
+        variance of each arm's log mean, ``failures / (successes * (n - 1))``. An arm mean is a
+        float64, which near one resolves a rate to ``eps``, so the log ratio is checked to a few
+        ``eps`` beside its relative tolerance; the standard error has no such floor."""
         tail, x_c, x_t = self.CASES[case]
         row = _summary_row(
             self._stored(case, "clamped"), tail=tail, alternative="two-sided", null_lift=0.0
@@ -470,7 +512,9 @@ class TestLargeArmsNearSaturation:
         assert row.lift is not None
         context = Context(prec=60)
         log_ratio = context.ln(context.divide(Decimal(x_t), Decimal(x_c)))
-        assert row.lift.log_mean == pytest.approx(float(log_ratio), rel=1e-9, abs=0.0)
+        assert row.lift.log_mean == pytest.approx(
+            float(log_ratio), rel=1e-9, abs=4.0 * math.ulp(1.0)
+        )
         variance = sum(Fraction(self.N - x, x * (self.N - 1)) for x in (x_c, x_t))
         assert row.lift.log_se == pytest.approx(math.sqrt(float(variance)), rel=1e-9, abs=0.0)
 
