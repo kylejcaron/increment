@@ -12,7 +12,7 @@ constructor.
 from __future__ import annotations
 
 import warnings
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
 import pyarrow as pa
@@ -28,7 +28,7 @@ from increment.errors import (
 )
 from increment.estimation.diagnostics import SRMResult
 from increment.results import NotApplicable
-from tests.analysis_factory import lift_rows, make_analysis_like
+from tests.analysis_factory import _moment_source, lift_rows, make_analysis_like
 from tests.warning_codes import warning_codes, warning_context
 
 if TYPE_CHECKING:
@@ -2054,27 +2054,25 @@ class _DriftingMoments:
     the late source's."""
 
     def __init__(self, early, late):
-        self._early = early
         self._late = late
+        self._early_moments = early.moments
+        self._late_moments = late.moments
         self.reads: dict[str, int] = {}
 
     def moments(self, metric, **options):
         self.reads[metric.name] = self.reads.get(metric.name, 0) + 1
-        source = self._early if self.reads[metric.name] == 1 else self._late
-        return source.moments(metric, **options)
+        moments = self._early_moments if self.reads[metric.name] == 1 else self._late_moments
+        return moments(metric, **options)
 
     def __getattr__(self, name):
         return getattr(self._late, name)
 
 
 def _drifting_analysis(early, late):
-    import copy
-    import dataclasses
-
-    source = _DriftingMoments(early._state.source, late._state.source)
-    drifting = copy.copy(late)
-    drifting._state = dataclasses.replace(late._state, source=source)
-    return drifting, source
+    source = _DriftingMoments(_moment_source(early), _moment_source(late))
+    # Capture both original reductions before substituting the drifting read behavior.
+    cast("Any", _moment_source(late)).moments = source.moments
+    return late, source
 
 
 _UNITS_PER_ARM = 12_000
@@ -2212,7 +2210,7 @@ def test_estimate_ate_reads_each_metrics_moments_once_across_methods():
     late = _mean_family_analysis(["control", "T1", "T2"])
     drifting, source = _drifting_analysis(early, late)
     try:
-        context = late._state.source.context
+        context = _moment_source(late).context
         computation = estimate_ate(
             cast("MomentSource", source),
             cast("Observational", context.design),
@@ -2333,8 +2331,8 @@ def test_native_observational_empty_selection_touches_no_source(tmp_path, monkey
     try:
         for name in ("readout_snapshot", "_pinned_source_execution", "moments", "unit_frame"):
             spy(name)
-        source = analysis._state.source
-        assert source.design.mechanism == "observational"
+        source = _moment_source(analysis)
+        assert isinstance(source.context.design, Observational)
 
         assert list(analysis.run(metrics=[])) == []
         assert readouts.run(source, metrics=[]) == []
