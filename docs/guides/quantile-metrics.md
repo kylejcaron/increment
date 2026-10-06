@@ -158,10 +158,16 @@ order statistic needs, and two different requests reach it:
   `source.frame.quantile_no_moments` (a source limit: a quantile has no moments
   representation), so no quantile cube ever exists to replay. Every
   export-capable ingress (`from_definitions`, a reopened unit-day artifact,
-  `from_unit_summary`, `from_unit_panel`) refuses the same way before reading
-  data or writing a file, even when additive metrics accompany the quantile. An
-  observational design refuses earlier, with `readout.observational.quantile`,
-  because no estimator could use the cube.
+  `from_unit_summary`, `from_unit_panel`) refuses a fixed-horizon moments
+  export the same way, from the metric catalog alone, before reading any
+  count or moment or writing a file, even when additive metrics accompany the
+  quantile. An observational design refuses with
+  `readout.observational.quantile` instead, because no estimator could use the
+  cube. A registered sequential plan is the one exception: it exports a
+  checkpoint of unit-record proofs and the declaration, with no moments rows,
+  so a catalog quantile no registered model covers does not block it and never
+  appears as mean moments (replay still refuses to estimate that quantile
+  sequentially).
 - **Declaring a quantile over a cube that already exists** (for example a
   `MetricSpec(type="quantile")` over exported scalar moments) constructs, then
   refuses when read, and the code depends on the request, measured on a real

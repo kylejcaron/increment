@@ -1878,11 +1878,17 @@ class ArtifactMomentSource(SequentialSourceMixin):
             arms=tuple(ComplianceArm(**row) for row in rows.values()),
         )
 
+    def _refuse_bound_observational_quantile(self, metric: Metric) -> NoReturn:
+        """Authenticate the metric against the artifact binding, then refuse it observationally."""
+        refuse_observational_quantile(metric, source=self)
+
     def export_moments(self, path: str | Path) -> None:
         if getattr(self.context.plan.inference, "registration", None) is not None:
             from increment.sources import export_source_moments
 
-            return export_source_moments(self, path)
+            return export_source_moments(
+                self, path, observational_refusal=self._refuse_bound_observational_quantile
+            )
         if self.context.cluster is not None and not isinstance(self.context.design, Encouragement):
             from increment.sources import refuse_cluster_grain_transport
 
@@ -1898,15 +1904,17 @@ class ArtifactMomentSource(SequentialSourceMixin):
             )
         from increment.sources import refuse_quantile_moments_export
 
-        if getattr(self.context.design, "mechanism", None) == "observational":
-            for metric in self.context.metrics:
-                if metric.type == "quantile":
-                    refuse_observational_quantile(metric, source=self)
-        refuse_quantile_moments_export(self.context.metrics, design=self.context.design)
+        refuse_quantile_moments_export(
+            self.context.metrics,
+            design=self.context.design,
+            observational_refusal=self._refuse_bound_observational_quantile,
+        )
         if not self._manifest.metric_measures:
             from increment.sources import export_source_moments
 
-            return export_source_moments(self, path)
+            return export_source_moments(
+                self, path, observational_refusal=self._refuse_bound_observational_quantile
+            )
         import pyarrow as pa
         import pyarrow.parquet as pq
 

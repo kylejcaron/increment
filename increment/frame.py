@@ -682,7 +682,7 @@ class FrameTotalsSource(SequentialSourceMixin):
     def export_moments(self, path: str | Path) -> None:
         from increment.sources import export_source_moments
 
-        export_source_moments(self, path)
+        export_source_moments(self, path, observational_refusal=refuse_observational_quantile)
 
     def sql(self, *, grain: Grain = "total") -> dict[str, str]:
         refuse(
@@ -1493,7 +1493,7 @@ class FramePanelSource(SequentialSourceMixin):
     def export_moments(self, path: str | Path) -> None:
         from increment.sources import export_source_moments
 
-        export_source_moments(self, path)
+        export_source_moments(self, path, observational_refusal=refuse_observational_quantile)
 
     def sql(self, *, grain: Grain = "total") -> dict[str, str]:
         refuse(

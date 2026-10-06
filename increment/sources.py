@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from fractions import Fraction
 from numbers import Integral, Real
 from pathlib import Path
@@ -195,26 +195,35 @@ SOURCE_QUANTILE_NO_MOMENTS = _RefusalSpec(
 )
 
 
-def refuse_quantile_moments_export(metrics: Sequence[Any], *, design: object | None) -> None:
+def refuse_quantile_moments_export(
+    metrics: Sequence[Any],
+    *,
+    design: object | None,
+    observational_refusal: Callable[[Any], object],
+) -> None:
     """Refuse exporting a quantile: a moments cube holds additive moments, never the per-unit
     values an order statistic needs, so a quantile exported there would carry mean moments
-    under the quantile's name. Runs before any evidence is read or file written.
+    under the quantile's name. Runs on catalog metadata alone, before any count or moment is
+    read or a file written.
 
-    An observational design is not refused here: its estimator refusal
-    (``readout.observational.quantile``) takes precedence, because no estimator could use the
-    cube, and it lives below this module. Each export caller raises it first.
+    Under an observational design the estimator refusal (``readout.observational.quantile``)
+    takes precedence, because no estimator could use the cube. It lives below this module, so
+    the caller supplies it as ``observational_refusal``; that callable owns any source
+    authentication and raises for the first quantile in catalog order.
     """
-    if getattr(design, "mechanism", None) == "observational":
-        return
     quantile = next(
         (metric for metric in metrics if getattr(metric, "type", None) == "quantile"), None
     )
-    if quantile is not None:
-        _refuse(
-            SOURCE_QUANTILE_NO_MOMENTS,
-            metric=quantile.name,
-            route="estimate the quantile with run(), or export a cube of the non-quantile metrics",
-        )
+    if quantile is None:
+        return
+    if getattr(design, "mechanism", None) == "observational":
+        observational_refusal(quantile)
+        return
+    _refuse(
+        SOURCE_QUANTILE_NO_MOMENTS,
+        metric=quantile.name,
+        route="estimate the quantile with run(), or export a cube of the non-quantile metrics",
+    )
 
 
 _MOMENTS_SQL = _RefusalSpec(
@@ -1139,8 +1148,19 @@ def _design_summary_row(
     }
 
 
-def export_source_moments(source: MomentSource, path: str | Path) -> None:
-    """Export total moments and immutable source-level compliance identity."""
+def export_source_moments(
+    source: MomentSource,
+    path: str | Path,
+    *,
+    observational_refusal: Callable[[Any], object],
+) -> None:
+    """Export total moments and immutable source-level compliance identity.
+
+    A registered sequential plan exports its finalized checkpoint, which holds unit-record
+    proofs and the declaration, never moments rows, so an unmodeled catalog quantile is not
+    refused there. Every moments export refuses a catalog quantile before reading evidence
+    (see :func:`refuse_quantile_moments_export` for ``observational_refusal``).
+    """
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -1184,7 +1204,9 @@ def export_source_moments(source: MomentSource, path: str | Path) -> None:
                 "preserves cluster-grain degrees of freedom and counts"
             ),
         )
-    refuse_quantile_moments_export(context.metrics, design=context.design)
+    refuse_quantile_moments_export(
+        context.metrics, design=context.design, observational_refusal=observational_refusal
+    )
     compliance = (
         source.compliance_summary(context.design)
         if isinstance(context.design, Encouragement)

@@ -3791,7 +3791,9 @@ class DefinitionsMomentSource(SequentialSourceMixin):
         if getattr(self.context.plan.inference, "registration", None) is not None:
             from increment.sources import export_source_moments
 
-            return export_source_moments(self, path)
+            return export_source_moments(
+                self, path, observational_refusal=self._refuse_observational_quantile
+            )
 
         if self._experiment.cluster is not None and not isinstance(
             self._context.design, Encouragement
@@ -3810,13 +3812,17 @@ class DefinitionsMomentSource(SequentialSourceMixin):
             )
         from increment.sources import refuse_quantile_moments_export
 
-        for metric in self._metrics:
-            self._refuse_observational_quantile(metric)
-        refuse_quantile_moments_export(self._metrics, design=self._context.design)
+        refuse_quantile_moments_export(
+            self._metrics,
+            design=self._context.design,
+            observational_refusal=self._refuse_observational_quantile,
+        )
         if not self._metrics:
             from increment.sources import export_source_moments
 
-            return export_source_moments(self, path)
+            return export_source_moments(
+                self, path, observational_refusal=self._refuse_observational_quantile
+            )
         # Import lazily because parquet export requires the live ibis session.
         import pyarrow as pa
         import pyarrow.parquet as pq

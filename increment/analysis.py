@@ -1274,9 +1274,12 @@ class Analysis:
         refuses a file written in a future wire format instead of
         misreading it.
 
-        A quantile metric is refused on every source with
+        A fixed-horizon export refuses a quantile metric on every source with
         ``source.frame.quantile_no_moments`` (``readout.observational.quantile``
-        under an observational design): a moments cube holds no per-unit values.
+        under an observational design), from the metric catalog alone before any
+        evidence is read: a moments cube holds no per-unit values. A registered
+        sequential checkpoint holds unit-record proofs, not moments rows, so it
+        still exports when a catalog quantile is not among its registered models.
         """
         src = _require_analysis_operation(
             self._src,
