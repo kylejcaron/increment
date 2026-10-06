@@ -21,6 +21,7 @@ import pytest
 from scipy.stats import binom
 
 from calibration import conversion_route as cr
+from increment._literals import Alternative
 from increment.estimation.conversion_delta import delta_interval, production_decision
 from increment.estimation.conversion_route import dense_min_count, route_for_counts
 from tests.estimation._conversion_counts import lift_row
@@ -167,10 +168,11 @@ class TestHybridPipelineAcrossTheThreshold:
         # The cell straddles the rule: some draws are routed each way.
         assert 0.0 < result.asymptotic_share < 1.0
 
-    def test_the_production_pipeline_reproduces_the_exact_noncoverage(self):
-        """``estimate_lift`` on ``replicates(tail)`` seeded draws agrees with the sum within
-        four Monte Carlo standard errors."""
-        assert cr.replicate_check(0.1, workers=1)
+    @pytest.mark.parametrize("alternative", ["two-sided", "greater", "less"])
+    def test_the_production_pipeline_reproduces_the_exact_noncoverage(self, alternative):
+        """``estimate_lift``, requested as each alternative, on ``replicates(tail)`` seeded draws
+        agrees with the sum within four Monte Carlo standard errors."""
+        assert cr.replicate_check(0.1, workers=1, alternative=alternative)
 
     def test_the_replayed_finite_sample_set_is_the_production_set_at_its_edge(self):
         compared, _edge, hard = cr.finite_conformance(per_tail=3, tails=(0.1, 0.05))
@@ -524,7 +526,7 @@ class TestHybridNoncoverageDecidesRoutedPairsByTheRuntimesRow:
     GRID = 2.0**-52
 
     @classmethod
-    def _boundary(cls, alternative: str, side: str) -> tuple[cr.Cell, int, int]:
+    def _boundary(cls, alternative: Alternative, side: str) -> tuple[cr.Cell, int, int]:
         """``(cell, x_c, x_t)``: a cell at control rate one half whose true lift lies within a few
         doubles of the ``side`` end of the runtime's interval at ``(x_c, x_t)``, chosen so that the
         vectorised formula and the runtime compare that end with the lift differently."""
@@ -608,6 +610,94 @@ class TestHybridNoncoverageDecidesRoutedPairsByTheRuntimesRow:
         assert getattr(result, unread) == 0.0
         assert getattr(result, read) > 0.0
         assert 0.0 < result.asymptotic_share < 1.0
+
+
+def _only_the_pair(monkeypatch, x_c: int, x_t: int) -> None:
+    """Have ``hybrid_noncoverage`` sum over one count pair, whose weight is one."""
+    from increment.power._binomial import _Window
+
+    def window(count: int) -> _Window:
+        return _Window(count, count, 0.0, np.ones(1), 0.0)
+
+    monkeypatch.setattr(cr, "_count_windows", lambda cell: (window(x_c), window(x_t)))
+
+
+class TestADirectionalRequestMissesOnlyOnTheSideItReads:
+    """The seeded simulation of ``estimate_lift`` and the exact sum count the same misses: a
+    directional request reads one end of its interval, and the delta-method route reports both."""
+
+    TAIL = 0.1
+    REPS = 150
+    SEED = 20261004
+    #: Counts whose delta-method interval at the 0.1 tail is about ``(0.022, 0.079)``.
+    COUNTS = (3_000, 10_000, 3_150, 10_000)
+
+    @staticmethod
+    def _cell(risk_ratio: float) -> cr.Cell:
+        """The central boundary cell of the 0.1 tail with equal arms and ``risk_ratio``: about
+        half its draws are routed to the delta method."""
+        return next(
+            c
+            for c in cr.cells(dense_min_count(0.1))
+            if c.family == "central" and c.n_c == c.n_t and c.risk_ratio == risk_ratio
+        )
+
+    @pytest.mark.parametrize(
+        ("alternative", "risk_ratio"),
+        [("greater", 0.5), ("greater", 1.25), ("less", 0.5), ("less", 1.25)],
+    )
+    def test_the_simulated_misses_are_the_exact_decisions_of_the_same_draws(
+        self, monkeypatch, alternative, risk_ratio
+    ):
+        cell, floor = self._cell(risk_ratio), dense_min_count(self.TAIL)
+        simulated = cr.simulate_hybrid(
+            cell, alpha=self.TAIL, alternative=alternative, reps=self.REPS, seed=self.SEED
+        )
+        x_c, x_t = cr.draw_counts(cell, reps=self.REPS, seed=self.SEED)
+        lower = upper = routed = 0.0
+        for c, t in zip(x_c.tolist(), x_t.tolist(), strict=True):
+            _only_the_pair(monkeypatch, c, t)
+            pair = cr.hybrid_noncoverage(
+                cell, alpha=self.TAIL, threshold=floor, alternative=alternative
+            )
+            lower, upper, routed = (
+                lower + pair.lower,
+                upper + pair.upper,
+                routed + pair.asymptotic_share,
+            )
+        assert (simulated.lower_misses, simulated.upper_misses) == (lower, upper)
+        assert round(simulated.asymptotic_share * self.REPS) == routed
+        assert 0 < routed < self.REPS
+        unread = simulated.upper_misses if alternative == "greater" else simulated.lower_misses
+        assert unread == 0
+
+    @pytest.mark.parametrize("lift", [0.0, 0.05, 0.1])
+    @pytest.mark.parametrize("alternative", ["two-sided", "greater", "less"])
+    def test_a_row_misses_where_the_runtime_rejects_against_the_true_lift(
+        self, alternative, lift
+    ):
+        alpha = 2.0 * self.TAIL if alternative == "two-sided" else self.TAIL
+        row = lift_row(self.COUNTS, alpha=alpha, alternative=alternative)
+        assert row.reference_kind == "t"
+        misses = cr.row_misses(row, lift)
+        runtime = lift_row(self.COUNTS, alpha=alpha, alternative=alternative, null_lift=lift)
+        assert any(misses) == runtime.stat_sig()
+        assert misses == production_decision(
+            *self.COUNTS, tail=self.TAIL, alternative=alternative, null_lift=lift
+        )
+
+    @pytest.mark.parametrize(
+        ("alternative", "lift", "far_end"), [("greater", 0.1, "ub"), ("less", 0.0, "lb")]
+    )
+    def test_the_end_a_directional_request_does_not_read_is_no_miss(
+        self, alternative, lift, far_end
+    ):
+        row = lift_row(self.COUNTS, alpha=self.TAIL, alternative=alternative)
+        end = getattr(row.require_lift(), far_end)
+        # The row reports that end, wholly on the miss side of the lift it is scored against.
+        assert end is not None
+        assert end < lift if far_end == "ub" else end > lift
+        assert cr.row_misses(row, lift) == (False, False)
 
 
 class TestEnumerationEnclosesTheExactMass:
@@ -735,14 +825,18 @@ class TestBoundCheckpoint:
         assert cr.bound(workers=1, out=path, grid="extended") == 0
         assert (enumerated, planned) == ([], [])
 
+    @pytest.mark.parametrize("retired", ["borderline_minimum", "hybrid_finite_plus_delta_v1"])
     def test_a_retired_model_keeps_the_enumeration_and_plans_again(
-        self, tmp_path, calls, monkeypatch
+        self, tmp_path, calls, monkeypatch, retired
     ):
+        from increment.power.core import BINOMIAL_PLANNING_MODEL
+
         enumerated, planned = calls
         designs = cr.bound_cells("extended")[:4]
         monkeypatch.setattr(cr, "bound_cells", lambda grid: designs)
         kept = {"asymptotic_part": 0.1234, "finite_part": 0.4321, "inflation": 1.0 + 1e-12}
-        stale = {"model": "borderline_minimum", "planned": 0.4, "basis": "exact"}
+        # A retired record's planned figure sits above its own lower end, as a central mass does.
+        stale = {"model": retired, "planned": 0.5 + 1e-9, "lower": 0.5, "upper": 0.5 + 2e-9}
         path = tmp_path / "bound.jsonl"
         self._write(path, [_record(cell, enumeration=kept, plan=stale) for cell in designs])
         cr.bound(workers=1, out=path)
@@ -751,8 +845,9 @@ class TestBoundCheckpoint:
         resumed = cr.read_checkpoint(path)
         for cell in designs:
             power = resumed[json.dumps(cr._design_key(cell))]
-            assert power.plan.model != "borderline_minimum"
+            assert power.plan.model == BINOMIAL_PLANNING_MODEL
             assert power.plan.planned == 0.5
+            assert power.plan.planned != stale["planned"]
             assert power.enumeration == cr.Enumeration(
                 **_record(cell, enumeration=kept)["enumeration"]
             )
@@ -915,11 +1010,16 @@ class TestResumedPlanEqualsAFreshOne:
     """Planning again from a retired model's checkpoint gives the plan a fresh run of the same
     design gives, on the enumeration the checkpoint kept."""
 
-    def test_a_resumed_design_matches_a_fresh_one(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("retired", ["borderline_minimum", "hybrid_finite_plus_delta_v1"])
+    def test_a_resumed_design_matches_a_fresh_one(self, tmp_path, monkeypatch, retired):
         design = cr.MirrorCell("bound", 300, 0.3, 0.1, 0.2, "two-sided")
         monkeypatch.setattr(cr, "bound_cells", lambda grid: (design,))
         fresh = cr.enumerated_power(design)
-        stale = {"model": "borderline_minimum", "planned": 0.01, "basis": "exact"}
+        # An enumerated plan publishes the lower end of its enclosure; a retired record's
+        # planned figure is the central mass above it.
+        assert not fresh.plan.closed_form
+        assert fresh.plan.planned == fresh.plan.lower
+        stale = {"model": retired, "planned": fresh.plan.planned * (1.0 + 1e-9), "basis": "exact"}
         path = tmp_path / "bound.jsonl"
         path.write_text(
             json.dumps(_record(design, enumeration=asdict(fresh.enumeration), plan=stale)) + "\n"
@@ -932,6 +1032,7 @@ class TestResumedPlanEqualsAFreshOne:
         cr.bound(workers=1, out=path)
         resumed = cr.read_checkpoint(path)[json.dumps(cr._design_key(design))]
         assert resumed.plan == fresh.plan
+        assert resumed.plan.planned != stale["planned"]
         assert resumed.enumeration == fresh.enumeration
         assert resumed.margin == fresh.margin
 

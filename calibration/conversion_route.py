@@ -112,6 +112,11 @@ def _tail(alpha: float, alternative: str) -> float:
     return alpha / 2.0 if alternative == "two-sided" else alpha
 
 
+def _level(tail: float, alternative: str) -> float:
+    """``alpha`` of the request whose one-sided level is ``tail``."""
+    return 2.0 * tail if alternative == "two-sided" else tail
+
+
 def production_requests(tail: float) -> tuple[tuple[float, Alternative, int], ...]:
     """``(alpha, alternative, sign)`` of the production requests whose one-sided tail is ``tail``,
     each with the sign of the lift it is tested against: a two-sided request at ``2 * tail``
@@ -702,15 +707,20 @@ def verify(*, workers: int, tails: Sequence[float] = TAILS) -> int:
 # --- Production route -------------------------------------------------------------------
 
 
-def row_misses(row, truth_ratio: float) -> tuple[bool, bool]:
-    """``(lower, upper)``: whether the row's interval lies wholly above / below the true
-    relative lift ``truth_ratio - 1``."""
+def row_misses(row, lift: float) -> tuple[bool, bool]:
+    """``(lower, upper)``: whether the row's interval lies wholly above / below the true relative
+    ``lift``, each end only where the row's alternative reads it (``greater`` the lower end,
+    ``less`` the upper): the comparisons of ``production_decision`` and
+    ``LiftEstimate.stat_sig``. The delta-method route reports both ends of a directional row,
+    and the end its alternative does not read is no claim of the row."""
     if row.binomial_set is not None:
         lower, upper = row.binomial_set.lower, row.binomial_set.upper
     else:
         lower, upper = row.lift.lb, row.lift.ub
-    lift = truth_ratio - 1.0
-    return (lower is not None and lower > lift), (upper is not None and upper < lift)
+    return (
+        row.alternative != "less" and lower is not None and lower > lift,
+        row.alternative != "greater" and upper is not None and upper < lift,
+    )
 
 
 def conformance(samples: int = 200, seed: int = 20261004) -> tuple[float, int, float]:
@@ -753,36 +763,41 @@ def conformance(samples: int = 200, seed: int = 20261004) -> tuple[float, int, f
 class HybridResult:
     cell: Cell
     alpha: float
-    alternative: str
+    alternative: Alternative
     reps: int
     lower_misses: int
     upper_misses: int
     asymptotic_share: float
 
 
+def draw_counts(cell: Cell, *, reps: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
+    """``(x_c, x_t)``: ``reps`` seeded binomial draws of ``cell``'s two success counts."""
+    rng = np.random.default_rng(seed)
+    return rng.binomial(cell.n_c, cell.p_c, size=reps), rng.binomial(cell.n_t, cell.p_t, size=reps)
+
+
 def simulate_hybrid(
     cell: Cell,
     *,
     alpha: float,
-    alternative: str,
+    alternative: Alternative,
     reps: int,
     seed: int,
     mode: Literal["auto", "finite_sample"] = "auto",
 ) -> HybridResult:
     """Noncoverage of the production pipeline in ``cell``: ``reps`` seeded binomial draws of
-    the four counts, each routed and inferred by ``estimate_lift``. Every replication stays
-    in the denominator; production runs once per distinct count pair."""
-    rng = np.random.default_rng(seed)
-    x_c = rng.binomial(cell.n_c, cell.p_c, size=reps)
-    x_t = rng.binomial(cell.n_t, cell.p_t, size=reps)
+    the four counts (``draw_counts``), each routed and inferred by ``estimate_lift``. A side the
+    request's alternative does not read never misses (``row_misses``), as in
+    ``hybrid_noncoverage``. Every replication stays in the denominator; production runs once per
+    distinct count pair."""
+    x_c, x_t = draw_counts(cell, reps=reps, seed=seed)
     pairs, multiplicity = np.unique(np.stack([x_c, x_t]), axis=1, return_counts=True)
-    ratio = cell.p_t / cell.p_c
     lower = upper = asymptotic = 0
     for (c, t), times in zip(pairs.T, multiplicity, strict=True):
         row = lift_row(
             (int(c), cell.n_c, int(t), cell.n_t), alpha=alpha, alternative=alternative, mode=mode
         )
-        miss_lower, miss_upper = row_misses(row, ratio)
+        miss_lower, miss_upper = row_misses(row, cell.lift)
         lower += int(times) * miss_lower
         upper += int(times) * miss_upper
         asymptotic += int(times) * (row.reference_kind == "t")
@@ -1015,7 +1030,7 @@ def finite_conformance(
                     (x_c, cell.n_c, x_t, cell.n_t), alpha=alpha, mode="finite_sample"
                 )
                 compared += 1
-                if row_misses(produced, cell.p_t / cell.p_c) == (
+                if row_misses(produced, lift) == (
                     bool(plus[row, column]),
                     bool(minus[row, column]),
                 ):
@@ -1041,7 +1056,7 @@ def hybrid_cells(tail: float, offset: int, *, count: int, workers: int = 1) -> l
     return [cell for cell, _ in ranked[:count]]
 
 
-def _hybrid_job(args: tuple[Cell, float, int, Literal["two-sided", "greater", "less"]]):
+def _hybrid_job(args: tuple[Cell, float, int, Alternative]):
     cell, alpha, threshold, alternative = args
     return hybrid_noncoverage(cell, alpha=alpha, threshold=threshold, alternative=alternative)
 
@@ -1049,27 +1064,34 @@ def _hybrid_job(args: tuple[Cell, float, int, Literal["two-sided", "greater", "l
 OFFSETS = (-2, -1, 0, 1, 2)
 
 
+def hybrid_alternatives(tail: float) -> tuple[Alternative, ...]:
+    """The alternatives whose noncoverage ``hybrid`` examines at ``tail``: two-sided at
+    ``alpha = 2 tail``, and directional at ``alpha = tail`` (``greater`` and, at a tail a
+    production alpha reaches directionally, ``less``)."""
+    if tail in PRODUCTION_ALPHAS:
+        return ("two-sided", "greater", "less")
+    return ("two-sided", "greater")
+
+
 def hybrid(
     tails: Sequence[float], *, workers: int, count: int = 3, replicate_tails: Sequence[float] = ()
 ) -> int:
     """Production-pipeline noncoverage at cells straddling each tail's shipped threshold
     (design counts ``m - 2 .. m + 2``): per-tail and unconditional two-sided noncoverage
-    within the repository's tolerance of its nominal level, two-sided at ``alpha = 2 tail`` and
-    directional at ``alpha = tail`` (``greater`` and, at a tail a production alpha reaches
-    directionally, ``less``). Then ``replicate_tails``: the pipeline run through
-    ``estimate_lift`` on ``replicates(tail)`` seeded draws at the worst cell, which must agree
-    with the exact value within four Monte Carlo standard errors."""
+    within the repository's tolerance of its nominal level, for each of ``hybrid_alternatives``
+    (a directional request at its worst cell of each design count). Then ``replicate_tails``:
+    the pipeline run through ``estimate_lift`` on ``replicates(tail)`` seeded draws at the worst
+    cell, for each of those alternatives, which must agree with the exact value within four
+    Monte Carlo standard errors."""
     failed = 0
     for tail in tails:
         shipped = dense_min_count(tail)
-        jobs: list[tuple[Cell, float, int, Literal["two-sided", "greater", "less"]]] = []
+        jobs: list[tuple[Cell, float, int, Alternative]] = []
         for offset in OFFSETS:
             for rank, cell in enumerate(hybrid_cells(tail, offset, count=count, workers=workers)):
-                jobs.append((cell, 2.0 * tail, shipped, "two-sided"))
-                if rank == 0:
-                    jobs.append((cell, tail, shipped, "greater"))
-                    if tail in PRODUCTION_ALPHAS:
-                        jobs.append((cell, tail, shipped, "less"))
+                for alternative in hybrid_alternatives(tail):
+                    if alternative == "two-sided" or rank == 0:
+                        jobs.append((cell, _level(tail, alternative), shipped, alternative))
         results = _pool(workers).imap(_hybrid_job, jobs) if workers > 1 else map(_hybrid_job, jobs)
         for (cell, alpha, _, alternative), result in zip(jobs, results, strict=True):
             delta, level = scientific_delta(tail), 2.0 * tail
@@ -1089,18 +1111,23 @@ def hybrid(
                 flush=True,
             )
         if tail in replicate_tails:
-            failed += not replicate_check(tail, workers=workers)
+            for alternative in hybrid_alternatives(tail):
+                failed += not replicate_check(tail, workers=workers, alternative=alternative)
     return 1 if failed else 0
 
 
-def replicate_check(tail: float, *, workers: int, seed: int = 20261004) -> bool:
-    """The production pipeline on ``replicates(tail)`` seeded draws at the worst boundary cell
-    of the shipped threshold, against the exact noncoverage of that cell."""
+def replicate_check(
+    tail: float, *, workers: int, alternative: Alternative = "two-sided", seed: int = 20261004
+) -> bool:
+    """The production pipeline, requested as ``alternative``, on ``replicates(tail)`` seeded
+    draws at the worst boundary cell of the shipped threshold, against the exact noncoverage of
+    that cell: a side the alternative does not read misses in neither."""
     shipped = dense_min_count(tail)
+    alpha = _level(tail, alternative)
     (cell,) = hybrid_cells(tail, 0, count=1, workers=workers)
-    exact = hybrid_noncoverage(cell, alpha=2.0 * tail, threshold=shipped)
+    exact = hybrid_noncoverage(cell, alpha=alpha, threshold=shipped, alternative=alternative)
     reps = replicates(tail)
-    result = simulate_hybrid(cell, alpha=2.0 * tail, alternative="two-sided", reps=reps, seed=seed)
+    result = simulate_hybrid(cell, alpha=alpha, alternative=alternative, reps=reps, seed=seed)
     ok = True
     for label, hits, truth in (
         ("lower", result.lower_misses, exact.lower),
@@ -1110,8 +1137,9 @@ def replicate_check(tail: float, *, workers: int, seed: int = 20261004) -> bool:
         agree = abs(hits / reps - truth) <= 4.0 * se + exact.omitted
         ok &= agree
         print(
-            f"replicates tail={tail:g} {label} cell={cell.family}/{cell.n_c}/{cell.n_t} "
-            f"reps={reps} simulated={hits / reps:.6f} exact={truth:.6f} se={se:.6f} "
+            f"replicates tail={tail:g} {alternative} {label} "
+            f"cell={cell.family}/{cell.n_c}/{cell.n_t} reps={reps} "
+            f"simulated={hits / reps:.6f} exact={truth:.6f} se={se:.6f} "
             f"asym_share={result.asymptotic_share:.3f} {'ok' if agree else 'FAIL'}",
             flush=True,
         )
@@ -1261,9 +1289,12 @@ class EnumeratedPower:
 
 
 #: Planner models a checkpoint may still name. Resuming keeps their designs' enumerations and
-#: plans each design again under the current model. ``borderline_minimum`` is the smaller of the
-#: replay and the closed form that preceded ``increment.power.core.BINOMIAL_PLANNING_MODEL``.
-RETIRED_PLANNER_MODELS = frozenset({"borderline_minimum"})
+#: plans each design again under the current model; a retired record's own ``planned`` is never
+#: reused. ``borderline_minimum`` is the smaller of the replay and the closed form that preceded
+#: ``increment.power.core.BINOMIAL_PLANNING_MODEL``. ``hybrid_finite_plus_delta_v1`` planned the
+#: same union but stored an enumerated plan's central decided mass as ``planned``, where the
+#: current model stores the lower end of its enclosure.
+RETIRED_PLANNER_MODELS = frozenset({"borderline_minimum", "hybrid_finite_plus_delta_v1"})
 
 
 def plan_design(cell: MirrorCell) -> Plan:
