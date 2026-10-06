@@ -1982,11 +1982,11 @@ def _retained_catalog_probes() -> tuple[Callable[[str, Analysis], None], Callabl
             )
 
     def assert_checkpoints_agree() -> None:
-        from .runner import _nested_close
+        from .comparison import nested_close
 
         assert set(checkpoints) == {"from_definitions", "from_unit_day_artifact", "from_moments"}
         for constructor, observed in checkpoints.items():
-            assert _nested_close(checkpoints["from_definitions"], observed), constructor
+            assert nested_close(checkpoints["from_definitions"], observed), constructor
 
     return probe_retained_catalog, assert_checkpoints_agree
 
@@ -5915,6 +5915,269 @@ def _quantile_ties_event_table(n_per_arm: int = 200, seed: int = 3, *, family: b
     return pa.Table.from_pylist(rows)
 
 
+def _mixed_quantile_checkpoint_probes(
+    summary_specs: list[MetricSpec],
+    design: Randomized,
+    checked_declaration: Callable[[Callable[[], Analysis]], Analysis],
+) -> tuple[Callable[[Any], None], Callable[[str, Analysis], None]]:
+    def check_rows(readout: Any) -> None:
+        (row,) = readout
+        assert (row.metric, row.group_id, row.estimand) == ("purchase_rate", "treatment", "itt")
+        lift = row.require_lift()
+        assert lift.value is not None
+        assert lift.value == pytest.approx(0.275)
+        assert lift.lb is not None and lift.ub is not None
+        assert lift.lb <= lift.value <= lift.ub
+        assert row.sequential_result is not None
+
+    def probe_checkpoint(constructor: str, analysis: Analysis) -> None:
+        from .comparison import nested_close
+
+        def check_catalog(source: Analysis) -> None:
+            assert [(m.name, m.type) for m in source.metrics] == [
+                ("purchase_rate", "conversion"),
+                ("p90_revenue", "quantile"),
+            ], constructor
+            assert getattr(source.metrics[1], "quantile", None) == 0.9
+            with pytest.raises(CodedError) as refused:
+                source.run(metrics=["p90_revenue"])
+            assert refused.value.code == "sequential.route.unsupported", constructor
+
+        check_catalog(analysis)
+        snapshot = analysis.sequential_snapshot()
+        assert [(m.metric, m.law) for m in snapshot.registration.models] == [
+            ("purchase_rate", "bernoulli")
+        ]
+        assert sorted((s.metric, s.group_id, s.n, s.successes) for s in snapshot.states) == [
+            ("purchase_rate", "control", 60, 40),
+            ("purchase_rate", "treatment", 60, 51),
+        ], constructor
+        expected = analysis.run(metrics=["purchase_rate"])
+        check_rows(expected)
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "checkpoint.parquet"
+            if constructor == "from_moments":
+                with pytest.raises(CodedError) as refused:
+                    analysis.export(path)
+                assert refused.value.code == "facade.analysis.operation"
+                assert refused.value.context["operation"] == "export_moments"
+                assert not path.exists()
+                return
+            analysis.export(path)
+            (envelope,) = pq.read_table(path).to_pylist()
+        assert envelope["record_kind"] == "sequential_checkpoint"
+        assert envelope["moments_format"] == 9
+        assert not {"metric", "group_id", "n", "sum", "sum_sq", "ref", "ref_den"} & envelope.keys()
+        replay = checked_declaration(
+            lambda: Analysis.from_moments([envelope], metrics=summary_specs, design=design)
+        )
+        try:
+            check_catalog(replay)
+            restored = replay.sequential_snapshot()
+            assert restored == snapshot, constructor
+            actual = replay.run(metrics=["purchase_rate"])
+            check_rows(actual)
+            assert nested_close(
+                [row.model_dump() for row in expected], [row.model_dump() for row in actual]
+            ), constructor
+        finally:
+            _close_parity_analysis(replay)
+
+    return check_rows, probe_checkpoint
+
+
+def _mixed_quantile_declaration(build: Callable[[], Analysis]) -> Analysis:
+    import warnings
+
+    from tests.warning_codes import warning_codes
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", IncrementWarning)
+        analysis = build()
+    unexpected = set(warning_codes(caught)) - {"decision.family.quantile_always_valid_excluded"}
+    if unexpected:
+        _close_parity_analysis(analysis)
+        pytest.fail(f"unexpected declaration warning codes: {unexpected}")
+    return analysis
+
+
+def _sequential_mixed_quantile_catalog_case() -> ParityCase:
+    """A conversion checkpoint retains an unmodeled quantile, never quantile moments."""
+    from increment.frame import synthesise_metric
+    from increment.semantics.sequential import SequentialRegistration
+    from increment.sequential_source import frame_observation_mapping, sequential_definition_id
+
+    rows = ds.event_rows() + _extra_treatment_purchases(11)
+    plan = AnalysisPlan(
+        primary="purchase_rate",
+        secondaries=["p90_revenue"],
+        inference={"kind": "always_valid"},
+    )
+    allocation = {"control": 0.5, "treatment": 0.5}
+    design = Randomized(control_group="control", allocation=allocation)
+    defs_dict = ds.definitions_dict(plan=plan, allocation=allocation)
+    conversion = next(m for m in defs_dict["metrics"] if m["name"] == "purchase_rate")
+    revenue = next(m for m in defs_dict["metrics"] if m["name"] == "revenue")
+    defs_dict["metrics"] = [
+        conversion,
+        {
+            **revenue,
+            "name": "p90_revenue",
+            "type": "quantile",
+            "quantile": 0.9,
+            "window_days": None,
+        },
+    ]
+    defs_dict["experiments"][0]["n_pre_periods"] = 0
+    declared = Definitions.model_validate(defs_dict)
+    exp = declared.experiment("exp")
+    assert exp is not None
+    as_of = ds._EXPOSURE_AT.date() + dt.timedelta(days=1)
+    summary_specs = [
+        MetricSpec(
+            name="purchase_rate",
+            type="conversion",
+            value_column="converted",
+            preferred_direction="increase",
+        ),
+        MetricSpec(
+            name="p90_revenue",
+            type="quantile",
+            quantile=0.9,
+            value_column="revenue",
+            missing="zero",
+            preferred_direction="increase",
+        ),
+    ]
+    panel_specs = [
+        summary_specs[0].model_copy(update={"value_column": "purchase_rate", "window_days": 1}),
+        summary_specs[1],
+    ]
+
+    def registered_plan(
+        metrics: list[Any], mapping: Mapping[str, object], *, specs=()
+    ) -> AnalysisPlan:
+        # Automatic registration refuses a quantile catalog. Declare the conversion
+        # law alone, then bind that immutable registration to the full source catalog.
+        automatic = bind_automatic_sequential_plan(
+            plan.model_copy(update={"secondaries": ()}),
+            [metrics[0]],
+            design=design,
+            source_id="exp",
+            source_mapping=mapping,
+            transformations=specs[:1],
+            path="frame" if specs else "warehouse",
+        )
+        assert automatic is not None and automatic.inference is not None
+        assert automatic.inference.registration is not None
+        registration = SequentialRegistration.model_validate(
+            {
+                **automatic.inference.registration.model_dump(),
+                "definitions_id": sequential_definition_id(
+                    metrics, design, source_mapping=mapping, transformations=specs
+                ),
+            }
+        )
+        return plan.model_copy(
+            update={"inference": InferenceSpec(kind="always_valid", registration=registration)}
+        )
+
+    native_plan = registered_plan(
+        list(declared.metrics),
+        native_observation_mapping(declared, exp, on_mixed_assignment="error"),
+    )
+    defs = declared.model_copy(
+        update={"experiments": (exp.model_copy(update={"plan": native_plan}),)}
+    )
+
+    def build_definitions() -> Analysis:
+        con = ds.duckdb_connection(rows)
+        try:
+            analysis = make_analysis(con, defs, experiment="exp", plan=native_plan)
+        except BaseException:
+            con.disconnect()
+            raise
+        analysis._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        return _track_connection(analysis, con)
+
+    def build_artifact() -> Analysis:
+        native = build_definitions()
+        adopted = _publish_and_adopt(native_connection(_native_source(native)), native)
+        adopted._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        return adopted
+
+    def build_frame(*, panel: bool) -> Analysis:
+        con = ds.duckdb_connection(rows)
+        try:
+            frame: Any = (
+                ds.sequential_unit_panel_frame(con) if panel else ds.unit_summary_frame(con)
+            )
+        finally:
+            con.disconnect()
+        specs = panel_specs if panel else summary_specs
+        if panel:
+            frame["purchase_rate"] = (frame["revenue"] > 0).astype(int)
+        frame_plan = registered_plan(
+            [synthesise_metric(spec) for spec in specs],
+            frame_observation_mapping(
+                unit="user_id",
+                group="variant",
+                date="date" if panel else None,
+                exposure_date="exposure_date",
+            ),
+            specs=specs,
+        )
+        builder = Analysis.from_unit_panel if panel else Analysis.from_unit_summary
+        analysis = builder(
+            frame,
+            unit="user_id",
+            group="variant",
+            design=design,
+            metrics=specs,
+            plan=frame_plan,
+            experiment_id="exp",
+            exposure_date="exposure_date",
+            **({"date": "date"} if panel else {}),
+        )
+        if panel:
+            analysis._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        return analysis
+
+    def build_moments() -> Analysis:
+        summary = build_frame(panel=False)
+        return _export_and_replay(summary, summary_specs)
+
+    check_rows, probe_checkpoint = _mixed_quantile_checkpoint_probes(
+        summary_specs, design, _mixed_quantile_declaration
+    )
+
+    return ParityCase(
+        id="sequential-mixed-quantile-catalog-checkpoint",
+        build={
+            name: lambda build=build: _mixed_quantile_declaration(build)
+            for name, build in {
+                "from_definitions": build_definitions,
+                "from_unit_day_artifact": build_artifact,
+                "from_unit_summary": lambda: build_frame(panel=False),
+                "from_unit_panel": lambda: build_frame(panel=True),
+                "from_moments": build_moments,
+            }.items()
+        },
+        metrics=("purchase_rate",),
+        sequential=True,
+        readout_probe=check_rows,
+        source_probe=probe_checkpoint,
+        waive={
+            "from_switchback_panel": (
+                "SOURCE: switchback accepts only mean/conversion metrics and refuses a "
+                "quantile catalog (source.frame.switchback.metric); it also has no "
+                "registered sequential construction. This dataset has no switchback schedule."
+            )
+        },
+        slow=True,
+    )
+
+
 def _quantile_ties_case(
     *, family: bool = False, unselected_conversion_sibling: bool = False
 ) -> ParityCase:
@@ -6534,6 +6797,7 @@ PARITY_CASES: tuple[ParityCase, ...] = (
     _observational_aipw_dml_case(default_sensitivity=True),
     _observational_categorical_case(),
     _observational_categorical_case(missing_levels=True),
+    _sequential_mixed_quantile_catalog_case(),
     _quantile_ties_case(),
     _quantile_ties_case(family=True),
     _quantile_ties_case(unselected_conversion_sibling=True),
