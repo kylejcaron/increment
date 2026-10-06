@@ -156,9 +156,12 @@ order statistic needs, and two different requests reach it:
 
 - **Exporting a quantile** refuses at `export()` with
   `source.frame.quantile_no_moments` (a source limit: a quantile has no moments
-  representation), so no quantile cube ever exists to replay. An observational
-  frame refuses earlier, with `readout.observational.quantile`, because no
-  estimator could use the cube.
+  representation), so no quantile cube ever exists to replay. Every
+  export-capable ingress (`from_definitions`, a reopened unit-day artifact,
+  `from_unit_summary`, `from_unit_panel`) refuses the same way before reading
+  data or writing a file, even when additive metrics accompany the quantile. An
+  observational design refuses earlier, with `readout.observational.quantile`,
+  because no estimator could use the cube.
 - **Declaring a quantile over a cube that already exists** (for example a
   `MetricSpec(type="quantile")` over exported scalar moments) constructs, then
   refuses when read, and the code depends on the request, measured on a real

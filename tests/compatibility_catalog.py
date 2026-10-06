@@ -323,7 +323,9 @@ MATRIX: dict[str, dict[str, Cell]] = {
         "conversion": S(),
         "ratio": S(),
         "retention": S(note="guardrail rows ride the export"),
-        "quantile": R("no moments representation", CapabilityError, code="source.native.operation"),
+        "quantile": R(
+            "no moments representation", CapabilityError, code="source.frame.quantile_no_moments"
+        ),
         "total": _NA_REPORT_LAYER,
         "active": _NA_REPORT_LAYER,
     },

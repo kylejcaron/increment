@@ -108,6 +108,7 @@ from increment.semantics.models import (
 )
 from increment.sequential_source import SequentialSourceMixin
 from increment.sources import (
+    SOURCE_QUANTILE_NO_MOMENTS,
     UNASSIGNED_LABEL,
     ComplianceArm,
     ComplianceSummary,
@@ -147,11 +148,6 @@ _FRAME_GRAIN = RefusalSpec(
             else ""
         )
     ),
-)
-_FRAME_QUANTILE_NO_MOMENTS = RefusalSpec(
-    "source.frame.quantile_no_moments",
-    CapabilityError,
-    template="quantile metric {metric!r} has no moment representation; it is served through unit_frame. {route}",
 )
 _FRAME_BREAKOUTS_UNSUPPORTED = RefusalSpec(
     "source.frame.breakouts_unsupported",
@@ -443,7 +439,7 @@ class FrameTotalsSource(SequentialSourceMixin):
             if getattr(self.design, "mechanism", None) == "observational":
                 refuse_observational_quantile(metric)
             refuse(
-                _FRAME_QUANTILE_NO_MOMENTS,
+                SOURCE_QUANTILE_NO_MOMENTS,
                 metric=metric.name,
                 route="use readouts.run, which routes quantiles automatically",
             )

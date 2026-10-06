@@ -3808,6 +3808,11 @@ class DefinitionsMomentSource(SequentialSourceMixin):
                     "preserves cluster-grain degrees of freedom and counts"
                 ),
             )
+        from increment.sources import refuse_quantile_moments_export
+
+        for metric in self._metrics:
+            self._refuse_observational_quantile(metric)
+        refuse_quantile_moments_export(self._metrics, design=self._context.design)
         if not self._metrics:
             from increment.sources import export_source_moments
 

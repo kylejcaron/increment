@@ -188,6 +188,35 @@ def refuse_cluster_grain_transport(
     )
 
 
+SOURCE_QUANTILE_NO_MOMENTS = _RefusalSpec(
+    "source.frame.quantile_no_moments",
+    _CapabilityError,
+    template="quantile metric {metric!r} has no moment representation; it is served through unit_frame. {route}",
+)
+
+
+def refuse_quantile_moments_export(metrics: Sequence[Any], *, design: object | None) -> None:
+    """Refuse exporting a quantile: a moments cube holds additive moments, never the per-unit
+    values an order statistic needs, so a quantile exported there would carry mean moments
+    under the quantile's name. Runs before any evidence is read or file written.
+
+    An observational design is not refused here: its estimator refusal
+    (``readout.observational.quantile``) takes precedence, because no estimator could use the
+    cube, and it lives below this module. Each export caller raises it first.
+    """
+    if getattr(design, "mechanism", None) == "observational":
+        return
+    quantile = next(
+        (metric for metric in metrics if getattr(metric, "type", None) == "quantile"), None
+    )
+    if quantile is not None:
+        _refuse(
+            SOURCE_QUANTILE_NO_MOMENTS,
+            metric=quantile.name,
+            route="estimate the quantile with run(), or export a cube of the non-quantile metrics",
+        )
+
+
 _MOMENTS_SQL = _RefusalSpec(
     "source.moments.sql",
     _CapabilityError,
@@ -1155,6 +1184,7 @@ def export_source_moments(source: MomentSource, path: str | Path) -> None:
                 "preserves cluster-grain degrees of freedom and counts"
             ),
         )
+    refuse_quantile_moments_export(context.metrics, design=context.design)
     compliance = (
         source.compliance_summary(context.design)
         if isinstance(context.design, Encouragement)
@@ -1352,11 +1382,13 @@ __all__ = [
     "MOMENTS_FORMAT",
     "MomentSource",
     "MomentsSource",
+    "SOURCE_QUANTILE_NO_MOMENTS",
     "SourceContext",
     "SourceOperation",
     "UNASSIGNED_LABEL",
     "WINSORIZATION_MOMENT_FIELDS",
     "require_operation",
     "refuse_cluster_grain_transport",
+    "refuse_quantile_moments_export",
     "validate_readout_source",
 ]

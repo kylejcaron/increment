@@ -38,6 +38,7 @@ from increment.errors import (
     refusals,
     refuse,
 )
+from increment.estimation._readout_refusals import refuse_observational_quantile
 from increment.query.artifact_contract import (
     REFUSALS,
     ArtifactSnapshot,
@@ -1895,6 +1896,13 @@ class ArtifactMomentSource(SequentialSourceMixin):
                     "preserves cluster-grain degrees of freedom and counts"
                 ),
             )
+        from increment.sources import refuse_quantile_moments_export
+
+        if getattr(self.context.design, "mechanism", None) == "observational":
+            for metric in self.context.metrics:
+                if metric.type == "quantile":
+                    refuse_observational_quantile(metric, source=self)
+        refuse_quantile_moments_export(self.context.metrics, design=self.context.design)
         if not self._manifest.metric_measures:
             from increment.sources import export_source_moments
 

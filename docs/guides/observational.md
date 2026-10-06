@@ -872,8 +872,8 @@ designs only) cannot read covariates from an artifact; use `from_definitions`.
   constructor refuses it with `plan.observational.relative_margin`. Run a
   quantile metric under a randomized design. Fixed-horizon inference does not
   change this: no inference kind has an observational quantile estimator.
-  An observational frame cannot export a quantile cube either (`export()`
-  raises the same code). `from_moments` therefore never receives a genuine
+  No observational ingress can export a quantile cube either (`export()`
+  raises the same code on definitions, a reopened artifact, and both frames). `from_moments` therefore never receives a genuine
   quantile: a quantile *declared* over exported scalar moments constructs, and
   a two-sided, zero-null `run()` raises `readout.observational.quantile` before
   those moments can be used as quantile data (an absolute `margin_abs` raises

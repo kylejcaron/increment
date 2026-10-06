@@ -1273,6 +1273,10 @@ class Analysis:
         stamp; :meth:`from_moments` validates and strips it, and
         refuses a file written in a future wire format instead of
         misreading it.
+
+        A quantile metric is refused on every source with
+        ``source.frame.quantile_no_moments`` (``readout.observational.quantile``
+        under an observational design): a moments cube holds no per-unit values.
         """
         src = _require_analysis_operation(
             self._src,
