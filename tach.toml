@@ -334,7 +334,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.power._binomial"
-depends_on = ["increment._literals", "increment.estimation"]
+depends_on = ["increment._literals", "increment.errors", "increment.estimation"]
 
 [[modules]]
 path = "increment.power._validation"

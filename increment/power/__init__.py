@@ -8,16 +8,19 @@ routes an unadjusted, unclustered, fixed-horizon conversion or retention
 contrast by its counts (``conversion_inference``), planning follows the route: the
 rejection probability of the runtime's union of the delta-method decision on dense counts
 and the finite-sample binomial risk-ratio decision on the rest, summed over the count lattice
-(``power_basis`` ``"exact"``, or ``"approximate"`` when the replay budget leaves mass
-undecided), published as the lower end of the enclosure of that probability, never above it,
-and the closed-form model, whose ``power`` is the model's own value, where the counts are
-dense with near certainty and the lattice is too large to enumerate (``"asymptotic"``).
+(``power_basis`` ``"exact"`` or ``"approximate"``), reported as computed rejection
+mass only when internal numerical bounds establish absolute error at most ``1e-6``.
+Materially unresolved probabilities are refused, not reported as lower bounds.
+Where counts are dense with near certainty and the lattice is too large to
+enumerate, ``"asymptotic"`` reports the closed-form model's own point probability.
 Segment-pairwise planning deliberately retains its separate baseline-only
 approximation.
 
 A valid supplied-effect result can have no admissible or numerically resolved
 companion MDE. In that case ``mde_relative`` is ``None`` and
 ``mde_unavailable_reason`` records why.
+Binomial MDE uses a numerical effect tolerance, not a first-representable-float
+guarantee, and reports point power evaluated at the returned effect.
 
 Sequential planning is declared through ``ArmPlanningProcedure.standard(
 inference=InferenceSpec(kind="asymptotic_mean"))``, the runtime's own

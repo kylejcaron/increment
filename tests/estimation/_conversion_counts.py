@@ -22,7 +22,8 @@ def arm_row(arm: ArmStats) -> dict[str, Any]:
         "experiment_id": arm.study_id,
         "metric": arm.metric,
         "group_id": arm.group_id,
-        "n": float(arm.n),
+        "n": arm.n,
+        "successes": arm.successes,
         "ref_y": arm.ref_y,
         "cy1": arm.cy1,
         "cy2": arm.cy2,
@@ -34,7 +35,13 @@ def count_arms(x_c: int, n_c: int, x_t: int, n_t: int) -> tuple[ArmStats, ArmSta
     centered exactly from their counts."""
     control, treatment = (
         ArmStats.from_raw_sums(
-            study_id="e", metric="conv", group_id=group_id, n=n, sum_y=float(x), sum_y2=float(x)
+            study_id="e",
+            metric="conv",
+            group_id=group_id,
+            n=n,
+            sum_y=float(x),
+            sum_y2=float(x),
+            successes=x,
         )
         for group_id, n, x in (("control", n_c, x_c), ("treatment", n_t, x_t))
     )
@@ -68,12 +75,17 @@ def producer_arm(n: int, successes: int | None, *, group_id: str = "control") ->
         f"{outcome} AS y, CAST(NULL AS DOUBLE) AS x, CAST(NULL AS DOUBLE) AS y_den "
         f"FROM range({n})"
     )
-    row = group_summary(totals).execute().iloc[0]
+    row = (
+        group_summary(totals, binary_metrics=["conv"] if successes is not None else [])
+        .execute()
+        .iloc[0]
+    )
     return ArmStats(
         study_id="e",
         metric="conv",
         group_id=group_id,
         n=int(row["n"]),
+        successes=int(row["successes"]) if successes is not None else None,
         ref_y=float(row["ref_y"]),
         cy1=float(row["cy1"]),
         cy2=float(row["cy2"]),

@@ -55,6 +55,7 @@ from increment.query.artifact_reader import (
     _rows as _artifact_rows,
 )
 from increment.query.builders import (
+    declared_binary_metrics,
     group_summary,
     winsorize_unit_totals,
 )
@@ -345,7 +346,7 @@ class SqlPanelSource:
         totals = transformed[0]
         for other in transformed[1:]:
             totals = totals.union(other)
-        summary = group_summary(totals)
+        summary = group_summary(totals, binary_metrics=declared_binary_metrics(metric_objects))
         source = cls(
             con,
             summary,

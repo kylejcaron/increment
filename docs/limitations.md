@@ -553,6 +553,26 @@ The finite-sample route also has three boundaries, each a refusal rather than si
   finite-sample route at a smaller alpha; use a larger alpha, or `conversion_inference="auto"`,
   which takes the delta-method route at counts dense for the tail and has neither floor.
 
+For these fixed-horizon binomial plans, public power is a model-based point
+probability, not a conservative numerical lower bound. Enumeration publishes
+computed rejection mass only when its internal enclosure establishes maximum
+absolute error at most `1e-6`; otherwise it refuses with
+`power.binomial_probability_unresolved`. The dense closed-form route instead
+reports its model's point probability; its validation tolerance remains
+`0.005`, not a universal bound or finite-sample calibration guarantee.
+Binomial MDE locates the earliest detectable region to `1e-8` absolute plus
+`1e-8` relative tolerance on the relative-effect scale. It does not promise the
+first IEEE-representable effect or silently skip materially earlier unresolved
+bands. Unresolved MDE searches refuse with
+`power.minimum_detectable_effect.numerical_resolution`, or leave a companion
+MDE unavailable with `mde_unavailable_reason="numerical_resolution"`.
+The reported power is evaluated at the returned effect. Internal accuracy
+bounds address numerical evaluation, not model misspecification; calibration
+remains a separate, deferred diagnostic. The planning model is
+`hybrid_finite_plus_delta_v3`, and persisted v1/v2 plans require recomputation.
+See [power planning](guides/power-analysis.md#conversion-and-retention-planning-follows-the-runtimes-route)
+for replay limits and comparisons with other tests.
+
 CUPED and unit-grain ratio-denominator conversion/retention retain their log-scale
 guards; their sufficient statistics are not raw Bernoulli count pairs. A clustered
 unadjusted arm instead uses joint relative inference, without the scalar log-SE
@@ -823,8 +843,9 @@ count rule. A count pair is decided by the delta method when its four per-arm su
 failure counts are all at least `m = dense_min_count` for the plan's tail allocation and by the
 finite-sample test otherwise, so a plan's power is the rejection probability of that union
 over the count lattice: the production delta decision on the routed rectangle plus the replayed
-finite-sample decision on the rest (`power_basis="exact"`, or `"approximate"` with `power` the
-certified lower figure when the replay budget leaves more than `1e-6` undecided). It is neither
+finite-sample decision on the rest (`power_basis="exact"` or `"approximate"`).
+Public `power` is the computed rejection mass, admitted only when its internal
+enclosure establishes absolute error at most `1e-6`. It is neither
 route's power: a plan whose counts straddle the threshold is not the smaller of the two. A plan
 whose counts are dense with probability at least `1 - 1e-6` (`P(m <= X <= n - m)` per arm, the
 arms independent) is enumerated while its lattice has at most 100,000 cells (a cost limit,
@@ -863,9 +884,9 @@ mass and numerical error (the dense closed form keeps its 0.005 ceiling; its two
 A `bound --out` checkpoint records each design's enumeration beside the finite-sample
 construction and routing floor it was summed under, and its plan beside the planner model. A
 resumed run retains compatible runtime enumerations and replans retired-model records with the
-current planner. Unknown models and earlier undated layouts refuse with the file line and a
-route to a new `--out`, rather than being reused, relabelled or re-enumerated unnoticed.
-The saved earlier files remain unchanged as evidence.
+current planner, `hybrid_finite_plus_delta_v3`. Its v1 and v2 predecessors must be
+recomputed, not relabelled. Unknown models and earlier undated layouts refuse with
+the file line and a route to a new `--out`. Saved earlier files remain unchanged as evidence.
 
 A plan not evaluated in closed form integrates the count lattice with a bounded decision
 budget. Evaluated pairs use the runtime's delta-method calculation on the routed rectangle
@@ -873,8 +894,9 @@ and the finite-sample replay elsewhere. Each evaluation selects at most 100,000 
 and 150,000 finite-sample directional pairs from its own count windows, prioritising heavier
 cells and retaining unprocessed probability in the upper bound. Selection depends on the
 request, not cached decisions: shared, repeated and fresh evaluations report the same enclosure.
-`power_basis="exact"` means at most `1e-6` remains undecided; `"approximate"` means more remains,
-with `power` the certified lower figure. The Normal-tail replay only proposes sizes.
+An enumeration that cannot establish maximum point error at most `1e-6` refuses
+with `power.binomial_probability_unresolved`; it does not substitute the lower
+endpoint. Diagnostic enclosures can remain wide. The Normal-tail replay only proposes sizes.
 The runtime's control-arm window and floating-point allowance carry over.
 
 On a loaded 12-core Apple machine, evaluating a dense 62,500-cell plan (1,236 per arm) with
@@ -887,25 +909,21 @@ first step; no pair inherits a neighbour's decision, because the runtime's stopp
 need not be monotone in a count. Sizing returns a verified bracket crossing,
 not a proven global minimum.
 
-Every probability planning computes carries the runtime's SciPy error allowance (`n` units in
-the last place of each binomial weight, `2.2e-7` of it at a billion units per arm, `4.5e-13`
-below 2,048) and the rounding of its sums, so a power is enclosed by an interval of about
-`1e-12` of it at 1,000 units per arm and `4e-7` at a billion, and every comparison with the
-target is made at its ends. A size or an effect is reported only when the lower end reaches
-the target; an effect search excludes an interval of effects only when a bound on the
-rejection set, enlarged by the same error, stays below it. One whose interval straddles the
-target is not decided, so the answer can exceed the first that reaches the target by that
-much (measured against the earlier comparisons of the computed values: the effect by a
-relative `1e-12` at 701 to 2,000 units per arm and `4.4e-7` at a billion; a size by 174 of
-489,713,690 units). An enumerated plan reports the lower endpoint as `power`. A
- target that no effect certifies, while the bound cannot exclude every effect, lies within the
-interval of the greatest power any effect may reach and is neither certified nor ruled out:
-a companion MDE is `None` with `mde_unavailable_reason="numerical_resolution"`.
-A direct `minimum_detectable_effect` refusal additionally includes the judged `power_basis`
-in its structured context. The interval covers the runtime's rejection probability wherever
-`power_basis` is `exact` or `approximate`, and the delta-method model's where it is `asymptotic`.
-Triggered plans use the
-rounded analyzed counts.
+The internal numerical enclosure accounts for the runtime's SciPy allowance,
+summation error, omitted support and unresolved decisions. Public solvers compare
+the admitted computed point power with the target, not an enclosure endpoint.
+The closed-form route reports its own model probability; its dense agreement
+criterion remains `0.005`, not a universal runtime error bound.
+
+MDE searches the earliest detectable region to `1e-8` absolute plus `1e-8`
+relative effect tolerance, not the first representable floating-point effect.
+It excludes an earlier interval only with a valid upper bound and cannot skip
+a materially earlier unresolved region. Reported power is evaluated at the
+reported effect. If the search cannot resolve that region, a supplied-effect
+answer preserves its valid power and has `mde_relative=None` with
+`mde_unavailable_reason="numerical_resolution"`. A direct
+`minimum_detectable_effect` refusal additionally retains structured context.
+Triggered plans use the rounded analyzed counts.
 
 A solve's replay is bounded by the cells it stores: at most 10,000,000 (control, treatment)
 count cells, the control window by the treatment windows at the null rate and at every

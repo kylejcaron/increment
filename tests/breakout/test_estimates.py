@@ -72,7 +72,8 @@ def _make_arm_row(
             "metric": metric,
             "group_id": group_id,
             "country": country,
-            "n": float(n),
+            "n": n,
+            "successes": None,
             "sum_y": sum_y,
             "sum_y2": sum_y2,
             "sum_x": sum_x,
@@ -135,9 +136,10 @@ def _conversion_arm_row(
             "metric": metric,
             "group_id": group_id,
             "country": country,
-            "n": float(n),
+            "n": n,
             "sum_y": float(successes),
             "sum_y2": float(successes),  # y in {0, 1}: y**2 == y
+            "successes": successes,
             "sum_x": 0.0 if with_covariate else None,
             "sum_x2": 0.0 if with_covariate else None,
             "sum_xy": 0.0 if with_covariate else None,
@@ -174,7 +176,7 @@ class TestPreferredDirectionReachesTheLiftEstimate:
         )
         # A moments cube needs its format stamp and the plan it was reduced under.
         stamp = {
-            "moments_format": 8,
+            "moments_format": 10,
             "winsor_lower_percentile": None,
             "winsor_upper_percentile": None,
             "winsor_lower_bound": None,
@@ -2713,6 +2715,7 @@ class TestRunBreakoutBinomialGateExemption:
                     "sum_d": count,
                     "sum_yd": count,
                     "sum_y2d": count,
+                    "successes": row["successes"],
                 }
             )
             for row, count in zip(bare, (0.0, 25.0), strict=True)

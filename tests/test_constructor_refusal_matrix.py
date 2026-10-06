@@ -75,7 +75,8 @@ def _moments_analysis() -> Analysis:
             "winsor_n": None,
             "winsor_n_lower": None,
             "winsor_n_upper": None,
-            "moments_format": 7,
+            "moments_format": 10,
+            "successes": None,
             "decision_plan": wire,
         }
         for group, total, total_sq in (

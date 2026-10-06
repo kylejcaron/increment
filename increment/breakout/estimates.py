@@ -3341,16 +3341,18 @@ def run_daily(
             )
             continue
 
-        arm = ArmStats(
-            study_id=str(row["experiment_id"]),
-            metric=metric,
-            group_id=group_id,
-            n=n,
-            ref_y=float(row["ref_y"]),
-            cy1=float(row["cy1"]),
-            cy2=float(row["cy2"]),
-            x_role=X_SLOT_ROLES["x"] if _opt(row.get("ref_x")) is not None else None,
-            **{slot: _opt(row.get(slot)) for slot in _DAY_VALUE_SLOTS},
+        arm = ArmStats.model_validate(
+            {
+                "study_id": str(row["experiment_id"]),
+                "metric": metric,
+                "group_id": group_id,
+                "n": n,
+                "ref_y": float(row["ref_y"]),
+                "cy1": float(row["cy1"]),
+                "cy2": float(row["cy2"]),
+                "x_role": X_SLOT_ROLES["x"] if _opt(row.get("ref_x")) is not None else None,
+                **{slot: _opt(row.get(slot)) for slot in _DAY_VALUE_SLOTS},
+            }
         )
         metric_type = metric_types[metric]
         variance_model = VARIANCE_MODELS.get(metric_type)

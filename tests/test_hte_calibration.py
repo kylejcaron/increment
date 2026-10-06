@@ -418,8 +418,8 @@ def _binomial_breakout_rows(
     rows = []
     for i, p in enumerate(baselines):
         seg = f"seg{i}"
-        y_c = rng.binomial(1, p, n_per_arm).astype(float)
-        y_t = rng.binomial(1, p + effect, n_per_arm).astype(float)
+        y_c = rng.binomial(1, p, n_per_arm)
+        y_t = rng.binomial(1, p + effect, n_per_arm)
         for group_id, y in (("control", y_c), ("treatment", y_t)):
             rows.append(
                 centered_row_from_raw_sums(
@@ -428,9 +428,10 @@ def _binomial_breakout_rows(
                         "metric": "conv",
                         "group_id": group_id,
                         "country": seg,
-                        "n": float(n_per_arm),
+                        "n": n_per_arm,
                         "sum_y": float(y.sum()),
                         "sum_y2": float((y**2).sum()),
+                        "successes": int(y.sum()),
                         "sum_x": None,
                         "sum_x2": None,
                         "sum_xy": None,

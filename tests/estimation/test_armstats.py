@@ -7,7 +7,7 @@ from fractions import Fraction
 import numpy as np
 import pytest
 
-from increment.errors import IncrementRuntimeWarning, InvalidRequestError
+from increment.errors import CapabilityError, IncrementRuntimeWarning, InvalidRequestError
 from increment.estimation.armstats import (
     ArmStats,
     BinomialDataError,
@@ -55,7 +55,9 @@ def _native(y: np.ndarray, **extra: float) -> ArmStats:
     # built arm keeps the x_role-set-iff-ref_x-set invariant combine() relies on.
     fields = _centered(y, **extra)
     x_role = "covariate" if fields.get("ref_x") is not None else None
-    return ArmStats(study_id="exp1", metric="rev", group_id="A", x_role=x_role, **fields)
+    return ArmStats.model_validate(
+        {"study_id": "exp1", "metric": "rev", "group_id": "A", "x_role": x_role, **fields}
+    )
 
 
 class TestArmStats:
@@ -332,6 +334,60 @@ class TestDfToArmsIngress:
         arms = _df_to_arms(rows)
         assert arms[0].study_id == "e"
 
+    @pytest.mark.parametrize("backend", ["rows", "arrow", "pandas"])
+    @pytest.mark.parametrize("failures", [0, 513])
+    def test_large_trial_counts_do_not_round_at_dataframe_ingress(self, backend, failures):
+        import pandas as pd
+        import pyarrow as pa
+
+        n = 2**61 + 1
+        successes = n - failures
+        ref = successes / n
+        rows = [
+            {
+                "experiment_id": "e",
+                "metric": "conv",
+                "group_id": "control",
+                "n": n,
+                "successes": successes,
+                "ref_y": ref,
+                "cy1": float(Fraction(successes) - n * Fraction(ref)),
+                "cy2": float(Fraction(successes * failures, n)),
+            }
+        ]
+        frame = (
+            rows
+            if backend == "rows"
+            else (pa.Table.from_pylist(rows) if backend == "arrow" else pd.DataFrame(rows))
+        )
+        (arm,) = _df_to_arms(frame)
+        assert binary_counts(arm, "conversion") == (successes, n)
+
+    @pytest.mark.parametrize("nullable_integer", [False, True])
+    def test_pandas_missing_successes_remain_absent_for_mean_rows(self, nullable_integer):
+        import pandas as pd
+
+        frame = pd.DataFrame(
+            [
+                {
+                    "experiment_id": "e",
+                    "metric": "m",
+                    "group_id": "control",
+                    "n": 5,
+                    "successes": math.nan,
+                    "ref_y": 0.4,
+                    "cy1": 0.0,
+                    "cy2": 1.5,
+                }
+            ]
+        )
+        if nullable_integer:
+            frame["successes"] = frame["successes"].astype("Int64")
+        (arm,) = _df_to_arms(frame)
+        assert arm.successes is None
+        assert arm.to_summary().mean == pytest.approx(0.4)
+        assert arm.to_summary().var == pytest.approx(1.5 / 4)
+
     @pytest.mark.parametrize("field", ["sum_w", "sum_w2"])
     def test_from_raw_sums_refuses_deprecated_weight_field(self, field: str):
         with pytest.raises(TypeError):
@@ -342,7 +398,7 @@ class TestDfToArmsIngress:
                 n=5,
                 sum_y=2.0,
                 sum_y2=1.5,
-                **{field: 4.0},
+                **{field: 4.0},  # ty: ignore[invalid-argument-type]  # deliberately invalid keyword
             )
 
     @pytest.mark.parametrize("field", ["sum_w", "sum_w2"])
@@ -1354,12 +1410,8 @@ def _gamma(terms: int) -> float:
 
 
 class TestBinaryCountsBernoulliConsistency:
-    """`binary_counts` reconstructs `(successes, n)` from the first
-    centered moment alone; the second centered moment (`cy2`) must ALSO
-    be consistent with genuine Bernoulli data (`successes * (n -
-    successes) / n`), not merely with a matching mean -- a constant
-    (non-binary) arm can share a Bernoulli-looking mean with zero actual
-    spread.
+    """Exact counts and stored second moments must agree for declared binary data.
+    A constant non-binary arm can have the same mean but the wrong variance.
     """
 
     def test_rejects_constant_arm_with_bernoulli_looking_mean(self):
@@ -1367,7 +1419,13 @@ class TestBinaryCountsBernoulliConsistency:
         # out of 10", but cy2 (centered sum of squares) is exactly 0.0,
         # not the Bernoulli-consistent 2.5.
         arm = ArmStats.from_raw_sums(
-            study_id="e", metric="conv", group_id="control", n=10, sum_y=5.0, sum_y2=2.5
+            study_id="e",
+            metric="conv",
+            group_id="control",
+            n=10,
+            sum_y=5.0,
+            sum_y2=2.5,
+            successes=5,
         )
         with pytest.raises(BinomialDataError) as exc_info:
             binary_counts(arm, "conversion")
@@ -1376,17 +1434,23 @@ class TestBinaryCountsBernoulliConsistency:
     def test_accepts_genuine_bernoulli_arm(self):
         # Five ones, five zeros: sum_y2 == sum_y for genuine 0/1 data.
         arm = ArmStats.from_raw_sums(
-            study_id="e", metric="conv", group_id="control", n=10, sum_y=5.0, sum_y2=5.0
+            study_id="e",
+            metric="conv",
+            group_id="control",
+            n=10,
+            sum_y=5.0,
+            sum_y2=5.0,
+            successes=5,
         )
         assert binary_counts(arm, "conversion") == (5, 10)
 
     def test_accepts_all_zero_and_all_success_boundaries(self):
         zero_arm = ArmStats.from_raw_sums(
-            study_id="e", metric="conv", group_id="control", n=8, sum_y=0.0, sum_y2=0.0
+            study_id="e", metric="conv", group_id="control", n=8, sum_y=0.0, sum_y2=0.0, successes=0
         )
         assert binary_counts(zero_arm, "conversion") == (0, 8)
         full_arm = ArmStats.from_raw_sums(
-            study_id="e", metric="conv", group_id="control", n=8, sum_y=8.0, sum_y2=8.0
+            study_id="e", metric="conv", group_id="control", n=8, sum_y=8.0, sum_y2=8.0, successes=8
         )
         assert binary_counts(full_arm, "conversion") == (8, 8)
 
@@ -1405,6 +1469,7 @@ class TestBinaryCountsBernoulliConsistency:
             metric="conv",
             group_id="control",
             n=n,
+            successes=successes,
             sum_y=float(np.sum(y)),
             sum_y2=float(np.sum(y * y)),
         )
@@ -1432,6 +1497,7 @@ class TestBinaryCountsBernoulliConsistency:
             metric="conv",
             group_id="control",
             n=n,
+            successes=successes,
             ref_y=successes / n,
             cy1=0.0,
             cy2=expected + drift,
@@ -1452,6 +1518,7 @@ class TestBinaryCountsBernoulliConsistency:
             metric="conv",
             group_id="control",
             n=n,
+            successes=successes,
             ref_y=successes / n,
             cy1=0.0,
             cy2=expected * (1.0 + 0.5 * (first_order + compounded)),
@@ -1467,6 +1534,7 @@ class TestBinaryCountsBernoulliConsistency:
             metric="conv",
             group_id="control",
             n=n,
+            successes=successes,
             ref_y=successes / n,
             cy1=0.0,
             cy2=expected * (1.0 + 4.0 * (n + 8) * 2.0**-53),
@@ -1486,6 +1554,7 @@ class TestBinaryCountsBernoulliConsistency:
             metric="conv",
             group_id="control",
             n=n,
+            successes=successes,
             ref_y=ref_y,
             cy1=float(Fraction(successes) - n * Fraction(ref_y)) + residual_shift,
             cy2=float(Fraction(successes * (n - successes), n)),
@@ -1494,11 +1563,8 @@ class TestBinaryCountsBernoulliConsistency:
     @pytest.mark.parametrize("n", [2**54 + 2, 2**58, 2**61, 10**18])
     @pytest.mark.parametrize("rare", [513, 514, 641, 777, 1027, 2561, 3001])
     @pytest.mark.parametrize("rare_side", ["failures", "successes"])
-    def test_counts_beyond_the_spacing_of_floats_are_recovered_exactly(self, n, rare, rare_side):
-        """Above ``2**53`` units a float sum ``n * ref_y + cy1`` is a multiple of 128 or more
-        (256 at ``2**61``), so a few failures that are not on that grid were read as the
-        neighboring multiple: 513 of 2**61 as 512. The reference and residual are exact floats
-        whose sum is exactly the integer count."""
+    def test_integer_counts_survive_beyond_float_spacing(self, n, rare, rare_side):
+        """A count such as 513 failures must not become 512 through a float total."""
         successes = rare if rare_side == "successes" else n - rare
         arm = self._stored_arm(n, successes)
         assert binary_counts(arm, "conversion") == (successes, n)
@@ -1510,14 +1576,43 @@ class TestBinaryCountsBernoulliConsistency:
         assert binary_counts(arm, "conversion") == (n - 513, n)
 
     @pytest.mark.parametrize("shift", [1e-3, -1e-3, 0.4, -0.4])
-    def test_a_first_moment_off_the_integer_beyond_the_tolerance_is_refused_at_any_scale(
-        self, shift
-    ):
-        """A float sum at this scale rounds the offset away; the exact sum keeps it."""
-        n = 2**61
+    def test_corrupt_first_moment_is_refused_when_rounding_cannot_explain_it(self, shift):
         with pytest.raises(BinomialDataError) as exc_info:
-            binary_counts(self._stored_arm(n, n - 513, residual_shift=shift), "conversion")
+            binary_counts(self._stored_arm(1000, 300, residual_shift=shift), "conversion")
         assert exc_info.value.code == "estimation.binomial.reconstructed_counts_not_binary"
+
+    @pytest.mark.parametrize(
+        ("n", "successes"),
+        [(10**11, 3 * 10**10), (10 * 2**54, 3 * 2**54), (3 * 2**60, 2**60)],
+    )
+    def test_counts_are_independent_of_rounded_producer_residuals(self, n, successes):
+        ref = successes / n
+        residual = float(successes * Fraction(1.0 - ref) + (n - successes) * Fraction(-ref))
+        arm = self._stored_arm(n, successes).model_copy(update={"cy1": residual})
+        assert binary_counts(arm, "conversion") == (successes, n)
+
+    def test_missing_exact_counts_refuse_instead_of_guessing_from_moments(self):
+        arm = self._stored_arm(3 * 2**60, 2**60).model_copy(update={"successes": None})
+        with pytest.raises(CapabilityError) as exc_info:
+            binary_counts(arm, "conversion")
+        assert exc_info.value.code == "estimation.binomial.exact_counts_required"
+
+    @pytest.mark.parametrize("order", [(0, 1, 2), (2, 0, 1), (1, 2, 0)])
+    def test_partition_merges_preserve_rare_failures_beyond_float_spacing(self, order):
+        n = 2**60
+        parts = [self._stored_arm(n, n - failures) for failures in (513, 777, 1500)]
+        merged = ArmStats.combine([parts[i] for i in order])
+        total, failures = 3 * n, 2790
+        assert binary_counts(merged, "conversion") == (total - failures, total)
+        expected = float(Fraction((total - failures) * failures, total * (total - 1)))
+        assert merged.var_y() == pytest.approx(expected, rel=1e-12, abs=0.0)
+
+    def test_missing_partition_count_cannot_be_reconstructed_after_merge(self):
+        complete = self._stored_arm(2**60, 2**60 - 513)
+        missing = self._stored_arm(2**60, 2**60 - 777).model_copy(update={"successes": None})
+        with pytest.raises(CapabilityError) as exc_info:
+            binary_counts(ArmStats.combine([complete, missing]), "conversion")
+        assert exc_info.value.code == "estimation.binomial.exact_counts_required"
 
 
 class TestCanonicalBernoulliArm:
@@ -1536,6 +1631,7 @@ class TestCanonicalBernoulliArm:
                 metric="conv",
                 group_id="control",
                 n=self.N,
+                successes=self.SUCCESSES,
                 ref_y=self.SUCCESSES / self.N,
                 cy1=4e-7,
                 cy2=expected * (1.0 + step),
@@ -1568,6 +1664,7 @@ class TestCanonicalBernoulliArm:
             metric="conv",
             group_id="control",
             n=self.N,
+            successes=self.SUCCESSES,
             sum_y=float(self.SUCCESSES),
             sum_y2=float(self.SUCCESSES),
         )
@@ -1579,6 +1676,7 @@ class TestCanonicalBernoulliArm:
             metric="conv",
             group_id="treatment",
             n=1_000,
+            successes=300,
             ref_y=0.3,
             cy1=0.0,
             cy2=210.0 * (1.0 + 1e-12),

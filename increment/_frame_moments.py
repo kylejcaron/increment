@@ -83,6 +83,7 @@ def emit_centered_moments(
     *,
     keys: Sequence[str],
     columns: Mapping[str, str],
+    successes_of: str | None = None,
 ) -> nw.DataFrame[Any]:
     """Two-phase centered moments of *plan*'s materialized variables, one row per *keys*.
 
@@ -96,6 +97,15 @@ def emit_centered_moments(
     plain column sum inside pyarrow's restricted group-by support. Masked
     moments stay centered on the partition reference, never on the masked
     subgroup's own mean (see ``ArmStats``). Count fields stay raw.
+
+    *successes_of* names a plan variable whose per-row values are a declared
+    0/1 outcome at the grain *long* is reduced at. The aggregate then also
+    carries :data:`_SUCCESSES` (the exact int64 sum of rows equal to 1) and
+    :data:`_NONBINARY` (rows equal to neither 0 nor 1, nulls and NaN
+    included); the count is meaningful only where ``_NONBINARY`` is 0 (see
+    :func:`_exact_successes`). Both are integer sums of integer indicators,
+    never routed through float. Callers declare the outcome from the metric
+    type, never from the values: 0/1-valued mean data is not a conversion.
     """
     group_cols = list(keys)
     live = [variable for variable in plan.variables if variable in columns]
@@ -136,9 +146,31 @@ def emit_centered_moments(
             assert product is not None
             products.append(product.alias(f"__product_{name}"))
             aggs.append(nw.col(f"__product_{name}").sum().alias(name))
+    if successes_of is not None:
+        outcome = nw.col(columns[successes_of])
+        is_one = (outcome == 1.0).fill_null(False)
+        is_zero = (outcome == 0.0).fill_null(False)
+        products.append(is_one.cast(nw.Int64).alias("__success"))
+        products.append((~(is_one | is_zero)).cast(nw.Int64).alias("__nonbinary"))
+        aggs.append(nw.col("__success").sum().alias(_SUCCESSES))
+        aggs.append(nw.col("__nonbinary").sum().alias(_NONBINARY))
     if products:
         long = long.with_columns(*products)
     return long.group_by(group_cols).agg(*aggs)
+
+
+#: Aggregate columns :func:`emit_centered_moments` adds for a declared binary outcome.
+_SUCCESSES = "successes"
+_NONBINARY = "__nonbinary_rows"
+
+#: Metric types whose per-unit outcome is a declared 0/1 indicator. The
+#: declaration, never the observed values, decides whether a count is carried.
+_BINARY_OUTCOME_TYPES = frozenset({"conversion", "retention"})
+
+
+def _binary_outcome(spec: MetricSpec) -> str | None:
+    """The plan variable to count successes of for *spec*, or ``None`` when undeclared."""
+    return "y" if spec.type in _BINARY_OUTCOME_TYPES else None
 
 
 #: Frame row slot order, pinned rather than taken from SLOTS: the frame has emitted
@@ -164,6 +196,19 @@ _FRAME_ROW_SLOTS = (
 assert frozenset(_FRAME_ROW_SLOTS) == frozenset(SLOTS)
 
 
+def _exact_successes(record: Mapping[str, Any]) -> int | None:
+    """The exact integer success count of an aggregated row, or ``None``.
+
+    Present only when the reduction was declared binary (``successes_of``)
+    and every row of this group is exactly 0 or 1; any other value (a cluster
+    sum, a fractional or missing outcome) leaves no count that could be read
+    as the success total of the ``n`` rows.
+    """
+    if _SUCCESSES not in record or int(record[_NONBINARY]) != 0:
+        return None
+    return int(record[_SUCCESSES])
+
+
 def _moment_fields(record: Mapping[str, Any]) -> dict[str, Any]:
     """Format one aggregated row, emitting literal ``None`` for unpopulated slots.
 
@@ -178,9 +223,13 @@ def _moment_fields(record: Mapping[str, Any]) -> dict[str, Any]:
     family: ``ArmStats.mean_d()`` guards on ``sum_d is None``. The emitter
     only aggregates materialized slots, so a slot absent from *record* was
     never computed and is filled in as ``None`` here.
+
+    ``n`` and ``successes`` stay Python integers: counts are never routed
+    through float.
     """
     return {
         "n": int(record["n"]),
+        "successes": _exact_successes(record),
         **{slot: (float(record[slot]) if slot in record else None) for slot in _FRAME_ROW_SLOTS},
     }
 
@@ -379,7 +428,13 @@ def _day_moment_records(
             columns["den"] = "y_den"
         if has_d:
             columns["d"] = "d"
-        summary = emit_centered_moments(clipped, DAY_GRAIN, keys=list(key_cols), columns=columns)
+        summary = emit_centered_moments(
+            clipped,
+            DAY_GRAIN,
+            keys=list(key_cols),
+            columns=columns,
+            successes_of=_binary_outcome(spec),
+        )
         for record in summary.iter_rows(named=True):
             yield record, _winsor_metadata_for_record(record, metadata, key_cols=key_cols)
 
@@ -478,7 +533,11 @@ def _moment_rows(
         if has_d:
             columns["d"] = "d"
         summary = emit_centered_moments(
-            long, UNIT_GRAIN, keys=_moment_group_cols("group_id", by=by), columns=columns
+            long,
+            UNIT_GRAIN,
+            keys=_moment_group_cols("group_id", by=by),
+            columns=columns,
+            successes_of=_binary_outcome(spec),
         )
 
         for record in summary.iter_rows(named=True):
@@ -1139,7 +1198,11 @@ def _windowed_moment_rows(
         if has_den:
             columns["den"] = "y_den"
         summary = emit_centered_moments(
-            long, UNIT_GRAIN, keys=_moment_group_cols("group_id", by=by), columns=columns
+            long,
+            UNIT_GRAIN,
+            keys=_moment_group_cols("group_id", by=by),
+            columns=columns,
+            successes_of=_binary_outcome(spec),
         )
 
         for record in summary.iter_rows(named=True):

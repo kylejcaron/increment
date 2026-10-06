@@ -126,8 +126,8 @@ old record proof and reuses the parent's exact sufficient state.
 `analysis.export(path)` writes a format-9 sequential checkpoint envelope,
 containing a version-2 registration/snapshot/checkpoint and a version-3
 compiled plan. `Analysis.from_moments` can replay this exact state.
-Legacy format-8 sequential moment files cannot resume the process; fixed-horizon
-format-8 (and the older format-7) moment behavior remains available.
+Legacy format-8 sequential moment files cannot resume the process.
+Fixed-horizon moments use format 10; sequential format 9 remains unchanged.
 
 Every rational in that envelope -- prior hyperparameters, `rho`,
 `treatment_probability`, cell `alpha` and `null_lift`, `q`, adjustment

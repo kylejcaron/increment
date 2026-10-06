@@ -108,6 +108,9 @@ WINSOR_PASSTHROUGH: tuple[Passthrough, ...] = (
     Passthrough("winsor_n_upper", "sum", "int64"),
 )
 
+#: Exact binary totals are integer metadata, not reconstructed centered moments.
+_BINARY_PASSTHROUGH = (Passthrough("successes", "sum", "int64"),)
+
 _SLOT_BY_MOMENT: Mapping[Moment, str] = MappingProxyType(
     {("n", (), None): "n", **{(s.kind, s.variables, s.mask): c for c, s in SLOTS.items()}}
 )
@@ -236,9 +239,11 @@ class MomentPlan:
 
 
 #: Unit-grain rows: ``group_summary`` / frame totals, winsor metadata carried.
-UNIT_GRAIN = MomentPlan.format8(("y", "x", "den"), passthrough=WINSOR_PASSTHROUGH)
+UNIT_GRAIN = MomentPlan.format8(
+    ("y", "x", "den"), passthrough=(*WINSOR_PASSTHROUGH, *_BINARY_PASSTHROUGH)
+)
 #: Day-axis rows (daily, as-of, cohort): the same shape, no winsor passthrough.
-DAY_GRAIN = MomentPlan.format8(("y", "x", "den"))
+DAY_GRAIN = MomentPlan.format8(("y", "x", "den"), passthrough=_BINARY_PASSTHROUGH)
 #: Cluster-grain rows: den before the x slot, as the clustered collapse emits.
 CLUSTER_SIZE_GRAIN = MomentPlan.format8(("y", "den", "size"), passthrough=WINSOR_PASSTHROUGH)
 CLUSTER_UPTAKE_GRAIN = MomentPlan.format8(("y", "den", "uptake"), passthrough=WINSOR_PASSTHROUGH)

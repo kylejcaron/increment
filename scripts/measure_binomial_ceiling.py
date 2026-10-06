@@ -688,7 +688,7 @@ def _recovery_cell(
     )
     wall = time.perf_counter()
     cpu = time.process_time()
-    row = group_summary(arm_table).execute().iloc[0]
+    row = group_summary(arm_table, binary_metrics=("conv",)).execute().iloc[0]
     cpu = time.process_time() - cpu
     wall = time.perf_counter() - wall
     connection.disconnect()
@@ -697,6 +697,7 @@ def _recovery_cell(
         metric="conv",
         group_id="control",
         n=int(row["n"]),
+        successes=None if successes is None else int(row["successes"]),
         ref_y=float(row["ref_y"]),
         cy1=float(row["cy1"]),
         cy2=float(row["cy2"]),

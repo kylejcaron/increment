@@ -111,22 +111,22 @@ def _v1(
 ) -> ArmStats:
     """The same units through the format-1 adapter, warnings suppressed;
     the warning bands themselves are asserted separately below."""
-    sums: dict[str, float] = {"sum_y": float(y.sum()), "sum_y2": float((y * y).sum())}
-    if x is not None:
-        sums |= {
-            "sum_x": float(x.sum()),
-            "sum_x2": float((x * x).sum()),
-            "sum_xy": float((x * y).sum()),
-        }
-    if den is not None:
-        sums |= {
-            "sum_den": float(den.sum()),
-            "sum_den2": float((den * den).sum()),
-            "sum_yden": float((y * den).sum()),
-        }
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
-        return ArmStats.from_raw_sums(study_id="s", metric="m", group_id=group_id, n=len(y), **sums)
+        return ArmStats.from_raw_sums(
+            study_id="s",
+            metric="m",
+            group_id=group_id,
+            n=len(y),
+            sum_y=float(y.sum()),
+            sum_y2=float((y * y).sum()),
+            sum_x=None if x is None else float(x.sum()),
+            sum_x2=None if x is None else float((x * x).sum()),
+            sum_xy=None if x is None else float((x * y).sum()),
+            sum_den=None if den is None else float(den.sum()),
+            sum_den2=None if den is None else float((den * den).sum()),
+            sum_yden=None if den is None else float((y * den).sum()),
+        )
 
 
 def _draw(cv: float, n: int, seed: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

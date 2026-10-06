@@ -155,7 +155,7 @@ class TestSparsePlansAreTheReplay:
         auto = achieved_power(n, lift, baseline, _plan("auto"))
         pinned = achieved_power(n, lift, baseline, _plan("finite_sample"))
         assert auto == pinned
-        assert auto.power_basis in ("exact", "approximate")
+        assert auto.power_basis == "exact"
 
     def test_a_sparse_size_search_equals_the_finite_sample_search(self):
         baseline = Baseline.from_proportion(0.02)
@@ -170,7 +170,7 @@ class TestExplicitFiniteSamplePlans:
         n = 2_000
         baseline = Baseline.from_proportion(p)
         result = achieved_power(n, 0.5, baseline, _plan("finite_sample"))
-        assert result.power_basis != "asymptotic"
+        assert result.power_basis == "exact"
 
     def test_a_clustered_plan_cannot_plan_finite_sample(self):
         with pytest.raises(CodedError) as raised:
@@ -235,7 +235,7 @@ class TestRefusalsNameTheAutoRoute:
         assert refusal.code == "power.binomial_tail_level_unrepresentable"
         sized = required_sample_size(0.5, baseline, _plan("auto", alpha=alpha))
         assert sized.power >= PowerDesign().power
-        assert sized.power_basis in ("asymptotic", "approximate", "exact")
+        assert sized.power_basis in ("asymptotic", "exact")
 
     def test_the_arm_floor_refusal_names_auto(self):
         baseline = Baseline.from_proportion(0.05)

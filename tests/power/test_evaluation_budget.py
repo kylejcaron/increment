@@ -10,22 +10,29 @@ replay); only the budgets are shrunk so that they bind at a size that runs in se
 
 from __future__ import annotations
 
+import copy
+import math
+import pickle
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
+import numpy as np
 import pytest
 
 from calibration.binomial_oracle import Binomial, precise
+from increment.errors import InvalidRequestError
 from increment.estimation import binomial_rr
 from increment.estimation.arm_contract import ArmPlanningProcedure
 from increment.estimation.conversion_delta import production_decision
 from increment.power import (
     Baseline,
+    PowerDesign,
     _binomial,
     achieved_power,
     minimum_detectable_effect,
     power_curve,
+    required_sample_size,
 )
 from increment.power._binomial import (
     PLANNING_CELL_CEILING,
@@ -206,9 +213,7 @@ class TestABudgetLeavesAmbiguousMassNotAnUnavailableRoute:
     when the pairs that route would decide carry probability. Routed pairs the row budget leaves
     out are ambiguous mass of an approximate enclosure, whatever their weight."""
 
-    def test_routed_pairs_the_row_budget_leaves_out_are_ambiguous_not_a_refusal(
-        self, monkeypatch
-    ):
+    def test_routed_pairs_the_row_budget_leaves_out_are_ambiguous_not_a_refusal(self, monkeypatch):
         """A floor of 10 leaves the finite route about 2e-9 of the probability here, far below
         half of `RESOLUTION`, so the default budgets decide every routed pair and report ``exact``;
         the shrunken row budget leaves most of the mass ambiguous and the enclosure holds it."""
@@ -303,40 +308,64 @@ def _conversion() -> ArmPlanningProcedure:
     )
 
 
-def _answer(result: Any) -> tuple[object, ...]:
-    return (result.power, result.power_basis, result.mde_relative, result.mde_unavailable_reason)
+def _failure(call):
+    with pytest.raises(InvalidRequestError) as raised:
+        call()
+    return raised.value
 
 
 @pytest.mark.slow
-class TestPublicAnswersDoNotDependOnWhatTheGeometryHolds:
-    """At 60 units per arm and a 20% rate a lattice holds about 1,800 directional pairs per
-    effect; a budget of 700 binds on every effect worth planning and leaves a few thousandths of
-    probability ambiguous, so ``power_basis`` is ``approximate``."""
-
+class TestUnresolvedPublicAnswersAreDeterministic:
     BASELINE = Baseline.from_proportion(0.2)
 
     @pytest.fixture(autouse=True)
     def _budget(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(_binomial, "EVALUATION_REPLAY_BUDGET", 700)
 
-    def test_duplicate_curve_points_are_one_answer_and_the_scalar_call(self):
-        lifts = [0.8, 0.8, 0.5, 0.8]
-        curve = power_curve(
-            n_per_arm=60,
-            relative_lift=lifts,
-            baseline=self.BASELINE,
-            procedure=_conversion(),
-            max_workers=1,
+    def test_wide_diagnostics_remain_available_but_scalar_and_curve_refuse(self):
+        diagnostic = planned_enclosure(60, 0.8, self.BASELINE, _conversion())
+        assert diagnostic.absolute_error > RESOLUTION
+        scalar = _failure(lambda: achieved_power(60, 0.8, self.BASELINE, _conversion()))
+        curve = _failure(
+            lambda: power_curve(
+                n_per_arm=60,
+                relative_lift=[0.8, 0.8, 0.5],
+                baseline=self.BASELINE,
+                procedure=_conversion(),
+                max_workers=1,
+            )
         )
-        assert curve[0].power_basis == "approximate"
-        assert _answer(curve[0]) == _answer(curve[1]) == _answer(curve[3])
-        direct = {lift: achieved_power(60, lift, self.BASELINE, _conversion()) for lift in lifts}
-        for point, lift in zip(curve, lifts, strict=True):
-            assert _answer(point) == _answer(direct[lift])
+        assert scalar.code == curve.code == "power.binomial_probability_unresolved"
+        assert scalar.context == curve.context
+        assert scalar.context["lower"] == diagnostic.lower
+        assert scalar.context["upper"] == diagnostic.upper
+        assert scalar.context["error"] == diagnostic.absolute_error
+        assert scalar.context["tolerance"] == RESOLUTION
+        for restored in (copy.deepcopy(scalar), pickle.loads(pickle.dumps(scalar))):
+            assert restored.code == scalar.code and restored.context == scalar.context
+            with pytest.raises(TypeError):
+                restored.context["error"] = 0.0
+
+    def test_repeated_mde_requests_refuse_instead_of_skipping_unresolved_effects(self):
+        failures = [
+            _failure(lambda: minimum_detectable_effect(60, self.BASELINE, _conversion()))
+            for _ in range(2)
+        ]
+        assert failures[0].code == "power.minimum_detectable_effect.numerical_resolution"
+        assert failures[0].context == failures[1].context
+
+    def test_size_search_does_not_count_unresolved_mass_as_power(self):
+        failure = _failure(lambda: required_sample_size(0.8, self.BASELINE, _conversion()))
+        assert failure.code == "power.binomial_probability_unresolved"
+        assert failure.context["error"] > failure.context["tolerance"]
+
+
+@pytest.mark.slow
+class TestResolvedPublicAnswers:
+    BASELINE = Baseline.from_proportion(0.2)
 
     def test_a_minimum_detectable_effect_reports_the_power_and_basis_of_its_own_enclosure(self):
-        """The effect's power and its basis are one figure: the lower end of the enclosure a fresh
-        plan of that very effect gives, whatever an earlier search of the same geometry cached."""
+        """The effect's power and basis belong to its own admitted point, regardless of cache."""
         curve = power_curve(
             n_per_arm=60,
             target_power=[0.9, 0.8],
@@ -348,6 +377,65 @@ class TestPublicAnswersDoNotDependOnWhatTheGeometryHolds:
         for row in (*curve, alone):
             assert row.mde_relative is not None
             enclosure = planned_enclosure(60, row.mde_relative, self.BASELINE, _conversion())
-            assert (row.power, row.power_basis) == (enclosure.lower, enclosure.basis)
-            assert row.power_basis == "approximate"
+            assert (row.power, row.power_basis) == (enclosure.power, enclosure.basis)
+            assert enclosure.absolute_error <= RESOLUTION
         assert alone.power >= 0.8 and curve[0].power >= 0.9
+
+    def test_unresolved_companion_preserves_a_resolved_supplied_power(self, monkeypatch):
+        from increment.power import core
+
+        expected = planned_enclosure(60, 0.8, self.BASELINE, _conversion())
+        monkeypatch.setattr(core, "_BINOMIAL_MDE_EVALUATIONS", 2)
+        answer = achieved_power(60, 0.8, self.BASELINE, _conversion())
+        assert answer.power == expected.power
+        assert (answer.mde_relative, answer.mde_unavailable_reason) == (
+            None,
+            "numerical_resolution",
+        )
+
+
+def test_weight_bucket_changes_cannot_publish_a_false_detectable_band(monkeypatch):
+    """Selection jumps even when the complete decision probability is increasing."""
+    monkeypatch.setattr(_binomial, "EVALUATION_REPLAY_BUDGET", 5)
+
+    def classify(decision, route, requests):
+        return [
+            (np.arange(r.j0, r.j1 + 1) >= 1) if r.x_c == 0 else np.ones(r.j1 - r.j0 + 1, bool)
+            for r in requests
+        ]
+
+    monkeypatch.setattr(_binomial, "classify", classify)
+    decision = BinomialDecision(1, 2, 1.0, 0.001, 0.05, "greater")
+    geometry = RejectionGeometry(decision, "exact")
+    boundary = 1.0 - math.sqrt(10.0 ** (-83 / 32) / 0.01)
+    rates = (boundary - 1e-5, boundary - 2.5e-6, boundary + 1e-5)
+    reference_rate = boundary - 5e-6
+    target = 0.99 * (2 * reference_rate - reference_rate**2) + 0.01 * (1 - reference_rate**2)
+    diagnostics = [geometry.evaluate(0.01, rate) for rate in rates]
+    assert [value.power >= target for value in diagnostics] == [False, True, False]
+    true_power = [0.01 + 0.99 * (2 * rate - rate**2) for rate in rates]
+    assert true_power == sorted(true_power)
+    for diagnostic, truth in zip(diagnostics, true_power, strict=True):
+        assert diagnostic.lower <= truth <= diagnostic.upper
+        assert diagnostic.absolute_error > RESOLUTION
+        failure = _failure(lambda diagnostic=diagnostic: diagnostic.reported)
+        assert failure.code == "power.binomial_probability_unresolved"
+    bound = geometry.point_upper(
+        0.01, rates[0], rates[-1], geometry.closure_bound(0.01, rates[0], rates[-1])
+    )
+    assert bound >= max(value.power for value in diagnostics)
+
+    # Public arms have a two-unit floor; use the same budget-dependent selection law
+    # on its smallest admissible public lattice rather than changing that floor.
+    failure = _failure(
+        lambda: achieved_power(
+            2,
+            rates[1] / 0.01 - 1,
+            Baseline.from_proportion(0.01),
+            ArmPlanningProcedure.standard(
+                "conversion", alternative="greater", conversion_inference="finite_sample"
+            ),
+            PowerDesign(),
+        )
+    )
+    assert failure.code == "power.binomial_probability_unresolved"

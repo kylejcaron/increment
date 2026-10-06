@@ -1145,7 +1145,7 @@ def test_design_summary_rejects_incompatible_shape_identity_catalog_and_plans(tm
             with pytest.raises(CodedError) as raised:
                 MomentsSource(rows, metrics=metrics, study_id=study_id, design=design(7), plan=plan)
             assert raised.value.code == "source.compliance_summary.invalid_state"
-        for version in (7, 9):
+        for version in (7, 8, 9):
             with pytest.raises(CodedError) as raised:
                 MomentsSource(
                     [{**envelope, "moments_format": version}],

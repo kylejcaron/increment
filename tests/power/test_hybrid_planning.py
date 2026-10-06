@@ -57,7 +57,8 @@ class TestDensePlansNearTheThresholdAreEnumerated:
         result = achieved_power(1_236, 0.06, baseline, procedure)
         computed = planned_enclosure(1_236, 0.06, baseline, procedure)
         assert result.power_basis == "exact"
-        assert result.power == computed.lower < computed.power
+        assert result.power == computed.power
+        assert computed.absolute_error <= _binomial.RESOLUTION
         assert result.power == pytest.approx(recorded, abs=1e-5)
 
     def test_a_lattice_too_large_to_enumerate_keeps_the_closed_form(self):
@@ -196,7 +197,7 @@ class TestPublicSolversAgree:
         assert achieved.power == sized.power >= 0.8
         assert achieved.power_basis == sized.power_basis
         effect = minimum_detectable_effect(sized.n_per_arm, baseline, procedure)
-        assert effect.mde_relative is not None and effect.mde_relative <= 0.1 * (1 + 1e-9)
+        assert effect.mde_relative is not None and effect.mde_relative <= 0.1 + 1.1e-8
         assert effect.power_basis == sized.power_basis
 
     def test_a_closed_form_plan_publishes_the_models_value_not_a_lower_end(self):

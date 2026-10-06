@@ -287,10 +287,19 @@ def test_export_moments_is_source_owned_and_portable(con, tmp_path):
         analysis.close()
 
     table = pq.read_table(path)
-    assert table.schema.metadata[b"increment.moments_format"] == b"8"
+    assert table.schema.metadata[b"increment.moments_format"] == b"10"
     rows = table.to_pylist()
     assert rows
-    assert {row["moments_format"] for row in rows} == {8}
+    assert {row["moments_format"] for row in rows} == {10}
+    metrics = {row["metric"] for row in rows}
+    by_metric = {metric: [r for r in rows if r["metric"] == metric] for metric in metrics}
+    for metric in ("purchase_rate", "d7_retention"):
+        assert by_metric[metric]
+        for row in by_metric[metric]:
+            assert type(row["successes"]) is int
+            assert 0 <= row["successes"] <= row["n"]
+    for row in by_metric["avg_session_duration"]:
+        assert row["successes"] is None
     payloads = {json.dumps(json.loads(row["assignment_counts"]), sort_keys=True) for row in rows}
     assert payloads == {json.dumps({"control": 2, "treatment": 2}, sort_keys=True)}
 

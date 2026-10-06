@@ -1,6 +1,6 @@
 # Power analysis and MDE for A/B tests
 
-Increment's arm power solvers invert the same log-ratio-of-means variance model used for parallel-arm readouts. They calculate required sample size, achieved power, or minimum detectable relative effect from a control-arm baseline and declared alternative-arm variance assumptions.
+Increment's arm power solvers calculate required sample size, achieved power, or minimum detectable relative effect from a control-arm baseline and declared alternative-arm assumptions. Mean-like plans use the estimator's log-ratio variance model; eligible fixed-horizon conversion and retention plans follow the runtime's count-based decision route or its dense closed-form planning model.
 
 ## Procedure-first API
 
@@ -182,121 +182,79 @@ and not a function of the two: a plan whose counts straddle the threshold is not
 of the two". The count law is integrated over windows that leave out at most about `1e-12` of
 mass. `ArmPlanningProcedure.standard(..., conversion_inference="finite_sample")` plans the
 replay at every size (refused for a mean, clustered or sequential plan, which the finite-sample
-route does not serve). At 701 units per arm, a 10% baseline and a 50% lift the replayed power
-is 0.7144 (the log-ratio model said 0.8004), and the planned size for 80% power is 831 per arm.
-Power depends on the baseline rate alone; `var` does not enter.
+route does not serve). Power depends on the baseline rate alone; `var` does not enter.
 
-- `power_basis="exact"`: every pair of the count lattice is decided by the runtime's own
-  decision, so the reported power is the lower end of the enclosure of the runtime's rejection
-  probability, below it by the numerical error of the sum and at most about `1e-6` of mass left
-  undecided (counts the rule routes to the delta method with near
-  certainty need no replay of the finite-sample test, and their `~1e-6` is that mass). The
-  production delta decision is also what a dense plan reports while its lattice has at most
-  100,000 cells. That limit is a cost route, the same for every design: each routed pair costs
-  about 0.2 CPU-milliseconds (it is decided by the runtime's own calculation, not a restatement)
-  and the closed form's error shrinks with the counts, so the closed form is used once the
-  lattice is too large to enumerate. Below it the closed
-  form understated the enumerated power by up to 0.006 (a 1,236-unit arm at a 50% baseline and
-  a 6% lift: 0.5859 against 0.5918 at `alpha=0.2`). Past 100,000 pairs an
-  evaluation leaves the rest undecided (ambiguous mass) rather than assume them.
-- `power_basis="approximate"`: the replay of the finite-sample test is budgeted at 150,000
-  directional replays an evaluation (about a hundred to four hundred CPU-microseconds each at
-  the arm sizes where counts reach the routing threshold), the heaviest count pairs first. A
-  plan with more pairs than that leaves the lightest undecided: `power` is then the same lower
-  end (the weight of the pairs decided to reject, less the numerical error of the sum, never
-  above the runtime's rejection probability), and the runtime's probability lies between it and
-  it plus the undecided mass and that error: at 382,230 units per arm and a 1% baseline an evaluation takes 46 s and
-  leaves 0.047 (the pipeline's 0.4125 lies in [0.3904, 0.4370]), and at 1,646,389 it takes
-  140 s and leaves 0.51. Sizes and effects are certified from that lower figure, so a budgeted
-  plan is sized conservatively, not approximately. The Normal-tail replay of an earlier
-  release remains only to propose a size the runtime's decision then verifies; it is never a
-  reported power or a bound.
-- `power_basis="asymptotic"`: the closed-form model above, for counts the rule routes to the
-  delta method with near certainty (unrouted mass at most `1e-6`) in a lattice of more than
-  100,000 cells; its figures are the model's only. It is not an enumeration of the runtime's decision: it agreed with the
-  pipeline's rejection probability to within 0.005 (the repository's ceiling for a normal
-  approximation) at the designs enumerated on the limitations page, and a target called
-  unattainable or an effect certified there is so under this model.
-- A decision the runtime refuses in full on the finite-sample route (an arm above its ceiling,
-  a nuisance budget below the solver's floor, a tail level the float margin dominates) decides
-  no count pair there. A plan that keeps more than half of `1e-6` of its counts on that route
-  is refused with a `power.binomial_*` code instead of reporting zero power for them; a dense
-  plan's smaller share is counted among the undecided mass.
-- Replay bound (every plan enumerated on the count lattice, which is every explicit
-  `conversion_inference="finite_sample"` plan and every `auto` plan except the closed-form
-  `asymptotic` ones): the work and memory follow the number of (control,
-  treatment) count cells a solve stores, not the arm size: the control window
-  by the treatment windows at the null rate and at every alternative that solve
-  evaluates. A supplied effect, an effect search (the union of the windows it
-  evaluates) and each row of a `power_curve` are separate solves: cells an
-  earlier row or the supplied effect left are a cache, dropped when the next
-  solve needs the room (the solve's own cells never are, and its union is what the
-  bound counts), so a row answers as its scalar call does. A design whose
-  null rectangle exceeds 10,000,000 cells, or an alternative whose window would
-  take its solve past it, is refused with `power.binomial_replay_bound_exceeded`
-  before any replay or allocation (the error's context names the analyzed
-  counts, the control rate, the alternative treatment rate `p_t` when it is the
-  alternative that exceeds, `cells` and `max_cells`). An effect search that would
-  exceed it ends unresolved: a companion `mde_relative` is `None` with
-  `numerical_resolution`, and `minimum_detectable_effect` is refused with the
-  bound, after the work that preceded it (one to 3.5 minutes of CPU in the
-  designs measured). An effect search stores more than the null rectangle, so it
-  reaches the bound at smaller arms than a supplied effect: at a 5% baseline
-  `achieved_power` is answered at 1,000,000 units per arm (but its companion
-  effect is not) and `minimum_detectable_effect` at 500,000 but not at
-  1,000,000. A 5% baseline with equal arms reaches the bound at about one million
-  units per arm and a 50% baseline at about 190,000; a rare baseline stays far
-  inside it at any arm size (100 million units per arm at a rate of 2e-7 expect
-  twenty events and replay about four thousand cells). Measured on a 12-core
-  machine under a shared load, an explicit `finite_sample` `achieved_power` at a 5% baseline
-  takes 10 s of CPU at 100,000 units per arm and 198 s (1.7 GiB) at 1,000,000, and is
-  refused within a millisecond at 5,000,000 and 50,000,000 (48.3 and 483 million null
-  cells); a design of about a hundred events per arm takes 0.2 s at 1e5, 1e6, 5e6
-  and 5e7 units per arm. Earlier measurements on an Apple M3 Pro put a call within the
-  bound at up to about 3.5 minutes at 190,000 per arm at 50% (where the companion effect
-  search runs to its own refusal) and several minutes for `required_sample_size`, with a
-  peak under 2 GiB. The same dense calls under the default `auto` take a millisecond at every
-  size, with no bound (the [limitations page](../limitations.md) lists the cells measured). The bound
-  limits the planner only: the runtime decides arms of up to a billion units.
+Public `power` is a model-based point probability, not the lower endpoint of a
+numerical enclosure:
 
-The plan depends only on the design, never on timing. Every probability here is a computed
-value with a numerical error: each binomial weight is a SciPy value within the runtime's
-allowance of `n` units in the last place (the allowance its own float margin is built on) and
-every sum rounds. The planner encloses the runtime's rejection probability in an interval and
-decides from its ends only: the lower end is the weight of the count pairs decided to reject,
-less that error, and the upper end adds the mass of the pairs left undecided and of
-everything outside the windows. The runtime's finite-sample search is bounded and stopped, so
-its rejections need not be monotone in a count the way the supremum it bounds is, and no pair
-is decided by extending a neighbour's decision. A target called unattainable or a size
-certified describes the runtime wherever `power_basis` is `exact` or `approximate`, and the
-delta-method model where it is `asymptotic`; a refusal's context names which. The interval
-is about `1e-12` of the power at 1,000 units per arm
-and `4e-7` of it at a billion, widened by the undecided mass (the reported `power` is its lower
-end, the figure a size or an effect is certified from, so it is never above the runtime's
-rejection probability and a size's `power` reaches the target; the `asymptotic` model's own
-value is reported as it is). Power is not monotone in the sample size under this decision, so
-`required_sample_size` returns a verified size whose power is *certified* to reach the target
-(the lower end of its interval does) while the size one below is not -- not a proof that no
-smaller size reaches it, and a size whose interval straddles the target is not certified, so
-the answer can exceed the first size that reaches it by the sizes within that interval of the
-target (none at ordinary sizes; about 170 of 490 million at a 2e-7 baseline).
-`minimum_detectable_effect` returns the first admissible effect whose power is certified to
-reach the target, whatever the shape of power along the effects (two-sided power can fall from
- the null before it rises, and a decision's rows can lift and lower it in turn): earlier effects
-are excluded by their own power or by a bound on the rejection set (enlarged by the same
-error), except those whose power lies within the interval of the target, which are not
-decided, so a band of effects that reaches the target is found whether or not the largest
-effect does. The effect reported can exceed the first that reaches it by that much (a relative
-`1e-12` at 701 to 2,000 units per arm, `4e-7` at a billion); its `power` is the lower end of the
-interval at that effect, which reaches the target. A target no admissible effect can reach is
-`unattainable`; one that no effect certifies, while the bound cannot exclude every effect, lies
-within the interval of the greatest power any effect may reach and can neither be certified
-nor ruled out, so the companion `mde_relative` is `None` with `numerical_resolution` and
-`minimum_detectable_effect` is refused with `power.minimum_detectable_effect.numerical_resolution`,
-whose context carries that interval as `power_enclosure` and the effects the bound could not
-exclude as `unresolved_interval`. Where the bound cannot exclude a stretch of effects (the
-effect search's own 512-evaluation budget ends, as it does when the target is the power of a
-flat peak) the same code is raised with `power_enclosure` of `None`.
+- `power_basis="exact"` or `"approximate"`: the computed rejection mass from the
+  count-law enumeration. Internal bounds account for summation error, omitted
+  support and unresolved count pairs. The point is published only when those
+  bounds establish a maximum absolute error of `1e-6`. `"exact"` describes the
+  decision-law calculation, not error-free floating-point arithmetic or a
+  finite-sample guarantee for the hybrid delta-method route.
+- `power_basis="asymptotic"`: the closed-form model above, where counts route to
+  the delta method with near certainty (unrouted mass at most `1e-6`) and the
+  lattice has more than 100,000 cells. This is the model's own probability,
+  not an enumeration of the runtime's decision. The dense validation tolerance
+  remains `0.005`; it is a comparison criterion, not a universal error bound
+  for every design or data-generating process.
+- If the enumeration cannot resolve the probability to `1e-6`, the public
+  request refuses with `power.binomial_probability_unresolved` (context
+  `lower`, `upper`, `error`, `tolerance`). It does not publish a lower endpoint, midpoint
+  or substitute approximation. Internal diagnostic enclosures may remain wide;
+  they are not additional `PowerResult` fields or user tuning parameters.
+
+Enumeration has deterministic work and memory limits, not a timing-dependent
+answer. Delta-decision enumeration is bounded at 100,000 count pairs, and
+finite-sample replay at 150,000 directional replays per evaluation. A solve
+stores at most 10,000,000 control/treatment count cells across its null and
+evaluated alternative windows. A supplied effect, an MDE search and each
+`power_curve` row are separate solves. Exceeding the cell bound raises
+`power.binomial_replay_bound_exceeded`; an MDE search that reaches it can leave
+a companion `mde_relative=None` with `mde_unavailable_reason="numerical_resolution"`.
+These are planner limits: the finite-sample runtime ceiling remains
+1,000,000,000 units per arm. A dense `auto` plan using the closed form does
+not enumerate that lattice.
+
+The runtime's bounded finite-sample search can produce nonmonotone rejection
+decisions. Planning does not infer a count pair's decision from its neighbour.
+Likewise, power need not be monotone in sample size or effect:
+
+- `required_sample_size` returns a size meeting the target under the selected
+  planning calculation, not a proof that no smaller size can reach it.
+- `minimum_detectable_effect` searches for the earliest detectable region to
+  an effect tolerance of `1e-8` absolute plus `1e-8` relative, measured on the
+  relative-effect scale, not the first IEEE-representable effect. It
+  cannot silently skip a materially earlier unresolved band. The result's
+  `power` is evaluated at the reported effect, not copied from the target.
+- A target excluded over every admissible effect is `unattainable`. If the
+  search cannot distinguish detectability or exclude an earlier region at its
+  numerical resolution, a companion MDE is unavailable with
+  `numerical_resolution`; a standalone call refuses with
+  `power.minimum_detectable_effect.numerical_resolution`. A supplied effect
+  whose point power is resolved can still be returned without a companion MDE.
+
+All conclusions are conditional on the selected decision rule and planning
+model. Numerical bounds address evaluation accuracy, not model misspecification
+or calibration. Calibration remains a separate, deferred diagnostic rather
+than a prerequisite on the planning path.
+
+#### Comparing with statsmodels
+
+The official [`TTestIndPower.power`](https://www.statsmodels.org/stable/generated/statsmodels.stats.power.TTestIndPower.power.html)
+and [`NormalIndPower.power`](https://www.statsmodels.org/stable/generated/statsmodels.stats.power.NormalIndPower.power.html)
+APIs return model-based point rejection probabilities, not lower numerical
+bounds. Increment uses the same point-probability interpretation, but that does
+not imply numerical parity: those APIs plan independent-sample t- and z-tests,
+respectively, with standardized mean differences. Compare only after aligning
+the decision rule, effect scale, baseline/variance assumptions, alpha, sidedness
+and arm allocation. A relative-lift binomial risk-ratio test can legitimately
+have different power from either test.
+
+The current binomial planning model is `hybrid_finite_plus_delta_v3`. Persisted
+results labelled `hybrid_finite_plus_delta_v2` or its v1 predecessor must be
+recomputed; they do not acquire point-power semantics by relabelling.
 
 A design the runtime refuses in full decides no count pair, so it has no power to plan, and it
 is never replayed: `achieved_power`, `minimum_detectable_effect` and every `power_curve` row
@@ -313,13 +271,13 @@ baseline rate holds smaller counts, which the runtime refuses, is refused rather
 with them as non-rejections. The margin grows with the arm, so a smaller size of
 the same alpha can be planned; the solver floor refuses every size.
 
-`required_sample_size` ends a replayed search it cannot satisfy with one of four codes, each
-with its own context (`conversion_inference="auto"` plans the dense counts these refusals name in closed form):
+In addition to numerical-resolution refusals, `required_sample_size` can end a
+replayed search with the following resource or decision-domain refusals:
 
 | Code | When | Context |
 |---|---|---|
 | `power.binomial_replay_bound_exceeded` | the search reached its ceiling: about 1/128 under the crossing of a bisection for the largest size whose null and supplied-effect rectangles fit the replay bound (the cell count is not monotone in the size, so a size above the ceiling may fit and may reach more) | `power`, `power_reached`, `n_c`, `n_t`, `p_c`, `p_t` (when the alternative exceeds), `cells`, `max_cells`, `max_arm_size` |
-| `power.binomial_size_search_unreachable` | the search reached the runtime's arm ceiling, or the size where the float margin starts dominating the tail level, without certifying the target | `power`, `maximum_power`, `n_per_arm`, `max_arm_size` |
+| `power.binomial_size_search_unreachable` | the search reached the runtime's arm ceiling, or the size where the float margin starts dominating the tail level, without reaching the target | `power`, `maximum_power`, `n_per_arm`, `max_arm_size` |
 | `power.binomial_tail_level_unrepresentable` | the decision is refused even at the smallest design: the nuisance budget is below the solver floor, or the float margin already dominates the tail level there, so no size reads the treatment arm; raised before any search | `alpha`, `beta`, `tail_alpha`, `margin`, `n_c`, `n_t`, `p_c`, `decided_from`, `solver_floor`, `cause` (`solver_floor` or `float_margin`), `scope` (`smallest`) |
 | `power.binomial_arm_ceiling_below_smallest_design` | the allocation is so lopsided that the smallest design already has an arm above the runtime's ceiling; raised before any search | `n_t`, `n_c`, `allocation`, `max_arm_size` |
 

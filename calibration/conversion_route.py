@@ -1258,11 +1258,13 @@ class Enumeration:
 
 @dataclass(frozen=True, slots=True)
 class Plan:
-    """What the planner reports for a design, under the model that produced it. ``planned`` is
-    the plan's power, the certified lower figure of a hybrid plan; ``lower`` and ``upper``
-    enclose the pipeline's rejection probability and ``ambiguous`` is the mass of the counts the
-    plan could not decide. A ``closed_form`` plan is the delta-method model and encloses only
-    itself; a plan that is not ``certified`` is a heuristic with no claim on the pipeline."""
+    """Diagnostic planner integral under the model that produced it.
+
+    ``planned`` is computed central rejection mass, not necessarily an admitted public
+    probability. ``lower`` and ``upper`` enclose the pipeline probability and ``ambiguous``
+    records undecided count mass. A ``closed_form`` plan encloses only its model value;
+    an uncertified heuristic has no claim on the pipeline.
+    """
 
     model: str
     route: str
@@ -1288,18 +1290,15 @@ class EnumeratedPower:
         return self.enumeration.hybrid - self.plan.planned
 
 
-#: Planner models a checkpoint may still name. Resuming keeps their designs' enumerations and
-#: plans each design again under the current model; a retired record's own ``planned`` is never
-#: reused. ``borderline_minimum`` is the smaller of the replay and the closed form that preceded
-#: ``increment.power.core.BINOMIAL_PLANNING_MODEL``. ``hybrid_finite_plus_delta_v1`` planned the
-#: same union but stored an enumerated plan's central decided mass as ``planned``, where the
-#: current model stores the lower end of its enclosure.
-RETIRED_PLANNER_MODELS = frozenset({"borderline_minimum", "hybrid_finite_plus_delta_v1"})
+#: Retired checkpoint models are recomputed while their runtime enumerations are kept.
+#: V1 published central mass without admission; v2 published a lower enclosure endpoint.
+RETIRED_PLANNER_MODELS = frozenset(
+    {"borderline_minimum", "hybrid_finite_plus_delta_v1", "hybrid_finite_plus_delta_v2"}
+)
 
 
 def plan_design(cell: MirrorCell) -> Plan:
-    """The planner's report for ``cell``'s design under the current model: the plan's power,
-    basis and enclosure of the pipeline's rejection probability, and its route."""
+    """Diagnostic central mass, enclosure, basis and route for ``cell``'s design."""
     from increment.estimation.arm_contract import ArmPlanningProcedure
     from increment.estimation.conversion_route import planning_route
     from increment.power import Baseline
@@ -1321,7 +1320,7 @@ def plan_design(cell: MirrorCell) -> Plan:
         BINOMIAL_PLANNING_MODEL,
         route,
         enclosure.basis,
-        enclosure.reported,
+        enclosure.power,
         enclosure.lower,
         enclosure.upper,
         enclosure.ambiguous,

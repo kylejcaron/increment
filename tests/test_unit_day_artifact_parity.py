@@ -1015,12 +1015,22 @@ def test_export_and_fused_breakout_summaries_match_the_definitions_source(
             for row in pq.read_table(adopted_path).to_pylist()
             if row["metric"] == "purchase_rate"
         ]
-        exported_fields = ("experiment_id", "metric", "group_id", "n", "ref_y", "cy1", "cy2")
+        exported_fields = (
+            "experiment_id",
+            "metric",
+            "group_id",
+            "n",
+            "ref_y",
+            "cy1",
+            "cy2",
+            "successes",
+        )
         _assert_rows_equal(
             [{field: row[field] for field in exported_fields} for row in native_rows],
             [{field: row[field] for field in exported_fields} for row in adopted_rows],
         )
-        assert {row["moments_format"] for row in adopted_rows} == {8}
+        assert all(type(row["successes"]) is int for row in adopted_rows)
+        assert {row["moments_format"] for row in adopted_rows} == {10}
     finally:
         adopted_source.close()
         adopted.close()
@@ -1656,7 +1666,7 @@ def test_adoption_known_total_horizon_preserves_unit_population(tmp_path, open_e
     import warnings
 
     from examples._seed import seed_event_log
-    from increment.query.builders import group_summary
+    from increment.query.builders import declared_binary_metrics, group_summary
 
     con, native, context, store = _native(definitions=_definitions(tmp_path, open_ended=open_ended))
     seed_event_log(con, n_units=200)
@@ -1670,7 +1680,9 @@ def test_adoption_known_total_horizon_preserves_unit_population(tmp_path, open_e
             for metric in source.context.metrics:
                 # Unit-grain still discovers the endpoint from the dense relation.
                 totals = source._reduction_query(metric, "unit")
-                expected = con.to_pyarrow(group_summary(totals)).to_pylist()
+                expected = con.to_pyarrow(
+                    group_summary(totals, binary_metrics=declared_binary_metrics([metric]))
+                ).to_pylist()
                 assert expected
                 _assert_rows_equal(expected, source._reduce(metric, "total"))
                 assert source._reduce(metric, "total", population_units=frozenset()) == []

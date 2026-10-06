@@ -962,6 +962,7 @@ def _moment_rows(metric_type: str) -> list[dict[str, Any]]:
                 "n": 12,
                 "sum_y": 5.0,
                 "sum_y2": 5.0,
+                "successes": 5,
                 **_MOMENT_NULLS,
             },
             {
@@ -971,6 +972,7 @@ def _moment_rows(metric_type: str) -> list[dict[str, Any]]:
                 "n": 12,
                 "sum_y": 8.0,
                 "sum_y2": 8.0,
+                "successes": 8,
                 **_MOMENT_NULLS,
             },
         ]
@@ -1025,8 +1027,9 @@ def _current_moment_rows(metric_type: str) -> list[dict[str, Any]]:
     return [
         {
             **centered_row_from_raw_sums(row),
+            "successes": row.get("successes"),
             **winsor,
-            "moments_format": 8,
+            "moments_format": 10,
             "decision_plan": wire,
         }
         for row in _moment_rows(metric_type)

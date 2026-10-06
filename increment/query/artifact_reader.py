@@ -55,6 +55,7 @@ from increment.query.builders import (
     compliance_event_horizon,
     daily_group_summary,
     day_boundary_offset,
+    declared_binary_metrics,
     group_summary,
     join_breakout_dimension,
     join_pre_period_covariate,
@@ -1292,6 +1293,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 cluster=cluster,
                 ratio_metrics=[metric.name] if isinstance(metric, RatioMetric) else None,
                 uptake=uptake_relation is not None,
+                binary_metrics=declared_binary_metrics([metric]),
             )
         if properties_table is not None:
             dimension = [by] if by else []

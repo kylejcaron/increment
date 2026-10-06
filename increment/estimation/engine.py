@@ -15,6 +15,7 @@ import sys
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
+from numbers import Integral
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import narwhals as nw
@@ -345,6 +346,15 @@ def _refuse_weighted_fields(names: Collection[str], what: str) -> None:
         )
 
 
+def _nullish(value: Any) -> bool:
+    if value is None or type(value).__name__ in {"NAType", "NaTType"}:
+        return True
+    try:
+        return bool(value != value)
+    except (TypeError, ValueError):
+        return False
+
+
 def _infer_x_role(row: Mapping[str, Any]) -> str | None:
     """Read an x-family declaration, inferring only when its key is absent.
 
@@ -354,14 +364,6 @@ def _infer_x_role(row: Mapping[str, Any]) -> str | None:
     producer; ``cxden`` marks an ambiguous clustered row whose role cannot be
     inferred safely.
     """
-
-    def _nullish(value: Any) -> bool:
-        if value is None or type(value).__name__ in {"NAType", "NaTType"}:
-            return True
-        try:
-            return bool(value != value)
-        except (TypeError, ValueError):
-            return False
 
     def _present(col: str) -> bool:
         return not _nullish(row.get(col))
@@ -388,6 +390,10 @@ def _validate_required_count(value: Any, *, what: str) -> int:
     of silently truncating it (``int(2.9) == 2``) into a different arm
     size than the row declared.
     """
+    if isinstance(value, bool):
+        _refuse("estimation.engine.arm.invalid_count", what=what, value=value)
+    if isinstance(value, Integral):
+        return int(value)
     try:
         numeric = float(value)
     except (TypeError, ValueError):
@@ -455,6 +461,11 @@ def _df_to_arms(summary: IntoDataFrame | Iterable[Mapping[str, Any]]) -> list[Ar
             _refuse("estimation.engine.group_summary_row", missing=missing)
         metric = row["metric"]
         group_id = row["group_id"]
+        successes = row.get("successes")
+        if isinstance(successes, Integral) and not isinstance(successes, bool):
+            successes = int(successes)
+        elif _nullish(successes):
+            successes = None
         arms.append(
             # Internal producers are already centered: construct directly,
             # never through the format-1 adapter.
@@ -465,6 +476,7 @@ def _df_to_arms(summary: IntoDataFrame | Iterable[Mapping[str, Any]]) -> list[Ar
                 n=_validate_required_count(
                     row["n"], what=f"group_summary row 'n' ({metric}/{group_id})"
                 ),
+                successes=successes,
                 ref_y=float(row["ref_y"]),
                 cy1=float(row["cy1"]),
                 cy2=float(row["cy2"]),

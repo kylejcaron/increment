@@ -433,6 +433,7 @@ class TestLargeArmsNearSaturation:
             metric="conv",
             group_id=group_id,
             n=cls.N,
+            successes=successes,
             ref_y=ref_y,
             cy1=float(Fraction(successes) - cls.N * Fraction(ref_y)),
             cy2=cy2,

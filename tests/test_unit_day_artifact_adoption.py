@@ -29,6 +29,7 @@ from increment.query.builders import (
     asof_group_summary,
     cohort_group_summary,
     daily_group_summary,
+    declared_binary_metrics,
     first_exposures,
     group_summary,
     metric_events,
@@ -730,7 +731,9 @@ def _adopted_artifact_fixture(
         warn_on_censoring=False,
     )
     totals = winsorize_unit_totals(totals, metric)
-    expected["total"] = con.to_pyarrow(group_summary(totals)).to_pylist()
+    expected["total"] = con.to_pyarrow(
+        group_summary(totals, binary_metrics=declared_binary_metrics([metric]))
+    ).to_pylist()
 
     def panel_for(
         measure_key: str,

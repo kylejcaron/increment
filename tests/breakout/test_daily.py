@@ -145,9 +145,10 @@ def _conversion_daily_row(
             "experiment_id": "exp1",
             "metric": metric,
             "group_id": group_id,
-            "n": float(n),
+            "n": n,
             "sum_y": float(successes),
             "sum_y2": float(successes),  # y in {0, 1}: y**2 == y
+            "successes": successes,
             "sum_x": 0.0 if with_covariate else None,
             "sum_x2": 0.0 if with_covariate else None,
             "sum_xy": 0.0 if with_covariate else None,
@@ -2390,18 +2391,16 @@ class TestViewAwareRetentionGuard:
 
     def test_lift_carries_the_same_contract(self):
         rows = [
-            _make_daily_row(
+            _conversion_daily_row(
                 n=50,
-                mean=1.0,
-                var=0.2,
+                successes=20,
                 ds=date(2025, 1, 1),
                 group_id="control",
                 metric="d7_retention",
             ),
-            _make_daily_row(
+            _conversion_daily_row(
                 n=50,
-                mean=1.5,
-                var=0.2,
+                successes=30,
                 ds=date(2025, 1, 1),
                 group_id="treatment",
                 metric="d7_retention",

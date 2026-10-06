@@ -223,13 +223,13 @@ class TestRowsCarryTheirRoute:
         assert (row.lift is None) == (counts[0] == 0)
 
     def test_a_corrupted_arm_refuses_identically_under_both_modes(self):
-        """Counts are reconstructed from the moments before any route is chosen, so a
-        non-binary second moment refuses by the same code whichever route would have run."""
+        """Exact counts and binary moments are validated before route selection."""
         bad = ArmStats.from_raw_sums(
             study_id="e",
             metric="conv",
             group_id="control",
             n=100_000,
+            successes=40_000,
             sum_y=40_000.0,
             sum_y2=55_000.0,
         )
@@ -238,6 +238,7 @@ class TestRowsCarryTheirRoute:
             metric="conv",
             group_id="treatment",
             n=100_000,
+            successes=41_000,
             sum_y=41_000.0,
             sum_y2=41_000.0,
         )
@@ -246,7 +247,8 @@ class TestRowsCarryTheirRoute:
                 "experiment_id": "e",
                 "metric": "conv",
                 "group_id": arm.group_id,
-                "n": float(arm.n),
+                "n": arm.n,
+                "successes": arm.successes,
                 "ref_y": arm.ref_y,
                 "cy1": arm.cy1,
                 "cy2": arm.cy2,

@@ -104,7 +104,7 @@ def _summary_df(arms: list[ArmStats]) -> pd.DataFrame:
                 "experiment_id": a.study_id,
                 "metric": a.metric,
                 "group_id": a.group_id,
-                "n": float(a.n),
+                "n": a.n,
                 "ref_y": a.ref_y,
                 "cy1": a.cy1,
                 "cy2": a.cy2,
@@ -123,7 +123,9 @@ def _summary_df(arms: list[ArmStats]) -> pd.DataFrame:
                 "cy2d": a.cy2d,
             }
         )
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    frame["successes"] = pd.array([a.successes for a in arms], dtype="Int64")
+    return frame
 
 
 def _mean_metric(name: str = "rev", window_days: int | None = None) -> MeanMetric:
@@ -337,6 +339,7 @@ class TestDegenerateData:
             metric="conv",
             group_id="control",
             n=n,
+            successes=n,
             sum_y=float(n),
             sum_y2=float(n),
         )
@@ -345,6 +348,7 @@ class TestDegenerateData:
             metric="conv",
             group_id="treatment",
             n=n,
+            successes=n,
             sum_y=float(n),
             sum_y2=float(n),
         )
@@ -496,6 +500,7 @@ class TestNonPositiveArmMeanFailsOneCell:
                 metric="converted",
                 group_id="control",
                 n=200,
+                successes=60,
                 sum_y=60.0,
                 sum_y2=60.0,
             ),
@@ -504,6 +509,7 @@ class TestNonPositiveArmMeanFailsOneCell:
                 metric="converted",
                 group_id="treatment",
                 n=200,
+                successes=70,
                 sum_y=70.0,
                 sum_y2=70.0,
             ),
@@ -770,7 +776,8 @@ def _summary_rows(arms: list[ArmStats]) -> list[dict]:
                 "experiment_id": a.study_id,
                 "metric": a.metric,
                 "group_id": a.group_id,
-                "n": float(a.n),
+                "n": a.n,
+                "successes": a.successes,
                 "ref_y": a.ref_y,
                 "cy1": a.cy1,
                 "cy2": a.cy2,
@@ -2160,10 +2167,22 @@ class TestBinomialDirectionalAlphaConvention:
 
     def _binomial_arms(self, n: int = 200):
         control = ArmStats.from_raw_sums(
-            study_id="exp1", metric="conv", group_id="control", n=n, sum_y=20.0, sum_y2=20.0
+            study_id="exp1",
+            metric="conv",
+            group_id="control",
+            n=n,
+            sum_y=20.0,
+            sum_y2=20.0,
+            successes=20,
         )
         treatment = ArmStats.from_raw_sums(
-            study_id="exp1", metric="conv", group_id="treatment", n=n, sum_y=40.0, sum_y2=40.0
+            study_id="exp1",
+            metric="conv",
+            group_id="treatment",
+            n=n,
+            sum_y=40.0,
+            sum_y2=40.0,
+            successes=40,
         )
         return control, treatment
 
@@ -2228,10 +2247,22 @@ class TestBinomialDirectionalAlphaConvention:
         from increment.estimation.results import open_bound_from_two_sided_at_target
 
         treatment = ArmStats.from_raw_sums(
-            study_id="exp1", metric="conv", group_id="treatment", n=200, sum_y=4, sum_y2=4
+            study_id="exp1",
+            metric="conv",
+            group_id="treatment",
+            n=200,
+            sum_y=4,
+            sum_y2=4,
+            successes=4,
         )
         control = ArmStats.from_raw_sums(
-            study_id="exp1", metric="conv", group_id="control", n=200, sum_y=0, sum_y2=0
+            study_id="exp1",
+            metric="conv",
+            group_id="control",
+            n=200,
+            sum_y=0,
+            sum_y2=0,
+            successes=0,
         )
         fcr_alpha = 0.10
         [parent] = estimate_lift(
@@ -2275,9 +2306,15 @@ class TestBinomialDirectionalAlphaConvention:
         assert 1.0 + null_lift == edge
         arms = [
             ArmStats.from_raw_sums(
-                study_id="exp1", metric="conv", group_id=group, n=4000, sum_y=x, sum_y2=x
+                study_id="exp1",
+                metric="conv",
+                group_id=group,
+                n=4000,
+                sum_y=x,
+                sum_y2=x,
+                successes=x,
             )
-            for group, x in (("control", 200.0), ("treatment", 260.0))
+            for group, x in (("control", 200), ("treatment", 260))
         ]
         [parent] = estimate_lift(
             metrics=[_conversion_metric()],
@@ -2326,6 +2363,7 @@ class TestBinomialDirectionalAlphaConvention:
                 metric="conv",
                 group_id=group_id,
                 n=200,
+                successes=successes,
                 sum_y=float(successes),
                 sum_y2=float(successes),
                 sum_x=200.0,
@@ -2468,6 +2506,7 @@ class TestEncouragementItiRetainsBinomialRoute:
             metric="converted",
             group_id=group_id,
             n=n,
+            successes=successes,
             sum_y=float(successes),
             sum_y2=float(successes),
             sum_d=float(uptake),

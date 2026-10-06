@@ -420,9 +420,10 @@ def _binomial_conversion_row(n, successes, *, group_id, metric="conv", experimen
             "experiment_id": experiment_id,
             "metric": metric,
             "group_id": group_id,
-            "n": float(n),
+            "n": n,
             "sum_y": float(successes),
             "sum_y2": float(successes),  # y in {0, 1}: y**2 == y
+            "successes": successes,
             "sum_x": None,
             "sum_x2": None,
             "sum_xy": None,

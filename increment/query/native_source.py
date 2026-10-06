@@ -68,6 +68,7 @@ from increment.query.builders import (
     compliance_event_horizon,
     daily_exposure_counts,
     daily_group_summary,
+    declared_binary_metrics,
     first_exposures,
     group_summary,
     join_breakout_dimension,
@@ -1615,6 +1616,7 @@ class DefinitionsMomentSource(SequentialSourceMixin):
             cluster=cluster,
             ratio_metrics=[metric.name] if metric.type == "ratio" else None,
             uptake=uptake_events is not None,
+            binary_metrics=declared_binary_metrics([metric]),
         )
         return summary, pre_stats, den_stats, totals
 
@@ -2698,12 +2700,12 @@ class DefinitionsMomentSource(SequentialSourceMixin):
         for the wire-format contract.
 
         Fixed-horizon exports carry ``group_summary`` rows, or one metric-free
-        ``design_summary`` envelope, stamped ``moments_format=8``. Registered
+        ``design_summary`` envelope, stamped ``moments_format=10``. Registered
         sequential exports instead carry one
         typed ``sequential_checkpoint`` envelope stamped ``moments_format=9``;
         they are not ordinary fixed moments rows. ``from_moments`` validates
         and strips these transport columns before constructing its immutable
-        context. Formats 1-6 and missing or partial decision-plan
+        context. Formats 1-8 and missing or partial decision-plan
         payloads are refused; all supported inference variants and view
         policies round-trip without fallback.
         """

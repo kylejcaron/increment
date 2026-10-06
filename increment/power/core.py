@@ -24,10 +24,10 @@ conversion_route``) and the finite-sample binomial risk-ratio inversion on the r
 is the rejection probability of that union over the binomial count lattice
 (``increment.power._binomial``), enclosed by what the plan leaves undecided and by the
 numerical error of its sum: neither route's power alone, and no function of the two. The
-lattice is enumerated while it fits (``power_basis`` ``"exact"``, or ``"approximate"`` when the
-replay budget leaves part of its mass undecided) and the published ``power`` is the lower end
-of that enclosure, never above the runtime's rejection probability; every size and effect is
-certified from it. ``conversion_inference="finite_sample"`` always enumerates. Where the counts
+lattice is enumerated while it fits. Its computed rejection mass is published only when
+the internal enclosure bounds its absolute error by ``1e-6``; materially unresolved
+probabilities explicitly refuse. Size and effect targets compare this admitted point
+power. ``conversion_inference="finite_sample"`` always enumerates. Where the counts
 are dense with near certainty and the lattice is too large to enumerate, this model's closed
 form applies (``power_basis="asymptotic"``) and ``power`` is the model's own value, not a
 bound on the runtime. The Bernoulli shape above applies to every conversion and retention plan
@@ -117,7 +117,6 @@ from increment.power._binomial import (
     PLANNING_CELL_CEILING,
     BinomialDecision,
     BinomialPower,
-    Closure,
     FiniteRouteUnavailable,
     RejectionGeometry,
     ReplayBoundExceeded,
@@ -129,6 +128,7 @@ from increment.power._binomial import (
     solver_refuses,
     structural_floor,
     tail_margin,
+    window_cell_bounds,
     window_cells,
     window_decided,
 )
@@ -257,6 +257,7 @@ _REFUSALS = refusals(
         "power.log_exp_needs": "log(1 - exp(x)) needs x <= 0, got {x}",
         "power.procedure_armplanningprocedure": "procedure must be ArmPlanningProcedure, got {procedure_type}",
         "power.power_solvers_relative": "power solvers require a relative ArmPlanningProcedure decision",
+        "power.binomial_enclosure_requires_counts": "a binomial planning enclosure requires an unadjusted fixed-horizon conversion or retention count decision, not this {metric_type!r} plan -- use achieved_power for model-based point power",
         "power.core.n_per_arm_int": "n_per_arm must be an integer (got {n_per_arm!r})",
         "power.core.n_per_arm_min": "n_per_arm must be >= {minimum} for metric {metric_type!r} (got {n_per_arm})",
         "power.sequential_sample_size": "sequential sample-size power could not meet its numerical tolerance at n_per_arm={n_per_arm}: {reason}",
@@ -732,29 +733,20 @@ class PowerResult(CodedModel, BaseModel):
         ``achieved_power`` it describes the SUPPLIED effect; for
         ``minimum_detectable_effect`` it describes the returned effect's
         implied absolute alternative, which can exceed the target when the
-        answer is a domain endpoint. Where ``power_basis`` is ``"exact"`` or
-        ``"approximate"`` it is the lower end of the enclosure of the runtime's
-        rejection probability, never above it, and a size or an effect is
-        certified when this figure reaches the target; where it is
-        ``"asymptotic"`` it is the planning model's own value.
+        answer is a domain endpoint. Enumerated binomial power is computed rejection
+        mass admitted only when its maximum absolute numerical error is at most
+        ``1e-6``. It is not a lower confidence bound. Where the basis is
+        ``"asymptotic"``, power is the planning model's own value.
     power_basis : {"asymptotic", "exact", "approximate"}
         How ``power`` was computed. ``"asymptotic"``: the log-ratio
         Normal/noncentral-t planning model (every plan the runtime does not
         decide with the binomial count rule, and a conversion or retention plan
         whose counts the runtime takes the delta-method route at with near
         certainty when its count lattice is too large to enumerate). ``"exact"``:
-        the probability that the runtime's unchanged decision rejects at the
-        analyzed integer counts, summed over the count lattice -- the
-        finite-sample test where the count rule keeps a pair on it, the
-        delta-method test where it routes it there -- with at most about
-        ``1e-6`` of mass left undecided (and ``1e-12`` of omitted outer count
-        mass). ``power`` is that sum less the numerical error of computing it,
-        about ``1e-12`` of it at 1,000 units per arm and ``4e-7`` at a billion,
-        so it lies below the runtime's rejection probability by at most the
-        undecided and omitted mass and that error. ``"approximate"``: the same
-        sum with more than that left undecided because the replay of the
-        finite-sample test is budgeted; ``power`` is the same lower end, below
-        the runtime's rejection probability by up to the undecided mass.
+        the runtime's unchanged rejection decision summed over the binomial count
+        lattice, with total numerical error and undecided mass bounded by ``1e-6``.
+        Materially unresolved enumeration is refused, not published with an
+        ``"approximate"`` label. That label remains part of the result schema.
     mde_relative : float | None
         Minimum detectable relative effect on the complier scale, expressed
         RELATIVE TO the declared null: ``(exp(distance) - 1) /
@@ -768,7 +760,9 @@ class PowerResult(CodedModel, BaseModel):
         "greater"; negative for one-sided "less". ``None`` when no minimum
         detectable effect exists at the design's target power -- a valid
         supplied-effect answer can still be reported then -- with the cause
-        in ``mde_unavailable_reason``.
+        in ``mde_unavailable_reason``. Fixed-horizon binomial searches locate the
+        earliest detectable region to ``1e-8 + 1e-8 * abs(mde_relative)`` in relative
+        effect, rather than proving the first representable floating-point value.
     mde_unavailable_reason : {"unattainable", "unrepresentable", "numerical_resolution"} | None
         Why ``mde_relative`` is ``None``: the target power exceeds every
         admissible alternative's power (``unattainable``), the admissible
@@ -2259,15 +2253,9 @@ def _solve_sequential_mde(
 # probability of that union over the count lattice (``increment.power._binomial``), not either
 # model's power and not a function of the two.
 
-#: Identifies the construction of the planned rejection probability, so a record of planner
-#: output made under another construction is recognised as such: the union of the finite-sample
-#: replay on the unrouted counts and the production delta decision on the routed rectangle,
-#: enclosed by the mass it leaves undecided.
-BINOMIAL_PLANNING_MODEL = "hybrid_finite_plus_delta_v1"
-
-#: Margin on `ENUMERATION_CELLS` within which an interval's regime (closed form or enumerated)
-#: is not inferred from its ends: window cells follow ``p (1 - p)`` up to integer edges.
-_REGIME_MARGIN = 1.25
+#: Point-power construction: the hybrid runtime rejection mass is admitted only when
+#: its absolute numerical error is resolved. Earlier saved constructions are recomputed.
+BINOMIAL_PLANNING_MODEL = "hybrid_finite_plus_delta_v3"
 
 _GeometryCache = dict[tuple[BinomialDecision, Routing | None, Route], RejectionGeometry]
 
@@ -2406,9 +2394,8 @@ class _BinomialPlan:
             _refuse_undecided(self.procedure, self.key, p_c=self.p_c, scope="requested")
 
     def closed_extent(self, theta_a: float, theta_b: float) -> tuple[bool, bool]:
-        """Whether some, and whether every, effect between two is planned in closed form. The
-        lattice size follows ``p (1 - p)``, concave, so it is smallest at an end of the interval
-        and largest at the rate nearest one half; both are read with a margin."""
+        """Whether some, and whether every, effect between two is planned in closed form.
+        Quantile-window intersections and unions bound the lattice size across the interval."""
         if self.mode != "auto":
             return False, False
         low, high = sorted((self.rate(theta_a), self.rate(theta_b)))
@@ -2424,24 +2411,11 @@ class _BinomialPlan:
         )
         if not some_dense:
             return False, False
-        widest = window_cells(decision, self.p_c, min(max(0.5, low), high))
-        narrowest = min(
-            window_cells(decision, self.p_c, low), window_cells(decision, self.p_c, high)
-        )
-        return (
-            widest * _REGIME_MARGIN > ENUMERATION_CELLS,
-            every_dense and narrowest > _REGIME_MARGIN * ENUMERATION_CELLS,
-        )
-
-    def closure(self, theta_a: float, theta_b: float) -> Closure:
-        """Upper bound on the runtime's rejection probability at every alternative between two
-        effects, numerical error included: the closure of the decided union of both routes'
-        rejections, which no part's bound replaces."""
-        low, high = sorted((self.rate(theta_a), self.rate(theta_b)))
-        return self.geometry.closure(self.p_c, low, high)
+        narrowest, widest = window_cell_bounds(decision, self.p_c, low, high)
+        return widest > ENUMERATION_CELLS, every_dense and narrowest > ENUMERATION_CELLS
 
     def bound(self, theta_a: float, theta_b: float) -> float:
-        """Upper bound on every computed point power between the effects."""
+        """Upper bound on computed point power throughout an interval of effects."""
         low, high = sorted((self.rate(theta_a), self.rate(theta_b)))
         bound = self.geometry.closure_bound(self.p_c, low, high)
         return self.geometry.point_upper(self.p_c, low, high, bound)
@@ -2603,11 +2577,13 @@ class _SearchBudgetExhausted(Exception):
 
 
 def _binomial_curvature_gap(n: int, low: float, high: float) -> Fraction:
-    """Bound interpolation error of a fixed binomial rejection probability.
+    """Bound the linear-interpolation error of a fixed rejection probability.
 
-    Bernstein second differences give ``|P''| <= 2n(n-1)`` everywhere.
-    Inside (0,1), the score bound ``2n/min(p(1-p))`` can be smaller.
-    Multiply the smaller bound by the squared interval width divided by eight.
+    On ``[a,b]`` inside ``(0,1)``, the score identity gives
+    ``|P''| <= 2n/min(p(1-p))``. The Bernstein second-difference formula
+    also gives ``|P''| <= 2n(n-1)``, including deterministic endpoints.
+    Multiplying the smaller bound by ``(b-a)**2/8`` bounds interpolation error.
+    This bounds the complete rejection probability, not budget-selected point power.
     """
     a, b = Fraction(low), Fraction(high)
     curvature = Fraction(2 * n * (n - 1))
@@ -2617,60 +2593,23 @@ def _binomial_curvature_gap(n: int, low: float, high: float) -> Fraction:
 
 
 @dataclass(slots=True)
-class _Spent:
-    count: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class _Standing:
-    """One candidate effect against the target power. ``certified``: the lower end of its
-    enclosed rejection mass reaches the target, so the runtime's rejection probability does
-    (for a closed-form candidate, the model's). ``possible``: the closure bound over that single
-    effect (the bound an interval is excluded by) reaches it, so the runtime's may; neither
-    holds only where the target is above the bound."""
-
-    power: BinomialPower
-    certified: bool
-    possible: bool
-    bound: float
-
-    @property
-    def error(self) -> float:
-        """What the numerical error leaves undecided at this effect: the closure bound above the
-        certified lower end of its power."""
-        return self.bound - self.power.lower
-
-
-@dataclass(slots=True)
-class _Obstruction:
-    """What a search could neither certify nor exclude: the ordinals spanning it, the greatest
-    certified lower end of any candidate evaluated, and the greatest closure bound over what
-    was not excluded. With nothing certified, the greatest power any candidate may reach lies
-    between the two."""
-
+class _BinomialMdeState:
+    evaluations: int = 0
+    unresolved: tuple[float, float] | None = None
     lower: float = 0.0
     upper: float = 0.0
+    basis: PowerBasis = "exact"
 
 
 @dataclass(frozen=True, slots=True)
 class _BinomialMdeSearch(_MdeSearch):
-    """``_MdeSearch``'s candidate space with power from the runtime binomial decision as
-    `_BinomialPlan` plans it. Power is a polynomial in the treatment rate, not a function of a
-    noncentrality, and every value of it is enclosed by what the plan leaves undecided and its
-    numerical error (see `BinomialPower`), so a candidate is *certified* when the enclosure's
-    lower end reaches the target and *possible* while the closure bound over it does. Neither is
-    monotone along the effects, so no search here assumes it: an ordinal interval is
-    discarded only when ``_BinomialPlan.bound`` (the monotone closure of the rejection set)
-    stays below target across it, or, in the search for the first certified candidate, when
-    every candidate in it lies within the numerical error of the target (`first_certified`).
-    The first possible candidate is found first, every earlier one excluded; the first
-    certified one is then the first the ordered search reaches, so the answer's power reaches
-    the target and every earlier candidate is excluded or lies within the numerical error of
-    the target, not decided. With none certified the refusal encloses the greatest power any
-    candidate may reach (`_Obstruction`). The enclosure bounds the runtime's rejection
-    probability wherever the plan enumerates its decision (``power_basis`` ``exact`` or
-    ``approximate``) and the delta-method model's where the lattice is too large to enumerate
-    (``asymptotic``); a refusal says which."""
+    """Search intervals in distance order without assuming point-power monotonicity.
+
+    Discard an interval only if an upper bound excludes every computed point.
+    Otherwise subdivide left first. A returned evaluated point reaches the target,
+    and every unexcluded earlier effect is within ``atol + rtol * abs(effect)``.
+    Wider unresolved intervals refuse instead of being skipped for a later band.
+    """
 
     model: _BinomialPlan
     state: _BinomialMdeState
@@ -2704,11 +2643,7 @@ class _BinomialMdeSearch(_MdeSearch):
             raise _SearchBudgetExhausted
 
     def interval_bound(self, theta_a: float, theta_b: float) -> float:
-        """Upper bound on the power the plan reports at every alternative between two effects.
-        Each effect is planned by one model, so the interval is bounded by the larger of the two
-        models' bounds over the effects they plan: the closure of the decided rejection set
-        (both routes' rejections together, never one route's alone) wherever some effect is
-        enumerated, and the delta-method bound wherever some effect is planned in closed form."""
+        """Bound every reported point over both the enumerated and closed-form routes."""
         some, every = self.model.closed_extent(theta_a, theta_b)
         bound = 0.0 if every else self.model.bound(theta_a, theta_b)
         if some:
@@ -2716,10 +2651,7 @@ class _BinomialMdeSearch(_MdeSearch):
         return bound
 
     def asymptotic_bound(self, theta_a: float, theta_b: float) -> float:
-        """Upper bound on the delta-method power between two effects. The increasing
-        direction's noncentrality grows with distance, so its larger end bounds it; the
-        decreasing direction's has a single peak (``peak_distance``), so the bound is the
-        power at the peak clamped into the interval."""
+        """The increasing model peaks at the far end; the decreasing model has one peak."""
         low, high = sorted((theta_a, theta_b))
         if self.sigma > 0.0:
             return self.plan.power(high - self.theta0, high)
@@ -2750,30 +2682,17 @@ class _BinomialMdeSearch(_MdeSearch):
             )
         return m_min
 
-    def _theta(self, ordinal: int) -> float:
-        point = self.candidate(float_from_ordinal(ordinal))
-        assert point is not None, "searched ordinals lie inside the admissible interval"
-        return point[1]
-
-    def stand(self, m: float) -> _Standing:
-        """Candidate ``m``'s enclosed rejection probability and its standing against the target.
-        A candidate whose finite-sample decision the runtime refuses for a non-negligible share
-        of its counts is undecided: certified never, possible always."""
+    def evaluate(self, effect: float) -> BinomialPower:
         self._charge()
-        point = self.candidate(m)
-        assert point is not None, "searched candidates lie inside the admissible interval"
-        distance, theta = point
+        point = self.candidate(effect)
+        assert point is not None
         try:
-            power = self.model.evaluate(theta, distance)
+            return self.model.evaluate(point[1], point[0])
         except FiniteRouteUnavailable:
-            power = _UNDECIDED
-        bound = self.interval_bound(theta, theta)
-        standing = _Standing(power, power.lower >= self.target, bound >= self.target, bound)
-        self.obstruction.evaluated(float_ordinal(m), standing)
-        return standing
+            return _UNDECIDED
 
     def detected(self, power: BinomialPower) -> bool:
-        return power.power >= self.target
+        return power.resolved and power.power >= self.target
 
     @staticmethod
     def tolerance(effect: float) -> float:
@@ -2791,27 +2710,30 @@ class _BinomialMdeSearch(_MdeSearch):
                 "unresolved_interval": tuple(sorted(interval)),
                 "power_enclosure": (state.lower, state.upper) if state.unresolved else None,
                 "stopping_reason": reason,
+                "power_basis": state.basis,
             },
         )
 
     def _bound(self, lo: float, hi: float, left: BinomialPower, right: BinomialPower) -> float:
         a, b = self.candidate(lo), self.candidate(hi)
         assert a is not None and b is not None
-        return self._theta_bound(a[1], b[1], left, right)
-
-    def _theta_bound(
-        self, theta_a: float, theta_b: float, left: BinomialPower, right: BinomialPower
-    ) -> float:
-        self._charge()
-        low_rate, high_rate = sorted((self.model.rate(theta_a), self.model.rate(theta_b)))
-        gap = _binomial_curvature_gap(self.model.geometry.decision.n_t, low_rate, high_rate)
+        bound = self.interval_bound(a[1], b[1])
+        some, _ = self.model.closed_extent(a[1], b[1])
+        if some:
+            self.state.basis = "asymptotic"
+            return bound
+        low_rate, high_rate = sorted((self.model.rate(a[1]), self.model.rate(b[1])))
+        gap = _binomial_curvature_gap(self.model.key.n_t, low_rate, high_rate)
         true_upper = min(
             1.0, math.nextafter(float(Fraction(max(left.upper, right.upper)) + gap), math.inf)
         )
-        return self.model.geometry.point_upper(self.model.p_c, low_rate, high_rate, true_upper)
+        point_upper = self.model.geometry.point_upper(
+            self.model.p_c, low_rate, high_rate, true_upper
+        )
+        return min(bound, point_upper)
 
     def _midpoint(self, lo: float, hi: float) -> float:
-        """Bisect log distance without overflowing a large relative effect."""
+        """Bisect log distance, keeping large relative effects within float64 range."""
         a = math.log1p(lo * self.compliance)
         b = math.log1p(hi * self.compliance)
         mid = math.expm1(a + (b - a) / 2.0) / self.compliance
@@ -2827,69 +2749,33 @@ class _BinomialMdeSearch(_MdeSearch):
         if pending is not None and abs(lo - pending[0]) > self.tolerance(lo):
             return self.unresolved(lo, hi, "an earlier detectable region remains unresolved")
         if self.detected(left):
-            return lo, left.power
+            return lo, left.reported
         bound = self._bound(lo, hi, left, right)
         if bound < self.target:
             return None
+        width = abs(hi - lo)
         adjacent = abs(float_ordinal(hi) - float_ordinal(lo)) <= 1
-        if abs(hi - lo) <= self.tolerance(hi) / 4.0 or adjacent:
+        if width <= self.tolerance(hi) / 4.0 or adjacent:
             if self.detected(right):
                 if pending is not None and abs(hi - pending[0]) > self.tolerance(hi):
                     return self.unresolved(
                         lo, hi, "an earlier detectable region remains unresolved"
                     )
-                return hi, right.power
+                return hi, right.reported
             if pending is None:
                 self.state.unresolved = (lo, hi)
                 self.state.lower = max(left.lower, right.lower)
                 self.state.upper = bound
+                self.state.basis = (
+                    "approximate" if not left.resolved or not right.resolved else left.basis
+                )
             return None
         mid = self._midpoint(lo, hi)
         middle = self.evaluate(mid)
         earlier = self.between(lo, mid, left, middle)
         if earlier is not None:
             return earlier
-        if at_mid.certified:
-            return mid
-        return self._certified_between(mid, at_mid, hi, at_hi)
-
-    def unresolved(self, lo: int, hi: int) -> _MdeRefusal:
-        low, high = sorted((float_from_ordinal(lo), float_from_ordinal(hi)))
-        return _MdeRefusal(
-            "numerical_resolution",
-            _MDE_NUMERICAL_RESOLUTION,
-            {
-                "target_power": self.target,
-                "direction": self.direction,
-                "unresolved_interval": (low, high),
-                "power_enclosure": None,
-                "stopping_reason": "the ordered exclusion's evaluation budget ran out",
-            },
-        )
-
-    def undecided(self) -> _MdeRefusal:
-        """No candidate certifies the target and the closure bound cannot exclude every one: it
-        lies within the numerical error of the greatest power any candidate may reach, which
-        the refusal encloses from the greatest certified lower end evaluated to the greatest
-        bound over the candidates not excluded."""
-        seen = self.obstruction
-        assert seen.first is not None and seen.last is not None
-        low, high = sorted((float_from_ordinal(seen.first), float_from_ordinal(seen.last)))
-        return _MdeRefusal(
-            "numerical_resolution",
-            _MDE_NUMERICAL_RESOLUTION,
-            {
-                "target_power": self.target,
-                "direction": self.direction,
-                "unresolved_interval": (low, high),
-                "power_enclosure": (seen.lower, seen.upper),
-                "stopping_reason": (
-                    "the target lies within the enclosure over unresolved effects "
-                    "(numerical error and undecided count mass)"
-                ),
-                "power_basis": seen.basis,
-            },
-        )
+        return self.between(mid, hi, middle, right)
 
 
 def _solve_binomial_mde(
@@ -2900,21 +2786,9 @@ def _solve_binomial_mde(
     null_lift: float,
     alternative: Alternative,
 ) -> tuple[float, float] | _MdeRefusal:
-    """``_solve_arm_mde``'s contract on the runtime binomial decision: the
-    first admissible effect in distance order whose power is certified to
-    reach ``target`` (see `_BinomialMdeSearch`), with the power it publishes
-    (`BinomialPower.reported`, the lower end of its enclosure). Every earlier
-    candidate is excluded by its own evaluation or by the monotone-closure
-    bound, except those whose power lies within the numerical error of the
-    target; certification is never assumed monotone, so an earlier band of
-    effects that reaches the target is found whether or not the far end of
-    the interval does. A target no admissible candidate can reach is
-    unattainable, reporting the power at the direction's far admissible end
-    (the bounded rate ceiling, or the relative-lift floor for a decrease);
-    when the closure bound cannot exclude every candidate and none is
-    certified, the target is unresolved, enclosed by the greatest power any
-    candidate may reach. The geometry keeps each solved search, so effects
-    sharing it (a curve's companions) are solved once."""
+    """Earliest detectable region to numerical effect tolerance, with its admitted point power.
+    Wide unresolved earlier intervals refuse; no first-representable-float claim is made.
+    The geometry memoizes each search independently of the supplied effect it accompanies."""
     memo = model.geometry.effects
     key = (model.p_c, plan.baseline.compliance, target, plan.baseline.effective_var, model.mode)
     if key not in memo:
@@ -2965,12 +2839,16 @@ def _search_binomial_mde(
     dense = _dense_mde(plan, model, target=target, null_lift=null_lift, alternative=alternative)
     if dense is not None:
         return dense
+    # Interval closure depends on known decisions. Start each uncached effect solve with
+    # the same knowledge, so its numerical stopping point cannot depend on earlier queries.
+    geometry = model.geometry
+    model = replace(
+        model,
+        geometry=RejectionGeometry(model.key, geometry.route, geometry.max_cells, geometry.routing),
+    )
     search = _BinomialMdeSearch.of(
         plan, model, target=target, null_lift=null_lift, alternative=alternative
     )
-    # The effect search is a solve of its own: the cells a supplied effect left on the geometry
-    # are a cache it may drop, so its answer never depends on the effect it accompanies.
-    model.geometry.begin_solve()
     try:
         return _ordered_exclusion(search)
     except ReplayBoundExceeded as exceeded:
@@ -2993,32 +2871,23 @@ def _ordered_exclusion(search: _BinomialMdeSearch) -> tuple[float, float] | _Mde
     m_min = search.lower_endpoint()
     if isinstance(m_min, _MdeRefusal):
         return m_min
-    first = search.stand(m_min)
-    if first.certified:
-        return m_min, first.power.reported
     m_max = search.upper_endpoint(m_min)
     try:
-        if first.possible:
-            reached: tuple[int, _Standing] | None = (lo, first)
-        elif last.possible:
-            reached = search.first_possible(lo, hi, last)
-        else:
-            reached = search.first_inside(lo, hi)
-        if reached is None:
-            limiting = "bounded_rate_ceiling" if search.sigma > 0.0 else "relative_lift_floor"
-            return search.unattainable(last.power.reported, limiting, power_basis=last.power.basis)
-        start, at_start = reached
-        found: int | None = start
-        if not at_start.certified:
-            found = search.first_certified(start, at_start, hi, last)
-        if found is None:
-            return search.undecided()
+        first = search.evaluate(m_min)
+        if search.detected(first):
+            return m_min, first.reported
+        last = search.evaluate(m_max)
+        found = search.between(m_min, m_max, first, last)
+        if found is not None:
+            return found
+        if search.state.unresolved is not None:
+            return search.unresolved(m_min, m_max, "no resolved point reaches the target")
+        limiting = "bounded_rate_ceiling" if search.sigma > 0.0 else "relative_lift_floor"
+        return search.unattainable(
+            last.power if last.resolved else None, limiting, power_basis=last.basis
+        )
     except _SearchBudgetExhausted:
-        return search.unresolved(lo, hi)
-    m = float_from_ordinal(found)
-    point = search.candidate(m)
-    assert point is not None
-    return m, search.model.evaluate(point[1], point[0]).reported
+        return search.unresolved(m_min, m_max, "the ordered interval search exhausted its budget")
 
 
 def _fixed_mde(
@@ -3243,9 +3112,8 @@ def _binomial_size(  # noqa: PLR0915
     proposal: int,
     cache: _GeometryCache,
 ) -> tuple[int, int, _BinomialPlan, BinomialPower]:
-    """Assigned ``(n_T, n_C)`` whose runtime binomial power is certified to reach
-    the target (the lower end of its enclosure does) while assigned
-    ``n_T - 1`` is not (or ``n_T`` is the per-arm floor), with that size's plan and enclosed power.
+    """Assigned ``(n_T, n_C)`` whose admitted point power reaches the target while
+    assigned ``n_T - 1`` does not (or ``n_T`` is the per-arm floor), with its plan and power.
     Each candidate's binomial law uses its analyzed counts
     (``_analyzed_counts``), exactly as ``achieved_power`` evaluates the returned
     size.
@@ -3255,7 +3123,7 @@ def _binomial_size(  # noqa: PLR0915
     by a probit-secant in ``sqrt(n)`` (power ``~ Phi(b sqrt(n) - z_alpha)``),
     then narrows the bracket to adjacent sizes, halving whenever the secant
     stalls. Power need not be monotone in the sample size, so the answer is
-    the verified smallest certified size of its bracket, not a global minimum.
+    the smallest passing size of its bracket, not a global minimum.
     """
     target = design.power
     floor = _assigned_minimum_per_arm(procedure, baseline)
@@ -3289,10 +3157,8 @@ def _binomial_size(  # noqa: PLR0915
         return powers[n]
 
     def crossing(evaluate: Callable[[int], BinomialPower], n: int, *, final: bool) -> int:
-        """Smallest certified size of the bracket the search closes from ``n``.
-        A search reaching the arm ceiling without certifying refuses when
-        ``final``; a proposal search returns the ceiling instead, leaving the
-        refusal to the selected-route search."""
+        """Smallest passing size of the bracket closed from ``n``. Only the final search
+        admits point probabilities; the heuristic proposes a size without publishing power."""
         values: dict[int, BinomialPower] = {}
 
         def value(m: int) -> BinomialPower:
@@ -3320,7 +3186,13 @@ def _binomial_size(  # noqa: PLR0915
         stalls = 0
         while True:
             width = None if lo is None or hi is None else hi - lo
-            if (value(n).lower if final else value(n).power) >= target:
+            candidate = value(n)
+            reaches = (
+                candidate is not _UNDECIDED and candidate.reported >= target
+                if final
+                else candidate.power >= target
+            )
+            if reaches:
                 hi = n if hi is None else min(hi, n)
             else:
                 lo = n if lo is None else max(lo, n)
@@ -3605,10 +3477,9 @@ def required_sample_size(  # noqa: PLR0915
 
     ``n_per_arm`` is the treatment arm size after ceiling to whole units;
     ``power`` is the actual (slightly >= target) power at that integer size,
-    with the treatment arm's variance evaluated at *relative_lift*. For a
-    plan the runtime decides by its counts it is the lower end of the
-    enclosure of the runtime's rejection probability (``PowerResult.power``),
-    the figure the size is certified from.
+    with the treatment arm's variance evaluated at *relative_lift*. A runtime-binomial
+    plan uses admitted point power, with absolute numerical error at most ``1e-6``;
+    a materially unresolved candidate refuses rather than silently undersizing.
     ``mde_relative`` is the companion minimum detectable effect at that
     size, ``None`` with ``mde_unavailable_reason`` when none exists at
     ``design.power``.
@@ -3896,16 +3767,11 @@ def achieved_power(
 ) -> PowerResult:
     """Compute achieved power at a fixed arm size under a planning procedure.
 
-    ``power`` describes the supplied ``relative_lift``: for a plan the runtime
-    decides with the finite-sample binomial risk-ratio test (a conversion or
-    retention metric, unadjusted, unclustered, fixed horizon, whose counts
-    ``conversion_inference`` routes there) it is the lower end of the enclosure
-    of that decision's rejection probability at the analyzed integer counts,
-    never above it (``power_basis`` ``"exact"``
-    or ``"approximate"``); otherwise the log-ratio planning model with the
-    treatment arm's variance evaluated at that alternative (``"asymptotic"``),
-    which is also the power of counts the runtime takes the delta-method route
-    at. ``mde_relative`` is the companion
+    ``power`` describes the supplied ``relative_lift``. A runtime-binomial plan sums
+    the hybrid rejection decision over the count law and admits its computed point
+    only when absolute numerical error is at most ``1e-6``. Otherwise it refuses with
+    ``power.binomial_probability_unresolved``. A closed-form plan reports its model
+    power, with treatment variance evaluated at the alternative. ``mde_relative`` is the
     minimum detectable effect at the same size and target under the same
     model; when none exists there it is ``None`` with
     ``mde_unavailable_reason`` set, and the supplied-effect answer stands.
@@ -3922,6 +3788,34 @@ def achieved_power(
     )
 
 
+def planned_enclosure(
+    n_per_arm: int,
+    relative_lift: float,
+    baseline: Baseline,
+    procedure: ArmPlanningProcedure,
+    design: PowerDesign | None = None,
+) -> BinomialPower:
+    """Diagnostic rejection-mass enclosure, including materially unresolved integrals.
+
+    Unlike ``achieved_power``, this does not admit or publish a point probability.
+    Calibration may retain ``power`` with its bounds even when ``reported`` refuses.
+    """
+    procedure, baseline = _prepare_solver(procedure, baseline)
+    decision = cast("RelativeDecisionPolicy", procedure.decision)
+    design = PowerDesign() if design is None else PowerDesign.model_validate(design)
+    bounded = _bounded_preflight(procedure, baseline, null_lift=decision.null_lift)
+    _validate_per_arm_floor(n_per_arm, procedure, baseline)
+    theta, distance = _supplied_effect(procedure, baseline, relative_lift, bounded=bounded)
+    if not _runtime_binomial(procedure):
+        _raise("power.binomial_enclosure_requires_counts", metric_type=procedure.metric.metric_type)
+    assigned = _compute_arms(
+        n_per_arm, design, minimum_per_arm=_assigned_minimum_per_arm(procedure, baseline)
+    )
+    n_t, n_c = _analyzed_counts(*assigned, baseline)
+    arm = _ArmPlan(procedure, baseline, n_t, n_c, None, bounded)
+    return _binomial_plan(procedure, baseline, arm, {}).supplied(theta, distance)
+
+
 def _achieved_power(
     n_per_arm: int,
     relative_lift: float,
@@ -3932,43 +3826,6 @@ def _achieved_power(
     *,
     cache: _GeometryCache,
 ) -> PowerResult:
-    return _achieved(
-        n_per_arm, relative_lift, baseline, procedure, design, planned_looks, cache=cache
-    )[0]
-
-
-def planned_enclosure(
-    n_per_arm: int,
-    relative_lift: float,
-    baseline: Baseline,
-    procedure: ArmPlanningProcedure,
-    design: PowerDesign | None = None,
-) -> BinomialPower:
-    """The enclosure ``achieved_power`` reports its ``power`` from, for a plan the runtime
-    decides by its counts: ``[lower, upper]`` contains the runtime's rejection probability
-    (the delta-method model's, where ``power_basis`` is ``asymptotic``), and ``reported`` is the
-    figure published as ``power``: ``lower``, or the model's own value where ``power_basis`` is
-    ``asymptotic``. The planner's own record, for calibration and tests; ``achieved_power`` is
-    the public answer."""
-    enclosure = _achieved(
-        n_per_arm, relative_lift, baseline, procedure, design, None, cache={}, companion=False
-    )[1]
-    if enclosure is None:
-        raise ValueError("the runtime does not decide this plan by its counts")
-    return enclosure
-
-
-def _achieved(
-    n_per_arm: int,
-    relative_lift: float,
-    baseline: Baseline,
-    procedure: ArmPlanningProcedure,
-    design: PowerDesign | None,
-    planned_looks: int | None,
-    *,
-    cache: _GeometryCache,
-    companion: bool = True,
-) -> tuple[PowerResult, BinomialPower | None]:
     procedure, baseline = _prepare_solver(procedure, baseline)
     decision = cast("RelativeDecisionPolicy", procedure.decision)
     if design is None:
@@ -4023,16 +3880,14 @@ def _achieved(
             exit_side=exit_side,
             e_value_dual=e_value_dual,
         )
-    elif companion:
-        mde_relative, mde_unavailable_reason = _companion_mde(plan, design, decision, model)
     else:
-        mde_relative, mde_unavailable_reason = None, "numerical_resolution"
+        mde_relative, mde_unavailable_reason = _companion_mde(plan, design, decision, model)
 
     triggered = baseline.trigger_rate < 1.0
     k_per_arm, k_total = _cluster_counts(n_T, n_C, baseline)
     n_total = n_T + n_C
     planned_metric_name, planned_quantile = _planned_quantile_fields(baseline)
-    result = PowerResult(
+    return PowerResult(
         n_per_arm=n_T,
         n_total=n_total,
         power=min(power, 1.0),
@@ -4053,7 +3908,6 @@ def _achieved(
         planned_metric_name=planned_metric_name,
         planned_quantile=planned_quantile,
     )
-    return result, enclosure
 
 
 def minimum_detectable_effect(
@@ -4066,29 +3920,18 @@ def minimum_detectable_effect(
 ) -> PowerResult:
     """Compute the minimum detectable relative effect at a fixed arm size.
 
-    The answer is the first admissible complier-scale effect reaching
-    ``design.power`` under the planning model named by ``power_basis`` (see
-    ``achieved_power``); ``power`` is that effect's own power, which exceeds
-    the target when the answer is the admissible interval's lower endpoint.
-    For a runtime-binomial plan the answer is the first effect whose power is
-    certified to reach the target: the lower end of its numerical enclosure
-    does, and an enumerated plan reports that end as ``power``. Every earlier
-    candidate is excluded by its own power or by the monotone closure of the
-    decision's rejection set, a bound over an interval of effects, except
-    those whose power lies within the enclosure of the target. A band of
-    effects that reaches it is found whether or not the largest admissible
-    effect does. The enclosure covers the runtime's enumerated decision:
-    ``power_basis="exact"`` leaves at most ``1e-6`` of count-pair mass undecided;
-    ``"approximate"`` leaves more because the replay is budgeted. Their reported
-    power is no greater than the runtime's rejection probability. For
-    ``"asymptotic"``, certification describes the delta-method model, not the runtime.
-    A target no admissible alternative can reach is ``unattainable``;
-    when no effect certifies it and the bound cannot exclude every effect, it
-    lies within the enclosure of the greatest power any effect may reach and
-    can neither be certified nor ruled out (``numerical_resolution``, whose
-    ``power_enclosure`` is that enclosure and ``unresolved_interval`` the
-    effects the bound could not exclude). A target whose answer has no float64
-    representation is refused with a
+    The returned effect reaches ``design.power`` under the model named by
+    ``power_basis``; ``power`` is the evaluated point power at its implied absolute
+    alternative, not the target substituted for it.
+
+    Fixed-horizon binomial searches locate the earliest detectable region within
+    ``1e-8 + 1e-8 * abs(mde_relative)`` in relative effect. Interval upper bounds,
+    not monotonicity assumptions, exclude earlier regions. A materially unresolved
+    earlier interval refuses with ``numerical_resolution`` rather than being skipped
+    for a later band. Enumerated points are admitted only with absolute error at most
+    ``1e-6``; closed-form power is the delta-method model's own value.
+    A target excluded throughout the admissible domain is ``unattainable``; one with
+    no representable answer is ``unrepresentable``. Refusals carry a
     ``power.minimum_detectable_effect.*`` code. The look schedule resolves
     as in ``required_sample_size``. For fixed-horizon inference, a target at
     or below the null's own crossing probability is also refused: zero

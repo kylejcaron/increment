@@ -31,9 +31,10 @@ from tests.analysis_factory import lift_rows, make_analysis_like
 from tests.warning_codes import warning_codes, warning_context
 
 
-def _v7_moment_fields() -> dict[str, object]:
+def _moment_fields() -> dict[str, object]:
     return {
-        "moments_format": 7,
+        "moments_format": 10,
+        "successes": None,
         "winsor_lower_percentile": None,
         "winsor_upper_percentile": None,
         "winsor_lower_bound": None,
@@ -408,7 +409,7 @@ def test_moments_source_observational_declared_relative_margin_refused_at_constr
     )
     rows = [
         {
-            **_v7_moment_fields(),
+            **_moment_fields(),
             "experiment_id": "e",
             "metric": "revenue",
             "group_id": "C",
@@ -417,7 +418,7 @@ def test_moments_source_observational_declared_relative_margin_refused_at_constr
             "sum_y2": 150.0,
         },
         {
-            **_v7_moment_fields(),
+            **_moment_fields(),
             "experiment_id": "e",
             "metric": "revenue",
             "group_id": "T",
@@ -522,7 +523,7 @@ def test_from_moments_observational_hits_capability_error():
 
     rows = [
         {
-            **_v7_moment_fields(),
+            **_moment_fields(),
             "experiment_id": "e",
             "metric": "revenue",
             "group_id": g,
@@ -1323,7 +1324,7 @@ def test_value_scale_refused_on_the_moments_only_analysis_path():
 
     rows = [
         {
-            **_v7_moment_fields(),
+            **_moment_fields(),
             "experiment_id": "e",
             "metric": "revenue",
             "group_id": g,

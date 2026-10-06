@@ -813,6 +813,7 @@ def _run_breakout_for_replication(
     import pyarrow.compute as pc
 
     from increment.query.builders import (
+        declared_binary_metrics,
         group_summary,
         metric_events,
         unit_day_spine_stats,
@@ -848,7 +849,9 @@ def _run_breakout_for_replication(
             properties_table=properties_tbl,
             warn_on_censoring=False,
         )
-        summary_by = group_summary(totals_by, by=by)
+        summary_by = group_summary(
+            totals_by, by=by, binary_metrics=declared_binary_metrics([metric])
+        )
         rows.extend(summary_by.to_pyarrow().to_pylist())
 
     if not rows:
@@ -966,6 +969,7 @@ def _run_one_replication(
     # Deferred: pulling in the query builders imports ibis, which is heavy
     # and unnecessary until a replication actually runs.
     from increment.query.builders import (
+        declared_binary_metrics,
         first_exposures,
         group_summary,
         metric_events,
@@ -1023,7 +1027,7 @@ def _run_one_replication(
         m_events = metric_events(fact_tbl, metric, value_column=value_col)
         spine, stats = unit_day_spine_stats(exposures, m_events, experiment, metric.name)
         totals = unit_totals(spine, stats, metric, experiment, warn_on_censoring=False)
-        summ = group_summary(totals).to_pyarrow()
+        summ = group_summary(totals, binary_metrics=declared_binary_metrics([metric])).to_pyarrow()
         summaries.append(summ)
 
     combined = pa.concat_tables(summaries)

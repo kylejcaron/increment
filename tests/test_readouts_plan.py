@@ -908,7 +908,8 @@ def _moments_row(metric_name: str, group_id: str, n: int, mean: float, var: floa
         "winsor_n": None,
         "winsor_n_lower": None,
         "winsor_n_upper": None,
-        "moments_format": 8,
+        "moments_format": 10,
+        "successes": None,
     }
 
 

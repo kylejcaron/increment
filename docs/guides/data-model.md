@@ -772,14 +772,20 @@ ref distribution and store authorization are the authenticity boundary.
 
 ### Moments wire migration
 
-`Analysis.from_moments` accepts centered, complete `moments_format=8`
-rows, including a complete embedded `decision_plan`. Fixed-horizon format 7
-remains readable; formats 1–6 are refused
-with `moments.format.unsupported_legacy`, and a newer format with
-`moments.format.unsupported_future`. Re-exporting is the only safe upgrade for a
-cube alone: reconstruct the raw metric/experiment definitions and re-export
-format 8, or pin the Increment revision that wrote the old cube. `from_moments`
-is separate from the unit-day artifact boundary.
+`Analysis.from_moments` accepts centered, complete `moments_format=10`
+rows, including a complete embedded `decision_plan`. Fixed-horizon formats 1–8
+are refused with `moments.format.unsupported_legacy`, and formats above 10 with
+`moments.format.unsupported_future`. Re-export from the original observations,
+or pin the Increment revision that wrote the old cube; a cube alone cannot
+recover exact binary counts from rounded moments. `from_moments` is separate
+from the unit-day artifact boundary.
+
+Each ordinary row carries integer `n` and nullable integer `successes`.
+Declared conversion and retention outcomes retain their original 0/1 success
+counts; other outcomes carry null. Partition merges add counts as integers,
+never via floating totals. Missing counts are not reconstructed from a mean.
+Parquet exports use nullable `int64` for `successes`; preserve that type when
+loading through a dataframe, including pandas' nullable `Int64` dtype.
 
 The `metrics` declaration selects which metrics to replay. Winsorization
 declarations must match selected metrics; an unselected clipped metric does
@@ -787,7 +793,7 @@ not require its configuration to replay an ordinary sibling. Format stamps
 and wire-schema validation still cover every row of the imported cube.
 
 A fixed-horizon Encouragement source with an empty metric catalog exports one
-format-8 `design_summary` envelope instead of outcome rows. It carries the
+format-10 `design_summary` envelope instead of outcome rows. It carries the
 experiment identity, complete assignment counts and compliance state, and an
 empty-metric fixed-horizon decision plan. Reload with `metrics=[]` and the same
 design. Missing state, mixed rows, outcome fields, a different identity, or a

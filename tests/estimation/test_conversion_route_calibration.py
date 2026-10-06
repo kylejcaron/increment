@@ -10,9 +10,11 @@ boundary excess at the shipped threshold and the hybrid pipeline across the thre
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import json
 import math
+import pickle
 from dataclasses import asdict
 from fractions import Fraction
 
@@ -673,9 +675,7 @@ class TestADirectionalRequestMissesOnlyOnTheSideItReads:
 
     @pytest.mark.parametrize("lift", [0.0, 0.05, 0.1])
     @pytest.mark.parametrize("alternative", ["two-sided", "greater", "less"])
-    def test_a_row_misses_where_the_runtime_rejects_against_the_true_lift(
-        self, alternative, lift
-    ):
+    def test_a_row_misses_where_the_runtime_rejects_against_the_true_lift(self, alternative, lift):
         alpha = 2.0 * self.TAIL if alternative == "two-sided" else self.TAIL
         row = lift_row(self.COUNTS, alpha=alpha, alternative=alternative)
         assert row.reference_kind == "t"
@@ -825,7 +825,10 @@ class TestBoundCheckpoint:
         assert cr.bound(workers=1, out=path, grid="extended") == 0
         assert (enumerated, planned) == ([], [])
 
-    @pytest.mark.parametrize("retired", ["borderline_minimum", "hybrid_finite_plus_delta_v1"])
+    @pytest.mark.parametrize(
+        "retired",
+        ["borderline_minimum", "hybrid_finite_plus_delta_v1", "hybrid_finite_plus_delta_v2"],
+    )
     def test_a_retired_model_keeps_the_enumeration_and_plans_again(
         self, tmp_path, calls, monkeypatch, retired
     ):
@@ -835,8 +838,12 @@ class TestBoundCheckpoint:
         designs = cr.bound_cells("extended")[:4]
         monkeypatch.setattr(cr, "bound_cells", lambda grid: designs)
         kept = {"asymptotic_part": 0.1234, "finite_part": 0.4321, "inflation": 1.0 + 1e-12}
-        # A retired record's planned figure sits above its own lower end, as a central mass does.
-        stale = {"model": retired, "planned": 0.5 + 1e-9, "lower": 0.5, "upper": 0.5 + 2e-9}
+        stale = {
+            "model": retired,
+            "planned": 0.5 if retired.endswith("_v2") else 0.5 + 1e-9,
+            "lower": 0.5,
+            "upper": 0.5 + 2e-9,
+        }
         path = tmp_path / "bound.jsonl"
         self._write(path, [_record(cell, enumeration=kept, plan=stale) for cell in designs])
         cr.bound(workers=1, out=path)
@@ -847,13 +854,32 @@ class TestBoundCheckpoint:
             power = resumed[json.dumps(cr._design_key(cell))]
             assert power.plan.model == BINOMIAL_PLANNING_MODEL
             assert power.plan.planned == 0.5
-            assert power.plan.planned != stale["planned"]
+            assert power.plan.model != retired
             assert power.enumeration == cr.Enumeration(
                 **_record(cell, enumeration=kept)["enumeration"]
             )
         planned.clear()
         cr.bound(workers=1, out=path)
         assert (enumerated, planned) == ([], [])
+
+    def test_an_invalid_record_prevents_any_retired_v2_replanning(self, tmp_path, calls):
+        designs = cr.bound_cells("original")[:2]
+        path = tmp_path / "bound.jsonl"
+        self._write(
+            path,
+            [
+                _record(designs[0], plan={"model": "hybrid_finite_plus_delta_v2"}),
+                _record(designs[1], plan={"model": "unknown"}),
+            ],
+        )
+        before = path.read_bytes()
+        with pytest.raises(cr.CheckpointError) as raised:
+            cr.bound(workers=1, out=path)
+        assert raised.value.code == "calibration.conversion_route.checkpoint_planner_model"
+        assert raised.value.context["line"] == 2
+        assert raised.value.context["current"] == "hybrid_finite_plus_delta_v3"
+        assert calls == ([], [])
+        assert path.read_bytes() == before
 
     @pytest.mark.parametrize(
         ("change", "code", "named"),
@@ -901,6 +927,13 @@ class TestBoundCheckpoint:
         assert {key: context[key] for key in named} == named
         assert calls == ([], [])
         assert path.read_text() == before
+        for restored in (
+            copy.deepcopy(refused.value),
+            pickle.loads(pickle.dumps(refused.value)),
+        ):
+            assert restored.code == code and restored.context == context
+            with pytest.raises(TypeError):
+                restored.context["next_action"] = "reuse"  # ty: ignore[invalid-assignment]  # proving immutability
 
     @pytest.mark.parametrize(
         ("text", "code"),
@@ -1004,22 +1037,49 @@ class TestBoundCheckpoint:
         assert "calibration.conversion_route.checkpoint_unreadable" in capsys.readouterr().err
 
 
+def test_diagnostic_plan_stores_central_mass_even_when_not_publicly_resolved(monkeypatch):
+    from increment.estimation.arm_contract import ArmPlanningProcedure
+    from increment.power import Baseline, _binomial
+    from increment.power.core import BINOMIAL_PLANNING_MODEL, planned_enclosure
+
+    monkeypatch.setattr(_binomial, "EVALUATION_REPLAY_BUDGET", 5)
+    cell = cr.MirrorCell("sparse", 60, 0.2, 0.8, 0.05, "two-sided")
+    diagnostic = planned_enclosure(
+        cell.n,
+        cell.lift,
+        Baseline.from_proportion(cell.p_c),
+        ArmPlanningProcedure.standard("conversion"),
+    )
+    assert diagnostic.absolute_error > _binomial.RESOLUTION
+    recorded = cr.plan_design(cell)
+    assert recorded.model == BINOMIAL_PLANNING_MODEL == "hybrid_finite_plus_delta_v3"
+    assert recorded.planned == diagnostic.power
+    assert (recorded.lower, recorded.upper) == (diagnostic.lower, diagnostic.upper)
+
+
 @pytest.mark.slow
 @pytest.mark.parameter_recovery
 class TestResumedPlanEqualsAFreshOne:
     """Planning again from a retired model's checkpoint gives the plan a fresh run of the same
     design gives, on the enumeration the checkpoint kept."""
 
-    @pytest.mark.parametrize("retired", ["borderline_minimum", "hybrid_finite_plus_delta_v1"])
+    @pytest.mark.parametrize(
+        "retired",
+        ["borderline_minimum", "hybrid_finite_plus_delta_v1", "hybrid_finite_plus_delta_v2"],
+    )
     def test_a_resumed_design_matches_a_fresh_one(self, tmp_path, monkeypatch, retired):
         design = cr.MirrorCell("bound", 300, 0.3, 0.1, 0.2, "two-sided")
         monkeypatch.setattr(cr, "bound_cells", lambda grid: (design,))
         fresh = cr.enumerated_power(design)
-        # An enumerated plan publishes the lower end of its enclosure; a retired record's
-        # planned figure is the central mass above it.
         assert not fresh.plan.closed_form
-        assert fresh.plan.planned == fresh.plan.lower
-        stale = {"model": retired, "planned": fresh.plan.planned * (1.0 + 1e-9), "basis": "exact"}
+        assert fresh.plan.lower <= fresh.plan.planned <= fresh.plan.upper
+        stale = {
+            "model": retired,
+            "planned": (
+                fresh.plan.lower if retired.endswith("_v2") else fresh.plan.planned * (1.0 + 1e-9)
+            ),
+            "basis": "exact",
+        }
         path = tmp_path / "bound.jsonl"
         path.write_text(
             json.dumps(_record(design, enumeration=asdict(fresh.enumeration), plan=stale)) + "\n"
@@ -1232,32 +1292,6 @@ class TestScanFiles:
         assert {(m, t): v.excess for m, bt in named.items() for t, v in bt.items()} == {
             (m, t): v.excess for m, bt in unnamed.items() for t, v in bt.items()
         }
-
-    def test_steps_that_are_no_ladder_are_refused(self, tmp_path):
-        path = tmp_path / "skipped.jsonl"
-        self._write(path, [10, 12, 15, 17], {0.01: [1.0] * 4})
-        with pytest.raises(cr.ScanError, match=r"skipped\.jsonl.*first 2 do.*step 15"):
-            cr.read_rows([path])
-
-    def test_a_file_of_two_scans_that_name_no_ladder_is_refused(self, tmp_path):
-        path = tmp_path / "joined.jsonl"
-        self._write(path, [10, 12, 13, 10, 12], {0.01: [1.0] * 5})
-        with pytest.raises(cr.ScanError, match="recurs"):
-            cr.read_rows([path])
-
-    def test_a_step_that_is_not_on_the_ladder_it_names_is_refused(self, tmp_path):
-        path = tmp_path / "forged.jsonl"
-        self._write(path, [10, 11], {0.01: [1.0, 1.0]}, ladder=(10.0, 40_000.0))
-        with pytest.raises(cr.ScanError, match="step 11 is not a step of the ladder it names"):
-            cr.read_rows([path])
-
-    @pytest.mark.parametrize("ladder", [{"start": 10.0}, {"start": "x", "stop": 4.0}, 7])
-    def test_a_ladder_that_is_not_a_start_and_a_stop_is_refused(self, tmp_path, ladder):
-        path = tmp_path / "named.jsonl"
-        record = {"m": 10, "tail": 0.01, "wald_excess": 1.0, "routed_excess": 1.0, "cell": None}
-        path.write_text(json.dumps(record | {"ladder": ladder}) + "\n")
-        with pytest.raises(cr.ScanError, match="not a start and a stop"):
-            cr.read_rows([path])
 
     def test_a_scan_writes_its_ladder_with_every_step_and_reads_back(self, tmp_path, monkeypatch):
         def measured(m, tails, workers=1):

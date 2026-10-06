@@ -444,7 +444,8 @@ def _two_metric_rows(*, second_metric_has_treatment: bool) -> tuple[list[dict], 
                     "sum_y2": sum_y + 50.0,
                 }
             ),
-            "moments_format": 7,
+            "moments_format": 10,
+            "successes": None,
             "winsor_lower_percentile": None,
             "winsor_upper_percentile": None,
             "winsor_lower_bound": None,
@@ -763,7 +764,8 @@ def test_cluster_counts_refuses_on_a_moments_source():
     rows = [
         {
             **raw_row,
-            "moments_format": 7,
+            "moments_format": 10,
+            "successes": None,
             "winsor_lower_percentile": None,
             "winsor_upper_percentile": None,
             "winsor_lower_bound": None,
@@ -1106,7 +1108,8 @@ def _rows_for(metric_name: str) -> list[dict]:
                     "sum_y2": 150.0,
                 }
             ),
-            "moments_format": 7,
+            "moments_format": 10,
+            "successes": None,
             "winsor_lower_percentile": None,
             "winsor_upper_percentile": None,
             "winsor_lower_bound": None,
@@ -1127,7 +1130,8 @@ def _rows_for(metric_name: str) -> list[dict]:
                     "sum_y2": 160.0,
                 }
             ),
-            "moments_format": 7,
+            "moments_format": 10,
+            "successes": None,
             "winsor_lower_percentile": None,
             "winsor_upper_percentile": None,
             "winsor_lower_bound": None,
@@ -1393,7 +1397,8 @@ def _guardrail_rows(metric_name: str, *, direction: str) -> list[dict]:
                         "sum_y2": n * (mean**2 + 0.04),
                     }
                 ),
-                "moments_format": 7,
+                "moments_format": 10,
+                "successes": None,
                 "winsor_lower_percentile": None,
                 "winsor_upper_percentile": None,
                 "winsor_lower_bound": None,

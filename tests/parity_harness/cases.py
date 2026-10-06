@@ -12,6 +12,8 @@ from __future__ import annotations
 import copy
 import datetime as dt
 import math
+import numbers
+import random
 import tempfile
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import ExitStack, nullcontext
@@ -3733,15 +3735,16 @@ def _encouragement_margin_guardrail_case() -> ParityCase:
     )
 
 
-def _retention_breakout_cohorts_case(
-    *,
-    single_segment: bool = False,
-    late_units: int = 2,
-    warehouse_connection: Callable[[list[dict[str, Any]]], Any] = ds.duckdb_connection,
-    dialect: str = "duckdb",
-) -> ParityCase:
-    """Mature binary retention, repeated returns, and excluded late cohorts."""
-    stores = ("s0",) if single_segment else ("s0", "s1")
+def _retention_cohort_data(
+    stores: tuple[str, ...], late_units: int
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Event rows, day panel rows and unit summary rows of the mature-retention cohorts.
+
+    Per (arm, store): 20 mature units exposed 2025-01-10 plus *late_units* exposed 2025-01-15,
+    whose day 7-8 band is unobservable at the 2025-01-20 horizon. A control unit returns when
+    ``index % 4 < 1``, a treatment unit when ``index % 4 < 2``; a returner purchases twice on
+    day 7, every unit on days 6 and 9, which lie outside the 7-8 band.
+    """
     rows: list[dict[str, Any]] = []
     panel_rows: list[dict[str, Any]] = []
     summary_rows: list[dict[str, Any]] = []
@@ -3790,9 +3793,12 @@ def _retention_breakout_cohorts_case(
                         "returned": float(returns),
                     }
                 )
+    return rows, panel_rows, summary_rows
 
-    plan = AnalysisPlan(secondaries=["d7_retention"])
-    defs_dict = ds.definitions_dict(plan=plan, breakout=True)
+
+def _retention_definitions(plan: AnalysisPlan, *, breakout: bool, dialect: str) -> Definitions:
+    """The ``d7_retention`` (days 7-8) catalog the retention parity cases share."""
+    defs_dict = ds.definitions_dict(plan=plan, breakout=breakout)
     defs_dict["dialect"] = dialect
     defs_dict["experiments"][0]["end"] = "2025-01-16"
     defs_dict["experiments"][0]["observation_end"] = "2025-01-20"
@@ -3806,7 +3812,22 @@ def _retention_breakout_cohorts_case(
             "preferred_direction": "increase",
         }
     ]
-    definitions = Definitions.model_validate(defs_dict)
+    return Definitions.model_validate(defs_dict)
+
+
+def _retention_breakout_cohorts_case(
+    *,
+    single_segment: bool = False,
+    late_units: int = 2,
+    warehouse_connection: Callable[[list[dict[str, Any]]], Any] = ds.duckdb_connection,
+    dialect: str = "duckdb",
+) -> ParityCase:
+    """Mature binary retention, repeated returns, and excluded late cohorts."""
+    stores = ("s0",) if single_segment else ("s0", "s1")
+    rows, panel_rows, summary_rows = _retention_cohort_data(stores, late_units)
+
+    plan = AnalysisPlan(secondaries=["d7_retention"])
+    definitions = _retention_definitions(plan, breakout=True, dialect=dialect)
     metric = MetricSpec(
         name="d7_retention",
         type="retention",
@@ -3872,7 +3893,8 @@ def _retention_breakout_cohorts_case(
             assert {(row["group_id"], row["store"]) for row in records} == set(expected)
             for row in records:
                 n, successes = expected[(row["group_id"], row["store"])]
-                assert row["n"] == n
+                assert _is_exact_count(row["n"]) and row["n"] == n
+                assert _is_exact_count(row["successes"]) and row["successes"] == successes
                 assert n * row["ref_y"] + row["cy1"] == pytest.approx(successes)
                 second = row["cy2"] + 2 * row["ref_y"] * row["cy1"] + n * row["ref_y"] ** 2
                 assert second == pytest.approx(successes)
@@ -7787,7 +7809,425 @@ def _conversion_route_observational_case() -> ParityCase:
     )
 
 
+# Exact unit counts must survive every producer seam, format-10 export/replay, and
+# emitted-row comparison. Switchback contrasts block periods rather than parallel arms.
+_EXACT_COUNT_SWITCHBACK_WAIVE = {
+    "from_switchback_panel": (
+        "SOURCE: from_switchback_panel contrasts per-cycle block outcomes of one switching "
+        "population and emits no arm-level unit-grain moments, so it has no exact arm "
+        "`successes`/`n` pair to compare with the parallel-arm ingresses."
+    )
+}
+
+# metric -> group -> (successes, n)
+_ExpectedCounts = Mapping[str, Mapping[str, tuple[int, int]]]
+
+
+def _is_exact_count(value: object) -> bool:
+    """An integer count: never a float, whose rounding would have decided it, nor a bool."""
+    return isinstance(value, numbers.Integral) and not isinstance(value, bool)
+
+
+def _assert_arm_counts(
+    where: str, rows: Iterable[Mapping[str, Any]], expected: Mapping[str, tuple[int, int]]
+) -> None:
+    by_group = {str(row["group_id"]): row for row in rows}
+    assert set(by_group) == set(expected), f"{where}: arms {sorted(by_group)} != {sorted(expected)}"
+    for group, (successes, n) in expected.items():
+        row = by_group[group]
+        assert _is_exact_count(row["n"]) and row["n"] == n, (
+            f"{where}/{group}: n={row['n']!r}, expected the integer {n}"
+        )
+        assert _is_exact_count(row["successes"]) and row["successes"] == successes, (
+            f"{where}/{group}: successes={row['successes']!r}, expected the integer {successes}"
+        )
+
+
+def _source_count_probe(expected: _ExpectedCounts) -> Callable[[str, Analysis], None]:
+    """Each constructor's own total-grain source rows carry the exact integer pair."""
+
+    def probe(path: str, analysis: Analysis) -> None:
+        src = _moment_source(analysis)
+        metrics = {metric.name: metric for metric in src.context.metrics}
+        for name, arms in expected.items():
+            _assert_arm_counts(f"{path}/{name}", src.moments(metrics[name], grain="total"), arms)
+
+    return probe
+
+
+def _binomial_counts_probe(expected: _ExpectedCounts) -> Callable[[Any], None]:
+    """The emitted exact-binomial rows were formed from the integer counts of the truth."""
+
+    def probe(results: Any) -> None:
+        rows = {row.metric: row for row in results if row.group_id == "treatment"}
+        assert set(rows) == set(expected)
+        for name, arms in expected.items():
+            row = rows[name]
+            assert row.reference_kind == "binomial", name
+            assert row.binomial_set is not None, name
+            (x_c, n_c), (x_t, n_t) = arms["control"], arms["treatment"]
+            counts = row.binomial_set
+            assert (counts.x_c, counts.n_c, counts.x_t, counts.n_t) == (x_c, n_c, x_t, n_t), name
+
+    return probe
+
+
+def _export_rows(analysis: Analysis) -> list[dict[str, Any]]:
+    """The rows of a real ``Analysis.export`` parquet file, read back as stored."""
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "moments.parquet"
+        analysis.export(path)
+        return pq.read_table(path).to_pylist()
+
+
+def _export_counts_and_replay(
+    analysis: Analysis, metrics: list[MetricSpec], expected: _ExpectedCounts
+) -> Analysis:
+    """Export *analysis* for real, check the exported cube's own counts, replay it.
+
+    The cube is checked at the file seam: the format stamp the exporter wrote (never one
+    stamped here) and each binary metric's integer ``n``/``successes`` per arm. The
+    returned ``from_moments`` Analysis is then compared at its source seam and by its rows.
+    """
+    try:
+        rows = _export_rows(analysis)
+        assert {row["moments_format"] for row in rows} == {10}
+        for name, arms in expected.items():
+            _assert_arm_counts(
+                f"export/{name}", [row for row in rows if row["metric"] == name], arms
+            )
+        return Analysis.from_moments(rows, control="control", metrics=metrics)
+    finally:
+        _close_parity_analysis(analysis)
+
+
+def _chunked_table(rows: list[dict[str, Any]], chunk_rows: int = 37) -> Any:
+    """*rows* as an Arrow table split into many small chunks, so any per-chunk or
+    per-partition reduction has to merge exactly to give the same counts."""
+    import pyarrow as pa
+
+    table = pa.Table.from_pylist(rows)
+    return pa.Table.from_batches(table.to_batches(max_chunksize=chunk_rows))
+
+
+# Both arms hold 240 units. Late decoys occur after the two-day conversion window;
+# repeated converter events, within or outside the window, still count as one success.
+_EXACT_UNITS_PER_ARM = 240
+_EXACT_WINDOW_DAYS = 2
+_EXACT_CONVERTERS = {
+    "signup": {"control": 70, "treatment": 95},
+    "rare": {"control": 2, "treatment": 7},
+}
+_EXACT_LATE_DECOYS = 6
+_EXACT_DAY_PATTERNS = ((0,), (1,), (0, 1), (0, 2))
+
+
+def _exact_unit_days(metric: str, group: str, index: int) -> tuple[int, ...]:
+    converters = _EXACT_CONVERTERS[metric][group]
+    if index < converters:
+        return _EXACT_DAY_PATTERNS[index % 4]
+    if index < converters + _EXACT_LATE_DECOYS:
+        return (2,)
+    return ()
+
+
+def _exact_converted(days: tuple[int, ...]) -> bool:
+    return any(day < _EXACT_WINDOW_DAYS for day in days)
+
+
+def _exact_conversion_counts() -> dict[str, dict[str, tuple[int, int]]]:
+    counts = {
+        metric: {
+            group: (
+                sum(
+                    _exact_converted(_exact_unit_days(metric, group, index))
+                    for index in range(_EXACT_UNITS_PER_ARM)
+                ),
+                _EXACT_UNITS_PER_ARM,
+            )
+            for group in ("control", "treatment")
+        }
+        for metric in _EXACT_CONVERTERS
+    }
+    # The truth above counts what the generator declares: decoys and repeated days are inert.
+    assert counts == {
+        metric: {group: (k, _EXACT_UNITS_PER_ARM) for group, k in arms.items()}
+        for metric, arms in _EXACT_CONVERTERS.items()
+    }
+    return counts
+
+
+def _exact_conversion_events() -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for group in ("control", "treatment"):
+        for index in range(_EXACT_UNITS_PER_ARM):
+            unit = f"{group}-{index}"
+            events.append(
+                ds._row(
+                    unit,
+                    _ENCOURAGEMENT_EXPOSURE_AT,
+                    "exposure",
+                    group_id=group,
+                    experiment_id="exp",
+                )
+            )
+            for metric in _EXACT_CONVERTERS:
+                for day in _exact_unit_days(metric, group, index):
+                    at = _ENCOURAGEMENT_EXPOSURE_AT + dt.timedelta(days=day, hours=6)
+                    events.append(ds._row(unit, at, metric))
+                    if day == 0 and index % 4 == 2:
+                        events.append(ds._row(unit, at + dt.timedelta(hours=1), metric))
+            events.append(ds._row(unit, _ENCOURAGEMENT_FRESHNESS_PAD_AT, "pad"))
+    random.Random(1729).shuffle(events)
+    return events
+
+
+def _exact_conversion_defs_dict(plan: AnalysisPlan) -> dict[str, Any]:
+    names = list(_EXACT_CONVERTERS)
+    return {
+        "dialect": "duckdb",
+        "fact_sources": [
+            {
+                "name": "events",
+                "sql": "SELECT * FROM events",
+                "timestamp_column": "event_at",
+                "entities": ["user_id"],
+                "facts": [
+                    {"name": "exposure", "column": None},
+                    {"name": "pad", "column": None},
+                    *({"name": name, "column": None} for name in names),
+                ],
+            }
+        ],
+        "exposures": [{"name": "assignment", "fact": "exposure"}],
+        "metrics": [
+            {
+                "type": "conversion",
+                "name": name,
+                "entity": "user_id",
+                "fact": name,
+                "window_days": _EXACT_WINDOW_DAYS,
+                "preferred_direction": "increase",
+            }
+            for name in names
+        ],
+        "experiments": [
+            {
+                "name": "exp",
+                "exposure": "assignment",
+                "unit": "user_id",
+                "start": "2025-01-10",
+                "end": _ENCOURAGEMENT_EXPERIMENT_END.isoformat(),
+                "control_group": "control",
+                "allocation": {"control": 0.5, "treatment": 0.5},
+                "plan": plan.model_dump(mode="json"),
+            }
+        ],
+    }
+
+
+def _exact_conversion_case(
+    *, export_from: Literal["from_definitions", "from_unit_panel"]
+) -> ParityCase:
+    """Exact conversion counts at every ingress, with out-of-window and multi-day converters.
+
+    Definitions and artifact aggregate in DuckDB over shuffled event rows; the panel carries
+    three day rows per unit (shuffled, in a many-chunk Arrow table) with the unit's flag on
+    each day it converted; the summary carries the one-row-per-unit flag in a many-chunk
+    table. The moments cube is exported for real from *export_from* and replayed.
+    """
+    expected = _exact_conversion_counts()
+    names = tuple(_EXACT_CONVERTERS)
+    plan = AnalysisPlan(secondaries=names)
+    definitions = Definitions.model_validate(_exact_conversion_defs_dict(plan))
+    events = _exact_conversion_events()
+    exposed_on = dt.date(2025, 1, 10)
+
+    summary_rows = [
+        {
+            "user_id": f"{group}-{index}",
+            "group_id": group,
+            **{name: int(_exact_converted(_exact_unit_days(name, group, index))) for name in names},
+        }
+        for group in ("control", "treatment")
+        for index in range(_EXACT_UNITS_PER_ARM)
+    ]
+    random.Random(42).shuffle(summary_rows)
+    panel_rows = [
+        {
+            "user_id": f"{group}-{index}",
+            "group_id": group,
+            "date": exposed_on + dt.timedelta(days=day),
+            "exposed_on": exposed_on,
+            **{name: int(day in _exact_unit_days(name, group, index)) for name in names},
+        }
+        for group in ("control", "treatment")
+        for index in range(_EXACT_UNITS_PER_ARM)
+        for day in range(3)
+    ]
+    random.Random(43).shuffle(panel_rows)
+    summary_specs = [
+        MetricSpec(name=name, type="conversion", preferred_direction="increase") for name in names
+    ]
+    panel_specs = [
+        MetricSpec(
+            name=name,
+            type="conversion",
+            window_days=_EXACT_WINDOW_DAYS,
+            preferred_direction="increase",
+        )
+        for name in names
+    ]
+
+    def native() -> Analysis:
+        con = ds.duckdb_connection(events)
+        return _track_connection(make_analysis(con, definitions, experiment="exp"), con)
+
+    def artifact() -> Analysis:
+        con = ds.duckdb_connection(events)
+        return _publish_and_adopt(con, make_analysis(con, definitions, experiment="exp"))
+
+    def summary() -> Analysis:
+        return Analysis.from_unit_summary(
+            _chunked_table(summary_rows),
+            unit="user_id",
+            group="group_id",
+            control="control",
+            metrics=summary_specs,
+            plan=plan,
+        )
+
+    def panel() -> Analysis:
+        return Analysis.from_unit_panel(
+            _chunked_table(panel_rows),
+            unit="user_id",
+            group="group_id",
+            date="date",
+            exposure_date="exposed_on",
+            control="control",
+            metrics=panel_specs,
+            plan=plan,
+        )
+
+    def moments() -> Analysis:
+        replay = [
+            MetricSpec(name=name, type="conversion", preferred_direction="increase")
+            for name in names
+        ]
+        origin = native() if export_from == "from_definitions" else panel()
+        return _export_counts_and_replay(origin, replay, expected)
+
+    return ParityCase(
+        id=f"exact_counts_conversion_window_boundary_export_{export_from}",
+        build={
+            "from_definitions": native,
+            "from_unit_day_artifact": artifact,
+            "from_unit_summary": summary,
+            "from_unit_panel": panel,
+            "from_moments": moments,
+        },
+        waive=dict(_EXACT_COUNT_SWITCHBACK_WAIVE),
+        readout_probe=_binomial_counts_probe(expected),
+        source_probe=_source_count_probe(expected),
+        slow=True,
+    )
+
+
+def _exact_retention_case(
+    *, export_from: Literal["from_definitions", "from_unit_panel"]
+) -> ParityCase:
+    """Exact retention counts: the 7-8 day band, repeat returns and immature cohorts.
+
+    Per arm 40 mature units return in the band 10 (control) and 20 (treatment) times; the
+    late-exposed cohorts would add 2 and 4 successes and 4 units each had the observation
+    horizon not excluded them, and a unit returning twice on day 7 is one success, as is a
+    unit active on days 6 and 9 outside the band not one at all. Row order is shuffled.
+    """
+    rows, panel_rows, summary_rows = _retention_cohort_data(("s0", "s1"), 2)
+    mature = [row for row in summary_rows if int(row["user_id"].rsplit("-", 1)[1]) < 20]
+    expected: _ExpectedCounts = {
+        "d7_retention": {
+            arm: (
+                int(sum(row["returned"] for row in mature if row["group"] == arm)),
+                sum(1 for row in mature if row["group"] == arm),
+            )
+            for arm in ("control", "treatment")
+        }
+    }
+    assert expected == {"d7_retention": {"control": (10, 40), "treatment": (20, 40)}}
+    rng = random.Random(7)
+    rng.shuffle(rows)
+    rng.shuffle(panel_rows)
+    plan = AnalysisPlan(secondaries=["d7_retention"])
+    definitions = _retention_definitions(plan, breakout=False, dialect="duckdb")
+    metric = MetricSpec(
+        name="d7_retention",
+        type="retention",
+        value_column="returned",
+        threshold_days=(7, 8),
+        preferred_direction="increase",
+    )
+
+    def native() -> Analysis:
+        con = ds.duckdb_connection(rows)
+        return _track_connection(make_analysis(con, definitions, experiment="exp"), con)
+
+    def artifact() -> Analysis:
+        con = ds.duckdb_connection(rows)
+        return _publish_and_adopt(con, make_analysis(con, definitions, experiment="exp"))
+
+    def summary() -> Analysis:
+        return Analysis.from_unit_summary(
+            pd.DataFrame(summary_rows),
+            unit="user_id",
+            group="group",
+            metrics=[metric],
+            plan=plan,
+            control="control",
+        )
+
+    def panel() -> Analysis:
+        return Analysis.from_unit_panel(
+            pd.DataFrame(panel_rows),
+            unit="user_id",
+            group="group",
+            date="day",
+            exposure_date="exposed_on",
+            observation_end=dt.date(2025, 1, 20),
+            metrics=[metric],
+            plan=plan,
+            control="control",
+        )
+
+    def moments() -> Analysis:
+        origin = native() if export_from == "from_definitions" else panel()
+        return _export_counts_and_replay(origin, [metric], expected)
+
+    return ParityCase(
+        id=f"exact_counts_retention_cohort_boundary_export_{export_from}",
+        build={
+            "from_definitions": native,
+            "from_unit_day_artifact": artifact,
+            "from_unit_summary": summary,
+            "from_unit_panel": panel,
+            "from_moments": moments,
+        },
+        waive={
+            **_EXACT_COUNT_SWITCHBACK_WAIVE,
+            "from_unit_summary": "SOURCE: unit summaries cannot supply retention exposure cohorts.",
+        },
+        waived_refusal_codes={"from_unit_summary": "source.frame.constructor"},
+        readout_probe=_binomial_counts_probe(expected),
+        source_probe=_source_count_probe(expected),
+        slow=True,
+    )
+
+
 PARITY_CASES: tuple[ParityCase, ...] = (
+    _exact_conversion_case(export_from="from_definitions"),
+    _exact_conversion_case(export_from="from_unit_panel"),
+    _exact_retention_case(export_from="from_definitions"),
+    _exact_retention_case(export_from="from_unit_panel"),
     _encouragement_multi_metric_breakout_case(),
     _inferred_null_metric_case(),
     _switchback_neighboring_integer_case(),
