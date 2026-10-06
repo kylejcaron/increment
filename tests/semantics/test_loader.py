@@ -1135,8 +1135,8 @@ def test_invalid_sql_without_dialect_raises(tmp_path: Path):
     assert exc_info.value.code == "definition.sql.parse"
 
 
-def test_empty_sql_is_fine(tmp_path: Path):
-    """An empty or whitespace-only sql string is skipped by the SQL checker."""
+def test_blank_fact_sql_refused(tmp_path: Path):
+    """Blank fact SQL in YAML refuses at load with `definition.source.sql_empty`."""
     _dump_yaml(
         {
             "fact_sources": [
@@ -1166,9 +1166,36 @@ def test_empty_sql_is_fine(tmp_path: Path):
         (tmp_path / "defs.yaml"),
     )
 
-    defs = load(tmp_path / "defs.yaml")
-    # Must load despite empty sql (the model requires it, but empty string is fine)
-    assert defs.fact_sources[0].sql == ""
+    with pytest.raises(DefinitionError) as exc_info:
+        load(tmp_path / "defs.yaml")
+    assert exc_info.value.code == "definition.source.sql_empty"
+    assert exc_info.value.context["source_kind"] == "fact"
+    assert exc_info.value.context["source_name"] == "empty_src"
+    assert "path" in exc_info.value.context
+
+
+def test_blank_dim_sql_refused(tmp_path: Path):
+    """Whitespace-only dimension SQL in YAML refuses at load with `definition.source.sql_empty`."""
+    _dump_yaml(
+        {
+            "dim_sources": [
+                {
+                    "name": "empty_dim",
+                    "sql": "   ",
+                    "entity": "u",
+                    "properties": [{"name": "country", "column": "country", "as_of": "static"}],
+                }
+            ],
+        },
+        (tmp_path / "defs.yaml"),
+    )
+
+    with pytest.raises(DefinitionError) as exc_info:
+        load(tmp_path / "defs.yaml")
+    assert exc_info.value.code == "definition.source.sql_empty"
+    assert exc_info.value.context["source_kind"] == "dimension"
+    assert exc_info.value.context["source_name"] == "empty_dim"
+    assert "path" in exc_info.value.context
 
 
 def test_snowflake_semi_structured_sql_loads_with_declared_dialect(tmp_path: Path):
