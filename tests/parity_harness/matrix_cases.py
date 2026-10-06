@@ -297,7 +297,7 @@ class _Ingress:
             # The Definitions schema has no missing-policy field: declaring one is
             # the structural-absence attempt.
             self.payload["metrics"][0]["missing"] = cell.missing
-        self.positive = cell.option in ("winsor_fixed", "winsor_percentile")
+        self.positive = cell.option == "winsor_percentile"
         self.rows = md.event_rows(positive=self.positive)
         self.plan = plan_for(cell, frame=True)
 

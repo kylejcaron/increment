@@ -81,7 +81,7 @@ class Unit:
     pre_converted: int
     purchases: tuple[tuple[dt.datetime, float], ...]
     sessions: tuple[dt.datetime, ...]
-    latency: tuple[dt.datetime, float]
+    latency: tuple[dt.datetime, float] | None
 
 
 def units(*, positive: bool = False) -> list[Unit]:
@@ -112,9 +112,21 @@ def units(*, positive: bool = False) -> list[Unit]:
                     purchases.append((exposed + dt.timedelta(days=4, hours=6), 1.0))
             if i % 10 == 9:
                 purchases.append((exposed + dt.timedelta(hours=7), 40.0))
-            sessions = [exposed + dt.timedelta(hours=7)]
-            if i % 2 == 0:
-                sessions.append(exposed + dt.timedelta(days=1, hours=7))
+            # A unit with no session event, or no latency event, has that input absent: a
+            # warehouse reads it as zero, a frame under `zero` or `drop` as a NULL cell.
+            sessions: list[dt.datetime] = []
+            if i % 4 != 3:
+                sessions.append(exposed + dt.timedelta(hours=7))
+                if i % 2 == 0:
+                    sessions.append(exposed + dt.timedelta(days=1, hours=7))
+            latency = (
+                None
+                if i % 5 == 3
+                else (
+                    exposed + dt.timedelta(hours=8),
+                    100.0 + float((i * 7) % 23) + 10.0 * treated,
+                )
+            )
             out.append(
                 Unit(
                     id=f"{prefix}{i}",
@@ -128,10 +140,7 @@ def units(*, positive: bool = False) -> list[Unit]:
                     pre_converted=int(pre > 0),
                     purchases=tuple(purchases),
                     sessions=tuple(sessions),
-                    latency=(
-                        exposed + dt.timedelta(hours=8),
-                        100.0 + float((i * 7) % 23) + 10.0 * treated,
-                    ),
+                    latency=latency,
                 )
             )
     return out
@@ -174,7 +183,8 @@ def event_rows(*, positive: bool = False) -> list[dict[str, Any]]:
             )
         rows.extend(_event(u.id, at, "purchase", revenue=r, **common) for at, r in u.purchases)
         rows.extend(_event(u.id, at, "session_end", sess=1, **common) for at in u.sessions)
-        rows.append(_event(u.id, u.latency[0], "latency", latency=u.latency[1], **common))
+        if u.latency is not None:
+            rows.append(_event(u.id, u.latency[0], "latency", latency=u.latency[1], **common))
     for kind, fields in (
         ("purchase", {"revenue": 1.0}),
         ("session_end", {"sess": 1}),
@@ -200,11 +210,35 @@ def _after_exposure(u: Unit, at: dt.datetime) -> bool:
     return at >= u.exposed_at
 
 
+# NULLs mark absent events, so warehouse zeros and frame zero-filling agree. Distinct input
+# masks exercise numerator-only, denominator-only, both-missing and complete ratio units.
+# Explicit zeros among non-purchasers keep conversion/drop nondegenerate; retention panels
+# similarly mix NULL and explicit-zero non-purchase days.
+def revenue_missing(u: Unit) -> bool:
+    return not u.purchases and u.index % 6 == 3
+
+
+def conversion_missing(u: Unit) -> bool:
+    return not u.purchases and u.index % 6 == 0
+
+
+def sessions_missing(u: Unit) -> bool:
+    return not u.sessions
+
+
+def latency_missing(u: Unit) -> bool:
+    return u.latency is None
+
+
+def retention_missing(u: Unit) -> bool:
+    return u.index % 2 == 0
+
+
 def summary_rows(boundary: str, *, nulls: bool, positive: bool = False) -> list[dict[str, Any]]:
     """One row per unit: unwindowed post-exposure totals over the whole window.
 
-    *nulls* leaves the revenue total of a unit with no purchase NULL (what an event
-    log aggregates to) instead of the caller's zero fill.
+    *nulls* leaves each input a unit has no event for as NULL, for the units in that input's
+    missing set (see `revenue_missing`), instead of the caller's zero fill.
     """
     rows = []
     for u in units(positive=positive):
@@ -218,10 +252,12 @@ def summary_rows(boundary: str, *, nulls: bool, positive: bool = False) -> list[
                 "cluster_id": u.cluster,
                 "tenure": u.tenure,
                 "exposed_on": local_day(u.exposed_at, boundary),
-                "revenue": total if bought or not nulls else None,
-                "converted": int(bought),
-                "sessions": len(u.sessions),
-                "latency": u.latency[1],
+                "revenue": None if nulls and revenue_missing(u) else total,
+                "converted": None if nulls and conversion_missing(u) else int(bought),
+                "sessions": None if nulls and sessions_missing(u) else len(u.sessions),
+                "latency": None
+                if nulls and latency_missing(u)
+                else (0.0 if u.latency is None else u.latency[1]),
                 "pre_revenue": u.pre_revenue,
                 "pre_converted": u.pre_converted,
             }
@@ -234,7 +270,10 @@ def panel_rows(
 ) -> list[dict[str, Any]]:
     """One row per unit per local day, dense from the first exposure day to the window end day.
 
-    A day with no purchase carries NULL revenue under *nulls*, else the caller's zero.
+    Under *nulls* a day with no event of an input is NULL for revenue (every unit), sessions
+    and latency (every unit); a unit in `conversion_missing` carries NULL conversion on every
+    day; and `returned` is NULL on a day without a purchase for the units in
+    `retention_missing` and an explicit 0 for the rest. Otherwise the caller's zero fill.
     """
     first = local_day(_EDGE_EXPOSED_AT, boundary)
     last = observation_end_day(boundary)
@@ -252,7 +291,7 @@ def panel_rows(
                 local_day(at, boundary), {"revenue": 0.0, "returned": 0.0, "sessions": 0}
             )
             slot["sessions"] += 1
-        latency_day = local_day(u.latency[0], boundary)
+        latency_day = None if u.latency is None else local_day(u.latency[0], boundary)
         exposed_on = local_day(u.exposed_at, boundary)
         post = [at for at, _ in u.purchases if _after_exposure(u, at)]
         first_purchase_day = local_day(min(post), boundary) if post else None
@@ -271,10 +310,18 @@ def panel_rows(
                     "revenue": slot.get("revenue", 0.0) if bought or not nulls else None,
                     # A total reads a unit's conversion once (its first purchase day); a
                     # daily series reads whether the unit converted that day.
-                    "converted": int(bought if daily_conversion else day == first_purchase_day),
-                    "returned": slot.get("returned", 0.0),
-                    "sessions": slot.get("sessions", 0),
-                    "latency": u.latency[1] if day == latency_day else 0.0,
+                    "converted": None
+                    if nulls and conversion_missing(u)
+                    else int(bought if daily_conversion else day == first_purchase_day),
+                    "returned": None
+                    if nulls and retention_missing(u) and not bought
+                    else slot.get("returned", 0.0),
+                    "sessions": slot.get("sessions", 0)
+                    if slot.get("sessions") or not nulls
+                    else None,
+                    "latency": u.latency[1]
+                    if u.latency is not None and day == latency_day
+                    else (None if nulls else 0.0),
                     "pre_revenue": u.pre_revenue,
                     "pre_converted": u.pre_converted,
                 }

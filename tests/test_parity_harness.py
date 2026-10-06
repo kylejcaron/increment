@@ -388,6 +388,145 @@ def test_day_axis_exact_binomial_bounds_compare_within_numeric_tolerance():
         _assert_equal(left, moved, key)
 
 
+_INF = float("inf")
+
+
+@pytest.mark.parametrize(
+    ("expected", "actual"),
+    [
+        (-_INF, 0.0),
+        (-_INF, -1e300),
+        (_INF, 1e300),
+        (0.0, -_INF),
+        (1.0, _INF),
+        (-_INF, _INF),
+        (_INF, -_INF),
+        (-_INF, 3),
+        (float("nan"), float("nan")),
+        (float("nan"), 1.0),
+        (1.0, float("nan")),
+        (float("nan"), _INF),
+        (None, 0.0),
+        (0.0, None),
+    ],
+)
+def test_nonfinite_evidence_does_not_compare_close_to_anything_but_itself(expected, actual):
+    """`sequential_log_e` is `-inf` once a boundary is certain; tolerance arithmetic on an
+    infinite operand is `inf <= inf`, which must never make it equal a finite or opposite
+    evidence value. A NaN or a null equals nothing but a null."""
+    from tests.parity_harness.runner import _nested_close
+
+    assert not _nested_close(expected, actual)
+    assert not _nested_close({"sequential_log_e": [expected]}, {"sequential_log_e": [actual]})
+
+
+@pytest.mark.parametrize("value", [_INF, -_INF])
+def test_same_signed_infinity_and_nulls_compare_equal_and_finite_values_keep_their_tolerance(
+    value,
+):
+    from tests.parity_harness.runner import _nested_close
+
+    assert _nested_close(value, value)
+    assert _nested_close({"sequential_log_e": value}, {"sequential_log_e": value})
+    assert _nested_close(None, None)
+    assert _nested_close(1.0, 1.0 + 1e-12)
+    assert _nested_close(1e6, 1e6 * (1 + 1e-12))
+    assert not _nested_close(1.0, 1.0 + 1e-6)
+    assert not _nested_close(1, 2)
+
+
+def test_a_row_whose_sequential_evidence_is_infinite_on_one_path_only_does_not_agree():
+    from tests.parity_harness.runner import _assert_payload_equal
+
+    certain = {"sequential_log_e": -_INF, "point": 1.0}
+    for other in (0.0, -5.0, _INF):
+        with pytest.raises(AssertionError, match="sequential_log_e"):
+            _assert_payload_equal(
+                "case",
+                "left",
+                "right",
+                ("m",),
+                "unadjusted",
+                certain,
+                {**certain, "sequential_log_e": other},
+            )
+    _assert_payload_equal("case", "left", "right", ("m",), "unadjusted", certain, dict(certain))
+
+
+def _post_exposure_events(unit_id: str, event: str) -> int:
+    """How many *event* rows the matrix log holds for *unit_id* at or after its exposure."""
+    from tests.parity_harness import matrix_data as md
+
+    exposed_at = next(u.exposed_at for u in md.units() if u.id == unit_id)
+    return sum(
+        1
+        for row in md.event_rows()
+        if row["user_id"] == unit_id and row["event"] == event and row["event_at"] >= exposed_at
+    )
+
+
+def test_matrix_fixture_nulls_mark_exactly_the_inputs_the_event_log_lacks():
+    """A frame NULL is an input the warehouse reads as an absent event (zero), for every
+    metric input -- conversion, revenue, sessions, latency -- and the `error` fixture is that
+    same data with the zero written out, so the three policies differ only in what they do
+    with the NULLs, never in the values underneath."""
+    from tests.parity_harness import matrix_data as md
+
+    nullable = md.frame(md.summary_rows("utc", nulls=True))
+    explicit = md.frame(md.summary_rows("utc", nulls=False))
+    assert not explicit.isna().any().any()
+    events = {
+        "revenue": "purchase",
+        "converted": "purchase",
+        "sessions": "session_end",
+        "latency": "latency",
+    }
+    for column, event in events.items():
+        null_units = set(nullable.loc[nullable[column].isna(), "user_id"])
+        assert null_units, f"{column} has no missing input"
+        for unit_id in null_units:
+            assert _post_exposure_events(unit_id, event) == 0, (
+                f"{unit_id}: {column} is NULL but the log has {event} events"
+            )
+        assert (nullable[column].fillna(0.0) == explicit[column]).all(), column
+
+
+def test_matrix_fixture_missing_inputs_are_distinct_and_cover_every_ratio_pattern():
+    """Each metric input is missing on its own units, so a policy applied to the wrong column
+    changes a result, and a ratio has units missing its numerator only, its denominator only,
+    both, and neither, in each arm."""
+    from collections import Counter
+
+    from tests.parity_harness import matrix_data as md
+
+    units = md.units()
+    for arm in ("control", "treatment"):
+        mine = [u for u in units if u.arm == arm]
+        sets = {
+            "conversion": {u.id for u in mine if md.conversion_missing(u)},
+            "revenue": {u.id for u in mine if md.revenue_missing(u)},
+            "sessions": {u.id for u in mine if md.sessions_missing(u)},
+            "latency": {u.id for u in mine if md.latency_missing(u)},
+        }
+        assert all(sets.values()), sets
+        assert not sets["conversion"] & sets["revenue"]
+        patterns = Counter((md.revenue_missing(u), md.sessions_missing(u)) for u in mine)
+        assert set(patterns) == {(False, False), (True, False), (False, True), (True, True)}
+
+
+def test_matrix_fixture_panel_nulls_reach_every_input_a_panel_metric_reads():
+    from tests.parity_harness import matrix_data as md
+
+    nulls = md.frame(md.panel_rows("utc", nulls=True))
+    explicit = md.frame(md.panel_rows("utc", nulls=False))
+    assert not explicit.isna().any().any()
+    for column in ("revenue", "converted", "returned", "sessions", "latency"):
+        assert nulls[column].isna().any(), column
+        assert (nulls[column].fillna(0.0) == explicit[column]).all(), column
+    daily = md.frame(md.panel_rows("utc", nulls=True, daily_conversion=True))
+    assert daily["converted"].isna().any()
+
+
 class _SplitDayAxis:
     """An analysis whose value methods return rows while its lift methods refuse, so a
     runner that routes a view to the wrong method, or reads two methods atomically, is
