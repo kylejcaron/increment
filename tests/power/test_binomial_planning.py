@@ -80,6 +80,16 @@ def _conversion(**overrides: Any) -> ArmPlanningProcedure:
     )
 
 
+def test_overflowed_complier_null_does_not_imply_detectable_unrepresented_effect():
+    baseline = Baseline(mean=1e-307, var=1e-307, compliance=0.00555)
+    procedure = _conversion(alternative="less", null_lift=1e306)
+    with pytest.raises(InvalidRequestError) as raised:
+        minimum_detectable_effect(10, baseline, procedure)
+    assert raised.value.code == "power.minimum_detectable_effect.unattainable"
+    maximum = raised.value.context["maximum_power"]
+    assert isinstance(maximum, float) and maximum < 0.8
+
+
 class TestExactRouteMatchesRuntime:
     """(a) The exact route integrates the runtime's own decisions."""
 

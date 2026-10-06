@@ -251,6 +251,11 @@ with `numerical_resolution`; a direct request raises
 `power.minimum_detectable_effect.numerical_resolution`. Its context names the
 `unresolved_interval` and includes `power_enclosure` when available. A target
 excluded over the whole admissible domain is `unattainable`.
+With a shifted null and partial compliance, an initial band can imply
+unrepresentable absolute lifts even though farther effects are representable.
+The planner bounds that band's power before excluding it. An unresolved band
+yields `numerical_resolution`, not a claim that a detectable effect exists
+outside the representable domain.
 
 A design the runtime refuses in full decides no count pair, so it has no power to plan, and it
 is never replayed: `achieved_power`, `minimum_detectable_effect` and every `power_curve` row

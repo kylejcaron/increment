@@ -2443,8 +2443,20 @@ class _BinomialMdeSearch(_MdeSearch):
             _first_ordinal_accepted(float_ordinal(0.0), float_ordinal(edge), self.admissible)
         )
         d_band = -math.log1p(float_from_ordinal(float_ordinal(m_min) + 1) * self.compliance)
-        if self.model.bound(self.theta0, self.theta0 - d_band) >= self.target:
+        self._charge()
+        left = self.model.evaluate(self.theta0)
+        self._charge()
+        right = self.model.evaluate(self.theta0 - d_band)
+        if self.detected(left) or self.detected(right):
             return self.unrepresentable("float64_relative_lift")
+        bound = self._theta_bound(self.theta0, self.theta0 - d_band, left, right)
+        if bound >= self.target:
+            self.state.unresolved = (0.0, m_min)
+            self.state.lower = max(left.lower, right.lower)
+            self.state.upper = bound
+            return self.unresolved(
+                0.0, m_min, "the initial unrepresentable band remains unresolved"
+            )
         return m_min
 
     def evaluate(self, effect: float) -> BinomialPower:
@@ -2476,10 +2488,15 @@ class _BinomialMdeSearch(_MdeSearch):
         )
 
     def _bound(self, lo: float, hi: float, left: BinomialPower, right: BinomialPower) -> float:
-        self._charge()
         a, b = self.candidate(lo), self.candidate(hi)
         assert a is not None and b is not None
-        low_rate, high_rate = sorted((self.model.rate(a[1]), self.model.rate(b[1])))
+        return self._theta_bound(a[1], b[1], left, right)
+
+    def _theta_bound(
+        self, theta_a: float, theta_b: float, left: BinomialPower, right: BinomialPower
+    ) -> float:
+        self._charge()
+        low_rate, high_rate = sorted((self.model.rate(theta_a), self.model.rate(theta_b)))
         gap = _binomial_curvature_gap(self.model.geometry.decision.n_t, low_rate, high_rate)
         true_upper = min(
             1.0, math.nextafter(float(Fraction(max(left.upper, right.upper)) + gap), math.inf)
@@ -3448,29 +3465,22 @@ def minimum_detectable_effect(
 ) -> PowerResult:
     """Compute the minimum detectable relative effect at a fixed arm size.
 
-    The answer is the first admissible complier-scale effect reaching
-    ``design.power`` under the planning model named by ``power_basis`` (see
-    ``achieved_power``); ``power`` is that effect's own power, which exceeds
-    the target when the answer is the admissible interval's lower endpoint.
-    For a runtime-binomial plan the answer is the first effect whose power is
-    certified to reach the target (the lower end of its numerical enclosure
-    does, so ``power`` exceeds the target by about that error), whatever the
-    shape of power along the effects: every earlier candidate is excluded by
-    its own power or by the monotone closure of the decision's rejection set,
-    a bound on the rejection probability over an interval of effects, except
-    those whose power lies within the enclosure of the target, so a band of
-    effects that reaches it is found whether or not the largest admissible
-    effect does. The enclosure is of the numerical integration of the decision
-    set the route replays: for ``power_basis="exact"`` that is the runtime's
-    own decision, for ``"approximate"`` its Normal-tail model, so "certified"
-    and "unattainable" there describe that model and are not bounds on the
-    runtime. A target no admissible alternative can reach is ``unattainable``;
-    when no effect certifies it and the bound cannot exclude every effect, it
-    lies within the enclosure of the greatest power any effect may reach and
-    can neither be certified nor ruled out (``numerical_resolution``, whose
-    ``power_enclosure`` is that enclosure and ``unresolved_interval`` the
-    effects the bound could not exclude). A target whose answer has no float64
-    representation is refused with a
+    The answer is a complier-scale effect reaching ``design.power`` under
+    the model named by ``power_basis`` (see ``achieved_power``); ``power``
+    is evaluated at that effect.
+
+    Runtime-binomial plans resolve the earliest detectable region to
+    ``1e-8`` absolute plus ``1e-8`` relative effect tolerance, not the first
+    representable float. Detection compares computed point power with the
+    target. An earlier interval is excluded only by a valid upper bound;
+    materially earlier unresolved intervals refuse with
+    ``numerical_resolution``. The exact route integrates the runtime
+    decision; the approximate route integrates its Normal-tail decision
+    model, not a bound on the runtime's power.
+
+    A target above every admissible alternative's power is ``unattainable``.
+    A detectable answer outside the representable relative-lift domain is
+    ``unrepresentable``. These refusals use a
     ``power.minimum_detectable_effect.*`` code. The look schedule resolves
     as in ``required_sample_size``. For fixed-horizon inference, a target at
     or below the null's own crossing probability is also refused: zero
