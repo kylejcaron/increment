@@ -326,10 +326,11 @@ finite-sample route there, which is valid at every count. A tail below 0.0005 is
 the same formula, not measured. Per tail, the requirement is a step of a ladder of that ratio
 with every step of that candidate's own ladder through 1.25 times it measured; the ladders are
 anchored at 10 for the tails from 0.025 up and at 1,637 below (the 0.005 tail's on the
-continuation of an interrupted scan, at 2,489.5). A scan records its ladder with every step, so
-a row of another start's ladder stands in for none of those steps; `python -m
-calibration.conversion_route required` reads saved scans, placing one written before the ladder
-was recorded on the ladder its own steps determine and refusing one no ladder fits:
+continuation of an interrupted scan, at 2,489.5). A scan records its ladder with every step.
+The same numeric rung counts regardless of which scan measured it, but a differently numbered
+rung cannot replace a missing candidate rung. `python -m calibration.conversion_route required`
+reads saved scans, inferring compatible anchors for legacy rows and refusing a legacy scan
+that no single ladder fits:
 
 | One-sided tail | 0.0005 | 0.001 | 0.005 | 0.01 | 0.025 | 0.05 | 0.1 |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -835,8 +836,14 @@ A decision the runtime refuses in full on the finite-sample
 route (a tail level its margin dominates, an arm above its ceiling) is refused for a plan that
 keeps more than half of `1e-6` of its counts there, never reported as zero power. A minimum
 detectable effect whose whole path from the null is closed-form is solved without a lattice.
-`conversion_inference="finite_sample"` plans the replay at every size and is the only plan the
-cell bound below can refuse outright. The measurements below are for the enumerated plans.
+Every enumerated plan is subject to the cell bound below, including sparse and borderline
+`auto` plans. `conversion_inference="finite_sample"` always uses enumeration; sufficiently
+dense `auto` plans can instead use the closed-form route.
+
+For these eligible dense rows, the runtime reconstructs Bernoulli moments from the validated
+integer counts before computing the delta interval. Accepted producer-rounding differences
+therefore cannot change the decision for identical counts. Other metrics and adjusted
+conversion rows continue to use their supplied moments.
 
 `python -m calibration.conversion_route bound` compares each route's plan with the pipeline's
 exact rejection probability, summed over the count lattice, and judges each by the claim of its
@@ -855,19 +862,20 @@ mass and numerical error (the dense closed form keeps its 0.005 ceiling; its two
 
 A `bound --out` checkpoint records each design's enumeration beside the finite-sample
 construction and routing floor it was summed under, and its plan beside the planner model. A
-resumed run reuses an enumeration of the current runtime, plans again under a retired model, and
-refuses a record that names neither (every earlier layout wrote one undated section) rather than
-reusing, relabelling or enumerating it again unnoticed: the refusal names the file line, and the
-designs are enumerated to a new `--out`. The saved earlier files are kept unchanged as evidence.
+resumed run retains compatible runtime enumerations and replans retired-model records with the
+current planner. Unknown models and earlier undated layouts refuse with the file line and a
+route to a new `--out`, rather than being reused, relabelled or re-enumerated unnoticed.
+The saved earlier files remain unchanged as evidence.
 
 A plan not evaluated in closed form integrates the count lattice with a bounded decision
 budget. Evaluated pairs use the runtime's delta-method calculation on the routed rectangle
-and the finite-sample replay elsewhere. Each evaluation decides at most 100,000 routed pairs
-and replays at most 150,000 finite-sample directional pairs, prioritising heavier cells and
-retaining unprocessed probability in the upper bound. `power_basis="exact"` means at most
-`1e-6` remains undecided; `"approximate"` means more remains, with `power` the certified lower
-figure. The Normal-tail replay is used only to propose sizes. The runtime's control-arm
-window and floating-point allowance carry over.
+and the finite-sample replay elsewhere. Each evaluation selects at most 100,000 routed pairs
+and 150,000 finite-sample directional pairs from its own count windows, prioritising heavier
+cells and retaining unprocessed probability in the upper bound. Selection depends on the
+request, not cached decisions: shared, repeated and fresh evaluations report the same enclosure.
+`power_basis="exact"` means at most `1e-6` remains undecided; `"approximate"` means more remains,
+with `power` the certified lower figure. The Normal-tail replay only proposes sizes.
+The runtime's control-arm window and floating-point allowance carry over.
 
 On a loaded 12-core Apple machine, evaluating a dense 62,500-cell plan (1,236 per arm) with
 the runtime calculation took 10 to 20 seconds. Public calls that also search for an effect
@@ -889,12 +897,14 @@ rejection set, enlarged by the same error, stays below it. One whose interval st
 target is not decided, so the answer can exceed the first that reaches the target by that
 much (measured against the earlier comparisons of the computed values: the effect by a
 relative `1e-12` at 701 to 2,000 units per arm and `4.4e-7` at a billion; a size by 174 of
-489,713,690 units) and its reported `power` exceeds the target by about the interval. A
-target that no effect certifies, while the bound cannot exclude every effect, lies within the
-interval of the greatest power any effect may reach and is neither certified nor ruled out: the
-companion `mde_relative` is `None` with `numerical_resolution`. The interval
-covers the runtime's rejection probability wherever `power_basis` is `exact` or `approximate`,
-and the delta-method model's where it is `asymptotic`. Triggered plans use the
+489,713,690 units). An enumerated plan reports the lower endpoint as `power`. A
+ target that no effect certifies, while the bound cannot exclude every effect, lies within the
+interval of the greatest power any effect may reach and is neither certified nor ruled out:
+a companion MDE is `None` with `mde_unavailable_reason="numerical_resolution"`.
+A direct `minimum_detectable_effect` refusal additionally includes the judged `power_basis`
+in its structured context. The interval covers the runtime's rejection probability wherever
+`power_basis` is `exact` or `approximate`, and the delta-method model's where it is `asymptotic`.
+Triggered plans use the
 rounded analyzed counts.
 
 A solve's replay is bounded by the cells it stores: at most 10,000,000 (control, treatment)
