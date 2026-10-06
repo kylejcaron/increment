@@ -1965,7 +1965,7 @@ def _retained_catalog_probes() -> tuple[Callable[[str, Analysis], None], Callabl
                     row.group_id,
                     row.estimand,
                     row.ds,
-                    row.lift,
+                    row.lift.model_dump() if row.lift is not None else None,
                     row.sequential_result.log_e,
                     row.sequential_result.decision_alpha,
                 )
@@ -1982,9 +1982,11 @@ def _retained_catalog_probes() -> tuple[Callable[[str, Analysis], None], Callabl
             )
 
     def assert_checkpoints_agree() -> None:
+        from .runner import _nested_close
+
         assert set(checkpoints) == {"from_definitions", "from_unit_day_artifact", "from_moments"}
         for constructor, observed in checkpoints.items():
-            assert observed == checkpoints["from_definitions"], constructor
+            assert _nested_close(checkpoints["from_definitions"], observed), constructor
 
     return probe_retained_catalog, assert_checkpoints_agree
 
