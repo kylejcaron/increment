@@ -19,6 +19,7 @@ from increment.estimation.armstats import (
 )
 from increment.estimation.engine import _df_to_arms, estimate_lift
 from increment.estimation.results import Estimate, LiftEstimate
+from increment.estimation.variance import se_log_mean
 from increment.semantics.models import MeanMetric
 from tests.estimation._conversion_counts import producer_arm
 from tests.warning_codes import warning_codes
@@ -1554,6 +1555,40 @@ class TestCanonicalBernoulliArm:
         for field in ("ref_y", "cy1", "cy2"):
             kept.pop(field), original.pop(field)
         assert kept == original
+
+    @pytest.mark.parametrize(
+        ("n", "failures"),
+        [(2**61, 2560), (2**61, 512), (2**58, 416), (2**55, 60)],
+    )
+    def test_an_arm_with_many_units_and_few_failures_keeps_their_variance(self, n, failures):
+        """The failures' centered sum of squares is ``failures`` to within ``failures / n``: no
+        rounding of raw sums is involved, so an arm of this many units whose variance a raw-sum
+        centering would clamp to zero (its noise floor is ``8 * eps * n``, above ``failures``)
+        keeps it, and the standard error of its log mean stays the closed form
+        ``sqrt(failures / (successes * (n - 1)))``."""
+        template = ArmStats(
+            study_id="e", metric="conv", group_id="control", n=n, ref_y=0.0, cy1=0.0, cy2=0.0
+        )
+        successes = n - failures
+        arm = canonical_bernoulli_arm(template, successes)
+        centered = Fraction(successes * failures, n)
+        assert arm.cy2 == pytest.approx(float(centered), rel=1e-15, abs=0.0)
+        assert arm.var_y() == pytest.approx(float(centered / (n - 1)), rel=1e-12, abs=0.0)
+        assert arm.mean_y() == pytest.approx(successes / n, rel=2.0**-52, abs=0.0)
+        summary = arm.to_summary()
+        assert se_log_mean(summary.var, summary.mean, summary.n) == pytest.approx(
+            math.sqrt(float(Fraction(failures, successes * (n - 1)))), rel=1e-12, abs=0.0
+        )
+        assert binary_counts(arm, "conversion") == (successes, n)
+
+    @pytest.mark.parametrize("successes", [-1, 1_001])
+    def test_counts_that_are_not_a_count_of_the_arm_are_refused(self, successes):
+        template = ArmStats(
+            study_id="e", metric="conv", group_id="control", n=1_000, ref_y=0.0, cy1=0.0, cy2=0.0
+        )
+        with pytest.raises(BinomialDataError) as exc_info:
+            canonical_bernoulli_arm(template, successes)
+        assert exc_info.value.code == "estimation.binomial.reconstructed_counts_not_binary"
 
 
 @pytest.mark.slow

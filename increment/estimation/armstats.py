@@ -1415,19 +1415,31 @@ def canonical_bernoulli_arm(arm: ArmStats, successes: int) -> ArmStats:
     moments it stores add the producer's summation error up to the bounds `binary_counts`
     admits (a first moment within an absolute 1e-6 of an integer sum, a second within the
     rounding of adding its units), which differs between producers and moves an interval end
-    by that relative amount. Forming the y family from the counts, as ``from_raw_sums`` does,
-    makes every estimate read from the arm a function of its counts alone. The same counts then
-    reach the same interval through any ingress, and a planner enumerating counts decides what
-    the runtime decides."""
-    exact = ArmStats.from_raw_sums(
-        study_id=arm.study_id,
-        metric=arm.metric,
-        group_id=arm.group_id,
-        n=arm.n,
-        sum_y=float(successes),
-        sum_y2=float(successes),
-    )
-    return arm.model_copy(update={"ref_y": exact.ref_y, "cy1": exact.cy1, "cy2": exact.cy2})
+    by that relative amount. Forming the y family from the counts makes every estimate read
+    from the arm a function of its counts alone: the same counts reach the same interval
+    through any ingress, and a planner enumerating counts decides what the runtime decides.
+
+    The y family is ``ArmStats``' own centering, about the stored reference ``ref_y`` (the
+    correctly rounded rate): ``cy1 = successes - n * ref_y`` is exact, and ``cy2`` is the exact
+    centered sum of squares about the true mean, a rational of the integer counts rounded once,
+    plus the squared offset of ``ref_y`` from it, ``cy1**2 / n``. Nothing is cancelled between
+    raw sums, so the noise floor that polices a raw sum of squares does not apply: an arm with
+    many units and few failures keeps the variance of its failures, which a raw-sum centering
+    clamps to zero once ``n - successes`` falls below about ``8 * eps * n``. Counts outside
+    ``[0, n]`` are not a count of this arm's units and are refused as non-binary."""
+    n = arm.n
+    if not 0 <= successes <= n:
+        _raise(
+            "estimation.binomial.reconstructed_counts_not_binary",
+            metric=arm.metric,
+            group_id=arm.group_id,
+            sum_y=float(successes),
+            n=n,
+        )
+    ref_y = successes / n
+    cy1 = float(Fraction(successes) - n * Fraction(ref_y))
+    cy2 = float(Fraction(successes * (n - successes), n)) + scaled_cross_over_n(cy1, cy1, n)
+    return arm.model_copy(update={"ref_y": ref_y, "cy1": cy1, "cy2": cy2})
 
 
 def centered_row_from_raw_sums(row: Mapping[str, Any]) -> dict[str, Any]:

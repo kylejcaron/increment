@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Mapping, Sequence
+from decimal import Context, Decimal
+from fractions import Fraction
 from functools import cache
 from typing import Any
 
@@ -377,5 +379,115 @@ class TestIntervalEndsNearTotalLoss:
                     *self.COUNTS, tail=self.TAIL, alternative=alternative, null_lift=null
                 )
                 assert (plus or minus) == row.stat_sig(), null
+                if null == end:
+                    assert not row.stat_sig()
+
+
+class TestLargeArmsNearSaturation:
+    """An arm of 2**61 units with a few thousand failures keeps the variance of its failures.
+
+    Its counts are admitted by `binary_counts` (a second moment is unconstrained once the
+    rounding bound of the arm's units reaches one) and dense for the tail, so the row takes the
+    delta method. A raw-sum centering of such an arm clamps the variance, ``failures``, to zero
+    under its noise floor of ``8 * eps * n`` and the row would be refused as zero variance; the
+    row is the interval of the counts instead, whatever second moment the producer stored, with
+    the log standard error and log ratio the counts give in closed form."""
+
+    N = 2**61
+    # (tail, control successes, treatment successes); failures are multiples of 256, the spacing
+    # of float64 below 2**61, so that `binary_counts` recovers the counts from float moments.
+    CASES = {
+        "both_near_saturation": (0.025, N - 2560, N - 3584),
+        "control_near_saturation_at_the_dense_floor": (0.1, N - 512, N // 2),
+        "treatment_near_saturation": (0.025, N // 2, N - 4096),
+    }
+    STORED = ("counted", "clamped", "inflated")
+
+    @classmethod
+    def _noise_floor(cls) -> float:
+        """Failures below this are a raw-sum centering's noise, ``4 * eps * 2 * n``."""
+        return 8.0 * math.ulp(1.0) * cls.N
+
+    @classmethod
+    def _arm(cls, successes: int, group_id: str, stored: str) -> ArmStats:
+        """The arm as a producer might store it: the exact centered sum of squares, that sum
+        lost to the noise floor of a raw-sum centering, or 1% above it."""
+        failures = cls.N - successes
+        exact = successes * failures / cls.N
+        cy2 = exact * 1.01 if stored == "inflated" else exact
+        if stored == "clamped" and failures < cls._noise_floor():
+            cy2 = 0.0
+        return ArmStats(
+            study_id="e",
+            metric="conv",
+            group_id=group_id,
+            n=cls.N,
+            ref_y=successes / cls.N,
+            cy1=0.0,
+            cy2=cy2,
+        )
+
+    @classmethod
+    def _stored(cls, case: str, stored: str) -> list[dict[str, Any]]:
+        _, x_c, x_t = cls.CASES[case]
+        control, treatment = cls._arm(x_c, "control", stored), cls._arm(x_t, "treatment", stored)
+        return [arm_row(control), arm_row(treatment)]
+
+    @pytest.mark.parametrize("stored", STORED)
+    @pytest.mark.parametrize("case", CASES)
+    def test_the_counts_are_admitted_and_dense(self, case, stored):
+        tail, x_c, x_t = self.CASES[case]
+        for successes, group_id in ((x_c, "control"), (x_t, "treatment")):
+            arm = self._arm(successes, group_id, stored)
+            assert binary_counts(arm, "conversion") == (successes, self.N)
+        assert min(self.N - x_c, self.N - x_t) >= dense_min_count(tail)
+        assert route_for_counts(x_c, self.N, x_t, self.N, tail_alpha=tail, mode="auto") == (
+            "asymptotic"
+        )
+
+    @pytest.mark.parametrize("alternative", _ALTERNATIVES)
+    @pytest.mark.parametrize("stored", STORED)
+    @pytest.mark.parametrize("case", CASES)
+    def test_the_row_is_the_interval_of_the_counts(self, case, stored, alternative):
+        tail, x_c, x_t = self.CASES[case]
+        row = _summary_row(
+            self._stored(case, stored), tail=tail, alternative=alternative, null_lift=0.0
+        )
+        interval = delta_interval(x_c, self.N, x_t, self.N, tail=tail, alternative=alternative)
+        assert interval is not None
+        assert row.lift is not None
+        assert (row.lift.lb, row.lift.ub) == interval
+        assert interval[0] < row.lift.value < interval[1]
+
+    @pytest.mark.parametrize("case", CASES)
+    def test_the_log_ratio_and_its_standard_error_are_the_closed_form_of_the_counts(self, case):
+        """Independent of the estimator: ``log(p_t / p_c)`` to 60 digits, and the delta-method
+        variance of each arm's log mean, ``failures / (successes * (n - 1))``."""
+        tail, x_c, x_t = self.CASES[case]
+        row = _summary_row(
+            self._stored(case, "clamped"), tail=tail, alternative="two-sided", null_lift=0.0
+        )
+        assert row.lift is not None
+        context = Context(prec=60)
+        log_ratio = context.ln(context.divide(Decimal(x_t), Decimal(x_c)))
+        assert row.lift.log_mean == pytest.approx(float(log_ratio), rel=1e-9, abs=0.0)
+        variance = sum(Fraction(self.N - x, x * (self.N - 1)) for x in (x_c, x_t))
+        assert row.lift.log_se == pytest.approx(math.sqrt(float(variance)), rel=1e-9, abs=0.0)
+
+    @pytest.mark.parametrize("stored", STORED)
+    @pytest.mark.parametrize("case", CASES)
+    def test_the_verdict_at_an_interval_end_is_the_one_of_the_counts(self, case, stored):
+        tail, x_c, x_t = self.CASES[case]
+        interval = delta_interval(x_c, self.N, x_t, self.N, tail=tail, alternative="two-sided")
+        assert interval is not None
+        for end in interval:
+            for null in (end, math.nextafter(end, -math.inf), math.nextafter(end, math.inf)):
+                row = _summary_row(
+                    self._stored(case, stored), tail=tail, alternative="two-sided", null_lift=null
+                )
+                plus, minus = production_decision(
+                    x_c, self.N, x_t, self.N, tail=tail, alternative="two-sided", null_lift=null
+                )
+                assert row.stat_sig() == (plus or minus), null
                 if null == end:
                     assert not row.stat_sig()
