@@ -68,8 +68,9 @@ analysis = Analysis.from_unit_summary(
 results = analysis.run()
 
 for r in results:
-    if r.lift is None:  # e.g. an exact conversion row with zero control events
-        print(repr(r))  # the repr shows the row's set or its unavailable reason
+    if r.lift is None or r.lift.lb is None or r.lift.ub is None:
+        # No point, or a withheld or open endpoint; use the row's set or reason.
+        print(repr(r))
         continue
     print(
         f"{r.metric} / {r.group_id}: "

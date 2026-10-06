@@ -299,8 +299,9 @@ no effect. Know which one you are reading:
 | Where | Scale |
 |---|---|
 | `r.sequential_result.bounds` and the `ratio_set` in the row's `repr` | Ratio, exact `Fraction` endpoints. |
-| `r.lift.value`, `r.lift.lb`, `r.lift.ub` | Lift: the ratio bounds minus one, rounded outward to floats. |
-| Frame columns `lb`, `ub`, `sequential_lower`, `sequential_upper`; readout `lower`, `higher` | Lift, same as `r.lift`. |
+| `r.lift.value` | Lift point estimate (float); `0.0` means no effect. |
+| `r.lift.lb`, `r.lift.ub`; frame columns `lb`, `ub` | Displayed lift bounds: ratio endpoints minus one, rounded outward to floats; withheld when no single interval is displayed. |
+| Frame columns `sequential_lower`, `sequential_upper`; sequential readout `lower`, `higher` | Retained-set endpoints on the lift scale, rounded outward to floats. For a disconnected set these are outer endpoints, **not a confidence interval**; inspect `sequential_status` and `sequential_components`. |
 
 The lift-scale endpoints are never narrower than the ratio bounds, because
 rounding moves them outward. Asymptotic sets can be disconnected, empty, or
