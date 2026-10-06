@@ -991,9 +991,9 @@ class TestPlanningNumericalEnclosure:
     @pytest.mark.slow
     def test_a_billion_unit_effect_and_size_are_certified_not_merely_computed(self):
         """At hundreds of millions of units the allowance of one pmf is ``n`` ULPs, 1e-7 of it,
-        so a computed power at the target is not known to reach it: the effect and the size
-        reported are those whose enclosure reaches the target, and a size's predecessor's does
-        not."""
+        so a computed power at the target is not known to reach it: the power reported is the
+        enclosure's lower end, so the effect and the size reported reach the target by it, the
+        computed mass clears it by the allowance, and a size's predecessor's does not."""
         eps = float(np.finfo(np.float64).eps)
         target = PowerDesign().power
 
@@ -1002,22 +1002,92 @@ class TestPlanningNumericalEnclosure:
 
         n, p_c = 1_000_000_000, 2e-7
         baseline, procedure = Baseline.from_proportion(p_c), _conversion()
-        try:
-            effect = minimum_detectable_effect(n, baseline, procedure)
-        except InvalidRequestError as raised:
-            assert raised.code == "power.minimum_detectable_effect.numerical_resolution"
-            supplied = achieved_power(n, 0.5, baseline, procedure)
-            assert supplied.power >= target
-            assert supplied.mde_unavailable_reason == "numerical_resolution"
-        else:
-            assert effect.mde_relative is not None and effect.power >= target
-            assert effect.power == achieved_power(n, effect.mde_relative, baseline, procedure).power
+        effect = minimum_detectable_effect(n, baseline, procedure)
+        assert effect.power >= target
 
         sized = required_sample_size(0.5, baseline, procedure)
         units = sized.n_per_arm
-        assert units > 10**8 and sized.power >= target * (1.0 + 2.0 * allowance(units))
+        computed = planned_enclosure(units, 0.5, baseline, procedure)
+        assert units > 10**8 and sized.power == computed.lower >= target
+        assert computed.power >= target * (1.0 + 2.0 * allowance(units))
         predecessor = achieved_power(units - 1, 0.5, baseline, procedure)
-        assert predecessor.power < target * (1.0 + 3.0 * allowance(units))
+        assert predecessor.power < target
+
+
+class TestPublishedPowerIsTheLowerEndOfTheEnclosure:
+    """The computed mass of the cells decided to reject is not a bound: the weights it reads and
+    the sums that add them round, so it can sit above the exact mass of those cells and above the
+    runtime's rejection probability. A plan that enumerates the runtime publishes the lower end
+    of the enclosure as its ``power`` on every public path."""
+
+    @pytest.mark.parametrize(
+        ("n_t", "allocation", "p_c", "lift", "overrides"),
+        [
+            (15, 0.6, 0.3, 0.8, {}),
+            (12, 0.5, 0.25, 0.9, {"alternative": "greater", "null_lift": 0.2, "alpha": 0.01}),
+            (10, 0.4, 0.5, -0.6, {"alternative": "less", "null_lift": -0.2}),
+        ],
+    )
+    def test_achieved_power_is_below_the_enumerated_runtime_probability(
+        self, n_t, allocation, p_c, lift, overrides
+    ):
+        procedure = _conversion(**overrides)
+        design = PowerDesign(allocation=allocation)
+        baseline = Baseline.from_proportion(p_c)
+        result = achieved_power(n_t, lift, baseline, procedure, design)
+        computed = planned_enclosure(n_t, lift, baseline, procedure, design)
+        runtime = _runtime_power(
+            result.n_total - result.n_per_arm, n_t, p_c, p_c * (1.0 + lift), procedure
+        )
+        assert result.power_basis == computed.basis == "exact"
+        assert computed.lower < computed.power
+        assert result.power == computed.lower
+        assert result.power < runtime <= computed.upper
+
+    def test_a_target_the_computed_mass_meets_is_not_met_by_the_power_published_at_its_size(self):
+        """At 26 units per arm the computed mass is the target and its lower end falls short of
+        it: that size does not report reaching the target, the size search moves to the next
+        one, and the power reported one below it is under the target."""
+        baseline, procedure, lift, n = Baseline.from_proportion(0.3), _conversion(), 1.0, 26
+        computed = planned_enclosure(n, lift, baseline, procedure)
+        design = PowerDesign(power=computed.power)
+        assert computed.lower < design.power
+        at_size = achieved_power(n, lift, baseline, procedure, design)
+        sized = required_sample_size(lift, baseline, procedure, design)
+        assert sized.n_per_arm == n + 1
+        assert at_size.power < design.power <= sized.power
+
+    def test_every_public_path_publishes_the_same_lower_end(self):
+        baseline, procedure = Baseline.from_proportion(0.3), _conversion()
+        n, lifts, targets = 24, [1.0, 0.6], [0.9, 0.8]
+        curve = power_curve(
+            n_per_arm=n, relative_lift=lifts, baseline=baseline, procedure=procedure, max_workers=1
+        )
+        for point, lift in zip(curve, lifts, strict=True):
+            computed = planned_enclosure(n, lift, baseline, procedure)
+            direct = achieved_power(n, lift, baseline, procedure)
+            assert point.power == direct.power == computed.lower < computed.power
+
+        # An earlier row's effect search leaves cells on the geometry the later rows share.
+        effects = power_curve(
+            n_per_arm=n, target_power=targets, baseline=baseline, procedure=procedure, max_workers=1
+        )
+        for point, target in zip(effects, targets, strict=True):
+            direct = minimum_detectable_effect(n, baseline, procedure, PowerDesign(power=target))
+            assert point.mde_relative is not None and point.mde_relative == direct.mde_relative
+            at_effect = planned_enclosure(n, point.mde_relative, baseline, procedure)
+            assert point.power == direct.power == at_effect.lower >= target
+            assert point.power_basis == direct.power_basis == at_effect.basis
+
+    def test_an_unattainable_target_names_a_maximum_power_below_the_exact_one(self):
+        """Six units per arm at a control rate of one half: the largest power any admissible
+        effect has is exactly 11/32, and the maximum named is a lower end of its enclosure."""
+        with pytest.raises(InvalidRequestError) as refused:
+            minimum_detectable_effect(
+                6, Baseline.from_proportion(0.5), _FAR_END, PowerDesign(power=11 / 32 + 1e-9)
+            )
+        assert refused.value.code == "power.minimum_detectable_effect.unattainable"
+        assert Fraction(refused.value.context["maximum_power"]) < Fraction(11, 32)
 
 
 _LATTICE_ARM, _LATTICE_RATE = 300, 0.05

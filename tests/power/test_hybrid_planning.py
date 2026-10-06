@@ -53,8 +53,11 @@ class TestDensePlansNearTheThresholdAreEnumerated:
         procedure = ArmPlanningProcedure.standard(
             "conversion", alpha=alpha, alternative=alternative
         )
-        result = achieved_power(1_236, 0.06, Baseline.from_proportion(0.5), procedure)
+        baseline = Baseline.from_proportion(0.5)
+        result = achieved_power(1_236, 0.06, baseline, procedure)
+        computed = planned_enclosure(1_236, 0.06, baseline, procedure)
         assert result.power_basis == "exact"
+        assert result.power == computed.lower < computed.power
         assert result.power == pytest.approx(recorded, abs=1e-5)
 
     def test_a_lattice_too_large_to_enumerate_keeps_the_closed_form(self):
@@ -195,6 +198,15 @@ class TestPublicSolversAgree:
         effect = minimum_detectable_effect(sized.n_per_arm, baseline, procedure)
         assert effect.mde_relative is not None and effect.mde_relative <= 0.1 * (1 + 1e-9)
         assert effect.power_basis == sized.power_basis
+
+    def test_a_closed_form_plan_publishes_the_models_value_not_a_lower_end(self):
+        """The delta-method model is not a claim on the runtime: its figure is the model's own
+        value, and the lower end that bounds an enumerated plan does not apply to it."""
+        baseline = Baseline.from_proportion(0.3)
+        result = achieved_power(5_000_000, 0.05, baseline, _procedure())
+        computed = planned_enclosure(5_000_000, 0.05, baseline, _procedure())
+        assert result.power_basis == "asymptotic" and computed.closed_form
+        assert result.power == computed.power
 
 
 @pytest.mark.slow

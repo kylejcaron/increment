@@ -1290,7 +1290,7 @@ def plan_design(cell: MirrorCell) -> Plan:
         BINOMIAL_PLANNING_MODEL,
         route,
         enclosure.basis,
-        enclosure.power,
+        enclosure.reported,
         enclosure.lower,
         enclosure.upper,
         enclosure.ambiguous,

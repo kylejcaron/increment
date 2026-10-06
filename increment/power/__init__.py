@@ -9,9 +9,9 @@ contrast by its counts (``conversion_inference``), planning follows the route: t
 rejection probability of the runtime's union of the delta-method decision on dense counts
 and the finite-sample binomial risk-ratio decision on the rest, summed over the count lattice
 (``power_basis`` ``"exact"``, or ``"approximate"`` when the replay budget leaves mass
-undecided and ``power`` is the certified lower figure), and the closed-form model where the
-counts are dense with near certainty and the lattice is too large to enumerate
-(``"asymptotic"``).
+undecided), published as the lower end of the enclosure of that probability, never above it,
+and the closed-form model, whose ``power`` is the model's own value, where the counts are
+dense with near certainty and the lattice is too large to enumerate (``"asymptotic"``).
 Segment-pairwise planning deliberately retains its separate baseline-only
 approximation.
 

@@ -43,6 +43,10 @@ is; no pair is decided by extending a neighbour's decision. `RejectionGeometry.c
 bounds the rejection mass, with the same error, across an interval of treatment rates by what
 the decided pairs reject and by counting every undecided pair as a rejection.
 
+A plan publishes the lower end (`BinomialPower.reported`), the one figure the error cannot put
+above the runtime's rejection probability; the closed-form model, which is not a claim on the
+runtime, publishes its own value.
+
 The replay of the finite-sample decision, route ``exact``, replays the runtime's own nuisance
 search -- the same
 Clopper-Pearson domains, support windows, endpoint and coordinate-corner
@@ -1494,13 +1498,16 @@ class BinomialPower:
     plus-direction rejections (nondecreasing in the treatment rate) and the remainder from
     minus-direction rejections (nonincreasing in it).
 
-    ``power`` sums the weight of the cells decided to reject in float64. ``omitted`` bounds the
-    mass outside the retained windows, ``ambiguous`` the mass of retained cells no decision was
-    made for (cells a replay budget left out, or a finite-sample route the runtime refuses would
-    have decided), and ``inflation`` (at least one) the numerical error of the sum, so the
-    runtime's rejection probability lies in ``[lower, upper]``. A ``closed_form`` figure is the
-    delta-method model of the plan and encloses only itself; a figure that is not ``certified``
-    is a heuristic with no claim on the runtime, enclosed by ``[0, 1]``."""
+    ``power`` sums the weight of the cells decided to reject in float64: the computed central
+    mass, which the error of the weights it reads and the rounding of its sum can put above the
+    exact mass of those cells. ``omitted`` bounds the mass outside the retained windows,
+    ``ambiguous`` the mass of retained cells no decision was made for (cells a replay budget left
+    out, or a finite-sample route the runtime refuses would have decided), and ``inflation`` (at
+    least one) the numerical error of the sum, so the runtime's rejection probability lies in
+    ``[lower, upper]``. ``reported`` is the figure a plan publishes as its power. A
+    ``closed_form`` figure is the delta-method model of the plan and encloses only itself; a
+    figure that is not ``certified`` is a heuristic with no claim on the runtime, enclosed by
+    ``[0, 1]``."""
 
     plus: float
     minus: float
@@ -1513,6 +1520,14 @@ class BinomialPower:
     @property
     def power(self) -> float:
         return min(1.0, self.plus + self.minus)
+
+    @property
+    def reported(self) -> float:
+        """The power a plan publishes. An enumerated figure is published at its `lower` end, the
+        value of the enclosure that is never above the runtime's rejection probability, however
+        the sum rounded: the central `power` can be. A closed-form figure is the model's own
+        value, which is not a claim on the runtime."""
+        return self.power if self.closed_form else self.lower
 
     @property
     def lower(self) -> float:

@@ -335,8 +335,8 @@ class TestPublicAnswersDoNotDependOnWhatTheGeometryHolds:
             assert _answer(point) == _answer(direct[lift])
 
     def test_a_minimum_detectable_effect_reports_the_power_and_basis_of_its_own_enclosure(self):
-        """The effect's power and its basis are one figure: the enclosure a fresh plan of that
-        very effect gives, whatever an earlier search of the same geometry cached."""
+        """The effect's power and its basis are one figure: the lower end of the enclosure a fresh
+        plan of that very effect gives, whatever an earlier search of the same geometry cached."""
         curve = power_curve(
             n_per_arm=60,
             target_power=[0.9, 0.8],
@@ -348,6 +348,6 @@ class TestPublicAnswersDoNotDependOnWhatTheGeometryHolds:
         for row in (*curve, alone):
             assert row.mde_relative is not None
             enclosure = planned_enclosure(60, row.mde_relative, self.BASELINE, _conversion())
-            assert (row.power, row.power_basis) == (min(enclosure.power, 1.0), enclosure.basis)
+            assert (row.power, row.power_basis) == (enclosure.lower, enclosure.basis)
             assert row.power_basis == "approximate"
         assert alone.power >= 0.8 and curve[0].power >= 0.9

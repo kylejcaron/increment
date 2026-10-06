@@ -187,8 +187,9 @@ is 0.7144 (the log-ratio model said 0.8004), and the planned size for 80% power 
 Power depends on the baseline rate alone; `var` does not enter.
 
 - `power_basis="exact"`: every pair of the count lattice is decided by the runtime's own
-  decision, so the reported power is the runtime's rejection probability, up to at most about
-  `1e-6` of mass left undecided (counts the rule routes to the delta method with near
+  decision, so the reported power is the lower end of the enclosure of the runtime's rejection
+  probability, below it by the numerical error of the sum and at most about `1e-6` of mass left
+  undecided (counts the rule routes to the delta method with near
   certainty need no replay of the finite-sample test, and their `~1e-6` is that mass). The
   production delta decision is also what a dense plan reports while its lattice has at most
   100,000 cells. That limit is a cost route, the same for every design: each routed pair costs
@@ -201,10 +202,10 @@ Power depends on the baseline rate alone; `var` does not enter.
 - `power_basis="approximate"`: the replay of the finite-sample test is budgeted at 150,000
   directional replays an evaluation (about a hundred to four hundred CPU-microseconds each at
   the arm sizes where counts reach the routing threshold), the heaviest count pairs first. A
-  plan with more pairs than that leaves the lightest undecided: `power` is then the certified
-  lower figure (the weight of the pairs decided to reject, never above the runtime's
-  rejection probability), and the runtime's probability lies between it and it plus the
-  undecided mass: at 382,230 units per arm and a 1% baseline an evaluation takes 46 s and
+  plan with more pairs than that leaves the lightest undecided: `power` is then the same lower
+  end (the weight of the pairs decided to reject, less the numerical error of the sum, never
+  above the runtime's rejection probability), and the runtime's probability lies between it and
+  it plus the undecided mass and that error: at 382,230 units per arm and a 1% baseline an evaluation takes 46 s and
   leaves 0.047 (the pipeline's 0.4125 lies in [0.3904, 0.4370]), and at 1,646,389 it takes
   140 s and leaves 0.51. Sizes and effects are certified from that lower figure, so a budgeted
   plan is sized conservatively, not approximately. The Normal-tail replay of an earlier
@@ -270,30 +271,32 @@ is decided by extending a neighbour's decision. A target called unattainable or 
 certified describes the runtime wherever `power_basis` is `exact` or `approximate`, and the
 delta-method model where it is `asymptotic`; a refusal's context names which. The interval
 is about `1e-12` of the power at 1,000 units per arm
-and `4e-7` of it at a billion, widened by the undecided mass (the reported `power` is the
-computed value inside it, not shifted). Power is not monotone in the sample size under this decision, so
+and `4e-7` of it at a billion, widened by the undecided mass (the reported `power` is its lower
+end, the figure a size or an effect is certified from, so it is never above the runtime's
+rejection probability and a size's `power` reaches the target; the `asymptotic` model's own
+value is reported as it is). Power is not monotone in the sample size under this decision, so
 `required_sample_size` returns a verified size whose power is *certified* to reach the target
 (the lower end of its interval does) while the size one below is not -- not a proof that no
 smaller size reaches it, and a size whose interval straddles the target is not certified, so
 the answer can exceed the first size that reaches it by the sizes within that interval of the
 target (none at ordinary sizes; about 170 of 490 million at a 2e-7 baseline).
-`minimum_detectable_effect` locates the earliest detectable region using computed
-point power, with effect tolerance `1e-8 + 1e-8 * abs(effect)`, not a first-float
-guarantee. The returned effect's evaluated point power reaches the target.
-Earlier intervals must be excluded by a bound or lie within that effect tolerance;
-endpoint numerical errors alone do not exclude an interior peak.
-
-An unresolved earlier interval is not skipped for a later detectable band. If its
-search exhausts the 512-evaluation budget, the companion `mde_relative` is `None`
-with `numerical_resolution`; a direct request raises
-`power.minimum_detectable_effect.numerical_resolution`. Its context names the
-`unresolved_interval` and includes `power_enclosure` when available. A target
-excluded over the whole admissible domain is `unattainable`.
-With a shifted null and partial compliance, an initial band can imply
-unrepresentable absolute lifts even though farther effects are representable.
-The planner bounds that band's power before excluding it. An unresolved band
-yields `numerical_resolution`, not a claim that a detectable effect exists
-outside the representable domain.
+`minimum_detectable_effect` returns the first admissible effect whose power is certified to
+reach the target, whatever the shape of power along the effects (two-sided power can fall from
+ the null before it rises, and a decision's rows can lift and lower it in turn): earlier effects
+are excluded by their own power or by a bound on the rejection set (enlarged by the same
+error), except those whose power lies within the interval of the target, which are not
+decided, so a band of effects that reaches the target is found whether or not the largest
+effect does. The effect reported can exceed the first that reaches it by that much (a relative
+`1e-12` at 701 to 2,000 units per arm, `4e-7` at a billion); its `power` is the lower end of the
+interval at that effect, which reaches the target. A target no admissible effect can reach is
+`unattainable`; one that no effect certifies, while the bound cannot exclude every effect, lies
+within the interval of the greatest power any effect may reach and can neither be certified
+nor ruled out, so the companion `mde_relative` is `None` with `numerical_resolution` and
+`minimum_detectable_effect` is refused with `power.minimum_detectable_effect.numerical_resolution`,
+whose context carries that interval as `power_enclosure` and the effects the bound could not
+exclude as `unresolved_interval`. Where the bound cannot exclude a stretch of effects (the
+effect search's own 512-evaluation budget ends, as it does when the target is the power of a
+flat peak) the same code is raised with `power_enclosure` of `None`.
 
 A design the runtime refuses in full decides no count pair, so it has no power to plan, and it
 is never replayed: `achieved_power`, `minimum_detectable_effect` and every `power_curve` row
@@ -475,8 +478,8 @@ unit-randomized sequential planning.
 |---|---|
 | `n_per_arm` | Assigned units in the treatment arm |
 | `n_total` | Assigned units across the two-arm contrast |
-| `power` | Planned power at the returned integer size, under `power_basis` |
-| `power_basis` | `asymptotic` (log-ratio model, for counts the runtime takes the delta-method route at with near certainty in a lattice too large to enumerate), `exact` (the runtime's decision, delta-method on dense counts and finite-sample on the rest, summed over the count lattice), or `approximate` (that sum with the replay budget leaving mass undecided: `power` is the certified lower figure) |
+| `power` | Planned power at the returned integer size, under `power_basis`; for `exact` and `approximate`, the lower end of the enclosure of the runtime's rejection probability, never above it |
+| `power_basis` | `asymptotic` (log-ratio model, for counts the runtime takes the delta-method route at with near certainty in a lattice too large to enumerate), `exact` (the runtime's decision, delta-method on dense counts and finite-sample on the rest, summed over the count lattice), or `approximate` (that sum with the replay budget leaving mass undecided) |
 | `mde_relative` | Detectable relative effect at the target power, rescaled for `compliance`; `None` when no admissible numeric answer is certified |
 | `mde_unavailable_reason` | `unattainable`, `unrepresentable`, or `numerical_resolution` when `mde_relative` is `None`; otherwise `None` |
 | `effective_var` | Per-unit control-arm variance for asymptotic planning, after decision-method reductions and cluster design effect; sensitivity-only CUPED receives no credit, so this can differ from the caller's `Baseline.effective_var`. For a `QuantileBaseline`, its pilot-implied variance. Exact/approximate binomial power uses event rates and counts, not this reported variance. |

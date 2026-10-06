@@ -22,13 +22,16 @@ is planned the way the runtime decides it: the delta-method contrast where every
 the four per-arm success and failure counts is dense (``increment.estimation.
 conversion_route``) and the finite-sample binomial risk-ratio inversion on the rest. Its power
 is the rejection probability of that union over the binomial count lattice
-(``increment.power._binomial``), enclosed by what the plan leaves undecided: neither route's
-power alone, and no function of the two. The lattice is enumerated while it fits
-(``power_basis`` ``"exact"``, or ``"approximate"`` when the replay budget leaves part of its
-mass undecided, ``power`` then being the certified lower figure); where the counts are dense
-with near certainty and the lattice is too large to enumerate, this model's closed form applies
-(``power_basis="asymptotic"``). The Bernoulli shape above applies to every conversion and
-retention plan the delta-method route decides.
+(``increment.power._binomial``), enclosed by what the plan leaves undecided and by the
+numerical error of its sum: neither route's power alone, and no function of the two. The
+lattice is enumerated while it fits (``power_basis`` ``"exact"``, or ``"approximate"`` when the
+replay budget leaves part of its mass undecided) and the published ``power`` is the lower end
+of that enclosure, never above the runtime's rejection probability; every size and effect is
+certified from it. ``conversion_inference="finite_sample"`` always enumerates. Where the counts
+are dense with near certainty and the lattice is too large to enumerate, this model's closed
+form applies (``power_basis="asymptotic"``) and ``power`` is the model's own value, not a
+bound on the runtime. The Bernoulli shape above applies to every conversion and retention plan
+the delta-method route decides.
 
 Because the variance depends on the alternative, a decreasing direction's
 noncentrality ``d / S(theta0 - d)`` rises to a single peak and then falls:
@@ -729,7 +732,11 @@ class PowerResult(CodedModel, BaseModel):
         ``achieved_power`` it describes the SUPPLIED effect; for
         ``minimum_detectable_effect`` it describes the returned effect's
         implied absolute alternative, which can exceed the target when the
-        answer is a domain endpoint.
+        answer is a domain endpoint. Where ``power_basis`` is ``"exact"`` or
+        ``"approximate"`` it is the lower end of the enclosure of the runtime's
+        rejection probability, never above it, and a size or an effect is
+        certified when this figure reaches the target; where it is
+        ``"asymptotic"`` it is the planning model's own value.
     power_basis : {"asymptotic", "exact", "approximate"}
         How ``power`` was computed. ``"asymptotic"``: the log-ratio
         Normal/noncentral-t planning model (every plan the runtime does not
@@ -739,14 +746,15 @@ class PowerResult(CodedModel, BaseModel):
         the probability that the runtime's unchanged decision rejects at the
         analyzed integer counts, summed over the count lattice -- the
         finite-sample test where the count rule keeps a pair on it, the
-        delta-method test where it routes it there -- up to at most about
-        ``1e-6`` of mass the plan leaves undecided (and ``1e-12`` of omitted outer
-        count mass, and the numerical error of its sum, about ``1e-12`` of it at
-        1,000 units per arm and ``4e-7`` at a billion). ``"approximate"``: the same
+        delta-method test where it routes it there -- with at most about
+        ``1e-6`` of mass left undecided (and ``1e-12`` of omitted outer count
+        mass). ``power`` is that sum less the numerical error of computing it,
+        about ``1e-12`` of it at 1,000 units per arm and ``4e-7`` at a billion,
+        so it lies below the runtime's rejection probability by at most the
+        undecided and omitted mass and that error. ``"approximate"``: the same
         sum with more than that left undecided because the replay of the
-        finite-sample test is budgeted; ``power`` is then the certified lower
-        figure, never above the runtime's rejection probability. Sizes and effects
-        are certified from that figure.
+        finite-sample test is budgeted; ``power`` is the same lower end, below
+        the runtime's rejection probability by up to the undecided mass.
     mde_relative : float | None
         Minimum detectable relative effect on the complier scale, expressed
         RELATIVE TO the declared null: ``(exp(distance) - 1) /
@@ -2894,7 +2902,8 @@ def _solve_binomial_mde(
 ) -> tuple[float, float] | _MdeRefusal:
     """``_solve_arm_mde``'s contract on the runtime binomial decision: the
     first admissible effect in distance order whose power is certified to
-    reach ``target`` (see `_BinomialMdeSearch`), with its power. Every earlier
+    reach ``target`` (see `_BinomialMdeSearch`), with the power it publishes
+    (`BinomialPower.reported`, the lower end of its enclosure). Every earlier
     candidate is excluded by its own evaluation or by the monotone-closure
     bound, except those whose power lies within the numerical error of the
     target; certification is never assumed monotone, so an earlier band of
@@ -2984,6 +2993,9 @@ def _ordered_exclusion(search: _BinomialMdeSearch) -> tuple[float, float] | _Mde
     m_min = search.lower_endpoint()
     if isinstance(m_min, _MdeRefusal):
         return m_min
+    first = search.stand(m_min)
+    if first.certified:
+        return m_min, first.power.reported
     m_max = search.upper_endpoint(m_min)
     try:
         if first.possible:
@@ -2994,7 +3006,7 @@ def _ordered_exclusion(search: _BinomialMdeSearch) -> tuple[float, float] | _Mde
             reached = search.first_inside(lo, hi)
         if reached is None:
             limiting = "bounded_rate_ceiling" if search.sigma > 0.0 else "relative_lift_floor"
-            return search.unattainable(last.power.power, limiting, power_basis=last.power.basis)
+            return search.unattainable(last.power.reported, limiting, power_basis=last.power.basis)
         start, at_start = reached
         found: int | None = start
         if not at_start.certified:
@@ -3006,7 +3018,7 @@ def _ordered_exclusion(search: _BinomialMdeSearch) -> tuple[float, float] | _Mde
     m = float_from_ordinal(found)
     point = search.candidate(m)
     assert point is not None
-    return m, search.model.evaluate(point[1], point[0]).power
+    return m, search.model.evaluate(point[1], point[0]).reported
 
 
 def _fixed_mde(
@@ -3345,7 +3357,7 @@ def _binomial_size(  # noqa: PLR0915
                             cells,
                             p_t=p_t,
                             power=target,
-                            power_reached=values[lo].power,
+                            power_reached=values[lo].reported,
                             **plan_at(lo).routing_context(),
                         )
                     refuse(
@@ -3356,7 +3368,7 @@ def _binomial_size(  # noqa: PLR0915
                                 *_compute_arms(arm_ceiling, design, minimum_per_arm=floor), baseline
                             )
                         ),
-                        maximum_power=values[lo].power,
+                        maximum_power=values[lo].reported,
                         n_per_arm=_compute_arms(lo, design, minimum_per_arm=floor)[0],
                         conversion_inference=_conversion_mode(procedure),
                     )
@@ -3593,7 +3605,10 @@ def required_sample_size(  # noqa: PLR0915
 
     ``n_per_arm`` is the treatment arm size after ceiling to whole units;
     ``power`` is the actual (slightly >= target) power at that integer size,
-    with the treatment arm's variance evaluated at *relative_lift*.
+    with the treatment arm's variance evaluated at *relative_lift*. For a
+    plan the runtime decides by its counts it is the lower end of the
+    enclosure of the runtime's rejection probability (``PowerResult.power``),
+    the figure the size is certified from.
     ``mde_relative`` is the companion minimum detectable effect at that
     size, ``None`` with ``mde_unavailable_reason`` when none exists at
     ``design.power``.
@@ -3822,7 +3837,7 @@ def required_sample_size(  # noqa: PLR0915
             e_value_dual=e_value_dual,
         )
     elif binomial_power is not None:
-        power = binomial_power.power
+        power = binomial_power.reported
         expected_t = None
     else:
         power = plan.power(distance, theta)
@@ -3884,8 +3899,9 @@ def achieved_power(
     ``power`` describes the supplied ``relative_lift``: for a plan the runtime
     decides with the finite-sample binomial risk-ratio test (a conversion or
     retention metric, unadjusted, unclustered, fixed horizon, whose counts
-    ``conversion_inference`` routes there) it is that decision's rejection
-    probability at the analyzed integer counts (``power_basis`` ``"exact"``
+    ``conversion_inference`` routes there) it is the lower end of the enclosure
+    of that decision's rejection probability at the analyzed integer counts,
+    never above it (``power_basis`` ``"exact"``
     or ``"approximate"``); otherwise the log-ratio planning model with the
     treatment arm's variance evaluated at that alternative (``"asymptotic"``),
     which is also the power of counts the runtime takes the delta-method route
@@ -3930,8 +3946,10 @@ def planned_enclosure(
 ) -> BinomialPower:
     """The enclosure ``achieved_power`` reports its ``power`` from, for a plan the runtime
     decides by its counts: ``[lower, upper]`` contains the runtime's rejection probability
-    (the delta-method model's, where ``power_basis`` is ``asymptotic``). The planner's own
-    record, for calibration and tests; ``achieved_power`` is the public answer."""
+    (the delta-method model's, where ``power_basis`` is ``asymptotic``), and ``reported`` is the
+    figure published as ``power``: ``lower``, or the model's own value where ``power_basis`` is
+    ``asymptotic``. The planner's own record, for calibration and tests; ``achieved_power`` is
+    the public answer."""
     enclosure = _achieved(
         n_per_arm, relative_lift, baseline, procedure, design, None, cache={}, companion=False
     )[1]
@@ -3990,7 +4008,7 @@ def _achieved(
         )
     elif model is not None:
         enclosure = model.supplied(theta, distance)
-        power = enclosure.power
+        power = enclosure.reported
         expected_t = None
     else:
         power = plan.power(distance, theta)
@@ -4048,22 +4066,29 @@ def minimum_detectable_effect(
 ) -> PowerResult:
     """Compute the minimum detectable relative effect at a fixed arm size.
 
-    The answer is a complier-scale effect reaching ``design.power`` under
-    the model named by ``power_basis`` (see ``achieved_power``); ``power``
-    is evaluated at that effect.
-
-    Runtime-binomial plans resolve the earliest detectable region to
-    ``1e-8`` absolute plus ``1e-8`` relative effect tolerance, not the first
-    representable float. Detection compares computed point power with the
-    target. An earlier interval is excluded only by a valid upper bound;
-    materially earlier unresolved intervals refuse with
-    ``numerical_resolution``. The exact route integrates the runtime
-    decision; the approximate route integrates its Normal-tail decision
-    model, not a bound on the runtime's power.
-
-    A target above every admissible alternative's power is ``unattainable``.
-    A detectable answer outside the representable relative-lift domain is
-    ``unrepresentable``. These refusals use a
+    The answer is the first admissible complier-scale effect reaching
+    ``design.power`` under the planning model named by ``power_basis`` (see
+    ``achieved_power``); ``power`` is that effect's own power, which exceeds
+    the target when the answer is the admissible interval's lower endpoint.
+    For a runtime-binomial plan the answer is the first effect whose power is
+    certified to reach the target: the lower end of its numerical enclosure
+    does, and an enumerated plan reports that end as ``power``. Every earlier
+    candidate is excluded by its own power or by the monotone closure of the
+    decision's rejection set, a bound over an interval of effects, except
+    those whose power lies within the enclosure of the target. A band of
+    effects that reaches it is found whether or not the largest admissible
+    effect does. The enclosure covers the runtime's enumerated decision:
+    ``power_basis="exact"`` leaves at most ``1e-6`` of count-pair mass undecided;
+    ``"approximate"`` leaves more because the replay is budgeted. Their reported
+    power is no greater than the runtime's rejection probability. For
+    ``"asymptotic"``, certification describes the delta-method model, not the runtime.
+    A target no admissible alternative can reach is ``unattainable``;
+    when no effect certifies it and the bound cannot exclude every effect, it
+    lies within the enclosure of the greatest power any effect may reach and
+    can neither be certified nor ruled out (``numerical_resolution``, whose
+    ``power_enclosure`` is that enclosure and ``unresolved_interval`` the
+    effects the bound could not exclude). A target whose answer has no float64
+    representation is refused with a
     ``power.minimum_detectable_effect.*`` code. The look schedule resolves
     as in ``required_sample_size``. For fixed-horizon inference, a target at
     or below the null's own crossing probability is also refused: zero
