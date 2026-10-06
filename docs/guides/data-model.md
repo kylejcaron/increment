@@ -787,6 +787,8 @@ outcomes carry null. Partition merges add counts as integers, never via
 floating totals. Missing counts are not reconstructed from a mean.
 Import and export validate count ranges on every row, including unselected
 imported metrics, with `moments.count_out_of_range` for invalid ranges.
+Exports from definitions, unit-day artifacts, and dataframe sources refuse
+invalid counts before creating the Parquet file.
 Parquet exports use nullable `int64` for `successes`; preserve that type when
 loading through a dataframe, including pandas' nullable `Int64` dtype.
 Warehouse daily conversion summaries also retain integer successes: each unit

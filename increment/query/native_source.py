@@ -2749,9 +2749,11 @@ class DefinitionsMomentSource(SequentialSourceMixin):
         import pyarrow.parquet as pq
 
         from increment.decision_wire import compiled_plan_to_json
-        from increment.sources import DECISION_PLAN_FIELD, MOMENTS_FORMAT
+        from increment.sources import DECISION_PLAN_FIELD, MOMENTS_FORMAT, _validate_moment_counts
 
         moments = self._moments_for_metrics()
+        for row in moments.to_pylist():
+            _validate_moment_counts(row)
         moments = moments.append_column(
             "moments_format", pa.array([MOMENTS_FORMAT] * moments.num_rows, type=pa.int64())
         )
