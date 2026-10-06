@@ -286,7 +286,7 @@ _DAY_AXIS = "increment/_day_axis.py"
 _RUN_ASOF_LIFT = "Analysis.run_asof_lift docstring"
 _RUN_DAILY_LIFT = "Analysis.run_daily_lift docstring"
 _PMP3 = "pmp3 policy-home ledger (kata comment on pmp3, S15)"
-_RUNNER = "tests/parity_harness/runner.py::_TOLERANCE (1e-9 relative)"
+_RUNNER = "tests/parity_harness/comparison.py::TOLERANCE (1e-9 relative)"
 
 # Tracker ids of the unfinished cells; each cell carries the code it raises now.
 _T_QUANTILE_DAY_AXIS = "0f6d"

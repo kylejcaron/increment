@@ -414,25 +414,25 @@ def test_nonfinite_evidence_does_not_compare_close_to_anything_but_itself(expect
     """`sequential_log_e` is `-inf` once a boundary is certain; tolerance arithmetic on an
     infinite operand is `inf <= inf`, which must never make it equal a finite or opposite
     evidence value. A NaN or a null equals nothing but a null."""
-    from tests.parity_harness.runner import _nested_close
+    from tests.parity_harness.comparison import nested_close
 
-    assert not _nested_close(expected, actual)
-    assert not _nested_close({"sequential_log_e": [expected]}, {"sequential_log_e": [actual]})
+    assert not nested_close(expected, actual)
+    assert not nested_close({"sequential_log_e": [expected]}, {"sequential_log_e": [actual]})
 
 
 @pytest.mark.parametrize("value", [_INF, -_INF])
 def test_same_signed_infinity_and_nulls_compare_equal_and_finite_values_keep_their_tolerance(
     value,
 ):
-    from tests.parity_harness.runner import _nested_close
+    from tests.parity_harness.comparison import nested_close
 
-    assert _nested_close(value, value)
-    assert _nested_close({"sequential_log_e": value}, {"sequential_log_e": value})
-    assert _nested_close(None, None)
-    assert _nested_close(1.0, 1.0 + 1e-12)
-    assert _nested_close(1e6, 1e6 * (1 + 1e-12))
-    assert not _nested_close(1.0, 1.0 + 1e-6)
-    assert not _nested_close(1, 2)
+    assert nested_close(value, value)
+    assert nested_close({"sequential_log_e": value}, {"sequential_log_e": value})
+    assert nested_close(None, None)
+    assert nested_close(1.0, 1.0 + 1e-12)
+    assert nested_close(1e6, 1e6 * (1 + 1e-12))
+    assert not nested_close(1.0, 1.0 + 1e-6)
+    assert not nested_close(1, 2)
 
 
 def test_a_row_whose_sequential_evidence_is_infinite_on_one_path_only_does_not_agree():

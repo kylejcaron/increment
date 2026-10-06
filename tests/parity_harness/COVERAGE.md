@@ -94,7 +94,9 @@ None. No cell is collapsed into a representative.
 
 ## Existing scenario cases
 
-The 69 `PARITY_CASES` keep their own scenario assertions (sequential families, encouragement/LATE, priors, multiplicity roles, observational covariate shapes, the observational quantile refusal). The matrix does not map them to cells; it executes every cell directly. A row is compared on every public field (`model_dump()` of the emitted row), with 1e-9 relative tolerance and a 1e-9 absolute floor for floats, and exactly otherwise; see `runner.py` for the few path-naming fields it drops.
+The 73 `PARITY_CASES` keep their own scenario assertions (sequential families, encouragement/LATE, priors, multiplicity roles, observational covariate shapes, the observational quantile refusal, and mixed-catalog checkpoint replay). The matrix does not map them to cells; it executes every cell directly. A row is compared on every public field (`model_dump()` of the emitted row), with 1e-9 relative tolerance and a 1e-9 absolute floor for floats, and exactly otherwise; see `runner.py` for the few path-naming fields it drops.
+
+The mixed-catalog checkpoint scenario compares the modeled conversion's rows and retained state across definitions, a reopened unit-day artifact, unit summary, unit panel, and moments replay. The first four routes export and reopen a checkpoint while preserving the unmodeled, unwindowed quantile's catalog entry and level. Explicit quantile estimation refuses with `sequential.route.unsupported`; moments replay refuses re-export with `facade.analysis.operation`. Switchback is source-waived: it cannot declare this quantile catalog or construct the sequential checkpoint.
 
 ## Fixture choices that bound what a cell proves
 
