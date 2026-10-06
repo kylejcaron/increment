@@ -29,6 +29,11 @@ Use `skip-changelog` to omit a PR from release notes. The automation labels
 `dependencies`, `python:uv`, and `weekly-failure` are not contributor categories;
 dependency updates are excluded from release notes.
 
+Increment is alpha: breaking changes between 0.x prereleases are allowed but
+must carry the `breaking` label and name the affected paths and a migration
+route. The full policy, including persisted formats and stable refusal codes,
+is in the [pre-1.0 compatibility policy](docs/api.md#pre-10-compatibility).
+
 ## License and the CLA
 
 increment is licensed under the [Apache License 2.0](LICENSE).

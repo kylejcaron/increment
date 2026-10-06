@@ -3,8 +3,9 @@
 Run via `nox -s wheel_smoke`, from a temp directory that is NOT the
 repository checkout -- a stray sys.path entry pointing at the source
 tree would otherwise let this "pass" against a broken wheel. Exits
-nonzero listing every failing name if anything in `increment.__all__`
-fails to import, or if `power`'s core-only call chain fails to execute.
+nonzero listing every failing name if anything in `__all__` of `increment`,
+`increment.results` or `increment.power` fails to import, or if `power`'s
+core-only call chain fails to execute.
 """
 
 from __future__ import annotations
@@ -55,13 +56,15 @@ def main() -> None:
         )
 
     failures: list[tuple[str, str]] = []
-    for name in increment.__all__:
-        try:
-            getattr(increment, name)
-        except Exception as exc:  # collect every failure, not just the first
-            failures.append((name, repr(exc)))
+    promised_tiers = ("increment", "increment.results", "increment.power")
+    for module in map(importlib.import_module, promised_tiers):
+        for name in module.__all__:
+            try:
+                getattr(module, name)
+            except Exception as exc:  # collect every failure, not just the first
+                failures.append((f"{module.__name__}.{name}", repr(exc)))
     if failures:
-        raise SystemExit(f"root exports failed to import core-only: {failures}")
+        raise SystemExit(f"promised-tier exports failed to import core-only: {failures}")
 
     from increment.decision import FixedInference
     from increment.estimation.arm_contract import (
