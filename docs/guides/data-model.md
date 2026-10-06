@@ -780,10 +780,13 @@ or pin the Increment revision that wrote the old cube; a cube alone cannot
 recover exact binary counts from rounded moments. `from_moments` is separate
 from the unit-day artifact boundary.
 
-Each ordinary row carries integer `n` and nullable integer `successes`.
-Declared conversion and retention outcomes retain their original 0/1 success
-counts; other outcomes carry null. Partition merges add counts as integers,
-never via floating totals. Missing counts are not reconstructed from a mean.
+Each ordinary row carries integer `n >= 1` and nullable integer `successes`
+between zero and `n`. Eligible unit-grain conversion and retention outcomes
+retain their original 0/1 success counts; cluster-aggregate rows and other
+outcomes carry null. Partition merges add counts as integers, never via
+floating totals. Missing counts are not reconstructed from a mean.
+Import and export validate count ranges on every row, including unselected
+imported metrics, with `moments.count_out_of_range` for invalid ranges.
 Parquet exports use nullable `int64` for `successes`; preserve that type when
 loading through a dataframe, including pandas' nullable `Int64` dtype.
 

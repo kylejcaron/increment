@@ -1293,6 +1293,36 @@ class TestScanFiles:
             (m, t): v.excess for m, bt in unnamed.items() for t, v in bt.items()
         }
 
+    @pytest.mark.parametrize(
+        ("steps", "ladder"),
+        [
+            ([10, 12, 15, 17], None),
+            ([10, 12, 13, 10, 12], None),
+            ([10, 11], {"start": 10.0, "stop": 40_000.0}),
+            ([10], {"start": 10.0}),
+            ([10], {"start": "x", "stop": 4.0}),
+            ([10], 7),
+        ],
+        ids=[
+            "skipped-rung",
+            "spliced-scans",
+            "off-ladder",
+            "missing-stop",
+            "invalid-start",
+            "scalar",
+        ],
+    )
+    def test_invalid_scan_ladder_records_are_refused(self, tmp_path, steps, ladder):
+        records = [
+            {"m": step, "tail": 0.01, "wald_excess": 1.0, "routed_excess": 1.0, "cell": None}
+            | ({"ladder": ladder} if ladder is not None else {})
+            for step in steps
+        ]
+        path = tmp_path / "invalid.jsonl"
+        path.write_text("".join(json.dumps(record) + "\n" for record in records))
+        with pytest.raises(cr.ScanError):
+            cr.read_rows([path])
+
     def test_a_scan_writes_its_ladder_with_every_step_and_reads_back(self, tmp_path, monkeypatch):
         def measured(m, tails, workers=1):
             return {tail: cr.Excess(tail, m, 0.5, 0.25, None) for tail in tails}

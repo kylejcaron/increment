@@ -950,8 +950,9 @@ ceiling or a float margin that dominates the tail level at larger arms ends it w
 `power.binomial_size_search_unreachable` and `maximum_power`, and a decision refused at the
 smallest design is refused before any search (see **Extreme alpha**). Under `conversion_inference="finite_sample"` a supplied effect
 reaches the bound at about a million units per arm at a 5% baseline, about 190,000 at 50%,
-and at any arm the runtime admits at a rate expecting up to about 48,000 events per arm; under the
-default `"auto"` a dense plan has no replay and no such bound. Measured with
+and at any arm the runtime admits at a rate expecting up to about 48,000 events per arm.
+Under default `"auto"`, dense plans using the closed-form route have no replay and no
+such bound; small enumerated dense plans remain subject to the replay bound. Measured with
 `scripts/measure_binomial_ceiling.py planning` (`--conversion-inference finite_sample` or
 `auto`) on a 12-core machine, cold CPU seconds of the call and the process's peak resident set,
 under a shared load that varied by several times between cells (null cells are the null

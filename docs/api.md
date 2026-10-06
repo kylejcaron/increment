@@ -82,11 +82,14 @@ current release, or pin the release that wrote the file. Nothing is
 downgraded or filled in silently.
 
 Fixed-horizon formats 7 and 8 must be re-exported from their original data.
-Format 10 carries exact success counts for declared conversion and retention
-outcomes; other outcomes carry `successes=null`. Floating centered moments
-cannot recover those integers reliably at large counts. Preserve both count
-columns as integers through storage and partition merges; do not cast them
-through floating point. Sequential format 9 is unchanged.
+Format 10 carries exact success counts for eligible unit-grain, declared
+conversion and retention outcomes. Cluster-aggregate rows and other outcomes
+carry `successes=null`. Every ordinary row requires integer `n >= 1` and,
+when present, integer `0 <= successes <= n`; import and export refuse invalid
+ranges with `moments.count_out_of_range`, including unselected imported rows.
+Floating centered moments cannot recover those integers reliably at large
+counts. Preserve count columns as integers through storage and partition
+merges; do not cast them through floating point. Sequential format 9 is unchanged.
 
 **Unit-day artifacts.** Artifact context format 2 is the only supported
 context. It carries no fact, dimension or exposure SQL; source recipes are

@@ -1772,10 +1772,11 @@ class TestBinaryCountsProducerPathTolerance:
 
     @pytest.mark.parametrize("n", [4_000_000, 16_000_000])
     def test_producer_path_corrupted_input_still_refuses_at_scale(self, n):
-        """A fractional outcome has no exact binary count, even when its mean is 50%."""
-        with pytest.raises(CapabilityError) as exc_info:
-            binary_counts(producer_arm(n, None), "conversion")
-        assert exc_info.value.code == "estimation.binomial.exact_counts_required"
+        """Fractional producer moments remain invalid even with a claimed integer count."""
+        arm = producer_arm(n, None).model_copy(update={"successes": n // 2})
+        with pytest.raises(BinomialDataError) as exc_info:
+            binary_counts(arm, "conversion")
+        assert exc_info.value.code == "estimation.binomial.inconsistent_bernoulli_variance"
 
 
 @pytest.mark.slow

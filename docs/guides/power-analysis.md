@@ -235,6 +235,12 @@ Likewise, power need not be monotone in sample size or effect:
   `power.minimum_detectable_effect.numerical_resolution`. A supplied effect
   whose point power is resolved can still be returned without a companion MDE.
 
+With a shifted null and partial compliance, an initial band can imply
+unrepresentable absolute lifts even though farther effects are representable.
+The planner bounds that band's power before excluding it. An unresolved band
+yields `numerical_resolution`, not a claim that a detectable effect exists
+outside the representable domain.
+
 All conclusions are conditional on the selected decision rule and planning
 model. Numerical bounds address evaluation accuracy, not model misspecification
 or calibration. Calibration remains a separate, deferred diagnostic rather

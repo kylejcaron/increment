@@ -2670,7 +2670,9 @@ class _BinomialMdeSearch(_MdeSearch):
             _first_ordinal_accepted(float_ordinal(0.0), float_ordinal(edge), self.admissible)
         )
         d_band = -math.log1p(float_from_ordinal(float_ordinal(m_min) + 1) * self.compliance)
-        if self.interval_bound(self.theta0, self.theta0 - d_band) >= self.target:
+        left = self._evaluate_theta(self.theta0, 0.0)
+        right = self._evaluate_theta(self.theta0 - d_band, -d_band)
+        if self.detected(left) or self.detected(right):
             return self.unrepresentable("float64_relative_lift")
         bound = self._theta_bound(self.theta0, self.theta0 - d_band, left, right)
         if bound >= self.target:
@@ -2683,11 +2685,14 @@ class _BinomialMdeSearch(_MdeSearch):
         return m_min
 
     def evaluate(self, effect: float) -> BinomialPower:
-        self._charge()
         point = self.candidate(effect)
         assert point is not None
+        return self._evaluate_theta(point[1], point[0])
+
+    def _evaluate_theta(self, theta: float, distance: float) -> BinomialPower:
+        self._charge()
         try:
-            return self.model.evaluate(point[1], point[0])
+            return self.model.evaluate(theta, distance)
         except FiniteRouteUnavailable:
             return _UNDECIDED
 
@@ -2717,12 +2722,18 @@ class _BinomialMdeSearch(_MdeSearch):
     def _bound(self, lo: float, hi: float, left: BinomialPower, right: BinomialPower) -> float:
         a, b = self.candidate(lo), self.candidate(hi)
         assert a is not None and b is not None
-        bound = self.interval_bound(a[1], b[1])
-        some, _ = self.model.closed_extent(a[1], b[1])
+        return self._theta_bound(a[1], b[1], left, right)
+
+    def _theta_bound(
+        self, theta_a: float, theta_b: float, left: BinomialPower, right: BinomialPower
+    ) -> float:
+        self._charge()
+        bound = self.interval_bound(theta_a, theta_b)
+        some, _ = self.model.closed_extent(theta_a, theta_b)
         if some:
             self.state.basis = "asymptotic"
             return bound
-        low_rate, high_rate = sorted((self.model.rate(a[1]), self.model.rate(b[1])))
+        low_rate, high_rate = sorted((self.model.rate(theta_a), self.model.rate(theta_b)))
         gap = _binomial_curvature_gap(self.model.key.n_t, low_rate, high_rate)
         true_upper = min(
             1.0, math.nextafter(float(Fraction(max(left.upper, right.upper)) + gap), math.inf)

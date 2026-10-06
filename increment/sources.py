@@ -333,6 +333,11 @@ _MOMENTS_COUNT_NOT_INTEGER = _RefusalSpec(
     _WireFormatError,
     template="moments field {field!r} must retain an integer, not {value!r}; re-export from the original data",
 )
+_MOMENTS_COUNT_OUT_OF_RANGE = _RefusalSpec(
+    "moments.count_out_of_range",
+    _WireFormatError,
+    template="moments field {field!r} has invalid count {value!r} for n={n}; require n >= 1 and 0 <= successes <= n when successes is present",
+)
 _READOUT_SOURCE_GRAIN = _RefusalSpec(
     "readout.source.grain",
     _CapabilityError,
@@ -581,6 +586,11 @@ def _validate_moment_counts(row: Mapping[str, object]) -> None:
             continue
         if isinstance(value, bool) or not isinstance(value, Integral):
             _refuse(_MOMENTS_COUNT_NOT_INTEGER, field=field, value=value)
+        minimum = 1 if field == "n" else 0
+        count = int(value)
+        n = cast("int", row["n"])
+        if count < minimum or (field == "successes" and count > n):
+            _refuse(_MOMENTS_COUNT_OUT_OF_RANGE, field=field, value=count, n=int(n))
 
 
 def _check_moments_format(

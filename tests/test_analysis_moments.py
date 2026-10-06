@@ -147,6 +147,51 @@ def test_current_moments_require_the_nullable_success_count_field():
     assert exc.value.code == "moments.count_field_missing"
 
 
+@pytest.mark.parametrize(
+    ("field", "value"), [("n", 0), ("n", -1), ("successes", -1), ("successes", 3)]
+)
+@pytest.mark.parametrize("selected", [True, False])
+def test_moments_count_ranges_are_validated_even_for_unselected_rows(field, value, selected):
+    rows = _moment_rows()
+    if selected:
+        rows[0][field] = value
+    else:
+        rows.append({**rows[0], "metric": "unselected", field: value})
+    with pytest.raises(WireFormatError) as exc:
+        Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="control")
+    assert exc.value.code == "moments.count_out_of_range"
+    assert exc.value.context["field"] == field
+
+
+@pytest.mark.parametrize(
+    ("field", "value"), [("n", 0), ("n", -1), ("successes", -1), ("successes", 3)]
+)
+def test_export_refuses_invalid_provider_counts_before_writing(field, value, monkeypatch, tmp_path):
+    import json
+
+    from increment.sources import ASSIGNMENT_COUNTS_FIELD, MomentsSource, export_source_moments
+
+    source = MomentsSource(
+        _moment_rows(**{ASSIGNMENT_COUNTS_FIELD: json.dumps({"control": 2, "treatment": 2})}),
+        metrics=[MeanMetric(name="revenue", entity="user", fact="revenue")],
+        study_id="e1",
+    )
+    moments = source.moments
+
+    def invalid_moments(metric):
+        rows = [dict(row) for row in moments(metric)]
+        rows[0][field] = value
+        return rows
+
+    monkeypatch.setattr(source, "moments", invalid_moments)
+    path = tmp_path / "invalid.parquet"
+    with pytest.raises(WireFormatError) as exc:
+        export_source_moments(source, path)
+    assert exc.value.code == "moments.count_out_of_range"
+    assert exc.value.context["field"] == field
+    assert not path.exists()
+
+
 @pytest.mark.slow
 def test_export_round_trips_through_from_moments(seeded_con, seeded_defs, tmp_path):
     """export -> parquet -> from_moments reproduces run() exactly.
