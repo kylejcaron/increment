@@ -2689,8 +2689,8 @@ def breakout(
     ``src.plan.alpha``, ``src.plan.inference``) rather than passed in -
     a `MomentSource` owns all three as construction state. `src.plan.alpha`/
     `.inference` are populated regardless of whether an `AnalysisPlan` was
-    ever declared (`src.plan.declared`): undeclared resolves to the same
-    defaults (alpha=0.05, inference=None) this function used to default to.
+    ever declared (`src.plan.declared`): an undeclared plan resolves to
+    alpha=0.05 and inference=None.
 
     Delegates the randomized per-segment split to run_breakout, supplying
     each metric's moments broken out by dimension; a segment with no
@@ -2713,10 +2713,9 @@ def breakout(
     correction="bonferroni" divides alpha by the number of distinct
     dimension values present in each metric's own moments, computed per
     metric. correction=None (the default) resolves to "bh" under a
-    randomized design, or "none" under Encouragement (preserving the
-    pre-existing Encouragement behavior, where correction has never
-    been supported) - a caller EXPLICITLY passing a non-"none"
-    correction under Encouragement is still refused. correction="bh"
+    randomized design, or "none" under Encouragement, which does not
+    support correction - a caller EXPLICITLY passing a non-"none"
+    correction under Encouragement is refused. correction="bh"
     runs run_breakout's flat BH/e-BH family across every (metric, arm,
     segment) cell this call produces in ONE run_breakout call (all
     selected metrics together, not one call per metric) at *q*,

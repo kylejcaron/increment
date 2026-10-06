@@ -3112,9 +3112,8 @@ class DefinitionsMomentSource(SequentialSourceMixin):
         ``site_volume`` -- because ``_site_volume_row`` needs two
         independently-resolved fact tables rather than one shared table.
         A missing-rows sum is a typed 0.0, never SQL NULL, matching
-        ``site_volume``'s convention: an unguarded ``events.value.sum()``
-        here previously returned NULL for an empty window and crashed
-        ``sitewide_evidence``'s ``float(row["y"])``.
+        ``site_volume``'s convention, so an empty window cannot reach
+        ``sitewide_evidence``'s ``float(row["y"])`` as NULL.
         """
         return _windowed_fact_sum(
             fact_tbl, metric, self._experiment, value_column=value_col, part=part
@@ -3840,7 +3839,7 @@ class DefinitionsMomentSource(SequentialSourceMixin):
         typed ``sequential_checkpoint`` envelope stamped ``moments_format=9``;
         they are not ordinary fixed moments rows. ``from_moments`` validates
         and strips these transport columns before constructing its immutable
-        context. Legacy formats 1-6 and missing or partial decision-plan
+        context. Formats 1-6 and missing or partial decision-plan
         payloads are refused; all supported inference variants and view
         policies round-trip without fallback.
         """

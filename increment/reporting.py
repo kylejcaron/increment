@@ -117,7 +117,7 @@ class MetricTrend:
     `period`, `[dims...]`, `period_complete`, `n`, `value`, `ci_lb`, `ci_ub`.
     `n` is the per-period unit denominator for entity-scoped metrics and
     NULL for total/active (an `active` metric's count is its `value`).
-    `ci_lb`/`ci_ub` are NULL for ratio (point estimate only in v1) and for
+    `ci_lb`/`ci_ub` are NULL for ratio (a point estimate only) and for
     total/active (no variance concept). `grain` keeps materialized rows
     self-describing across grains. `window` is the rolling trailing-day
     size (total/active only), NULL for every calendar-bucket trend.

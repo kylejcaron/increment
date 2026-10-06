@@ -775,8 +775,8 @@ class Analysis:
         required for :meth:`run` to apply role-based dispatch
         (primary/guardrail/secondary alpha allocation, non-inferiority
         margins) on this seam source instead of refusing the
-        equivalent call-time kwargs. Omitted (default): an
-        undeclared/unassigned plan, same as before.
+        equivalent call-time kwargs. Omitted (default): the plan is
+        undeclared; alpha is 0.05 and no sequential inference applies.
 
         *on_unassigned* controls a null value in *group*: ``"error"``
         (default) refuses; ``"exclude"`` drops those rows, with the
@@ -927,8 +927,8 @@ class Analysis:
         counts, and full bivariate uptake/size moments on every row. Supply
         the same Encouragement design when reloading; an omitted experiment_id
         is recovered from the cube for this design. An explicit identity must
-        match the exported cohort. Legacy
-        cubes without that state cannot provide design-level compliance.
+        match the exported cohort. A
+        cube without that state cannot provide design-level compliance.
         An empty-metric fixed-horizon Encouragement export instead carries one
         complete format-8 ``design_summary`` envelope. Reload it with
         ``metrics=[]``; both its embedded and effective plans must remain
@@ -2214,7 +2214,7 @@ class Analysis:
         ----------
         metrics : Sequence[str | Metric] | None
             Override the declared metrics + guardrails. A bounded-band
-            :class:`RetentionMetric` no longer needs excluding; an
+            :class:`RetentionMetric` is accepted; an
             unbounded one always raises (see ``Raises``).
         dimension : str | None
             Break each day out by one declared breakout's dimension.
@@ -2333,7 +2333,7 @@ class Analysis:
             Explicit prior override; UNSET inherits and None resets.
         metrics : Sequence[str | Metric] | None
             Override the declared metrics + guardrails. A bounded-band
-            :class:`RetentionMetric` no longer needs excluding; an
+            :class:`RetentionMetric` is accepted; an
             unbounded one always raises (see ``Raises``).
         dimension : str | None
             Break each day's lift out by one declared breakout's

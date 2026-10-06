@@ -1291,8 +1291,7 @@ class WarehouseSession:
         when that predicate does not apply to this stream (e.g. a dimension
         source has no timestamp axis; an exposure/trigger stream is deliberately
         never scoped -- see `_pinned_source`'s own module docs). With
-        `scope=None` (the default), no predicate is pushed and behavior is
-        unchanged from before this parameter existed.
+        `scope=None` (the default), no predicate is pushed.
 
         Each stream occupies distinct typed columns of a tagged UNION ALL.
         The tagged relation stays in a warehouse TEMP table. Subsequent
