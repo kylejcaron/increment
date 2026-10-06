@@ -642,6 +642,18 @@ family: it is an intersection-union test (ship only if every guardrail
 clears), whose own family-wise error rate is already bounded by construction
 regardless of how many guardrails are declared.
 
+One readout reduces each metric's whole-window moments once. That evidence
+supplies the arm gate, a primary's Bonferroni split, the family's size `m` and
+the `q / m` level conversion cells are routed at, and every estimate and FCR
+re-estimate, so every one of them sees the same arms. A warehouse-backed
+source also pins its inputs for the readout (`readout_snapshot`), so the unit
+frames IPTW, AIPW, DML and clustered unadjusted estimates read are the same
+execution as those moments, and data that lands during the readout joins
+none of it. A dataframe source is immutable; a custom source that
+owns no snapshot is trusted not to change during the call. The lower-level
+`estimate_ate()` likewise reduces each metric's moments once but reads unit
+frames from the source it is given, so pin a changing source first.
+
 
 ## Clustered rollouts
 

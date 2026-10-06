@@ -7,6 +7,7 @@ module owns the registry, validation, and public orchestration seam.
 from __future__ import annotations
 
 from collections.abc import Container, Mapping, Sequence
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -259,6 +260,42 @@ def _adjust_kwargs(method: Method) -> dict[str, Any]:
             kwargs["folds"] = method.folds
         return kwargs
     return {}
+
+
+def _evidence_kwargs(
+    method: Method, evidence: ObservationalEvidence, metric: Metric
+) -> dict[str, Any]:
+    """The evidence a built-in estimator reads in place of ``src.moments``; a registered
+    adjustment keeps the ``(src, metric, design, ...)`` contract and reads ``src``."""
+    if method.name in _BUILTIN_ADJUSTMENTS:
+        return {"moment_rows": evidence.metric_rows(metric)}
+    return {}
+
+
+def _no_decision_method(
+    design: Observational, selected: Sequence[Metric], evidence: ObservationalEvidence
+) -> DecisionComputation[LiftEstimate]:
+    """A failed cell for every treatment arm of a metric with no decision method."""
+    from increment.estimation.decision_types import (
+        ArmHypothesisKey,
+        DecisionComputation,
+        DecisionFailure,
+    )
+
+    control = str(design.control_group)
+    failures: dict[Any, DecisionFailure] = {}
+    for metric in selected:
+        groups = evidence.arms(metric)
+        if control not in groups:
+            continue
+        for group_id in groups - {control}:
+            hypothesis = ArmHypothesisKey(metric.name, group_id, "ate")
+            failures[hypothesis] = DecisionFailure(
+                hypothesis,
+                "estimation.adjust.no_decision_method",
+                {"metric": metric.name, "group_id": group_id},
+            )
+    return DecisionComputation(results=(), evidence={}, failures=failures)
 
 
 # estimate_ate: the observational orchestrator
@@ -619,13 +656,37 @@ def validate_readout_adjustment(request: ReadoutRequest) -> None:
         _validate_global_prior_method_scales(configs, method_catalog)
 
 
+@dataclass(frozen=True, slots=True)
+class ObservationalEvidence:
+    """Whole-window moment rows, reduced once per metric.
+
+    One readout sizes its Bonferroni split and multiplicity family, routes conversion cells,
+    and builds every contrast, winsorization diagnostic, failed cell and FCR re-estimate from
+    these rows, so each reads the same arm inventory. Unit-frame estimators additionally read
+    the source's unit frame. `readouts.run` pins warehouse inputs through ``readout_snapshot``;
+    callers of `estimate_ate` must supply a stable or source-owned pinned source themselves.
+    """
+
+    rows: Mapping[str, tuple[Mapping[str, Any], ...]]
+
+    def metric_rows(self, metric: Metric) -> tuple[Mapping[str, Any], ...]:
+        return self.rows[metric.name]
+
+    def arms(self, metric: Metric) -> frozenset[str]:
+        """Every arm this metric's moments carry, control included."""
+        return frozenset(str(row["group_id"]) for row in self.rows[metric.name])
+
+
+def observational_evidence(src: MomentSource, metrics: Sequence[Metric]) -> ObservationalEvidence:
+    """Reduce each of ``metrics`` once; the one place an observational readout reads moments."""
+    return ObservationalEvidence({metric.name: tuple(src.moments(metric)) for metric in metrics})
+
+
 def _winsorization_diagnostics(
-    src: MomentSource,
-    metric: Metric,
+    rows: Sequence[Mapping[str, Any]],
     control_group: str,
 ) -> dict[str, dict[str, int | float | None]]:
     """Return contrast diagnostics keyed by treatment group for one metric."""
-    rows = cast("list[Mapping[str, Any]]", src.moments(metric))
     arms = _df_to_arms(rows)
     control = next(
         (arm for arm in arms if arm.group_id == control_group),
@@ -701,6 +762,11 @@ def estimate_ate(  # noqa: PLR0913
     `readouts.run` plumbing: they let a caller splitting metrics across
     several calls judge "nothing estimated" and prior scale-uniformity
     once, across every group (see `judge_shared_prior_scales`).
+
+    Each selected metric's moments are reduced once and every method, diagnostic and refused cell
+    reads that evidence. Unit frames come from `src` itself, so a source whose data can change
+    during the call must be pinned by its owner first (`readouts.run` does so for a native
+    warehouse source).
     """
     return _estimate_ate(
         src,
@@ -739,13 +805,18 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
     _prior_scale_judged: bool = False,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
     route_alpha: float | None = None,
+    evidence: ObservationalEvidence | None = None,
 ) -> DecisionComputation[LiftEstimate]:
-    """``estimate_ate`` with the multiplicity routing level its families pass.
+    """``estimate_ate`` with the multiplicity routing level and moment evidence its callers pass.
 
     ``route_alpha`` is the smallest level (in ``alpha``'s convention) a multiplicity procedure
     reads a p-value at (see ``_estimate_lift``'s ``route_alpha``): the unadjusted conversion
     rows of a family are routed at it. Only the package's own families set it; the public
     function never does, so a caller cannot move a row's ``reference_kind`` apart from a family.
+
+    ``evidence`` is the moment rows a readout already reduced (and sized its family from): every
+    method, diagnostic, failed cell and FCR re-estimate of this call reads them. Absent, the call
+    reduces each selected metric once itself.
     """
     if methods is None:
         methods = [Method(name="iptw")]
@@ -761,26 +832,9 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
     if methods == []:
         _refuse_observational_quantiles(selected, source=src)
         _reject_unsupported_prior_type(prior)
-        from increment.estimation.decision_types import (
-            ArmHypothesisKey,
-            DecisionComputation,
-            DecisionFailure,
+        return _no_decision_method(
+            design, selected, evidence or observational_evidence(src, selected)
         )
-
-        failures: dict[Any, DecisionFailure] = {}
-        for metric in selected:
-            rows = cast("list[Mapping[str, Any]]", src.moments(metric))
-            groups = {str(row["group_id"]) for row in rows}
-            if str(design.control_group) not in groups:
-                continue
-            for group_id in groups - {str(design.control_group)}:
-                hypothesis = ArmHypothesisKey(metric.name, group_id, "ate")
-                failures[hypothesis] = DecisionFailure(
-                    hypothesis,
-                    "estimation.adjust.no_decision_method",
-                    {"metric": metric.name, "group_id": group_id},
-                )
-        return DecisionComputation(results=(), evidence={}, failures=failures)
 
     cluster = src.context.cluster
     if cluster is not None and prior is not None:
@@ -812,6 +866,20 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
         alternatives=alternatives,
         prior_scale_judged=_prior_scale_judged,
     )
+    if evidence is None:
+        evidence = observational_evidence(src, selected)
+    winsor_diagnostics: dict[str, dict[str, dict[str, int | float | None]]] = {}
+    for raw_metric in selected:
+        declared_metric = raw_metric
+        metric_config = getattr(declared_metric, "winsorization", None)
+        if metric_config is None:
+            continue
+        if metric_config.has_percentile:
+            _refuse("adjust.winsorization.percentile_unsupported", metric=declared_metric.name)
+        winsor_diagnostics[declared_metric.name] = _winsorization_diagnostics(
+            evidence.metric_rows(declared_metric),
+            design.control_group,
+        )
 
     winsor_diagnostics: dict[str, dict[str, dict[str, int | float | None]]] = {}
     for declared_metric in selected:
@@ -845,7 +913,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                 else:
                     unadj = _estimate_lift(
                         [metric],
-                        cast("list[Mapping[str, Any]]", src.moments(metric)),
+                        list(evidence.metric_rows(metric)),
                         design.control_group,
                         methods=[method],
                         prior=prior,
@@ -888,6 +956,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                     variance_reduction=method.variance_reduction,
                 )
             for metric in selected:
+                row_kwargs = _evidence_kwargs(method, evidence, metric)
                 try:
                     adjusted = adjust_fn(
                         src,
@@ -901,6 +970,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                         null_abs=(null_abs or {}).get(metric.name),
                         preferred_direction=metric.declared_preferred_direction,
                         **adjust_kwargs,
+                        **row_kwargs,
                     )
                     diagnostics_by_group = winsor_diagnostics.get(metric.name, {})
                     results.extend(
@@ -931,7 +1001,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                             DecisionFailure,
                         )
 
-                        for row in cast("list[Mapping[str, Any]]", src.moments(metric)):
+                        for row in evidence.metric_rows(metric):
                             if str(row["group_id"]) == design.control_group:
                                 continue
                             hypothesis = ArmHypothesisKey(metric.name, str(row["group_id"]), "ate")

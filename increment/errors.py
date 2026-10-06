@@ -794,6 +794,7 @@ RETIRED_CODES: Mapping[str, str | tuple[str, ...] | None] = MappingProxyType(
         "estimation.adjust_overlap.unit_ids_shape": "estimation.crossfit.fold_assignments_unit_ids_shape",
         "estimation.armstats.arm_stats.family_field_finite": "estimation.armstats.arm_stats.cross_field_finite",
         "estimation.armstats.arm_stats.var_d_needs_uptake_sum": "estimation.armstats.arm_stats.mean_d_needs_uptake_sum",
+        "estimation.binomial.arm_too_large_for_exact_enumeration": "estimation.binomial.finite_sample_arm_ceiling_exceeded",
         "estimation.cate.alpha": "estimation.diagnostics.alpha",
         "estimation.contrast.contrast_partition.control_group_treatment": "estimation.contrast.contrast_stats.control_group_treatment",
         "estimation.contrast.contrast_partition.positive_cycles_contain_least_one": "estimation.contrast.contrast_partition.contain_least_one",

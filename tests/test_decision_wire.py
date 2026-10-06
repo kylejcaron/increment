@@ -401,11 +401,18 @@ def _legacy_payload(plan: CompiledDecisionPlan) -> dict[str, Any]:
     return payload
 
 
-def _legacy_unadjusted_plan(metric_type: str | None = None) -> dict[str, Any]:
-    """A legacy payload of one prior-free, fixed-horizon, relative-scale unadjusted procedure."""
+def _legacy_unadjusted_plan(
+    metric_type: str | None = None, method: Method | None = None
+) -> dict[str, Any]:
+    """A legacy payload of one prior-free, fixed-horizon, relative-scale procedure whose decision
+    method is ``method`` (the unadjusted ``Method(name="unadjusted")`` by default)."""
     plan = _arm_plan()
     procedure = cast(RelativeArmDecisionProcedure, plan.procedures[_METRIC_A]).model_copy(
-        update={"prior": None, "sensitivity_methods": ()}
+        update={
+            "prior": None,
+            "sensitivity_methods": (),
+            **({} if method is None else {"decision_method": method}),
+        }
     )
     return _legacy_payload(plan.model_copy(update={"procedures": {_METRIC_A: procedure}}))
 
@@ -422,6 +429,41 @@ def test_a_legacy_unadjusted_method_decodes_to_the_route_it_ran():
     assert _decision_method(restored) == Method(
         name="unadjusted", conversion_inference="finite_sample"
     )
+
+
+@pytest.mark.parametrize("label", ["custom", "control_v2", "ols"])
+def test_a_legacy_free_form_method_label_replays_on_the_route_it_ran(label):
+    """``Method.name`` is a free-form label: the historical randomized estimator sent every
+    non-CUPED conversion row of a fixed-horizon, prior-free procedure through the binomial set,
+    so a stored method under any other label decodes and replays there, not on ``auto``'s
+    delta method."""
+    restored = compiled_plan_from_dict(
+        _legacy_unadjusted_plan(method=Method(name=label)), metric_types={_METRIC_A: "conversion"}
+    )
+    assert _decision_method(restored) == Method(name=label, conversion_inference="finite_sample")
+    assert _executed_row_kinds(restored, "conversion") == ["binomial"]
+    assert _method_row_kinds(Method(name=label), "conversion") == ["t"]
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        Method(name="cuped", variance_reduction="cuped"),
+        Method(name="adjusted", variance_reduction="cuped"),
+        Method(name="iptw"),
+        Method(name="aipw"),
+        Method(name="dml"),
+    ],
+    ids=lambda method: f"{method.name}-{method.variance_reduction}",
+)
+def test_a_legacy_adjusted_method_stays_on_auto_whatever_its_label(method):
+    """A CUPED method (under any label) and an observational estimator never took the binomial
+    route, so a stored one must not acquire ``finite_sample``."""
+    restored = compiled_plan_from_dict(
+        _legacy_unadjusted_plan(method=method), metric_types={_METRIC_A: "conversion"}
+    )
+    assert _decision_method(restored) == method
+    assert _decision_method(restored).conversion_inference == "auto"
 
 
 @pytest.mark.parametrize("metric_type", ["conversion", "retention"])

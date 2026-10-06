@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -275,6 +275,7 @@ def dml_estimate(  # noqa: PLR0913
     null_abs: float | None = None,
     value_scale: ValueScale = "relative",
     preferred_direction: PreferredDirection | None = None,
+    moment_rows: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[LiftEstimate]:
     """DML (double machine learning, partially-linear cross-fit
     partialling-out) estimate of relative lift, one entry per non-control
@@ -324,6 +325,7 @@ def dml_estimate(  # noqa: PLR0913
         null_abs=null_abs,
         value_scale=value_scale,
         preferred_direction=preferred_direction,
+        moment_rows=moment_rows,
     )
     if not requests:
         return []

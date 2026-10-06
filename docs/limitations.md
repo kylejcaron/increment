@@ -308,9 +308,10 @@ the one code per hazard whether a definition, a frame metric, a method or a plan
 There is no forced
 delta-method value and no analysis-wide knob. A multiplicity family that reads p-values at
 levels below the row's own routes each row at the smallest level it can be decided at (for a
-BH family, `q` over the hypotheses it tests), never at a looser one. Plans and wire payloads
-written before the field existed decode as `"finite_sample"`, the route they were produced
-under.
+BH family, `q` over the hypotheses it tests), never at a looser one. A stored plan or wire payload
+written before the field existed decodes each method to the route it ran under: `"finite_sample"`
+for a prior-free, fixed-horizon method on a conversion or retention metric, whatever its
+`Method.name` label, unless it is CUPED or an observational estimator; `"auto"` for every other method.
 
 `dense_min_count(tail) = max(412, ceil(145 z^4))` with `z = Phi^-1(1 - tail)`. It is an envelope
 of a measured requirement, not a fit: the requirement is the least count at which the
@@ -425,7 +426,9 @@ The finite-sample route also has three boundaries, each a refusal rather than si
   removed without an alias -- code that imported the old name imports the new one and gets the
   new cap). This is a compute-resource applicability boundary, not a statistical
   one: a call with either arm above the cap refuses immediately
-  (`estimation.binomial.finite_sample_arm_ceiling_exceeded`, the cap in `max_arm_size`; a dense cell runs at any size under `auto`)
+  (`estimation.binomial.finite_sample_arm_ceiling_exceeded`, the cap in `max_arm_size`; it replaces the retired
+  `estimation.binomial.arm_too_large_for_exact_enumeration`, which `increment.errors.RETIRED_CODES` maps to it;
+  a dense cell runs at any size under `auto`)
   rather than running a search whose cost keeps growing with the arm. The cap is the
   largest arm the numerical safeguards were validated at against an independent decimal
   oracle (`calibration/binomial_oracle.py`, run by `scripts/measure_binomial_ceiling.py`
@@ -433,12 +436,14 @@ The finite-sample route also has three boundaries, each a refusal rather than si
   per arm): the SciPy binomial primitives' error allowance (the worst relative error of a
   pmf, cdf or sf that bears weight, as a share of `n` units of `2^-52`, was 0.198, 0.245,
   0.212, 0.236 and 0.226 at those sizes, against an allowance of one), the Clopper-Pearson
-  enclosure, the support window's omitted mass (each held at every size), and count recovery from the
-  producer's float moments, whose Bernoulli second-moment check scales with `n`: the
-  DuckDB producer's counts were accepted at every size and rate measured (0.5, 0.002, 1e-4
-  and a single success), the second-moment error reaching at most 0.24 of the check's
-  rounding bound (2,442 times `variance_slack` at a billion units), and a constant-0.5
-  arm was refused at every size. Count thresholds are computed in exact
+  enclosure, the support window's omitted mass (each held at every size), and exact-count
+  transport from the DuckDB producer: the integer `successes` it exports is the count the
+  route uses, and the float first and second moments only validate it, the Bernoulli
+  second-moment check scaling with `n`. The producer's counts passed that validation at
+  every size and rate measured (0.5, 0.002, 1e-4 and a single success), the second-moment
+  error reaching at most 0.24 of the check's rounding bound (2,442 times `variance_slack` at
+  a billion units), and a constant-0.5 arm, which carries no integer count, was refused at
+  every size. Count thresholds are computed in exact
   integers, which a float quotient cannot keep above about 67,000,000 per arm. The error
   model was measured with fused multiply-subtract on arm64; an x86 build has not been run.
 * **Latency.** Cost grows with arm size. Cold CPU seconds and peak resident set of one

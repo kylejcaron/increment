@@ -442,7 +442,7 @@ unit-randomized sequential planning.
 |---|---|
 | `n_per_arm` | Assigned units in the treatment arm |
 | `n_total` | Assigned units across the two-arm contrast |
-| `power` | Planned power at the returned integer size, under `power_basis`; for `exact` and `approximate`, the lower end of the enclosure of the runtime's rejection probability, never above it |
+| `power` | Planned power at the returned integer size, under `power_basis`; for `exact` and `approximate`, the runtime's rejection probability as an admitted point, published only once its maximum absolute error is at most `1e-6` (a materially unresolved enclosure is refused, not reported as a lower endpoint); for `asymptotic`, the model's own probability |
 | `power_basis` | `asymptotic` (log-ratio model, for counts the runtime takes the delta-method route at with near certainty in a lattice too large to enumerate), `exact` (the runtime's decision, delta-method on dense counts and finite-sample on the rest, summed over the count lattice), or `approximate` (that sum with the replay budget leaving mass undecided) |
 | `mde_relative` | Detectable relative effect at the target power, rescaled for `compliance`; `None` when no admissible numeric answer is certified |
 | `mde_unavailable_reason` | `unattainable`, `unrepresentable`, or `numerical_resolution` when `mde_relative` is `None`; otherwise `None` |

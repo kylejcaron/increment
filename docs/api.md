@@ -53,8 +53,10 @@ change without notice.
 - A code that is retired keeps its entry in
   `increment.errors.RETIRED_CODES`, which maps it to its replacement code, a
   tuple of replacements when it split, or `None` when it was removed with no
-  replacement. Retiring a code is a contract change and is listed in the
-  release notes.
+  replacement. For example,
+  `estimation.binomial.arm_too_large_for_exact_enumeration` maps to
+  `estimation.binomial.finite_sample_arm_ceiling_exceeded`. Retiring a code is
+  a contract change and is listed in the release notes.
 - Consumers of results must preserve numeric nulls and the reason, guarantee
   and reference metadata that accompany a number. Dropping a null reason or
   reading a value without its reference label changes what the number claims.
@@ -75,9 +77,12 @@ writer:
 | above 10 | not written by this release | refused, `moments.format.unsupported_future` |
 
 A cube must use one format (`moments.format.mixed`) and repeat no
-`(metric, group_id)` row (`moments.rows.duplicate`). Format 8 files from a
-sequential analysis cannot resume the sequential process: they are refused with
-`sequential.continuation.legacy`. Re-export from the raw definitions with the
+`(metric, group_id)` row (`moments.rows.duplicate`). Every row stamped below 9,
+including each row of a sequential analysis written as format 8, is refused with
+`moments.format.unsupported_legacy` before any plan is read. Only a
+checkpoint envelope restamped below 9 reaches `sequential.continuation.legacy`:
+a checkpoint resumes only from the current format.
+Re-export from the raw definitions with the
 current release, or pin the release that wrote the file. Nothing is
 downgraded or filled in silently.
 
@@ -87,8 +92,9 @@ conversion and retention outcomes. Cluster-aggregate rows and other outcomes
 carry `successes=null`. Every ordinary row requires integer `n >= 1` and,
 when present, integer `0 <= successes <= n`; import and export refuse invalid
 ranges with `moments.count_out_of_range`, including unselected imported rows.
-Floating centered moments cannot recover those integers reliably at large
-counts. Preserve count columns as integers through storage and partition
+Exact counts travel as these integers; the floating centered moments are used only
+to check that a count agrees with them and are not a source from which to recover
+one. Preserve count columns as integers through storage and partition
 merges; do not cast them through floating point. Sequential format 9 is unchanged.
 
 **Unit-day artifacts.** Artifact context format 2 is the only supported

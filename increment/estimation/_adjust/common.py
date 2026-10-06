@@ -324,6 +324,7 @@ def _prepare_adjustment_requests(
     covariates: list[str],
     learner_roles: tuple[str, ...],
     method_fields: Mapping[str, str] | None = None,
+    moment_rows: Sequence[Mapping[str, Any]] | None = None,
     **contrast_kwargs: Any,
 ) -> tuple[list[AdjustedContrastRequest], dict[str, Callable[[], Learner] | None]]:
     """Shared ratio/missing-allow/moments/frame preamble for `aipw_estimate`,
@@ -337,7 +338,9 @@ def _prepare_adjustment_requests(
     refusal -- identity for AIPW/DML (whose kwarg names already match
     `Method.propensity_learner`/`outcome_learner`), but
     `{"learner": "propensity_learner"}` for IPTW, whose own kwarg is named
-    `learner` while `Method` has no such field."""
+    `learner` while `Method` has no such field. `moment_rows` is the metric's
+    moments a caller already reduced (and sized its family from); absent, they
+    are read from `src`."""
     if metric.type == "ratio":
         _raise(
             "estimation.adjust_common.supported_ratio_metric",
@@ -360,10 +363,12 @@ def _prepare_adjustment_requests(
 
         inference_refuse("estimation.inference.prior_excludes_cluster_robust_t")
     control_group = design.control_group
-    moment_rows = _moment_dicts(cast("list[Mapping[str, Any]]", src.moments(metric)))
+    rows = _moment_dicts(
+        cast("list[Mapping[str, Any]]", src.moments(metric) if moment_rows is None else moment_rows)
+    )
     group_native: dict[str, object] = {}
     group_n: dict[str, int] = {}
-    for row in moment_rows:
+    for row in rows:
         key = str(row["group_id"])
         group_native[key] = row["group_id"]
         group_n[key] = int(row["n"])

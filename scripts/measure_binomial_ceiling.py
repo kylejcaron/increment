@@ -24,10 +24,12 @@ versions on every line) and are meant to run serially, one at a time::
 
 ``recovery``
     Builds an arm inside DuckDB from ``range()`` and runs the production two-phase producer
-    (``query.builders.group_summary``), then ``armstats.binary_counts``, recording the integer
-    reconstruction error and the second-moment error in units of ``variance_slack`` -- plus the
-    constant-0.5 corruption cell, which must still be refused. The raw moments are recorded so
-    acceptance can be re-evaluated under another tolerance without rebuilding the arm.
+    (``query.builders.group_summary``), then ``armstats.binary_counts``, which transports the
+    producer's exact integer ``successes`` and validates it against the first and second moments.
+    Records the first-moment error and the second-moment error in units of ``variance_slack``
+    and whether the count is accepted -- plus the constant-0.5 corruption cell, which carries no
+    integer count and must still be refused. The raw moments are recorded so the consistency
+    checks can be re-evaluated under another tolerance without rebuilding the arm.
 
 ``planning``
     Runs ``achieved_power``, ``minimum_detectable_effect`` or ``required_sample_size`` cold in a
@@ -896,7 +898,7 @@ def _parser() -> argparse.ArgumentParser:
     for name, help_text in (
         ("latency", "cold confidence_interval latency and memory"),
         ("ulp", "primitive ULP error, enclosure and omitted mass against the oracle"),
-        ("recovery", "DuckDB producer error against binary_counts"),
+        ("recovery", "DuckDB producer exact counts against binary_counts' moment checks"),
         ("planning", "cold planning call cost and memory (CPU seconds, peak RSS)"),
     ):
         command = sub.add_parser(name, help=help_text)

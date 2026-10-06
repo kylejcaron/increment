@@ -681,21 +681,27 @@ def _legacy_conversion_inference(
 ) -> ConversionInference:
     """The ``conversion_inference`` a stored method lacking the field ran under.
 
-    Before the field existed an unadjusted conversion or retention row of a fixed-horizon,
-    prior-free procedure ran the finite-sample route on either value scale (an absolute margin
-    reads the same binomial set through its additive sidecar), so a method of that kind is
-    ``"finite_sample"``. Every other stored method never had that route (a CUPED method, an
-    observational adjustment, an informative prior, sequential inference, or a metric that is
-    not a conversion or retention rate) and is ``"auto"``, which leaves it on the route it
-    always took. ``metric_type`` is the stored metric's declared type when the caller knows
-    it; without it a metric is taken to be a conversion rate."""
+    Before the field existed a fixed-horizon, prior-free conversion or retention row ran the
+    finite-sample route on either value scale (an absolute margin reads the same binomial set
+    through its additive sidecar) unless its method adjusted: only CUPED
+    (``variance_reduction == "cuped"``) and an observational estimator (a name registered in
+    ``ADJUSTMENTS``) did. ``Method.name`` is otherwise a free-form label that never gated the
+    route, so a method of that kind is ``"finite_sample"`` whatever it is called. Every other
+    stored method never had that route (a CUPED method, an observational adjustment, an
+    informative prior, sequential inference, or a metric that is not a conversion or retention
+    rate) and is ``"auto"``, which leaves it on the route it always took. ``metric_type`` is
+    the stored metric's declared type when the caller knows it; without it a metric is taken to
+    be a conversion rate."""
+    from increment.estimation.adjust import ADJUSTMENTS
+
     inference = procedure.get("inference")
     kind = inference.get("kind", "fixed") if isinstance(inference, Mapping) else "fixed"
+    name = method.get("name")
     historically_exact = (
         procedure.get("prior") is None
         and kind == "fixed"
-        and method.get("name") == "unadjusted"
-        and method.get("variance_reduction", "none") == "none"
+        and method.get("variance_reduction", "none") != "cuped"
+        and not (isinstance(name, str) and name in ADJUSTMENTS)
         and metric_type in (None, "conversion", "retention")
     )
     return "finite_sample" if historically_exact else "auto"
