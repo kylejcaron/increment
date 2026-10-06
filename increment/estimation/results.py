@@ -245,7 +245,9 @@ class BinomialConfidenceSet(CodedModel, BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _cut_under_the_current_construction(cls, data: Any) -> Any:
-        recorded = data.get("method") if isinstance(data, Mapping) else BINOMIAL_METHOD
+        recorded = (
+            data.get("method") if isinstance(data, Mapping) else getattr(data, "method", None)
+        )
         if recorded != BINOMIAL_METHOD:
             _raise(
                 "estimation.results.binomial.obsolete_construction",

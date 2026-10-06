@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pandas as pd
@@ -1342,7 +1343,11 @@ class TestLiftEstimateBinomialCrossInvariants:
             LiftEstimate.model_validate(persisted)
         with pytest.raises(InvalidRequestError) as set_error:
             BinomialConfidenceSet.model_validate(persisted["binomial_set"])
-        for exc_info in (row_error, dict_error, set_error):
+        with pytest.raises(InvalidRequestError) as attribute_error:
+            BinomialConfidenceSet.model_validate(
+                SimpleNamespace(**persisted["binomial_set"]), from_attributes=True
+            )
+        for exc_info in (row_error, dict_error, set_error, attribute_error):
             assert exc_info.value.code == "estimation.results.binomial.obsolete_construction"
             assert exc_info.value.context["method"] == (None if recorded == "absent" else recorded)
 
@@ -1352,6 +1357,13 @@ class TestLiftEstimateBinomialCrossInvariants:
         with pytest.raises(InvalidRequestError) as exc_info:
             BinomialConfidenceSet(**fields)
         assert exc_info.value.code == "estimation.results.binomial.obsolete_construction"
+
+    def test_current_construction_roundtrips_from_attributes(self):
+        confidence_set = _binomial_set()
+        restored = BinomialConfidenceSet.model_validate(
+            SimpleNamespace(**confidence_set.model_dump()), from_attributes=True
+        )
+        assert restored == confidence_set
 
     def test_a_row_dumped_without_defaults_keeps_its_construction(self):
         """The construction is a required marker, not a default a lean dump can drop: every

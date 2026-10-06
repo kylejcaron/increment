@@ -340,10 +340,11 @@ It also has two further boundaries, both refusals rather than silent degradation
   p-value above the tail level and 2^-14 of the tail level below it (1.5e-6 at a 0.025
   tail, 6.1e-7 at a 0.01 tail). A two-sided p-value is twice the smaller directional
   one, so it exceeds its ideal by at most twice that. The target is never tighter than
-  a fixed 1e-6 stop at a tail level of 0.0164 or more, and a p-value within the gap of
-  the tail level is read as not rejecting. The endpoint search only
-  compares p-values with the tail level, so each probe also stops once that comparison
-  is certified either way. A search the cap ends is not an error: its p-value stays a valid,
+  a fixed 1e-6 stop at a tail level of 0.0164 or more. A certificate whose bounds still
+  straddle the tail level is conservatively non-rejecting; a certified upper bound below
+  the tail rejects even within the declared gap. The endpoint search only compares
+  p-values with the tail level, so each probe also stops once that comparison is certified
+  either way. A search the cap ends is not an error: its p-value stays a valid,
   conservative bound, and the row's `note` says how many probes ended so and the largest
   gap they left, in units of the p-value the row reports (twice a directional gap on a
   two-sided row). No tolerance beyond that disclosure is promised. The stop rule is part of
