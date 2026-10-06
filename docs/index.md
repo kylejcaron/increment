@@ -73,74 +73,45 @@ for r in results:
     print(f"{r.metric} / {r.group_id}: lift={r.lift.value:.2%}")
 ```
 
-Monitoring daily? [Register a raw sequential model](guides/sequential-inference.md)
-before reading outcomes, including predictive priors, a fixed cell roster, and the
-joint finalized reveal contract. Pass that registration through `InferenceSpec`
-and explicitly capture finalized checkpoints. The public exact `always_valid` route is
-limited to raw Bernoulli observations with a proper Beta predictive prior and a
-common joint-unit filtration. Scalar Gaussian and paired-Gaussian kernels are
-private research diagnostics only and do not produce public evidence or
-decisions; that does not affect the public asymptotic route below. Sequential secondary families use current or frozen e-values and
-reinvert selected intervals at `min(q * R / m, nominal alpha)` on that same stopped state.
-Name primary and guardrail roles explicitly when constructing the plan.
+## Analyze from your warehouse
 
-`InferenceSpec(kind="asymptotic_mean")` is a separate public route: an asymptotic
-confidence sequence for mean, ratio, conversion and retention metrics that needs no prior
-and holds only under its stated iid, fixed-Bernoulli-assignment and moment
-assumptions (see [sequential inference](guides/sequential-inference.md)). It is
-distinct from the exact Bernoulli `always_valid` e-process above.
+Declare sources, exposures, metrics, and experiments in YAML, then bind the
+definitions to an Ibis connection to inspect the generated SQL and run the same
+analysis:
 
-See the [API Reference](api.md) for the full surface.
+<!-- skip: next "requires a configured warehouse and project definitions" -->
 
-## Switchback contrasts
+```python
+import ibis
+from increment import Analysis
 
-For randomized treatment orders within independent units or shared across a
-fixed roster, use the fixed-horizon [switchback guide](guides/switchback.md).
-Switchback applies washout and declared carryover discards, then estimates an
-additive retained-window difference. Independent unit-cycle orders use the qualified
-unit-t approximation by default (equivalent to passing `UnitCycleTApproximation()`):
-it requires at least two independent units and reports
-`switchback_unit_t_approximation` / `unit_t_approximation` with `dof=n_units-1`.
-A separately supplied valid prospective `UnitCycleVarianceEnvelope` is a stronger
-route and can support one unit; a pilot or sample variance is not such an envelope.
-Shared schedules keep block-t semantics: `switchback_block_t` with a `block_t`
-reference and at least two independent blocks; a one-unit roster is supported.
-Units, cycles and blocks are distinct independence grains. Switchback does
-not support sequential inference, CUPED, multiplicity families, or arm-method
-overrides.
+con = ibis.snowflake.connect(...)
+analysis = Analysis.from_definitions("checkout_redesign", "definitions/", con)
 
-## Evidence and method roles
+print(analysis.summary_sql()["revenue"])
+results = analysis.run()
+```
 
-Parallel arm analyses compile one `decision_method` and optional
-`sensitivity_methods` per metric. Declare these on a plan binding or
-`MetricSpec`, or override them call-wide with `run(decision_method=...,
-sensitivity_methods=...)`; sensitivity rows are reporting-only and do not
-create decision evidence. The former method-list keyword is removed.
+The [data model guide](guides/data-model.md) covers the YAML setup. The
+[warehouse analysis example](examples/analysis_from_a_warehouse.md) runs end to end
+against an in-memory DuckDB database.
 
-Definitions-backed analyses may publish a canonical context-format-2 unit-day
-artifact once and later adopt it from a caller-pinned `UnitDayArtifactRef`.
-Session `materialize()` creates only a local TEMP realization. See the [data
-model guide](guides/data-model.md#canonical-unit-day-artifacts) for the
-manifest, extensions, trust boundary, and immutable snapshot contract.
+## What do you want to do next?
 
-If artifact publication raises after its manifest is written,
-`WarehouseArtifactStore` invalidates the generation through `drop_generation`,
-so a fresh store lists nothing for it and reads are refused with
-`artifact.generation.dropped`. If the invalidation itself fails, the exception
-carries a note with the `artifact_id` and `generation_id` to pass to
-`drop_generation` from a fresh process. If the manifest insert was submitted but
-its outcome is unknown, the generation is tombstoned before its relations are
-erased, so a row that commits late stays hidden. Erasure attempts every relation
-even if one drop fails. If the tombstone cannot be written, or a relation cannot be
-dropped afterwards, the relations are kept and the note (or, when the publication
-ends normally without a manifest, the context of the
-`query.session.warehouse_artifact.publication_state_unknown` refusal) lists them
-by qualified name. A failed drop before the manifest insert is submitted is reported
-the same way: the aborting exception carries the note, and a publication that ends
-normally without a manifest raises
-`query.session.warehouse_artifact.publication_cleanup_incomplete`; drop the listed
-relations by name. When the outcome is unknown, call
-`store.abandon_generation(artifact_id, generation_id)` from a fresh process first
-(durable, safe to repeat), then drop the listed relations by name. The
-[data
-model guide](guides/data-model.md#canonical-unit-day-artifacts) describes recovery.
+| Job | Where to go |
+|---|---|
+| Add CUPED variance reduction | [CUPED on the dataframe path](guides/cuped.md#on-the-dataframe-path) |
+| Monitor while the experiment runs (conversion or retention) | [Sequential monitoring of a conversion metric](guides/sequential-inference.md#sequential-monitoring-of-a-conversion-metric) |
+| Monitor while the experiment runs (mean or ratio) | [Ordinary continuous monitoring](guides/sequential-inference.md#ordinary-continuous-monitoring) |
+| Run a switchback | [Switchback supported contract](guides/switchback.md#supported-contract) |
+| Estimate an opt-in or self-selected treatment | [Observational inference](guides/observational.md) |
+| Plan sample size or power | [Power analysis](guides/power-analysis.md) |
+| Use daily panels, a published unit-day artifact, or a moments file | [One row per unit per day](guides/quickstart.md#one-row-per-unit-per-day), [Canonical unit-day artifacts](guides/data-model.md#canonical-unit-day-artifacts), [Moments wire migration](guides/data-model.md#moments-wire-migration); which entry points support what: [What runs where](limitations.md#what-runs-where) |
+| Anything else | [Which method should I use?](guides/choose-a-method.md) |
+
+Method assumptions are in [Statistical limitations](limitations.md). Unit-day
+artifacts, publication, and recovery are in [Canonical unit-day
+artifacts](guides/data-model.md#canonical-unit-day-artifacts), and decision and
+sensitivity methods are in [Choosing decision and sensitivity
+methods](guides/choose-a-method.md#choosing-decision-and-sensitivity-methods). See
+the [API Reference](api.md) for the full surface.

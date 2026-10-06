@@ -7,8 +7,9 @@
 
 > [!WARNING]
 > **Increment is currently in pre-release.** APIs and supported combinations may
-> change before a stable release. Review the [statistical limitations](docs/limitations.md)
-> before relying on an analysis.
+> change before a stable release; see the
+> [compatibility policy](docs/api.md#pre-10-compatibility). Review the
+> [statistical limitations](docs/limitations.md) before relying on an analysis.
 
 **Analyze experiments directly from your warehouse or a dataframe.**
 
@@ -30,7 +31,8 @@ flags, or maintain a separate event store.
 - **Plan and monitor** — solve for sample size, power, and minimum detectable
   effect; use sequential methods for repeated looks under their stated assumptions.
 - **Estimate causal effects** — use IPTW, DML, or AIPW for observational treatments
-  from dataframes, or analyze encouragement designs and switchback contrasts.
+  from dataframes or warehouse definitions, or analyze encouragement designs and
+  switchback contrasts.
 - **Explore and report** — inspect breakouts, trends, and heterogeneous treatment
   effects; produce readout tables, dashboards, and sitewide-impact estimates.
 
@@ -91,6 +93,13 @@ as well. For unit-by-day data, use `Analysis.from_unit_panel`.
 The [dataframe quickstart](docs/guides/quickstart.md) covers metric declarations,
 missing values, analysis plans, uncertainty intervals, and monitoring.
 
+Next: [add CUPED](docs/guides/cuped.md#on-the-dataframe-path) ·
+monitor sequentially ([mean or ratio](docs/guides/sequential-inference.md#ordinary-continuous-monitoring),
+[conversion or retention](docs/guides/sequential-inference.md#sequential-monitoring-of-a-conversion-metric)) ·
+[run a switchback](docs/guides/switchback.md#supported-contract) ·
+[adjust for opt-in treatment](docs/guides/observational.md) ·
+[other data shapes](docs/guides/choose-a-method.md).
+
 ## Connect your warehouse
 
 Declare sources, exposures, metrics, and experiments in YAML. Bind the definitions
@@ -135,12 +144,12 @@ portable unit-day artifacts, and moments exports.
 | Define warehouse data and experiments | [Data model](docs/guides/data-model.md) |
 | Understand metrics and supported combinations | [Metric types](docs/guides/metric-types.md) · [Compatibility](docs/guides/compatibility.md) |
 | Use priors and probability-based decisions | [Bayesian inference](docs/guides/priors-and-decisions.md) |
-| Reduce variance | [CUPED](docs/guides/cuped.md) |
+| Reduce variance | [CUPED](docs/guides/cuped.md#on-the-dataframe-path) |
 | Correct multiple comparisons | [Multiplicity](docs/guides/multiplicity.md) |
-| Monitor an experiment | [Sequential inference](docs/guides/sequential-inference.md) |
+| Monitor an experiment | [Mean or ratio metrics](docs/guides/sequential-inference.md#ordinary-continuous-monitoring) · [Conversion or retention metrics](docs/guides/sequential-inference.md#sequential-monitoring-of-a-conversion-metric) |
 | Plan sample size or power | [Power analysis](docs/guides/power-analysis.md) |
 | Analyze non-randomized treatments | [Observational inference](docs/guides/observational.md) |
-| Analyze encouragement or switchback designs | [Encouragement](docs/guides/encouragement.md) · [Switchback](docs/guides/switchback.md) |
+| Analyze encouragement or switchback designs | [Encouragement](docs/guides/encouragement.md) · [Switchback](docs/guides/switchback.md#supported-contract) |
 | Explore treatment-effect differences | [Heterogeneity and rollout](docs/guides/heterogeneity-and-rollout.md) |
 | Build an experiment dashboard | [Dashboard](docs/guides/dashboard.md) |
 | Look up public APIs | [API reference](docs/api.md) |
@@ -152,7 +161,7 @@ See the [examples guide](examples/README.md) to choose one.
 ## Scope and statistical assumptions
 
 Increment analyzes randomized experiments from dataframes or SQL warehouses;
-observational treatments are supported from dataframes. It estimates effects—it
+observational treatments are supported from dataframes or warehouse definitions. It estimates effects—it
 does not make an observational comparison causal without identification assumptions.
 
 Exact and asymptotic methods have different guarantees. Repeated looks require a
