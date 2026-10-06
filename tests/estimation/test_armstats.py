@@ -1772,11 +1772,10 @@ class TestBinaryCountsProducerPathTolerance:
 
     @pytest.mark.parametrize("n", [4_000_000, 16_000_000])
     def test_producer_path_corrupted_input_still_refuses_at_scale(self, n):
-        """A constant y=0.5 arm shares a genuine 50% conversion rate's mean but has zero actual
-        spread (cy2 == 0 instead of the Bernoulli-consistent n/4) -- must still refuse."""
-        with pytest.raises(BinomialDataError) as exc_info:
+        """A fractional outcome has no exact binary count, even when its mean is 50%."""
+        with pytest.raises(CapabilityError) as exc_info:
             binary_counts(producer_arm(n, None), "conversion")
-        assert exc_info.value.code == "estimation.binomial.inconsistent_bernoulli_variance"
+        assert exc_info.value.code == "estimation.binomial.exact_counts_required"
 
 
 @pytest.mark.slow
