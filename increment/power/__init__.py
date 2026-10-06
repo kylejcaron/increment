@@ -10,7 +10,7 @@ probability (``PowerResult.power_basis`` ``"exact"`` or ``"approximate"``).
 Segment-pairwise planning deliberately retains its separate baseline-only
 approximation.
 
-A valid supplied-effect result can have no admissible or numerically certified
+A valid supplied-effect result can have no admissible or numerically resolved
 companion MDE. In that case ``mde_relative`` is ``None`` and
 ``mde_unavailable_reason`` records why.
 

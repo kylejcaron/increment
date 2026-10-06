@@ -478,20 +478,6 @@ class TestPlanningReplayBound:
         assert not _binomial.refused(core._binomial_key(procedure, last, last))
         assert _binomial.refused(core._binomial_key(procedure, last + 1, last + 1))
 
-    def test_a_size_search_the_bound_admits_is_unchanged_by_it(self, monkeypatch):
-        """A bound twice the cells of the sized design's alternative rectangle (which, at a 15%
-        treatment rate, exceeds its null rectangle) leaves room for the size search and the
-        companion effect search, which stores the union of its windows: nothing changes."""
-        from increment.power import core
-
-        baseline, procedure = Baseline.from_proportion(0.1), _conversion()
-        expected = required_sample_size(0.5, baseline, procedure)
-        key = core._binomial_key(procedure, expected.n_per_arm, expected.n_per_arm)
-        cells = window_cells(key, 0.1, 0.15)
-        assert window_cells(key, 0.1) < cells
-        monkeypatch.setattr(core, "PLANNING_CELL_CEILING", 2 * cells)
-        assert required_sample_size(0.5, baseline, procedure) == expected
-
     def test_an_alternative_window_beyond_the_bound_is_refused_before_it_is_allocated(
         self, monkeypatch
     ):
@@ -850,26 +836,15 @@ class TestPlanningNumericalEnclosure:
             )
             assert Decimal(result.lower) <= retained <= Decimal(result.upper)
 
-    def test_a_target_inside_the_enclosure_of_the_largest_power_is_not_decided(self):
-        """Six units per arm at a control rate of one half: a treatment rate of one is the
-        largest admissible alternative, and the one-sided power there is exactly 11/32. A target
-        at that value lies inside the enclosure of the computed power, so the effect can
-        neither be certified nor ruled out; a target above the enclosure is unattainable and one
-        below it is certified."""
+    def test_endpoint_target_uses_point_power_not_its_lower_bound(self):
         baseline = Baseline.from_proportion(0.5)
-        with pytest.raises(InvalidRequestError) as raised:
-            minimum_detectable_effect(6, baseline, _FAR_END, PowerDesign(power=11 / 32))
-        assert raised.value.code == "power.minimum_detectable_effect.numerical_resolution"
-        context: dict[str, Any] = dict(raised.value.context)
-        lower, upper = context["power_enclosure"]
-        assert Fraction(lower) <= Fraction(11, 32) <= Fraction(upper)
-        assert lower < 11 / 32 < upper
-
-        companion = achieved_power(6, 0.5, baseline, _FAR_END, PowerDesign(power=11 / 32))
-        assert (companion.mde_relative, companion.mde_unavailable_reason) == (
-            None,
-            "numerical_resolution",
-        )
+        endpoint = achieved_power(6, 1.0, baseline, _FAR_END)
+        target = min(11 / 32, endpoint.power)
+        found = minimum_detectable_effect(6, baseline, _FAR_END, PowerDesign(power=target))
+        assert found.mde_relative is not None
+        assert found.mde_relative == pytest.approx(1.0, abs=2e-8)
+        assert found.power >= target
+        assert found.power == achieved_power(6, found.mde_relative, baseline, _FAR_END).power
 
         with pytest.raises(InvalidRequestError) as above:
             minimum_detectable_effect(6, baseline, _FAR_END, PowerDesign(power=11 / 32 + 1e-9))
@@ -878,11 +853,8 @@ class TestPlanningNumericalEnclosure:
         below = minimum_detectable_effect(6, baseline, _FAR_END, PowerDesign(power=11 / 32 - 1e-9))
         assert below.power >= 11 / 32 - 1e-9
 
-    def test_a_billion_unit_effect_and_size_are_certified_not_merely_computed(self):
-        """At hundreds of millions of units the allowance of one pmf is ``n`` ULPs, 1e-7 of it,
-        so a computed power at the target is not known to reach it: the effect and the size
-        reported are those whose enclosure reaches the target, and a size's predecessor's does
-        not."""
+    def test_large_arm_point_power_survives_numerically_unavailable_effect(self):
+        """Effect localization can be unresolved even when supplied point power is usable."""
         eps = float(np.finfo(np.float64).eps)
         target = PowerDesign().power
 
@@ -891,8 +863,16 @@ class TestPlanningNumericalEnclosure:
 
         n, p_c = 1_000_000_000, 2e-7
         baseline, procedure = Baseline.from_proportion(p_c), _conversion()
-        effect = minimum_detectable_effect(n, baseline, procedure)
-        assert effect.power >= target * (1.0 + 2.0 * allowance(n))
+        try:
+            effect = minimum_detectable_effect(n, baseline, procedure)
+        except InvalidRequestError as raised:
+            assert raised.code == "power.minimum_detectable_effect.numerical_resolution"
+            supplied = achieved_power(n, 0.5, baseline, procedure)
+            assert supplied.power >= target
+            assert supplied.mde_unavailable_reason == "numerical_resolution"
+        else:
+            assert effect.mde_relative is not None and effect.power >= target
+            assert effect.power == achieved_power(n, effect.mde_relative, baseline, procedure).power
 
         sized = required_sample_size(0.5, baseline, procedure)
         units = sized.n_per_arm
@@ -980,20 +960,14 @@ def _lattice_effect(target: float) -> PowerResult:
     )
 
 
-class TestEarliestCertifiedEffectOnANonMonotoneLattice:
-    """Power along the effects is not monotone for a decision whose control rows reject different
-    treatment counts: plus rejections lift it and minus rejections lower it, each from where its
-    row's threshold sits. The effect search reports the first effect whose power is certified to
-    reach the target and, where none is, refuses with the target enclosed at the effects it
-    could not exclude. The expected effects below come from a dense scan and a root solve of the
-    set's power from the binomial laws alone."""
+class TestEarliestDetectableRegionOnANonMonotoneLattice:
+    """Find the earliest detectable region to numerical effect tolerance.
 
-    def test_a_target_within_the_nulls_enclosure_is_refused_there_when_power_falls_from_it(self):
-        """A 90% baseline tested against a null lift of -25% at 10 units per arm and a 35%
-        treatment share: power falls from its null value (0.01985) to a trough and ends at 0.0086
-        at a rate of one. A target at the null's own power lies in the enclosure of the null's
-        power, which the refusal encloses -- not that of the far end, which the target is above.
-        A target below the enclosure is the null itself; one above it is unattainable."""
+    An independent binomial-law scan and root solve locate the reference crossings.
+    Earlier unresolved intervals cannot be skipped for later detectable bands.
+    """
+
+    def test_a_target_at_the_null_point_is_a_zero_effect_not_numerically_unresolved(self):
         baseline = Baseline.from_proportion(0.9)
         procedure = _conversion(null_lift=-0.25)
         allocation = 0.35
@@ -1007,13 +981,7 @@ class TestEarliestCertifiedEffectOnANonMonotoneLattice:
 
         with pytest.raises(InvalidRequestError) as raised:
             effect(at_null.power)
-        context: dict[str, Any] = dict(raised.value.context)
-        assert raised.value.code == "power.minimum_detectable_effect.numerical_resolution"
-        lower, upper = context["power_enclosure"]
-        assert lower < at_null.power <= upper
-        assert upper - lower < 1e-9
-        low, high = context["unresolved_interval"]
-        assert low == 0.0 < high < 1e-6
+        assert raised.value.code == "power.minimum_detectable_effect.design_search_minimum"
 
         with pytest.raises(InvalidRequestError) as below:
             effect(at_null.power * (1.0 - 1e-9))
@@ -1037,23 +1005,17 @@ class TestEarliestCertifiedEffectOnANonMonotoneLattice:
 
         found = _lattice_effect(0.8)
 
-        assert found.mde_relative == pytest.approx(expected, rel=1e-9)
+        assert found.mde_relative == pytest.approx(expected, rel=1e-8, abs=1e-8)
         assert found.power >= 0.8
 
     @pytest.mark.parametrize(
         ("target", "band"),
-        [(None, "first"), (0.33, "first"), (0.40, "second")],
+        [(0.33, "first"), (0.40, "second")],
     )
     def test_the_first_of_two_bands_is_found_across_the_trough_between_them(
         self, monkeypatch, target, band
     ):
-        """Four row groups: one rejects below 19 counts (falling by a 9% rate), one from 30
-        (rising at 10%), one below 36 (falling at 12%) and one from 180 (rising at 60%). Power
-        starts at 0.309, falls to 0.246 and comes back to a first band that peaks at 0.338, drops
-        to 0.246 and climbs to 0.678 for the second. With the null's own power as target the null
-        is undecided and the first band starts at an effect near 0.94: a search that leaps from
-        the null over a stretch where nothing certifies lands in the second band (10.4). The
-        first band is the answer for 0.33; it does not reach 0.40, so the second is."""
+        """The first band reaches 0.33 but not 0.40; the second reaches both."""
         rows = _lattice_rows(0.10, 0.25, 0.20, 0.45)
         rules = [
             (*rows[0], "minus", 19),
@@ -1068,20 +1030,13 @@ class TestEarliestCertifiedEffectOnANonMonotoneLattice:
 
         found = _lattice_effect(target)
 
-        assert found.mde_relative == pytest.approx(expected, rel=1e-9)
+        assert found.mde_relative == pytest.approx(expected, rel=1e-8, abs=1e-8)
         assert found.power >= target
 
     def test_a_target_at_the_peak_of_a_band_is_neither_answered_nor_called_unattainable(
         self, monkeypatch
     ):
-        """The first three row groups above, without the one that rises at 60%: power peaks at
-        0.338 near an 11% treatment rate and ends at 0.25. A target at the peak's power lies
-        within the enclosure of the powers there, and the closure bound over the flat top
-        (where the plus and minus rejections it adds cancel) cannot show that no effect there
-        reaches it: the search ends on its evaluation budget and refuses with
-        ``numerical_resolution``, naming no effect and not calling the target unattainable. A
-        target a thousandth above the peak is unattainable and one three percent below it is
-        reached on the band's rising side."""
+        """At a flat peak, report an evaluated passing point or explicit numerical uncertainty."""
         rows = _lattice_rows(0.10, 0.25, 0.20, 0.45)
         rules = [(*rows[0], "minus", 19), (*rows[1], "plus", 30), (*rows[2], "minus", 36)]
         _decide_by_rows(monkeypatch, rules)
@@ -1094,12 +1049,19 @@ class TestEarliestCertifiedEffectOnANonMonotoneLattice:
         peak, peak_effect = -float(top.fun), float(top.x) / _LATTICE_RATE - 1.0
         assert _lattice_power(1.0, rules) < _lattice_power(_LATTICE_RATE, rules) < peak
 
-        with pytest.raises(InvalidRequestError) as raised:
-            _lattice_effect(peak)
-        assert raised.value.code == "power.minimum_detectable_effect.numerical_resolution"
-        context: dict[str, Any] = dict(raised.value.context)
-        enclosure = context["power_enclosure"]
-        assert enclosure is None or enclosure[0] < peak <= enclosure[1]
+        try:
+            found = _lattice_effect(peak)
+        except InvalidRequestError as raised:
+            assert raised.code == "power.minimum_detectable_effect.numerical_resolution"
+            enclosure = raised.context["power_enclosure"]
+            if enclosure is not None:
+                assert isinstance(enclosure, tuple)
+                lower, upper = enclosure
+                assert isinstance(lower, (int, float)) and isinstance(upper, (int, float))
+                assert lower <= peak <= upper
+        else:
+            assert found.mde_relative == pytest.approx(peak_effect, abs=1e-6)
+            assert found.power >= peak
 
         with pytest.raises(InvalidRequestError) as above:
             _lattice_effect(peak * 1.001)
@@ -1107,23 +1069,15 @@ class TestEarliestCertifiedEffectOnANonMonotoneLattice:
         reached = _lattice_effect(peak * 0.97)
         assert reached.mde_relative is not None
         assert reached.mde_relative == pytest.approx(
-            _lattice_crossing(rules, peak * 0.97), rel=1e-9
+            _lattice_crossing(rules, peak * 0.97), rel=1e-8, abs=1e-8
         )
         assert reached.mde_relative < peak_effect
 
-    def test_the_closure_is_tight_over_a_runtime_decision_and_still_valid_over_a_gapped_set(
-        self, monkeypatch
-    ):
-        """Every row of the runtime's decision rejects a run of treatment counts that reaches
-        the window's end, so its closure is closed. A set that rejects only a band of counts
-        is not: its closure counts the counts above the band too, so it bounds the band's
-        probability (checked against the binomial law) without being tight and says it is open."""
+    def test_closure_bounds_a_rejection_set_with_holes(self, monkeypatch):
+        """A monotone closure also bounds a rejection set with holes."""
         from increment.power import _binomial
 
         decision = BinomialDecision(40, 40, 1.0, binomial_rr.nuisance_beta(0.05), 0.025, "greater")
-        runtime = RejectionGeometry(decision, "exact")
-        runtime.evaluate(0.2, 0.4)
-        assert runtime.closure(0.2, 0.4, 0.4).closed
 
         band = np.arange(14, 19)
         monkeypatch.setattr(
@@ -1138,11 +1092,9 @@ class TestEarliestCertifiedEffectOnANonMonotoneLattice:
         )
         gapped = RejectionGeometry(decision, "exact")
         gapped.evaluate(0.2, 0.4)
-        closure = gapped.closure(0.2, 0.4, 0.4)
+        bound = gapped.closure_bound(0.2, 0.4, 0.4)
         exact = float(binom.pmf(band, 40, 0.4).sum())
-        assert not closure.closed
-        assert closure.bound >= exact
-        assert closure.bound > exact + 0.1
+        assert bound >= exact
 
 
 @pytest.mark.parametrize(

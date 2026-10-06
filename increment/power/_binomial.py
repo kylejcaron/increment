@@ -1390,16 +1390,6 @@ class BinomialPower:
         return min(1.0, _up(_up(self.power * self.inflation) + self.omitted))
 
 
-@dataclass(frozen=True, slots=True)
-class Closure:
-    """The closure bound over an interval of treatment rates (`RejectionGeometry.closure`) and
-    whether the decision set it closes over is already closed there, which is when the bound
-    exceeds the power it bounds by no more than the numerical error."""
-
-    bound: float
-    closed: bool
-
-
 @dataclass(slots=True)
 class _Segment:
     """Classified cells over one contiguous run of treatment counts
@@ -1614,11 +1604,26 @@ class RejectionGeometry:
             inflation,
         )
 
-    def closure_bound(self, p_c: float, p_lo: float, p_hi: float) -> float:
-        """`closure` bound alone."""
-        return self.closure(p_c, p_lo, p_hi).bound
+    def point_upper(self, p_c: float, p_lo: float, p_hi: float, bound: float) -> float:
+        """Enlarge a probability bound to cover every computed point in the interval.
 
-    def closure(self, p_c: float, p_lo: float, p_hi: float) -> Closure:
+        Endpoint windows bound intervening summation lengths. Their PMF and
+        nonnegative summation allowances bound the floating rejection mass,
+        without assuming it varies monotonically.
+        """
+        wc = _window(self.decision.n_c, p_c)
+        low = _window_bounds(self.decision.n_t, p_lo)[0]
+        high = _window_bounds(self.decision.n_t, p_hi)[1]
+        inflation = _inflation(
+            wc.error,
+            _allowance(self.decision.n_t),
+            _compounded(wc.size),
+            _compounded(high - low + 1),
+            _UNIT_ROUNDOFF,
+        )
+        return min(1.0, _up(bound * inflation))
+
+    def closure_bound(self, p_c: float, p_lo: float, p_hi: float) -> float:
         """Upper bound on the replayed decision set's rejection probability (the runtime's on the
         ``exact`` route) at control rate ``p_c`` and every
         treatment rate ``p`` in ``[p_lo, p_hi]``, numerical error included.
@@ -1634,11 +1639,6 @@ class RejectionGeometry:
         to every row. A row's bound is that sum, at most one; control counts outside the window
         add its omitted mass. The bound reads only what earlier evaluations classified and is a
         valid bound on the unclassified rest.
-
-        The bound is tight only where the set is already closed: ``closed`` says every control row
-        has all of ``[L, H]`` classified, its plus rejections run on to ``H`` from the first and
-        its minus rejections back to ``L`` from the last. Elsewhere the bound counts counts the
-        decision does not reject, so it can exceed the power it bounds by any amount.
         """
         decision = self.decision
         n_t = decision.n_t
@@ -1648,7 +1648,6 @@ class RejectionGeometry:
         # A row without classified counts across [low, high] may reject at every one.
         t = np.full(rows.size, low, np.int64)
         s = np.full(rows.size, high, np.int64)
-        closed = False
         segment = self._containing(low, high)
         inside = (rows >= 0) & (rows < self.rows)
         if segment is not None and inside.any():
@@ -1664,9 +1663,6 @@ class RejectionGeometry:
             last = np.where(minus.any(axis=1), j[last_index], low - 1)
             t[inside] = np.where(known, first, low)
             s[inside] = np.where(known, last, high)
-            run_plus = plus.sum(axis=1) == np.where(plus.any(axis=1), j.size - first_index, 0)
-            run_minus = minus.sum(axis=1) == np.where(minus.any(axis=1), last_index + 1, 0)
-            closed = bool(inside.all() and known.all() and run_plus.all() and run_minus.all())
         if "plus" not in decision.kinds:
             t[:] = n_t + 1
         if "minus" not in decision.kinds:
@@ -1686,5 +1682,4 @@ class RejectionGeometry:
             _UNIT_ROUNDOFF,
             _compounded(wc.size),
         )
-        bound = min(1.0, _up(_up(float(wc.weights @ rows_bound) * inflation) + wc.omitted))
-        return Closure(bound, closed)
+        return min(1.0, _up(_up(float(wc.weights @ rows_bound) * inflation) + wc.omitted))

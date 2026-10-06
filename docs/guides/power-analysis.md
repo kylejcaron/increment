@@ -229,10 +229,9 @@ The route depends only on the design, never on timing. Every probability here is
 value with a numerical error: each binomial weight is a SciPy value within the runtime's
 allowance of `n` units in the last place (the allowance its own float margin is built on) and
 every sum rounds. The planner encloses the rejection probability of the decision set its route
-replays in an interval and decides from its ends only: on the exact route that is the
-runtime's rejection probability, on the approximate route its Normal-tail model's, whose own
-departure from the runtime (above) the interval does not cover, so a size or effect certified
-or called unattainable there is so under that model. The interval is about `1e-12` of the power at 1,000 units per arm
+replays: on the exact route that is the runtime's probability; on the approximate route it is
+the Normal-tail model's. The interval does not cover that model's departure from the runtime.
+The interval is about `1e-12` of the power at 1,000 units per arm
 and `4e-7` of it at a billion (the reported `power` is the computed value inside it, not
 shifted). Power is not monotone in the sample size under this decision, so
 `required_sample_size` returns a verified size whose power is *certified* to reach the target
@@ -240,23 +239,18 @@ shifted). Power is not monotone in the sample size under this decision, so
 smaller size reaches it, and a size whose interval straddles the target is not certified, so
 the answer can exceed the first size that reaches it by the sizes within that interval of the
 target (none at ordinary sizes; about 170 of 490 million at a 2e-7 baseline).
-`minimum_detectable_effect` returns the first admissible effect whose power is certified to
-reach the target, whatever the shape of power along the effects (two-sided power can fall from
-the null before it rises, and a decision's rows can lift and lower it in turn): earlier effects
-are excluded by their own power or by a bound on the rejection set (enlarged by the same
-error), except those whose power lies within the interval of the target, which are not
-decided, so a band of effects that reaches the target is found whether or not the largest
-effect does. The effect reported can exceed the first that reaches it by that much (a relative
-`1e-12` at 701 to 2,000 units per arm, `4e-7` at a billion) and its `power` exceeds the target
-by about the interval. A target no admissible effect can reach is `unattainable`; one that no
-effect certifies, while the bound cannot exclude every effect, lies within the interval of the
-greatest power any effect may reach and can neither be certified nor ruled out, so the
-companion `mde_relative` is `None` with `numerical_resolution` and `minimum_detectable_effect`
-is refused with `power.minimum_detectable_effect.numerical_resolution`, whose context carries
-that interval as `power_enclosure` and the effects the bound could not exclude as
-`unresolved_interval`. Where the bound cannot exclude a stretch of effects (the effect search's
-own 512-evaluation budget ends, as it does when the target is the power of a flat peak) the
-same code is raised with `power_enclosure` of `None`.
+`minimum_detectable_effect` locates the earliest detectable region using computed
+point power, with effect tolerance `1e-8 + 1e-8 * abs(effect)`, not a first-float
+guarantee. The returned effect's evaluated point power reaches the target.
+Earlier intervals must be excluded by a bound or lie within that effect tolerance;
+endpoint numerical errors alone do not exclude an interior peak.
+
+An unresolved earlier interval is not skipped for a later detectable band. If its
+search exhausts the 512-evaluation budget, the companion `mde_relative` is `None`
+with `numerical_resolution`; a direct request raises
+`power.minimum_detectable_effect.numerical_resolution`. Its context names the
+`unresolved_interval` and includes `power_enclosure` when available. A target
+excluded over the whole admissible domain is `unattainable`.
 
 A design the runtime refuses in full decides no count pair, so it has no power to plan, and it
 is never replayed: `achieved_power`, `minimum_detectable_effect` and every `power_curve` row

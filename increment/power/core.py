@@ -45,6 +45,7 @@ import math
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+from fractions import Fraction
 from typing import Literal, NoReturn, cast
 
 import numpy as np
@@ -94,7 +95,6 @@ from increment.power._binomial import (
     PLANNING_CELL_CEILING,
     BinomialDecision,
     BinomialPower,
-    Closure,
     RejectionGeometry,
     ReplayBoundExceeded,
     Route,
@@ -2240,16 +2240,11 @@ class _BinomialPlan:
                 self.p_c, decision.n_t, decision.n_c, exceeded.cells, p_t=exceeded.p_t, **sizing
             )
 
-    def closure(self, theta_a: float, theta_b: float) -> Closure:
-        """Closure bound on the replayed decision set's rejection mass (the runtime's rejection
-        probability on the exact route) at every alternative between two effects, numerical
-        error included, and whether the set is closed there."""
-        low, high = sorted((self.rate(theta_a), self.rate(theta_b)))
-        return self.geometry.closure(self.p_c, low, high)
-
     def bound(self, theta_a: float, theta_b: float) -> float:
-        """`closure` bound alone."""
-        return self.closure(theta_a, theta_b).bound
+        """Upper bound on every computed point power between the effects."""
+        low, high = sorted((self.rate(theta_a), self.rate(theta_b)))
+        bound = self.geometry.closure_bound(self.p_c, low, high)
+        return self.geometry.point_upper(self.p_c, low, high, bound)
 
 
 def _render_replay_bound(
@@ -2365,87 +2360,49 @@ def _analyzed_counts(n_T: int, n_C: int, baseline: Baseline) -> tuple[int, int]:
     return round(n_T * baseline.trigger_rate), round(n_C * baseline.trigger_rate)
 
 
-# Evaluations and interval bounds one binomial minimum-detectable-effect search may spend: each
-# evaluates a candidate or bounds an interval, and an ordinal interval halves at most 64 times.
+# Evaluations and interval bounds one binomial effect search may spend.
 _BINOMIAL_MDE_EVALUATIONS = 512
+_BINOMIAL_MDE_ATOL = 1e-8
+_BINOMIAL_MDE_RTOL = 1e-8
 
 
 class _SearchBudgetExhausted(Exception):
-    """Internal: the ordered exclusion ran out of evaluations."""
+    """The ordered interval search exhausted its evaluation allowance."""
+
+
+def _binomial_curvature_gap(n: int, low: float, high: float) -> Fraction:
+    """Bound interpolation error of a fixed binomial rejection probability.
+
+    Bernstein second differences give ``|P''| <= 2n(n-1)`` everywhere.
+    Inside (0,1), the score bound ``2n/min(p(1-p))`` can be smaller.
+    Multiply the smaller bound by the squared interval width divided by eight.
+    """
+    a, b = Fraction(low), Fraction(high)
+    curvature = Fraction(2 * n * (n - 1))
+    if 0 < a <= b < 1:
+        curvature = min(curvature, 2 * n / min(a * (1 - a), b * (1 - b)))
+    return curvature * (b - a) ** 2 / 8
 
 
 @dataclass(slots=True)
-class _Spent:
-    count: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class _Standing:
-    """One candidate effect against the target power. ``certified``: the lower end of its
-    enclosed rejection mass reaches the target, so the decision model's does (the runtime's, on
-    the exact route). ``possible``: ``bound``, the closure bound over that single effect (the
-    bound an interval is excluded by), reaches it, so the model's may; neither holds only where
-    the target is above the bound."""
-
-    power: BinomialPower
-    certified: bool
-    possible: bool
-    bound: float
-
-    @property
-    def error(self) -> float:
-        """What the numerical error leaves undecided at this effect: the closure bound above the
-        certified lower end of its power."""
-        return self.bound - self.power.lower
-
-
-@dataclass(slots=True)
-class _Obstruction:
-    """What a search could neither certify nor exclude: the ordinals spanning it, the greatest
-    certified lower end of any candidate evaluated, and the greatest closure bound over what
-    was not excluded. With nothing certified, the greatest power any candidate may reach lies
-    between the two."""
-
+class _BinomialMdeState:
+    evaluations: int = 0
+    unresolved: tuple[float, float] | None = None
     lower: float = 0.0
     upper: float = 0.0
-    first: int | None = None
-    last: int | None = None
-
-    def evaluated(self, ordinal: int, standing: _Standing) -> None:
-        self.lower = max(self.lower, standing.power.lower)
-        if standing.possible:
-            self.cover(ordinal, ordinal, standing.bound)
-
-    def cover(self, lo: int, hi: int, bound: float) -> None:
-        low, high = min(lo, hi), max(lo, hi)
-        self.first = low if self.first is None else min(self.first, low)
-        self.last = high if self.last is None else max(self.last, high)
-        self.upper = max(self.upper, bound)
 
 
 @dataclass(frozen=True, slots=True)
 class _BinomialMdeSearch(_MdeSearch):
-    """``_MdeSearch``'s candidate space with power from the runtime binomial
-    decision as the geometry's route models it. Power is a polynomial in the treatment rate,
-    not a function of a noncentrality, and every value of it is enclosed by its numerical
-    error (see `BinomialPower`), so a candidate is *certified* when the enclosure's lower end
-    reaches the target and *possible* while the closure bound over it does. Neither is
-    monotone along the effects, so no search here assumes it: an ordinal interval is
-    discarded only when ``_BinomialPlan.bound`` (the monotone closure of the rejection set)
-    stays below target across it, or, in the search for the first certified candidate, when
-    every candidate in it lies within the numerical error of the target (`first_certified`).
-    The first possible candidate is found first, every earlier one excluded; the first
-    certified one is then the first the ordered search reaches, so the answer's power reaches
-    the target and every earlier candidate is excluded or lies within the numerical error of
-    the target, not decided. With none certified the refusal encloses the greatest power any
-    candidate may reach (`_Obstruction`). The enclosure is of the integration, not of the
-    route's decision mask: on the approximate route certified, possible and unattainable
-    describe its Normal-tail model (``power_basis="approximate"``), not a bound on the
-    runtime."""
+    """Search intervals in distance order without assuming point-power monotonicity.
+
+    Exclude an interval only with an upper bound on every computed point.
+    Otherwise subdivide left first. Unexcluded earlier effects must be within
+    ``atol + rtol * abs(effect)`` of the returned, evaluated passing point.
+    """
 
     model: _BinomialPlan
-    spent: _Spent
-    obstruction: _Obstruction
+    state: _BinomialMdeState
 
     @classmethod
     def of(
@@ -2467,18 +2424,16 @@ class _BinomialMdeSearch(_MdeSearch):
             log_m0=base.log_m0,
             theta_floor=base.theta_floor,
             model=model,
-            spent=_Spent(),
-            obstruction=_Obstruction(),
+            state=_BinomialMdeState(),
         )
 
     def _charge(self) -> None:
-        self.spent.count += 1
-        if self.spent.count > _BINOMIAL_MDE_EVALUATIONS:
+        self.state.evaluations += 1
+        if self.state.evaluations > _BINOMIAL_MDE_EVALUATIONS:
             raise _SearchBudgetExhausted
 
     def overflowed_null(self) -> float | _MdeRefusal:
-        """``_MdeSearch.overflowed_null`` with the band's reachable power
-        bounded by the rejection set's monotone closure across the band."""
+        """Exclude an unrepresentable initial band before searching representable effects."""
         if self.sigma > 0.0:
             return self.unrepresentable("float64_relative_lift")
         edge = math.nextafter(-1.0, 0.0)
@@ -2492,158 +2447,85 @@ class _BinomialMdeSearch(_MdeSearch):
             return self.unrepresentable("float64_relative_lift")
         return m_min
 
-    def _theta(self, ordinal: int) -> float:
-        point = self.candidate(float_from_ordinal(ordinal))
-        assert point is not None, "searched ordinals lie inside the admissible interval"
-        return point[1]
-
-    def stand(self, m: float) -> _Standing:
-        """Candidate ``m``'s enclosed rejection probability and its standing against the target."""
+    def evaluate(self, effect: float) -> BinomialPower:
         self._charge()
-        point = self.candidate(m)
-        assert point is not None, "searched candidates lie inside the admissible interval"
-        theta = point[1]
-        power = self.model.evaluate(theta)
-        bound = self.model.bound(theta, theta)
-        standing = _Standing(power, power.lower >= self.target, bound >= self.target, bound)
-        self.obstruction.evaluated(float_ordinal(m), standing)
-        return standing
+        point = self.candidate(effect)
+        assert point is not None
+        return self.model.evaluate(point[1])
 
-    def _closure_over(self, lo: int, hi: int) -> Closure:
-        """Closure over the effects between two ordinals, ends included."""
+    def detected(self, power: BinomialPower) -> bool:
+        return power.power >= self.target
+
+    @staticmethod
+    def tolerance(effect: float) -> float:
+        return _BINOMIAL_MDE_ATOL + _BINOMIAL_MDE_RTOL * abs(effect)
+
+    def unresolved(self, lo: float, hi: float, reason: str) -> _MdeRefusal:
+        state = self.state
+        interval = state.unresolved or (lo, hi)
+        return _MdeRefusal(
+            "numerical_resolution",
+            _MDE_NUMERICAL_RESOLUTION,
+            {
+                "target_power": self.target,
+                "direction": self.direction,
+                "unresolved_interval": tuple(sorted(interval)),
+                "power_enclosure": (state.lower, state.upper) if state.unresolved else None,
+                "stopping_reason": reason,
+            },
+        )
+
+    def _bound(self, lo: float, hi: float, left: BinomialPower, right: BinomialPower) -> float:
         self._charge()
-        return self.model.closure(self._theta(lo), self._theta(hi))
+        a, b = self.candidate(lo), self.candidate(hi)
+        assert a is not None and b is not None
+        low_rate, high_rate = sorted((self.model.rate(a[1]), self.model.rate(b[1])))
+        gap = _binomial_curvature_gap(self.model.geometry.decision.n_t, low_rate, high_rate)
+        true_upper = min(
+            1.0, math.nextafter(float(Fraction(max(left.upper, right.upper)) + gap), math.inf)
+        )
+        return self.model.geometry.point_upper(self.model.p_c, low_rate, high_rate, true_upper)
 
-    def _excluded(self, lo: int, hi: int) -> bool:
-        return self._closure_over(lo, hi).bound < self.target
+    def _midpoint(self, lo: float, hi: float) -> float:
+        """Bisect log distance without overflowing a large relative effect."""
+        a = math.log1p(lo * self.compliance)
+        b = math.log1p(hi * self.compliance)
+        mid = math.expm1(a + (b - a) / 2.0) / self.compliance
+        if min(lo, hi) < mid < max(lo, hi):
+            return mid
+        first, last = float_ordinal(lo), float_ordinal(hi)
+        return float_from_ordinal(first + (last - first) // 2)
 
-    def first_possible(self, lo: int, hi: int, at_hi: _Standing) -> tuple[int, _Standing]:
-        """First ordinal in ``(lo, hi]`` where the target may be reached, with its standing,
-        given it cannot be at ``lo`` and may be at ``hi`` (standing ``at_hi``): bisect, and
-        before discarding the left part of a midpoint that cannot reach it prove that part
-        holds no candidate that may."""
-        while abs(hi - lo) > 1:
-            mid = lo + (hi - lo) // 2
-            at_mid = self.stand(float_from_ordinal(mid))
-            if at_mid.possible:
-                hi, at_hi = mid, at_mid
-                continue
-            earlier = self.first_inside(lo, mid)
-            if earlier is not None:
-                return earlier
-            lo = mid
-        return hi, at_hi
-
-    def first_inside(self, lo: int, hi: int) -> tuple[int, _Standing] | None:
-        """First ordinal strictly between two ordinals where the target cannot be reached at
-        which it may be, with its standing, or ``None`` when the closure bound proves there is
-        none."""
-        if abs(hi - lo) <= 1 or self._excluded(lo, hi):
+    def between(
+        self, lo: float, hi: float, left: BinomialPower, right: BinomialPower
+    ) -> tuple[float, float] | _MdeRefusal | None:
+        pending = self.state.unresolved
+        if pending is not None and abs(lo - pending[0]) > self.tolerance(lo):
+            return self.unresolved(lo, hi, "an earlier detectable region remains unresolved")
+        if self.detected(left):
+            return lo, left.power
+        bound = self._bound(lo, hi, left, right)
+        if bound < self.target:
             return None
-        mid = lo + (hi - lo) // 2
-        at_mid = self.stand(float_from_ordinal(mid))
-        if at_mid.possible:
-            return self.first_possible(lo, mid, at_mid)
-        left = self.first_inside(lo, mid)
-        return left if left is not None else self.first_inside(mid, hi)
-
-    def first_certified(
-        self, start: int, at_start: _Standing, end: int, at_end: _Standing
-    ) -> int | None:
-        """First ordinal after ``start``, up to ``end`` inclusive, that certifies the target, or
-        ``None`` when none does, given ``start`` does not. The ordinals are covered by
-        consecutive intervals whose length doubles from one ordinal, each searched completely
-        (`_certified_between`), so none is taken from another's standing. Candidates near the
-        first possible one differ in power by about the numerical error and the answer is
-        usually among them: the doubling keeps the effects evaluated that close, rather than at
-        the midpoint of a span that may be far larger."""
-        direction = 1 if end > start else -1
-        lo, at_lo, stride = start, at_start, 1
-        while lo != end:
-            probe = start + direction * stride
-            if (probe - end) * direction >= 0:
-                probe, at_probe = end, at_end
-            else:
-                at_probe = self.stand(float_from_ordinal(probe))
-            found = self._certified_between(lo, at_lo, probe, at_probe)
-            if found is not None:
-                return found
-            if at_probe.certified:
-                return probe
-            lo, at_lo, stride = probe, at_probe, 2 * stride
-        return None
-
-    def _certified_between(
-        self, lo: int, at_lo: _Standing, hi: int, at_hi: _Standing
-    ) -> int | None:
-        """First ordinal strictly between two evaluated ordinals that certifies the target, or
-        ``None`` when none does, given ``lo`` does not. Certification is not monotone along
-        the effects, so no ordinal is passed over on the strength of its neighbours: an
-        interval is left only when the closure bound over it stays below the target, or when
-        ``hi`` does not certify, the set the bound closes over is already closed (so the bound
-        is tight, see `Closure`) and it exceeds the target by no more than the numerical error
-        of the interval's ends (every candidate in it then lies within that error of the
-        target, so none is decided to reach it and none is skipped in favour of a later one
-        that is). Any other interval is split at its midpoint and its left part searched
-        first, so the answer is the first certified ordinal and each earlier candidate is
-        excluded or within the numerical error of the target; a set that is not closed over
-        a stretch the bound cannot exclude leaves the search to end on its evaluation budget.
-        A certified ``hi`` leaves no bound to compute: the bound over an interval that ends at
-        a candidate reaching the target reaches it too."""
-        if abs(hi - lo) <= 1:
+        adjacent = abs(float_ordinal(hi) - float_ordinal(lo)) <= 1
+        if abs(hi - lo) <= self.tolerance(hi) / 4.0 or adjacent:
+            if self.detected(right):
+                if pending is not None and abs(hi - pending[0]) > self.tolerance(hi):
+                    return self.unresolved(
+                        lo, hi, "an earlier detectable region remains unresolved"
+                    )
+                return hi, right.power
+            if pending is None:
+                self.state.unresolved = (lo, hi)
+                self.state.lower = max(left.lower, right.lower)
+                self.state.upper = bound
             return None
-        if not at_hi.certified:
-            closure = self._closure_over(lo, hi)
-            if closure.bound < self.target:
-                return None
-            if closure.closed and closure.bound <= self.target + max(at_lo.error, at_hi.error):
-                self.obstruction.cover(lo, hi, closure.bound)
-                return None
-        mid = lo + (hi - lo) // 2
-        at_mid = self.stand(float_from_ordinal(mid))
-        earlier = self._certified_between(lo, at_lo, mid, at_mid)
+        mid = self._midpoint(lo, hi)
+        middle = self.evaluate(mid)
+        earlier = self.between(lo, mid, left, middle)
         if earlier is not None:
             return earlier
-        if at_mid.certified:
-            return mid
-        return self._certified_between(mid, at_mid, hi, at_hi)
-
-    def unresolved(self, lo: int, hi: int) -> _MdeRefusal:
-        low, high = sorted((float_from_ordinal(lo), float_from_ordinal(hi)))
-        return _MdeRefusal(
-            "numerical_resolution",
-            _MDE_NUMERICAL_RESOLUTION,
-            {
-                "target_power": self.target,
-                "direction": self.direction,
-                "unresolved_interval": (low, high),
-                "power_enclosure": None,
-                "stopping_reason": "the ordered exclusion's evaluation budget ran out",
-            },
-        )
-
-    def undecided(self) -> _MdeRefusal:
-        """No candidate certifies the target and the closure bound cannot exclude every one: it
-        lies within the numerical error of the greatest power any candidate may reach, which
-        the refusal encloses from the greatest certified lower end evaluated to the greatest
-        bound over the candidates not excluded."""
-        seen = self.obstruction
-        assert seen.first is not None and seen.last is not None
-        low, high = sorted((float_from_ordinal(seen.first), float_from_ordinal(seen.last)))
-        return _MdeRefusal(
-            "numerical_resolution",
-            _MDE_NUMERICAL_RESOLUTION,
-            {
-                "target_power": self.target,
-                "direction": self.direction,
-                "unresolved_interval": (low, high),
-                "power_enclosure": (seen.lower, seen.upper),
-                "stopping_reason": (
-                    "the target lies within the numerical error of the greatest power any "
-                    "candidate reaches"
-                ),
-            },
-        )
+        return self.between(mid, hi, middle, right)
 
 
 def _solve_binomial_mde(
@@ -2654,20 +2536,11 @@ def _solve_binomial_mde(
     null_lift: float,
     alternative: Alternative,
 ) -> tuple[float, float] | _MdeRefusal:
-    """``_solve_arm_mde``'s contract on the runtime binomial decision: the
-    first admissible effect in distance order whose power is certified to
-    reach ``target`` (see `_BinomialMdeSearch`), with its power. Every earlier
-    candidate is excluded by its own evaluation or by the monotone-closure
-    bound, except those whose power lies within the numerical error of the
-    target; certification is never assumed monotone, so an earlier band of
-    effects that reaches the target is found whether or not the far end of
-    the interval does. A target no admissible candidate can reach is
-    unattainable, reporting the power at the direction's far admissible end
-    (the bounded rate ceiling, or the relative-lift floor for a decrease);
-    when the closure bound cannot exclude every candidate and none is
-    certified, the target is unresolved, enclosed by the greatest power any
-    candidate may reach. The geometry keeps each solved search, so effects
-    sharing it (a curve's companions) are solved once."""
+    """Earliest detectable region to numerical effect tolerance, with point power.
+
+    Wider unresolved earlier intervals refuse instead of being skipped.
+    Solved searches are memoized for a curve's companion effects.
+    """
     memo = model.geometry.effects
     key = (model.p_c, plan.baseline.compliance, target)
     if key not in memo:
@@ -2685,12 +2558,14 @@ def _search_binomial_mde(
     null_lift: float,
     alternative: Alternative,
 ) -> tuple[float, float] | _MdeRefusal:
+    geometry = model.geometry
+    model = replace(
+        model,
+        geometry=RejectionGeometry(geometry.decision, geometry.route, geometry.max_cells),
+    )
     search = _BinomialMdeSearch.of(
         plan, model, target=target, null_lift=null_lift, alternative=alternative
     )
-    # The effect search is a solve of its own: the cells a supplied effect left on the geometry
-    # are a cache it may drop, so its answer never depends on the effect it accompanies.
-    model.geometry.begin_solve()
     try:
         return _ordered_exclusion(search)
     except ReplayBoundExceeded as exceeded:
@@ -2708,34 +2583,21 @@ def _ordered_exclusion(search: _BinomialMdeSearch) -> tuple[float, float] | _Mde
     m_min = search.lower_endpoint()
     if isinstance(m_min, _MdeRefusal):
         return m_min
-    first = search.stand(m_min)
-    if first.certified:
-        return m_min, first.power.power
     m_max = search.upper_endpoint(m_min)
-    last = search.stand(m_max)
-    lo, hi = float_ordinal(m_min), float_ordinal(m_max)
     try:
-        if first.possible:
-            reached: tuple[int, _Standing] | None = (lo, first)
-        elif last.possible:
-            reached = search.first_possible(lo, hi, last)
-        else:
-            reached = search.first_inside(lo, hi)
-        if reached is None:
-            limiting = "bounded_rate_ceiling" if search.sigma > 0.0 else "relative_lift_floor"
-            return search.unattainable(last.power.power, limiting)
-        start, at_start = reached
-        found: int | None = start
-        if not at_start.certified:
-            found = search.first_certified(start, at_start, hi, last)
-        if found is None:
-            return search.undecided()
+        first = search.evaluate(m_min)
+        if search.detected(first):
+            return m_min, first.power
+        last = search.evaluate(m_max)
+        found = search.between(m_min, m_max, first, last)
+        if found is not None:
+            return found
+        if search.state.unresolved is not None:
+            return search.unresolved(m_min, m_max, "no evaluated point reaches the target")
+        limiting = "bounded_rate_ceiling" if search.sigma > 0.0 else "relative_lift_floor"
+        return search.unattainable(last.power, limiting)
     except _SearchBudgetExhausted:
-        return search.unresolved(lo, hi)
-    m = float_from_ordinal(found)
-    point = search.candidate(m)
-    assert point is not None
-    return m, search.model.evaluate(point[1]).power
+        return search.unresolved(m_min, m_max, "the ordered interval search exhausted its budget")
 
 
 def _fixed_mde(
