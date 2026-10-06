@@ -1835,9 +1835,10 @@ class TestScipyBinomErrorBudget:
 
 
 class TestMarginDominatedAlpha:
-    """Every certified tail carries the float margin, so once the margin reaches what the tail
-    allocation leaves after the nuisance budget no p-value can be certified below it: the result
-    would be the degenerate set ``[0, 2/a]``. It is refused, coded, instead."""
+    """Every evaluated tail carries the float margin, so once the margin reaches what the tail
+    allocation leaves after the nuisance budget no p-value read from one can be certified below
+    it: the set would extend to wherever the structure alone stops it. It is refused, coded,
+    instead -- except a null the empty nuisance domain rejects without a tail evaluated."""
 
     @pytest.mark.parametrize("alternative", ["two-sided", "greater", "less"])
     def test_an_alpha_below_the_margin_is_refused_at_the_ceiling(self, alternative):
@@ -1869,6 +1870,82 @@ class TestMarginDominatedAlpha:
         with pytest.raises(brr.BinomialDataError) as exc_info:
             brr.confidence_interval(1, 1, 0, 1, alpha=1e-14, alternative="two-sided")
         assert exc_info.value.code == "estimation.binomial.tail_unrepresentable"
+
+    @pytest.mark.parametrize("alternative", ["two-sided", "less"])
+    @pytest.mark.parametrize("x_t", [brr.FINITE_SAMPLE_MAX_ARM_SIZE, 500_000_000, 0])
+    def test_a_null_the_empty_nuisance_domain_rejects_is_answered_at_the_ceiling(
+        self, alternative, x_t
+    ):
+        """A control arm of all successes puts the Clopper-Pearson lower bound ``a`` within 2e-8
+        of one, so a null ratio of two empties the domain of ``p_-``: the p-value is the nuisance
+        budget itself (doubled two-sided) and every treatment count rejects, on the control arm
+        alone. The set is ``[0, r]`` with ``r`` the first candidate beyond ``1/a`` the search
+        probed, so it excludes the null exactly as the p-value does."""
+        n, alpha, null_r = brr.FINITE_SAMPLE_MAX_ARM_SIZE, 1e-7, 2.0
+        beta = brr.nuisance_beta(alpha)
+        tail = alpha / 2.0 if alternative == "two-sided" else alpha
+        assert brr.margin_dominates_tail(tail, beta, n, n)
+        assert brr.structural_rejection(alternative, null_r, n, n, beta)
+        a, _ = brr.clopper_pearson(n, n, beta)
+        ci = brr.confidence_interval(
+            n, n, x_t, n, alpha=alpha, alternative=alternative, null_r=null_r
+        )
+        assert ci.p_value_null == (2.0 * beta if alternative == "two-sided" else beta) < alpha
+        assert ci.p_value_null == brr.null_p_value(
+            null_r, n, n, x_t, n, beta, alternative=alternative, tail=tail
+        )
+        assert ci.lower == 0.0
+        assert ci.upper is not None
+        assert 1.0 / a <= ci.upper <= (1.0 / a) * math.exp(ci.endpoint_log_width) < null_r
+        assert ci.resolution_reached and ci.capped_probes == 0
+
+    @pytest.mark.parametrize(
+        ("alternative", "x_c", "null_r"),
+        [
+            ("less", brr.FINITE_SAMPLE_MAX_ARM_SIZE, 1.0),
+            ("two-sided", brr.FINITE_SAMPLE_MAX_ARM_SIZE, 1.0),
+            ("less", 500_000_000, 2.0),
+            ("two-sided", 0, 2.0),
+            ("greater", brr.FINITE_SAMPLE_MAX_ARM_SIZE, 2.0),
+        ],
+    )
+    def test_a_null_whose_domain_is_not_empty_stays_refused_at_the_ceiling(
+        self, alternative, x_c, null_r
+    ):
+        """The unshifted null never empties the domain (``1/a > 1``), nor does a control count
+        whose lower bound stays at or below ``1/null_r``, nor a zero control count (``a = 0``);
+        "greater" reads ``p_+``, whose domain never empties. Each would read a tail the margin
+        dominates, so each is refused as before."""
+        n, alpha = brr.FINITE_SAMPLE_MAX_ARM_SIZE, 1e-7
+        assert not brr.structural_rejection(alternative, null_r, x_c, n, brr.nuisance_beta(alpha))
+        with pytest.raises(brr.BinomialDataError) as exc_info:
+            brr.confidence_interval(
+                x_c, n, 5, n, alpha=alpha, alternative=alternative, null_r=null_r
+            )
+        assert exc_info.value.code == "estimation.binomial.tail_unrepresentable"
+        assert exc_info.value.context["margin"] == brr._eps_margin(1, n, n)
+
+    def test_the_structural_threshold_is_where_the_lower_bound_passes_the_null(self):
+        """`structural_rejection` is exactly the emptiness of the domain `p_minus` evaluates: at
+        the smallest control count whose lower bound exceeds ``1/null_r`` the certificate is the
+        budget alone, one count below it the domain is not empty and the call is refused."""
+        n, alpha, null_r = brr.FINITE_SAMPLE_MAX_ARM_SIZE, 1e-7, 2.0
+        beta = brr.nuisance_beta(alpha)
+        lo, hi = 0, n
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if brr.structural_rejection("less", null_r, mid, n, beta):
+                hi = mid
+            else:
+                lo = mid
+        a_hi, b_hi = brr.clopper_pearson(hi, n, beta)
+        a_lo, b_lo = brr.clopper_pearson(lo, n, beta)
+        assert brr.minus_domain_upper(null_r, b_hi) < a_hi
+        assert brr.minus_domain_upper(null_r, b_lo) >= a_lo
+        ci = brr.confidence_interval(hi, n, 5, n, alpha=alpha, alternative="less", null_r=null_r)
+        assert ci.p_value_null == beta and ci.upper is not None and 1.0 / a_hi <= ci.upper < null_r
+        with pytest.raises(brr.BinomialDataError):
+            brr.confidence_interval(lo, n, 5, n, alpha=alpha, alternative="less", null_r=null_r)
 
 
 @pytest.mark.slow

@@ -14,7 +14,7 @@ import tracemalloc
 import weakref
 from decimal import Decimal
 from fractions import Fraction
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import pytest
@@ -385,6 +385,122 @@ class TestATailLevelTheSolverRefuses:
         assert context["cause"] == "float_margin"
         assert context["beta"] >= context["solver_floor"]
         assert context["margin"] >= context["tail_alpha"] - context["beta"]
+
+
+class TestAShiftedNullTheControlArmAloneRejects:
+    """Under a float margin that dominates the tail level the runtime evaluates no tail, yet a
+    two-sided or "less" test of a null ratio above ``1/a`` (``a`` the control arm's Clopper-Pearson
+    lower bound) rejects on the empty nuisance domain alone, whatever the treatment count: those
+    count pairs are decided and every other is refused. Planning decides exactly the same pairs,
+    plans a control window made of them alone, and refuses a window holding a refused count rather
+    than integrate it as a non-rejection."""
+
+    N, ALPHA, NULL_RATIO = binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE, 1e-7, 2.0
+
+    def _key(self, alternative: Literal["two-sided", "greater", "less"]) -> BinomialDecision:
+        tail = self.ALPHA / 2.0 if alternative == "two-sided" else self.ALPHA
+        beta = binomial_rr.nuisance_beta(self.ALPHA)
+        return BinomialDecision(self.N, self.N, self.NULL_RATIO, beta, tail, alternative)
+
+    @pytest.mark.parametrize("alternative", ["less", "two-sided"])
+    @pytest.mark.parametrize("route", ["exact", "approximate"])
+    def test_a_window_of_structural_counts_has_the_runtime_power_without_a_replay(
+        self, monkeypatch, alternative, route
+    ):
+        from increment.power import _binomial
+
+        key = self._key(alternative)
+        assert _binomial.margin_dominates(key) and not _binomial.refused(key)
+        floor = _binomial.structural_floor(key)
+        assert floor is not None
+        # The runtime decides from the floor on and refuses the count below it.
+        with pytest.raises(binomial_rr.BinomialDataError):
+            binomial_rr.confidence_interval(
+                floor - 1, self.N, 5, self.N, alpha=self.ALPHA, alternative=alternative, null_r=2.0
+            )
+        at_floor = binomial_rr.confidence_interval(
+            floor, self.N, 5, self.N, alpha=self.ALPHA, alternative=alternative, null_r=2.0
+        )
+        assert at_floor.p_value_null < self.ALPHA
+        assert at_floor.upper is not None and at_floor.upper < self.NULL_RATIO
+
+        p_c, p_t = 1.0 - 1e-7, 1e-7
+        assert _binomial.window_decided(key, p_c)
+        wc, wt = _binomial._window(self.N, p_c), _binomial._window(self.N, p_t)
+        assert wc.lo >= floor
+        for x_c in (wc.lo, (wc.lo + wc.hi) // 2, wc.hi):
+            for x_t in (wt.lo, wt.hi):
+                ci = binomial_rr.confidence_interval(
+                    x_c, self.N, x_t, self.N, alpha=self.ALPHA, alternative=alternative, null_r=2.0
+                )
+                assert ci.p_value_null < self.ALPHA
+        # Every pair of the windows rejects, so the power is their mass: no tail is replayed.
+        monkeypatch.setattr(_binomial, "_classify_live", self._forbidden)
+        power = _binomial.RejectionGeometry(key, route).evaluate(p_c, p_t)
+        mass = float(wc.weights.sum()) * float(wt.weights.sum())
+        assert power.power == pytest.approx(mass, rel=1e-12)
+        assert power.lower <= mass <= power.upper <= 1.0
+
+    @staticmethod
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("a count pair the margin dominates must not be replayed")
+
+    def test_a_window_holding_a_refused_count_is_refused_not_integrated(self, monkeypatch):
+        from increment.power import _binomial
+
+        key = self._key("less")
+        floor = _binomial.structural_floor(key)
+        assert floor is not None and not _binomial.window_decided(key, 0.5)
+        with pytest.raises(AssertionError):
+            _binomial.RejectionGeometry(key, "exact").evaluate(0.5, 1.0)
+
+        procedure = _conversion(alpha=self.ALPHA, alternative="less", null_lift=1.0)
+        baseline = Baseline.from_proportion(0.5)
+        for name in ("classify", "_window"):
+            monkeypatch.setattr(_binomial, name, self._forbidden)
+        for planner in (
+            lambda: achieved_power(self.N, -0.5, baseline, procedure),
+            lambda: minimum_detectable_effect(self.N, baseline, procedure),
+        ):
+            with pytest.raises(InvalidRequestError) as raised:
+                planner()
+            context: dict[str, Any] = dict(raised.value.context)
+            assert raised.value.code == "power.binomial_tail_level_unrepresentable"
+            assert (context["cause"], context["scope"]) == ("float_margin", "requested")
+            assert (context["decided_from"], context["p_c"]) == (floor, 0.5)
+        # The window's first control count is one the runtime refuses.
+        lo, _ = _binomial._window_bounds(self.N, 0.5)
+        assert lo < floor
+        with pytest.raises(binomial_rr.BinomialDataError):
+            binomial_rr.confidence_interval(
+                lo, self.N, 5, self.N, alpha=self.ALPHA, alternative="less", null_r=2.0
+            )
+
+    def test_a_size_search_stays_where_the_decision_reads_the_treatment_arm(self):
+        """At the smallest design of a 2.2e-9 allocation the margin dominates a two-sided alpha
+        of 4e-7; with a null ratio of two the control arm alone decides from a count the context
+        names, which no treatment effect moves, so no size is sized for one."""
+        from increment.power import _binomial, core
+
+        alpha, design = 4e-7, PowerDesign(allocation=2.2e-9)
+        procedure = _conversion(alpha=alpha, alternative="two-sided", null_lift=1.0)
+        with pytest.raises(InvalidRequestError) as raised:
+            required_sample_size(0.5, Baseline.from_proportion(0.05), procedure, design)
+        context: dict[str, Any] = dict(raised.value.context)
+        assert raised.value.code == "power.binomial_tail_level_unrepresentable"
+        assert (context["cause"], context["scope"]) == ("float_margin", "smallest")
+        key = core._binomial_key(procedure, context["n_t"], context["n_c"])
+        assert _binomial.margin_dominates(key) and not _binomial.refused(key)
+        floor = context["decided_from"]
+        assert floor == _binomial.structural_floor(key)
+        decided = binomial_rr.confidence_interval(
+            floor, key.n_c, 1, key.n_t, alpha=alpha, alternative="two-sided", null_r=2.0
+        )
+        assert decided.p_value_null < alpha
+        with pytest.raises(binomial_rr.BinomialDataError):
+            binomial_rr.confidence_interval(
+                floor - 1, key.n_c, 1, key.n_t, alpha=alpha, alternative="two-sided", null_r=2.0
+            )
 
 
 class TestPlanningReplayBound:

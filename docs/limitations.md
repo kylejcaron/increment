@@ -406,10 +406,16 @@ It also has two further boundaries, both refusals rather than silent degradation
   were measured against an exact decimal oracle to a billion trials, where their relative
   error stays within a quarter of `n` units of `2^-52`): once it reaches what the tail
   level leaves after the nuisance budget (`alpha / 2 - min(1e-6, alpha / 32)` two-sided,
-  `alpha - min(1e-6, alpha / 32)` one-sided) no p-value can be certified below the tail,
-  and the call refuses with the same code (context `alpha`, `margin`, `n_c`, `n_t`)
-  instead of returning the degenerate set `[0, 2/a]`. For equal arms the two-sided
-  threshold is about `3.8e-9` at 4,000,000 per arm, `9.5e-8` at 100,000,000 and `9.5e-7` at
+  `alpha - min(1e-6, alpha / 32)` one-sided) no p-value read from an evaluated tail can be
+  certified below the tail, and the call refuses with the same code (context `alpha`,
+  `margin`, `n_c`, `n_t`) instead of returning a set that extends to wherever the structure
+  alone stops it. The one exception is a null the structure alone rejects: a two-sided or
+  "less" test of a null ratio above `1 / a`, `a` the control arm's Clopper-Pearson lower
+  bound at the nuisance budget, has an empty nuisance domain, so its p-value is the budget
+  itself (doubled two-sided) with no tail evaluated, and the upper endpoint is the first
+  candidate above `1 / a`, which the control arm certifies by itself; that call is answered,
+  the lower endpoint at zero. For equal arms the two-sided threshold is about `3.8e-9` at
+  4,000,000 per arm, `9.5e-8` at 100,000,000 and `9.5e-7` at
   1,000,000,000 (one-sided, about half of that); it passes the `3.2e-8` solver floor at
   about 34,000,000 per arm, so below that size the solver floor binds. The margin is
   absent from ordinary levels. Its effect depends on its ratio to the tail level, so it was
@@ -418,12 +424,17 @@ It also has two further boundaries, both refusals rather than silent degradation
   move an interval, at `1e-5` it widens it by about 1%, and from about `3e-6` it degrades
   it (+2%, then +43% at `1.5e-6`). Planning mirrors both floors: a tail level they refuse
   leaves the runtime deciding no count pair, so it has no power to plan and is refused, not
-  planned as zero. `achieved_power`, `minimum_detectable_effect` and each `power_curve` row
-  refuse it with `power.binomial_tail_level_unrepresentable` (context `alpha`, `beta`,
-  `tail_alpha`, `margin`, `n_c`, `n_t`, `solver_floor`, `cause`, `solver_floor` or
-  `float_margin`, and `scope`, `requested`) and an arm above the ceiling with
-  `power.binomial_arm_ceiling_exceeded` (context `n_c`, `n_t`, `max_arm_size`), before any
-  replay. `required_sample_size` refuses a decision refused even at the smallest design before
+  planned as zero. Under a dominating margin the runtime decides only the count pairs whose
+  control count rejects the null on its Clopper-Pearson bound alone, and refuses the rest;
+  a plan whose control window at the baseline rate holds a refused count is refused too, never
+  planned with those pairs as non-rejections. `achieved_power`, `minimum_detectable_effect`
+  and each `power_curve` row refuse it with `power.binomial_tail_level_unrepresentable`
+  (context `alpha`, `beta`, `tail_alpha`, `margin`, `n_c`, `n_t`, `p_c`, `decided_from` -- the
+  smallest control count the runtime decides, `None` when it decides none -- `solver_floor`,
+  `cause`, `solver_floor` or `float_margin`, and `scope`, `requested`) and an arm above the
+  ceiling with `power.binomial_arm_ceiling_exceeded` (context `n_c`, `n_t`, `max_arm_size`),
+  before any replay. `required_sample_size` searches only sizes whose decision reads the
+  treatment arm: one the margin dominates even at the smallest design is refused before
   searching, with `power.binomial_tail_level_unrepresentable` (`scope` `smallest`); a float
   margin that starts dominating only at larger arms ends the search at that size with
   `power.binomial_size_search_unreachable` (context `power`, `maximum_power`, `n_per_arm`,
@@ -697,10 +708,12 @@ not guarantee that a future data-generating process has either variance shape.
 ### Conversion planning matches the exact binomial decision only within a budget
 
 Unadjusted, unclustered, fixed-horizon conversion and retention plans report
-the rejection probability of the runtime's exact binomial risk-ratio decision.
-With at most 16,000 retained (control, treatment) cells at the null rate the
+the rejection probability of the runtime's exact binomial risk-ratio decision only on the
+exact route. With at most 16,000 retained (control, treatment) cells at the null rate the
 decision set is replayed exactly (`power_basis="exact"`); up to 10,000,000 cells the
-replay uses Normal conditional tails (`power_basis="approximate"`), measured
+replay uses Normal conditional tails (`power_basis="approximate"`), a model of the decision
+whose rejection probability is what that route reports and encloses: its numerical
+certificates are model-only and do not bound the model's departure from the runtime, measured
 at up to 0.8 percentage points below the runtime's power (unequal allocation,
 shifted null) and able to misclassify rare-event count pairs near the tail
 allocation. The runtime's own control-arm window and floating-point

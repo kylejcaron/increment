@@ -60,12 +60,16 @@ The route is a deterministic function of the geometry: ``exact`` when the
 retained (control, treatment) cell count at the null rate is within
 ``EXACT_CELL_BUDGET``, else ``approximate``. A decision the runtime refuses in full (an arm
 above its ceiling, a nuisance budget below the endpoint solver's floor, or a tail level its
-float margin dominates; see `refused`) decides no count pair: it has no rejection geometry and
-planning refuses it rather than report a power for it. A geometry never stores more than
-``PLANNING_CELL_CEILING`` cells: a decision whose null rectangle exceeds it is not planned, and
-an evaluation whose own rectangle (the control window at the control rate by the treatment
-window at the alternative rate), or the union the geometry would hold with it, exceeds it
-raises ``ReplayBoundExceeded`` before any mask is allocated.
+float margin dominates with no count pair rejected on the nuisance domain alone; see `refused`)
+decides no count pair: it has no rejection geometry and planning refuses it rather than report
+a power for it. Under a dominating margin the runtime decides only the count pairs whose
+control count empties the minus certificate's domain at the null (`structural_floor`), and
+refuses the rest; a plan is built only where its control window holds structural counts alone
+(`window_decided`), so no refused pair is ever integrated as a non-rejection. A geometry never
+stores more than ``PLANNING_CELL_CEILING`` cells: a decision whose null rectangle exceeds it is
+not planned, and an evaluation whose own rectangle (the control window at the control rate by
+the treatment window at the alternative rate), or the union the geometry would hold with it,
+exceeds it raises ``ReplayBoundExceeded`` before any mask is allocated.
 """
 
 from __future__ import annotations
@@ -1064,12 +1068,16 @@ def classify(
     a neighbouring count's computed margin, through the step's monotonicity in
     the treatment count, forces it (``_root_settled``; it assumes each
     computed tail lies within ``_ROOT_ROUNDING`` of its exact-arithmetic
-    value). Every other count is replayed."""
+    value). Every other count is replayed, except under a float margin that dominates the tail
+    level (`margin_dominates`): the runtime then evaluates no tail, so a row is decided only on
+    its structural minus certificate, which every request must carry (`window_decided`), and
+    the plus certificate of such a row, which the runtime never refines, rejects nothing."""
     results: list[np.ndarray | None] = []
     slots: list[list[int]] = []
     live: list[tuple[int, _Request, float, float, tuple[int, int, float]]] = []
     pending = 0
     batch_rows = _batch_rows(exact=route == "exact")
+    dominated = margin_dominates(decision)
     for req in requests:
         size = req.j1 - req.j0 + 1
         try:
@@ -1081,12 +1089,19 @@ def classify(
             continue
         hi = b
         if req.kind == "minus":
-            hi = b if decision.null_ratio <= 0.0 else min(b, 1.0 / decision.null_ratio)
+            hi = _rr.minus_domain_upper(decision.null_ratio, b)
             if hi < a:
                 # Empty nuisance domain: the runtime reports beta alone.
                 results.append(np.full(size, min(1.0, decision.beta) < decision.tail_alpha))
                 slots.append([len(results) - 1])
                 continue
+        if dominated:
+            assert _rr.minus_domain_upper(decision.null_ratio, b) < a, (
+                "a dominated count pair without a structural rejection is refused by the runtime"
+            )
+            results.append(np.zeros(size, bool))
+            slots.append([len(results) - 1])
+            continue
         window = _rr._support_window(decision.n_c, a, hi)
         mine: list[int] = []
         # A request larger than a batch is replayed in pieces of at most a batch: each count
@@ -1321,14 +1336,68 @@ def tail_margin(decision: BinomialDecision) -> float:
     return _rr._eps_margin(1, decision.n_c, decision.n_t)
 
 
+def margin_dominates(decision: BinomialDecision) -> bool:
+    """Whether `tail_margin` reaches what the tail level leaves after the nuisance budget
+    (`binomial_rr.margin_dominates_tail`): then no tail the runtime evaluates can fall below the
+    level, and it decides a count pair only on the structure of the nuisance domain
+    (`structural_floor`), refusing every other."""
+    return _rr.margin_dominates_tail(decision.tail_alpha, decision.beta, decision.n_c, decision.n_t)
+
+
+def structural_floor(decision: BinomialDecision) -> int | None:
+    """The smallest control count whose minus certificate rejects the null on the nuisance domain
+    alone (`binomial_rr.structural_rejection`: the domain is empty, so the p-value is ``beta``
+    with no tail evaluated), or ``None`` when no count does: a "greater" decision, a null ratio
+    at most one, or arms too small for the control arm's Clopper-Pearson lower bound to pass
+    ``1 / null_ratio``. The bound is nondecreasing in the count, so every count from the floor on
+    is structural. ``None`` too when the solver refuses the budget, which has no bound to pass."""
+    if (
+        "minus" not in decision.kinds
+        or decision.null_ratio <= 0.0
+        or solver_refuses(decision)
+        or max(decision.n_c, decision.n_t) > _rr.FINITE_SAMPLE_MAX_ARM_SIZE
+    ):
+        return None
+
+    def structural(x_c: int) -> bool:
+        return _rr.structural_rejection(
+            decision.alternative, decision.null_ratio, x_c, decision.n_c, decision.beta
+        )
+
+    if not structural(decision.n_c):
+        return None
+    lo, hi = 0, decision.n_c  # a zero count's lower bound is zero: never structural
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if structural(mid):
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
 def refused(decision: BinomialDecision) -> bool:
     """Whether the runtime refuses every count pair of this decision, so none rejects: an arm
     above the finite-sample ceiling, a nuisance budget below the solver's floor, or a tail
-    level the float margin dominates (`binomial_rr.margin_dominates_tail`, which
-    `confidence_interval` applies)."""
+    level the float margin dominates (`margin_dominates`) with no control count that rejects
+    the null on the nuisance domain alone (`structural_floor`). The runtime applies the same
+    rule to each count pair in `confidence_interval`."""
     if max(decision.n_c, decision.n_t) > _rr.FINITE_SAMPLE_MAX_ARM_SIZE or solver_refuses(decision):
         return True
-    return _rr.margin_dominates_tail(decision.tail_alpha, decision.beta, decision.n_c, decision.n_t)
+    return margin_dominates(decision) and structural_floor(decision) is None
+
+
+def window_decided(decision: BinomialDecision, p_c: float) -> bool:
+    """Whether the runtime decides every count pair of the control window at ``p_c``, the rows
+    every evaluation of a plan at that rate integrates: always while the margin leaves room;
+    once it dominates, only when the window starts at or above `structural_floor`, so the
+    count pairs the runtime refuses carry at most the window's omitted mass, which the
+    enclosure already holds. A plan whose window holds a refused count is refused, not planned
+    with those pairs as non-rejections."""
+    if not margin_dominates(decision):
+        return True
+    floor = structural_floor(decision)
+    return floor is not None and _window_bounds(decision.n_c, p_c)[0] >= floor
 
 
 def window_cells(decision: BinomialDecision, p_c: float, p_t: float | None = None) -> int:
@@ -1421,6 +1490,8 @@ class RejectionGeometry:
     would refuse it; when the stored cells (footprint and cache) would exceed it while the
     footprint fits, the cache is dropped and the footprint kept. The decision is one the
     runtime decides (`refused` is false): a refused decision has no rejection set to classify.
+    Under a dominating float margin every control window evaluated must start at or above
+    `structural_floor` (`window_decided`): the runtime refuses the counts below it.
     """
 
     def __init__(

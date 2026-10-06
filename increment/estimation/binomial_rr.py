@@ -266,9 +266,11 @@ def _eps_margin(term_count: int, n_c: int, n_t: int) -> float:
 
 def margin_dominates_tail(tail: float, beta: float, n_c: int, n_t: int) -> bool:
     """Whether the float margin reaches what the tail level *tail* leaves after the nuisance budget
-    *beta*. Every certified tail carries `_eps_margin`, so then no p-value can be certified below
-    *tail* and every count pair at these arm sizes is refused: the result would be the degenerate
-    set ``[0, 2/a]``. Planning shares this predicate with `confidence_interval`."""
+    *beta*. Every evaluated tail carries `_eps_margin`, so then no p-value read from one can be
+    certified below *tail*: a numerically evaluated null never rejects, and the set extends to
+    wherever the structure alone stops it (``r = 0`` below, the empty nuisance domain just above
+    ``1/a`` above). `confidence_interval` refuses such a count pair unless its null is rejected on
+    the structure alone (`structural_rejection`); planning shares both predicates."""
     return tail - beta <= _eps_margin(1, n_c, n_t)
 
 
@@ -823,6 +825,29 @@ def p_plus(
     return _p_plus_certificate(r, x_c, n_c, x_t, n_t, beta, NUISANCE_STOP, _Reading(tail)).p
 
 
+def minus_domain_upper(r: float, b: float) -> float:
+    """Upper end of the nuisance domain ``[a, b] cap [0, 1/r]`` of ``p_-(r)``: the Clopper-Pearson
+    upper bound *b* cut at ``1/r``. The domain is empty once this falls below the lower bound
+    ``a`` (``r > 1/a``), where ``p_-(r)`` is the structural ``beta`` and no tail is evaluated."""
+    return b if r <= 0.0 else min(b, 1.0 / r)
+
+
+def structural_rejection(
+    alternative: Alternative, null_r: float, x_c: int, n_c: int, beta: float
+) -> bool:
+    """Whether ``H0: R = null_r`` is rejected under *alternative* on the nuisance domain alone:
+    the domain of ``p_-(null_r)`` is empty (`minus_domain_upper`), so the p-value is ``beta``
+    (doubled two-sided) below every tail level, with no tail evaluated. ``p_+`` is at least
+    ``beta`` whatever its search, so a two-sided minimum is then ``beta`` too; "greater" reads
+    only ``p_+`` and never rejects this way. The control arm alone certifies ``R <= 1/a <
+    null_r`` there: every treatment count rejects.
+    """
+    if alternative == "greater":
+        return False
+    a, b = clopper_pearson(x_c, n_c, beta)
+    return minus_domain_upper(null_r, b) < a
+
+
 def _p_minus_impl(
     r: float,
     x_c: int,
@@ -834,7 +859,7 @@ def _p_minus_impl(
     reading: _Reading,
 ) -> _PCertificate:
     a, b = clopper_pearson(x_c, n_c, beta)
-    upper = b if r <= 0.0 else min(b, 1.0 / r)
+    upper = minus_domain_upper(r, b)
     if upper < a:
         return _PCertificate(min(1.0, beta), 0.0, True)
     window = _support_window(n_c, a, upper)
@@ -1373,6 +1398,12 @@ def confidence_interval(
     (``BinomialInterval.endpoint_log_width``); `precision_note` discloses a search that fell short
     and a nuisance search the iteration cap ended before its gap target. The p-value at the null
     is the certified bound `p_plus`/`p_minus` return for the tail level of this *alternative*.
+
+    Once the float margin every evaluated tail carries dominates the tail level
+    (`margin_dominates_tail`) the call is refused unless the null is rejected on the nuisance
+    domain alone (`structural_rejection`): then no reported value reads a tail, the p-value is
+    ``beta`` (doubled two-sided) and the set is ``[0, r]`` with ``r`` the first candidate that
+    empties the domain, just above ``1/a``, which the control arm certifies by itself.
     """
     validate_counts(x_c, n_c)
     validate_counts(x_t, n_t)
@@ -1388,10 +1419,14 @@ def confidence_interval(
             max_arm_size=FINITE_SAMPLE_MAX_ARM_SIZE,
         )
     validated_alternative = validate_alternative(alternative)
-    # Every certified tail carries the float margin, so no p-value can be certified below
-    # `target` once the margin reaches what `target` leaves after the nuisance budget.
+    # Every evaluated tail carries the float margin, so no p-value read from one can be
+    # certified below `target` once the margin reaches what `target` leaves after the nuisance
+    # budget. A null the empty nuisance domain rejects reads none.
     target = alpha / 2.0 if validated_alternative == "two-sided" else alpha
-    if margin_dominates_tail(target, nuisance_beta(alpha), n_c, n_t):
+    beta = nuisance_beta(alpha)
+    if margin_dominates_tail(target, beta, n_c, n_t) and not structural_rejection(
+        validated_alternative, null_r, x_c, n_c, beta
+    ):
         _raise(
             "estimation.binomial.tail_unrepresentable",
             alpha=alpha,

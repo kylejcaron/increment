@@ -98,12 +98,15 @@ from increment.power._binomial import (
     RejectionGeometry,
     ReplayBoundExceeded,
     Route,
+    margin_dominates,
     refused,
     route_for,
     solver_floor,
     solver_refuses,
+    structural_floor,
     tail_margin,
     window_cells,
+    window_decided,
 )
 from increment.power._noncentral_t import _scalar_power_from_nc
 from increment.power._search import (
@@ -714,9 +717,11 @@ class PowerResult(CodedModel, BaseModel):
         rejects, at the analyzed integer counts (up to at most about ``1e-12``
         of omitted outer count mass, and the numerical error of its sum, about
         ``1e-12`` of it at 1,000 units per arm and ``4e-7`` at a billion).
-        ``"approximate"``: the same decision replayed with Normal conditional
-        tails, for binomial plans whose exact geometry exceeds the planning
-        cell budget.
+        ``"approximate"``: the rejection probability of a model of that decision
+        replayed with Normal conditional tails, for binomial plans whose exact
+        geometry exceeds the planning cell budget; its numerical enclosure is of
+        the model's integral only and does not bound the model's departure from
+        the runtime (measured at up to 0.8 percentage points below it).
     mde_relative : float | None
         Minimum detectable relative effect on the complier scale, expressed
         RELATIVE TO the declared null: ``(exp(distance) - 1) /
@@ -2334,13 +2339,15 @@ def _binomial_plan(
     route: Route | None = None,
 ) -> _BinomialPlan:
     """The runtime decision at analyzed counts ``(n_T, n_C)``. A decision the runtime refuses in
-    full decides no count pair, so it has no power to plan and is refused (`_refuse_undecided`).
+    full decides no count pair, so it has no power to plan and is refused (`_refuse_undecided`);
+    so is one it decides only on control counts above the control window at the baseline rate
+    (`window_decided`), since the window then holds count pairs the runtime refuses.
     One whose replay would span more than ``PLANNING_CELL_CEILING`` count cells at the null rate
     is refused before any is built; its geometry refuses an alternative whose window would take
     it past the bound. ``route`` overrides the budgeted route (sizing proposals only)."""
     key = _binomial_key(procedure, n_T, n_C)
-    if refused(key):
-        _refuse_undecided(procedure, key, scope="requested")
+    if refused(key) or not window_decided(key, baseline.mean):
+        _refuse_undecided(procedure, key, p_c=baseline.mean, scope="requested")
     cells = window_cells(key, baseline.mean)
     if cells > PLANNING_CELL_CEILING:
         _refuse_replay_bound(baseline.mean, n_T, n_C, cells)
@@ -2674,6 +2681,8 @@ def _render_tail_level(
     margin: float,
     n_c: int,
     n_t: int,
+    p_c: float,
+    decided_from: int | None,
     solver_floor: float,
     cause: str,
     scope: str,
@@ -2691,17 +2700,34 @@ def _render_tail_level(
         )
         why = (
             f"its float margin {margin:.3g} {where} reaches what the tail level {tail_alpha:.3g} "
-            f"leaves after the nuisance budget {beta:.3g}"
+            f"leaves after the nuisance budget {beta:.3g}: no tail it evaluates can fall below "
+            "the level"
         )
+    if decided_from is None:
+        way = (
+            "so no arm size has power -- plan a larger alpha"
+            if cause == "solver_floor" or scope == "smallest"
+            else "so this size has no power to plan -- plan fewer analyzed units per arm or a "
+            "larger alpha"
+        )
+        return (
+            f"the runtime's exact binomial decision refuses every count pair at alpha={alpha}: "
+            f"{why}, {way}"
+        )
+    structural = (
+        f"a control count of at least {decided_from} rejects the null on its Clopper-Pearson "
+        "bound alone and every smaller count is refused"
+    )
     way = (
-        "so no arm size has power -- plan a larger alpha"
-        if cause == "solver_floor" or scope == "smallest"
-        else "so this size has no power to plan -- plan fewer analyzed units per arm or a "
+        "whatever the treatment arm shows, so no size can be sized for an effect -- plan a "
         "larger alpha"
+        if scope == "smallest"
+        else f"and the plan's control window at a {p_c:.6g} control rate holds smaller counts, "
+        "so this size has no power to plan -- plan fewer analyzed units per arm or a larger alpha"
     )
     return (
-        f"the runtime's exact binomial decision refuses every count pair at alpha={alpha}: "
-        f"{why}, {way}"
+        f"the runtime's exact binomial decision at alpha={alpha} decides a count pair on its "
+        f"control arm alone: {why}; {structural}, {way}"
     )
 
 
@@ -2734,13 +2760,17 @@ def _refuse_undecided(
     procedure: ArmPlanningProcedure,
     key: BinomialDecision,
     *,
+    p_c: float,
     scope: Literal["smallest", "requested"],
     allocation: float | None = None,
 ) -> NoReturn:
     """Refuse a decision the runtime refuses in full, by its cause (`refused`): an arm above
     its ceiling, a nuisance budget below the solver's floor, or a tail level the float margin
-    dominates. ``scope`` is ``smallest`` for the smallest design a size search can plan (then no
-    size has power) and ``requested`` for the analyzed counts a caller asked about."""
+    dominates; or one it decides only on control counts the plan's control window at ``p_c``
+    does not hold alone (`window_decided`), whose smallest is the context's ``decided_from``
+    (``None`` when the runtime decides no count pair). ``scope`` is ``smallest`` for the
+    smallest design a size search can plan (then no size has power to size an effect) and
+    ``requested`` for the analyzed counts a caller asked about."""
     if max(key.n_c, key.n_t) > FINITE_SAMPLE_MAX_ARM_SIZE:
         if scope == "smallest":
             refuse(
@@ -2764,6 +2794,8 @@ def _refuse_undecided(
         margin=tail_margin(key),
         n_c=key.n_c,
         n_t=key.n_t,
+        p_c=p_c,
+        decided_from=structural_floor(key),
         solver_floor=solver_floor(),
         cause="solver_floor" if solver_refuses(key) else "float_margin",
         scope=scope,
@@ -2954,20 +2986,29 @@ def _binomial_admitted_ceiling(
     floor: int,
     upper: int,
 ) -> int:
-    """Largest assigned treatment size at most ``upper`` whose decision the runtime does not
-    refuse in full: from the size where the float margin dominates the tail level, the runtime
-    decides no count pair. A decision refused even at the smallest arms has no such size and is
-    refused."""
+    """Largest assigned treatment size at most ``upper`` whose decision the runtime decides on
+    both arms: from the size where the float margin dominates the tail level, the runtime
+    evaluates no tail, and a count pair is decided, if at all, on the control arm's structural
+    certificate alone (`structural_floor`), which no treatment effect moves, so no size there
+    can be sized for an effect. A decision the margin dominates even at the smallest arms has
+    no such size and is refused."""
 
     def key_at(n: int) -> BinomialDecision:
         n_T, n_C = _analyzed_counts(*_compute_arms(n, design, minimum_per_arm=floor), baseline)
         return _binomial_key(procedure, n_T, n_C)
 
     def admitted(n: int) -> bool:
-        return not refused(key_at(n))
+        key = key_at(n)
+        return not margin_dominates(key) and not refused(key)
 
     if not admitted(floor):
-        _refuse_undecided(procedure, key_at(floor), scope="smallest", allocation=design.allocation)
+        _refuse_undecided(
+            procedure,
+            key_at(floor),
+            p_c=baseline.mean,
+            scope="smallest",
+            allocation=design.allocation,
+        )
     if admitted(upper):
         return upper
     lo, hi = floor, upper - 1
@@ -3357,7 +3398,9 @@ def achieved_power(
     A binomial plan whose decision the runtime refuses in full (an arm above
     its ceiling, a nuisance budget below the endpoint solver's floor, a tail
     level its float margin dominates) decides no count pair and is refused
-    with a ``power.binomial_*`` code, not given a power.
+    with a ``power.binomial_*`` code, not given a power; under a dominating
+    margin only a count pair whose control count alone rejects a shifted null
+    is decided, and a plan whose control window holds any other is refused too.
     The look schedule resolves as in ``required_sample_size``.
     """
     return _achieved_power(

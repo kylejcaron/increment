@@ -5,10 +5,12 @@ evaluated at its own mean under the alternative. Mean-like planning assumes
 equal absolute effective arm variances; conversion and retention planning use
 the Bernoulli variance shape at the implied treatment rate -- except plans
 the runtime decides with the exact binomial risk-ratio test (unadjusted,
-unclustered, fixed horizon), whose power is that decision's rejection
-probability (``PowerResult.power_basis`` ``"exact"`` or ``"approximate"``).
-Segment-pairwise planning deliberately retains its separate baseline-only
-approximation.
+unclustered, fixed horizon): with ``PowerResult.power_basis`` ``"exact"`` their
+power is that decision's rejection probability; with ``"approximate"`` it is the
+rejection probability of a Normal-conditional-tail model of the decision, whose
+numerical certificates are model-only and do not bound its departure from the
+runtime. Segment-pairwise planning deliberately retains its separate
+baseline-only approximation.
 
 A valid supplied-effect result can have no admissible or numerically resolved
 companion MDE. In that case ``mde_relative`` is ``None`` and

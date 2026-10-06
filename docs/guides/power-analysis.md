@@ -264,7 +264,12 @@ that reaches one refuse it, with `power.binomial_arm_ceiling_exceeded` (context 
 `power.binomial_tail_level_unrepresentable` (the context below, `scope="requested"`) for a
 nuisance budget (`alpha / 32`) below the endpoint solver's floor (an alpha under `3.2e-8`) or a
 tail level its float margin dominates (a two-sided alpha below about `9.5e-7` at a billion
-units per arm; see the limitations page). The margin grows with the arm, so a smaller size of
+units per arm; see the limitations page). Under a dominating margin the runtime still decides
+a count pair whose control count alone rejects a shifted null (its Clopper-Pearson lower bound
+above `1 / (1 + null_lift)`, for a two-sided or "less" test); the context's `decided_from` is
+the smallest such count (`None` when there is none), and a plan whose control window at the
+baseline rate holds smaller counts, which the runtime refuses, is refused rather than planned
+with them as non-rejections. The margin grows with the arm, so a smaller size of
 the same alpha can be planned; the solver floor refuses every size.
 
 `required_sample_size` ends a search it cannot satisfy with one of four codes, each
@@ -274,7 +279,7 @@ with its own context:
 |---|---|---|
 | `power.binomial_replay_bound_exceeded` | the search reached its ceiling: about 1/128 under the crossing of a bisection for the largest size whose null and supplied-effect rectangles fit the replay bound (the cell count is not monotone in the size, so a size above the ceiling may fit and may reach more) | `power`, `power_reached`, `n_c`, `n_t`, `p_c`, `p_t` (when the alternative exceeds), `cells`, `max_cells`, `max_arm_size` |
 | `power.binomial_size_search_unreachable` | the search reached the runtime's arm ceiling, or the size where the float margin starts dominating the tail level, without certifying the target | `power`, `maximum_power`, `n_per_arm`, `max_arm_size` |
-| `power.binomial_tail_level_unrepresentable` | the decision is refused even at the smallest design: the nuisance budget is below the solver floor, or the float margin already dominates the tail level there; raised before any search | `alpha`, `beta`, `tail_alpha`, `margin`, `n_c`, `n_t`, `solver_floor`, `cause` (`solver_floor` or `float_margin`), `scope` (`smallest`) |
+| `power.binomial_tail_level_unrepresentable` | the decision is refused even at the smallest design: the nuisance budget is below the solver floor, or the float margin already dominates the tail level there, so no size reads the treatment arm; raised before any search | `alpha`, `beta`, `tail_alpha`, `margin`, `n_c`, `n_t`, `p_c`, `decided_from`, `solver_floor`, `cause` (`solver_floor` or `float_margin`), `scope` (`smallest`) |
 | `power.binomial_arm_ceiling_below_smallest_design` | the allocation is so lopsided that the smallest design already has an arm above the runtime's ceiling; raised before any search | `n_t`, `n_c`, `allocation`, `max_arm_size` |
 
 The `segment_pairwise_*` solvers are separate: they retain a baseline-only
