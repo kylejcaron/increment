@@ -48,12 +48,12 @@ Ingress parity is a separate fact: among the five matched-arm entry points (`fro
 `from_unit_day_artifact`, `from_unit_summary`, `from_unit_panel`, `from_moments`) every supported one
 agrees at the documented tolerance whatever a row says. `from_switchback_panel` targets a different
 estimand and is never row-compared with them: a `supported` switchback cell establishes that the
-request runs and is exercised on its own, not that it agrees with the matched-arm constructors. A
-request an entry point can declare but cannot supply refuses with a coded error. A request its
-constructor or schema cannot declare at all fails during signature or schema validation (a
-`TypeError` for a missing keyword, a Pydantic `ValidationError` for a missing field) and has no
-refusal code; the parity matrix records which of the two each cell is, and its `source_limited` and
-`not_expressible` cells include both kinds.
+request runs and is exercised on its own, not that it agrees with the matched-arm constructors.
+A `source_limited` request can be declared but the entry point cannot supply its input;
+it refuses with a coded error. A `not_expressible` request fails during declaration,
+either with a coded refusal or through signature/schema validation (`TypeError` or
+Pydantic `ValidationError` without a refusal code). The parity matrix records the
+specific outcome for each cell.
 The Entry points and parity column links the [capability matrix](reference/capabilities-by-entry-point.md#what-runs-where)
 and copies the status words of the parity matrix in `tests/parity_harness/matrix.py` (counts and
 unfinished trackers: `tests/parity_harness/COVERAGE.md`) without rewording them:
@@ -61,9 +61,9 @@ unfinished trackers: `tests/parity_harness/COVERAGE.md`) without rewording them:
 | Status | Meaning in the parity matrix |
 |---|---|
 | `supported` | runs, and agrees with every other running matched-arm entry point within the runner's `1e-9` relative tolerance; `from_switchback_panel` is not compared with them |
-| `source_limited` | the entry point cannot supply the input |
+| `source_limited` | the entry point cannot supply the input and refuses with a code |
 | `construction_limited` | the estimator or readout is not defined for the combination; this is neither `unsound` nor `unfinished` |
-| `not_expressible` | the axis value cannot be declared on that entry point |
+| `not_expressible` | the axis value cannot be declared; a coded declaration refusal or an uncoded signature/schema failure |
 | `unfinished` | supportable or unifiable but not implemented; names its tracker |
 | `unsound` | mathematically invalid; carries a derivation |
 
