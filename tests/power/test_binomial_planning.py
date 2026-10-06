@@ -1097,13 +1097,15 @@ class TestEarliestCertifiedEffectOnANonMonotoneLattice:
         with pytest.raises(InvalidRequestError) as raised:
             _lattice_effect(peak)
         assert raised.value.code == "power.minimum_detectable_effect.numerical_resolution"
-        enclosure = raised.value.context["power_enclosure"]
+        context: dict[str, Any] = dict(raised.value.context)
+        enclosure = context["power_enclosure"]
         assert enclosure is None or enclosure[0] < peak <= enclosure[1]
 
         with pytest.raises(InvalidRequestError) as above:
             _lattice_effect(peak * 1.001)
         assert above.value.code == "power.minimum_detectable_effect.unattainable"
         reached = _lattice_effect(peak * 0.97)
+        assert reached.mde_relative is not None
         assert reached.mde_relative == pytest.approx(
             _lattice_crossing(rules, peak * 0.97), rel=1e-9
         )
