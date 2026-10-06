@@ -2089,7 +2089,7 @@ def daily_group_summary(
     panel = _finalize_daily_state(panel, metric, part="numerator")
     if isinstance(metric, ConversionMetric):
         # The day's any-occurrence value is an exact 0/1 per unit: count it as an integer.
-        panel = panel.mutate(successes=(panel.n_events > 0).cast("int64"))
+        panel = panel.mutate(successes=(panel.n_events > 0).cast("int32").cast("int64"))
 
     if den_panel is not None:
         den_final = _finalize_daily_state(den_panel, metric, part="denominator")

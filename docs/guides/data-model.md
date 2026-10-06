@@ -789,6 +789,8 @@ Import and export validate count ranges on every row, including unselected
 imported metrics, with `moments.count_out_of_range` for invalid ranges.
 Parquet exports use nullable `int64` for `successes`; preserve that type when
 loading through a dataframe, including pandas' nullable `Int64` dtype.
+Warehouse daily conversion summaries also retain integer successes: each unit
+contributes at most one success per day, regardless of its event count.
 
 The `metrics` declaration selects which metrics to replay. Winsorization
 declarations must match selected metrics; an unselected clipped metric does
