@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 import ibis
@@ -598,7 +599,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
     def __init__(
         self,
         store: ArtifactStore,
-        snapshot_context: Any,
+        snapshot_context: AbstractContextManager[object],
         snapshot: Any,
         manifest: UnitDayArtifactManifest,
         *,
@@ -1327,7 +1328,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         rows = self._read_extension(trigger, request=_artifact_request(trigger))
         return _ArtifactFacadeSource(
             self._store,
-            self._snapshot_context,
+            self._lifecycle,
             self._snapshot,
             self._manifest,
             expected_context=self._expected_context,

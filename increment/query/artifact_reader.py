@@ -749,6 +749,27 @@ def _record_binding_resolution(
             )
 
 
+class _SnapshotLifecycle(AbstractContextManager[None]):
+    """Closed-state and release of one pinned snapshot, shared by every view of it.
+
+    It is itself a context manager, so a view can be built from it exactly as from the
+    snapshot context it wraps; ``ArtifactMomentSource`` adopts it instead of re-wrapping.
+    """
+
+    def __init__(self, context: AbstractContextManager[object]) -> None:
+        self._context = context
+        self.closed = False
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        self._context.__exit__(None, None, None)
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+
 class ArtifactMomentSource(SequentialSourceMixin):
     """Moment source backed by one immutable, lazily verified artifact handle."""
 
@@ -767,11 +788,14 @@ class ArtifactMomentSource(SequentialSourceMixin):
         metrics: Sequence[MetricSpec] | Mapping[str, str] | None = None,
     ) -> None:
         self._store = store
-        self._snapshot_context = snapshot_context
+        self._lifecycle = (
+            snapshot_context
+            if isinstance(snapshot_context, _SnapshotLifecycle)
+            else _SnapshotLifecycle(snapshot_context)
+        )
         self._snapshot = snapshot
         self._manifest = manifest
         self._population_units: frozenset[str] | None = None
-        self._closed = False
         self._verified_tables: dict[str, ir.Table] = {}
         self._metrics_arg = metrics
         self._aggregation_by_metric: dict[str, str] = {}
@@ -1967,11 +1991,13 @@ class ArtifactMomentSource(SequentialSourceMixin):
             route="use moments() for artifact-backed reductions",
         )
 
+    @property
+    def closed(self) -> bool:
+        """Whether :meth:`close` released the snapshot this source shares with its views."""
+        return self._lifecycle.closed
+
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self._snapshot_context.__exit__(None, None, None)
+        self._lifecycle.close()
 
     def __enter__(self) -> Self:
         return self
