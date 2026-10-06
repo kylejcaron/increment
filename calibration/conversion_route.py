@@ -38,10 +38,12 @@ whose ladder opens with them) and refused when no ladder does; a rung past its l
 counts only where every such start agrees on it.
 
 The vectorised delta-method interval (``delta_statistic``, ``critical_values`` and
-``delta_log_bounds``) measures the asymptotic formula over a whole lattice: the ``wald``
-noncoverage tables. ``conformance`` checks it against ``estimate_lift`` on sampled count pairs
-before any table is trusted. It decides no rejection of an enumeration: ``bound`` asks the
-runtime's own row, one routed pair at a time.
+``delta_log_bounds``) measures the asymptotic formula over a whole lattice: the ``wald`` and
+``routed`` noncoverage tables, and the ranking of the cells ``hybrid`` examines.
+``conformance`` checks it against ``estimate_lift`` on sampled count pairs before any table is
+trusted. It is a measurement and decides no pair of an exact sum: ``hybrid_noncoverage`` and
+``bound`` ask the runtime's own row (``conversion_delta.production_decision``), one routed pair
+at a time, ``hybrid_noncoverage`` against the cell's true lift.
 
 Planning is validated against the same production route. ``bound`` compares the plan of
 dense, sparse and borderline designs with the production pipeline's exact rejection
@@ -50,8 +52,9 @@ dense plan's closed form to within ``DENSE_AGREEMENT``, any other plan's enclosu
 pipeline's interval with no further allowance. A checkpoint records each design's
 enumeration beside the runtime it was summed under, and its plan beside the planner model, so
 a resumed run keeps an enumeration of this runtime, plans again under a retired model, and
-refuses what names neither. ``mirror`` compares the plan with the simulated rejection
-rate of ``estimate_lift`` (``tests.estimation._conversion_counts.runtime_rejection_rate``).
+refuses what names neither (a ``CheckpointError``: its code names the reason, its context the
+line and the next action). ``mirror`` compares the plan with the simulated rejection rate of
+``estimate_lift`` (``tests.estimation._conversion_counts.runtime_rejection_rate``).
 
 Every lattice sum streams over blocks of control counts (``_BLOCK_CELLS`` cells each), so a
 worker's footprint stays near a gibibyte whatever the arm sizes: the largest boundary cell has
@@ -79,13 +82,14 @@ import sys
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast, get_args, get_type_hints
+from typing import TYPE_CHECKING, Literal, NoReturn, cast, get_args, get_type_hints
 
 import numpy as np
 from scipy.stats import binom as _binom
 from scipy.stats import norm as _norm
 from scipy.stats import t as _student_t
 
+from increment.errors import CodedError, raiser, refusals
 from increment.estimation.conversion_route import dense_min_count, routed_share
 from tests.estimation._conversion_counts import lift_row, runtime_rejection_rate
 from tests.mc import (
@@ -101,6 +105,11 @@ PRODUCTION_ALPHAS = (0.001, 0.01, 0.05, 0.1)
 #: The one-sided tails those requests produce.
 TAILS = (0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1)
 Alternative = Literal["two-sided", "greater", "less"]
+
+
+def _tail(alpha: float, alternative: str) -> float:
+    """The one-sided level a request at ``alpha`` tests at."""
+    return alpha / 2.0 if alternative == "two-sided" else alpha
 
 
 def production_requests(tail: float) -> tuple[tuple[float, Alternative, int], ...]:
@@ -147,6 +156,11 @@ class Cell:
     @property
     def truth(self) -> float:
         return math.log(self.p_t / self.p_c)
+
+    @property
+    def lift(self) -> float:
+        """The true relative lift."""
+        return self.p_t / self.p_c - 1.0
 
 
 def cells(m: float) -> tuple[Cell, ...]:
@@ -266,9 +280,10 @@ def boundary_noncoverage(
     cell: Cell, tails: Sequence[float], threshold: dict[float, int] | int
 ) -> dict[float, tuple[float, float, float, float]]:
     """Per tail: ``(wald_lower, wald_upper, routed_lower, routed_upper)`` noncoverage of the
-    delta-method interval at ``cell``, applied to every draw with positive counts (``wald``) and
-    to the draws whose four counts reach ``threshold`` (``routed``). ``threshold`` is one count,
-    or a count per tail."""
+    vectorised delta-method interval at ``cell`` (a measurement of the formula, which
+    ``conformance`` checks, not the runtime's decision of any pair), applied to every draw with
+    positive counts (``wald``) and to the draws whose four counts reach ``threshold``
+    (``routed``). ``threshold`` is one count, or a count per tail."""
     x_c, w_c = _lattice(cell.n_c, cell.p_c)
     x_t, w_t = _lattice(cell.n_t, cell.p_t)
     totals = {tail: np.zeros(4) for tail in tails}
@@ -846,10 +861,17 @@ def _decision_key(
     from increment.estimation.binomial_rr import nuisance_beta
     from increment.power._binomial import BinomialDecision
 
-    tail = alpha / 2.0 if alternative == "two-sided" else alpha
+    tail = _tail(alpha, alternative)
     return BinomialDecision(
         cell.n_c, cell.n_t, cell.p_t / cell.p_c, nuisance_beta(alpha), tail, alternative
     )
+
+
+def _count_windows(cell: Cell) -> tuple[_Window, _Window]:
+    """The count windows of ``cell``'s two arms: the lattice every pipeline sum runs over."""
+    from increment.power._binomial import _window
+
+    return _window(cell.n_c, cell.p_c), _window(cell.n_t, cell.p_t)
 
 
 def finite_sample_misses(
@@ -860,9 +882,7 @@ def finite_sample_misses(
     ratio (``_finite_blocks``): a ``plus`` rejection puts the set wholly above the truth, a
     ``minus`` one wholly below. The whole lattice is held, so this is for cells whose windows
     are small."""
-    from increment.power._binomial import _window
-
-    window_c, window_t = _window(cell.n_c, cell.p_c), _window(cell.n_t, cell.p_t)
+    window_c, window_t = _count_windows(cell)
     blocks = list(
         _finite_blocks(
             _decision_key(cell, alpha=alpha, alternative=alternative), window_c, window_t
@@ -876,24 +896,55 @@ def finite_sample_misses(
     )
 
 
+def _delta_decisions(
+    x_c: np.ndarray,
+    n_c: int,
+    x_t: np.ndarray,
+    n_t: int,
+    routed: np.ndarray,
+    *,
+    tail: float,
+    alternative: Alternative,
+    null_lift: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(plus, minus)``: where the runtime's own row (`production_decision`, one call per pair)
+    puts the interval of a routed pair wholly above or below ``null_lift``; every other pair is
+    ``False``. ``x_c`` is a column and ``x_t`` a row of counts, ``routed`` their grid. Slow by
+    design: nothing restates the runtime's calculation."""
+    from increment.estimation.conversion_delta import production_decision
+
+    plus = np.zeros(routed.shape, bool)
+    minus = np.zeros(routed.shape, bool)
+    for i, j in np.argwhere(routed):
+        plus[i, j], minus[i, j] = production_decision(
+            int(x_c[i, 0]),
+            n_c,
+            int(x_t[0, j]),
+            n_t,
+            tail=tail,
+            alternative=alternative,
+            null_lift=null_lift,
+        )
+    return plus, minus
+
+
 def hybrid_noncoverage(
     cell: Cell,
     *,
     alpha: float,
     threshold: int,
-    alternative: Literal["two-sided", "greater", "less"] = "two-sided",
+    alternative: Alternative = "two-sided",
 ) -> HybridNoncoverage:
     """Exact noncoverage of the pipeline at ``cell``, summed over the joint binomial law of its
-    counts: a pair whose four counts reach ``threshold`` is covered by the delta-method
-    interval (the vectorised production interval, ``conformance``), every other pair by the
-    finite-sample set (``_finite_blocks``, checked against ``estimate_lift`` by
-    ``conformance``). Counts are not drawn, so there is no sampling error; the lattice omits at
-    most the windows' ``omitted`` mass. The sums stream over blocks of control counts, so the
-    footprint does not grow with the windows."""
-    from increment.power._binomial import _window
-
-    tail = alpha / 2.0 if alternative == "two-sided" else alpha
-    window_c, window_t = _window(cell.n_c, cell.p_c), _window(cell.n_t, cell.p_t)
+    counts: a pair whose four counts reach ``threshold`` is decided by the runtime's own
+    delta-method row against the cell's true lift (``_delta_decisions``), every other pair by
+    the finite-sample set (``_finite_blocks``, checked against ``estimate_lift`` by
+    ``finite_conformance``). A side the alternative does not read never misses. Counts are not
+    drawn, so there is no sampling error; the lattice omits at most the windows' ``omitted``
+    mass. The sums stream over blocks of control counts, so the footprint does not grow with
+    the windows."""
+    tail = _tail(alpha, alternative)
+    window_c, window_t = _count_windows(cell)
     key = _decision_key(cell, alpha=alpha, alternative=alternative)
     x_t = np.arange(window_t.lo, window_t.hi + 1)[None, :]
     lower = upper = share = 0.0
@@ -901,13 +952,19 @@ def hybrid_noncoverage(
         x_c = np.arange(window_c.lo + rows.start, window_c.lo + rows.stop)[:, None]
         weight = np.outer(window_c.weights[rows], window_t.weights)
         smallest = np.minimum(np.minimum(x_c, cell.n_c - x_c), np.minimum(x_t, cell.n_t - x_t))
-        log_rr, se, df = delta_statistic(
-            np.clip(x_c, 1, cell.n_c - 1), cell.n_c, np.clip(x_t, 1, cell.n_t - 1), cell.n_t
-        )
-        crit = critical_values(df, tail)
         routed = smallest >= threshold
-        lower += float(weight[np.where(routed, log_rr - crit * se > cell.truth, plus)].sum())
-        upper += float(weight[np.where(routed, log_rr + crit * se < cell.truth, minus)].sum())
+        delta_plus, delta_minus = _delta_decisions(
+            x_c,
+            cell.n_c,
+            x_t,
+            cell.n_t,
+            routed,
+            tail=tail,
+            alternative=alternative,
+            null_lift=cell.lift,
+        )
+        lower += float(weight[np.where(routed, delta_plus, plus)].sum())
+        upper += float(weight[np.where(routed, delta_minus, minus)].sum())
         share += float(weight[routed].sum())
     return HybridNoncoverage(lower, upper, share, window_c.omitted + window_t.omitted)
 
@@ -938,7 +995,7 @@ def finite_conformance(
             cell, alpha=alpha, alternative="two-sided"
         )
         width = window_t.hi - window_t.lo + 1
-        lift = cell.p_t / cell.p_c - 1.0
+        lift = cell.lift
         rows = rng.choice(
             window_c.weights.size, size=per_tail, p=window_c.weights / window_c.weights.sum()
         )
@@ -975,7 +1032,9 @@ def finite_conformance(
 def hybrid_cells(tail: float, offset: int, *, count: int, workers: int = 1) -> list[Cell]:
     """The ``count`` boundary cells at design count ``dense_min_count(tail) + offset`` whose
     routed (delta-method) side has the largest per-tail noncoverage: the cells where the
-    finite-sample side has the least room."""
+    finite-sample side has the least room. The vectorised measurement ranks the cells and
+    decides none of them: ``hybrid_noncoverage`` decides every pair of the chosen cells through
+    the runtime."""
     shipped = dense_min_count(tail)
     table = noncoverage_table(shipped + offset, (tail,), threshold=shipped, workers=workers)
     ranked = sorted(table, key=lambda item: -max(item[1][tail][2], item[1][tail][3]))
@@ -1069,11 +1128,6 @@ class MirrorCell:
     lift: float
     alpha: float
     alternative: Literal["two-sided", "greater", "less"]
-
-
-def _tail(alpha: float, alternative: str) -> float:
-    """The one-sided level a request at ``alpha`` tests at."""
-    return alpha / 2.0 if alternative == "two-sided" else alpha
 
 
 def mirror_cells() -> tuple[MirrorCell, ...]:
@@ -1277,24 +1331,19 @@ def _design_lattice(cell: MirrorCell) -> _DesignLattice:
 def _delta_rejects(
     cell: MirrorCell, lattice: _DesignLattice, x_c: np.ndarray, routed: np.ndarray
 ) -> np.ndarray:
-    """Where the runtime's own row (`production_decision`, one call per pair) rejects a routed
-    pair; every other pair is ``False``. Slow by design: nothing restates the runtime's
-    calculation."""
-    from increment.estimation.conversion_delta import production_decision
-
-    rejects = np.zeros(routed.shape, bool)
-    for i, j in np.argwhere(routed):
-        plus, minus = production_decision(
-            int(x_c[i, 0]),
-            cell.n,
-            int(lattice.x_t[0, j]),
-            cell.n,
-            tail=lattice.tail,
-            alternative=cell.alternative,
-            null_lift=0.0,
-        )
-        rejects[i, j] = plus or minus
-    return rejects
+    """Where the runtime's own row rejects a routed pair at the null (``null_lift = 0``); every
+    other pair is ``False``."""
+    plus, minus = _delta_decisions(
+        x_c,
+        cell.n,
+        lattice.x_t,
+        cell.n,
+        routed,
+        tail=lattice.tail,
+        alternative=cell.alternative,
+        null_lift=0.0,
+    )
+    return plus | minus
 
 
 @dataclass(frozen=True, slots=True)
@@ -1515,8 +1564,60 @@ def _design_key(cell: MirrorCell) -> list[object]:
     return [cell.n, cell.p_c, cell.lift, cell.alpha, cell.alternative]
 
 
-class CheckpointError(ValueError):
-    """A ``bound`` checkpoint record that cannot be resumed from."""
+class CheckpointError(CodedError):
+    """A ``bound`` checkpoint record that cannot be resumed from. ``code`` is the stable reason;
+    ``context`` holds the record's ``path`` and ``line``, what the reason names, and the
+    ``next_action`` that resolves it: ``recompute_to_new_out`` (enumerate to another ``--out``)
+    or ``remove_line`` (drop a line that is no record and resume from the others)."""
+
+
+_RECOMPUTE = "recompute_to_new_out"
+_REMOVE_LINE = "remove_line"
+
+_REFUSALS = refusals(
+    CheckpointError,
+    {
+        "calibration.conversion_route.checkpoint_unreadable": (
+            "{path}:{line}: not a bound checkpoint record; remove the line to resume from the "
+            "other records",
+            ("next_action",),
+        ),
+        "calibration.conversion_route.checkpoint_design": (
+            "{path}:{line}: design {design!r} is not a design key; remove the line to resume "
+            "from the other records",
+            ("next_action",),
+        ),
+        "calibration.conversion_route.checkpoint_layout": (
+            "{path}:{line}: the {section} is not exactly {expected!r} with the types of this "
+            "checkpoint layout (it holds {found!r}), so nothing in the record is reused, "
+            "relabelled or enumerated again unnoticed; enumerate to a new --out",
+            ("next_action",),
+        ),
+        "calibration.conversion_route.checkpoint_runtime": (
+            "{path}:{line}: the enumeration was summed under {construction} with routing floor "
+            "{floor}, and this runtime is {current_construction} with floor {current_floor} at "
+            "this design's tail; enumerate to a new --out",
+            ("next_action",),
+        ),
+        "calibration.conversion_route.checkpoint_planner_model": (
+            "{path}:{line}: planner model {model!r} is neither {current!r} nor a retired model "
+            "this checkpoint can be re-planned from ({retired!r}); enumerate to a new --out",
+            ("next_action",),
+        ),
+    },
+)
+_raise = raiser(_REFUSALS)
+
+
+@dataclass(frozen=True, slots=True)
+class _Line:
+    """The checkpoint line a refusal is about."""
+
+    path: str
+    number: int
+
+    def refuse(self, code: str, /, **context: object) -> NoReturn:
+        _raise(code, path=self.path, line=self.number, **context)
 
 
 def _conforms(hint: object, value: object) -> bool:
@@ -1533,23 +1634,28 @@ def _conforms(hint: object, value: object) -> bool:
     )
 
 
-def _section[T](cls: type[T], value: object, where: str) -> T:
-    """``cls`` read from a record's section, which must hold exactly its fields, typed."""
+def _section[T](cls: type[T], value: object, where: _Line, name: str) -> T:
+    """``cls`` read from a record's ``name`` section, which must hold exactly its fields, typed."""
     hints = get_type_hints(cls)
+    found: tuple[str, ...] | None = None
     if isinstance(value, dict):
-        section = {str(name): item for name, item in value.items()}
+        section = {str(key): item for key, item in value.items()}
         if section.keys() == hints.keys() and all(
-            _conforms(hint, section[name]) for name, hint in hints.items()
+            _conforms(hint, section[field]) for field, hint in hints.items()
         ):
             return cls(**section)
-    raise CheckpointError(
-        f"{where}: the {cls.__name__.lower()} section is not exactly {sorted(hints)} "
-        "with the types of this checkpoint layout; recompute to another --out"
+        found = tuple(sorted(section))
+    where.refuse(
+        "calibration.conversion_route.checkpoint_layout",
+        section=name,
+        found=found,
+        expected=tuple(sorted(hints)),
+        next_action=_RECOMPUTE,
     )
 
 
 def _checkpoint_record(
-    where: str, record: Mapping[str, object]
+    where: _Line, record: Mapping[str, object]
 ) -> tuple[list[object], EnumeratedPower]:
     """The design and the enumerated power one checkpoint record holds, refused unless the
     enumeration was summed under this runtime and the plan's model is one it can be resumed
@@ -1557,12 +1663,14 @@ def _checkpoint_record(
     from increment.estimation.results import BINOMIAL_METHOD
     from increment.power.core import BINOMIAL_PLANNING_MODEL
 
-    if record.keys() != {"design", "enumeration", "planner"}:
-        raise CheckpointError(
-            f"{where}: the record names neither the runtime it was summed under nor the planner "
-            "model that planned it (it holds one undated `power` section), so neither can be "
-            "established and the record is not reused, relabelled or enumerated again "
-            "unnoticed; enumerate to a new --out"
+    layout = ("design", "enumeration", "planner")
+    if record.keys() != set(layout):
+        where.refuse(
+            "calibration.conversion_route.checkpoint_layout",
+            section="record",
+            found=tuple(sorted(record)),
+            expected=layout,
+            next_action=_RECOMPUTE,
         )
     design = record["design"]
     if not (
@@ -1572,20 +1680,30 @@ def _checkpoint_record(
         and all(_conforms(float, value) for value in design[1:4])
         and design[4] in ("two-sided", "greater", "less")
     ):
-        raise CheckpointError(f"{where}: design {design!r} is not a design key")
-    enumeration = _section(Enumeration, record["enumeration"], where)
-    plan = _section(Plan, record["planner"], where)
+        where.refuse(
+            "calibration.conversion_route.checkpoint_design",
+            design=design,
+            next_action=_REMOVE_LINE,
+        )
+    enumeration = _section(Enumeration, record["enumeration"], where, "enumeration")
+    plan = _section(Plan, record["planner"], where, "planner")
     floor = dense_min_count(_tail(cast("float", design[3]), cast("str", design[4])))
     if enumeration.construction != BINOMIAL_METHOD or enumeration.floor != floor:
-        raise CheckpointError(
-            f"{where}: the enumeration was summed under {enumeration.construction} with routing "
-            f"floor {enumeration.floor}, and this runtime is {BINOMIAL_METHOD} with floor "
-            f"{floor} at this design's tail; recompute to another --out"
+        where.refuse(
+            "calibration.conversion_route.checkpoint_runtime",
+            construction=enumeration.construction,
+            floor=enumeration.floor,
+            current_construction=BINOMIAL_METHOD,
+            current_floor=floor,
+            next_action=_RECOMPUTE,
         )
     if plan.model != BINOMIAL_PLANNING_MODEL and plan.model not in RETIRED_PLANNER_MODELS:
-        raise CheckpointError(
-            f"{where}: planner model {plan.model!r} is neither {BINOMIAL_PLANNING_MODEL!r} nor a "
-            "retired model this checkpoint can be re-planned from"
+        where.refuse(
+            "calibration.conversion_route.checkpoint_planner_model",
+            model=plan.model,
+            current=BINOMIAL_PLANNING_MODEL,
+            retired=tuple(sorted(RETIRED_PLANNER_MODELS)),
+            next_action=_RECOMPUTE,
         )
     return list(design), EnumeratedPower(plan, enumeration)
 
@@ -1596,18 +1714,22 @@ def read_checkpoint(path: Path) -> dict[str, EnumeratedPower]:
     runtime it was summed under, and its plan with the planner model that made it. A record
     that names neither (one undated `power` section, as every earlier layout wrote), or an
     enumeration of another runtime, or a model that is neither current nor retired, is refused
-    and never reused or relabelled; a retired model's plan is replaced when the run resumes
-    (``bound``) and its enumeration kept."""
+    with a `CheckpointError` whose code names the reason, and never reused or relabelled; a
+    retired model's plan is replaced when the run resumes (``bound``) and its enumeration
+    kept."""
     done: dict[str, EnumeratedPower] = {}
     for number, line in enumerate(path.read_text().splitlines(), start=1):
         if not line.strip():
             continue
-        where = f"{path}:{number}"
+        where = _Line(str(path), number)
         try:
             record = json.loads(line)
-            record.keys()
-        except (json.JSONDecodeError, AttributeError) as error:
-            raise CheckpointError(f"{where}: not a bound checkpoint record") from error
+        except json.JSONDecodeError:
+            record = None
+        if not isinstance(record, dict):
+            where.refuse(
+                "calibration.conversion_route.checkpoint_unreadable", next_action=_REMOVE_LINE
+            )
         design, power = _checkpoint_record(where, record)
         done[json.dumps(design)] = power
     return done
@@ -1694,7 +1816,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     verify_parser = sub.add_parser("verify", help="check the shipped threshold at every tail")
     verify_parser.add_argument("--workers", type=int, default=1)
     verify_parser.add_argument("--tails", type=float, nargs="+", default=list(TAILS))
-    sub.add_parser("conformance", help="compare the vectorised decisions with estimate_lift")
+    sub.add_parser("conformance", help="compare the vectorised intervals with estimate_lift")
     hybrid_parser = sub.add_parser("hybrid", help="pipeline noncoverage at the boundary")
     hybrid_parser.add_argument("--workers", type=int, default=1)
     hybrid_parser.add_argument("--tails", type=float, nargs="+", default=list(TAILS))
@@ -1741,7 +1863,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             return bound(workers=args.workers, out=args.out, grid=args.grid)
         except CheckpointError as refusal:
-            print(refusal, file=sys.stderr)
+            print(f"{refusal.code}: {refusal}", file=sys.stderr)
             return 2
     return hybrid(
         args.tails, workers=args.workers, count=args.count, replicate_tails=args.replicate_tails

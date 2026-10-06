@@ -18,8 +18,10 @@ from fractions import Fraction
 
 import numpy as np
 import pytest
+from scipy.stats import binom
 
 from calibration import conversion_route as cr
+from increment.estimation.conversion_delta import delta_interval, production_decision
 from increment.estimation.conversion_route import dense_min_count, route_for_counts
 from tests.estimation._conversion_counts import lift_row
 from tests.mc import scientific_delta
@@ -506,6 +508,108 @@ class TestRoutedPairsAreDecidedByTheRuntimesOwnRow:
         assert not cr._delta_rejects(design, lattice, x_c, routed).any()
 
 
+class TestHybridNoncoverageDecidesRoutedPairsByTheRuntimesRow:
+    """A routed pair of ``hybrid_noncoverage`` misses the true lift where the row ``estimate_lift``
+    reports for it rejects against that lift (``stat_sig``), whichever side the alternative
+    reads. The vectorised formula of the same interval compares on the log scale, and differs
+    from the runtime's lift-scale comparison where an interval end equals the true lift to the
+    last bit; the cells below are built so that one does."""
+
+    N = 3_000
+    TAIL = 0.1
+    #: Counts either side of the boundary pair that the sum runs over: the runtime row costs one
+    #: computation per pair.
+    REACH = 2
+    #: Spacing of the doubles in ``[1, 2)``: a lift on this grid is exact as a ratio minus one.
+    GRID = 2.0**-52
+
+    @classmethod
+    def _boundary(cls, alternative: str, side: str) -> tuple[cr.Cell, int, int]:
+        """``(cell, x_c, x_t)``: a cell at control rate one half whose true lift lies within a few
+        doubles of the ``side`` end of the runtime's interval at ``(x_c, x_t)``, chosen so that the
+        vectorised formula and the runtime compare that end with the lift differently."""
+        n, tail, index = cls.N, cls.TAIL, 0 if side == "plus" else 1
+        x_c = n // 2
+        # Pairs about two standard deviations from the cell their interval end names, so the
+        # count window of that cell holds them.
+        pairs = range(1_630, 1_730) if side == "plus" else range(1_430, 1_560)
+        for x_t in pairs:
+            interval = delta_interval(x_c, n, x_t, n, tail=tail, alternative=alternative)
+            assert interval is not None
+            log_lower, log_upper = cr.delta_log_bounds(np.array([x_c]), n, np.array([x_t]), n, tail)
+            for step in range(-3, 4):
+                lift = (1.0 + interval[index]) - 1.0 + step * cls.GRID
+                p_t = (1.0 + lift) / 2.0
+                cell = cr.Cell("central", n, n, 0.5, p_t, 2.0 * p_t, float(dense_min_count(tail)))
+                assert cell.lift == lift
+                vectorised = (bool(log_lower[0] > cell.truth), bool(log_upper[0] < cell.truth))
+                runtime = production_decision(
+                    x_c, n, x_t, n, tail=tail, alternative=alternative, null_lift=lift
+                )
+                if vectorised[index] != runtime[index]:
+                    return cell, x_c, x_t
+        raise AssertionError("no boundary pair separates the vectorised formula from the runtime")
+
+    @classmethod
+    def _restrict_windows(cls, monkeypatch, x_c: int, x_t: int) -> None:
+        """Sum over the counts within ``REACH`` of ``(x_c, x_t)`` only."""
+        from increment.power._binomial import _Window, _window
+
+        def around(n: int, p: float, centre: int) -> _Window:
+            full = _window(n, p)
+            lo, hi = centre - cls.REACH, centre + cls.REACH
+            assert full.lo <= lo and hi <= full.hi
+            weights = full.weights[lo - full.lo : hi - full.lo + 1]
+            return _Window(lo, hi, 0.0, weights, full.error)
+
+        monkeypatch.setattr(
+            cr,
+            "_count_windows",
+            lambda cell: (around(cell.n_c, cell.p_c, x_c), around(cell.n_t, cell.p_t, x_t)),
+        )
+
+    @pytest.mark.parametrize(
+        ("alternative", "side"),
+        [("two-sided", "plus"), ("two-sided", "minus"), ("greater", "plus"), ("less", "minus")],
+    )
+    def test_the_noncoverage_of_routed_pairs_is_the_runtime_rows_verdict_at_the_true_lift(
+        self, monkeypatch, alternative, side
+    ):
+        n, reach = self.N, self.REACH
+        cell, x_c, x_t = self._boundary(alternative, side)
+        alpha = 2.0 * self.TAIL if alternative == "two-sided" else self.TAIL
+        self._restrict_windows(monkeypatch, x_c, x_t)
+        result = cr.hybrid_noncoverage(
+            cell, alpha=alpha, threshold=dense_min_count(self.TAIL), alternative=alternative
+        )
+        lower = upper = mass = 0.0
+        for c in range(x_c - reach, x_c + reach + 1):
+            for t in range(x_t - reach, x_t + reach + 1):
+                weight = float(binom.pmf(c, n, cell.p_c) * binom.pmf(t, n, cell.p_t))
+                row = lift_row(
+                    (c, n, t, n), alpha=alpha, alternative=alternative, null_lift=cell.lift
+                )
+                assert row.reference_kind == "t"
+                interval = row.require_lift()
+                rejected = row.stat_sig()
+                mass += weight
+                lower += weight * (rejected and interval.lb is not None and interval.lb > cell.lift)
+                upper += weight * (rejected and interval.ub is not None and interval.ub < cell.lift)
+        assert result.asymptotic_share == pytest.approx(mass, rel=1e-9)
+        assert result.lower == pytest.approx(lower, rel=1e-9, abs=0.0)
+        assert result.upper == pytest.approx(upper, rel=1e-9, abs=0.0)
+        assert (lower if side == "plus" else upper) > 0.0
+
+    @pytest.mark.parametrize(("alternative", "unread"), [("greater", "upper"), ("less", "lower")])
+    def test_a_side_the_alternative_does_not_read_never_misses(self, alternative, unread):
+        cell = cr.Cell("central", 300, 600, 0.3, 0.36, 1.2, 90.0)
+        result = cr.hybrid_noncoverage(cell, alpha=0.1, threshold=90, alternative=alternative)
+        read = "lower" if unread == "upper" else "upper"
+        assert getattr(result, unread) == 0.0
+        assert getattr(result, read) > 0.0
+        assert 0.0 < result.asymptotic_share < 1.0
+
+
 class TestEnumerationEnclosesTheExactMass:
     """The pipeline's rejection probability over the lattice, in exact rational arithmetic,
     lies in the interval the enumeration reports; the interval is not vacuous."""
@@ -657,24 +761,76 @@ class TestBoundCheckpoint:
         assert (enumerated, planned) == ([], [])
 
     @pytest.mark.parametrize(
-        "change",
+        ("change", "code", "named"),
         [
-            {"enumeration": {"construction": "binomial_bb_difference_v2"}},
-            {"enumeration": {"floor": 411}},
-            {"plan": {"model": "an_unrecorded_model"}},
-            {"plan": {"model": None}},
-            {"enumeration": {"inflation": "1"}},
+            (
+                {"enumeration": {"construction": "binomial_bb_difference_v2"}},
+                "calibration.conversion_route.checkpoint_runtime",
+                {"construction": "binomial_bb_difference_v2"},
+            ),
+            (
+                {"enumeration": {"floor": 411}},
+                "calibration.conversion_route.checkpoint_runtime",
+                {"floor": 411},
+            ),
+            (
+                {"plan": {"model": "an_unrecorded_model"}},
+                "calibration.conversion_route.checkpoint_planner_model",
+                {"model": "an_unrecorded_model"},
+            ),
+            (
+                {"plan": {"model": None}},
+                "calibration.conversion_route.checkpoint_layout",
+                {"section": "planner"},
+            ),
+            (
+                {"enumeration": {"inflation": "1"}},
+                "calibration.conversion_route.checkpoint_layout",
+                {"section": "enumeration"},
+            ),
         ],
         ids=["other_construction", "other_routing_floor", "unknown_model", "no_model", "mistyped"],
     )
     def test_a_record_of_another_runtime_or_an_unknown_model_is_refused(
-        self, tmp_path, calls, change
+        self, tmp_path, calls, change, code, named
     ):
         path = tmp_path / "bound.jsonl"
         self._write(path, [_record(cr.bound_cells("original")[0], **change)])
-        with pytest.raises(cr.CheckpointError):
+        before = path.read_text()
+        with pytest.raises(cr.CheckpointError) as refused:
             cr.bound(workers=1, out=path)
+        context = refused.value.context
+        assert refused.value.code == code
+        assert (context["path"], context["line"]) == (str(path), 1)
+        assert context["next_action"] == "recompute_to_new_out"
+        assert {key: context[key] for key in named} == named
         assert calls == ([], [])
+        assert path.read_text() == before
+
+    @pytest.mark.parametrize(
+        ("text", "code"),
+        [
+            ('{"design": 0, "power"', "calibration.conversion_route.checkpoint_unreadable"),
+            ("[1, 2]", "calibration.conversion_route.checkpoint_unreadable"),
+            (
+                json.dumps({"design": [1], "enumeration": {}, "planner": {}}),
+                "calibration.conversion_route.checkpoint_design",
+            ),
+        ],
+        ids=["truncated", "not_an_object", "not_a_design"],
+    )
+    def test_a_line_that_is_no_record_is_refused_with_the_line_to_remove(
+        self, tmp_path, calls, text, code
+    ):
+        path = tmp_path / "bound.jsonl"
+        path.write_text(text + "\n")
+        with pytest.raises(cr.CheckpointError) as refused:
+            cr.bound(workers=1, out=path)
+        assert refused.value.code == code
+        assert refused.value.context["line"] == 1
+        assert refused.value.context["next_action"] == "remove_line"
+        assert calls == ([], [])
+        assert path.read_text() == text + "\n"
 
     @pytest.mark.parametrize(
         "power",
@@ -708,14 +864,30 @@ class TestBoundCheckpoint:
     ):
         """A line of an earlier layout holds one undated power section. Nothing in it says what
         planned it or which runtime summed it, so none of it is reused, relabelled or silently
-        enumerated again: the refusal names the file line and tells how to proceed."""
+        enumerated again: the refusal is an incompatible layout that locates the line and names
+        the next action, enumerating to another file, which resumes from nothing."""
+        enumerated, _ = calls
+        designs = cr.bound_cells("original")
         path = tmp_path / "bound.jsonl"
-        self._write(path, [{"design": design, "power": power}])
+        earlier = {"design": design, "power": power}
+        self._write(path, [_record(cell) for cell in designs[:2]] + [earlier])
         before = path.read_text()
-        with pytest.raises(cr.CheckpointError, match=r"bound\.jsonl:1: .*undated .*--out"):
+        with pytest.raises(cr.CheckpointError) as refused:
             cr.bound(workers=1, out=path)
-        assert calls == ([], [])
+        context = refused.value.context
+        assert refused.value.code == "calibration.conversion_route.checkpoint_layout"
+        located = ("path", "line", "section", "found", "next_action")
+        assert {key: context[key] for key in located} == {
+            "path": str(path),
+            "line": 3,
+            "section": "record",
+            "found": ("design", "power"),
+            "next_action": "recompute_to_new_out",
+        }
+        assert enumerated == []
         assert path.read_text() == before
+        assert cr.bound(workers=1, out=tmp_path / "recomputed.jsonl") == 0
+        assert enumerated == list(designs)
 
     def test_a_plans_enclosure_and_its_certification_survive_a_checkpoint(self, tmp_path):
         designs = cr.bound_cells("original")[:2]
@@ -734,7 +906,7 @@ class TestBoundCheckpoint:
         path = tmp_path / "bound.jsonl"
         path.write_text('{"design": 0, "power"\n')
         assert cr.main(["bound", "--out", str(path)]) == 2
-        assert str(path) in capsys.readouterr().err
+        assert "calibration.conversion_route.checkpoint_unreadable" in capsys.readouterr().err
 
 
 @pytest.mark.slow
