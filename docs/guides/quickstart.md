@@ -100,8 +100,10 @@ For the default two-sided test, `r.lift.excludes(0.0)` checks whether the
 interval excludes zero. A row can have no `r.lift`, as the guard in the loop
 above handles; see [Reading results](reading-results.md) for missing points,
 open and sequential intervals, switchback contrasts, and flat readout rows.
-A row summary does not enumerate a retained sequential set; inspect
-`r.sequential_result.bounds` for its `status` and `components`.
+A row summary does not enumerate a retained sequential set. For a sequential
+row, inspect `r.sequential_result.bounds`: exact bounds expose `status`, `lower`,
+and `upper` in ratio coordinates; asymptotic bounds also expose `components`
+for disconnected sets.
 
 The readout's `stat_sig` column also handles one-sided tests and nonzero
 null values. For other decision statistics, see `r.chance_to_beat()`,
