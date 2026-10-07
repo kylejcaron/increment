@@ -92,8 +92,9 @@ for specified populations, not a universal finite-sample or heterogeneous-
 effects guarantee. Calibration remains unresolved for the preserved stress
 grid, including 12 alternative rows with known clipped-variance failures and
 the contamination width failure evidence; these rows remain unavailable
-evidence, not passes. The typed public status is `experimental`, and adaptive-
-winsor proposals are experimental and excluded from stable admission. No
+evidence, not passes. The typed public status is `experimental`: the descriptive
+confidence set is reported and decision evidence is withheld
+(`evidence.experimental_reference`), as described below. No
 external upper-tail bound is required.
 Select `inference: {method: joint-rank-projection-v1}` for the optional
 uniform rank confidence set. That method requires an explicit finite lower

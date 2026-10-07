@@ -146,10 +146,11 @@ def plan_for(cell: Cell, *, frame: bool) -> AnalysisPlan:
 
 
 def _sequential_inference(cell: Cell) -> InferenceSpec:
-    """Exact Bernoulli monitoring for a binary metric, asymptotic mean otherwise."""
-    if cell.base in ("conversion", "retention"):
-        return InferenceSpec(kind="always_valid")
-    return InferenceSpec(kind="asymptotic_mean", expected_decision_sample_size=100)
+    """Exact Bernoulli monitoring for a binary metric, asymptotic mean otherwise; a variant
+    cell names its route."""
+    if cell.inference == "asymptotic_mean" or cell.base not in ("conversion", "retention"):
+        return InferenceSpec(kind="asymptotic_mean", expected_decision_sample_size=100)
+    return InferenceSpec(kind="always_valid")
 
 
 def definitions_payload(cell: Cell) -> dict[str, Any]:

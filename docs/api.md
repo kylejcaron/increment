@@ -42,6 +42,8 @@ change without notice.
 - A released bug fix may change a numerical answer that was wrong. The
   release notes name the correction; the incorrect value is not preserved for
   compatibility.
+- Compatibility promises do not vary by method; guarantees and evidence do, see
+  [Evidence status](validation.md#evidence-status).
 
 ### Machine-readable contracts
 

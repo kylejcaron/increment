@@ -19,6 +19,10 @@ shared between cells, so a cell never depends on test order or on a sibling havi
 
 from __future__ import annotations
 
+import itertools
+from collections.abc import Iterable
+from dataclasses import replace
+
 import pytest
 
 from tests.parity_harness import matrix, matrix_cases
@@ -38,9 +42,9 @@ def _reads_data(disposition: matrix.Disposition) -> bool:
     )
 
 
-def _params() -> list:
+def _params(cells: Iterable[matrix.Cell]) -> list:
     params = []
-    for cell in matrix.iter_cells():
+    for cell in cells:
         disposition = matrix.classify(cell)
         marks = [pytest.mark.slow] if _reads_data(disposition) else []
         params.append(pytest.param(cell, id=cell.id, marks=marks))
@@ -59,12 +63,13 @@ def _assert_runners_produced_rows(
             )
 
 
-def _matched(cell: matrix.Cell, method: str, disposition: matrix.Disposition) -> None:
+def _matched(cell: matrix.Cell, method: str, disposition: matrix.Disposition) -> CaseResult:
     outcomes = disposition.outcomes(method)
     case = matrix_cases.build_case(cell, method, outcomes)
     result = run_case(case)
     _assert_runners_produced_rows(case, outcomes, result)
     assert_parity(case, result)
+    return result
 
 
 def _switchback(cell: matrix.Cell, method: str, disposition: matrix.Disposition) -> None:
@@ -174,7 +179,7 @@ def test_sequential_quantile_drop_and_impute_are_refused_before_the_portable_ing
     assert declaration.value.code == "frame.metric.missing_impute"
 
 
-@pytest.mark.parametrize("cell", _params())
+@pytest.mark.parametrize("cell", _params(matrix.iter_cells()))
 def test_cell(cell: matrix.Cell) -> None:
     """Each leg of the cell (a day-axis view has a value leg and a lift leg) runs on its own,
     so one leg refusing never hides the other's rows."""
@@ -182,3 +187,62 @@ def test_cell(cell: matrix.Cell) -> None:
     for method in disposition.legs:
         _matched(cell, method, disposition)
         _switchback(cell, method, disposition)
+
+
+def test_asymptotic_retention_variant_enumerates_every_retention_sequential_cell():
+    """The variant is an enumerated set, not a one-off: every retention and windowed-retention
+    `sequential` cell of the matrix, once, on the asymptotic route, with the same disposition
+    as its default cell. The expected set is spelled out here from the axes' literal values, so
+    a generator that returned another metric's cells (the conversion `sequential` cells have
+    the same count and uniqueness) or dropped one retention cell fails."""
+    expected = sorted(
+        itertools.product(
+            ("retention", "windowed_retention"),
+            ("run", "breakout", "daily", "asof"),
+            ("sequential",),
+            ("utc", "fixed_offset"),
+            ("error", "zero", "drop", "impute"),
+            ("asymptotic_mean",),
+        )
+    )
+    variants = list(matrix.iter_asymptotic_retention_cells())
+    assert (
+        sorted(
+            (c.metric, c.view, c.option, c.day_boundary, c.missing, c.inference) for c in variants
+        )
+        == expected
+    )
+    for cell in variants:
+        default = replace(cell, inference="default")
+        assert matrix.classify(cell) == matrix.classify(default)
+        asymptotic = matrix_cases.plan_for(cell, frame=True).inference
+        exact = matrix_cases.plan_for(default, frame=True).inference
+        assert asymptotic is not None and asymptotic.kind == "asymptotic_mean"
+        assert exact is not None and exact.kind == "always_valid"
+
+
+@pytest.mark.parametrize("cell", _params(matrix.iter_asymptotic_retention_cells()))
+def test_asymptotic_retention_cell(cell: matrix.Cell) -> None:
+    """Retention under the asymptotic scalar-mean route is held to the cell's recorded
+    per-ingress outcomes, as the exact-Bernoulli route is: the matched ingresses that run
+    agree, the dateless unit summary refuses at its constructor, and every other refusal keeps
+    its recorded code. Agreement alone would also hold if every ingress fell back to exact
+    Bernoulli monitoring, so each live ingress's retained state must name the scalar-mean
+    law."""
+    disposition = matrix.classify(cell)
+    for method in disposition.legs:
+        merged = _matched(cell, method, disposition)
+        _switchback(cell, method, disposition)
+        case = matrix_cases.build_case(cell, method, disposition.outcomes(method))
+        for name in merged.sequential_state:
+            analysis = case.build[name]()
+            try:
+                as_of = getattr(analysis, "_sequential_as_of", None)
+                snapshot = analysis.capture_sequential(
+                    finalized=True, **({"as_of": as_of} if as_of is not None else {})
+                )
+                assert {state.law for state in snapshot.states} == {"scalar_mean"}, name
+            finally:
+                analysis.close()
+                for connection in getattr(analysis, "_parity_connections", ()):
+                    connection.disconnect()
