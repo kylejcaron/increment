@@ -1213,7 +1213,7 @@ dev = [
     { name = "prek", specifier = ">=0.4.11" },
     { name = "psutil", specifier = ">=7.2.2" },
     { name = "pydoclint", specifier = ">=0.9.1" },
-    { name = "pytest", specifier = ">=9.0.2" },
+    { name = "pytest", specifier = "==9.1.1" },
     { name = "pytest-cov", specifier = ">=6.0" },
     { name = "pytest-split", specifier = ">=0.11.0" },
     { name = "pytest-timeout", specifier = ">=2.4" },

@@ -75,11 +75,53 @@ Jupyter Notebook, JupyterLab, or ipywidgets.
 
 ### Tests and quality checks
 
-Start with the smallest test selection that exercises your change:
+- Start with the exact regression:
 
-```bash
-make test TESTS=tests/file.py::test_name
-```
+  ```bash
+  make test TESTS=tests/file.py::test_name
+  ```
+
+  For a scoped follow-up, run the affected fast tier against the task's recorded
+  base commit:
+
+  ```bash
+  make test-affected BASE=<task-base-sha>
+  make test-affected BASE=<task-base-sha> TIER=slow
+  ```
+
+  `BASE` is required and resolved to an immutable commit. `HEAD` is valid for
+  a working-tree-only comparison; long-running tasks MUST record their dispatch
+  base SHA and reuse it across later commits and resumes so committed task work
+  is not dropped.
+
+  `PYTEST_ARGS` may contain only typed controls: `-k`/`--keyword`,
+  `-m`/`--markexpr`, `-x`/`--maxfail`, `-q`, `-v`, `--durations`, numeric
+  `-n 1..8`, `--dist loadgroup`, `--evidence-root`, and
+  `--runtime-diagnostics`. Runs are serial by default. `-n auto`/`logical`,
+  maximum-process caps, custom xdist transports, arbitrary pytest arguments,
+  `-c`/`-o`, response files, non-empty inherited `PYTEST_ADDOPTS` or
+  `PYTEST_PLUGINS`, and project pytest addopts/plugins are not accepted in
+  affected mode. The launcher uses a fixed config, sanitized environment,
+  explicit plugin set, and a parser-backed effective-option allowlist.
+
+  The Tach selection reuses the dependency graph and filesystem guards. It
+  refuses changes whose impact is not proven (including configuration,
+  dependencies/plugins, conftest/shared fixtures, data, source files that
+  dynamically load arbitrary paths, and public lazy exports). When source
+  changes, it retains every detected dynamic-import consumer test file and
+  reports consumers not selected by the current tier/selector; run the
+  relevant slow/broader validation for those tests. A successful affected run
+  requires finished owner-matched evidence whose exact terminal report node
+  IDs equal its nonempty selected node IDs. A zero-selection run is rejected.
+  Affected-fast is a feedback tool, not a replacement for explicit slow,
+  parity, fixture, public-smoke, documentation, or scientific acceptance.
+  Keep the exact focused regression and required broader gates.
+
+  Each long-running task's dispatch/resume trail records its base SHA, exact
+  commands, serial/numeric worker allowance, remaining acceptance, and evidence
+  location. Selection evidence is specific to source/worktree/environment and
+  dirty inputs; a changed base or input requires a new run.
+
 
 Before pushing, run:
 
@@ -117,10 +159,11 @@ pytest-split distributes tests evenly.
 investigating slow tests; retained artifacts are not committed.
 
 Ordinary Make/Nox suites disable Tach's unused impact-analysis plugin; direct
-`uv run pytest --tach ...` remains available for impact-selected work. Override
-Make's `PYTEST_ARGS` when you need different pytest options. Notebook checks share one
-batched Marimo invocation while retaining a separate guard for each notebook;
-export and warehouse-regeneration scenarios still execute independently.
+`uv run pytest --tach ...` remains available for impact-selected work. Ordinary
+Make tiers accept their normal `PYTEST_ARGS`; affected mode accepts only the
+typed controls listed above. Notebook checks share one batched Marimo
+invocation while retaining a separate guard for each notebook; export and
+warehouse-regeneration scenarios still execute independently.
 
 Unit tests do not use the network or real warehouses. Live PostgreSQL,
 Snowflake, and BigQuery checks live under `integration/warehouse_execution/`

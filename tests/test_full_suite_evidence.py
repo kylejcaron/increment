@@ -9,7 +9,7 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -28,6 +28,10 @@ def test_failed_parallel_run_retains_evidence_without_overwriting_previous_run(t
     (sample / "scripts" / "__init__.py").touch()
     shutil.copyfile(
         project / "scripts" / "run_test_tier.py", sample / "scripts" / "run_test_tier.py"
+    )
+    shutil.copyfile(
+        project / "scripts" / "_test_tier_policy.py",
+        sample / "scripts" / "_test_tier_policy.py",
     )
     (sample / ".gitignore").write_text("__pycache__/\n.pytest_cache/\n")
     subprocess.run(["git", "init", "-q", str(sample)], check=True)
@@ -556,3 +560,254 @@ def test_child_exit_124_is_not_a_supervisor_timeout(tmp_path, budget_seconds, wr
     assert summary["status"] == "finished"
     assert summary["exit_code"] == 124
     assert summary["termination"] == "process_exit"
+
+
+def test_affected_run_evidence_retains_selection_identity(tmp_path):
+    from tests.test_impact_selection import _make_affected_fixture, _run_affected
+
+    project = Path(__file__).resolve().parents[1]
+    base = _make_affected_fixture(tmp_path)
+    (tmp_path / "pkg" / "leaf.py").write_text("VALUE = 1  # changed\n")
+    evidence = tmp_path / "selection-evidence"
+    outcome = _run_affected(project, tmp_path, base, "fast", "--evidence-root", str(evidence))
+    assert outcome.returncode == 0, outcome.stdout + outcome.stderr
+    manifest = json.loads(next(evidence.glob("run-*/run.json")).read_text())
+    assert manifest["validation_kind"] == "affected"
+    assert manifest["affected_base"] == base
+    assert manifest["tier"] == "fast"
+    assert manifest["selected_tests"] == 2
+    assert manifest["deselected_tests"] == 1
+    assert manifest["selection_status"] == "selected"
+    assert manifest["outcome"] == "passed"
+    assert manifest["dirty_inputs"]
+
+
+@pytest.mark.slow
+def test_affected_xdist_run_retains_controller_selection_and_worker_results(tmp_path):
+    from tests.test_impact_selection import _make_affected_fixture, _run_affected
+
+    project = Path(__file__).resolve().parents[1]
+    base = _make_affected_fixture(tmp_path)
+    (tmp_path / "pkg" / "leaf.py").write_text("VALUE = 1  # changed\n")
+    evidence = tmp_path / "xdist-evidence"
+    outcome = _run_affected(
+        project,
+        tmp_path,
+        base,
+        "fast",
+        "-n",
+        "2",
+        "--dist",
+        "loadgroup",
+        "--evidence-root",
+        str(evidence),
+    )
+    assert outcome.returncode == 0, outcome.stdout + outcome.stderr
+    manifest_path = next(evidence.glob("run-*/run.json"))
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["selected_tests"] == 2
+    assert manifest["deselected_tests"] == 1
+    assert manifest["worker_allowance"] == "2"
+    assert manifest["resolved_worker_count"] == 2
+    assert manifest["outcome"] == "passed"
+    reports = [
+        json.loads(line)
+        for line in manifest_path.with_name("reports.jsonl").read_text().splitlines()
+    ]
+    assert {
+        report["nodeid"].rsplit("::", 1)[-1]
+        for report in reports
+        if report.get("event") == "report"
+        and report["when"] == "call"
+        and report["outcome"] == "passed"
+    } == {
+        "test_direct",
+        "test_transitive",
+    }
+    assert set(manifest["selected_nodeids"]) == {
+        report["nodeid"]
+        for report in reports
+        if report.get("event") == "report" and report["when"] == "call"
+    }
+
+
+def test_affected_evidence_fails_when_selected_tests_are_incompletely_reported(tmp_path):
+    from types import SimpleNamespace
+
+    from tests._evidence import _RUN, _SELECTION, pytest_sessionfinish
+
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "run.json").write_text(json.dumps({"status": "running", "exit_code": None}))
+    counts = {"selected": 2, "deselected": 1, "executed": 0}
+    (run / "reports.jsonl").write_text(
+        json.dumps(
+            {
+                "event": "report",
+                "nodeid": "tests/test_a.py::test_a",
+                "when": "setup",
+                "outcome": "passed",
+            }
+        )
+        + "\n"
+    )
+    session = SimpleNamespace(
+        config=SimpleNamespace(stash={_RUN: run, _SELECTION: counts}),
+        exitstatus=0,
+    )
+    pytest_sessionfinish(cast(Any, session), 0)
+    manifest = json.loads((run / "run.json").read_text())
+    assert session.exitstatus != 0
+    assert manifest["outcome"] == "incomplete"
+    assert manifest["executed_tests"] == 0
+
+
+def test_affected_evidence_counts_setup_skip_as_terminal_outcome(tmp_path):
+    from types import SimpleNamespace
+
+    from tests._evidence import _RUN, _SELECTION, pytest_sessionfinish
+
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "run.json").write_text(json.dumps({"status": "running", "exit_code": None}))
+    counts = {"selected": 1, "deselected": 0}
+    (run / "reports.jsonl").write_text(
+        json.dumps(
+            {
+                "event": "report",
+                "nodeid": "tests/test_a.py::test_a",
+                "when": "setup",
+                "outcome": "skipped",
+            }
+        )
+        + "\n"
+    )
+    session = SimpleNamespace(
+        config=SimpleNamespace(stash={_RUN: run, _SELECTION: counts}),
+        exitstatus=0,
+    )
+    pytest_sessionfinish(cast(Any, session), 0)
+    manifest = json.loads((run / "run.json").read_text())
+    assert session.exitstatus == 0
+    assert manifest["outcome"] == "passed"
+    assert manifest["executed_tests"] == 1
+
+
+def test_xdist_crash_without_worker_output_does_not_raise():
+    from types import SimpleNamespace
+
+    from tests._evidence import _XdistSelectionEvidence
+
+    plugin = _XdistSelectionEvidence(cast(Any, SimpleNamespace()))
+    plugin.pytest_testnodedown(cast(Any, SimpleNamespace()), RuntimeError("worker crashed"))
+
+
+def _write_affected_evidence_case(
+    root: Path,
+    *,
+    selected: list[str],
+    reports: list[dict[str, object]] | None,
+    status: str = "finished",
+    owner: str = "owner",
+) -> Path:
+    run = root / "run-case"
+    run.mkdir()
+    (run / "run.json").write_text(
+        json.dumps(
+            {
+                "validation_kind": "affected",
+                "status": status,
+                "owner_token": owner,
+                "selected_nodeids": selected,
+            }
+        )
+    )
+    if reports is not None:
+        (run / "reports.jsonl").write_text("".join(json.dumps(event) + "\n" for event in reports))
+    return root
+
+
+@pytest.mark.parametrize(
+    ("selected", "terminal", "status", "owner", "pytest_status", "expected"),
+    [
+        (["a"], ["a"], "finished", "owner", 0, None),
+        (["a"], [], "finished", "owner", 0, "incomplete"),
+        (["a", "b"], ["a"], "finished", "owner", 0, "incomplete"),
+        (["a"], ["a", "extra"], "finished", "owner", 0, "incomplete"),
+        (["a"], ["different"], "finished", "owner", 0, "incomplete"),
+        ([], [], "finished", "owner", 1, "pytest_failed"),
+        (["a"], ["a"], "running", "owner", 0, "incomplete"),
+        (["a"], ["a"], "finished", "other", 0, "incomplete"),
+        (["a"], ["a"], "finished", "owner", 1, "pytest_failed"),
+    ],
+)
+def test_affected_runner_accepts_only_complete_owned_nodeid_evidence(
+    tmp_path: Path,
+    selected: list[str],
+    terminal: list[str],
+    status: str,
+    owner: str,
+    pytest_status: int,
+    expected: str | None,
+) -> None:
+    from scripts import run_test_tier
+
+    outcome = run_test_tier._validate_affected_evidence(
+        _write_affected_evidence_case(
+            tmp_path,
+            selected=selected,
+            reports=[
+                {
+                    "event": "report",
+                    "nodeid": nodeid,
+                    "when": "call",
+                    "outcome": "passed",
+                }
+                for nodeid in terminal
+            ],
+            status=status,
+            owner=owner,
+        ),
+        owner_token="owner",
+        pytest_status=pytest_status,
+    )
+    if expected is None:
+        assert outcome is None
+    else:
+        assert outcome is not None
+        assert expected in outcome
+
+
+def test_affected_runner_requires_evidence_after_zero_exit(tmp_path: Path) -> None:
+    from scripts import run_test_tier
+
+    status = run_test_tier.run_with_budget(
+        [sys.executable, "-c", "pass"],
+        tier="fast",
+        budget_seconds=10,
+        affected_evidence_root=tmp_path,
+    )
+    assert status != 0
+
+
+def test_affected_runner_accepts_setup_skip_terminal_outcome(tmp_path: Path) -> None:
+    from scripts import run_test_tier
+
+    evidence_root = _write_affected_evidence_case(
+        tmp_path,
+        selected=["test.py::test_skip"],
+        reports=[
+            {
+                "event": "report",
+                "nodeid": "test.py::test_skip",
+                "when": "setup",
+                "outcome": "skipped",
+            }
+        ],
+    )
+    assert (
+        run_test_tier._validate_affected_evidence(
+            evidence_root, owner_token="owner", pytest_status=0
+        )
+        is None
+    )
