@@ -226,21 +226,53 @@ def validate_alternative(alternative: str) -> Alternative:
 # 1. Higham's bound for summing `m` nonnegative terms in [0, 1]: the absolute error is about
 #    `m * eps`, since the true sum is a sub-probability. This covers the `np.dot` step in
 #    `_tail_plus`/`_tail_minus`.
-# 2. SciPy's per-call `binom.pmf/cdf/sf` error, which is not assumed negligible.
-#    `SCIPY_BINOMIAL_ULP_ALLOWANCE` is checked against a `decimal` exact oracle (the incomplete-beta
-#    identity for the binomial CDF at integer shapes) in
-#    `tests/estimation/test_binomial_rr.py::TestScipyBinomErrorBudget`. The worst grid value
-#    that did not underflow to 0 was under 500 ULPs; 2048 keeps about 4x headroom.
+# 2. SciPy's per-call `binom.pmf/cdf/sf` error, which is not assumed negligible. It is a relative
+#    error `r` of the value, and two mechanisms of the Boost incomplete-beta code set its size:
+#    (a) near the mean, the logarithm of the power terms is built from the numerators
+#    `x*b - y*a` and `y*a - x*b`; a build that fuses each into one multiply-subtract rounds
+#    different products, so the two errors no longer cancel and `|r| <= (y*a + x*b) * 2**-53`, about
+#    `n q (1 - q)` units of `eps / 2`, at most `n * eps / 4` (zero at a dyadic rate; an unfused
+#    build leaves about 1e-12 at `n = 1e8`). (b) for a count below 40 under the mean at a rate
+#    below one half, the finite sum starts from `fl(1 - x)**(n - s)`: the rounding of `1 - x`
+#    (at most `2**-54`) raised to a power near `n`, so `|r| <= n * 2**-54 = n * eps / 4`, the same
+#    sign across every count of one rate. Terms in the far branches can err by up to `2.5 n * eps`,
+#    but carry probability at most `2 exp(-0.02 n)`, so they move a sum by at most about 100 `eps`
+#    at any `n`, which the `SCIPY_BINOMIAL_ULP_ALLOWANCE` floor covers.
+#    `_ulp_allowance` is `n` ULPs, never below that floor: 4x the cap on `r` in `eps` units
+#    (2x in ULPs of the value). Against a `decimal` oracle (`calibration/binomial_oracle.py`;
+#    `scripts/measure_binomial_ceiling.py ulp`; `TestScipyBinomErrorBudget`) the worst measured
+#    error was `0.5 n` ULPs, `0.25 n * eps` relative, from `n = 1e5` to `1e9`. That was measured
+#    with fused multiply-subtract (arm64); an x86 build has not been run. A different SciPy or
+#    Boost build can change (a), so the test is what keeps the allowance honest.
+#    Weighted by a pmf that sums to at most one, the control pmf over `n_c` trials and the
+#    treatment tail over `n_t` trials together move the sum by at most
+#    `(_ulp_allowance(n_c) + _ulp_allowance(n_t)) * eps`.
 _FLOAT64_EPS = float(np.finfo(np.float64).eps)
 
 
-def _eps_margin(term_count: int) -> float:
-    """Additive safety margin bounding accumulated float64 rounding error
-    across a probability computed as a dot product of *term_count* many
-    nonnegative sub-probabilities, each a SciPy special-function
+def _ulp_allowance(trials: int) -> int:
+    """ULPs of relative error assumed of a SciPy binomial pmf, cdf or sf with *trials* trials."""
+    return max(SCIPY_BINOMIAL_ULP_ALLOWANCE, trials)
+
+
+def _eps_margin(term_count: int, n_c: int, n_t: int) -> float:
+    """Additive safety margin bounding accumulated float64 rounding error across a probability
+    computed as a dot product of *term_count* many nonnegative sub-probabilities: a control pmf
+    over *n_c* trials times a treatment tail over *n_t* trials, each a SciPy special-function
     evaluation. See the module-level comment above for the derivation.
     """
-    return (2 * SCIPY_BINOMIAL_ULP_ALLOWANCE + max(1, term_count)) * _FLOAT64_EPS
+    return (_ulp_allowance(n_c) + _ulp_allowance(n_t) + max(1, term_count)) * _FLOAT64_EPS
+
+
+def margin_dominates_tail(tail: float, beta: float, n_c: int, n_t: int) -> bool:
+    """Whether the float margin reaches what the tail level *tail* leaves after the nuisance budget
+    *beta*. Every evaluated tail carries `_eps_margin`, so then no p-value read from one can be
+    certified below *tail*: a numerically evaluated null never rejects, and the set extends to
+    wherever the structure alone stops it (``r = 0`` below, the empty nuisance domain just above
+    ``1/a`` above). `confidence_interval` and `null_p_value` refuse such a count pair unless its
+    null is rejected on the structure alone (`structural_rejection`; `validate_decidable_null`
+    combines the two); planning shares both predicates."""
+    return tail - beta <= _eps_margin(1, n_c, n_t)
 
 
 def _round_outward(x: float, *, direction: Literal["down", "up"]) -> float:
@@ -262,9 +294,29 @@ def _round_outward(x: float, *, direction: Literal["down", "up"]) -> float:
 #: endpoints on both sides; x=0 or x=n still needs one solver endpoint.
 _CP_BETA_FLOOR = 1e-9
 
-#: Empirical solver allowance, checked by decimal binomial-tail inversion
-#: regressions. Directed rounding also protects the final subtraction.
+#: Relative allowance for the SciPy beta solver's error, checked by decimal binomial-tail inversion
+#: regressions (`TestClopperPearsonOutwardRounding`). The solver is accurate in the smaller of an
+#: endpoint and its complement, so the allowance is relative to that side: an absolute `1e-6`
+#: would exceed a billion-trial arm's rare rate of `1e-8`. Directed rounding covers the arithmetic.
 _CP_RELATIVE_SLACK = 1e-6
+
+
+def _widened_lower(raw: float) -> float:
+    """A lower endpoint moved down by `_CP_RELATIVE_SLACK` of the smaller of it and its complement."""
+    if raw < 0.5:
+        widened = raw * (1.0 - _CP_RELATIVE_SLACK)
+    else:
+        widened = 1.0 - (1.0 - raw) * (1.0 + _CP_RELATIVE_SLACK)
+    return max(0.0, _round_outward(widened, direction="down"))
+
+
+def _widened_upper(raw: float) -> float:
+    """An upper endpoint moved up by `_CP_RELATIVE_SLACK` of the smaller of it and its complement."""
+    if raw < 0.5:
+        widened = raw * (1.0 + _CP_RELATIVE_SLACK)
+    else:
+        widened = 1.0 - (1.0 - raw) * (1.0 - _CP_RELATIVE_SLACK)
+    return min(1.0, _round_outward(widened, direction="up"))
 
 
 @lru_cache(maxsize=64)
@@ -287,8 +339,7 @@ def clopper_pearson(x: int, n: int, beta: float) -> tuple[float, float]:
     else:
         if beta < _CP_BETA_FLOOR:
             _raise("estimation.binomial.tail_unrepresentable", beta=beta, x=x, n=n)
-        a_raw = float(_beta_dist.ppf(half, x, n - x + 1))
-        a = max(0.0, _round_outward(a_raw * (1.0 - _CP_RELATIVE_SLACK), direction="down"))
+        a = _widened_lower(float(_beta_dist.ppf(half, x, n - x + 1)))
     if x == n:
         b = 1.0
     elif (x, n) == (0, 1):
@@ -296,11 +347,7 @@ def clopper_pearson(x: int, n: int, beta: float) -> tuple[float, float]:
     else:
         if beta < _CP_BETA_FLOOR:
             _raise("estimation.binomial.tail_unrepresentable", beta=beta, x=x, n=n)
-        b_raw = float(_beta_dist.isf(half, x + 1, n - x))
-        b = min(
-            1.0,
-            _round_outward(1.0 - (1.0 - b_raw) * (1.0 - _CP_RELATIVE_SLACK), direction="up"),
-        )
+        b = _widened_upper(float(_beta_dist.isf(half, x + 1, n - x)))
     return a, b
 
 
@@ -438,16 +485,32 @@ def _control_pmf(n_c: int, q: float, i_lo: int, i_hi: int) -> np.ndarray:
     return _read_only(_fast_binom_pmf(np.arange(i_lo, i_hi + 1), n_c, q))
 
 
+def _count_threshold(kind: Literal["plus", "minus"], n_c: int, numerator: np.ndarray) -> np.ndarray:
+    """Treatment-count threshold of an integer *numerator* over *n_c*: ``ceil(numerator / n_c) -
+    1`` for the plus tail (``P(X_t >= x) = sf(x - 1)``) and ``floor(numerator / n_c)`` for the
+    minus tail, by int64 floor division.
+
+    A float quotient rounds the numerator, then the division, and a non-integer quotient sits
+    only ``1 / n_c`` from an integer, so it misplaces a threshold once ``n_c * n_t`` outgrows
+    float64's exact range (about 6.7e7 per arm). Floor division is exact while the numerator
+    fits int64, which `FINITE_SAMPLE_MAX_ARM_SIZE` guarantees: ``k + n_t * i`` lies within
+    ``[-n_c * n_t, 2 * n_c * n_t]``.
+    """
+    if kind == "plus":
+        return -((-numerator) // n_c) - 1
+    return numerator // n_c
+
+
 @lru_cache(maxsize=32)
 def _plus_threshold(n_c: int, n_t: int, k: int, i_lo: int, i_hi: int) -> np.ndarray:
-    i = np.arange(i_lo, i_hi + 1)
-    return _read_only(np.ceil((k + n_t * i) / n_c).astype(np.int64) - 1)
+    i = np.arange(i_lo, i_hi + 1, dtype=np.int64)
+    return _read_only(_count_threshold("plus", n_c, k + n_t * i))
 
 
 @lru_cache(maxsize=32)
 def _minus_threshold(n_c: int, n_t: int, k: int, i_lo: int, i_hi: int) -> np.ndarray:
-    i = np.arange(i_lo, i_hi + 1)
-    return _read_only(np.floor((k + n_t * i) / n_c).astype(np.int64))
+    i = np.arange(i_lo, i_hi + 1, dtype=np.int64)
+    return _read_only(_count_threshold("minus", n_c, k + n_t * i))
 
 
 # A search asks for each treatment vector (a function of `p` alone; the control PMF carries `q`)
@@ -474,7 +537,7 @@ def _tail_plus(
     pmf_i = _control_pmf(n_c, q, i_lo, i_hi)
     sf = _treatment_tail("plus", n_c, n_t, k, i_lo, i_hi, p)
     raw = float(np.dot(pmf_i, sf)) + omitted
-    return min(1.0, raw + _eps_margin(i_hi - i_lo + 1))
+    return min(1.0, raw + _eps_margin(i_hi - i_lo + 1, n_c, n_t))
 
 
 def _tail_minus(
@@ -485,18 +548,18 @@ def _tail_minus(
     pmf_i = _control_pmf(n_c, q, i_lo, i_hi)
     cdf = _treatment_tail("minus", n_c, n_t, k, i_lo, i_hi, p)
     raw = float(np.dot(pmf_i, cdf)) + omitted
-    return min(1.0, raw + _eps_margin(i_hi - i_lo + 1))
+    return min(1.0, raw + _eps_margin(i_hi - i_lo + 1, n_c, n_t))
 
 
-def _certification_noise(window: tuple[int, int, float]) -> float:
+def _certification_noise(window: tuple[int, int, float], n_c: int, n_t: int) -> float:
     """How far a `_tail_plus`/`_tail_minus` value can sit above the exact tail it bounds: the
     window's omitted control mass, one float margin it adds, and the margin of the computed sum
     itself. No amount of searching narrows this, so a stop target below it is unreachable."""
     i_lo, i_hi, omitted = window
-    return omitted + 2.0 * _eps_margin(i_hi - i_lo + 1)
+    return omitted + 2.0 * _eps_margin(i_hi - i_lo + 1, n_c, n_t)
 
 
-def tail_lower_enclosure(value: float, window: tuple[int, int, float]) -> float:
+def tail_lower_enclosure(value: float, window: tuple[int, int, float], n_c: int, n_t: int) -> float:
     """A lower bound on the exact tail whose `_tail_plus`/`_tail_minus` value is *value*.
 
     That value adds the window's omitted control mass and one float margin to a computed sum
@@ -504,7 +567,7 @@ def tail_lower_enclosure(value: float, window: tuple[int, int, float]) -> float:
     (`_certification_noise`) leaves at most the exact tail. The value is a certified upper
     bound; it is not a lower one.
     """
-    return max(0.0, value - _certification_noise(window))
+    return max(0.0, value - _certification_noise(window, n_c, n_t))
 
 
 def _p_of_plus(q: float, r: float) -> float:
@@ -609,7 +672,7 @@ def _certified_sup(
     relevant tail evaluated along ``p(q)``, with the lower bound the search reached.
 
     ``upper`` is valid however many splits run; more splits only tighten it. With ``noise =
-    _certification_noise(window)`` the search stops once ``upper - witness_lower <=
+    _certification_noise(window, n_c, n_t)`` the search stops once ``upper - witness_lower <=
     rule.gap_fraction * max(beta + witness_lower, reading.tail) + noise`` -- the gap relative
     to the p-value ``beta + sup`` reported, or to the tail level it will be compared with when
     that is larger -- or after ``rule.max_iter`` splits or at the float floor, where
@@ -659,10 +722,10 @@ def _certified_sup(
     heap: list[tuple[float, float, float, float, float]] = []
     heapq.heappush(heap, (-bound(a, b, fa, fb), a, b, fa, fb))
     iterations = 0
-    noise = _certification_noise(window)
+    noise = _certification_noise(window, n_c, n_t)
     while True:
         upper = min(1.0, max(-heap[0][0], best_achieved))
-        witness = tail_lower_enclosure(best_achieved, window)
+        witness = tail_lower_enclosure(best_achieved, window, n_c, n_t)
         scale = max(beta + witness, reading.tail)
         if upper - witness <= rule.gap_fraction * scale + noise:
             return _SupCertificate(upper, witness, iterations, True)
@@ -763,6 +826,56 @@ def p_plus(
     return _p_plus_certificate(r, x_c, n_c, x_t, n_t, beta, NUISANCE_STOP, _Reading(tail)).p
 
 
+def minus_domain_upper(r: float, b: float) -> float:
+    """Upper end of the nuisance domain ``[a, b] cap [0, 1/r]`` of ``p_-(r)``: the Clopper-Pearson
+    upper bound *b* cut at ``1/r``. The domain is empty once this falls below the lower bound
+    ``a`` (``r > 1/a``), where ``p_-(r)`` is the structural ``beta`` and no tail is evaluated."""
+    return b if r <= 0.0 else min(b, 1.0 / r)
+
+
+def structural_rejection(
+    alternative: Alternative, null_r: float, x_c: int, n_c: int, beta: float
+) -> bool:
+    """Whether ``H0: R = null_r`` is rejected under *alternative* on the nuisance domain alone:
+    the domain of ``p_-(null_r)`` is empty (`minus_domain_upper`), so the p-value is ``beta``
+    (doubled two-sided) below every tail level, with no tail evaluated. ``p_+`` is at least
+    ``beta`` whatever its search, so a two-sided minimum is then ``beta`` too; "greater" reads
+    only ``p_+`` and never rejects this way. The control arm alone certifies ``R <= 1/a <
+    null_r`` there: every treatment count rejects.
+    """
+    if alternative == "greater":
+        return False
+    a, b = clopper_pearson(x_c, n_c, beta)
+    return minus_domain_upper(null_r, b) < a
+
+
+def validate_decidable_null(
+    alternative: Alternative,
+    null_r: float,
+    x_c: int,
+    n_c: int,
+    n_t: int,
+    beta: float,
+    tail: float,
+) -> None:
+    """Refuse ``H0: R = null_r`` read against the tail level *tail* once the float margin every
+    evaluated tail carries dominates what *tail* leaves after the nuisance budget *beta*
+    (`margin_dominates_tail`), unless the nuisance domain alone rejects the null
+    (`structural_rejection`); neither predicate evaluates a tail. `confidence_interval` and
+    `null_p_value` share this guard, so counts persisted from an admitted inversion are
+    refused at another null exactly where a fresh inversion at that null is."""
+    if margin_dominates_tail(tail, beta, n_c, n_t) and not structural_rejection(
+        alternative, null_r, x_c, n_c, beta
+    ):
+        _raise(
+            "estimation.binomial.tail_unrepresentable",
+            alpha=2.0 * tail if alternative == "two-sided" else tail,
+            margin=_eps_margin(1, n_c, n_t),
+            n_c=n_c,
+            n_t=n_t,
+        )
+
+
 def _p_minus_impl(
     r: float,
     x_c: int,
@@ -774,7 +887,7 @@ def _p_minus_impl(
     reading: _Reading,
 ) -> _PCertificate:
     a, b = clopper_pearson(x_c, n_c, beta)
-    upper = b if r <= 0.0 else min(b, 1.0 / r)
+    upper = minus_domain_upper(r, b)
     if upper < a:
         return _PCertificate(min(1.0, beta), 0.0, True)
     window = _support_window(n_c, a, upper)
@@ -897,10 +1010,13 @@ def null_p_value(
     """The p-value for ``H0: R = r`` under *alternative*, as `confidence_interval` reports it:
     `p_plus` for "greater", `p_minus` for "less" and `p_two` for "two-sided", read against the
     *tail* level the caller compares it with, and equal to them without the work of the test
-    that cannot be the smaller."""
+    that cannot be the smaller. Refused where `confidence_interval` refuses the same null
+    (`validate_decidable_null`): a margin-dominated *tail* reads a p-value only from a null the
+    nuisance domain alone rejects."""
     if r < 0.0:
         _raise("estimation.binomial.tail_unrepresentable", r=r)
     validated = validate_alternative(alternative)
+    validate_decidable_null(validated, r, x_c, n_c, n_t, beta, tail)
     certificates = _null_certificates(r, x_c, n_c, x_t, n_t, beta, NUISANCE_STOP, validated, tail)
     return _smallest_p(certificates, validated)
 
@@ -1201,10 +1317,12 @@ def _bound_upper(
     return result
 
 
-#: Compute-resource ceiling, not a statistical limit, sized for the largest supported design:
-#: a two-sided `confidence_interval` call up to it fits the per-request budget, and larger
-#: arms refuse before searching. Unbounded sizes need a closed-form or recurrence tail evaluator.
-MAX_ARM_SIZE = 4_000_000
+#: Largest arm the finite-sample route admits: a compute-resource ceiling, not a statistical limit.
+#: `scripts/measure_binomial_ceiling.py` measures latency and memory at every rung up to it and
+#: validates the SciPy error allowance, the Clopper-Pearson enclosure, the window's omitted mass
+#: and count recovery there against the Decimal oracle. Larger arms refuse before searching.
+FINITE_SAMPLE_MAX_ARM_SIZE = 1_000_000_000
+assert 2 * FINITE_SAMPLE_MAX_ARM_SIZE**2 < 2**63, "threshold numerators must fit int64"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1311,6 +1429,13 @@ def confidence_interval(
     (``BinomialInterval.endpoint_log_width``); `precision_note` discloses a search that fell short
     and a nuisance search the iteration cap ended before its gap target. The p-value at the null
     is the certified bound `p_plus`/`p_minus` return for the tail level of this *alternative*.
+
+    Once the float margin every evaluated tail carries dominates the tail level
+    (`margin_dominates_tail`) the call is refused unless the null is rejected on the nuisance
+    domain alone (`structural_rejection`; `validate_decidable_null` is the guard, shared with
+    `null_p_value`): then no reported value reads a tail, the p-value is ``beta`` (doubled
+    two-sided) and the set is ``[0, r]`` with ``r`` the first candidate that empties the domain,
+    just above ``1/a``, which the control arm certifies by itself.
     """
     validate_counts(x_c, n_c)
     validate_counts(x_t, n_t)
@@ -1318,14 +1443,21 @@ def confidence_interval(
         _raise("estimation.binomial.tail_unrepresentable", alpha=alpha)
     if null_r < 0.0 or not math.isfinite(null_r):
         _raise("estimation.binomial.tail_unrepresentable", null_r=null_r)
-    if n_c > MAX_ARM_SIZE or n_t > MAX_ARM_SIZE:
+    if n_c > FINITE_SAMPLE_MAX_ARM_SIZE or n_t > FINITE_SAMPLE_MAX_ARM_SIZE:
         _raise(
             "estimation.binomial.arm_too_large_for_exact_enumeration",
             n_c=n_c,
             n_t=n_t,
-            max_arm_size=MAX_ARM_SIZE,
+            max_arm_size=FINITE_SAMPLE_MAX_ARM_SIZE,
         )
     validated_alternative = validate_alternative(alternative)
+    # Every evaluated tail carries the float margin, so no p-value read from one can be
+    # certified below `target` once the margin reaches what `target` leaves after the nuisance
+    # budget. A null the empty nuisance domain rejects reads none.
+    target = alpha / 2.0 if validated_alternative == "two-sided" else alpha
+    validate_decidable_null(
+        validated_alternative, null_r, x_c, n_c, n_t, nuisance_beta(alpha), target
+    )
     arguments = (x_c, n_c, x_t, n_t, alpha, validated_alternative, null_r, NUISANCE_STOP)
     try:
         hash(arguments)

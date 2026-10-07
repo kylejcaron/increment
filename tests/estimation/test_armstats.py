@@ -1343,6 +1343,13 @@ class TestUptakeBoundaryIdentities:
         assert arm.sum_d == 19.2
 
 
+def _gamma(terms: int) -> float:
+    """Higham's ``k u / (1 - k u)``, the largest relative error of summing *terms* nonnegative
+    values in any order, with ``u = 2**-53``."""
+    product = terms * 2.0**-53
+    return product / (1.0 - product)
+
+
 class TestBinaryCountsBernoulliConsistency:
     """`binary_counts` reconstructs `(successes, n)` from the first
     centered moment alone; the second centered moment (`cy2`) must ALSO
@@ -1400,12 +1407,109 @@ class TestBinaryCountsBernoulliConsistency:
         )
         assert binary_counts(arm, "conversion") == (successes, n)
 
+    @pytest.mark.parametrize(
+        ("n", "successes"),
+        [
+            (10_000_000, 20_000),
+            (100_000_000, 200_000),
+            (1_000_000_000, 2_000_000),
+            (1_000_000_000, 500_000_000),
+        ],
+    )
+    def test_a_summation_drift_within_the_rounding_bound_of_n_terms_is_accepted(self, n, successes):
+        """A centered sum of squares adds ``n`` nonnegative terms, which any summation order
+        evaluates within ``gamma_(n+8)`` of itself, ``k u / (1 - k u)`` with ``u = 2**-53``.
+        Sequential accumulation of equal tiny residuals onto a growing total drifts that far at
+        the largest arm sizes, so a genuine arm whose second moment errs by 90% of the bound is
+        not corrupt."""
+        expected = successes * (n - successes) / n
+        drift = 0.9 * _gamma(n + 8) * expected
+        arm = ArmStats(
+            study_id="e",
+            metric="conv",
+            group_id="control",
+            n=n,
+            ref_y=successes / n,
+            cy1=0.0,
+            cy2=expected + drift,
+        )
+        assert binary_counts(arm, "conversion") == (successes, n)
+
+    def test_a_drift_between_the_first_order_bound_and_the_compounded_one_is_accepted(self):
+        """At a billion terms the compounding of the roundings, ``(k u)**2``, is 1.2e-14 of the
+        sum, fourteen times the eight units of headroom a first-order bound ``k u`` leaves: a
+        genuine second moment that has drifted the full worst case is not corrupt."""
+        n, successes = 1_000_000_000, 2_000_000
+        expected = successes * (n - successes) / n
+        first_order = (n + 8) * 2.0**-53
+        compounded = _gamma(n + 8)
+        assert compounded > first_order
+        arm = ArmStats(
+            study_id="e",
+            metric="conv",
+            group_id="control",
+            n=n,
+            ref_y=successes / n,
+            cy1=0.0,
+            cy2=expected * (1.0 + 0.5 * (first_order + compounded)),
+        )
+        assert binary_counts(arm, "conversion") == (successes, n)
+
+    @pytest.mark.parametrize("n", [10_000_000, 100_000_000, 1_000_000_000])
+    def test_a_second_moment_beyond_the_rounding_bound_is_refused(self, n):
+        successes = n // 500
+        expected = successes * (n - successes) / n
+        arm = ArmStats(
+            study_id="e",
+            metric="conv",
+            group_id="control",
+            n=n,
+            ref_y=successes / n,
+            cy1=0.0,
+            cy2=expected * (1.0 + 4.0 * (n + 8) * 2.0**-53),
+        )
+        with pytest.raises(BinomialDataError) as exc_info:
+            binary_counts(arm, "conversion")
+        assert exc_info.value.code == "estimation.binomial.inconsistent_bernoulli_variance"
+
+
+def _producer_arm(n: int, successes: int | None) -> ArmStats:
+    """The ``ArmStats`` the production producer (``group_summary``) emits for an arm built
+    inside DuckDB from ``range()``: ``successes`` ones scattered by a bijection of the row index
+    (``None``: every unit's outcome is the constant 0.5). No row is materialized outside DuckDB."""
+    import ibis
+
+    from increment.query.builders import group_summary
+
+    if successes is None:
+        outcome = "CAST(0.5 AS DOUBLE)"
+    else:
+        multiplier = next(m for m in range(2654435761, 2654435761 + 1000, 2) if math.gcd(m, n) == 1)
+        outcome = (
+            f"CAST(CASE WHEN ((range::HUGEINT * {multiplier} + 12345) % {n}) < {successes} "
+            "THEN 1 ELSE 0 END AS DOUBLE)"
+        )
+    totals = ibis.duckdb.connect().sql(
+        "SELECT 'u' AS unit_id, 'e' AS experiment_id, 'control' AS group_id, 'conv' AS metric, "
+        f"{outcome} AS y, CAST(NULL AS DOUBLE) AS x, CAST(NULL AS DOUBLE) AS y_den "
+        f"FROM range({n})"
+    )
+    row = group_summary(totals).execute().iloc[0]
+    return ArmStats(
+        study_id="e",
+        metric="conv",
+        group_id="control",
+        n=int(row["n"]),
+        ref_y=float(row["ref_y"]),
+        cy1=float(row["cy1"]),
+        cy2=float(row["cy2"]),
+    )
+
 
 @pytest.mark.slow
 @pytest.mark.parameter_recovery
 class TestBinaryCountsProducerPathTolerance:
-    """`_BERNOULLI_CONSISTENCY_SLACK`'s own citation: this measures
-    `binary_counts` against the REAL two-phase producer path --
+    """`binary_counts` against the REAL two-phase producer path --
     `increment.query.builders.group_summary`'s DuckDB
     window(``AVG``)-then-``SUM((y-ref_y)**2)`` aggregation, the exact SQL
     shape that produces a conversion arm's ``ref_y``/``cy1``/``cy2`` in
@@ -1413,97 +1517,83 @@ class TestBinaryCountsProducerPathTolerance:
     from_raw_sums`` uses near-exact ``Fraction`` arithmetic and so never
     exercises this two-phase floating error).
 
-    ``binary_counts`` must accept every genuinely Bernoulli cell this
-    real path produces up to ``binomial_rr.MAX_ARM_SIZE``, and must still
-    refuse a genuinely corrupted cell at the same scale.
+    ``binary_counts`` must accept every genuinely Bernoulli cell this real path produces and
+    must still refuse a genuinely corrupted cell at the same scale. The cells below are the
+    measured sizes up to 16M units; 64M, 100M and 1B units, where one DuckDB aggregation takes
+    minutes, are measured by ``scripts/measure_binomial_ceiling.py recovery``.
     """
 
-    @staticmethod
-    def _group_summary_arm(n: int, successes: int, *, seed: int) -> ArmStats:
-        import ibis
-
-        from increment.query.builders import group_summary
-
-        rng = np.random.default_rng(seed)
-        y = np.zeros(n, dtype="float64")
-        y[:successes] = 1.0
-        rng.shuffle(y)
-        totals = ibis.memtable(
-            {
-                "unit_id": np.arange(n).astype(str),
-                "experiment_id": ["e"] * n,
-                "group_id": ["control"] * n,
-                "metric": ["conv"] * n,
-                "y": y,
-                "x": np.full(n, np.nan),
-                "y_den": np.full(n, np.nan),
-            }
-        )
-        row = group_summary(totals).execute().iloc[0]
-        return ArmStats(
-            study_id="e",
-            metric="conv",
-            group_id="control",
-            n=int(row["n"]),
-            ref_y=float(row["ref_y"]),
-            cy1=float(row["cy1"]),
-            cy2=float(row["cy2"]),
-        )
-
     @pytest.mark.parametrize(
-        ("n_frac", "success_frac"),
+        ("n", "success_frac"),
         [
-            (0.05, 0.3),
-            (0.25, 0.3),
-            (0.25, 0.0001),
-            (0.5, 0.001),
-            # The measured worst cell: ~240x the base variance_slack bound
-            # -- this and the constant's headroom over it are what sets
-            # _BERNOULLI_CONSISTENCY_SLACK.
-            (1.0, 0.002),
-            (1.0, 0.5),
+            (200_000, 0.3),
+            (1_000_000, 0.3),
+            (1_000_000, 0.0001),
+            (2_000_000, 0.001),
+            (4_000_000, 0.002),
+            (4_000_000, 0.5),
+            # The measured worst cells at 16M and 100M units sat near 335x and 275x the base
+            # `variance_slack`: the cells that set `_BERNOULLI_CONSISTENCY_SLACK`.
+            (16_000_000, 0.002),
+            (16_000_000, 0.0001),
+            (16_000_000, 0.5),
         ],
     )
-    def test_producer_path_tolerance_grid_up_to_max_arm_size(self, n_frac, success_frac):
-        from increment.estimation.binomial_rr import MAX_ARM_SIZE
-
-        n = max(1_000, int(MAX_ARM_SIZE * n_frac))
+    def test_producer_path_tolerance_grid(self, n, success_frac):
         successes = max(1, round(n * success_frac))
-        arm = self._group_summary_arm(n, successes, seed=0)
-        assert binary_counts(arm, "conversion") == (successes, n)
+        assert binary_counts(_producer_arm(n, successes), "conversion") == (successes, n)
 
-    def test_producer_path_corrupted_input_still_refuses_at_scale(self):
-        """The widened tolerance must not swallow real corruption: a
-        constant y=0.5 arm at MAX_ARM_SIZE scale shares a genuine 50%
-        conversion rate's mean but has zero actual spread (cy2 == 0
-        instead of the Bernoulli-consistent n/4) -- must still refuse."""
-        import ibis
-
-        from increment.estimation.binomial_rr import MAX_ARM_SIZE
-        from increment.query.builders import group_summary
-
-        n = MAX_ARM_SIZE
-        totals = ibis.memtable(
-            {
-                "unit_id": np.arange(n).astype(str),
-                "experiment_id": ["e"] * n,
-                "group_id": ["control"] * n,
-                "metric": ["conv"] * n,
-                "y": np.full(n, 0.5),
-                "x": np.full(n, np.nan),
-                "y_den": np.full(n, np.nan),
-            }
-        )
-        row = group_summary(totals).execute().iloc[0]
-        arm = ArmStats(
-            study_id="e",
-            metric="conv",
-            group_id="control",
-            n=int(row["n"]),
-            ref_y=float(row["ref_y"]),
-            cy1=float(row["cy1"]),
-            cy2=float(row["cy2"]),
-        )
+    @pytest.mark.parametrize("n", [4_000_000, 16_000_000])
+    def test_producer_path_corrupted_input_still_refuses_at_scale(self, n):
+        """A constant y=0.5 arm shares a genuine 50% conversion rate's mean but has zero actual
+        spread (cy2 == 0 instead of the Bernoulli-consistent n/4) -- must still refuse."""
         with pytest.raises(BinomialDataError) as exc_info:
-            binary_counts(arm, "conversion")
+            binary_counts(_producer_arm(n, None), "conversion")
         assert exc_info.value.code == "estimation.binomial.inconsistent_bernoulli_variance"
+
+
+@pytest.mark.slow
+def test_a_unit_frame_and_its_exported_moments_decide_alike_beyond_the_former_arm_ceiling():
+    """Frame and exported-moments decisions agree with one arm above four million units.
+    The parity harness's ``exact_binomial_beyond_the_former_arm_ceiling`` case also
+    checks definitions, unit-day artifacts and unit panels at this scale."""
+    import tempfile
+    from pathlib import Path
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from increment import AnalysisPlan, MetricSpec
+    from increment.analysis import Analysis
+    from tests.analysis_factory import lift_rows
+
+    n_c, n_t, x_c, x_t = 4_000_100, 4_000, 4_000, 80
+    units = np.arange(n_c + n_t, dtype=np.int64)
+    converted = np.zeros(units.size, np.int8)
+    converted[:x_c] = 1
+    converted[n_c : n_c + x_t] = 1
+    frame = pa.table(
+        {
+            "user_id": units,
+            "group_id": pa.array(np.where(units < n_c, "control", "treatment")),
+            "conversion": converted,
+        }
+    )
+    metric = MetricSpec(name="conversion", type="conversion")
+    plan = AnalysisPlan(secondaries=["conversion"])
+    with Analysis.from_unit_summary(
+        frame, unit="user_id", group="group_id", control="control", metrics=[metric], plan=plan
+    ) as summary:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "moments.parquet"
+            summary.export(path)
+            rows = pq.read_table(path).to_pylist()
+        from_frame = list(lift_rows(summary.run()))
+    with Analysis.from_moments(rows, control="control", metrics=[metric]) as replay:
+        from_cube = list(lift_rows(replay.run()))
+    for results in (from_frame, from_cube):
+        (row,) = results
+        assert row.reference_kind == "binomial" and row.binomial_set is not None
+        counts = (row.binomial_set.x_c, row.binomial_set.n_c, row.binomial_set.x_t)
+        assert counts == (x_c, n_c, x_t) and row.binomial_set.n_t == n_t
+    assert from_frame[0].binomial_set == from_cube[0].binomial_set

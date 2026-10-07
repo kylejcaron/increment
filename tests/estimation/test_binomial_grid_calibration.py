@@ -148,7 +148,7 @@ class TestMonotoneSurrogate:
         assert prod == pytest.approx(beta)
         expect_accept = beta >= 0.025
         accept_mass, unresolved = cbg.single_tail_accept_mass("minus", res, n_t, 0.5)
-        assert unresolved <= binomial_rr._eps_margin(2)
+        assert unresolved <= binomial_rr._eps_margin(2, n_t, n_t)
         assert (accept_mass > 0.5) == expect_accept
 
 
@@ -418,10 +418,45 @@ def test_reported_error_bounds_enclose_full_joint_enumeration(risk_ratio):
 class TestOutwardIntegrationAllowances:
     def test_tail_allowance_includes_production_absolute_error(self):
         for p in (0.0, 1e-300, 1e-20, 0.25):
-            assert cbg._inflate_tail(p) >= p + binomial_rr._eps_margin(1)
+            assert cbg._inflate_tail(p, 1, 1) >= p + binomial_rr._eps_margin(1, 1, 1)
 
     def test_below_precision_budget_falls_back_to_full_support(self):
         assert cbg.exact_outer_window(1000, 0.5, 1e-13) == (0, 1000, 0.0)
+
+    @pytest.mark.parametrize(("requested", "widened"), [(1e-12, False), (1e-14, True)])
+    def test_the_truncation_record_states_the_budgets_the_windows_were_built_with(
+        self, monkeypatch, requested, widened
+    ):
+        """A request below what the float margin can certify is widened; the record carries the
+        request and the budget that bounds the omitted mass reported beside it, for the
+        control window and for every treatment window the resolvers built."""
+        monkeypatch.setattr(cbg, "_XC_TAIL_BUDGET", requested)
+        monkeypatch.setattr(cbg, "_XT_TAIL_BUDGET", requested)
+        built = []
+        window = cbg.exact_outer_window
+
+        def spy(n, p, budget):
+            built.append((n, budget))
+            return window(n, p, budget)
+
+        monkeypatch.setattr(cbg, "exact_outer_window", spy)
+        cell = next(
+            c
+            for c in cbg.MANIFEST
+            if c.p_c == 0.1
+            and c.expected_events == 0.5
+            and c.ratio == (1, 1)
+            and c.risk_ratio == 1.0
+        )
+        record = cbg.calibrate_cell(cell, interval_only=True)["truncation_budget"]
+        assert (record["xc_tail_budget"], record["xt_tail_budget"]) == (requested, requested)
+        assert record["effective_xc_tail_budget"] == cbg._attainable_budget(cell.n_c, requested)
+        assert record["effective_xt_tail_budget"] == cbg._attainable_budget(cell.n_t, requested)
+        assert (record["effective_xt_tail_budget"] > requested) is widened
+        assert record["omitted_xc_tail_mass"] <= record["effective_xc_tail_budget"]
+        control, *treatment = [budget for _, budget in built]  # the control window is built first
+        assert control == record["effective_xc_tail_budget"]
+        assert treatment and set(treatment) == {record["effective_xt_tail_budget"]}
 
     @pytest.mark.parametrize("direction", ["plus", "minus"])
     def test_unresolved_points_charge_the_inflated_window(self, monkeypatch, direction):
@@ -450,7 +485,7 @@ class TestOutwardIntegrationAllowances:
 
     def test_window_encloses_tails_with_downward_special_function_error(self, monkeypatch):
         cdf, sf = _binom.cdf, _binom.sf
-        error = binomial_rr._eps_margin(1) / 4
+        error = binomial_rr._eps_margin(1, 1000, 1000) / 4
         monkeypatch.setattr(_binom, "cdf", lambda *a: max(0.0, float(cdf(*a)) - error))
         monkeypatch.setattr(_binom, "sf", lambda *a: max(0.0, float(sf(*a)) - error))
         lo, hi, omitted = cbg.exact_outer_window(1000, 0.5, 1e-12)

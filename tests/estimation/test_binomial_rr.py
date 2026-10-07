@@ -13,18 +13,22 @@ import math
 import re
 import sys
 from decimal import Decimal, localcontext
+from fractions import Fraction
 from math import comb
+from pathlib import Path
 
 import numpy as np
 import pytest
 from scipy.special import ndtr, ndtri
 from scipy.stats import binom as _binom
 
+from calibration.binomial_oracle import Binomial
 from increment.estimation import binomial_rr as brr
 from increment.estimation._binomial_support import chernoff_support, exponent_lower_bound
 from increment.estimation._tails import SCIPY_BINOMIAL_ULP_ALLOWANCE
 from increment.estimation.binomial_rr import _find_boundary
 from increment.estimation.results import BINOMIAL_METHOD, BinomialConfidenceSet
+from scripts import measure_binomial_ceiling as measure
 from tests.estimation._binomial_endpoint_reference import assert_endpoints_contain_finer_reference
 
 # --- Independent decimal oracle for scipy.stats.binom --------------------
@@ -185,7 +189,7 @@ class TestTailLowerEnclosure:
             else:
                 p = r * q
                 value = brr._tail_minus(q, p, n_c, n_t, k, window)
-            lower = brr.tail_lower_enclosure(value, window)
+            lower = brr.tail_lower_enclosure(value, window, n_c, n_t)
             assert 0.0 <= lower <= value
             assert Decimal(lower) <= _dec_tail(kind, n_c, n_t, k, q, p)
 
@@ -209,7 +213,7 @@ class TestTailLowerEnclosure:
             full = float(np.dot(pmf, _binom.cdf(thresholds, n_t, r * q)))
             value = brr._tail_minus(q, r * q, n_c, n_t, k, window)
         assert value >= full
-        assert brr.tail_lower_enclosure(value, window) <= full
+        assert brr.tail_lower_enclosure(value, window, n_c, n_t) <= full
 
 
 def _sup_inputs(kind: str, counts: tuple[int, int, int, int], r: float):
@@ -256,9 +260,10 @@ class TestNuisanceStopContract:
         assert cert.upper >= sup - 1e-12
         gap = cert.upper - cert.witness_lower
         scale = max(self.BETA + cert.witness_lower, tail)
-        assert gap <= rule.gap_fraction * scale + brr._certification_noise(inputs[-1])
+        window, n_c, n_t = inputs[-1], inputs[3], inputs[4]
+        assert gap <= rule.gap_fraction * scale + brr._certification_noise(window, n_c, n_t)
         # The reported bound exceeds the supremum by no more than the declared gap.
-        noise = brr._certification_noise(inputs[-1])
+        noise = brr._certification_noise(window, n_c, n_t)
         assert cert.upper <= sup + rule.gap_fraction * scale + noise + 1e-9
         assert cert.iterations <= rule.max_iter
 
@@ -273,7 +278,7 @@ class TestNuisanceStopContract:
         ]
         # Bounds of sibling leaves are computed independently, so a longer search may rise by
         # rounding noise (far below the float margin) but never by more.
-        slack = brr._eps_margin(1)
+        slack = brr._eps_margin(1, inputs[3], inputs[4])
         assert uppers[0] >= uppers[1] - slack
         assert uppers[1] >= uppers[2] - slack
 
@@ -355,13 +360,16 @@ class TestNuisanceStopContract:
         )
 
         def enclosed(q: float) -> float:
-            return brr.tail_lower_enclosure(brr._tail_plus(q, r * q, n_c, n_t, k, window), window)
+            tail = brr._tail_plus(q, r * q, n_c, n_t, k, window)
+            return brr.tail_lower_enclosure(tail, window, n_c, n_t)
 
         sup = _refined_sup(enclosed, a, b)
         assert not relative.stopped and relative.iterations == rule.max_iter
         assert floored.stopped and floored.iterations < relative.iterations // 8
         assert floored.upper >= sup - 1e-12
-        assert floored.upper <= sup + rule.gap_fraction * tail + brr._certification_noise(window)
+        assert floored.upper <= sup + rule.gap_fraction * tail + brr._certification_noise(
+            window, n_c, n_t
+        )
 
     def test_a_gap_target_below_the_certification_noise_is_not_chased(self):
         """At alpha = 1e-20 the nuisance budget is 3e-22 and a tail over a domain this small is
@@ -375,7 +383,7 @@ class TestNuisanceStopContract:
         cert = brr._certified_sup(
             "minus", a, 1.0 / r, r, 1, 1000, -999, window, beta=beta, rule=brr.NUISANCE_STOP
         )
-        noise = brr._certification_noise(window)
+        noise = brr._certification_noise(window, 1, 1000)
         assert cert.stopped and cert.iterations == 0
         assert 0.0 <= cert.upper <= noise
 
@@ -404,7 +412,8 @@ class TestNuisanceStopContract:
         )
 
         def enclosed(q: float) -> float:
-            return brr.tail_lower_enclosure(brr._tail_plus(q, q, n_c, n_t, k, window), window)
+            tail = brr._tail_plus(q, q, n_c, n_t, k, window)
+            return brr.tail_lower_enclosure(tail, window, n_c, n_t)
 
         sup = _refined_sup(enclosed, a, b)
         assert cert.stopped
@@ -444,7 +453,7 @@ class TestNuisanceStopContract:
             "minus": brr.p_minus(1.0, x_c, n_c, x_t, n_t, beta, tail=tail_read),
         }
         for kind in ("plus", "minus"):
-            assert refined[kind] <= capped[kind] + brr._eps_margin(1)
+            assert refined[kind] <= capped[kind] + brr._eps_margin(1, n_c, n_t)
             assert not (capped[kind] < tail <= refined[kind])
         if counts == (5778, 57780, 5985, 57780):
             assert refined["plus"] < tail <= capped["plus"]
@@ -457,30 +466,22 @@ class TestExtremeAlphaFiniteUpperBound:
     """
 
     def test_astra_extreme_alpha_repro_returns_finite_upper(self):
-        ci = brr.confidence_interval(1, 1, 0, 1, alpha=1e-14, alternative="two-sided")
+        ci = brr.confidence_interval(1, 1, 0, 1, alpha=1e-10, alternative="two-sided")
         assert ci.upper is not None
         assert math.isfinite(ci.upper)
 
     @pytest.mark.parametrize("alternative", ["two-sided", "less"])
     @pytest.mark.parametrize("alpha", [1e-14, 5e-307])
-    def test_sparse_treatment_search_reaches_a_crossing_far_above_its_subunit_seed(
+    def test_an_alpha_the_certification_margin_exceeds_is_refused_not_degenerate(
         self, alpha, alternative
     ):
-        """With one control success in one control unit the Clopper-Pearson lower end is
-        exactly ``beta / 2`` (Uniform(0, 1)), and at these alphas the certification margin
-        exceeds the target until the restricted nuisance domain ``[a, 1/r]`` empties, so the
-        evaluated crossing is exactly ``1 / a``. The point estimate (0.001) is more than 60
-        doublings below it: the search must still bracket it, then stop within the declared
-        resolution of it. At 5e-307 ``1 / a`` is finite but ``2 / a`` overflows, so the
-        bracket's far end is the largest float."""
-        counts = (1, 1, 1, 1000)
-        a, _ = brr.clopper_pearson(1, 1, brr.nuisance_beta(alpha))
-        crossing = 1.0 / a
-        ci = brr.confidence_interval(*counts, alpha=alpha, alternative=alternative)
-        tau = brr._endpoint_tolerance(brr._count_scale(*counts))
-        assert ci.resolution_reached
-        assert ci.upper is not None
-        assert crossing * (1.0 - 1e-12) <= ci.upper <= crossing * math.exp(tau) * (1.0 + 1e-12)
+        """With one control success in one control unit the Clopper-Pearson lower end is exactly
+        ``beta / 2``, and at these alphas the certification margin exceeds the tail allocation,
+        so the only evaluable crossing is the degenerate ``1 / a``. It is refused, coded, as every
+        margin-dominated alpha is (`TestMarginDominatedAlpha`)."""
+        with pytest.raises(brr.BinomialDataError) as exc_info:
+            brr.confidence_interval(1, 1, 1, 1000, alpha=alpha, alternative=alternative)
+        assert exc_info.value.code == "estimation.binomial.tail_unrepresentable"
 
     def test_a_crossing_beyond_the_float_range_is_a_coded_failure(self):
         """Below this alpha ``1 / a`` exceeds the largest float, so no upper endpoint is
@@ -489,18 +490,19 @@ class TestExtremeAlphaFiniteUpperBound:
             brr.confidence_interval(1, 1, 1, 1000, alpha=1e-307, alternative="two-sided")
         assert exc_info.value.code == "estimation.binomial.tail_unrepresentable"
 
-    @pytest.mark.parametrize("alternative", ["two-sided", "greater", "less"])
-    def test_a_control_rate_the_binomial_pmf_cannot_evaluate_is_a_coded_refusal(self, alternative):
-        """At this alpha the control's Clopper-Pearson lower end (``alpha / 64``) is a denormal
-        for which SciPy's binomial PMF raises ``OverflowError``: the interval refuses with the
-        module's coded failure and names the rate, rather than leaking the library's error."""
+    def test_a_control_rate_the_binomial_pmf_cannot_evaluate_is_a_coded_refusal(self):
+        """A denormal rate (the control's Clopper-Pearson lower end at ``alpha = 4e-307``) makes
+        SciPy's binomial PMF raise ``OverflowError``: the primitive refuses with the module's coded
+        failure and names the rate, rather than leaking the library's error. (Such an alpha never
+        reaches it through `confidence_interval`: the margin refuses it first.)"""
+        rate = 4e-307 / 64.0
+        assert 0.0 < rate < sys.float_info.min
         with pytest.raises(brr.BinomialDataError) as exc_info:
-            brr.confidence_interval(1, 1, 1, 1000, alpha=4e-307, alternative=alternative)
+            brr._fast_binom_pmf(np.array([0]), 1, rate)
         error = exc_info.value
         assert error.code == "estimation.binomial.tail_unrepresentable"
         assert error.context["n"] == 1
-        rate = error.context["p"]
-        assert isinstance(rate, float) and 0.0 < rate < sys.float_info.min
+        assert error.context["p"] == rate
 
     def test_positive_control_upper_search_never_returns_none(self):
         # Within the validated Clopper-Pearson regime (beta = alpha/32
@@ -625,15 +627,100 @@ class TestFastBinomMatchesScipy:
         assert np.array_equal(brr._fast_binom_pmf(k, n, p), _binom.pmf(k, n, p))
 
 
+class TestExactThresholds:
+    """The treatment count thresholds are exact integer quotients of ``k + n_t * i`` for every
+    admitted arm size, including where that numerator exceeds float64's exact range.
+
+    The reference is ``Fraction`` arithmetic. An adversarial numerator sits one count of
+    ``n_t * (i - x_c)`` from a multiple of ``n_c``, where a float quotient (which rounds the
+    numerator, then the division) lands on the wrong side of the integer.
+    """
+
+    ARM_SIZES = (10**8 + 7, 999_999_937, 2**29 - 1, 2**29 + 1, 10**9)
+
+    @staticmethod
+    def _adversarial_cells(n_c: int, n_t: int):
+        """``(x_c, x_t, i_lo, i_hi)`` whose window holds a control count ``i`` with
+        ``n_t * (i - x_c)`` congruent to ``0`` and to ``+-1`` modulo ``n_c``."""
+        residues = {0}
+        if math.gcd(n_t, n_c) == 1:
+            inverse = pow(n_t, -1, n_c)
+            residues |= {inverse, n_c - inverse}
+        for shift in sorted(residues):
+            for x_c in sorted({0, n_c - shift, n_c // 2 - shift // 2}):
+                i = x_c + shift
+                if not 0 <= x_c <= n_c or not 0 <= i <= n_c:
+                    continue
+                for x_t in (0, 1, n_t // 2, n_t - 1, n_t):
+                    yield x_c, x_t, max(0, i - 3), min(n_c, i + 3)
+
+    @pytest.mark.parametrize("n_t", ARM_SIZES)
+    @pytest.mark.parametrize("n_c", ARM_SIZES)
+    def test_thresholds_equal_the_exact_quotients_at_adversarial_counts(self, n_c, n_t):
+        checked = 0
+        for x_c, x_t, i_lo, i_hi in self._adversarial_cells(n_c, n_t):
+            k = n_c * x_t - n_t * x_c
+            plus = brr._plus_threshold(n_c, n_t, k, i_lo, i_hi)
+            minus = brr._minus_threshold(n_c, n_t, k, i_lo, i_hi)
+            for offset, i in enumerate(range(i_lo, i_hi + 1)):
+                exact = Fraction(k + n_t * i, n_c)
+                assert plus[offset] == math.ceil(exact) - 1, (x_c, x_t, i)
+                assert minus[offset] == math.floor(exact), (x_c, x_t, i)
+            checked += 1
+        assert checked >= 5
+
+    @pytest.mark.parametrize("n", ARM_SIZES)
+    def test_thresholds_at_the_edges_of_the_support_are_exact(self, n):
+        for x_c, x_t in ((0, 0), (0, n), (n, 0), (n, n), (1, n - 1), (n - 1, 1)):
+            k = n * x_t - n * x_c
+            for i_lo, i_hi in ((0, 4), (n - 4, n)):
+                plus = brr._plus_threshold(n, n, k, i_lo, i_hi)
+                minus = brr._minus_threshold(n, n, k, i_lo, i_hi)
+                for offset, i in enumerate(range(i_lo, i_hi + 1)):
+                    exact = Fraction(k + n * i, n)
+                    assert plus[offset] == math.ceil(exact) - 1
+                    assert minus[offset] == math.floor(exact)
+
+    def test_random_numerators_up_to_the_ceiling_are_exact(self):
+        rng = np.random.default_rng(20261004)
+        for _ in range(200):
+            n_c, n_t = (int(v) for v in rng.integers(1, brr.FINITE_SAMPLE_MAX_ARM_SIZE + 1, 2))
+            x_c, x_t = int(rng.integers(0, n_c + 1)), int(rng.integers(0, n_t + 1))
+            k = n_c * x_t - n_t * x_c
+            i_lo = int(rng.integers(0, n_c + 1))
+            i_hi = min(n_c, i_lo + 5)
+            plus = brr._plus_threshold(n_c, n_t, k, i_lo, i_hi)
+            minus = brr._minus_threshold(n_c, n_t, k, i_lo, i_hi)
+            for offset, i in enumerate(range(i_lo, i_hi + 1)):
+                exact = Fraction(k + n_t * i, n_c)
+                assert plus[offset] == math.ceil(exact) - 1
+                assert minus[offset] == math.floor(exact)
+
+    @pytest.mark.parametrize(("n_c", "n_t"), [(10**9, 10**9), (999_999_937, 10**8 + 7)])
+    def test_planning_offsets_give_the_runtime_thresholds(self, n_c, n_t):
+        from increment.power import _binomial
+
+        for x_c, x_t, i_lo, i_hi in self._adversarial_cells(n_c, n_t):
+            k = n_c * x_t - n_t * x_c
+            s = np.arange(i_lo, i_hi + 1, dtype=np.int64)
+            plus = brr._plus_threshold(n_c, n_t, k, i_lo, i_hi)
+            minus = brr._minus_threshold(n_c, n_t, k, i_lo, i_hi)
+            assert np.array_equal(
+                x_t + _binomial._threshold_offsets("plus", n_c, n_t, x_c, s), plus
+            )
+            assert np.array_equal(
+                x_t + _binomial._threshold_offsets("minus", n_c, n_t, x_c, s), minus
+            )
+
+
 class TestApplicabilityBoundaryCalibration:
-    """``MAX_ARM_SIZE`` is a compute-resource applicability boundary, not a
-    scientific one: ordinary sizes up to it succeed (spot-checked below),
-    sizes far beyond it -- and exactly one arm-count above it -- are
-    refused immediately (without attempting the expensive search), and
-    the largest arm size in the full 336-cell rare-event calibration
-    manifest is admitted, which is checked structurally rather than by
-    actually calling ``confidence_interval`` at that size (too slow to run
-    as a routine regression).
+    """``FINITE_SAMPLE_MAX_ARM_SIZE`` is a compute-resource applicability boundary, not a
+    scientific one: ordinary sizes up to it succeed (spot-checked below, and a rare count pair
+    exactly at it), sizes far beyond it -- and exactly one arm-count above it -- are refused
+    immediately (without attempting the expensive search), and the largest arm size in the full
+    336-cell rare-event calibration manifest is admitted, which is checked structurally rather
+    than by actually calling ``confidence_interval`` at that size (too slow to run as a routine
+    regression).
     """
 
     def _record_searches(self, monkeypatch) -> list[str]:
@@ -656,23 +743,35 @@ class TestApplicabilityBoundaryCalibration:
         with pytest.raises(brr.BinomialDataError) as exc_info:
             brr.confidence_interval(
                 1,
-                brr.MAX_ARM_SIZE * 10,
+                brr.FINITE_SAMPLE_MAX_ARM_SIZE * 10,
                 1,
-                brr.MAX_ARM_SIZE * 10,
+                brr.FINITE_SAMPLE_MAX_ARM_SIZE * 10,
                 alpha=0.05,
                 alternative="two-sided",
             )
         assert calls == []
         assert exc_info.value.code == "estimation.binomial.arm_too_large_for_exact_enumeration"
+        assert exc_info.value.context["max_arm_size"] == 1_000_000_000
 
-    def test_refuses_at_one_above_the_ceiling(self, monkeypatch):
+    @pytest.mark.parametrize("above", ["control", "treatment"])
+    def test_refuses_at_one_above_the_ceiling(self, monkeypatch, above):
         calls = self._record_searches(monkeypatch)
+        n_c, n_t = (brr.FINITE_SAMPLE_MAX_ARM_SIZE + 1, 10)
+        if above == "treatment":
+            n_c, n_t = n_t, n_c
         with pytest.raises(brr.BinomialDataError) as exc_info:
-            brr.confidence_interval(
-                1, brr.MAX_ARM_SIZE + 1, 1, 10, alpha=0.05, alternative="two-sided"
-            )
+            brr.confidence_interval(1, n_c, 1, n_t, alpha=0.05, alternative="two-sided")
         assert calls == []
         assert exc_info.value.code == "estimation.binomial.arm_too_large_for_exact_enumeration"
+
+    @pytest.mark.parametrize("alternative", ["two-sided", "greater", "less"])
+    def test_a_rare_count_pair_exactly_at_the_ceiling_is_admitted(self, alternative):
+        n = brr.FINITE_SAMPLE_MAX_ARM_SIZE
+        ci = brr.confidence_interval(3, n, 5, n, alpha=0.05, alternative=alternative)
+        assert math.isfinite(ci.lower) and 0.0 < ci.p_value_null <= 1.0
+        if ci.upper is not None:
+            assert ci.lower < 5 / 3 < ci.upper
+        assert ci.lower <= 5 / 3
 
     def test_full_grid_maximum_is_admitted_by_the_ceiling(self):
         """The 336-cell rare-event calibration manifest computes ``n_c``
@@ -686,8 +785,8 @@ class TestApplicabilityBoundaryCalibration:
         n_c = max(1, math.floor(expected_events / p_c + 0.5))
         n_t = max(1, math.floor(n_c * t / c + 0.5))
         assert (n_c, n_t) == (1_000_000, 4_000_000)
-        assert n_c <= brr.MAX_ARM_SIZE
-        assert n_t <= brr.MAX_ARM_SIZE
+        assert n_c <= brr.FINITE_SAMPLE_MAX_ARM_SIZE
+        assert n_t <= brr.FINITE_SAMPLE_MAX_ARM_SIZE
 
     def test_moderate_arm_sizes_succeed(self):
         for n in (100, 10_000, 200_000):
@@ -1678,6 +1777,246 @@ class TestScipyBinomErrorBudget:
             f"{SCIPY_BINOMIAL_ULP_ALLOWANCE} -- re-derive the margin"
         )
 
+    @pytest.mark.parametrize("n", [1_000, 10_000, 100_000, 1_000_000])
+    @pytest.mark.parametrize("p", [0.05, 0.3, 0.4999, 1e-4])
+    def test_every_primitive_stays_within_the_size_dependent_allowance(self, n, p):
+        """The margin consumes the primitives' relative error in units of ``eps``, so that is what
+        a count on the mass of its sum (within 4.5 standard deviations of the mean, or at most 45)
+        is graded by against the decimal oracle: below half the allowance. Any other count carries
+        a negligible weight, and only its absolute error is graded. (Boost's far branches reach
+        about ``2.5 n eps`` relative at probabilities near ``exp(-0.02 n)``.)"""
+        oracle = Binomial(n, p)
+        sigma = math.sqrt(n * p * (1.0 - p))
+        counts = {0, 1, n - 1, n} | set(range(min(n, 46)))
+        counts |= {min(n, max(0, round(n * p + z * sigma))) for z in np.arange(-12.0, 12.5, 0.5)}
+        ordered = sorted(counts)
+        array = np.array(ordered, dtype=np.int64)
+        for primitive, exact in (
+            (brr._fast_binom_pmf, oracle.pmf_many(ordered)),
+            (brr._fast_binom_cdf, oracle.cdf_many(ordered)),
+            (brr._fast_binom_sf, oracle.sf_many(ordered)),
+        ):
+            tally = measure._graded(ordered, primitive(array, n, p), exact, n, p)
+            worst = max(tally.worst_relative_eps, tally.worst_absolute_eps)
+            assert worst < brr._ulp_allowance(n) / 2.0, (primitive.__name__, n, p, worst)
+
+    @pytest.mark.parametrize("n", [100_000, 1_000_000, 10_000_000])
+    def test_small_counts_below_the_mean_stay_within_the_allowance(self, n):
+        """The worst regime of the primitives' error: counts 0..45 under a mean of 3 to 300, where
+        Boost raises ``1 - x`` to a power near ``n`` and the rounding is coherent across counts."""
+        entry = measure._small_count_check(n)
+        for name in ("pmf", "cdf", "sf"):
+            tally = entry[name]
+            worst = max(tally["worst_relative_eps"], tally["worst_absolute_eps"])
+            assert tally["values"] > 0
+            assert worst < brr._ulp_allowance(n) / 2.0, (name, n, worst)
+
+    @pytest.mark.parametrize("p", [0.05123456789, 0.3141592653, 0.4567890123])
+    def test_the_pmf_stays_within_the_allowance_at_a_billion_trials(self, p):
+        n = 1_000_000_000
+        sigma = math.sqrt(n * p * (1.0 - p))
+        ordered = sorted({round(n * p + z * sigma) for z in np.arange(-4.5, 4.75, 0.5)})
+        array = np.array(ordered, dtype=np.int64)
+        tally = measure._graded(
+            ordered, brr._fast_binom_pmf(array, n, p), Binomial(n, p).pmf_many(ordered), n, p
+        )
+        assert tally.values == len(ordered)
+        assert tally.worst_relative_eps < brr._ulp_allowance(n) / 2.0
+
+    def test_the_allowance_is_the_floor_for_small_arms_and_grows_with_the_trials(self):
+        assert brr._ulp_allowance(1) == SCIPY_BINOMIAL_ULP_ALLOWANCE
+        assert brr._ulp_allowance(SCIPY_BINOMIAL_ULP_ALLOWANCE) == SCIPY_BINOMIAL_ULP_ALLOWANCE
+        assert brr._ulp_allowance(1_000_000_000) == 1_000_000_000
+        assert brr._eps_margin(7, 50, 60) == (2 * SCIPY_BINOMIAL_ULP_ALLOWANCE + 7) * 2.0**-52
+        assert (
+            brr._eps_margin(7, 4_000_000, 1_000)
+            == (4_000_000 + SCIPY_BINOMIAL_ULP_ALLOWANCE + 7) * 2.0**-52
+        )
+
+
+class TestMarginDominatedAlpha:
+    """Every evaluated tail carries the float margin, so once the margin reaches what the tail
+    allocation leaves after the nuisance budget no p-value read from one can be certified below
+    it: the set would extend to wherever the structure alone stops it. It is refused, coded,
+    instead -- except a null the empty nuisance domain rejects without a tail evaluated."""
+
+    @pytest.mark.parametrize("alternative", ["two-sided", "greater", "less"])
+    def test_an_alpha_below_the_margin_is_refused_at_the_ceiling(self, alternative):
+        n = brr.FINITE_SAMPLE_MAX_ARM_SIZE
+        with pytest.raises(brr.BinomialDataError) as exc_info:
+            brr.confidence_interval(3, n, 5, n, alpha=1e-7, alternative=alternative)
+        assert exc_info.value.code == "estimation.binomial.tail_unrepresentable"
+        assert exc_info.value.context["alpha"] == 1e-7
+        assert exc_info.value.context["margin"] == brr._eps_margin(1, n, n)
+
+    def test_the_refusal_is_by_the_margin_not_the_arm_size(self):
+        """The same alpha is certifiable on small arms, whose margin is a million times smaller."""
+        ci = brr.confidence_interval(3, 10_000, 5, 10_000, alpha=1e-7, alternative="two-sided")
+        assert ci.upper is not None and ci.lower <= 5 / 3 <= ci.upper
+
+    def test_an_alpha_the_margin_leaves_room_for_is_admitted_at_the_ceiling(self):
+        n = brr.FINITE_SAMPLE_MAX_ARM_SIZE
+        ci = brr.confidence_interval(3, n, 5, n, alpha=2e-6, alternative="greater")
+        assert ci.lower <= 5 / 3
+
+    def test_a_two_sided_alpha_is_judged_at_half_its_value(self):
+        n = brr.FINITE_SAMPLE_MAX_ARM_SIZE
+        margin = brr._eps_margin(1, n, n)
+        alpha = 2.0 * (margin + brr.nuisance_beta(1.0e-6)) * 0.99
+        with pytest.raises(brr.BinomialDataError):
+            brr.confidence_interval(3, n, 5, n, alpha=alpha, alternative="two-sided")
+
+    def test_a_tiny_alpha_on_a_one_unit_arm_is_refused(self):
+        with pytest.raises(brr.BinomialDataError) as exc_info:
+            brr.confidence_interval(1, 1, 0, 1, alpha=1e-14, alternative="two-sided")
+        assert exc_info.value.code == "estimation.binomial.tail_unrepresentable"
+
+    @pytest.mark.parametrize("alternative", ["two-sided", "less"])
+    @pytest.mark.parametrize("x_t", [brr.FINITE_SAMPLE_MAX_ARM_SIZE, 500_000_000, 0])
+    def test_a_null_the_empty_nuisance_domain_rejects_is_answered_at_the_ceiling(
+        self, alternative, x_t
+    ):
+        """A control arm of all successes puts the Clopper-Pearson lower bound ``a`` within 2e-8
+        of one, so a null ratio of two empties the domain of ``p_-``: the p-value is the nuisance
+        budget itself (doubled two-sided) and every treatment count rejects, on the control arm
+        alone. The set is ``[0, r]`` with ``r`` the first candidate beyond ``1/a`` the search
+        probed, so it excludes the null exactly as the p-value does."""
+        n, alpha, null_r = brr.FINITE_SAMPLE_MAX_ARM_SIZE, 1e-7, 2.0
+        beta = brr.nuisance_beta(alpha)
+        tail = alpha / 2.0 if alternative == "two-sided" else alpha
+        assert brr.margin_dominates_tail(tail, beta, n, n)
+        assert brr.structural_rejection(alternative, null_r, n, n, beta)
+        a, _ = brr.clopper_pearson(n, n, beta)
+        ci = brr.confidence_interval(
+            n, n, x_t, n, alpha=alpha, alternative=alternative, null_r=null_r
+        )
+        assert ci.p_value_null == (2.0 * beta if alternative == "two-sided" else beta) < alpha
+        assert ci.p_value_null == brr.null_p_value(
+            null_r, n, n, x_t, n, beta, alternative=alternative, tail=tail
+        )
+        assert ci.lower == 0.0
+        assert ci.upper is not None
+        assert 1.0 / a <= ci.upper <= (1.0 / a) * math.exp(ci.endpoint_log_width) < null_r
+        assert ci.resolution_reached and ci.capped_probes == 0
+
+    @pytest.mark.parametrize(
+        ("alternative", "x_c", "null_r"),
+        [
+            ("less", brr.FINITE_SAMPLE_MAX_ARM_SIZE, 1.0),
+            ("two-sided", brr.FINITE_SAMPLE_MAX_ARM_SIZE, 1.0),
+            ("less", 500_000_000, 2.0),
+            ("two-sided", 0, 2.0),
+            ("greater", brr.FINITE_SAMPLE_MAX_ARM_SIZE, 2.0),
+        ],
+    )
+    def test_a_null_whose_domain_is_not_empty_stays_refused_at_the_ceiling(
+        self, alternative, x_c, null_r
+    ):
+        """The unshifted null never empties the domain (``1/a > 1``), nor does a control count
+        whose lower bound stays at or below ``1/null_r``, nor a zero control count (``a = 0``);
+        "greater" reads ``p_+``, whose domain never empties. Each would read a tail the margin
+        dominates, so each is refused as before."""
+        n, alpha = brr.FINITE_SAMPLE_MAX_ARM_SIZE, 1e-7
+        assert not brr.structural_rejection(alternative, null_r, x_c, n, brr.nuisance_beta(alpha))
+        with pytest.raises(brr.BinomialDataError) as exc_info:
+            brr.confidence_interval(
+                x_c, n, 5, n, alpha=alpha, alternative=alternative, null_r=null_r
+            )
+        assert exc_info.value.code == "estimation.binomial.tail_unrepresentable"
+        assert exc_info.value.context["margin"] == brr._eps_margin(1, n, n)
+
+    def test_the_structural_threshold_is_where_the_lower_bound_passes_the_null(self):
+        """`structural_rejection` is exactly the emptiness of the domain `p_minus` evaluates: at
+        the smallest control count whose lower bound exceeds ``1/null_r`` the certificate is the
+        budget alone, one count below it the domain is not empty and the call is refused."""
+        n, alpha, null_r = brr.FINITE_SAMPLE_MAX_ARM_SIZE, 1e-7, 2.0
+        beta = brr.nuisance_beta(alpha)
+        lo, hi = 0, n
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if brr.structural_rejection("less", null_r, mid, n, beta):
+                hi = mid
+            else:
+                lo = mid
+        a_hi, b_hi = brr.clopper_pearson(hi, n, beta)
+        a_lo, b_lo = brr.clopper_pearson(lo, n, beta)
+        assert brr.minus_domain_upper(null_r, b_hi) < a_hi
+        assert brr.minus_domain_upper(null_r, b_lo) >= a_lo
+        ci = brr.confidence_interval(hi, n, 5, n, alpha=alpha, alternative="less", null_r=null_r)
+        assert ci.p_value_null == beta and ci.upper is not None and 1.0 / a_hi <= ci.upper < null_r
+        with pytest.raises(brr.BinomialDataError):
+            brr.confidence_interval(lo, n, 5, n, alpha=alpha, alternative="less", null_r=null_r)
+
+    @pytest.mark.parametrize("alternative", ["two-sided", "less"])
+    def test_counts_admitted_at_a_structural_null_are_refused_at_another_null(self, alternative):
+        """`null_p_value` is the recompute a persisted set makes at any null, so it shares the
+        guard: the counts a null ratio of two admits on the structure alone are refused at the
+        unshifted null, whose domain is not empty, with the refusal a fresh inversion at that
+        null raises -- not the margin-floored non-rejection their tails would read."""
+        n, alpha = brr.FINITE_SAMPLE_MAX_ARM_SIZE, 1e-7
+        beta = brr.nuisance_beta(alpha)
+        tail = alpha / 2.0 if alternative == "two-sided" else alpha
+        admitted = brr.confidence_interval(
+            n, n, 5, n, alpha=alpha, alternative=alternative, null_r=2.0
+        )
+        assert admitted.p_value_null == brr.null_p_value(
+            2.0, n, n, 5, n, beta, alternative=alternative, tail=tail
+        )
+        with pytest.raises(brr.BinomialDataError) as fresh:
+            brr.confidence_interval(n, n, 5, n, alpha=alpha, alternative=alternative, null_r=1.0)
+        with pytest.raises(brr.BinomialDataError) as retested:
+            brr.null_p_value(1.0, n, n, 5, n, beta, alternative=alternative, tail=tail)
+        assert fresh.value.code == retested.value.code == "estimation.binomial.tail_unrepresentable"
+        assert dict(retested.value.context) == dict(fresh.value.context)
+        assert retested.value.context["alpha"] == alpha
+        assert retested.value.context["margin"] == brr._eps_margin(1, n, n)
+
+    def test_the_recompute_is_unguarded_where_the_margin_leaves_room(self):
+        """Small arms leave the tail level room below the margin at the same alpha: the
+        recompute reads its tails as before, at a null the structure does not reject."""
+        beta = brr.nuisance_beta(1e-7)
+        assert not brr.margin_dominates_tail(5e-8, beta, 10_000, 10_000)
+        p = brr.null_p_value(1.0, 3, 10_000, 5, 10_000, beta, alternative="two-sided", tail=5e-8)
+        assert p == brr.p_two(1.0, 3, 10_000, 5, 10_000, beta, tail=5e-8)
+
+
+@pytest.mark.slow
+class TestLargeArmValidation:
+    """The finite-sample ceiling's validation at 4M, 16M and 64M trials on a reduced grid, against
+    the decimal oracle (``scripts/measure_binomial_ceiling.py ulp`` runs the full grid up to the
+    ceiling): primitive errors inside the allowance, certified tails above the exact tail plus
+    the exact omitted mass, Clopper-Pearson endpoints enclosing their tails, and the support
+    window's omitted mass inside its reported bound."""
+
+    SIZES = (4_000_000, 16_000_000, 64_000_000)
+
+    @pytest.mark.parametrize("n", SIZES)
+    @pytest.mark.parametrize("rate", [0.05, 1e-4])
+    def test_certified_tails_dominate_the_exact_tail(self, n, rate):
+        allowance = brr._ulp_allowance(n)
+        for kind, tail in (("plus", "treatment_sf"), ("minus", "treatment_cdf")):
+            entry = measure._window_check(n, rate, kind, "upper", 1.02)
+            assert entry["certificate_dominates"], entry
+            assert entry["exact_omitted_mass"] <= entry["window_omitted_mass"]
+            assert entry["control_pmf"]["worst_ulps"] < allowance / 2.0
+            assert entry[tail]["worst_ulps"] < allowance / 2.0
+
+    @pytest.mark.parametrize("n", SIZES)
+    def test_primitives_stay_within_the_allowance_across_the_distribution(self, n):
+        entry = measure._sampled_check(n, 0.05)
+        for name in ("pmf", "cdf", "sf"):
+            assert entry[name]["worst_ulps"] < brr._ulp_allowance(n) / 2.0, (name, entry[name])
+
+    @pytest.mark.parametrize("n", SIZES)
+    def test_clopper_pearson_endpoints_enclose_their_tails(self, n):
+        entries = measure._enclosure_checks(n)
+        assert entries and all(entry["encloses"] for entry in entries)
+
+    @pytest.mark.parametrize("n", SIZES)
+    def test_window_omitted_mass_stays_within_the_reported_bound(self, n):
+        entries = measure._omitted_mass_checks(n)
+        assert entries and all(entry["bounded"] for entry in entries)
+
 
 class TestClopperPearsonOutwardRounding:
     def test_trivial_single_trial_shape_is_exact(self):
@@ -1715,3 +2054,87 @@ class TestClopperPearsonOutwardRounding:
                 assert _dec_binom_cdf(x - 1, n, lower) >= Decimal(1) - half
             if x < n:
                 assert _dec_binom_cdf(x, n, upper) <= half
+
+    @pytest.mark.parametrize(
+        "n",
+        [
+            1_000_000,
+            10_000_000,
+            100_000_000,
+            pytest.param(1_000_000_000, marks=pytest.mark.slow),
+        ],
+    )
+    @pytest.mark.parametrize("beta", [brr.nuisance_beta(0.05), 1e-9])
+    def test_endpoints_enclose_and_nearly_reach_their_exact_tails_at_large_arms(self, n, beta):
+        """Against the decimal oracle at one million to one billion trials, for small counts
+        (0..5), rare and dense rates, and counts a few short of the arm (where the complement
+        of the endpoint is the small quantity): the outward-rounded endpoint leaves its tail at
+        most ``beta / 2``, and no endpoint is left wider than a tenth of that tail unless it
+        is clamped to the end of the unit interval or within a billionth of it. An allowance absolute in the rate fails the
+        second check at a rare count on a large arm: ``1e-6`` against a rate of ``1e-8`` leaves
+        a tail of ``1e-1000`` of its target."""
+        half = Decimal(beta) / 2
+
+        def resolvable(endpoint: float) -> bool:
+            """Neither clamped to an end of the unit interval nor so near one that the float
+            spacing there is a visible share of the endpoint's complement."""
+            return 0.0 < endpoint < 1.0 and 1.0 - endpoint > 1e-9
+
+        counts = sorted(
+            {0, 1, 2, 3, 4, 5, 10, 100, round(n * 1e-4), round(n * 0.05)}
+            | {n - 100, n - 10, n - 5, n - 4, n - 3, n - 2, n - 1, n}
+        )
+        for x in counts:
+            lower, upper = brr.clopper_pearson(x, n, beta)
+            if x > 0:
+                tail = Binomial(n, lower).sf(x - 1)
+                assert tail <= half, (n, x, "lower")
+                assert not resolvable(lower) or tail >= Decimal("0.9") * half, (n, x, "lower")
+            if x < n:
+                tail = Binomial(n, upper).cdf(x)
+                assert tail <= half, (n, x, "upper")
+                assert not resolvable(upper) or tail >= Decimal("0.9") * half, (n, x, "upper")
+
+    def test_a_rare_count_is_decided_alike_at_every_arm_size(self):
+        """The smallest treatment count the runtime rejects at against four control events
+        does not move with the arm size: nineteen from a million trials to a billion. With the
+        allowance absolute in the rate it grew to 21, 36 and 94 at 1e7, 1e8 and 1e9."""
+        beta = brr.nuisance_beta(0.05)
+        first = {}
+        for n in (10**6, 10**7, 10**8, 10**9):
+            lo, hi = 4, 200
+            while lo < hi:
+                mid = (lo + hi) // 2
+                if brr.p_plus(1.0, 4, n, mid, n, beta, tail=0.025) < 0.025:
+                    hi = mid
+                else:
+                    lo = mid + 1
+            first[n] = lo
+        assert set(first.values()) == {19}
+
+
+class TestMeasurementScriptPortability:
+    """The oracle-grading helpers this module imports from the measurement script must load on
+    a platform without ``resource`` and ``os.wait4`` (Windows); only the commands that read a
+    child's resource usage need them, and those refuse by name instead of failing late."""
+
+    def test_the_grading_helpers_import_without_the_resource_module(self):
+        import subprocess
+
+        code = (
+            "import sys; sys.modules['resource'] = None; "
+            "from scripts import measure_binomial_ceiling as m; "
+            "assert callable(m._graded) and callable(m._window_check)"
+        )
+        root = Path(__file__).resolve().parents[2]
+        done = subprocess.run(
+            [sys.executable, "-c", code], cwd=root, capture_output=True, text=True, check=False
+        )
+        assert done.returncode == 0, done.stderr
+
+    def test_a_command_refuses_off_posix_by_name(self, monkeypatch):
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(measure, "os", SimpleNamespace(name="nt"))
+        with pytest.raises(SystemExit, match="POSIX"):
+            measure.main(["latency", "--out", "unused.jsonl"])

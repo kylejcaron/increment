@@ -314,46 +314,72 @@ subject to the registered sampling and finalized-window contract.
 
 It also has two further boundaries, both refusals rather than silent degradation:
 
-* **Arm size.** Each arm is capped at `binomial_rr.MAX_ARM_SIZE` (4,000,000). This is a
-  compute-resource applicability boundary, not a statistical one: per-call cost keeps
-  growing with arm size past it, so a call with either arm above the cap refuses
-  immediately (`estimation.binomial.arm_too_large_for_exact_enumeration`) rather than
-  running an increasingly expensive search. The cap is sized to admit every arm size this
-  method is asked to support today; a workload with a genuinely larger arm would need a
-  higher cap or a closed-form/recurrence tail evaluation (out of scope here).
-* **Latency.** Cost grows with arm size: measured on commodity hardware
-  (two-sided, `alpha=0.05`, cold, CPU seconds on a shared machine, so read them as
-  upper-side estimates), a 5% control rate takes roughly 0.5s at 100,000 per arm,
-  2s at 1,000,000 and 4s at 4,000,000 (`MAX_ARM_SIZE`); a 1e-4 rate at
-  1,000,000 per arm takes about 0.03s, because the control-count window follows
-  the nuisance rate. The window is widest at a 50% control rate, which costs
-  roughly 1.3s at 100,000 per arm and 3.3s at 1,000,000. These are about
-  1.5 times the cost of stopping each search after a fixed 60 splits, which could
-  leave a p-value near the tail level far looser than reported.
+* **Arm size.** Each arm is capped at `binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE`
+  (1,000,000,000; it replaces `binomial_rr.MAX_ARM_SIZE`, which capped arms at 4,000,000 and is
+  removed without an alias -- code that imported the old name imports the new one and gets the
+  new cap). This is a compute-resource applicability boundary, not a statistical
+  one: a call with either arm above the cap refuses immediately
+  (`estimation.binomial.arm_too_large_for_exact_enumeration`, the cap in `max_arm_size`)
+  rather than running a search whose cost keeps growing with the arm. The cap is the
+  largest arm the numerical safeguards were validated at against an independent decimal
+  oracle (`calibration/binomial_oracle.py`, run by `scripts/measure_binomial_ceiling.py`
+  `ulp` and `recovery` at 4,000,000, 16,000,000, 64,000,000, 100,000,000 and 1,000,000,000
+  per arm): the SciPy binomial primitives' error allowance (the worst relative error of a
+  pmf, cdf or sf that bears weight, as a share of `n` units of `2^-52`, was 0.198, 0.245,
+  0.212, 0.236 and 0.226 at those sizes, against an allowance of one), the Clopper-Pearson
+  enclosure, the support window's omitted mass (each held at every size), and count recovery from the
+  producer's float moments, whose Bernoulli second-moment check scales with `n`: the
+  DuckDB producer's counts were accepted at every size and rate measured (0.5, 0.002, 1e-4
+  and a single success), the second-moment error reaching at most 0.24 of the check's
+  rounding bound (2,442 times `variance_slack` at a billion units), and a constant-0.5
+  arm was refused at every size. Count thresholds are computed in exact
+  integers, which a float quotient cannot keep above about 67,000,000 per arm. The error
+  model was measured with fused multiply-subtract on arm64; an x86 build has not been run.
+* **Latency.** Cost grows with arm size. Cold CPU seconds and peak resident set of one
+  two-sided `alpha=0.05` `confidence_interval` with the treatment count at a risk ratio of
+  1.02 of the control rate, measured on an Apple M3 Pro with
+  `scripts/measure_binomial_ceiling.py latency` (commits `d9b136b` to `2cad484`, none touching
+  the estimation code; wall time depends on machine load):
+
+  | Units per arm | 5% control rate | 1e-4 | 50% |
+  |---:|---:|---:|---:|
+  | 4,000,000 | 5.16 s / 178 MiB | 0.07 s / 122 MiB | 13.7 s / 207 MiB |
+  | 16,000,000 | 10.8 s / 198 MiB | 0.227 s / 128 MiB | 44.2 s / 237 MiB |
+  | 64,000,000 | 44.5 s / 228 MiB | 0.731 s / 148 MiB | 159 s / 242 MiB |
+  | 100,000,000 | 82.3 s / 222 MiB | 1.21 s / 150 MiB | 179 s / 415 MiB |
+  | 1,000,000,000 | 234 s / 336 MiB | 2.92 s / 165 MiB | 787 s / 424 MiB |
+
+  The cost follows the control-count window, which follows the nuisance rate, so a rare rate
+  is cheap at any size and the window is widest at a 50% control rate.
   Each p-value bounds a supremum over the control rate's Clopper-Pearson
   interval. The search splits that interval until the bound's distance above a
   witnessed lower end of the supremum is within 2^-14 of the larger of the p-value
   and the tail level it is compared with, plus the certificate's own float noise
-  (2e-12 to 1.4e-11 from 1,000 to 4,000,000 per arm, which no search narrows), or
-  after 2,048 splits. The reported directional p-value is therefore a certified upper
-  bound that exceeds the supremum-based p-value by no more than that gap: 2^-14 of the
-  p-value above the tail level and 2^-14 of the tail level below it (1.5e-6 at a 0.025
-  tail, 6.1e-7 at a 0.01 tail). A two-sided p-value is twice the smaller directional
-  one, so it exceeds its ideal by at most twice that. The target is never tighter than
-  a fixed 1e-6 stop at a tail level of 0.0164 or more. A certificate whose bounds still
-  straddle the tail level is conservatively non-rejecting; a certified upper bound below
-  the tail rejects even within the declared gap. The endpoint search only compares
-  p-values with the tail level, so each probe also stops once that comparison is certified
-  either way. A search the cap ends is not an error: its p-value stays a valid,
+  (2.9e-12 at 1,000 per arm, 8.9e-10 at 1,000,000, 3.6e-9 at 4,000,000, 8.9e-8 at
+  100,000,000 and 8.9e-7 at 1,000,000,000, which no search narrows), or
+  after 2,048 splits. The reported p-value is therefore a certified upper bound that
+  exceeds the supremum-based p-value by no more than that gap: 2^-14 of the p-value
+  above the tail level and 2^-14 of the tail level below it, plus the noise. For one tail
+  at a billion units per arm that is at most 2.4e-6 at a 0.025 tail (1.5e-6 plus 8.9e-7) and
+  1.5e-6 at a 0.01 tail (6.1e-7 plus 8.9e-7); at 1,000 units the noise is negligible and it
+  is 1.5e-6 and 6.1e-7. A two-sided p-value is twice the smaller certified tail, so its gap
+  is twice those. The target is never tighter than a fixed 1e-6 stop at a tail
+  level of 0.0164 or more. A certificate whose bounds still straddle the tail level is
+  conservatively non-rejecting; a certified upper bound below the tail rejects even
+  within the declared gap. The endpoint search only compares p-values with the tail
+  level, so each probe also stops once that comparison is certified either way.
+  A search the cap ends is not an error: its p-value stays a valid,
   conservative bound, and the row's `note` says how many probes ended so and the largest
   gap they left, in units of the p-value the row reports (twice a directional gap on a
-  two-sided row). No tolerance beyond that disclosure is promised. The stop rule is part of
-  the construction every `BinomialConfidenceSet` records (`binomial_bb_difference_v2`): a
-  row persisted under `binomial_bb_difference_v1`, which stopped each search at an absolute
-  1e-6 or after 60 splits, or without naming a construction at all, is refused when read
-  (`estimation.results.binomial.obsolete_construction`) rather than shown with endpoints
-  its counts no longer reproduce beside a verdict recomputed with the tighter bound;
-  re-run the analysis to cut it again. Each endpoint is the outer end of a search
+  two-sided row). No tolerance beyond that disclosure is promised. Every
+  `BinomialConfidenceSet` records `binomial_bb_difference_v3`: its Clopper–Pearson
+  widening is relative to the smaller endpoint/complement, its numerical allowance
+  scales with arm size, and its lattice thresholds use integer arithmetic. A row
+  persisted under v1 (the absolute-gap stop), v2 (the earlier nuisance envelope),
+  another construction, or no construction is refused when read
+  (`estimation.results.binomial.obsolete_construction`), rather than combining its
+  endpoints with a verdict recomputed by a different rule. Re-run the analysis to cut
+  it again. Each endpoint is the outer end of a search
   bracket no wider than 0.05% (2^-11) and no wider than 1/128 of the log risk
   ratio's standard error, whichever is finer, so the search works harder as
   arms grow and the standard error shrinks. The stop is the resolution of the
@@ -370,12 +396,55 @@ It also has two further boundaries, both refusals rather than silent degradation
   matters more than exactness at your arm sizes.
   FCR-selected rows refresh this disclosure for the returned interval; an
   obsolete nominal disclosure is removed while unrelated notes are retained.
-* **Extreme alpha.** The frozen nuisance tail budget passed to the Clopper-Pearson
-  endpoint solver is `min(1e-6, alpha / 32)`. Below `1e-9` (i.e. `alpha < 3.2e-8`), SciPy's
-  iterative beta-quantile solver has demonstrated large relative error against an exact
-  oracle for small `n` in the validated regime, so the endpoint is refused
-  (`estimation.binomial.tail_unrepresentable`) rather than certified outside that regime.
-  Ordinary use (including FCR-adjusted alpha) is far above this floor.
+* **Extreme alpha.** Two floors bound the tail level. The frozen nuisance tail budget passed
+  to the Clopper-Pearson endpoint solver is `min(1e-6, alpha / 32)`; below `1e-9` (i.e.
+  `alpha < 3.2e-8`), SciPy's iterative beta-quantile solver has demonstrated large relative
+  error against an exact oracle for small `n` in the validated regime, so the endpoint is
+  refused (`estimation.binomial.tail_unrepresentable`) rather than certified outside that
+  regime. And every certified tail carries a float margin that grows with the arms,
+  `(A(n_c) + A(n_t) + m) * 2^-52` with `A(n) = max(2048, n)` (SciPy's binomial primitives
+  were measured against an exact decimal oracle to a billion trials, where their relative
+  error stays within a quarter of `n` units of `2^-52`): once it reaches what the tail
+  level leaves after the nuisance budget (`alpha / 2 - min(1e-6, alpha / 32)` two-sided,
+  `alpha - min(1e-6, alpha / 32)` one-sided) no p-value read from an evaluated tail can be
+  certified below the tail, and the call refuses with the same code (context `alpha`,
+  `margin`, `n_c`, `n_t`) instead of returning a set that extends to wherever
+  the structure alone stops it. The one exception is a null the structure alone rejects: a
+  two-sided or "less" test of a null ratio above `1 / a`, `a` the control arm's
+  Clopper-Pearson lower bound at the nuisance budget, has an empty nuisance domain, so its
+  p-value is the budget itself (doubled two-sided) with no tail evaluated, and the upper
+  endpoint is the first candidate above `1 / a`, which the control arm certifies by itself;
+  that call is answered, the lower endpoint at zero. A row persisted from such a call
+  carries that guard: `stat_sig()`/`p_value()` and the table adapters recompute its verdict
+  from the persisted counts, so re-reading them at a null the structure does not reject (the
+  unshifted null, for one) refuses with the same code and context a fresh call at that null
+  does, never a margin-floored non-rejection. For equal arms the two-sided threshold is
+  about `3.8e-9` at 4,000,000 per arm, `9.5e-8` at 100,000,000 and `9.5e-7` at
+  1,000,000,000 (one-sided, about half of that); it passes the `3.2e-8` solver floor at
+  about 34,000,000 per arm, so below that size the solver floor binds. The margin is
+  absent from ordinary levels. Its effect depends on its ratio to the tail level, so it was
+  measured on the production search at 10,000 units per arm with the margin set to the
+  ratio a billion-unit arm has (it was not run at a billion): at `alpha >= 1e-4` it does not
+  move an interval, at `1e-5` it widens it by about 1%, and from about `3e-6` it degrades
+  it (+2%, then +43% at `1.5e-6`). Planning mirrors both floors: a tail level they refuse
+  leaves the runtime deciding no count pair, so it has no power to plan and is refused, not
+  planned as zero. Under a dominating margin the runtime decides only the count pairs whose
+  control count rejects the null on its Clopper-Pearson bound alone, and refuses the rest;
+  a plan whose control window at the baseline rate holds a refused count is refused too, never
+  planned with those pairs as non-rejections. `achieved_power`, `minimum_detectable_effect`
+  and each `power_curve` row refuse it with `power.binomial_tail_level_unrepresentable`
+  (context `alpha`, `beta`, `tail_alpha`, `margin`, `n_c`, `n_t`, `p_c`, `decided_from` -- the
+  smallest control count the runtime decides, `None` when it decides none -- `solver_floor`,
+  `cause`, `solver_floor` or `float_margin`, and `scope`, `requested`) and an arm above the
+  ceiling with `power.binomial_arm_ceiling_exceeded` (context `n_c`, `n_t`, `max_arm_size`),
+  before any replay. `required_sample_size` searches only sizes whose decision reads the
+  treatment arm: one the margin dominates even at the smallest design is refused before
+  searching, with `power.binomial_tail_level_unrepresentable` (`scope` `smallest`); a float
+  margin that starts dominating only at larger arms ends the search at that size with
+  `power.binomial_size_search_unreachable` (context `power`, `maximum_power`, `n_per_arm`,
+  `max_arm_size`). An allocation so lopsided that the smallest design has an arm above the arm
+  ceiling is refused with `power.binomial_arm_ceiling_below_smallest_design`. There is no exact
+  route at a smaller alpha; use a larger alpha.
 
 CUPED and unit-grain ratio-denominator conversion/retention retain their log-scale
 guards; their sufficient statistics are not raw Bernoulli count pairs. A clustered
@@ -643,10 +712,12 @@ not guarantee that a future data-generating process has either variance shape.
 ### Conversion planning matches the exact binomial decision only within a budget
 
 Unadjusted, unclustered, fixed-horizon conversion and retention plans report
-the rejection probability of the runtime's exact binomial risk-ratio decision.
-With at most 16,000 retained (control, treatment) cells at the null rate the
-decision set is replayed exactly (`power_basis="exact"`); beyond that the
-replay uses Normal conditional tails (`power_basis="approximate"`), measured
+the rejection probability of the runtime's exact binomial risk-ratio decision only on the
+exact route. With at most 16,000 retained (control, treatment) cells at the null rate the
+decision set is replayed exactly (`power_basis="exact"`); up to 10,000,000 cells the
+replay uses Normal conditional tails (`power_basis="approximate"`), a model of the decision
+whose rejection probability is what that route reports and encloses: its numerical
+certificates are model-only and do not bound the model's departure from the runtime, measured
 at up to 0.8 percentage points below the runtime's power (unequal allocation,
 shifted null) and able to misclassify rare-event count pairs near the tail
 allocation. The runtime's own control-arm window and floating-point
@@ -658,11 +729,76 @@ for achieved power and 6.3 / 15.5 / 22 s for sizing, and at 20,000 per arm
 with a 50% baseline 6.4 s and 67 s. Every count pair's decision comes from its
 own replay, except counts the replay's first step would settle: those are
 inferred from a neighbouring count's margin through the step's monotonicity
-in the treatment count, which assumes each computed tail lies within
-`5e-11` of its exact-arithmetic value. Sizing returns a verified bracket
-crossing, not a proven global minimum; effect searches exclude earlier
-effects to within `2e-12` of the target power. Triggered plans use the
-rounded analyzed counts.
+in the treatment count, which assumes each computed tail lies within the larger of
+`5e-11` and the decision's float margin (see **Extreme alpha**) of its exact-arithmetic
+value. Sizing returns a verified bracket crossing, not a proven global minimum.
+
+Every computed probability carries the runtime's SciPy error allowance (`n` units in
+the last place of each binomial weight) and the rounding of its sums. The resulting
+interval is about `1e-12` of the power at 1,000 units per arm and `4e-7` at a billion.
+Sizing uses its lower end to verify the target. MDE instead uses computed point
+power and effect tolerance `1e-8 + 1e-8 * abs(effect)`, without promising the first
+representable passing effect. Internal bounds exclude earlier intervals; an earlier
+uncertain interval wider than the effect tolerance cannot be skipped for a later band.
+If the search cannot resolve it, the companion `mde_relative` is `None` with
+`numerical_resolution`, while a supplied-effect power remains available.
+The interval covers integration of the replayed decision set, not the approximate
+route's separate model error. Triggered plans use rounded analyzed counts.
+
+A solve's replay is bounded by the cells it stores: at most 10,000,000 (control, treatment)
+count cells, the control window by the treatment windows at the null rate and at every
+alternative that solve evaluates. A supplied effect, an effect search (the union of the
+windows it evaluates) and each row of a power curve are separate solves: the cells an
+earlier row or the supplied effect left on the shared geometry are a cache, dropped when
+the next solve needs the room (the solve's own cells never are, and its union is what the
+bound counts), so a curve row answers as its scalar call does. The work
+follows that count, not the arm size, which the runtime decides up to a billion units.
+Planning refuses a decision whose null rectangle exceeds the bound before any replay
+(`power.binomial_replay_bound_exceeded`), and with the same code (its context then names
+the alternative treatment rate `p_t`) an alternative whose window would take its solve past
+it, before any mask is allocated. An effect search that would exceed it ends unresolved:
+the companion `mde_relative` of a supplied-effect answer is null with `numerical_resolution`
+(the supplied effect's power is unchanged), and `minimum_detectable_effect` is refused with
+the bound after the work that preceded it. An effect search stores more than the null
+rectangle, so it reaches the bound at smaller arms than a supplied effect does.
+`required_sample_size` searches only sizes about 1/128 under the largest whose null and
+supplied-effect rectangles fit, and a search that reaches that ceiling refuses with
+`power.binomial_replay_bound_exceeded`, whose context adds the target `power` and
+`power_reached` there (a skipped size just above may reach more). The other ends of a size
+search have their own codes (see the sizing table in the power-analysis guide): the arm
+ceiling or a float margin that dominates the tail level at larger arms ends it with
+`power.binomial_size_search_unreachable` and `maximum_power`, and a decision refused at the
+smallest design is refused before any search (see **Extreme alpha**). A supplied effect
+reaches the bound at about a million units per arm at a 5% baseline, about 190,000 at 50%,
+and at any arm the runtime admits at a rate expecting up to about 48,000 events per arm.
+Measured with `scripts/measure_binomial_ceiling.py planning` on an Apple M3 Pro, cold CPU
+seconds and peak resident set, under a shared load that varied by a factor of about two
+between runs (null cells are the null rectangle). The cells marked † were re-measured at
+`45829f1`, after a companion effect search became a solve of its own (it no longer inherits
+the supplied effect's cells, so an unresolved companion costs what a refused
+`minimum_detectable_effect` does); the others are from `2da355f`, before it, and a
+companion effect there was cheaper to refuse:
+
+| Baseline, units per arm | Call | CPU / peak | Outcome |
+|---|---|---:|---|
+| 5%, 100,000 | `achieved_power`, lift 5% | 6.3 s / 1.3 GiB | 0.97M null cells, companion effect available |
+| 5%, 250,000 | `achieved_power`, lift 3% | 16.5 s / 1.6 GiB | 2.4M null cells, companion effect available |
+| 5%, 500,000 † | `achieved_power`, lift 2% | 35.3 s / 1.8 GiB | 4.8M null cells, companion effect available |
+| 5%, 500,000 † | `minimum_detectable_effect` | 35.7 s / 1.9 GiB | answered |
+| 5%, 1,000,000 † | `achieved_power`, lift 1.5% | 119 s / 1.8 GiB | 9.7M null cells; companion effect `numerical_resolution` |
+| 5%, 1,000,000 † | `minimum_detectable_effect` | refused after 61.0 s / 1.8 GiB | needs 19.7M cells |
+| 5%, lift 1.75% | `required_sample_size` | 277 s / 1.7 GiB | 993,064 per arm; companion effect `numerical_resolution` (not re-measured) |
+| 50%, 100,000 | `minimum_detectable_effect` | refused after 57.5 s / 1.3 GiB | needs 10.6M cells (5.1M null) |
+| 50%, 190,000 † | `achieved_power`, lift 3% | 201 s / 1.7 GiB | 9.7M null cells; companion effect `numerical_resolution` |
+| 50%, 190,000 † | `minimum_detectable_effect` | refused after 210 s / 1.1 GiB | needs 10.8M cells |
+| 1e-4 at 1e6, 1e-6 at 1e8, 1e-7 at 1e9 (100 events) | `achieved_power`, lift 50% | 0.85 s / 0.2 GiB | 20,164 null cells, answered |
+| 5%, 5,000,000 | `achieved_power`, lift 1% | refused after 0.7 s / 0.1 GiB | 48.3M null cells |
+
+Not measured: `required_sample_size` at a 50% baseline or beyond a million units per arm,
+and the 5% sizing row since a companion effect became its own solve (its time can only have
+grown). Planning a design above the bound has no exact route: the replay is the only
+construction that reproduces the runtime's decision. Before the bound existed a call took
+574 s and 3.4 GiB at 4,000,000 per arm (39 million cells).
 
 Bounded-metric baselines and implied null/alternative rates must stay strictly
 positive and at most 1. A requested rate above 1 is refused rather than treated

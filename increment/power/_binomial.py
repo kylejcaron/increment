@@ -20,9 +20,19 @@ so the planning power is the polynomial
 
     power(p_c, p_t) = sum_i sum_j Bin(i; n_c, p_c) Bin(j; n_t, p_t) D(i, j).
 
-It is integrated over outer count windows each omitting at most
-``_OUTER_TAIL`` of its arm's mass; the omitted mass is measured, not
-renormalized, and bounds the reported (central) value from above only.
+It is integrated over outer count windows each omitting at most ``_OUTER_TAIL`` of its arm's
+mass; the omitted mass is measured, not renormalized. Every SciPy pmf, cdf and sf value read
+carries the runtime's relative error allowance (``binomial_rr._ulp_allowance``, ``n`` ULPs, the
+same one its float margin is built on) and every dot product rounds, so a computed value is
+never an exact probability: `BinomialPower` encloses the weighted mass of the decision set the
+geometry replays in ``[lower, upper]`` (the computed power less and plus that error, the
+omitted mass added to the upper end) and `RejectionGeometry.closure_bound` bounds that mass,
+with the same error, across an interval of treatment rates. The enclosure is of the
+integration only, so it is the runtime's rejection probability only for the ``exact`` route,
+whose mask is the runtime's own decision; the ``approximate`` route's mask is its Normal-tail
+decision model, whose departure from the runtime is the measured approximation of that route
+and is not covered. A comparison with a target certifies a crossing from the lower end and
+excludes an interval from the upper bound only, for the model its route names.
 
 Two routes classify ``D``:
 
@@ -48,7 +58,18 @@ Two routes classify ``D``:
 
 The route is a deterministic function of the geometry: ``exact`` when the
 retained (control, treatment) cell count at the null rate is within
-``EXACT_CELL_BUDGET``, else ``approximate``.
+``EXACT_CELL_BUDGET``, else ``approximate``. A decision the runtime refuses in full (an arm
+above its ceiling, a nuisance budget below the endpoint solver's floor, or a tail level its
+float margin dominates with no count pair rejected on the nuisance domain alone; see `refused`)
+decides no count pair: it has no rejection geometry and planning refuses it rather than report
+a power for it. Under a dominating margin the runtime decides only the count pairs whose
+control count empties the minus certificate's domain at the null (`structural_floor`), and
+refuses the rest; a plan is built only where its control window holds structural counts alone
+(`window_decided`), so no refused pair is ever integrated as a non-rejection. A geometry never
+stores more than ``PLANNING_CELL_CEILING`` cells: a decision whose null rectangle exceeds it is
+not planned, and an evaluation whose own rectangle (the control window at the control rate by
+the treatment window at the alternative rate), or the union the geometry would hold with it,
+exceeds it raises ``ReplayBoundExceeded`` before any mask is allocated.
 """
 
 from __future__ import annotations
@@ -56,11 +77,10 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from fractions import Fraction
 from typing import Literal
 
 import numpy as np
-from scipy.special import bdtr as _bdtr
-from scipy.special import bdtrc as _bdtrc
 from scipy.special import ndtr as _ndtr
 from scipy.stats import binom as _binom
 
@@ -71,6 +91,52 @@ Kind = Literal["plus", "minus"]
 Route = Literal["exact", "approximate"]
 
 _EPS = float(np.finfo(np.float64).eps)
+_UNIT_ROUNDOFF = _EPS / 2.0
+
+
+# prose: allow-long numerical error model of the planning integral and its closure bound
+# --- Numerical error of the planning integral --------------------------------------------
+# A computed power is ``fl(w_c . D . w_t)`` over SciPy pmf values ``w``. Each weight is within
+# the relative allowance ``a(n) = _ulp_allowance(n) * 2**-52`` of its exact probability (the
+# error model of ``binomial_rr``'s float margin, measured against the decimal oracle), and the
+# nonnegative products are summed in some order, whose relative error is at most
+# ``gamma_k = k u / (1 - k u)`` for ``k`` terms (``u = 2**-53``; Higham). All terms are
+# nonnegative, so these compose multiplicatively: with ``S`` the exact retained mass and
+# ``Theta = prod (1 - e)`` over ``e in {a(n_c), a(n_t), gamma_R, gamma_C, u}`` (the control and
+# treatment window sizes ``R`` and ``C``, and the one rounding of ``plus + minus``), the computed
+# value lies in ``[S Theta, S / Theta]``, hence ``S`` in ``[P / I, P I]`` with ``I >= 1 / Theta``.
+# The omitted window mass is itself a cdf plus an sf value and one addition, enlarged the same
+# way. ``I`` is rounded up from the exact rational and each bound one unit in the last place
+# outward, so the enclosure does not depend on the rounding of its own arithmetic.
+def _up(x: float) -> float:
+    return math.nextafter(x, math.inf)
+
+
+def _down(x: float) -> float:
+    return math.nextafter(x, -math.inf)
+
+
+def _allowance(trials: int) -> float:
+    """Relative error allowance of one SciPy binomial pmf, cdf or sf value with *trials* trials:
+    the runtime's ULP allowance (`binomial_rr._ulp_allowance`) times ``2**-52``."""
+    return _rr._ulp_allowance(trials) * _EPS
+
+
+def _compounded(terms: int) -> Fraction:
+    """``gamma_k = k u / (1 - k u)``, the relative error of summing *terms* nonnegative values in
+    any order, exactly; one (no relative bound) once ``k u`` reaches it."""
+    product = terms * Fraction(_UNIT_ROUNDOFF)
+    return product / (1 - product) if product < 1 else Fraction(1)
+
+
+def _inflation(*errors: float | Fraction) -> float:
+    """A float at or above ``1 / prod(1 - e)`` over the relative errors *errors*; infinite when
+    one reaches one."""
+    kept = Fraction(1)
+    for error in errors:
+        kept *= 1 - Fraction(error)
+    return math.inf if kept <= 0 else _up(float(1 / kept))
+
 
 #: Per-side mass each outer count window may omit. The omitted mass is
 #: measured afterwards and reported as an upper allowance, never renormalized.
@@ -89,6 +155,12 @@ _SURROGATE_SLACK = 1e-12
 #: Benchmarks across arm sizes, rates, and one- and two-sided tests keep the
 #: slowest measured complete `achieved_power` call near two seconds.
 EXACT_CELL_BUDGET = 16_000
+
+#: Planning bound in (control, treatment) count cells a geometry may store, about 10-15
+#: CPU-microseconds each. It bounds every evaluation's rectangle (the control window by the
+#: treatment window at the null or the alternative rate) and the union a geometry holds across
+#: them; the runtime's own arm ceiling is unaffected by it.
+PLANNING_CELL_CEILING = 10_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,17 +208,12 @@ class _Groups:
 def _threshold_offsets(kind: Kind, n_c: int, n_t: int, x_c: int, s: np.ndarray) -> np.ndarray:
     """Treatment thresholds of the runtime tails minus the treatment count.
 
-    The runtime forms ``ceil((k + n_t s) / n_c) - 1`` (plus) and ``floor((k +
-    n_t s) / n_c)`` (minus) in float64 with ``k = n_c j - n_t x_c``; that
-    quotient is ``j + n_t (s - x_c) / n_c`` and its rounding error (below
-    ``2 max(n_c, n_t) * 2**-53`` for admitted arms) never crosses an integer,
-    since a non-integer quotient sits at least ``1 / n_c`` from one. The
-    thresholds are therefore ``j`` plus these exact integer offsets.
+    The runtime's threshold for control count ``s`` and ``k = n_c j - n_t x_c`` is
+    `binomial_rr._count_threshold` of ``k + n_t s = n_c j + n_t (s - x_c)``, which is ``j`` plus
+    the same threshold of ``n_t (s - x_c)``: the shift by a multiple of ``n_c`` is exact in
+    integers. The offsets are therefore exact at every admitted arm size.
     """
-    num = n_t * (s - x_c)
-    if kind == "plus":
-        return -((-num) // n_c) - 1
-    return num // n_c
+    return _rr._count_threshold(kind, n_c, n_t * (s - x_c))
 
 
 # --- Replay engine ----------------------------------------------------------
@@ -778,8 +845,8 @@ class _SurrogateTails:
             floor_ = num // n_t
             ceil_ = -((-num) // n_t)
             with np.errstate(invalid="ignore"):
-                cdf = _bdtr(floor_, n_c, q)
-                sf = _bdtrc(ceil_ - 1, n_c, q)
+                cdf = _rr._fast_binom_cdf(floor_, n_c, q)
+                sf = _rr._fast_binom_sf(ceil_ - 1, n_c, q)
             cdf = np.where(floor_ < 0, 0.0, np.where(floor_ >= n_c, 1.0, cdf))
             sf = np.where(ceil_ <= 0, 1.0, np.where(ceil_ > n_c, 0.0, sf))
             out = np.where(only_t, np.where(plus, cdf, sf), out)
@@ -790,8 +857,8 @@ class _SurrogateTails:
             ceil_ = -((-num) // n_c)
             floor_ = num // n_c
             with np.errstate(invalid="ignore"):
-                sf = _bdtrc(ceil_ - 1, n_t, p)
-                cdf = _bdtr(floor_, n_t, p)
+                sf = _rr._fast_binom_sf(ceil_ - 1, n_t, p)
+                cdf = _rr._fast_binom_cdf(floor_, n_t, p)
             sf = np.where(ceil_ <= 0, 1.0, np.where(ceil_ > n_t, 0.0, sf))
             cdf = np.where(floor_ < 0, 0.0, np.where(floor_ >= n_t, 1.0, cdf))
             out = np.where(only_c, np.where(plus, sf, cdf), out)
@@ -1001,12 +1068,16 @@ def classify(
     a neighbouring count's computed margin, through the step's monotonicity in
     the treatment count, forces it (``_root_settled``; it assumes each
     computed tail lies within ``_ROOT_ROUNDING`` of its exact-arithmetic
-    value). Every other count is replayed."""
+    value). Every other count is replayed, except under a float margin that dominates the tail
+    level (`margin_dominates`): the runtime then evaluates no tail, so a row is decided only on
+    its structural minus certificate, which every request must carry (`window_decided`), and
+    the plus certificate of such a row, which the runtime never refines, rejects nothing."""
     results: list[np.ndarray | None] = []
     slots: list[list[int]] = []
     live: list[tuple[int, _Request, float, float, tuple[int, int, float]]] = []
     pending = 0
     batch_rows = _batch_rows(exact=route == "exact")
+    dominated = margin_dominates(decision)
     for req in requests:
         size = req.j1 - req.j0 + 1
         try:
@@ -1018,12 +1089,19 @@ def classify(
             continue
         hi = b
         if req.kind == "minus":
-            hi = b if decision.null_ratio <= 0.0 else min(b, 1.0 / decision.null_ratio)
+            hi = _rr.minus_domain_upper(decision.null_ratio, b)
             if hi < a:
                 # Empty nuisance domain: the runtime reports beta alone.
                 results.append(np.full(size, min(1.0, decision.beta) < decision.tail_alpha))
                 slots.append([len(results) - 1])
                 continue
+        if dominated:
+            assert _rr.minus_domain_upper(decision.null_ratio, b) < a, (
+                "a dominated count pair without a structural rejection is refused by the runtime"
+            )
+            results.append(np.zeros(size, bool))
+            slots.append([len(results) - 1])
+            continue
         window = _rr._support_window(decision.n_c, a, hi)
         mine: list[int] = []
         # A request larger than a batch is replayed in pieces of at most a batch: each count
@@ -1076,7 +1154,7 @@ def _classify_live(decision, route, live, results) -> None:
         wlo=wlo,
         width=widths,
         omitted=np.array([w[2] for *_, w in live]),
-        margin=np.array([_rr._eps_margin(int(w)) for w in widths]),
+        margin=np.array([_rr._eps_margin(int(w), n_c, n_t) for w in widths]),
         j0=np.array([item[1].j0 for item in live], np.int64),
         j1=np.array([item[1].j1 for item in live], np.int64),
         dmin=dmin,
@@ -1112,10 +1190,10 @@ def _classify_live(decision, route, live, results) -> None:
         results[index] = reject[bounds[n] : bounds[n + 1]]
 
 
-#: Bound on the gap between the surrogate replay's computed root tails and reachable bound
-#: and their exact-arithmetic values: a few roundings of arguments below 1e3 through
-#: ``ndtr``/``bdtr``/``bdtrc`` (derivative at most one; Cephes ~1e-15 absolute).
-#: ``_root_settled`` infers a count's root exit only where a neighbour's margin exceeds twice this.
+#: Floor of the gap between the replay's computed root tails and reachable bound and their exact
+#: values: a few roundings of arguments below 1e3 through ``ndtr`` (derivative at most one). A
+#: point-mass arm's tails use the guarded primitives, whose error grows with the arm, so
+#: `_root_settled` raises this to the decision's margin and infers a root exit only beyond twice it.
 _ROOT_ROUNDING = 5e-11
 
 
@@ -1167,7 +1245,7 @@ def _root_settled(
     lo, hi = groups.j0, groups.j1
     rows = np.arange(count)
     plus = groups.kind == 0
-    need = 2.0 * _ROOT_ROUNDING
+    need = 2.0 * max(_ROOT_ROUNDING, _rr._eps_margin(1, decision.n_c, decision.n_t))
 
     def edge(which: int, upper: np.ndarray) -> np.ndarray:
         """Per group, the evaluated count nearest the other end at which
@@ -1204,63 +1282,181 @@ def _root_settled(
 
 @dataclass(frozen=True, slots=True)
 class _Window:
-    """Outer count window of ``Bin(n, p)`` with its PMF and measured omitted mass."""
+    """Outer count window of ``Bin(n, p)`` with its PMF and an upper bound on its omitted mass.
+    ``error`` is the relative error allowance of every weight (zero for the point mass of a
+    rate of zero or one)."""
 
     lo: int
     hi: int
     omitted: float
     weights: np.ndarray
+    error: float
 
     @property
     def size(self) -> int:
         return self.hi - self.lo + 1
 
 
-def _window(n: int, p: float) -> _Window:
+def _window_bounds(n: int, p: float) -> tuple[int, int]:
     if p <= 0.0:
-        return _Window(0, 0, 0.0, np.ones(1))
+        return 0, 0
     if p >= 1.0:
-        return _Window(n, n, 0.0, np.ones(1))
-    lo = max(0, int(_binom.ppf(_OUTER_TAIL, n, p)))
-    hi = min(n, int(_binom.isf(_OUTER_TAIL, n, p)))
-    below = float(_bdtr(lo - 1, n, p)) if lo > 0 else 0.0
-    above = float(_bdtrc(hi, n, p)) if hi < n else 0.0
+        return n, n
+    return max(0, int(_binom.ppf(_OUTER_TAIL, n, p))), min(n, int(_binom.isf(_OUTER_TAIL, n, p)))
+
+
+def _window(n: int, p: float) -> _Window:
+    lo, hi = _window_bounds(n, p)
+    if p <= 0.0 or p >= 1.0:
+        return _Window(lo, hi, 0.0, np.ones(1), 0.0)
+    below = float(_rr._fast_binom_cdf(np.asarray(lo - 1), n, p)) if lo > 0 else 0.0
+    above = float(_rr._fast_binom_sf(np.asarray(hi), n, p)) if hi < n else 0.0
     weights = _rr._fast_binom_pmf(np.arange(lo, hi + 1), n, p)
-    return _Window(lo, hi, below + above, weights)
+    error = _allowance(n)
+    # The two omitted tails are SciPy cdf and sf values and their sum rounds once.
+    omitted = _up((below + above) * _inflation(error, _UNIT_ROUNDOFF))
+    return _Window(lo, hi, omitted, weights, error)
 
 
-def null_cells(decision: BinomialDecision, p_c: float) -> int:
-    """Retained (control, treatment) cells of the geometry at the null rate."""
-    p_null = min(1.0, decision.null_ratio * p_c)
-    return _window(decision.n_c, p_c).size * _window(decision.n_t, p_null).size
+def solver_floor() -> float:
+    """The nuisance budget below which the runtime's Clopper-Pearson endpoint solver refuses."""
+    return _rr._CP_BETA_FLOOR
 
 
-def route_for(decision: BinomialDecision, p_c: float) -> Route:
-    """Deterministic route: exact within the cell budget, else approximate.
+def solver_refuses(decision: BinomialDecision) -> bool:
+    """Whether the nuisance budget is below `solver_floor`, which refuses the control arm's
+    Clopper-Pearson interval at every count once it has two or more units (only ``n = 1`` has
+    closed-form endpoints)."""
+    return decision.beta < solver_floor() and decision.n_c > 1
 
-    Arms above the runtime's ceiling refuse every count pair, so their power
-    is exactly zero whatever the budget."""
-    if decision.n_c > _rr.MAX_ARM_SIZE or decision.n_t > _rr.MAX_ARM_SIZE:
-        return "exact"
-    return "exact" if null_cells(decision, p_c) <= EXACT_CELL_BUDGET else "approximate"
+
+def tail_margin(decision: BinomialDecision) -> float:
+    """The float margin every certified tail of this decision carries (`binomial_rr._eps_margin`
+    at one summation term), which `refused` compares with what the tail level leaves."""
+    return _rr._eps_margin(1, decision.n_c, decision.n_t)
+
+
+def margin_dominates(decision: BinomialDecision) -> bool:
+    """Whether `tail_margin` reaches what the tail level leaves after the nuisance budget
+    (`binomial_rr.margin_dominates_tail`): then no tail the runtime evaluates can fall below the
+    level, and it decides a count pair only on the structure of the nuisance domain
+    (`structural_floor`), refusing every other."""
+    return _rr.margin_dominates_tail(decision.tail_alpha, decision.beta, decision.n_c, decision.n_t)
+
+
+def structural_floor(decision: BinomialDecision) -> int | None:
+    """The smallest control count whose minus certificate rejects the null on the nuisance domain
+    alone (`binomial_rr.structural_rejection`: the domain is empty, so the p-value is ``beta``
+    with no tail evaluated), or ``None`` when no count does: a "greater" decision, a null ratio
+    at most one, or arms too small for the control arm's Clopper-Pearson lower bound to pass
+    ``1 / null_ratio``. The bound is nondecreasing in the count, so every count from the floor on
+    is structural. ``None`` too when the solver refuses the budget, which has no bound to pass."""
+    if (
+        "minus" not in decision.kinds
+        or decision.null_ratio <= 0.0
+        or solver_refuses(decision)
+        or max(decision.n_c, decision.n_t) > _rr.FINITE_SAMPLE_MAX_ARM_SIZE
+    ):
+        return None
+
+    def structural(x_c: int) -> bool:
+        return _rr.structural_rejection(
+            decision.alternative, decision.null_ratio, x_c, decision.n_c, decision.beta
+        )
+
+    if not structural(decision.n_c):
+        return None
+    lo, hi = 0, decision.n_c  # a zero count's lower bound is zero: never structural
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if structural(mid):
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
+def refused(decision: BinomialDecision) -> bool:
+    """Whether the runtime refuses every count pair of this decision, so none rejects: an arm
+    above the finite-sample ceiling, a nuisance budget below the solver's floor, or a tail
+    level the float margin dominates (`margin_dominates`) with no control count that rejects
+    the null on the nuisance domain alone (`structural_floor`). The runtime applies the same
+    rule to each count pair in `confidence_interval`."""
+    if max(decision.n_c, decision.n_t) > _rr.FINITE_SAMPLE_MAX_ARM_SIZE or solver_refuses(decision):
+        return True
+    return margin_dominates(decision) and structural_floor(decision) is None
+
+
+def window_decided(decision: BinomialDecision, p_c: float) -> bool:
+    """Whether the runtime decides every count pair of the control window at ``p_c``, the rows
+    every evaluation of a plan at that rate integrates: always while the margin leaves room;
+    once it dominates, only when the window starts at or above `structural_floor`, so the
+    count pairs the runtime refuses carry at most the window's omitted mass, which the
+    enclosure already holds. A plan whose window holds a refused count is refused, not planned
+    with those pairs as non-rejections."""
+    if not margin_dominates(decision):
+        return True
+    floor = structural_floor(decision)
+    return floor is not None and _window_bounds(decision.n_c, p_c)[0] >= floor
+
+
+def window_cells(decision: BinomialDecision, p_c: float, p_t: float | None = None) -> int:
+    """Retained (control, treatment) cells of the windows at control rate ``p_c`` and treatment
+    rate ``p_t`` (the null rate when omitted): the rectangle an evaluation at those rates
+    classifies. It grows with the arm sizes up to the integer edges of its windows."""
+    lo_c, hi_c = _window_bounds(decision.n_c, p_c)
+    rate = min(1.0, decision.null_ratio * p_c) if p_t is None else p_t
+    lo_t, hi_t = _window_bounds(decision.n_t, rate)
+    return (hi_c - lo_c + 1) * (hi_t - lo_t + 1)
+
+
+class ReplayBoundExceeded(Exception):
+    """An evaluation would leave a geometry storing ``cells`` count cells, beyond its bound.
+    ``p_t`` is the evaluation's treatment rate, when it has one."""
+
+    def __init__(self, cells: int, p_t: float | None = None) -> None:
+        super().__init__(cells)
+        self.cells = cells
+        self.p_t = p_t
+
+
+def route_for(cells: int) -> Route:
+    """Deterministic route of a geometry with ``cells`` retained cells at the null rate: exact
+    within the cell budget, else approximate."""
+    return "exact" if cells <= EXACT_CELL_BUDGET else "approximate"
 
 
 @dataclass(frozen=True, slots=True)
 class BinomialPower:
-    """Rejection probability at one alternative, split into the part from
-    plus-direction rejections (nondecreasing in the treatment rate) and the
+    """Rejection mass at one alternative of the decision set a geometry replays, split into the
+    part from plus-direction rejections (nondecreasing in the treatment rate) and the
     remainder from minus-direction rejections (nonincreasing in it).
-    ``power`` sums the retained cells; ``omitted`` bounds what the windows
-    left out, so the runtime's rejection probability lies in ``[power, power
-    + omitted]``."""
+    ``power`` sums the retained cells in float64; ``omitted`` bounds what the windows left out
+    and ``inflation`` (at least one) the numerical error of that sum, so the mass lies in
+    ``[lower, upper]``: the runtime's rejection probability for an ``exact`` geometry, the
+    mass of the Normal-tail decision model for an ``approximate`` one."""
 
     plus: float
     minus: float
     omitted: float
+    inflation: float
 
     @property
     def power(self) -> float:
         return min(1.0, self.plus + self.minus)
+
+    @property
+    def lower(self) -> float:
+        """No larger than the exact retained mass of the replayed decision set (the runtime's
+        rejection probability on the ``exact`` route): what the retained cells certify."""
+        return max(0.0, _down(self.power / self.inflation))
+
+    @property
+    def upper(self) -> float:
+        """No smaller than the replayed decision set's rejection probability (the runtime's on
+        the ``exact`` route): the exact retained mass at the most the computed sum allows, plus
+        the omitted mass."""
+        return min(1.0, _up(_up(self.power * self.inflation) + self.omitted))
 
 
 @dataclass(slots=True)
@@ -1284,23 +1480,103 @@ class RejectionGeometry:
     Control counts ``[x0, x0 + rows)`` index every block; treatment counts
     are stored in disjoint column segments, merged whenever a request
     overlaps or touches them, so distant windows (a rate near one, say)
-    never force the counts between them to be classified.
+    never force the counts between them to be classified. The stored cells
+    (every row by every segment's columns) never exceed ``max_cells``: a request
+    that would exceed it raises `ReplayBoundExceeded` before anything is allocated.
+    A geometry shared by several solves (a power curve's rows, a supplied effect and its
+    companion effect search) tracks each solve's own footprint, the rows by the treatment
+    segments its requests cover, apart from the cells earlier solves left, which are only a
+    cache. The bound is on the footprint, so a solve is refused exactly when a fresh geometry
+    would refuse it; when the stored cells (footprint and cache) would exceed it while the
+    footprint fits, the cache is dropped and the footprint kept. The decision is one the
+    runtime decides (`refused` is false): a refused decision has no rejection set to classify.
+    Under a dominating float margin every control window evaluated must start at or above
+    `structural_floor` (`window_decided`): the runtime refuses the counts below it.
     """
 
-    def __init__(self, decision: BinomialDecision, route: Route) -> None:
+    def __init__(
+        self, decision: BinomialDecision, route: Route, max_cells: int = PLANNING_CELL_CEILING
+    ) -> None:
         self.decision = decision
         self.route = route
-        self.refused = decision.n_c > _rr.MAX_ARM_SIZE or decision.n_t > _rr.MAX_ARM_SIZE
+        self.max_cells = max_cells
+        assert not refused(decision), "a decision the runtime refuses has no rejection geometry"
         self.x0 = 0
         self.rows = 0
         self.segments: list[_Segment] = []
         # Effect searches already solved on this geometry, keyed by their
         # control rate, compliance, and target: a curve's companion effects.
         self.effects: dict[tuple[float, float, float], object] = {}
+        # The current solve's rows and its treatment spans, merged as the segments are.
+        self._footprint: tuple[int, int, list[tuple[int, int]]] | None = None
+
+    def begin_solve(self) -> None:
+        """Start a solve: the cells stored so far become a cache, outside its footprint."""
+        self._footprint = None
+
+    def _footprint_after(
+        self, x_lo: int, x_hi: int, j_lo: int, j_hi: int
+    ) -> tuple[int, int, list[tuple[int, int]]]:
+        """The solve's footprint once ``[x_lo, x_hi] x [j_lo, j_hi]`` is covered."""
+        rows_lo, rows_hi, spans = self._footprint or (x_lo, x_hi, [])
+        touching = [s for s in spans if s[0] <= j_hi + 1 and s[1] >= j_lo - 1]
+        merged = (min([j_lo, *(s[0] for s in touching)]), max([j_hi, *(s[1] for s in touching)]))
+        apart = [s for s in spans if s not in touching]
+        return min(rows_lo, x_lo), max(rows_hi, x_hi), sorted([*apart, merged])
+
+    @staticmethod
+    def _footprint_cells(footprint: tuple[int, int, list[tuple[int, int]]]) -> int:
+        rows_lo, rows_hi, spans = footprint
+        return (rows_hi - rows_lo + 1) * sum(b - a + 1 for a, b in spans)
+
+    def _keep_footprint(self) -> None:
+        """Drop every stored cell outside the solve's footprint (the cache of earlier solves)."""
+        if self._footprint is None:
+            self.x0, self.rows, self.segments = 0, 0, []
+            return
+        rows_lo, rows_hi, spans = self._footprint
+        kept: list[_Segment] = []
+        for first, last in spans:
+            shape = (rows_hi - rows_lo + 1, last - first + 1)
+            segment = _Segment(
+                first, np.zeros(shape, bool), np.zeros(shape, bool), np.zeros(shape, bool)
+            )
+            top, bottom = max(rows_lo, self.x0), min(rows_hi, self.x0 + self.rows - 1)
+            for old in self.segments:
+                left, right = max(first, old.j0), min(last, old.j1)
+                if left > right or top > bottom:
+                    continue
+                new_rows = slice(top - rows_lo, bottom - rows_lo + 1)
+                new_cols = slice(left - first, right - first + 1)
+                old_rows = slice(top - self.x0, bottom - self.x0 + 1)
+                old_cols = slice(left - old.j0, right - old.j0 + 1)
+                segment.plus[new_rows, new_cols] = old.plus[old_rows, old_cols]
+                segment.minus[new_rows, new_cols] = old.minus[old_rows, old_cols]
+                segment.known[new_rows, new_cols] = old.known[old_rows, old_cols]
+            kept.append(segment)
+        self.x0, self.rows, self.segments = rows_lo, rows_hi - rows_lo + 1, kept
+
+    def _row_span(self, x_lo: int, x_hi: int) -> tuple[int, int]:
+        """First and last control count of the stored rows extended to ``[x_lo, x_hi]``."""
+        if not self.rows:
+            return x_lo, x_hi
+        return min(self.x0, x_lo), max(self.x0 + self.rows - 1, x_hi)
+
+    def _touching(self, j_lo: int, j_hi: int) -> list[_Segment]:
+        """The segments that overlap or touch ``[j_lo, j_hi]``."""
+        return [s for s in self.segments if s.j0 <= j_hi + 1 and s.j1 >= j_lo - 1]
+
+    def _stored_after(self, x_lo: int, x_hi: int, j_lo: int, j_hi: int) -> int:
+        """Cells stored once ``[x_lo, x_hi] x [j_lo, j_hi]`` is covered: every segment spans all
+        rows, and the one covering the request absorbs the segments it touches."""
+        x0, x1 = self._row_span(x_lo, x_hi)
+        touching = self._touching(j_lo, j_hi)
+        merged = max([j_hi, *(s.j1 for s in touching)]) - min([j_lo, *(s.j0 for s in touching)]) + 1
+        apart = sum(s.j1 - s.j0 + 1 for s in self.segments if all(s is not t for t in touching))
+        return (x1 - x0 + 1) * (apart + merged)
 
     def _cover_rows(self, x_lo: int, x_hi: int) -> None:
-        x0 = min(self.x0, x_lo) if self.rows else x_lo
-        x1 = max(self.x0 + self.rows - 1, x_hi) if self.rows else x_hi
+        x0, x1 = self._row_span(x_lo, x_hi)
         if (x0, x1 - x0 + 1) == (self.x0, self.rows):
             return
         top = self.x0 - x0
@@ -1315,7 +1591,7 @@ class RejectionGeometry:
     def _merged(self, j_lo: int, j_hi: int) -> _Segment:
         """The one segment covering ``[j_lo, j_hi]``, absorbing every
         segment that overlaps or touches it."""
-        touching = [s for s in self.segments if s.j0 <= j_hi + 1 and s.j1 >= j_lo - 1]
+        touching = self._touching(j_lo, j_hi)
         if len(touching) == 1 and touching[0].j0 <= j_lo and touching[0].j1 >= j_hi:
             return touching[0]
         j0 = min([j_lo, *(s.j0 for s in touching)])
@@ -1341,8 +1617,13 @@ class RejectionGeometry:
 
     def ensure(self, x_lo: int, x_hi: int, j_lo: int, j_hi: int) -> None:
         """Classify every cell of ``[x_lo, x_hi] x [j_lo, j_hi]`` not yet known."""
-        if self.refused:
-            return
+        footprint = self._footprint_after(x_lo, x_hi, j_lo, j_hi)
+        needed = self._footprint_cells(footprint)
+        if needed > self.max_cells:
+            raise ReplayBoundExceeded(needed)
+        if self._stored_after(x_lo, x_hi, j_lo, j_hi) > self.max_cells:
+            self._keep_footprint()
+        self._footprint = footprint
         self._cover_rows(x_lo, x_hi)
         segment = self._merged(j_lo, j_hi)
         rows = slice(x_lo - self.x0, x_hi - self.x0 + 1)
@@ -1367,9 +1648,6 @@ class RejectionGeometry:
 
     def cells(self, x_lo: int, x_hi: int, j_lo: int, j_hi: int) -> tuple[np.ndarray, np.ndarray]:
         """Plus and minus rejection masks over ``[x_lo, x_hi] x [j_lo, j_hi]``."""
-        if self.refused:
-            shape = (x_hi - x_lo + 1, j_hi - j_lo + 1)
-            return np.zeros(shape, bool), np.zeros(shape, bool)
         self.ensure(x_lo, x_hi, j_lo, j_hi)
         segment = self._containing(j_lo, j_hi)
         assert segment is not None
@@ -1382,72 +1660,97 @@ class RejectionGeometry:
         decision = self.decision
         wc = _window(decision.n_c, p_c)
         wt = _window(decision.n_t, p_t)
-        plus, minus = self.cells(wc.lo, wc.hi, wt.lo, wt.hi)
+        try:
+            plus, minus = self.cells(wc.lo, wc.hi, wt.lo, wt.hi)
+        except ReplayBoundExceeded as exceeded:
+            raise ReplayBoundExceeded(exceeded.cells, p_t) from None
+        # The matrix products sum over the control window, then over the treatment window.
+        inflation = _inflation(
+            wc.error, wt.error, _compounded(wc.size), _compounded(wt.size), _UNIT_ROUNDOFF
+        )
         return BinomialPower(
             float(wc.weights @ plus @ wt.weights),
             float(wc.weights @ (minus & ~plus) @ wt.weights),
-            wc.omitted + wt.omitted,
+            _up(wc.omitted + wt.omitted),
+            inflation,
         )
 
-    def closure_bound(self, p_c: float, p_lo: float, p_hi: float) -> float:
-        """Upper bound on ``evaluate(p_c, p).power`` for every treatment rate
-        ``p`` in ``[p_lo, p_hi]``.
+    def point_upper(self, p_c: float, p_lo: float, p_hi: float, bound: float) -> float:
+        """Enlarge a probability bound to cover every computed point in the interval.
 
-        Every such evaluation sums treatment counts inside ``[L, H]``, the
-        lower edge of ``p_lo``'s window and the upper edge of ``p_hi``'s.
-        Within it each control row's rejections lie inside the upper-set
-        closure of its plus rejections, ``j >= t``, and the lower-set closure
-        of its minus rejections, ``j <= s``. ``P(t <= X <= H)`` has derivative
-        ``n (b(t - 1) - b(H))`` in the rate (``b`` the ``Bin(n - 1)`` PMF),
-        whose sign changes at most once, upward to downward, so it is
-        nondecreasing on the interval when ``b(t - 1) >= b(H)`` at ``p_hi``;
-        symmetrically ``P(L <= X <= s)`` is nonincreasing when ``b(s) >=
-        b(L - 1)`` at ``p_lo``. A row failing its check, or with unclassified
-        counts in ``[L, H]``, is bounded by its untruncated tail instead.
+        Endpoint windows bound intervening summation lengths. Their PMF and
+        nonnegative summation allowances bound the floating rejection mass,
+        without assuming it varies monotonically.
+        """
+        wc = _window(self.decision.n_c, p_c)
+        low = _window_bounds(self.decision.n_t, p_lo)[0]
+        high = _window_bounds(self.decision.n_t, p_hi)[1]
+        inflation = _inflation(
+            wc.error,
+            _allowance(self.decision.n_t),
+            _compounded(wc.size),
+            _compounded(high - low + 1),
+            _UNIT_ROUNDOFF,
+        )
+        return min(1.0, _up(bound * inflation))
+
+    def closure_bound(self, p_c: float, p_lo: float, p_hi: float) -> float:
+        """Upper bound on the replayed decision set's rejection probability (the runtime's on the
+        ``exact`` route) at control rate ``p_c`` and every
+        treatment rate ``p`` in ``[p_lo, p_hi]``, numerical error included.
+
+        Every evaluation in the interval classifies treatment counts inside ``[L, H]``, the
+        lower edge of ``p_lo``'s window to the upper edge of ``p_hi``'s. A control row rejects
+        at those counts only from its first plus rejection ``t`` on and up to its last minus
+        rejection ``s`` (``t = H + 1`` and ``s = L - 1`` when it has none; a row with unclassified
+        counts may reject at every one). A binomial tail is nondecreasing in its rate, so
+        ``P(X >= t)`` at ``p_hi`` bounds the plus rejections at every ``p`` and ``P(X <= s)`` at
+        ``p_lo`` the minus ones. No assumption on which side of ``[L, H]`` a rejection outside it
+        falls is needed once the mass below ``L`` at ``p_lo`` and above ``H`` at ``p_hi`` is added
+        to every row. A row's bound is that sum, at most one; control counts outside the window
+        add its omitted mass. The bound reads only what earlier evaluations classified and is a
+        valid bound on the unclassified rest.
         """
         decision = self.decision
         n_t = decision.n_t
         wc = _window(decision.n_c, p_c)
-        if self.refused:
-            return 0.0
-        low, high = _window(n_t, p_lo).lo, _window(n_t, p_hi).hi
+        low, high = _window_bounds(n_t, p_lo)[0], _window_bounds(n_t, p_hi)[1]
         rows = np.arange(wc.lo, wc.hi + 1) - self.x0
-        # Rows without classified cells across [low, high]: every count may reject.
+        # A row without classified counts across [low, high] may reject at every one.
         t = np.full(rows.size, low, np.int64)
         s = np.full(rows.size, high, np.int64)
-        covered = np.zeros(rows.size, bool)
         segment = self._containing(low, high)
         inside = (rows >= 0) & (rows < self.rows)
         if segment is not None and inside.any():
             r = rows[inside]
             cols = slice(low - segment.j0, high - segment.j0 + 1)
             j = np.arange(low, high + 1)
-            width = j.size
             plus = segment.plus[r, cols]
             minus = segment.minus[r, cols]
             known = segment.known[r, cols].all(axis=1)
-            first = np.where(plus.any(axis=1), j[np.argmax(plus, axis=1)], high + 1)
-            last_index = width - 1 - np.argmax(minus[:, ::-1], axis=1)
+            first_index = np.argmax(plus, axis=1)
+            first = np.where(plus.any(axis=1), j[first_index], high + 1)
+            last_index = j.size - 1 - np.argmax(minus[:, ::-1], axis=1)
             last = np.where(minus.any(axis=1), j[last_index], low - 1)
-            covered[inside] = known
             t[inside] = np.where(known, first, low)
             s[inside] = np.where(known, last, high)
         if "plus" not in decision.kinds:
-            t[:] = high + 1
+            t[:] = n_t + 1
         if "minus" not in decision.kinds:
-            s[:] = low - 1
+            s[:] = -1
         with np.errstate(invalid="ignore"):
-            tail_up = np.where(t <= 0, 1.0, _bdtrc(t - 1, n_t, p_hi))
-            inner_up = tail_up - (_bdtrc(high, n_t, p_hi) if high < n_t else 0.0)
-            rising = _rr._fast_binom_pmf(t - 1, n_t - 1, p_hi) >= _rr._fast_binom_pmf(
-                np.array(high), n_t - 1, p_hi
-            )
-            up = np.where(t > high, 0.0, np.where(covered & rising, inner_up, tail_up))
-            tail_down = np.where(s >= n_t, 1.0, _bdtr(s, n_t, p_lo))
-            inner_down = tail_down - (_bdtr(low - 1, n_t, p_lo) if low > 0 else 0.0)
-            falling = _rr._fast_binom_pmf(s, n_t - 1, p_lo) >= _rr._fast_binom_pmf(
-                np.array(low - 1), n_t - 1, p_lo
-            )
-            down = np.where(s < low, 0.0, np.where(covered & falling, inner_down, tail_down))
-        rows_bound = np.minimum(1.0, np.maximum(up, 0.0) + np.maximum(down, 0.0))
-        return min(1.0, float(wc.weights @ rows_bound))
+            up = _rr._fast_binom_sf(t - 1, n_t, p_hi)
+            down = _rr._fast_binom_cdf(s, n_t, p_lo)
+            below = float(_rr._fast_binom_cdf(np.asarray(low - 1), n_t, p_lo))
+            above = float(_rr._fast_binom_sf(np.asarray(high), n_t, p_hi))
+        rows_bound = np.minimum(1.0, up + down + (below + above))
+        # Every term is a SciPy tail within the allowance; a row's sum and the edge sum round,
+        # then the dot product over the control window.
+        inflation = _inflation(
+            wc.error,
+            _allowance(n_t),
+            _UNIT_ROUNDOFF,
+            _UNIT_ROUNDOFF,
+            _compounded(wc.size),
+        )
+        return min(1.0, _up(_up(float(wc.weights @ rows_bound) * inflation) + wc.omitted))

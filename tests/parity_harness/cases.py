@@ -6900,6 +6900,172 @@ def _encouragement_multi_metric_breakout_case() -> ParityCase:
     )
 
 
+# A control arm above the 4,000,000 units the exact binomial route once refused, against a
+# small treatment arm: from there `armstats.binary_counts` checks the Bernoulli second moment
+# against the rounding bound of the arm's units, and each ingress builds that moment its own
+# way. One large arm keeps the build within bounded memory and time.
+_CEILING_CONTROL_UNITS = 4_000_100
+_CEILING_TREATMENT_UNITS = 4_000
+_CEILING_CONTROL_CONVERSIONS = 4_000
+_CEILING_TREATMENT_CONVERSIONS = 80
+
+_CEILING_DEFS_YAML = """
+fact_sources:
+  - name: events
+    sql: SELECT * FROM events
+    timestamp_column: ts
+    entities: [user_id]
+    facts:
+      - name: converted
+        column: value
+      - name: enrolled
+        column: null
+exposures:
+  - name: assignment
+    fact: enrolled
+metrics:
+  - name: conversion
+    type: conversion
+    entity: user_id
+    fact: converted
+    window_days: 7
+experiments:
+  - name: exp
+    exposure: assignment
+    unit: user_id
+    start: 2024-01-01T00:00:00
+    end: 2024-01-20T00:00:00
+    control_group: control
+    plan: {secondaries: [conversion]}
+"""
+
+
+def _ceiling_scale_connection() -> Any:
+    """DuckDB holding one enrollment per unit and one conversion event per converter, generated
+    inside the database so no row exists in Python. A memory limit and a private spill directory
+    bound a table this size; a conversion event past the window pads the data's freshness."""
+    import atexit
+
+    import ibis
+
+    spill = tempfile.TemporaryDirectory(prefix="increment-parity-spill-")
+    atexit.register(spill.cleanup)
+    con = ibis.duckdb.connect(memory_limit="6GB", threads=2, temp_directory=spill.name)
+    n_c, n_t = _CEILING_CONTROL_UNITS, _CEILING_TREATMENT_UNITS
+    c_conv, t_conv = _CEILING_CONTROL_CONVERSIONS, _CEILING_TREATMENT_CONVERSIONS
+    con.raw_sql(
+        f"""
+        CREATE TABLE events AS
+        SELECT i AS user_id, 'exp' AS experiment_id, 'control' AS group_id,
+               TIMESTAMP '2024-01-02 00:00:00' AS ts, 'enrolled' AS event,
+               CAST(NULL AS DOUBLE) AS value
+        FROM range({n_c}) t(i)
+        UNION ALL
+        SELECT i + {n_c}, 'exp', 'treatment', TIMESTAMP '2024-01-02 00:00:00', 'enrolled',
+               CAST(NULL AS DOUBLE)
+        FROM range({n_t}) t(i)
+        UNION ALL
+        SELECT i, 'exp', 'control', TIMESTAMP '2024-01-03 00:00:00', 'converted', 1.0
+        FROM range({c_conv}) t(i)
+        UNION ALL
+        SELECT i + {n_c}, 'exp', 'treatment', TIMESTAMP '2024-01-03 00:00:00', 'converted', 1.0
+        FROM range({t_conv}) t(i)
+        UNION ALL
+        SELECT 0, 'exp', 'control', TIMESTAMP '2024-01-19 00:00:00', 'converted', 0.0
+        """
+    )
+    return con
+
+
+def _ceiling_scale_frame() -> Any:
+    import numpy as np
+    import pyarrow as pa
+
+    n_c, n_t = _CEILING_CONTROL_UNITS, _CEILING_TREATMENT_UNITS
+    units = np.arange(n_c + n_t, dtype=np.int64)
+    converted = np.zeros(units.size, np.int8)
+    converted[:_CEILING_CONTROL_CONVERSIONS] = 1
+    converted[n_c : n_c + _CEILING_TREATMENT_CONVERSIONS] = 1
+    group = pa.array(np.where(units < n_c, "control", "treatment"))
+    return pa.table({"user_id": units, "group_id": group, "conversion": converted})
+
+
+def _exact_binomial_beyond_the_former_arm_ceiling_case() -> ParityCase:
+    """The exact binomial route on a control arm of 4,000,100 units reaches the same counts, and
+    so the same interval, through every ingress that builds its moments differently: a
+    warehouse aggregation (definitions, unit-day artifact), a per-unit frame (summary, panel)
+    and an exported moments cube."""
+    import numpy as np
+    import pyarrow as pa
+    import yaml
+
+    metric = MetricSpec(name="conversion", type="conversion")
+    plan = AnalysisPlan(secondaries=["conversion"])
+    definition = yaml.safe_load(_CEILING_DEFS_YAML)
+    definition["experiments"][0]["plan"] = plan.model_dump(mode="json")
+    definitions = Definitions.model_validate(definition)
+
+    def build_definitions() -> Analysis:
+        con = _ceiling_scale_connection()
+        return _track_connection(make_analysis(con, definitions, experiment="exp"), con)
+
+    def build_artifact() -> Analysis:
+        con = _ceiling_scale_connection()
+        return _publish_and_adopt(con, make_analysis(con, definitions, experiment="exp"))
+
+    def build_unit_summary() -> Analysis:
+        return Analysis.from_unit_summary(
+            _ceiling_scale_frame(),
+            unit="user_id",
+            group="group_id",
+            control="control",
+            metrics=[metric],
+            plan=plan,
+        )
+
+    def build_unit_panel() -> Analysis:
+        frame = _ceiling_scale_frame()
+        days = np.full(frame.num_rows, (dt.date(2024, 1, 3) - dt.date(1970, 1, 1)).days, np.int32)
+        panel = frame.append_column("date", pa.array(days, pa.date32()))
+        panel = panel.append_column("enrolled_on", pa.array(days - 1, pa.date32()))
+        return Analysis.from_unit_panel(
+            panel,
+            unit="user_id",
+            group="group_id",
+            date="date",
+            exposure_date="enrolled_on",
+            control="control",
+            metrics=[metric],
+            plan=plan,
+        )
+
+    def build_moments() -> Analysis:
+        return _export_and_replay(build_unit_summary(), [metric])
+
+    def probe(results: Any) -> None:
+        (row,) = [r for r in results if r.metric == "conversion"]
+        assert row.reference_kind == "binomial"
+        assert row.binomial_set is not None
+        counts = (row.binomial_set.x_c, row.binomial_set.n_c)
+        assert counts == (_CEILING_CONTROL_CONVERSIONS, _CEILING_CONTROL_UNITS)
+        counts = (row.binomial_set.x_t, row.binomial_set.n_t)
+        assert counts == (_CEILING_TREATMENT_CONVERSIONS, _CEILING_TREATMENT_UNITS)
+
+    return ParityCase(
+        id="exact_binomial_beyond_the_former_arm_ceiling",
+        build={
+            "from_definitions": build_definitions,
+            "from_unit_day_artifact": build_artifact,
+            "from_unit_summary": build_unit_summary,
+            "from_unit_panel": build_unit_panel,
+            "from_moments": build_moments,
+        },
+        waive=_SWITCHBACK_WAIVE,
+        readout_probe=probe,
+        slow=True,
+    )
+
+
 PARITY_CASES: tuple[ParityCase, ...] = (
     _encouragement_multi_metric_breakout_case(),
     _inferred_null_metric_case(),
@@ -7000,4 +7166,5 @@ PARITY_CASES: tuple[ParityCase, ...] = (
     _quantile_ties_case(),
     _quantile_ties_case(family=True),
     _quantile_ties_case(unselected_conversion_sibling=True),
+    _exact_binomial_beyond_the_former_arm_ceiling_case(),
 )
