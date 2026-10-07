@@ -85,6 +85,7 @@ from increment.estimation.family import (
 )
 from increment.estimation.inference import LiftGuardError, Prior
 from increment.estimation.meta import ESTIMATION_META_ALPHA_TOO_SMALL
+from increment.estimation.priors import MixturePrior, StudentTPrior
 from increment.estimation.results import (
     BinomialConfidenceSet,
     Estimate,
@@ -114,6 +115,7 @@ from increment.sequential_state import SequentialSnapshot, require_public_laws, 
 
 if TYPE_CHECKING:
     from increment.decision import CompiledDecisionPlan, DecisionComputation
+    from increment.estimation.readout_types import ReadoutMetadata
 
 Renderer = Callable[..., str]
 
@@ -575,6 +577,8 @@ class BreakoutEstimate(_RowIdentity):
     rather than constructing a plain ``list[BreakoutEstimate]``.
     """
 
+    analysis_population: Literal["assigned", "triggered"] = "assigned"
+
     null_lift: float = Field(default=0.0, allow_inf_nan=False)
     dof: float | None = None
     reference_kind: Literal["normal", "t", "sequential", "binomial"] = "normal"
@@ -955,6 +959,11 @@ def _append_frame_value(
         data[name].append(None)
     elif isinstance(value, date) and not isinstance(value, datetime):
         data[name].append(datetime.combine(value, datetime.min.time()))
+    elif isinstance(value, Mapping):
+        from increment._canonical import canonical_json_bytes
+        from increment.estimation.readout_types import thaw
+
+        data[name].append(canonical_json_bytes(thaw(value)).decode())
     elif isinstance(value, BaseModel):
         data[name].append(repr(value))
     elif isinstance(value, Sequence) and not isinstance(value, str):
@@ -1004,6 +1013,8 @@ def _copy_common_fields(source: LiftEstimate, /, **overrides: Any) -> dict[str, 
         "abs_reference_df": source.abs_reference_df,
         "abs_alpha": source.abs_alpha,
     }
+    copied.update({name: getattr(source, name) for name in _RowIdentity.model_fields})
+    copied["analysis_population"] = source.analysis_population
     copied.update(overrides)
     return copied
 
@@ -1211,13 +1222,78 @@ class EstimateList[M: BaseModel](list[M]):
     preserve the subclass; a list comprehension over the results does
     not - use :func:`to_frame` directly with an explicit ``model=`` for
     that case.
+
+    Scope metadata is bound at construction and cannot be replaced or removed.
     """
 
     _model: ClassVar[type[BaseModel]]
 
+    def __init__(
+        self,
+        rows=(),
+        *,
+        metadata: ReadoutMetadata | None = None,
+        source=None,
+        sequential_snapshot=None,
+    ):
+        from increment.estimation.readout_types import validate_collection
+
+        super().__init__(rows)
+        self._metadata = metadata
+        self.source = source
+        self.sequential_snapshot = sequential_snapshot
+        validate_collection(self, metadata)
+
+    @property
+    def metadata(self) -> ReadoutMetadata | None:
+        return self._metadata
+
+    @metadata.setter
+    def metadata(self, value) -> None:
+        self._mutation("metadata_set")
+
+    @metadata.deleter
+    def metadata(self) -> None:
+        self._mutation("metadata_delete")
+
+    def __reduce_ex__(self, protocol):
+        from increment.estimation.readout_types import _restore_collection
+
+        return _restore_collection, (
+            type(self),
+            tuple(self),
+            self.metadata,
+            self.source,
+            self.sequential_snapshot,
+        )
+
+    def model_dump_json(self):
+        from increment.estimation.readout_types import dump_collection
+
+        return dump_collection(self)
+
+    def filter(self, predicate):
+        from increment.estimation.readout_types import partial_metadata
+
+        rows = [row for row in self if predicate(row)]
+        return type(self)(
+            rows,
+            metadata=partial_metadata(self.metadata, rows, "filter"),
+            source=self.source,
+            sequential_snapshot=self.sequential_snapshot,
+        )
+
+    def concat(self, other):
+        from increment.estimation.readout_types import concat_collection
+
+        return concat_collection(self, other)
+
     def to_frame(self, backend: Backend = "pandas") -> IntoDataFrame:
         """Convert this list to a native ``backend`` frame - see :func:`to_frame`."""
-        return to_frame(self, model=self._model, backend=backend)
+        frame = nw.from_native(to_frame(self, model=self._model, backend=backend), eager_only=True)
+        return frame.with_columns(
+            nw.lit(None if self.metadata is None else self.metadata.partial).alias("view_partial")
+        ).to_native()
 
     @overload
     def __getitem__(self, key: SupportsIndex) -> M: ...
@@ -1226,11 +1302,63 @@ class EstimateList[M: BaseModel](list[M]):
     def __getitem__(self, key: SupportsIndex | slice) -> M | EstimateList[M]:
         result = super().__getitem__(key)
         if isinstance(key, slice):
-            return cast("EstimateList[M]", type(self)(cast("list[M]", result)))
+            from increment.estimation.readout_types import partial_metadata
+
+            return type(self)(
+                result,
+                metadata=partial_metadata(self.metadata, result, "slice"),
+                source=self.source,
+                sequential_snapshot=self.sequential_snapshot,
+            )
         return cast("M", result)
 
-    def __add__(self, other: list[M]) -> EstimateList[M]:
-        return cast("EstimateList[M]", type(self)([*self, *other]))
+    def __add__(self, other):
+        return self.concat(other)
+
+    def _mutation(self, operation):
+        from increment.estimation.readout_types import refuse_readout
+
+        refuse_readout(
+            "readout.collection.mutation_unsupported",
+            operation=operation,
+            model=type(self).__name__,
+        )
+
+    def append(self, value):
+        self._mutation("append")
+
+    def extend(self, values):
+        self._mutation("extend")
+
+    def insert(self, index, value):
+        self._mutation("insert")
+
+    def pop(self, index=-1):
+        self._mutation("pop")
+
+    def remove(self, value):
+        self._mutation("remove")
+
+    def clear(self):
+        self._mutation("clear")
+
+    def reverse(self):
+        self._mutation("reverse")
+
+    def sort(self, *args, **kwargs):
+        self._mutation("sort")
+
+    def __setitem__(self, key, value):
+        self._mutation("item_set")
+
+    def __delitem__(self, key):
+        self._mutation("item_delete")
+
+    def __iadd__(self, value):
+        self._mutation("iadd")
+
+    def __imul__(self, value):
+        self._mutation("imul")
 
 
 class DailyMetricValue(CodedModel, BaseModel):
@@ -1255,6 +1383,12 @@ class DailyMetricValue(CodedModel, BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    analysis_population: Literal["assigned", "triggered"] = "assigned"
+    source_snapshot_id: str | None = None
+    decision_scope_complete: bool | None = None
+    decision_scope_reason_code: str | None = None
+    decision_scope_reason_context: Mapping[str, object] | None = None
+
     ds: date
     metric: str
     group_id: str
@@ -1270,6 +1404,22 @@ class DailyMetricValue(CodedModel, BaseModel):
     def _value_or_unavailable(self):
         if (self.value is None) == (self.unavailable is None):
             _refuse("breakout.daily_metric.exactly_one_value")
+        if self.decision_scope_reason_context is not None:
+            from increment._canonical import canonical_json_bytes
+            from increment._immutable import _FrozenMapping
+
+            def freeze(value):
+                if isinstance(value, Mapping):
+                    frozen = _FrozenMapping({key: freeze(item) for key, item in value.items()})
+                    canonical_json_bytes(dict(frozen))
+                    return frozen
+                if isinstance(value, (tuple, list)):
+                    return tuple(freeze(item) for item in value)
+                return value
+
+            object.__setattr__(
+                self, "decision_scope_reason_context", freeze(self.decision_scope_reason_context)
+            )
         return self
 
 
@@ -1293,6 +1443,8 @@ class DailyLiftEstimate(_RowIdentity):
     otherwise. ``ds_basis`` - see :class:`DailyMetricValue`.
     """
 
+    analysis_population: Literal["assigned", "triggered"] = "assigned"
+    prior_spec: StudentTPrior | MixturePrior | None = None
     dof: float | None = None
     reference_kind: Literal["normal", "t", "sequential", "binomial"] = "normal"
     reference_df: float | None = None

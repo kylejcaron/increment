@@ -1214,7 +1214,7 @@ def test_load_explore_segments_filter_by_dimension_source_and_method_without_lea
         explore={
             **storefront.explore,
             key: DashboardExploreCapture.answered(
-                key, wanted + decoys, collection=BreakoutEstimates
+                key, BreakoutEstimates([*wanted, *decoys]), collection=BreakoutEstimates
             ),
         },
     )

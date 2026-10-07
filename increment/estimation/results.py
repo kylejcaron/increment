@@ -542,7 +542,7 @@ class _RowIdentity(CodedModel, BaseModel):
     field (e.g. `null_lift` on DailyLiftEstimate) must stay put.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, revalidate_instances="always")
 
     metric: str
     group_id: str
@@ -550,6 +550,95 @@ class _RowIdentity(CodedModel, BaseModel):
     method_role: Literal["decision", "sensitivity"]
     inference: str = "fixed"  # "fixed" | "always_valid" | "asymptotic_mean"
     alternative: Alternative = "two-sided"  # "two-sided" | "greater" | "less"
+
+    sampling_available: bool | None = None
+    sampling_reason_code: str | None = None
+    sampling_reason_context: Mapping[str, object] | None = None
+    posterior_available: bool | None = None
+    posterior_reason_code: str | None = None
+    posterior_reason_context: Mapping[str, object] | None = None
+    posterior_model: Literal["normal", "mixture"] | None = None
+    posterior_scale: Literal["log", "linear"] | None = None
+    posterior_estimate: float | None = None
+    posterior_lb: float | None = None
+    posterior_ub: float | None = None
+    posterior_level: float | None = None
+    posterior_alpha: float | None = None
+    posterior_latent_mean: float | None = None
+    posterior_latent_sd: float | None = None
+    posterior_prob_favorable: float | None = None
+    failure_code: str | None = None
+    failure_context: Mapping[str, object] | None = None
+    source_snapshot_id: str | None = None
+    decision_scope_complete: bool | None = None
+    decision_scope_reason_code: str | None = None
+    decision_scope_reason_context: Mapping[str, object] | None = None
+    family_id: str | None = None
+    multiplicity_status: (
+        Literal[
+            "declared_plan",
+            "unassigned_in_plan",
+            "undeclared_plan",
+            "exploratory_unadjusted",
+            "exploratory_family",
+        ]
+        | None
+    ) = None
+    weight_diagnostics_available: bool | None = None
+    weight_diagnostics_reason_code: str | None = None
+    weight_diagnostics_reason_context: Mapping[str, object] | None = None
+    weight_definition: str | None = None
+    weight_grain: Literal["unit", "cluster"] | None = None
+    control_weight_ess: float | None = None
+    treatment_weight_ess: float | None = None
+    control_weight_max_share: float | None = None
+    treatment_weight_max_share: float | None = None
+    control_weight_n: int | None = None
+    treatment_weight_n: int | None = None
+
+    @model_validator(mode="after")
+    def _freeze_readout_contexts(self):
+        from increment._canonical import canonical_json_bytes
+        from increment._immutable import _FrozenMapping
+
+        def freeze(value):
+            if isinstance(value, Mapping):
+                frozen = _FrozenMapping({key: freeze(item) for key, item in value.items()})
+                canonical_json_bytes(dict(frozen))
+                return frozen
+            if isinstance(value, (tuple, list)):
+                return tuple(freeze(item) for item in value)
+            return value
+
+        for name in (
+            "sampling_reason_context",
+            "posterior_reason_context",
+            "failure_context",
+            "decision_scope_reason_context",
+            "weight_diagnostics_reason_context",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, freeze(value))
+        return self
+
+    @field_serializer(
+        "sampling_reason_context",
+        "posterior_reason_context",
+        "failure_context",
+        "decision_scope_reason_context",
+        "weight_diagnostics_reason_context",
+        when_used="always",
+    )
+    def _serialize_readout_context(self, value: Mapping[str, object] | None) -> object:
+        def thaw(item: object) -> object:
+            if isinstance(item, Mapping):
+                return {key: thaw(nested) for key, nested in item.items()}
+            if isinstance(item, (tuple, list)):
+                return [thaw(nested) for nested in item]
+            return item
+
+        return None if value is None else thaw(value)
 
     @field_validator("alternative", mode="before")
     @classmethod
@@ -894,6 +983,15 @@ class LiftEstimate(_RowIdentity):
             return self
         if self.reference_kind == "sequential":
             return self
+        if self.failure_code is not None and self.lift is None:
+            if self.binomial_set is not None or self.confidence_set is not None:
+                _raise(
+                    "estimation.results.lift.binomial_lift_availability",
+                    group_id=self.group_id,
+                    metric=self.metric,
+                    reason="failed cell cannot carry a confidence set",
+                )
+            return self
         if self.reference_kind != "binomial":
             if self.lift is None:
                 _raise(
@@ -990,6 +1088,18 @@ class LiftEstimate(_RowIdentity):
                 sequential_refuse("source.invalid", "fixed result cannot carry sequential evidence")
             return self
         if result is None:
+            if (
+                self.analysis_population == "triggered"
+                and self.failure_code == "readout.cell.unsupported_request"
+                and self.failure_context is not None
+                and self.failure_context.get("reason") == "triggered_sequential"
+                and self.sampling_available is False
+                and self.decision_scope_complete is False
+                and self.lift is None
+            ):
+                # This narrowly typed row is an explicit unsupported request,
+                # not a sequential estimate; it must not invent a checkpoint.
+                return self
             sequential_refuse(
                 "continuation.legacy", "sequential result lacks certified raw-state evidence"
             )

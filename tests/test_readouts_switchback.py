@@ -323,6 +323,13 @@ def test_conversion_readout_uses_retained_window_estimand(shared, carryover_orde
     assert result.estimate.value == pytest.approx(0.5)
     assert result.aggregation == "any"
     assert ContrastResult.model_validate_json(result.model_dump_json()) == result
+    from increment.estimation.readout_types import ReadoutResults
+
+    restored_collection = ReadoutResults.model_validate_json(results.model_dump_json())
+    assert restored_collection.metadata == results.metadata
+    assert restored_collection.source == results.source
+    assert restored_collection[0].aggregation == "any"
+    assert restored_collection[0] == result
     row = estimates_to_readout(results)[0]
     assert row["estimand"] == "retained_window_conversion_difference"
     assert row["observation_steps"] == 3
@@ -532,6 +539,21 @@ def _switchback_analysis(reference=None):
     )
 
 
+def test_sum_contrast_saved_collection_replay_preserves_identity_and_consumers():
+    from increment.estimation.readout_types import ReadoutResults
+    from increment.tables import estimates_to_readout
+
+    results = _switchback_analysis().run()
+    restored = ReadoutResults.model_validate_json(results.model_dump_json())
+
+    assert restored.metadata == results.metadata
+    assert restored.source == results.source
+    assert restored[0].aggregation == "sum"
+    assert restored[0] == results[0]
+    assert results.to_frame()["aggregation"].iloc[0] == "sum"
+    assert estimates_to_readout(results)[0]["aggregation"] == "sum"
+
+
 @pytest.mark.parametrize(
     "method", ["run_daily", "run_asof", "breakout_summaries", "factor_summaries"]
 )
@@ -618,7 +640,8 @@ def test_public_envelope_plan_result_frame_and_readout_roundtrip(backend):
     reference = envelope(p=0.5, cycles=2).model_copy(update={"assignment": _assignment()})
     analysis = _switchback_analysis(reference)
     source = _source(reference)
-    result = analysis.run()[0]
+    results = analysis.run()
+    result = results[0]
     context = source.context
     restored_context = type(context).model_validate_json(context.model_dump_json())
     assert restored_context == context
@@ -651,12 +674,45 @@ def test_public_envelope_plan_result_frame_and_readout_roundtrip(backend):
     assert isinstance(restored_procedure, ContrastDecisionProcedure)
     assert restored_procedure.reference == reference
     replay = estimate_contrast(source.contrast_stats(source.metrics[0]), restored_procedure)
-    assert replay.results[0] == result
-    frame = nw.from_native(ContrastResults([restored]).to_frame(backend=backend), eager_only=True)
+    replay_row = replay.results[0]
+    scope_fields = {
+        "source_snapshot_id",
+        "decision_scope_complete",
+        "decision_scope_reason_code",
+        "decision_scope_reason_context",
+    }
+    assert {
+        name: getattr(replay_row, name)
+        for name in ContrastResult.model_fields
+        if name not in scope_fields
+    } == {
+        name: getattr(result, name)
+        for name in ContrastResult.model_fields
+        if name not in scope_fields
+    }
+    assert result.analysis_population == "assigned"
+    assert result.source_snapshot_id is not None
+    assert result.decision_scope_complete is True
+    assert result.decision_scope_reason_code is None
+    from increment.estimation.readout_types import ReadoutResults
+
+    restored_collection = ReadoutResults.model_validate_json(results.model_dump_json())
+    assert restored_collection.metadata == results.metadata
+    assert restored_collection.source == results.source
+    frame = nw.from_native(results.to_frame(backend=backend), eager_only=True)
+    restored = results[0]
     row = next(frame.iter_rows(named=True))
-    readout = estimates_to_readout([restored])[0]
+    readout = estimates_to_readout(results)[0]
     for name in ("method", "reference", "mean_slope", "effective_alpha", "residual_p_value"):
         assert row[name] == readout[name] == getattr(result, name)
+    assert row["source_snapshot_id"] == result.source_snapshot_id
+    assert row["analysis_population"] == "assigned"
+    assert row["decision_scope_complete"] is True
+    assert row["view_partial"] is False
+    assert readout["source_snapshot_id"] == result.source_snapshot_id
+    assert readout["analysis_population"] == "assigned"
+    assert readout["decision_scope_complete"] is True
+    assert readout["view_partial"] is False
     import json
 
     assert (

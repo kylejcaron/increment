@@ -142,9 +142,13 @@ _MOMENTS_COVARIATE_UNAVAILABLE = _RefusalSpec(
     lambda *, covariates: (
         f"unit_frame: covariates {list(covariates)!r} are not available from a "
         "moments-backed source -- a moments cube holds no per-unit rows to attach "
-        "a covariate to. Analyze the per-unit data with Analysis.from_definitions, "
-        "from_unit_day_artifact (covariates the experiment declares), or "
-        "from_unit_summary instead."
+        "covariates or reconstruct observational weight diagnostics from. "
+        "IPTW/AIPW diagnostics need per-arm weight sums, squared-weight sums, "
+        "maximum weight, positive-weight counts, and the weight definition and "
+        "unit/cluster grain (with cluster-total summaries at cluster grain). "
+        "Use the original per-unit data with Analysis.from_definitions, "
+        "from_unit_day_artifact (covariates the experiment declares), "
+        "from_unit_summary, or from_unit_panel instead."
     ),
 )
 _MOMENTS_COUNTS = _RefusalSpec(

@@ -129,7 +129,7 @@ def test_analysis_wire_export_replay_and_truthful_numeric_columns(tmp_path):
     displayed = estimates_to_readout([row])[0]
     assert displayed["sequential_log_e"] is None
     assert displayed["sequential_validity_regime"] == "asymptotic_sequential"
-    assert displayed["prob_favorable"] is None
+    assert displayed["posterior_prob_favorable"] is None
 
 
 @pytest.mark.slow

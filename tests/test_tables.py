@@ -701,9 +701,13 @@ def _valid_estimate_expected_decision_stats():
 
     chance_to_beat = phi(mu / sigma)
     a = -mu / sigma
-    risk_if_shipped = phi(a) - math.exp(mu + 0.5 * sigma**2) * phi(a - sigma)
-    return chance_to_beat, risk_if_shipped
-
+    assert no_prior_row["posterior_risk_if_shipped"] is None
+    assert no_prior_row["posterior_prob_favorable"] is None
+    assert not {
+        "chance_to_beat",
+        "risk_if_shipped",
+        "prob_favorable",
+    } & no_prior_row.keys()
 
 def test_estimates_to_readout_adds_advisory_decision_stat_columns_by_default():
     est = _valid_estimate()

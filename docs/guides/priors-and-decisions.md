@@ -1,15 +1,12 @@
 # Priors and Bayesian decisions
 
-`run(prior=...)` shifts a metric from a plain frequentist interval to
-a Normal-conjugate (or discretized heavier-tailed) posterior. The
-reported `value`/`lb`/`ub` become prior-informed posterior values; the
-row's raw `log_mean`/`log_se` remain the unshrunk statistics underneath.
-Each `LiftEstimate` exposes decision summaries from that row:
-`stat_sig()`, `prob_favorable()`, and `p_value()`. They are not equally
-universal: `stat_sig()` reads the row's own interval and works on any
-row, while `prob_favorable()` and `p_value()` reconstruct the actual
-posterior or sampling distribution and refuse on some row shapes (see
-["`prob_favorable`, `p_value`, and `stat_sig`"](#prob_favorable-p_value-and-stat_sig)).
+`run(prior=...)` leaves the sampling estimate, interval, reference, p-value,
+and significance verdict equal to the same request with `prior=None`. It
+stores the posterior separately in `posterior_*` fields; use
+`posterior_estimate`, `posterior_lb`/`posterior_ub`, and the posterior
+probability accessors for Bayesian decisions. The row's ordinary `lift`
+remains the prior-free sampling construction. `stat_sig()` and `p_value()`
+are sampling decisions, not posterior summaries.
 
 ## Declaring a prior: `Normal`, `StudentTPrior`, `MixturePrior`
 
@@ -36,14 +33,12 @@ analysis = Analysis.from_unit_summary(
 )
 results = analysis.run(prior=skeptical)
 for r in results:
-    print(
-        f"prior_shrunk={r.prior_shrunk} lift={r.lift.value:+.2%} prob_favorable={r.prob_favorable():.3f}"
-    )
+        f"sampling_lift={r.lift.value:+.2%} posterior={r.posterior_estimate:+.2%} "
+        f"prob_favorable={r.prob_favorable():.3f}"
 ```
 
 ```text
-prior_shrunk=True lift=+0.16% prob_favorable=0.538
-```
+sampling_lift=+0.00% posterior=+0.16% prob_favorable=0.538
 
 `prior=` belongs on `run(...)`, not on `from_unit_summary`/
 `from_definitions`/etc. The constructor assembles the source and its
@@ -91,20 +86,16 @@ Informative priors also work on ordinary conversion data. This uses a
 Normal likelihood approximation for the observed **log risk ratio**, not
 two binomial likelihoods. Without a prior, eligible conversion/retention
 rows are routed by their counts (`Method.conversion_inference`, default
-`"auto"`): rows whose success and failure counts are all dense in both arms
-use the same delta-method log risk ratio with a Welch-Satterthwaite t
-reference (`reference_kind="t"`) that an informative prior then shrinks, and
-every other row uses exact binomial test inversion. For a sparse row, adding
-a prior therefore changes the reported reference as well as the estimate; it
-does not add a posterior to an otherwise unchanged sampling report.
-`conversion_inference="finite_sample"` is refused with a prior (the
-inversion has no posterior a prior could act on).
+`"auto"` chooses from the four success/failure counts whether or not a
+prior is declared. Dense counts use the same prior-free delta-method
+construction (including its t reference) as an unadjusted mean; sparse
+counts use exact binomial test inversion. A supported posterior is stored
+separately for dense counts. For sparse counts, valid exact sampling
+inference remains available even when the existing approximate-posterior
+guard reports `posterior_available=False` and its exact reason. An explicit
+`conversion_inference="finite_sample"` request with a prior remains refused;
+the exact binomial inversion has no posterior for a prior to update.
 
-For example, with 20 conversions among 60 control units and 40 among 60
-treatment units, `Normal(mu=0, sigma=0.1)` gives posterior median lift
-about 14.15% and `prob_favorable()` about 0.9294. `run(prior=None)` clears
-the prior and restores the exact-binomial row with observed lift 100% (the
-counts are sparse, so the default route is the finite-sample one).
 Zero-success, all-success and sufficiently imprecise binary samples can
 fail the approximate posterior's log-mean/SE requirements even when the
 prior-free binomial route can report a confidence set.
@@ -133,54 +124,44 @@ persisted under an earlier construction of that test, or without naming its
 construction, is refused when read rather than shown beside a verdict its
 endpoints can contradict.
 
-`prob_favorable()` and `p_value()` instead reconstruct the actual
-posterior or sampling distribution the row's interval was cut from, so
-they need `inference == "fixed"`: a sequential row (`AlwaysValid`/
+`prob_favorable()` reads the stored posterior only when it is available.
+`p_value()` instead reads the prior-free sampling construction and remains
+a sampling p-value whether or not a prior was declared. Both require
+`inference == "fixed"`: a sequential row (`AlwaysValid`/
 `AsymptoticMean`) refuses on both, since a confidence sequence has no
 fixed endpoint distribution to summarize. `p_value()` additionally
 handles a cluster-robust (`reference_kind="t"`) row directly against its
-own t reference, so it still returns a number there; `prob_favorable()`'s
-plain relative-null branch always needs the recovered Normal/mixture
-posterior and so refuses on a cluster-robust row too -- the clustered
-path bypasses the Normal-Normal tail that branch reconstructs. (An
-absolute-margin `null_abs` row that is also cluster-robust refuses on
-both `prob_favorable()` and `p_value()`, since neither reads a clustered
-additive tail.) `prob_favorable()` also needs `preferred_direction`
+own t reference, while posterior access remains unavailable for unsupported
+cluster-prior requests. `prob_favorable()` also needs `preferred_direction`
 declared on the metric (`"increase"`/`"decrease"`/`"neutral"`) -- it is
 not derived from `alternative`, which can point the opposite way on a
 harm/futility test.
 
-Without an informative prior, `p_value()`'s fixed-horizon Normal-reference
-branch is a Normal-tail sampling approximation. The estimated log-delta
-standard error does not make it an exact finite-sample p-value. On a
-`prior_shrunk=True` row, `p_value()` is instead a property of the posterior
-that produced the row, not a guarantee of frequentist calibration.
-Do not use that posterior-tail helper as input to BH or e-BH.
+The posterior probability accessors (`chance_to_beat`, `prob_beyond`,
+`prob_within`, and `risk_if_shipped`) never reconstruct a posterior from
+sampling interval endpoints and never infer one from a p-value. They return
+`None` when no supported posterior is stored.
 
 ## Mutual exclusions: prior vs sequential inference, prior vs cluster
 
 A prior and sequential inference (`AlwaysValid`/`AsymptoticMean`) cannot
-compose: sequential coverage is a frequentist martingale guarantee, and a
-prior-shifted posterior center would void it. Declaring both -- an
-`AnalysisPlan(inference=...)` combined with a `run(prior=...)` override
-or a per-metric declared prior -- raises
-`sequential.route.unsupported` ("registered runtime supports predictive
-priors, not posterior effect priors"). A prior also cannot compose with a
-declared cluster: clustered rows use a t reference built from cluster
-totals, which bypasses the Normal-Normal conjugate update a prior needs,
-so combining `cluster=` with a prior raises
-`arm.adjustment.cluster_prior`. In both cases the raw statistics
-become the inference inputs directly, with no prior layered on top. See
-[Sequential inference](sequential-inference.md) for the always-valid/
-asymptotic-mean side of this exclusion.
+compose: sequential coverage is a frequentist martingale guarantee. Declaring
+both -- an `AnalysisPlan(inference=...)` combined with a `run(prior=...)`
+override or a per-metric declared prior -- raises `sequential.route.unsupported`.
+A prior also cannot compose with a declared cluster: clustered rows use a
+joint reference built from cluster totals, and separating payloads does not
+authorize a cluster prior. Combining `cluster=` with a prior raises
+`arm.adjustment.cluster_prior`. In both cases the request is refused before
+estimation.
 
-## Per-metric priors
-
-`MetricSpec(prior=...)` declares one metric's own prior on the dataframe
-path. It applies only when the call itself leaves `prior` at its default
-`UNSET`: an *explicit* `run(prior=...)` call -- including `run(prior=None)`
--- overrides every metric's prior for that call, including metrics that
-declared their own `MetricSpec.prior`, the same call-wide-overrides-
+The same override applies to priors declared on YAML `ExperimentMetric`
+bindings. An informative prior changes the separately stored posterior, not
+the prior-free sampling evidence used for an otherwise eligible secondary's
+configured multiplicity family; method-compatibility checks still apply.
+Overrides do not change the declaration: a later call that omits `prior`
+uses the declared prior again for posterior inference. This also works after
+reloading older moment exports with a declared prior. An explicit no-family
+policy remains excluded.
 per-metric-declaration precedence `decision_method`/`sensitivity_methods`
 use (see [The data model](data-model.md)).
 

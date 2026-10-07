@@ -29,6 +29,7 @@ from increment.estimation._adjust.common import (
 )
 from increment.estimation._adjust.learners import Learner, LogisticPropensity, RidgeOutcome
 from increment.estimation._adjust.value_scale import resolve_value_scale
+from increment.estimation._adjust.weight_diagnostics import _weight_summary
 from increment.estimation.adjust import ADJUSTMENTS
 from increment.estimation.inference import Prior
 
@@ -152,6 +153,17 @@ def _aipw_cohort(
         for t in arms
     ]
     mu0, psi0 = means[0]
+    summary = [
+        _weight_summary(w, clusters.inv, clusters.k)
+        if clusters.inv is not None
+        else _weight_summary(w)
+        for w in weights
+    ]
+    definition = (
+        "unclipped inverse marginal propensity I(A=a)/p_a(X), retained cohort; "
+        "AIPW self-normalized residual correction"
+    )
+    grain = "cluster" if clusters.inv is not None else "unit"
     return [
         _aipw_contrast(
             request,
@@ -161,6 +173,20 @@ def _aipw_cohort(
             mu0=mu0,
             psi1=means[a][1],
             psi0=psi0,
+        ).model_copy(
+            update={
+                "weight_diagnostics_available": True,
+                "weight_diagnostics_reason_code": None,
+                "weight_diagnostics_reason_context": None,
+                "weight_definition": definition,
+                "weight_grain": grain,
+                "control_weight_n": summary[0][0],
+                "treatment_weight_n": summary[a][0],
+                "control_weight_ess": summary[0][1],
+                "treatment_weight_ess": summary[a][1],
+                "control_weight_max_share": summary[0][2],
+                "treatment_weight_max_share": summary[a][2],
+            }
         )
         for a, request in enumerate(cohort.requests, start=1)
     ]

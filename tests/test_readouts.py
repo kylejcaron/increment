@@ -463,18 +463,30 @@ def _two_metric_rows(*, second_metric_has_treatment: bool) -> tuple[list[dict], 
 
 
 def test_run_unions_observed_arms_across_selected_metrics_before_refusing():
-    """Metric ``a`` alone has no treatment arm, but ``b`` does - the gate
-    must union arms across every selected metric, not just the first, so
-    ``b``'s row is still reported instead of a spurious refusal."""
+    """Metric ``a`` has no treatment arm, but ``b`` does - preserve ``b`` and
+    report ``a``'s required treatment cell as a typed, incomplete failure."""
     from increment import readouts
     from increment.sources import MomentsSource
 
     design = Randomized(control_group="control")
     rows, metric_a, metric_b = _two_metric_rows(second_metric_has_treatment=True)
     src = MomentsSource(rows, metrics=[metric_a, metric_b], study_id="e", design=design)
-    results = readouts.run(src)
-    assert {r.metric for r in results} == {"b"}
 
+    results = readouts.run(src)
+
+    assert {(row.metric, row.group_id) for row in results} == {
+        ("a", "treatment"),
+        ("b", "treatment"),
+    }
+    (missing,) = [row for row in results if row.metric == "a"]
+    assert missing.failure_code == "readout.cell.missing_arm"
+    assert missing.failure_context["group_id"] == "treatment"
+    assert missing.lift is None
+    (surviving,) = [row for row in results if row.metric == "b"]
+    assert surviving.failure_code is None and surviving.lift is not None
+    assert results.metadata is not None
+    assert results.metadata.scope.decision_complete("assigned") is False
+    assert all(row.decision_scope_complete is False for row in results)
 
 def test_run_refuses_when_no_selected_metric_has_a_treatment_arm():
     """The converse: neither metric carries a non-control arm, so the
@@ -1207,7 +1219,7 @@ def test_run_declared_margin_flips_stat_sig():
     assert guardrailed[0].alternative == "greater"
     assert guardrailed[0].preferred_direction == "increase"
     # Non-inferior against a -50% tolerance is essentially certain here.
-    assert guardrailed[0].prob_favorable() > 0.999
+    assert guardrailed[0].prob_favorable() is None
     lift = guardrailed[0].require_lift()
     assert lift.lb is not None and lift.lb > -0.5
 

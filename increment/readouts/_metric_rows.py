@@ -21,6 +21,30 @@ class MetricRows:
     unit_frame: Any | None
     observed_arms: frozenset[str]
     n_treatment_arms: int
+    evidence_kind: str
+    evidence_sha256: str
+    evidence_count: int
+
+
+def _frame_digest(native):
+    import narwhals as nw
+
+    from increment.estimation.readout_types import StreamingDigest
+
+    digest = StreamingDigest()
+    frame = nw.from_native(native, eager_only=True)
+    for row in frame.iter_rows(named=True):
+        digest.update(row)
+    return digest.hexdigest(), digest.count
+
+
+def _rows_digest(rows):
+    from increment.estimation.readout_types import StreamingDigest
+
+    digest = StreamingDigest()
+    for row in rows:
+        digest.update(row)
+    return digest.hexdigest(), digest.count
 
 
 def _load_metric_rows(
@@ -43,13 +67,19 @@ def _load_metric_rows(
         native = raw_source.unit_frame(metric, outcome_stage="raw")
 
         frame = nw.from_native(native, eager_only=True)
-        observed = frozenset(str(g) for g in frame["group_id"].unique().to_list())
+        evidence_sha256, evidence_count = _frame_digest(native)
+        observed = frozenset(
+            str(group) for group in frame["group_id"].unique().to_list() if group is not None
+        )
         if not observed - {str(control_group)}:
             return MetricRows(
                 rows=(),
                 unit_frame=None,
                 observed_arms=observed,
                 n_treatment_arms=0,
+                evidence_kind="unit_evidence_rows",
+                evidence_sha256=evidence_sha256,
+                evidence_count=evidence_count,
             )
         raw = _raw_state_from_source(src, metric, native=native)
         references = {}
@@ -74,25 +104,38 @@ def _load_metric_rows(
             unit_frame=None,
             observed_arms=observed,
             n_treatment_arms=len(observed - {control_group}),
+            evidence_kind="unit_evidence_rows",
+            evidence_sha256=evidence_sha256,
+            evidence_count=evidence_count,
         )
     if getattr(metric, "type", None) == "quantile":
         import narwhals as nw
 
         native = src.unit_frame(metric)
         frame = nw.from_native(native, eager_only=True)
-        observed = frozenset(str(g) for g in frame["group_id"].to_list())
+        evidence_sha256, evidence_count = _frame_digest(native)
+        observed = frozenset(
+            str(group) for group in frame["group_id"].to_list() if group is not None
+        )
         return MetricRows(
             rows=(),
             unit_frame=native,
             observed_arms=observed,
             n_treatment_arms=len(observed - {control_group}),
+            evidence_kind="unit_evidence_rows",
+            evidence_sha256=evidence_sha256,
+            evidence_count=evidence_count,
         )
     _refuse_unsupported_by(metric, by)
     rows = cast("list[Mapping[str, Any]]", src.moments(metric, grain="total", by=by))
-    observed = frozenset(str(r["group_id"]) for r in rows)
+    observed = frozenset(str(r["group_id"]) for r in rows if r.get("group_id") is not None)
+    evidence_sha256, evidence_count = _rows_digest(rows)
     return MetricRows(
         rows=tuple(rows),
         unit_frame=None,
         observed_arms=observed,
         n_treatment_arms=len(observed - {control_group}),
+        evidence_kind="moments_rows",
+        evidence_sha256=evidence_sha256,
+        evidence_count=evidence_count,
     )

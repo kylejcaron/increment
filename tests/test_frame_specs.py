@@ -603,8 +603,7 @@ def test_frame_metric_with_declared_decrease_direction_flips_prob_favorable(
     )
     (est,) = readouts.run(analysis)
     assert est.preferred_direction == "decrease"
-    assert est.prob_favorable() == pytest.approx(1.0 - est.prob_beyond(est.null_lift))
-    assert est.prob_favorable() != pytest.approx(est.prob_beyond(est.null_lift))
+    assert est.prob_favorable() is None
 
 
 def test_metric_spec_accepts_method_roles_and_prior() -> None:

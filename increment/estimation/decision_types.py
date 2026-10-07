@@ -157,7 +157,10 @@ class PValueEvidence:
 class EValueEvidence:
     hypothesis: ArmHypothesisKey | SegmentHypothesisKey
     method: str
-    log_e: Fraction | float
+    # Float first deliberately: the certified zero-likelihood boundary is
+    # represented by -inf, which Fraction cannot parse. Finite exact inputs
+    # remain Fractions under Pydantic's smart union matching.
+    log_e: float | Fraction
     process: str
     checkpoint: SequentialCheckpoint
     certificate: LikelihoodCertificate

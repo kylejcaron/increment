@@ -201,7 +201,7 @@ def test_frame_zero_event_prefix_append_and_rewrite_do_not_reset_process():
     assert displayed["lift"] is None
     assert displayed["sequential_point_reason"]
     assert displayed["sequential_log_e"] == str(first_row.require_exact_sequential_result().log_e)
-    assert displayed["prob_favorable"] is None
+    assert displayed["posterior_prob_favorable"] is None
     assert displayed["stat_sig"] is False
     snapshot = first.sequential_snapshot()
     later = pd.concat(

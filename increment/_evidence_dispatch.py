@@ -112,7 +112,10 @@ class ContrastHandler:
     family: ClassVar[Literal["contrast"]] = "contrast"
 
     def run(self, source: ContrastSource, request: ContrastReadoutRequest) -> ContrastResults:
+        from increment.readouts._contrast_scope import scope_contrast_results
+
         results = []
+        stats = {}
         for metric in request.metrics:
             try:
                 procedure = request.procedures[metric.name]
@@ -130,8 +133,9 @@ class ContrastHandler:
                     reason="unit_cycle_reference_required",
                     metric=metric.name,
                 )
-            results.append(compute_contrast(source.contrast_stats(metric), procedure).results[0])
-        return ContrastResults(results)
+            stats[metric.name] = source.contrast_stats(metric)
+            results.append(compute_contrast(stats[metric.name], procedure).results[0])
+        return scope_contrast_results(results, stats=stats, procedures=request.procedures)
 
 
 __all__ = ["ArmMomentHandler", "ContrastHandler", "ContrastReadoutRequest"]

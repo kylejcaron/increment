@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from increment._immutable import _FrozenMapping
 from increment._literals import VALUE_SCALE_VALUES, ValueScale
 from increment.compatibility import ARM_COMPATIBILITY_REFUSALS
 from increment.errors import (
@@ -140,6 +141,12 @@ _REFUSALS = (
                     else "as-of lift is not defined for an observational design"
                 ),
             ),
+            "readout.weight_diagnostics.not_applicable": RefusalSpec(
+                "readout.weight_diagnostics.not_applicable",
+                UnsupportedRequestError,
+                template="weight diagnostics are not applicable to method {method!r}",
+                keys=frozenset({"method"}),
+            ),
         },
     )
     | refusals(
@@ -169,6 +176,27 @@ def _refuse_compatibility(code: str, **context: object) -> None:
 
 
 _refuse = raiser(_REFUSALS)
+
+
+def _weight_diagnostics_projection(method_name: str) -> dict[str, object]:
+    if method_name in {"iptw", "aipw"}:
+        return {}
+    return {
+        "weight_diagnostics_available": False,
+        "weight_diagnostics_reason_code": _REFUSALS[
+            "readout.weight_diagnostics.not_applicable"
+        ].code,
+        "weight_diagnostics_reason_context": _FrozenMapping({"method": method_name}),
+        "weight_definition": None,
+        "weight_grain": None,
+        "control_weight_n": None,
+        "treatment_weight_n": None,
+        "control_weight_ess": None,
+        "treatment_weight_ess": None,
+        "control_weight_max_share": None,
+        "treatment_weight_max_share": None,
+    }
+
 
 MIXTURE_PRIORS_ARE = _REFUSALS["estimation.adjust.prior.type"]
 
@@ -903,6 +931,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
     refused_failures: dict[Any, DecisionFailure] = {}
     any_attempted = False
     for method in methods:
+        weight_diagnostics = _weight_diagnostics_projection(method.name)
         if method.name == "unadjusted":
             any_attempted = True
             for metric in selected:
@@ -940,6 +969,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                     r.model_copy(
                         update={
                             "method_role": resolved_method_roles.get(method.name, "decision"),
+                            **weight_diagnostics,
                             **(
                                 winsor_diagnostics.get(metric.name, {}).get(r.group_id, {})
                                 if cluster is not None
@@ -979,6 +1009,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                         result.model_copy(
                             update={
                                 "method_role": resolved_method_roles.get(method.name, "decision"),
+                                **weight_diagnostics,
                                 **diagnostics_by_group.get(result.group_id, {}),
                             }
                         )

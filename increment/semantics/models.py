@@ -40,6 +40,8 @@ from increment._literals import (
 )
 from increment.errors import CodedModel, CodedValidationMixin, DefinitionError, RefusalSpec
 from increment.semantics.design import (
+    ALLOCATION_SCHEME_INCOMPATIBLE,
+    AllocationScheme,
     ExclusionRestriction,
     UptakeSpec,
     _freeze_allocation,
@@ -2171,7 +2173,7 @@ def local_day(value: datetime, offset: timedelta) -> date:
 
 class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
     _explicit_only_fields: ClassVar[frozenset[str]] = frozenset(
-        {"day_boundary", "allocation", "design"}
+        {"day_boundary", "allocation", "allocation_scheme", "design"}
     )
 
     name: str
@@ -2200,6 +2202,9 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
     control_group: str  # REQUIRED: which group_id is control
     #: Declared assignment weights, never estimated from observed group counts.
     allocation: Mapping[str, float] | None = None
+    allocation_scheme: AllocationScheme | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     #: Optional non-randomized identification mechanism. Absent means
     #: Randomized, built from control_group/allocation above -- see
     #: resolved_design(). mechanism: "randomized" is not a valid value
@@ -2227,6 +2232,14 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
     @model_validator(mode="after")
     def _check_allocation(self):
         _validate_allocation_semantics(self.control_group, self.allocation)
+        if isinstance(self.design, ObservationalDeclaration) and self.allocation_scheme is not None:
+            from increment.errors import refuse
+
+            refuse(
+                ALLOCATION_SCHEME_INCOMPATIBLE,
+                design="observational",
+                allocation_scheme=self.allocation_scheme,
+            )
         return self
 
     @field_validator("start", "end", "observation_end", mode="before")
@@ -2305,11 +2318,16 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
         from increment.semantics.design import Randomized as _Randomized
 
         if self.design is None:
-            return _Randomized(control_group=self.control_group, allocation=self.allocation)
+            return _Randomized(
+                control_group=self.control_group,
+                allocation=self.allocation,
+                allocation_scheme=self.allocation_scheme,
+            )
         if isinstance(self.design, EncouragementDeclaration):
             return _Encouragement(
                 control_group=self.control_group,
                 allocation=self.allocation,
+                allocation_scheme=self.allocation_scheme,
                 uptake=self.design.uptake,
                 exclusion_restriction=self.design.exclusion_restriction,
                 one_sided=self.design.one_sided,

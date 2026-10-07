@@ -1263,6 +1263,26 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 )
         return result
 
+    def assignment_counts(
+        self, *, population: Literal["assigned", "triggered"] = "assigned"
+    ) -> dict[str, int]:
+        if population != "assigned":
+            raise CapabilityError(
+                "artifact base does not carry triggered assignment counts",
+                code="artifact.evidence.unavailable",
+                context={},
+            )
+        try:
+            return self.unit_counts()
+        except ArtifactContractError as exc:
+            if exc.code != "artifact.extension.missing":
+                raise
+            raise CapabilityError(
+                "artifact base does not carry assignment counts",
+                code="artifact.evidence.unavailable",
+                context={},
+            ) from exc
+
     def unit_counts(self) -> dict[str, int]:
         if self._population_units is not None:
             grain, counts, unit_counts = self.triggered_counts()
@@ -1272,12 +1292,20 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             if self._artifact_experiment.trigger is not None
             else ("assigned",)
         )
-        extension = self._extension({"kind": "assignment_counts", "populations": populations})
+        try:
+            extension = self._extension({"kind": "assignment_counts", "populations": populations})
+        except ArtifactContractError as exc:
+            if exc.code != "artifact.extension.missing":
+                raise
+            # The pinned exposure relation itself is sufficient for assigned
+            # counts. The extension is needed only for explicit population
+            # counts (notably triggered), which this call did not request.
+            return super().unit_counts()
         rows = self._read_extension(extension, request=_artifact_request(extension))
         return {
             str(row["group_id"]): int(row["n_units"])
             for row in rows
-            if row["population"] == "assigned"
+            if row["population"] == "assigned" and row["group_id"] is not None
         }
 
     def cluster_counts(self) -> dict[str, int]:
@@ -1287,12 +1315,14 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         rows = self._read_extension(extension, request=_artifact_request(extension))
         groups: dict[str, set[str]] = {}
         exposure_by_unit = {
-            str(row["unit_id"]): str(row["group_id"]) for row in self._exposure_rows()
+            str(row["unit_id"]): str(row["group_id"])
+            for row in self._exposure_rows()
+            if row["group_id"] is not None
         }
         for row in rows:
-            groups.setdefault(exposure_by_unit[str(row["unit_id"])], set()).add(
-                str(row["cluster_id"])
-            )
+            unit_id = str(row["unit_id"])
+            if unit_id in exposure_by_unit:
+                groups.setdefault(exposure_by_unit[unit_id], set()).add(str(row["cluster_id"]))
         return {group: len(clusters) for group, clusters in groups.items()}
 
     def triggered_counts(self) -> tuple[Literal["unit", "cluster"], dict[str, int], dict[str, int]]:
@@ -1303,12 +1333,12 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         counts = {
             str(row["group_id"]): int(row["n_randomization_units"])
             for row in rows
-            if row["population"] == "triggered"
+            if row["population"] == "triggered" and row["group_id"] is not None
         }
         unit_counts = {
             str(row["group_id"]): int(row["n_units"])
             for row in rows
-            if row["population"] == "triggered"
+            if row["population"] == "triggered" and row["group_id"] is not None
         }
         grain: Literal["unit", "cluster"] = (
             "cluster" if self.context.cluster is not None else "unit"

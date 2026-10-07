@@ -72,7 +72,7 @@ def _binomial_stat_sig(bset: BinomialConfidenceSet, *, null_lift: float, alterna
     return bset.null_p_value(null_lift, alternative) < bset.decision_alpha
 
 
-def _stat_sig(est: LiftEstimate | BreakoutEstimate | DailyLiftEstimate) -> bool:
+def _stat_sig(est: LiftEstimate | BreakoutEstimate | DailyLiftEstimate) -> bool | None:
     """Whether the interval excludes the null, honoring the row's own
     one-sided ``alternative`` (``Estimate.excludes`` checks both tails).
     Always False when ``low_reliability`` is set. A ``null_abs`` row
@@ -93,7 +93,11 @@ def _stat_sig(est: LiftEstimate | BreakoutEstimate | DailyLiftEstimate) -> bool:
     exact same construction ``LiftEstimate.stat_sig()`` uses, so a
     set-only row's real evidence is never erased just because it has no
     finite point.
+    An explicit producer failure has unavailable significance (``None``), not
+    a non-rejection.
     """
+    if getattr(est, "failure_code", None) is not None:
+        return None
     if est.sequential_result is not None:
         return est.sequential_result.rejects()
     if getattr(est, "low_reliability", False):
@@ -181,6 +185,43 @@ def _base_liftestimate_to_row(
         "family_size": getattr(est, "family_size", None),
         "group_id": est.group_id,
     }
+    row.update(
+        sampling_available=getattr(est, "sampling_available", None),
+        sampling_reason_code=getattr(est, "sampling_reason_code", None),
+        sampling_reason_context=getattr(est, "sampling_reason_context", None),
+        posterior_available=getattr(est, "posterior_available", None),
+        posterior_reason_code=getattr(est, "posterior_reason_code", None),
+        posterior_reason_context=getattr(est, "posterior_reason_context", None),
+        posterior_model=getattr(est, "posterior_model", None),
+        posterior_scale=getattr(est, "posterior_scale", None),
+        posterior_estimate=getattr(est, "posterior_estimate", None),
+        posterior_lb=getattr(est, "posterior_lb", None),
+        posterior_ub=getattr(est, "posterior_ub", None),
+        posterior_level=getattr(est, "posterior_level", None),
+        posterior_alpha=getattr(est, "posterior_alpha", None),
+        posterior_latent_mean=getattr(est, "posterior_latent_mean", None),
+        posterior_latent_sd=getattr(est, "posterior_latent_sd", None),
+        posterior_prob_favorable=getattr(est, "posterior_prob_favorable", None),
+        failure_code=getattr(est, "failure_code", None),
+        failure_context=getattr(est, "failure_context", None),
+        source_snapshot_id=getattr(est, "source_snapshot_id", None),
+        decision_scope_complete=getattr(est, "decision_scope_complete", None),
+        decision_scope_reason_code=getattr(est, "decision_scope_reason_code", None),
+        decision_scope_reason_context=getattr(est, "decision_scope_reason_context", None),
+        family_id=getattr(est, "family_id", None),
+        multiplicity_status=getattr(est, "multiplicity_status", None),
+        weight_diagnostics_available=getattr(est, "weight_diagnostics_available", None),
+        weight_diagnostics_reason_code=getattr(est, "weight_diagnostics_reason_code", None),
+        weight_diagnostics_reason_context=getattr(est, "weight_diagnostics_reason_context", None),
+        weight_definition=getattr(est, "weight_definition", None),
+        weight_grain=getattr(est, "weight_grain", None),
+        control_weight_ess=getattr(est, "control_weight_ess", None),
+        treatment_weight_ess=getattr(est, "treatment_weight_ess", None),
+        control_weight_max_share=getattr(est, "control_weight_max_share", None),
+        treatment_weight_max_share=getattr(est, "treatment_weight_max_share", None),
+        control_weight_n=getattr(est, "control_weight_n", None),
+        treatment_weight_n=getattr(est, "treatment_weight_n", None),
+    )
     if region is not None:
         row.update(
             reference_kind="confidence_set",
@@ -350,6 +391,10 @@ def contrast_results_to_readout(
                 "maximum_cycles_per_unit": result.maximum_cycles_per_unit,
                 "washout_steps": result.washout_steps,
                 "effective_alpha": result.effective_alpha,
+                "source_snapshot_id": result.source_snapshot_id,
+                "decision_scope_complete": result.decision_scope_complete,
+                "decision_scope_reason_code": result.decision_scope_reason_code,
+                "decision_scope_reason_context": result.decision_scope_reason_context,
                 "refusal_probability_upper": result.refusal_probability_upper,
                 "residual_cutoff": result.residual_cutoff,
                 "residual_p_value": result.residual_p_value,
@@ -399,6 +444,10 @@ def estimates_to_readout(
     ``None`` when no plan was ever declared) and ``discovery`` (its
     family's BH/e-BH verdict, or ``None`` outside any discovery family) -
     see ``_liftestimate_to_row``.
+    When ``estimates`` is a scoped result collection, every row also carries
+    ``view_partial`` from its original metadata; a filtered or sliced view
+    remains explicitly partial without shrinking its source scope. Unscoped
+    plain lists leave this status unknown.
 
     Every row also gets ``chance_to_beat``/``risk_if_shipped`` (``None``
     when undefined) and ``prob_favorable``. ``informative_prior=False``
@@ -409,6 +458,8 @@ def estimates_to_readout(
     """
     beat_col = "chance_to_beat" if informative_prior else "chance_to_beat (advisory)"
     risk_col = "risk_if_shipped" if informative_prior else "risk_if_shipped (advisory)"
+    metadata = getattr(estimates, "metadata", None)
+    view_partial = None if metadata is None else metadata.partial
     rows = []
     for est in estimates:
         if isinstance(est, ContrastResult):
@@ -416,9 +467,11 @@ def estimates_to_readout(
             row[beat_col] = None
             row[risk_col] = None
             row["prob_favorable"] = None
+            row["view_partial"] = view_partial
             rows.append(row)
             continue
         row = _liftestimate_to_row(est)
+        row["view_partial"] = view_partial
         if hasattr(est, "dimension_value") and hasattr(est, "dimension"):
             row["segment"] = est.dimension_value
             row["dimension"] = est.dimension
@@ -614,6 +667,19 @@ def _format_metadata_stat(value: Any, *, percentage: bool) -> str:
     return f"{value:+.2f}"
 
 
+def _failure_disclosure(code: Any, context: Any) -> str:
+    if _is_missing(code):
+        return ""
+    details = []
+    if isinstance(context, Mapping):
+        reason = context.get("reason")
+        if not _is_missing(reason):
+            details.append(str(reason))
+        else:
+            details.extend(f"{key}={value!r}" for key, value in sorted(context.items()))
+    return f"{code}: {', '.join(details)}" if details else str(code)
+
+
 def _interval_level_note(
     frame: Any, *, show_interval_level: bool, has_confidence_sets: bool
 ) -> str | None:
@@ -662,6 +728,27 @@ def _rendered_metadata_columns(
     """
     n = len(frame)
     columns: dict[str, list[str]] = {}
+    failure_codes = _column_values(frame, "failure_code")
+    if failure_codes is not None and any(not _is_missing(value) for value in failure_codes):
+        failure_contexts = _column_values(frame, "failure_context") or [None] * n
+        columns["Failure"] = [
+            _failure_disclosure(code, context)
+            for code, context in zip(failure_codes, failure_contexts, strict=True)
+        ]
+
+    decision_scope = _column_values(frame, "decision_scope_complete")
+    if decision_scope is not None and any(not _is_missing(value) for value in decision_scope):
+        columns["Decision scope"] = [
+            "" if _is_missing(value) else "Complete" if bool(value) else "Incomplete"
+            for value in decision_scope
+        ]
+
+    partial_view = _column_values(frame, "view_partial")
+    if partial_view is not None and any(not _is_missing(value) for value in partial_view):
+        columns["Readout view"] = [
+            "" if _is_missing(value) else "Partial view" if bool(value) else "Full view"
+            for value in partial_view
+        ]
 
     null_lift = _column_values(frame, "null_lift") or [None] * n
     null_abs = _column_values(frame, "null_abs") or [None] * n
@@ -928,10 +1015,11 @@ def readout_table(  # noqa: C901, PLR0915
     ``level``, ``chance_to_beat``, ``risk_if_shipped``,
     ``prob_favorable``, ``discovery``) render as the ``Chance to beat``/
     ``Risk if shipped``/``P(favorable)``/``Interval``/``Discovery``
-    columns; a shifted ``null_lift`` also draws a dashed forest
-    reference line. Row caveats (``note``, ``excluded``,
-    ``low_reliability``, ``inference``) ride along in the frame and
-    render nowhere.
+    columns; a shifted ``null_lift`` also draws a dashed forest reference
+    line. ``Failure`` shows the actual coded failure and reason (or its
+    available context), ``Decision scope`` shows known complete/incomplete
+    status, and ``Readout view`` identifies metadata-backed partial views.
+    Unknown row/scope values are left blank rather than inferred.
 
     For ``binomial_set`` rows, the table adds a ``Numerical qualification``
     column. Its values identify ``scipy_special_function_error_model_conditional_v1``

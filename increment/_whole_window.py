@@ -28,6 +28,7 @@ from increment.readouts._requests import _design_compliance_only, _validate_run_
 from increment.sources import SourceContext, require_operation
 
 if TYPE_CHECKING:
+    from increment.breakout.estimates import LiftEstimates
     from increment.decision import CompiledDecisionPlan
     from increment.estimation.engine import Method
     from increment.estimation.inference import Prior
@@ -147,7 +148,7 @@ class WholeWindowReadouts:
         self._validate_trigger = validate_trigger
         self._arm_moments = arm_moments
 
-    def run(self, req: WholeWindowRequest) -> list[LiftEstimate]:
+    def run(self, req: WholeWindowRequest) -> LiftEstimates:
         route = _day_axis_source_route(self._src)
         validate_whole_window(
             req,
@@ -158,7 +159,7 @@ class WholeWindowReadouts:
             route=route,
         )
         if getattr(self._plan.inference, "registration", None) is not None:
-            return readouts.run(
+            result = readouts.run(
                 self._src,
                 metrics=[m.name for m in req.metrics],
                 estimands=req.estimands,
@@ -167,25 +168,37 @@ class WholeWindowReadouts:
                 prior=req.prior,
                 value_scale=req.value_scale,
             )
+            if self._experiment is not None and self._experiment.trigger is not None:
+                from increment.readouts._sequential_scope import scope_sequential_results
+
+                result = scope_sequential_results(
+                    self._src,
+                    result,
+                    result.sequential_snapshot,
+                    metrics=[m.name for m in req.metrics],
+                    estimands=req.estimands,
+                    triggered_declared=True,
+                )
+            return result
         design_summary_only = _design_compliance_only(self._src, req.estimands)
         if not req.metrics and not design_summary_only:
-            return []
+            from increment.breakout.estimates import LiftEstimates
+
+            return LiftEstimates()
         if route != "native":
             return self._run_seam_family(req)
         return self._run_native_family(req, design_summary_only=design_summary_only)
 
-    def _run_seam_family(self, req: WholeWindowRequest) -> list[LiftEstimate]:
+    def _run_seam_family(self, req: WholeWindowRequest) -> LiftEstimates:
         metric_names = [m.name for m in req.metrics]
-        results = list(
-            self._arm_moments(
-                self._src,
-                decision_method=req.decision_method,
-                sensitivity_methods=req.sensitivity_methods,
-                prior=req.prior,
-                metrics=metric_names,
-                estimands=req.estimands,
-                value_scale=req.value_scale,
-            )
+        results = self._arm_moments(
+            self._src,
+            decision_method=req.decision_method,
+            sensitivity_methods=req.sensitivity_methods,
+            prior=req.prior,
+            metrics=metric_names,
+            estimands=req.estimands,
+            value_scale=req.value_scale,
         )
         if classify_source(self._src) == "artifact":
             assert self._experiment is not None
@@ -206,16 +219,14 @@ class WholeWindowReadouts:
                 metrics=metric_names,
                 estimands=req.estimands,
                 value_scale=req.value_scale,
+                population="triggered",
             )
-            results.extend(
-                row.model_copy(update={"analysis_population": "triggered"})
-                for row in triggered_rows
-            )
+            results = results.concat(triggered_rows)
         return results
 
     def _run_native_family(
         self, req: WholeWindowRequest, *, design_summary_only: bool
-    ) -> list[LiftEstimate]:
+    ) -> LiftEstimates:
         assert self._experiment is not None
         metric_names = [m.name for m in req.metrics]
 
@@ -223,17 +234,15 @@ class WholeWindowReadouts:
             source: MomentSource,
             *,
             population: Literal["assigned", "triggered"] = "assigned",
-        ) -> list[LiftEstimate]:
-            return list(
-                self._arm_moments(
-                    source,
-                    decision_method=req.decision_method,
-                    sensitivity_methods=req.sensitivity_methods,
-                    prior=req.prior,
-                    metrics=metric_names,
-                    estimands=req.estimands,
-                    population=population,
-                )
+        ) -> LiftEstimates:
+            return self._arm_moments(
+                source,
+                decision_method=req.decision_method,
+                sensitivity_methods=req.sensitivity_methods,
+                prior=req.prior,
+                metrics=metric_names,
+                estimands=req.estimands,
+                population=population,
             )
 
         results = _run_arm(
@@ -256,10 +265,7 @@ class WholeWindowReadouts:
                 ),
                 population="triggered",
             )
-            results = [
-                *results,
-                *(row.model_copy(update={"analysis_population": "triggered"}) for row in triggered),
-            ]
+            results = results.concat(triggered)
         return results
 
 

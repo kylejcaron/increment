@@ -278,7 +278,7 @@ def test_primary_interval_at_split_alpha_two_primaries_two_arms():
         assert r.require_lift().level == pytest.approx(1 - 0.0125)
 
 
-def _guarded_three_arm_source(*, all_degenerate: bool = False):
+def _guarded_three_arm_source(*, all_degenerate: bool = False, secondary: bool = False):
     n = 200
     table = pa.table(
         {
@@ -299,7 +299,11 @@ def _guarded_three_arm_source(*, all_degenerate: bool = False):
         group="variant",
         control="control",
         metrics=[MetricSpec(name="revenue")],
-        plan=AnalysisPlan(primary="revenue"),
+        plan=(
+            AnalysisPlan(secondaries=["revenue"])
+            if secondary
+            else AnalysisPlan(primary="revenue")
+        ),
     )
 
 
@@ -316,8 +320,37 @@ def test_run_retains_valid_whole_window_cells_after_guard():
     assert any(m.context["group_id"] == "treatment_bad" for m in cell_refused)
 
     assert [(r.metric, r.group_id, r.method) for r in results] == [
-        ("revenue", "treatment_good", "unadjusted")
+        ("revenue", "treatment_bad", "unadjusted"),
+        ("revenue", "treatment_good", "unadjusted"),
     ]
+    failed = next(row for row in results if row.group_id == "treatment_bad")
+    assert failed.lift is None
+    assert failed.failure_code == "estimation.engine.lift_guard"
+    assert failed.failure_context["reason"] == "zero_variance"
+    assert results.metadata is not None
+    assert any(record.failure is not None for record in results.metadata.cells)
+
+
+def test_secondary_fcr_pass_keeps_producer_failure_in_scoped_results():
+    src = _guarded_three_arm_source(secondary=True)
+
+    with pytest.warns(IncrementWarning):
+        results = readouts.run(src)
+
+    failed = next(row for row in results if row.group_id == "treatment_bad")
+    surviving = next(row for row in results if row.group_id == "treatment_good")
+    assert failed.failure_code == "estimation.engine.lift_guard"
+    assert failed.failure_context["reason"] == "zero_variance"
+    assert failed.lift is None
+    assert surviving.lift is not None
+    assert results.metadata is not None
+    failed_record = next(
+        record
+        for record in results.metadata.cells
+        if record.cell.group_id == "treatment_bad"
+    )
+    assert failed_record.failure is not None
+    assert failed_record.failure.code == "estimation.engine.lift_guard"
 
 
 def test_registered_raw_run_refuses_unproved_sensitivity_method():

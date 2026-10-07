@@ -1612,7 +1612,9 @@ class ArtifactMomentSource(SequentialSourceMixin):
         exposures = self._ensure("exposures")
         counts = exposures.group_by("group_id").agg(n=exposures.count())
         return {
-            str(row["group_id"]): int(row["n"]) for row in _rows(self._snapshot.execute(counts))
+            str(row["group_id"]): int(row["n"])
+            for row in _rows(self._snapshot.execute(counts))
+            if row["group_id"] is not None
         }
 
     def cluster_counts(self) -> dict[str, int]:
@@ -1682,9 +1684,10 @@ class ArtifactMomentSource(SequentialSourceMixin):
         self, *, population: Literal["assigned", "triggered"] = "assigned"
     ) -> dict[str, int]:
         if population != "assigned":
-            _relation_refuse(
-                "artifact.evidence.unavailable",
+            raise CapabilityError(
                 "artifact base does not carry triggered assignment counts",
+                code="artifact.evidence.unavailable",
+                context={},
             )
         return self.unit_counts()
 

@@ -260,10 +260,32 @@ def _estimate_lift_cells(  # noqa: PLR0913
 
 def _raise_if_all_lift_cells_refused(
     refused: Sequence[tuple[str, str, str, str]],
+    computations: Sequence[DecisionComputation[Any]],
 ) -> None:
-    """Give an explicit result when every attempted randomized cell refused."""
-    if refused:
-        _raise("readout.estimate_lift_every")
+    """Refuse an all-failed run with the producer's keyed failure evidence."""
+    if not refused:
+        return
+    failures = [
+        {
+            "metric": key.metric,
+            "group_id": key.group_id,
+            "estimand": key.estimand,
+            "method": failure.context.get("method"),
+            "code": failure.code,
+            "context": dict(failure.context),
+        }
+        for computation in computations
+        for key, failure in computation.failures.items()
+    ]
+    failures.sort(
+        key=lambda failure: (
+            failure["metric"],
+            failure["group_id"],
+            failure["method"] or "",
+            failure["code"],
+        )
+    )
+    _raise("readout.estimate_lift_every", failures=failures)
 
 
 def _estimate_pass(  # noqa: PLR0913

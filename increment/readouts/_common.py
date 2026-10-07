@@ -75,7 +75,8 @@ _REFUSALS = refusals(
         "readout.estimate_lift_every": RefusalSpec(
             "readout.estimate_lift_every",
             UnsupportedRequestError,
-            template="estimate_lift: every requested randomized metric/arm/method cell was refused by an inference guard -- no estimates remain. See the accompanying UserWarnings for metric/arm/method refusal reasons.",
+            template="estimate_lift: every requested randomized metric/arm/method cell was refused by an inference guard -- no estimates remain. Failures: {failures!r}",
+            keys=frozenset({"failures"}),
         ),
         "readout.value_scale_names": "value_scale= names metrics this source does not report on this call: {unknown_value_scale!r} (selected: {metric_names!r}) -- refusing rather than silently dropping the request",
         "readout.sequential_inference_supported": RefusalSpec(

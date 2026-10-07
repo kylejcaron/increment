@@ -900,6 +900,44 @@ def test_triggered_artifact_serves_full_population_extensions(tmp_path: Path) ->
     assert any(row["ref_x"] is not None for row in triggered_rows)
 
 
+def test_clustered_artifact_run_integrity_uses_randomization_unit_counts(tmp_path: Path) -> None:
+    from tests.test_analysis_trigger import _clustered_trigger_events, _defs_yaml_clustered
+
+    con = ibis.duckdb.connect()
+    con.create_table(
+        "cluster_trigger_events",
+        obj=_clustered_trigger_events(
+            n_stores_per_arm=25,
+            units_per_store={"C": 2, "T": 10},
+            trigger_rate=0.5,
+        ),
+    )
+    definitions = tmp_path / "clustered.yml"
+    definitions.write_text(
+        _defs_yaml_clustered(trigger=None).replace(
+            "control_group: C",
+            "control_group: C\n    allocation: {C: 0.5, T: 0.5}\n"
+            "    allocation_scheme: independent",
+        )
+    )
+    native = Analysis.from_definitions("exp", definitions, con)
+    context = _expected_context(definitions, "exp")
+    store = WarehouseArtifactStore(con, schema_name="cluster_integrity_artifact")
+    extensions = _extensions(context, "assignment_counts", "cluster_identity")
+    ref = native.publish_unit_day_artifact(store, extensions=extensions)
+    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+
+    results = adopted.run()
+
+    (integrity,) = next(iter(results.metadata.scope.by_source.values())).integrity
+    assert integrity.randomization_grain == "cluster"
+    assert integrity.observed == {"C": 25, "T": 25}
+    assert integrity.status == "not_rejected"
+    adopted.close()
+    native.close()
+    con.disconnect()
+
+
 @pytest.mark.filterwarnings("ignore:sitewide under a declared cluster")
 def test_clustered_sitewide_supplies_assignment_counts(tmp_path: Path) -> None:
     from tests.test_analysis_trigger import _clustered_trigger_events, _defs_yaml_clustered

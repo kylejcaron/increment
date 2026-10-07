@@ -151,8 +151,7 @@ def test_quantile_explicit_preferred_direction_flows_through_infer_lift(tmp_path
     analysis = Analysis.from_definitions("exp", defs_path, con)
     est = lift_rows(analysis.run())[0]
     assert est.preferred_direction == "decrease"
-    assert est.prob_favorable() == pytest.approx(1.0 - est.prob_beyond(est.null_lift))
-    assert est.prob_favorable() != pytest.approx(est.prob_beyond(est.null_lift))
+    assert est.prob_favorable() is None
 
 
 def _cluster_defs_and_con(tmp_path, *, cluster: bool):

@@ -7,6 +7,7 @@ from increment._policy_alpha import resolve_cell_alpha
 from increment.estimation.adjust import (
     ObservationalEvidence,
     _estimate_ate,
+    _weight_diagnostics_projection,
     judge_shared_prior_scales,
 )
 from increment.estimation.conversion_route import family_route_alpha
@@ -46,6 +47,7 @@ def _estimate_observational(
     value_scale: Mapping[str, ValueScale] | None,
     call_prior: Prior | None,
     evidence: ObservationalEvidence,
+    computations: list[DecisionComputation[LiftEstimate]] | None = None,
 ) -> list[LiftEstimate]:
     """Estimate the observational phase after whole-window validation.
 
@@ -113,6 +115,8 @@ def _estimate_observational(
             _prior_scale_judged=True,
             evidence=evidence,
         )
+        if computations is not None:
+            computations.append(computation)
         results.extend(
             row.model_copy(update={"role": procedure.role if plan.declared else None})
             for row in computation.results
@@ -131,6 +135,7 @@ def _estimate_observational(
                 resolved_null_abs=resolved_null_abs,
                 resolved_alternatives=resolved_alternatives,
                 evidence=evidence,
+                computations=computations,
             )
         )
 
@@ -138,7 +143,12 @@ def _estimate_observational(
         _raise("estimation.adjust.estimate_ate_every")
     order = {metric.name: i for i, metric in enumerate(selected)}
     results.sort(key=lambda result: order[result.metric])
-    return results
+    return [
+        row.model_copy(update=_weight_diagnostics_projection(row.method))
+        if row.method not in {"iptw", "aipw"} and row.weight_diagnostics_available is None
+        else row
+        for row in results
+    ]
 
 
 def _estimate_observational_secondary_family(
@@ -153,6 +163,7 @@ def _estimate_observational_secondary_family(
     resolved_null_abs: Mapping[str, float] | None,
     resolved_alternatives: Mapping[str, str] | None,
     evidence: ObservationalEvidence,
+    computations: list[DecisionComputation[LiftEstimate]] | None = None,
 ) -> list[LiftEstimate]:
     """Nominal pass at plan.alpha, BH-select at plan.q, FCR-reestimate the
     selected cells -- the observational sibling of
@@ -175,7 +186,7 @@ def _estimate_observational_secondary_family(
         metric: Metric, alpha: float, route_alpha: float | None = None
     ) -> DecisionComputation[LiftEstimate]:
         config = config_by_name[metric.name]
-        return _estimate_ate(
+        computation = _estimate_ate(
             src,
             design,
             methods=methods_by_metric[metric.name],
@@ -193,6 +204,9 @@ def _estimate_observational_secondary_family(
             route_alpha=route_alpha,
             evidence=evidence,
         )
+        if computations is not None:
+            computations.append(computation)
+        return computation
 
     for metric in non_family:
         out.extend(
@@ -293,6 +307,8 @@ def _estimate_observational_secondary_family(
             _prior_scale_judged=True,
             evidence=evidence,
         )
+        if computations is not None:
+            computations.append(computation)
         reestimated[metric.name] = [
             open_bound_from_two_sided_at_target(r) for r in computation.results
         ]

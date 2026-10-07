@@ -26,8 +26,13 @@ def _lift_rows(rows: object) -> list[LiftEstimate]:
     return cast(list[LiftEstimate], rows)
 
 
-def _defs_yaml(trigger: str | None = "saw_surface") -> str:
+def _defs_yaml(trigger: str | None = "saw_surface", *, allocation_scheme: str | None = None) -> str:
     trigger_line = f"    trigger: {trigger}\n" if trigger else ""
+    scheme_line = (
+        f"    allocation: {{C: 0.5, T: 0.5}}\n    allocation_scheme: {allocation_scheme}\n"
+        if allocation_scheme
+        else ""
+    )
     return f"""
 dialect: duckdb
 fact_sources:
@@ -58,6 +63,7 @@ experiments:
   - name: exp
     exposure: assignment
 {trigger_line}    unit: user_id
+{scheme_line}
     start: 2024-01-01T00:00:00
     control_group: C
     plan:
@@ -65,9 +71,9 @@ experiments:
 """
 
 
-def _write_defs(tmp_path, trigger="saw_surface"):
+def _write_defs(tmp_path, trigger="saw_surface", *, allocation_scheme=None):
     p = tmp_path / "defs.yml"
-    p.write_text(_defs_yaml(trigger))
+    p.write_text(_defs_yaml(trigger, allocation_scheme=allocation_scheme))
     return p
 
 
@@ -94,7 +100,13 @@ def test_trigger_declaration_loads(tmp_path):
     assert exp.trigger == "saw_surface"
 
 
-def _events(n_per_arm=2000, trigger_rate=0.2, effect=0.5, seed=5):
+def _events(
+    n_per_arm=2000,
+    trigger_rate=0.2,
+    effect=0.5,
+    seed=5,
+    treatment_trigger_rate=None,
+):
     """Only triggered treatment units are affected. The assigned-population
     lift is therefore the true lift times the trigger rate."""
 
@@ -113,9 +125,14 @@ def _events(n_per_arm=2000, trigger_rate=0.2, effect=0.5, seed=5):
         rows["experiment_id"].append("exp")
 
     for arm in ("C", "T"):
+        arm_trigger_rate = (
+            treatment_trigger_rate
+            if arm == "T" and treatment_trigger_rate is not None
+            else trigger_rate
+        )
         for i in range(n_per_arm):
             uid = f"{arm}{i}"
-            triggered = rng.random() < trigger_rate
+            triggered = rng.random() < arm_trigger_rate
             add(uid, arm, "enrolled", 0.0, enrolled_ts)
             if triggered:
                 add(uid, arm, "saw_surface", 0.0, enrolled_ts)
@@ -126,12 +143,14 @@ def _events(n_per_arm=2000, trigger_rate=0.2, effect=0.5, seed=5):
     return pa.table(rows)
 
 
-def _analysis(tmp_path, table, trigger="saw_surface", *, on_mixed_assignment="error"):
+def _analysis(
+    tmp_path, table, trigger="saw_surface", *, on_mixed_assignment="error", allocation_scheme=None
+):
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
     return Analysis.from_definitions(
         "exp",
-        _write_defs(tmp_path, trigger),
+        _write_defs(tmp_path, trigger, allocation_scheme=allocation_scheme),
         con,
         on_mixed_assignment=on_mixed_assignment,
     )
@@ -269,6 +288,176 @@ def test_srm_population_triggered_counts_the_narrowed_population(tmp_path):
     assert sum(triggered.observed.values()) < sum(assigned.observed.values())
 
 
+def test_triggered_run_does_not_retest_assigned_law_on_selected_counts(tmp_path):
+    analysis = _analysis(
+        tmp_path,
+        _events(n_per_arm=500, trigger_rate=0.1, treatment_trigger_rate=0.9),
+        allocation_scheme="independent",
+    )
+
+    results = analysis.run()
+
+    scopes = {
+        scope.rosters[0].analysis_population: scope
+        for scope in results.metadata.scope.by_source.values()
+    }
+    assert scopes["assigned"].integrity[0].status == "not_rejected"
+    assert scopes["assigned"].integrity[0].analysis_population == "assigned"
+    (triggered_integrity,) = scopes["triggered"].integrity
+    assert triggered_integrity.status == "not_checked_missing_counts"
+    assert triggered_integrity.analysis_population == "triggered"
+    assert triggered_integrity.observed is None
+    triggered_only = results.filter(lambda row: row.analysis_population == "triggered")
+    retained = next(
+        scope
+        for scope in triggered_only.metadata.scope.by_source.values()
+        if scope.rosters[0].analysis_population == "assigned"
+    )
+    assert retained.integrity[0] == scopes["assigned"].integrity[0]
+
+
+def test_registered_sequential_trigger_run_reuses_assigned_integrity(monkeypatch, tmp_path):
+    import datetime as dt
+
+    from increment.readouts import _sequential_scope
+    from tests.binary_sequential_cases import definitions_yaml, event_rows, unit_rows
+    from tests.sequential_cases import registered_native
+
+    units = unit_rows(seed=17, n=500)
+    rng = np.random.default_rng(51)
+    for unit in units:
+        threshold = 0.1 if unit["variant"] == "control" else 0.9
+        unit["triggered"] = rng.random() < threshold
+    events = event_rows(units)
+    trigger_time = dt.datetime(2025, 1, 10, 10, tzinfo=dt.UTC)
+    events.extend(
+        {
+            "user_id": unit["user_id"],
+            "ts": trigger_time,
+            "event": "saw_surface",
+            "experiment_id": None,
+            "group_id": None,
+        }
+        for unit in units
+        if unit["triggered"]
+    )
+    definitions = (
+        definitions_yaml("duckdb", "events", plan="      primary: purchase\n")
+        .replace(
+            "      - {name: buy, column: null}",
+            "      - {name: buy, column: null}\n      - {name: saw_surface, column: null}",
+        )
+        .replace(
+            "  - {name: enrollment, fact: enrolled}",
+            "  - {name: enrollment, fact: enrolled}\n  - {name: saw_surface, fact: saw_surface}",
+        )
+        .replace(
+            "    allocation: {control: 0.5, treatment: 0.5}",
+            "    allocation: {control: 0.5, treatment: 0.5}\n"
+            "    allocation_scheme: independent\n    trigger: saw_surface",
+        )
+    )
+    definitions_path = tmp_path / "sequential-trigger.yml"
+    definitions_path.write_text(definitions)
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=pa.Table.from_pylist(events))
+    analysis = registered_native(Analysis.from_definitions("exp", definitions_path, con))
+    analysis.capture_sequential(finalized=True, as_of=dt.date(2025, 1, 14))
+
+    source_type = type(analysis._src)
+    original_counts = source_type.assignment_counts
+    count_calls = []
+
+    def counted_counts(self, *, population="assigned"):
+        count_calls.append(population)
+        return original_counts(self, population=population)
+
+    original_integrity = _sequential_scope.assignment_integrity
+    integrity_calls = []
+
+    def counted_integrity(*args, **kwargs):
+        integrity_calls.append(kwargs.get("counts", args[1] if len(args) > 1 else None))
+        return original_integrity(*args, **kwargs)
+
+    monkeypatch.setattr(source_type, "assignment_counts", counted_counts)
+    monkeypatch.setattr(_sequential_scope, "assignment_integrity", counted_integrity)
+    results = analysis.run()
+
+    (scope,) = results.metadata.scope.by_source.values()
+    (integrity,) = scope.integrity
+    assert count_calls == ["assigned"]
+    assert len(integrity_calls) == 1
+    assert integrity.analysis_population == "assigned"
+    assert integrity.observed == {"control": 500, "treatment": 500}
+    assert any(
+        row.analysis_population == "triggered"
+        and row.failure_code == "readout.cell.unsupported_request"
+        for row in results
+    )
+    assert results.source["components"][-1]["kind"] == "assignment_counts"
+    import datetime as dt
+
+    from tests.binary_sequential_cases import definitions_yaml, event_rows, unit_rows
+    from tests.sequential_cases import registered_native
+
+    units = unit_rows(seed=17, n=500)
+    rng = np.random.default_rng(51)
+    for unit in units:
+        threshold = 0.1 if unit["variant"] == "control" else 0.9
+        unit["triggered"] = rng.random() < threshold
+    events = event_rows(units)
+    trigger_time = dt.datetime(2025, 1, 10, 10, tzinfo=dt.UTC)
+    events.extend(
+        {
+            "user_id": unit["user_id"],
+            "ts": trigger_time,
+            "event": "saw_surface",
+            "experiment_id": None,
+            "group_id": None,
+        }
+        for unit in units
+        if unit["triggered"]
+    )
+    definitions = (
+        definitions_yaml("duckdb", "events", plan="      primary: purchase\n")
+        .replace("      - {name: buy, column: null}", "      - {name: buy, column: null}\n      - {name: saw_surface, column: null}")
+        .replace("  - {name: enrollment, fact: enrolled}", "  - {name: enrollment, fact: enrolled}\n  - {name: saw_surface, fact: saw_surface}")
+        .replace(
+            "    allocation: {control: 0.5, treatment: 0.5}",
+            "    allocation: {control: 0.5, treatment: 0.5}\n"
+            "    allocation_scheme: independent\n    trigger: saw_surface",
+        )
+    )
+    definitions_path = tmp_path / "sequential-trigger.yml"
+    definitions_path.write_text(definitions)
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=pa.Table.from_pylist(events))
+    analysis = registered_native(Analysis.from_definitions("exp", definitions_path, con))
+    analysis.capture_sequential(finalized=True, as_of=dt.date(2025, 1, 14))
+
+    source_type = type(analysis._src)
+    original = source_type.assignment_counts
+    calls = []
+
+    def counted(self, *, population="assigned"):
+        calls.append(population)
+        return original(self, population=population)
+
+    monkeypatch.setattr(source_type, "assignment_counts", counted)
+    results = analysis.run()
+
+    (scope,) = results.metadata.scope.by_source.values()
+    (integrity,) = scope.integrity
+    assert calls == ["assigned"]
+    assert integrity.analysis_population == "assigned"
+    assert integrity.observed == {"control": 500, "treatment": 500}
+    assert any(
+        row.analysis_population == "triggered"
+        and row.failure_code == "readout.cell.unsupported_request"
+        for row in results
+    )
+
+
 def test_srm_population_triggered_refuses_on_a_seam_instance():
     import pandas as pd
 
@@ -350,7 +539,11 @@ experiments:
 
 
 def _clustered_trigger_events(
-    n_stores_per_arm=20, units_per_store=5, trigger_rate=0.2, effect=0.5, seed=5
+    n_stores_per_arm=20,
+    units_per_store=5,
+    trigger_rate=0.2,
+    effect=0.5,
+    seed=5,
 ):
     """Same dilution shape as `_events`, but store-clustered: every row
     also carries a `store_id`, and a store's units share triggered status
@@ -383,7 +576,10 @@ def _clustered_trigger_events(
         for s in range(n_stores_per_arm):
             store = f"{arm}{s}"
             store_triggered = rng.random() < trigger_rate
-            for u in range(units_per_store):
+            arm_units_per_store = (
+                units_per_store[arm] if isinstance(units_per_store, dict) else units_per_store
+            )
+            for u in range(arm_units_per_store):
                 uid = f"{store}_{u}"
                 add(uid, arm, store, "enrolled", 0.0, enrolled_ts)
                 if store_triggered:

@@ -1787,20 +1787,29 @@ class Analysis:
                 prior=prior,
             )
 
-        rows = self._whole_window().run(request(selected)) if selected or not added else []
+        rows = (
+            self._whole_window().run(request(selected))
+            if selected or not added
+            else LiftEstimates()
+        )
+        if not isinstance(rows, LiftEstimates):
+            rows = LiftEstimates(rows)
         if added:
-            # The design-level compliance rows already ride with the declared read.
-            rows = [
-                *rows,
-                *(
+            extra = (
+                self._exploratory_analysis(added, caller="run")._whole_window().run(request(added))
+            )
+            extra = LiftEstimates(
+                (
                     row.model_copy(update={"role": "exploratory"})
-                    for row in self._exploratory_analysis(added, caller="run")
-                    ._whole_window()
-                    .run(request(added))
+                    for row in extra
                     if row.estimand != "compliance"
                 ),
-            ]
-        return LiftEstimates(rows)
+                metadata=extra.metadata,
+                source=extra.source,
+                sequential_snapshot=extra.sequential_snapshot,
+            )
+            rows = extra if rows.metadata is None else rows.concat(extra)
+        return rows
 
     def _run_contrast(
         self,

@@ -76,6 +76,22 @@ def test_compile_context_rejects_unknown_on_mixed_assignment() -> None:
     assert exc_info.value.code == "artifact.on_mixed_assignment"
 
 
+def test_artifact_context_round_trips_declared_allocation_scheme() -> None:
+    definitions = _definitions()
+    experiment = definitions.experiment(_EXPERIMENT)
+    assert experiment is not None
+    declared = experiment.model_copy(update={"allocation_scheme": "independent"})
+    definitions = definitions.model_copy(update={"experiments": (declared,)})
+
+    context = ac.compile_unit_day_artifact_context(_EXPERIMENT, definitions)
+    stored = json.loads(context.canonical_json)["experiment"]
+    assert stored["allocation_scheme"] == "independent"
+    legacy = ac.compile_unit_day_artifact_context(_EXPERIMENT, _definitions())
+    assert "allocation_scheme" not in json.loads(legacy.canonical_json)["experiment"]
+
+    assert definitions.experiment(_EXPERIMENT).resolved_design().allocation_scheme == "independent"
+
+
 def test_compile_context_rejects_non_date_site_volume_coverage() -> None:
     with pytest.raises(InvalidRequestError) as exc_info:
         ac.compile_unit_day_artifact_context(

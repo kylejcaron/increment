@@ -633,10 +633,14 @@ def test_loaded_collections_are_independent_copies_of_the_capture(tmp_path):
         )
         kept = _fingerprint(first)
         assert kept
-        first.clear()
+        assert isinstance(first, DailyMetricValues)
+        with pytest.raises(CodedError, match="Collection mutation clear"):
+            first.clear()
         again = load_explore(
             analysis, snapshot=snapshot, metric="checkout_conversion", view="cumulative_values"
         )
+        assert again is not first
+        assert _fingerprint(first) == kept
         assert _fingerprint(again) == kept
 
 

@@ -822,6 +822,15 @@ def test_run_asof_lift_returns_frozen_per_day_lift_estimates(con):
 
     by_day = {r.ds: r for r in results}
     assert set(by_day) == {date(2025, 6, 1), date(2025, 6, 2), date(2025, 6, 3)}
+    restored = [
+        type(row).model_validate_json(row.model_dump_json())
+        for row in results
+    ]
+    assert restored == list(results)
+    assert {
+        value.date() if isinstance(value, datetime) else value
+        for value in results.to_frame()["ds"]
+    } == set(by_day)
     day0_lift = by_day[date(2025, 6, 1)].require_lift().value
     # Not hand-computed: "unadjusted" applies posterior shrinkage on top of the raw ratio. The property under test is the FREEZE (below), so just confirm direction (treatment > control).
     assert day0_lift > 0

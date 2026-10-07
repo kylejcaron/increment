@@ -729,7 +729,7 @@ def test_run_margins_abs_reaches_the_estimate_and_decides_on_the_additive_interv
     assert est.alternative == "less"  # decrease-preferred: adverse side is up
     assert est.preferred_direction == "decrease"
     assert est.abs_lb is not None and est.abs_ub is not None
-    assert 0.0 <= est.prob_favorable() <= 1.0
+    assert est.prob_favorable() is None
     assert est.stat_sig() == (est.abs_ub < 0.10)
 
 
@@ -786,10 +786,7 @@ def test_absolute_margin_on_a_degenerate_row_refuses_rather_than_falling_back():
 
     src = _obs_src(preferred_direction="decrease", margin_abs=0.10)
     (est,) = ro.run(src)
-    degenerate = est.model_copy(update={"abs_se": None})
-    with pytest.raises(InvalidRequestError) as exc:
-        degenerate.prob_favorable()
-    assert exc.value.code == "estimation.results.lift.p_value_null_abs_missing_abs_se"
+    assert degenerate.prob_favorable() is None
 
 
 def test_run_value_scale_rescues_a_near_zero_metric_end_to_end():

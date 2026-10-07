@@ -2360,10 +2360,12 @@ def test_estimate_cate_matches_across_unit_panel_and_unit_summary(tmp_path):
 
 
 def test_observational_ate_matches_across_definitions_artifact_and_unit_summary(tmp_path):
-    """Confounded assignment adjusted on a declared pre-exposure covariate: the
-    warehouse and artifact routes return the dataframe route's rows exactly."""
+    """Confounded assignment adjusted on a declared pre-exposure covariate: the warehouse and artifact routes return the dataframe route's rows exactly."""
+    from collections import Counter
+
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
+    from increment.query.source import open_artifact
     from increment.semantics import load
     from increment.semantics.artifact import UnitCovariateRequest
     from tests.analysis_factory import lift_rows
@@ -2380,6 +2382,8 @@ def test_observational_ate_matches_across_definitions_artifact_and_unit_summary(
         store, extensions=[UnitCovariateRequest(property_name="tenure", source_name="events")]
     )
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    with open_artifact(store, ref, expected_context=context) as artifact_source:
+        assert artifact_source.assignment_counts() == dict(Counter(group.values()))
     oracle = Analysis.from_unit_summary(
         _unit_summary_frame(tenure, group, revenue),
         unit="user_id",

@@ -101,6 +101,8 @@ from .comparison import nested_close
 _POOL_LABELS = {"raw": {"study_id": True, "missingness": True}}
 _PATH_SPECIFIC: dict[str, Any] = {
     "source": True,
+    # Source identities bind ingress-specific evidence kinds.
+    "source_snapshot_id": True,
     "sequential_result": {
         "checkpoint": {"registration_id": True, "filtration_id": True, "prefix_id": True}
     },
@@ -147,8 +149,11 @@ def _row_payload(row: Any) -> dict[str, Any]:
     """Every public field of the row, plus the derived values the dump does not carry."""
     payload = row.model_dump(mode="python", exclude=_PATH_SPECIFIC)
     payload["p_value"] = _p_value(row)
-    prior_shrunk = getattr(row, "prior_shrunk", False)
-    payload["posterior_prob_favorable"] = row.prob_favorable() if prior_shrunk else None
+    payload["posterior_prob_favorable"] = (
+        row.prob_favorable()
+        if getattr(row, "posterior_available", None) is True
+        else None
+    )
     # `log_e` is a property of the result, not a dumped field. `sequential_result` is None on
     # a non-sequential row: both sides then compare as None.
     sequential_result = getattr(row, "sequential_result", None)

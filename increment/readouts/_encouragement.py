@@ -142,6 +142,60 @@ def _family_route_alphas(
     }
 
 
+def _compliance_only_rows(src, design, wanted, plan, capture):
+    if set(wanted) != {"compliance"}:
+        return None
+    summary = _validated_compliance_summary(src, design)
+    computation = _design_compliance_computation(
+        summary, design, wanted, alpha=plan.alpha, deferred=False
+    )
+    if capture is not None:
+        capture["computations"] = [computation]
+        capture["compliance_summary"] = summary
+    return list(computation.results)
+
+
+def _prepare_encouragement_groups(metrics, rows_by_metric, configs, design, plan):
+    role_by_metric: dict[str, str | None] = {}
+    cell_alpha_by_metric: dict[str, float] = {}
+    cell_alternative_by_metric: dict[str, str] = {}
+    cell_null_lift_by_metric: dict[str, float] = {}
+    cell_null_abs_by_metric: dict[str, float | None] = {}
+    control = str(design.control_group)
+    for metric in metrics:
+        test = plan.procedures[metric.name]
+        cell_null_lift_by_metric[metric.name] = getattr(test, "null_lift", 0.0) or 0.0
+        cell_null_abs_by_metric[metric.name] = getattr(test, "null_abs", None)
+        if not plan.declared:
+            role_by_metric[metric.name] = None
+            cell_alpha_by_metric[metric.name] = test.alpha
+            cell_alternative_by_metric[metric.name] = test.alternative
+            continue
+        role_by_metric[metric.name] = test.role
+        arm_ids = (
+            {str(row["group_id"]) for row in rows_by_metric[metric.name]}
+            if test.role == "primary"
+            else set()
+        )
+        # Secondary metrics use nominal alpha here; family selection later re-estimates selected cells at its FCR alpha.
+        cell_alpha_by_metric[metric.name] = resolve_cell_alpha(
+            plan, test, n_arms=len(arm_ids - {control}), view=None
+        )
+        cell_alternative_by_metric[metric.name] = test.alternative
+    _, family_metric_names = _encouragement_family_config(metrics, configs, plan)
+    groups = _encouragement_cell_groups(
+        metrics,
+        configs,
+        design,
+        cell_alpha_by_metric,
+        cell_alternative_by_metric,
+        cell_null_lift_by_metric,
+        cell_null_abs_by_metric,
+        _family_route_alphas(metrics, family_metric_names, rows_by_metric, plan.q, control),
+    )
+    return role_by_metric, family_metric_names, groups
+
+
 def encouragement_rows(
     *,
     src: MomentSource,
@@ -153,6 +207,7 @@ def encouragement_rows(
     estimands: Sequence[str] | None,
     cluster: str | None,
     caller: str,
+    capture: dict[str, Any] | None = None,
 ) -> list[LiftEstimate]:
     """Every encouragement row for one whole-window readout.
 
@@ -170,16 +225,9 @@ def encouragement_rows(
     compliance carry no shifted null.
     """
     wanted = estimands if estimands is not None else ESTIMANDS
-    if set(wanted) == {"compliance"}:
-        compliance_summary = _validated_compliance_summary(src, design)
-        computation = _design_compliance_computation(
-            compliance_summary,
-            design,
-            wanted,
-            alpha=plan.alpha,
-            deferred=False,
-        )
-        return list(computation.results)
+    compliance_rows = _compliance_only_rows(src, design, wanted, plan, capture)
+    if compliance_rows is not None:
+        return compliance_rows
     if not metrics:
         return []
     reject_quantile_metrics(
@@ -189,43 +237,8 @@ def encouragement_rows(
         "which a quantile metric has none of",
         remedy="Drop the encouragement design or the quantile metric.",
     )
-    role_by_metric: dict[str, str | None] = {}
-    cell_alpha_by_metric: dict[str, float] = {}
-    cell_alternative_by_metric: dict[str, str] = {}
-    cell_null_lift_by_metric: dict[str, float] = {}
-    cell_null_abs_by_metric: dict[str, float | None] = {}
-    control = str(design.control_group)
-    for metric in metrics:
-        test = plan.procedures[metric.name]
-        cell_null_lift_by_metric[metric.name] = getattr(test, "null_lift", 0.0) or 0.0
-        cell_null_abs_by_metric[metric.name] = getattr(test, "null_abs", None)
-        if not plan.declared:
-            # No declared plan: every metric uses its compiled default.
-            role_by_metric[metric.name] = None
-            cell_alpha_by_metric[metric.name] = test.alpha
-            cell_alternative_by_metric[metric.name] = test.alternative
-            continue
-        role_by_metric[metric.name] = test.role
-        if test.role == "primary":
-            arm_ids = {str(r["group_id"]) for r in rows_by_metric[metric.name]}
-            n_arms = len(arm_ids - {control})
-        else:
-            n_arms = 0
-        # This first pass intentionally uses the secondary's nominal plan.alpha. The
-        # family block below stamps the ITT verdict and re-estimates selected cells
-        # at the capped FCR alpha; compliance and LATE rows keep discovery unset.
-        cell_alpha_by_metric[metric.name] = resolve_cell_alpha(plan, test, n_arms=n_arms, view=None)
-        cell_alternative_by_metric[metric.name] = test.alternative
-    config_by_metric, family_metric_names = _encouragement_family_config(metrics, configs, plan)
-    groups = _encouragement_cell_groups(
-        metrics,
-        configs,
-        design,
-        cell_alpha_by_metric,
-        cell_alternative_by_metric,
-        cell_null_lift_by_metric,
-        cell_null_abs_by_metric,
-        _family_route_alphas(metrics, family_metric_names, rows_by_metric, plan.q, control),
+    role_by_metric, family_metric_names, groups = _prepare_encouragement_groups(
+        metrics, rows_by_metric, configs, design, plan
     )
 
     compliance_summary = (
@@ -304,6 +317,9 @@ def encouragement_rows(
     )
     computations.append(computation)
     results.extend(r.model_copy(update={"role": None}) for r in computation.results)
+    if capture is not None:
+        capture["computations"] = computations
+        capture["compliance_summary"] = compliance_summary
     if plan.declared:
         results = _select_encouragement_family(
             results,
@@ -315,6 +331,7 @@ def encouragement_rows(
             rows_by_metric=rows_by_metric,
             estimands=estimands,
             cluster=cluster,
+            computations=computations,
         )
     # Grouping dispatches metrics out of declared order, so stable-sort
     # back to it; compliance is design-level (identified by estimand, not
@@ -370,6 +387,7 @@ def _select_encouragement_family(
     rows_by_metric: Mapping[str, list[Mapping[str, Any]]],
     estimands: Sequence[str] | None,
     cluster: str | None,
+    computations: list[DecisionComputation[LiftEstimate]],
 ) -> list[LiftEstimate]:
     """BH/e-BH selection over in-family encouragement secondaries.
 
@@ -461,7 +479,7 @@ def _select_encouragement_family(
                 "two-sided" if _joint_relative_rows(rows, metric=name) else alternative,
                 outcome.fcr_alpha,
             )
-            pass_results = estimate_encouragement(
+            pass_computation = estimate_encouragement(
                 metrics=[metric],
                 summary=rows_by_metric[name],
                 design=design,
@@ -474,7 +492,9 @@ def _select_encouragement_family(
                 null_abs=getattr(plan.procedures[name], "null_abs", None),
                 cluster=cluster,
                 method_roles={config.decision_method.name: "decision"},
-            ).results
+            )
+            computations.append(pass_computation)
+            pass_results = pass_computation.results
             for r in pass_results:
                 if r.estimand in ("itt", "late"):
                     reestimated[(r.metric, r.group_id, r.method, r.estimand, r.value_scale)] = (
