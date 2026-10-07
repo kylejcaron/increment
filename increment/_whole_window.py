@@ -24,6 +24,7 @@ from increment._readout_request import _raise as _raise_readout
 from increment._source_types import classify_source
 from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec
 from increment.errors import refuse as _refuse
+from increment.readouts._requests import _design_compliance_only, _validate_run_request
 from increment.sources import SourceContext, require_operation
 
 if TYPE_CHECKING:
@@ -113,7 +114,7 @@ def validate_whole_window(
         return
     if route == "native" and req.value_scale:
         _raise_readout("readout.randomized.value_scale")
-    readouts._validate_run_request(
+    _validate_run_request(
         src,
         decision_method=req.decision_method,
         sensitivity_methods=req.sensitivity_methods,
@@ -166,7 +167,7 @@ class WholeWindowReadouts:
                 prior=req.prior,
                 value_scale=req.value_scale,
             )
-        design_summary_only = readouts._design_compliance_only(self._src, req.estimands)
+        design_summary_only = _design_compliance_only(self._src, req.estimands)
         if not req.metrics and not design_summary_only:
             return []
         if route != "native":

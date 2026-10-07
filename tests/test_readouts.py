@@ -799,7 +799,7 @@ def test_cluster_counts_refuses_on_a_sql_summary_source(con, unit_summary_frame)
 
 def test_breakout_preserves_breakout_estimates_type():
     """breakout() is annotated -> BreakoutEstimates, and both its return
-    statements (increment/readouts.py:904, :921) construct one - this test
+    statements (increment/readouts/_breakout.py) construct one - this test
     pins that the dimensioned path never silently degrades to a plain list."""
     from increment import readouts
     from increment.breakout.estimates import BreakoutEstimates
@@ -1570,6 +1570,7 @@ def test_run_quantile_secondary_refuses_breakout_dimensions(monkeypatch):
     from increment import readouts
     from increment.errors import CapabilityError
     from increment.frame import FrameTotalsSource
+    from increment.readouts import _requests
 
     src = FrameTotalsSource.from_frame(
         _quantile_unit_frame(),
@@ -1586,7 +1587,7 @@ def test_run_quantile_secondary_refuses_breakout_dimensions(monkeypatch):
     # dispatch site itself still invokes the quantile refusal. Narrowed to
     # the quantile secondary alone: `revenue` (non-quantile primary) would
     # otherwise trip its own, unrelated by= refusal first.
-    monkeypatch.setattr(readouts, "validate_request", lambda request: None)
+    monkeypatch.setattr(_requests, "validate_request", lambda request: None)
     original_moments = src.moments
     monkeypatch.setattr(src, "moments", lambda metric, **kwargs: original_moments(metric))
     with pytest.raises(CapabilityError) as raised:

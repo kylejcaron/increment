@@ -344,7 +344,7 @@ def test_run_rejects_unidentifiable_estimand_on_native_randomized_path(con):
     """A known-but-unidentifiable ``estimands`` value (``"late"``/
     ``"compliance"``) must refuse loudly on the native (non-frame) path
     for a design that isn't an Encouragement, same as it already does on
-    the frame path (``readouts.py``), rather than returning itt rows the
+    the frame path (``increment.readouts``), rather than returning itt rows the
     caller never requested."""
     analysis = Analysis(
         experiment_name="new_onboarding_v2",

@@ -15,7 +15,6 @@ import pytest
 from pydantic import ValidationError
 
 from increment import Analysis, IdentificationError
-from increment import readouts as readout_functions
 from increment.breakout.estimates import (
     BreakoutEstimates,
     DailyLiftEstimates,
@@ -33,6 +32,7 @@ from increment.estimation.engine import Method
 from increment.estimation.results import LiftEstimate
 from increment.frame import MetricSpec
 from increment.query.artifact_contract import ArtifactContractError
+from increment.readouts import _run as run_readout
 from increment.semantics.design import AdjustmentSet, Observational
 from increment.semantics.models import (
     AnalysisPlan,
@@ -1598,7 +1598,7 @@ def test_observational_estimand_guardrail_row_survives_native_run(
             estimand="ate",
         ),
     ]
-    monkeypatch.setattr(readout_functions, "run", lambda *args, **kwargs: canned)
+    monkeypatch.setattr(run_readout, "run", lambda *args, **kwargs: canned)
     results = a.run(decision_method=Method(name="iptw"))
     metrics_seen = {r.metric for r in results}
     assert "d7_retention" in metrics_seen, (

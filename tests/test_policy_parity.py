@@ -236,8 +236,13 @@ def test_every_confirmatory_path_matches_the_policy_resolver():
 def test_confirmatory_consumers_delegate_alpha_composition():
     root = Path(__file__).parents[1]
     offenders: list[str] = []
-    for relative in ("increment/readouts.py", "increment/analysis.py"):
-        tree = ast.parse((root / relative).read_text())
+    sources = [
+        *sorted((root / "increment" / "readouts").glob("*.py")),
+        root / "increment/analysis.py",
+    ]
+    for path in sources:
+        relative = path.relative_to(root).as_posix()
+        tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
                 if node.func.id in {"_conservative_divide", "_conservative_ratio"}:

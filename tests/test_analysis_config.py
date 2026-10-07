@@ -217,9 +217,9 @@ def test_resolve_configs_global_methods_win_for_every_metric():
 
 @pytest.mark.parametrize("design", [None, OBSERVATIONAL])
 def test_resolve_configs_explicit_empty_methods_emit_no_estimation_rows(design):
-    from increment import readouts
     from increment._analysis_config import UNSET, resolve_configs
     from increment._readout_request import ReadoutRequest, validate_request
+    from increment.readouts._run import _run_prepared
 
     source = from_unit_summary(
         _unit_frame(),
@@ -236,7 +236,7 @@ def test_resolve_configs_explicit_empty_methods_emit_no_estimation_rows(design):
     )
     validate_request(request)
     assert (
-        readouts._run_prepared(
+        _run_prepared(
             source, metrics, configs, prior=UNSET, by=(), estimands=None, value_scale=None
         )
         == []
@@ -247,6 +247,7 @@ def test_lift_option_resolution_preserves_the_observational_decision():
     from increment import readouts
     from increment._analysis_config import UNSET
     from increment._lift_options import LiftOptions
+    from increment.readouts._run import _run_prepared
 
     source = from_unit_summary(
         _unit_frame(),
@@ -265,7 +266,7 @@ def test_lift_option_resolution_preserves_the_observational_decision():
         prior=UNSET,
         alpha=0.05,
     )
-    (actual,) = readouts._run_prepared(
+    (actual,) = _run_prepared(
         source, metrics, options.configs, prior=UNSET, by=(), estimands=None, value_scale=None
     )
     (expected,) = readouts.run(source)

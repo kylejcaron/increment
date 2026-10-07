@@ -33,6 +33,8 @@ from increment.estimation.armstats import centered_row_from_raw_sums
 from increment.estimation.engine import Method
 from increment.estimation.results import LiftEstimate
 from increment.frame import MetricSpec, from_unit_summary
+from increment.readouts._common import _validate_encouragement_asof_inference
+from increment.readouts._encouragement import encouragement_rows
 from increment.semantics.design import Encouragement, ExclusionRestriction, Randomized, UptakeSpec
 from increment.semantics.models import AnalysisPlan, Definitions, InferenceSpec, MeanMetric
 from increment.sources import MomentSource, SourceContext, SourceOperation
@@ -507,7 +509,7 @@ def test_asof_lift_mixed_family_requires_finalized_bounded_windows():
 
 
 def test_validate_encouragement_asof_inference_gates_mixed_family_and_spares_asymptotic_only():
-    """``_validate_encouragement_asof_inference`` (readouts.py) must gate
+    """``_validate_encouragement_asof_inference`` (``increment.readouts._common``) must gate
     MixedFamily the same way it gates AlwaysValid -- both carry an exact
     Bernoulli cell -- while leaving plain AsymptoticMean (no compliance
     cell) untouched."""
@@ -518,19 +520,19 @@ def test_validate_encouragement_asof_inference_gates_mixed_family_and_spares_asy
     mixed = _sequential_policy(uptake=True)
     assert isinstance(mixed, MixedFamily)
     with pytest.raises(InvalidRequestError) as unfinished:
-        readouts._validate_encouragement_asof_inference(
+        _validate_encouragement_asof_inference(
             [METRIC], design, inference=mixed, completed_windows_only=False, method="asof_lift"
         )
     assert unfinished.value.code == "readout.alwaysvalid_under_encouragement"
     with pytest.raises(InvalidRequestError) as unbounded:
-        readouts._validate_encouragement_asof_inference(
+        _validate_encouragement_asof_inference(
             [METRIC], design, inference=mixed, completed_windows_only=True, method="asof_lift"
         )
     assert unbounded.value.code == "readout.completed_encouragement_inference"
 
     asymptotic_only = _sequential_policy(uptake=False)
     assert isinstance(asymptotic_only, AsymptoticMean)
-    readouts._validate_encouragement_asof_inference(
+    _validate_encouragement_asof_inference(
         [METRIC],
         design,
         inference=asymptotic_only,
@@ -651,7 +653,7 @@ def test_validate_encouragement_asof_inference_uses_the_retention_band_not_windo
     unbounded = RetentionMetric(name="ret", entity="user_id", fact="orders", threshold_days=7)
     design = _design(uptake={"fact": "help_click", "window_days": 7})
 
-    readouts._validate_encouragement_asof_inference(
+    _validate_encouragement_asof_inference(
         [bounded],
         design,
         inference=AlwaysValid(registration=registration("gaussian")),
@@ -659,7 +661,7 @@ def test_validate_encouragement_asof_inference_uses_the_retention_band_not_windo
         method="asof_lift",
     )
     with pytest.raises(InvalidRequestError) as exc_info:
-        readouts._validate_encouragement_asof_inference(
+        _validate_encouragement_asof_inference(
             [unbounded],
             design,
             inference=AlwaysValid(registration=registration("gaussian")),
@@ -1673,7 +1675,7 @@ def test_encouragement_missing_control_defers_to_family_gate(con):
         row for row in rows_by_metric["revenue"] if str(row["group_id"]) != "control"
     ]
     with pytest.raises(CapabilityError) as raised:
-        readouts.encouragement_rows(
+        encouragement_rows(
             src=src,
             metrics=metrics,
             rows_by_metric=rows_by_metric,
@@ -1793,7 +1795,7 @@ def test_selected_secondary_late_row_keeps_both_value_scales_at_corrected_level(
     (complier-ratio) and absolute (additive) -- sharing the same
     (metric, group_id, method, estimand="late") tuple and differing only
     in ``value_scale``. ``_select_encouragement_family``'s re-estimation
-    cache (readouts.py) must key on ``value_scale`` too: without it, the
+    cache (``increment.readouts._encouragement``) must key on ``value_scale`` too: without it, the
     second late row's ``pass_results`` entry would silently overwrite the
     first in ``reestimated``, so BOTH original late rows would look up
     and receive the SAME single re-estimated object -- one value_scale
@@ -1969,7 +1971,7 @@ def test_guardrail_estimands_narrowing_never_returns_unrequested_estimand(con):
 def _uptake_named_secondary_analysis(con):
     """Two in-family secondaries with symmetric roles, one of them
     literally named ``uptake`` -- the outcome-metric collision surface
-    for defect 1 (readouts.py identifying the design-level compliance
+    for defect 1 (``increment.readouts._encouragement`` identifying the design-level compliance
     row by ``metric == "uptake"`` instead of ``estimand == "compliance"``).
 
     The plan declares ``q=0.02`` (below the default 0.10) so that, with
@@ -2144,8 +2146,8 @@ def _uptake_named_secondary_analysis(con):
 
 
 def test_outcome_metric_named_uptake_keeps_its_own_role_and_family_verdict(con):
-    """Defect 1 regression (readouts.py): a real outcome metric legitimately
-    named ``uptake`` shares its ``LiftEstimate.metric`` string with the
+    """Defect 1 regression (``increment.readouts._encouragement``): a real outcome metric
+    legitimately named ``uptake`` shares its ``LiftEstimate.metric`` string with the
     design-level compliance diagnostic, which `encouragement_rows` and
     `_select_encouragement_family` used to identify via
     ``r.metric == "uptake"``. That collision used to (a) drop the real

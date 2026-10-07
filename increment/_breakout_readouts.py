@@ -14,6 +14,7 @@ from increment._source_types import classify_source
 from increment._whole_window import _ANALYSIS_OPERATION, _require_analysis_operation
 from increment.breakout.estimates import BreakoutEstimates
 from increment.errors import refuse as _refuse
+from increment.readouts._requests import _validate_breakout_request
 
 if TYPE_CHECKING:
     from increment.estimation.engine import Method
@@ -141,7 +142,7 @@ class BreakoutReadouts:
                 return BreakoutEstimates([])
         if route == "native":
             assert self._experiment is not None
-            validated = readouts._validate_breakout_request(
+            validated = _validate_breakout_request(
                 self._src,
                 metrics=[metric.name for metric in req.metrics],
                 decision_method=req.decision_method,

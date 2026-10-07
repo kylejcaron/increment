@@ -40,6 +40,7 @@ from increment.estimation.family import bh_select, e_bh_select
 from increment.estimation.inference import Normal
 from increment.estimation.sequential import AlwaysValid
 from increment.frame import FrameTotalsSource, MetricSpec
+from increment.readouts import _passes
 from increment.semantics.design import (
     Encouragement,
     ExclusionRestriction,
@@ -439,7 +440,7 @@ def test_family_missing_control_reports_incomplete():
 
 def test_run_replays_advisory_before_reraising_unrelated_whole_window_cell_error(monkeypatch):
     src = _guarded_three_arm_source()
-    original = readouts.estimate_lift
+    original = _passes.estimate_lift
 
     def raise_unrelated(*args, **kwargs):
         if any(str(row["group_id"]) == "treatment_bad" for row in kwargs["summary"]):
@@ -447,7 +448,7 @@ def test_run_replays_advisory_before_reraising_unrelated_whole_window_cell_error
             raise ValueError("unexpected estimator failure")
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(readouts, "estimate_lift", raise_unrelated)
+    monkeypatch.setattr(_passes, "estimate_lift", raise_unrelated)
     with pytest.warns(UserWarning, match="is open-ended"):
         with pytest.raises(ValueError, match="unexpected estimator failure"):
             readouts.run(src)
@@ -470,7 +471,7 @@ def test_run_replays_advisory_before_reraising_missing_control(monkeypatch):
         warnings.warn("metric is open-ended (window_days=None)", UserWarning, stacklevel=2)
         raise ValueError("unexpected estimator failure")
 
-    monkeypatch.setattr(readouts, "estimate_lift", raise_unrelated)
+    monkeypatch.setattr(_passes, "estimate_lift", raise_unrelated)
     with pytest.warns(UserWarning, match="is open-ended"):
         with pytest.raises(ValueError, match="unexpected estimator failure"):
             readouts.run(src)
