@@ -55,8 +55,20 @@ than scored on partial data. When the drop is material, a warning reports the
 count.
 
 The dataframe path (`Analysis.from_unit_panel`, see the
-[Quickstart](quickstart.md)) accepts this same one-row-per-unit-per-day
-shape directly and zero-fills it to a dense spine internally.
+[Quickstart](quickstart.md)) accepts sparse one-row-per-observed-unit-per-day
+input directly. An absent eligible unit/date observation is a **logical zero**,
+not an excluded unit or missing outcome: aggregation includes it in the
+population's means and variances.
+
+For small inputs, zero filling uses a bounded temporary date spine. For larger
+sparse panels the aggregation avoids retaining the full unit-by-date product;
+the logical population is preserved without materializing one row per zero.
+`densified_cells` counts observed or implicit cells that require zero filling,
+not physical rows written or retained.
+
+This dataframe zero-fill behavior is distinct from the warehouse query path
+above, whose generated dense date spine remains the explanation of the
+warehouse-native one-row-per-unit-per-day relation.
 
 ## The definitions directory
 

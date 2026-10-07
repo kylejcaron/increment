@@ -541,14 +541,272 @@ def test_zero_row_fact_horizon_with_default_end_empty_frame(report):
     assert len(frame) == 0
 
 
+@pytest.mark.parametrize("grain", ["day", "week", "month"])
+@pytest.mark.parametrize("span", [3652, 3653, 3654])
+def test_default_report_horizon_capacity(grain, span):
+    start = dt.date(2000, 1, 1)
+    last = start + dt.timedelta(days=span - 1)
+    definitions = Definitions.model_validate(
+        {
+            "fact_sources": [
+                {
+                    "name": "events",
+                    "sql": "SELECT * FROM horizon_events",
+                    "timestamp_column": "ts",
+                    "entities": ["unit_id"],
+                    "facts": [{"name": "purchase", "column": "amount"}],
+                }
+            ],
+            "metrics": [
+                {"type": "total", "name": "revenue", "fact": "purchase", "aggregation": "sum"},
+                {
+                    "type": "mean",
+                    "name": "calendar_average",
+                    "entity": "unit_id",
+                    "fact": "purchase",
+                    "aggregation": "avg_calendar_day",
+                },
+            ],
+        }
+    )
+    con = ibis.duckdb.connect()
+    try:
+        con.create_table(
+            "horizon_events",
+            ibis.memtable(
+                [
+                    {
+                        "unit_id": "u1",
+                        "ts": dt.datetime.combine(start, dt.time(12)),
+                        "event": "purchase",
+                        "amount": 2.0,
+                    },
+                    {
+                        "unit_id": "u2",
+                        "ts": dt.datetime.combine(last, dt.time(12)),
+                        "event": "purchase",
+                        "amount": 7.0,
+                    },
+                ]
+            ),
+        )
+        report = Report.from_definitions(definitions, con)
+        if span > 3653:
+            with pytest.raises(CapabilityError) as raised:
+                report.metric("revenue", grain=grain, start=start).to_table().execute()
+            assert raised.value.code == "query.calendar.range"
+            assert dict(raised.value.context) == {
+                "start": start,
+                "end_edge": last,
+                "span": span,
+            }
+            with pytest.raises(TypeError):
+                raised.value.context["span"] = 1
+        else:
+            default_trend = report.metric("revenue", grain=grain, start=start)
+            assert default_trend.end is None
+            assert default_trend.sql()
+            default = default_trend.to_frame()
+            assert len(default_trend.to_table().execute()) == len(default)
+            assert len(default_trend.to_frame("polars")) == len(default)
+            assert default_trend.to_frame("pyarrow").num_rows == len(default)
+            explicit = report.metric("revenue", grain=grain, start=start, end=last).to_frame()
+            columns = ["period", "period_complete", "n", "value", "ci_lb", "ci_ub"]
+            from pandas.testing import assert_frame_equal
+
+            assert_frame_equal(
+                default.sort_values("period")[columns].reset_index(drop=True),
+                explicit.sort_values("period")[columns].reset_index(drop=True),
+                check_exact=False,
+                rtol=1e-12,
+                atol=1e-12,
+            )
+            assert default["value"].sum() == pytest.approx(9.0)
+            con.create_table("report_units", ibis.memtable({"unit_id": ["u1", "u2"]}))
+            population = con.table("report_units")
+            average = report.metric(
+                "calendar_average", grain=grain, start=start, population=population
+            ).to_frame()
+            for row in average.itertuples():
+                period = row.period.date() if isinstance(row.period, dt.datetime) else row.period
+                if grain == "day":
+                    period_end = period
+                elif grain == "week":
+                    period_end = period + dt.timedelta(days=6)
+                else:
+                    next_month = (period.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
+                    period_end = next_month - dt.timedelta(days=1)
+                low, high = max(period, start), min(period_end, last)
+                days = (high - low).days + 1
+                amount = 2.0 if low <= start <= high else 0.0
+                amount += 7.0 if low <= last <= high else 0.0
+                assert row.n == 2
+                assert row.value == pytest.approx(amount / (2 * days), rel=1e-12, abs=1e-12)
+    finally:
+        con.disconnect()
+
+
+def test_default_horizons_are_selected_per_metric_and_frozen():
+    start = dt.date(2000, 1, 1)
+    definitions = Definitions.model_validate(
+        {
+            "fact_sources": [
+                {
+                    "name": "events",
+                    "sql": "SELECT * FROM scoped_horizon_events",
+                    "timestamp_column": "ts",
+                    "entities": ["unit_id"],
+                    "facts": [
+                        {"name": name, "column": "amount"}
+                        for name in ("purchase", "numerator", "denominator", "unrelated")
+                    ],
+                }
+            ],
+            "metrics": [
+                {"type": "total", "name": "fresh", "fact": "purchase", "aggregation": "sum"},
+                {
+                    "type": "ratio",
+                    "name": "ratio",
+                    "entity": "unit_id",
+                    "numerator": {"fact": "numerator", "aggregation": "sum"},
+                    "denominator": {"fact": "denominator", "aggregation": "sum"},
+                },
+            ],
+        }
+    )
+    con = ibis.duckdb.connect()
+    try:
+        con.create_table(
+            "scoped_horizon_events",
+            ibis.memtable(
+                [
+                    {
+                        "unit_id": "u1",
+                        "ts": dt.datetime(2000, 1, 10, 12),
+                        "event": "purchase",
+                        "amount": 5.0,
+                    },
+                    {
+                        "unit_id": "u1",
+                        "ts": dt.datetime(2000, 1, 15, 12),
+                        "event": "numerator",
+                        "amount": 8.0,
+                    },
+                    {
+                        "unit_id": "u1",
+                        "ts": dt.datetime(2000, 2, 1, 12),
+                        "event": "numerator",
+                        "amount": 8.0,
+                    },
+                    {
+                        "unit_id": "u1",
+                        "ts": dt.datetime(2000, 1, 15, 12),
+                        "event": "denominator",
+                        "amount": 4.0,
+                    },
+                    {
+                        "unit_id": "u1",
+                        "ts": dt.datetime(2020, 1, 1, 12),
+                        "event": "unrelated",
+                        "amount": 100.0,
+                    },
+                ]
+            ),
+        )
+        report = Report.from_definitions(definitions, con)
+        trends = report.metrics(["fresh", "ratio"], grain="day", start=start)
+        assert trends["fresh"].end is None
+        assert trends["ratio"].end is None
+        fresh = trends["fresh"].to_frame()
+        ratio = trends["ratio"].to_frame()
+        assert max(fresh["period"]) == dt.date(2000, 1, 10)
+        assert max(ratio["period"]) == dt.date(2000, 1, 15)
+        assert ratio.loc[ratio.period == dt.date(2000, 1, 15), "value"].iloc[0] == pytest.approx(
+            2.0
+        )
+
+        con.raw_sql(
+            "INSERT INTO scoped_horizon_events VALUES "
+            "('u1', TIMESTAMP '2020-01-02 12:00:00', 'purchase', 9.0)"
+        )
+        assert max(trends["fresh"].to_frame()["period"]) == dt.date(2000, 1, 10)
+    finally:
+        con.disconnect()
+
+
+def test_omitted_end_executes_bound_horizon_aggregate(report, monkeypatch):
+    executed = []
+    original_execute = report._con.execute
+
+    def record_execute(expression, *args, **kwargs):
+        executed.append(ibis.to_sql(expression))
+        return original_execute(expression, *args, **kwargs)
+
+    monkeypatch.setattr(report._con, "execute", record_execute)
+    trend = report.metric("revenue", grain="day", start=dt.date(2026, 1, 5))
+    assert trend.end is None
+    assert len(executed) == 1
+    assert "raw_events" in executed[0]
+    assert "VALUES" not in executed[0].upper()
+
+
+def test_omitted_end_ratio_aggregates_bound_component_relations(report, monkeypatch):
+    executed = []
+    original_execute = report._con.execute
+
+    def record_execute(expression, *args, **kwargs):
+        executed.append(ibis.to_sql(expression))
+        return original_execute(expression, *args, **kwargs)
+
+    monkeypatch.setattr(report._con, "execute", record_execute)
+    trend = report.metric("rev_per_order", grain="day", start=dt.date(2026, 1, 5))
+    assert trend.end is None
+    assert len(executed) == 1
+    assert "raw_events" in executed[0] and "raw_orders" in executed[0]
+    assert "VALUES" not in executed[0].upper()
+
+
+def test_omitted_end_population_admission_precedes_data_execution(report, monkeypatch):
+    executions = []
+    original_execute = report._con.execute
+
+    def record_execute(expression, *args, **kwargs):
+        executions.append(expression)
+        return original_execute(expression, *args, **kwargs)
+
+    monkeypatch.setattr(report._con, "execute", record_execute)
+    for invalid_sql in ("SELEC FROM raw_events", "DELETE FROM raw_events"):
+        with pytest.raises(InvalidRequestError):
+            report.metric(
+                "revenue",
+                grain="day",
+                start=dt.date(2026, 1, 5),
+                population=invalid_sql,
+            )
+        assert executions == []
+
+    with pytest.raises(InvalidRequestError) as raised:
+        report.metric(
+            "revenue",
+            grain="day",
+            start=dt.date(2026, 1, 5),
+            population=ibis.memtable({"not_unit_id": ["u1"]}),
+        )
+    assert raised.value.code == "query.calendar.population_unit_id"
+    assert executions == []
+
+
 def test_range_beyond_capacity_refused_through_facade(report):
-    # calendar_periods' 10-year capacity refusal must reach the public API.
-    # Regresses a bug where the facade wrapped end in ibis.literal(...), defeating the isinstance(end_edge, dt.date) check.
     with pytest.raises(CapabilityError) as raised:
         report.metric(
             "total_revenue", grain="week", start=dt.date(2026, 1, 1), end=dt.date(2036, 2, 1)
         )
     assert raised.value.code == "query.calendar.range"
+    assert dict(raised.value.context) == {
+        "start": dt.date(2026, 1, 1),
+        "end_edge": dt.date(2036, 2, 1),
+        "span": (dt.date(2036, 2, 1) - dt.date(2026, 1, 1)).days + 1,
+    }
 
 
 def test_zero_row_fact_ratio_numerator_horizon_never_complete(report):

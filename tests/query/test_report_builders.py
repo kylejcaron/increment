@@ -138,6 +138,13 @@ def test_range_beyond_capacity_refused(con):
     with pytest.raises(CapabilityError) as exc_info:
         _periods(con, end_edge=dt.date(2036, 2, 1))  # > 10 years after start
     assert exc_info.value.code == "query.calendar.range"
+    assert dict(exc_info.value.context) == {
+        "start": dt.date(2026, 1, 1),
+        "end_edge": dt.date(2036, 2, 1),
+        "span": (dt.date(2036, 2, 1) - dt.date(2026, 1, 1)).days + 1,
+    }
+    with pytest.raises(TypeError):
+        exc_info.value.context["span"] = 1
 
 
 def test_period_start_expr_refuses_unknown_grain():
