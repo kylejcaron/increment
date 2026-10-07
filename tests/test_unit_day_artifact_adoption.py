@@ -786,10 +786,11 @@ def _adopted_artifact_fixture(
     }
 
 
-@pytest.mark.parametrize(
-    "shape",
-    ("windowed_mean", "winsorized_mean", "ratio", "avg_event", "retention"),
-)
+# Metric shapes the adopted artifact reduction is verified against (and so supports).
+ARTIFACT_SUPPORTED_SHAPES = ("windowed_mean", "winsorized_mean", "ratio", "avg_event", "retention")
+
+
+@pytest.mark.parametrize("shape", ARTIFACT_SUPPORTED_SHAPES)
 def test_adopted_source_matches_builder_reduction_matrix(shape: str) -> None:
     fixture = _adopted_artifact_fixture(shape)
     source = fixture["source"]

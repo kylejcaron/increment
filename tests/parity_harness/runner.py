@@ -71,7 +71,6 @@ Every one of the six constructor names in `CONSTRUCTORS` must appear in
 
 from __future__ import annotations
 
-import math
 import warnings
 from contextlib import nullcontext
 from dataclasses import dataclass, field
@@ -84,8 +83,8 @@ from increment.errors import CodedError, IncrementWarning
 from tests.warning_codes import warning_codes
 
 from .cases import CONSTRUCTORS, ParityCase, _close_parity_analysis
+from .comparison import nested_close
 
-_TOLERANCE = 1e-9
 _NUMERIC_FIELDS = (
     "value",
     "lb",
@@ -380,33 +379,12 @@ def run_case(case: ParityCase) -> CaseResult:
     return CaseResult(rows=rows, refusals=refusals, sequential_state=sequential_state)
 
 
-def _nested_close(expected: Any, actual: Any) -> bool:
-    """Tolerant structural equality for a `model_dump()`-ed nested field:
-    same recursive shape, floats compared with `_TOLERANCE` like every
-    other numeric bound this harness checks."""
-    if expected is None or actual is None:
-        return expected is None and actual is None
-    if isinstance(expected, float) and isinstance(actual, float):
-        return abs(expected - actual) <= _TOLERANCE * max(1.0, abs(expected)) or (
-            math.isinf(expected) and expected == actual
-        )
-    if isinstance(expected, dict) and isinstance(actual, dict):
-        return expected.keys() == actual.keys() and all(
-            _nested_close(expected[k], actual[k]) for k in expected
-        )
-    if isinstance(expected, (list, tuple)) and isinstance(actual, (list, tuple)):
-        return len(expected) == len(actual) and all(
-            _nested_close(e, a) for e, a in zip(expected, actual, strict=True)
-        )
-    return expected == actual
-
-
 def _assert_payload_equal(
     case_id: str, name: str, oracle_name: str, key: tuple, method: str, expected: dict, actual: dict
 ) -> None:
     if "contrast" in expected:
         assert actual.keys() == expected.keys()
-        assert _nested_close(expected["contrast"], actual["contrast"]), (
+        assert nested_close(expected["contrast"], actual["contrast"]), (
             f"{case_id}: {name}/{oracle_name} disagree on contrast {key}/{method}"
         )
         return
@@ -418,7 +396,7 @@ def _assert_payload_equal(
                 f"{field_name} for {key}/{method}: {a!r} vs {e!r}"
             )
             continue
-        assert abs(e - a) <= _TOLERANCE * max(1.0, abs(e)) or (math.isinf(e) and e == a), (
+        assert nested_close(e, a), (
             f"{case_id}: {name} vs {oracle_name} disagree on {field_name} for {key}/{method}: {a} != {e}"
         )
     for field_name in _EXACT_FIELDS:
@@ -428,7 +406,7 @@ def _assert_payload_equal(
         )
     for field_name in _NESTED_FIELDS:
         e, a = expected[field_name], actual[field_name]
-        assert _nested_close(e, a), (
+        assert nested_close(e, a), (
             f"{case_id}: {name} vs {oracle_name} disagree on {field_name} for {key}/{method}: {a!r} != {e!r}"
         )
 

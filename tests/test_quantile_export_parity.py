@@ -29,6 +29,7 @@ from tests.test_native_encouragement_declaration import (
     _write_defs_yaml,
 )
 from tests.test_readouts_observational import _OBS_TRIM, _confounded_table
+from tests.warning_codes import warning_codes
 
 _RANDOMIZED_INGRESSES = (
     "from_definitions",
@@ -202,14 +203,10 @@ def _registered_mixed_catalog(*, registered: bool) -> Analysis:
     specs = _mixed_catalog_specs()
     frame = _frame([0, 0, 0, 1] * 24, [0, 1, 1, 1] * 24)
     frame["latency"] = [float(i % 7) for i in range(len(frame))]
-    declared = (
-        pytest.warns(IncrementWarning, match="quantile sequential inference is refused")
-        if registered
-        else nullcontext()
-    )
-    with declared:
+    declared = pytest.warns(IncrementWarning) if registered else nullcontext()
+    with declared as caught:
         plan = _plan(specs, "bernoulli") if registered else AnalysisPlan(primary="outcome")
-        return Analysis.from_unit_summary(
+        analysis = Analysis.from_unit_summary(
             frame,
             unit="unit",
             group="arm",
@@ -219,6 +216,10 @@ def _registered_mixed_catalog(*, registered: bool) -> Analysis:
             plan=plan,
             exposure_date="exposure",
         )
+    if registered:
+        assert caught is not None
+        assert warning_codes(caught) == ["decision.family.quantile_always_valid_excluded"]
+    return analysis
 
 
 def test_registered_checkpoint_keeps_an_unmodeled_quantile_sibling_exportable(
@@ -241,7 +242,10 @@ def test_registered_checkpoint_keeps_an_unmodeled_quantile_sibling_exportable(
     assert envelope["moments_format"] == 9
     assert "metric" not in envelope
     replay = Analysis.from_moments([envelope], metrics=_mixed_catalog_specs(), control="control")
-    assert replay.sequential_snapshot() == snapshot
+    try:
+        assert replay.sequential_snapshot() == snapshot
+    finally:
+        replay.close()
 
     fixed = _registered_mixed_catalog(registered=False)
     fixed_path = tmp_path / "fixed-moments.parquet"

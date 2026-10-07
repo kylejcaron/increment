@@ -61,13 +61,16 @@ from increment.errors import (
     refusals,
     warn,
 )
+from increment.estimation._readout_refusals import READOUT_REFUSALS
 from increment.estimation.armstats import ArmStats
 from increment.estimation.diagnostics import ESTIMATION_DIAGNOSTICS_ALPHA
 from increment.estimation.encouragement import ESTIMANDS, estimate_encouragement
 from increment.estimation.engine import (
+    UNBOUNDED_RETENTION_DAILY_REMEDY,
     Method,
     _validate_methods,
     estimate_lift,
+    reject_unbounded_retention,
 )
 from increment.estimation.engine import (
     merge_decision_computations as _merge_decision_computations,
@@ -113,21 +116,10 @@ if TYPE_CHECKING:
 Renderer = Callable[..., str]
 
 
-_RETENTION_UNBOUNDED_REMEDY = (
-    "Use the as-of view (run_asof/run_asof_lift), which reports the cumulative ratchet "
-    "honestly, or declare threshold_days: [a, b] to bound the band."
-)
 _REFUSALS = refusals(
     InvalidRequestError,
     {
-        "breakout.retention.unbounded": RefusalSpec(
-            "breakout.retention.unbounded",
-            InvalidRequestError,
-            template="{fn_name}: retention metric(s) {names!r} declare an unbounded band, so their outcome never completes -- on this view every value would be a lower bound on itself, biased hardest for the least-observed units. {remedy}",
-            keys=frozenset({"supported_view"}),
-        ),
         "breakout.retention.daily": "{fn_name}: RetentionMetric(s) {names!r} have no valid independent-per-day snapshot -- 'returned within the observation band' is not a property of a single day. Use the as-of view (run_asof/run_asof_lift, calendar axis) or the cohort view (run_daily/run_daily_lift on a retention metric, indexed by exposure date), or pass metrics= to exclude it.",
-        "breakout.retention.completion": "{fn_name}: completed_windows_only=True is contradictory for retention metric(s) {names!r} -- their bands are open on the right, so no unit's window ever completes and the gate would admit nothing. Drop completed_windows_only to get the cumulative monitoring series, or declare threshold_days: [a, b] to bound the band.",
         "breakout.quantile": RefusalSpec(
             "breakout.quantile",
             CapabilityError,
@@ -181,6 +173,8 @@ _REFUSALS = refusals(
     },
 )
 
+_REFUSALS["breakout.retention.unbounded"] = READOUT_REFUSALS["breakout.retention.unbounded"]
+_REFUSALS["breakout.retention.completion"] = READOUT_REFUSALS["breakout.retention.completion"]
 _REFUSALS["estimation.meta.alpha_too_small"] = ESTIMATION_META_ALPHA_TOO_SMALL
 _REFUSALS["estimation.diagnostics.alpha"] = ESTIMATION_DIAGNOSTICS_ALPHA
 _REFUSALS["breakout.run_breakout_bh_excludes_prior"] = BH_EXCLUDES_PRIOR
@@ -306,17 +300,9 @@ def reject_retention_metrics(
     shapes - its cumulative series has an honest reading either way.
     """
     if view != "asof":
-        unbounded = [
-            m.name for m in metrics if isinstance(m, RetentionMetric) and m.band[1] is None
-        ]
-        if unbounded:
-            _refuse(
-                "breakout.retention.unbounded",
-                fn_name=fn_name,
-                names=unbounded,
-                remedy=_RETENTION_UNBOUNDED_REMEDY,
-                supported_view="asof",
-            )
+        reject_unbounded_retention(
+            metrics, fn_name, remedy=UNBOUNDED_RETENTION_DAILY_REMEDY, supported_view="asof"
+        )
 
     if view != "daily":
         return
@@ -347,17 +333,6 @@ def reject_quantile_metrics(
             method=method,
             reason=reason,
             remedy=remedy,
-        )
-
-
-def reject_contradictory_completed_windows(metrics: Sequence[Metric], fn_name: str) -> None:
-    """Raise when completed windows meet an unbounded retention band."""
-    open_bands = [m.name for m in metrics if isinstance(m, RetentionMetric) and m.band[1] is None]
-    if open_bands:
-        _refuse(
-            "breakout.retention.completion",
-            fn_name=fn_name,
-            names=open_bands,
         )
 
 

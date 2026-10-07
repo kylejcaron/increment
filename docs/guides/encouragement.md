@@ -180,6 +180,15 @@ and an explicit `SequentialCompliancePolicy`; no scalar outcome law is needed.
 The same five constructors support the empty catalog, with `from_moments`
 replaying the retained checkpoint. An empty catalog alone does not enable
 monitoring: without a compliance policy or an uptake registration it is refused.
+A registered compliance-only checkpoint reads uptake and no outcome, so an
+unbounded retention metric may stay in the catalog when the explicit uptake-only
+registration is declared over that catalog (an automatic registration would
+monitor the metric and refuse it, `sequential.route.unsupported`). `from_definitions`,
+`from_unit_day_artifact` (with the metric declared on the experiment) and
+`from_moments` (with the metric in `metrics=`) retain it; the dataframe
+constructors cannot declare it. Requests that consume outcomes, such as ITT,
+still refuse the retention metric. The empty-catalog path above does not
+exercise a nonempty catalog.
 The existing unit-panel refusal of `missing="drop"` remains; do not replace
 undefined outcomes with zeros to bypass it. Mixed ITT/LATE requests still
 require their outcome data. Each metric's LATE uses the first stage on that

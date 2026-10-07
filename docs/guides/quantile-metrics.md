@@ -165,9 +165,14 @@ order statistic needs, and two different requests reach it:
   `readout.observational.quantile` instead, because no estimator could use the
   cube. A registered sequential plan is the one exception: it exports a
   checkpoint of unit-record proofs and the declaration, with no moments rows,
-  so a catalog quantile no registered model covers does not block it and never
-  appears as mean moments (replay still refuses to estimate that quantile
-  sequentially).
+  so an unwindowed catalog quantile no registered model covers does not block
+  it and never appears as mean moments (replay still refuses to estimate that
+  quantile sequentially).
+  The `sequential-mixed-quantile-catalog-checkpoint` parity scenario verifies
+  export and replay on definitions, reopened artifacts, unit summaries and
+  unit panels, including equivalent modeled results and retained state.
+  `from_moments` preserves the checkpoint and catalog but cannot re-export
+  (`facade.analysis.operation`); switchback cannot declare this quantile catalog.
 - **Declaring a quantile over a cube that already exists** (for example a
   `MetricSpec(type="quantile")` over exported scalar moments) constructs, then
   refuses when read, and the code depends on the request, measured on a real

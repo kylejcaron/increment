@@ -72,7 +72,7 @@ from increment.estimation.variance import (
     stable_log_ratio,
 )
 from increment.estimation.variance import ratio_abs_diff_se as variance_ratio_abs_diff_se
-from increment.semantics.models import Metric
+from increment.semantics.models import Metric, RetentionMetric
 from increment.sequential_state import SequentialSnapshot, sequential_refuse
 
 if TYPE_CHECKING:
@@ -123,6 +123,8 @@ _REFUSALS.update(
     {
         code: _READOUT_REFUSALS[code]
         for code in (
+            "breakout.retention.completion",
+            "breakout.retention.unbounded",
             "readout.assignment.estimands",
             "readout.margin.breakout",
             "readout.metric.daily_winsorization",
@@ -742,6 +744,46 @@ def _validate_percentile_winsor_readout(
             validate_winsor_metric(metric)
 
 
+UNBOUNDED_RETENTION_DAILY_REMEDY = (
+    "Use the as-of view (run_asof/run_asof_lift), which reports the cumulative ratchet "
+    "honestly, or declare threshold_days: [a, b] to bound the band."
+)
+
+
+def reject_unbounded_retention(
+    metrics: Sequence[Metric], fn_name: str, *, remedy: str, supported_view: str
+) -> None:
+    """Refuse a retention band with no completion date on a non-cumulative view.
+
+    The one implementation of this rule: the shared readout gate and the
+    day-axis facade both call it, so every route raises the same code before
+    any source read.
+    """
+    unbounded = [m.name for m in metrics if isinstance(m, RetentionMetric) and m.band[1] is None]
+    if unbounded:
+        _refuse(
+            "breakout.retention.unbounded",
+            fn_name=fn_name,
+            names=unbounded,
+            remedy=remedy,
+            supported_view=supported_view,
+        )
+
+
+def reject_completed_windows_on_unbounded_retention(
+    metrics: Sequence[Metric], fn_name: str
+) -> None:
+    """Refuse completed windows over a retention band with no completion date.
+
+    No unit's window ever completes, so the completion gate would admit nothing.
+    Like `reject_unbounded_retention`, the shared readout gate and the day-axis
+    facade both call this, so every route raises one code before any source read.
+    """
+    open_bands = [m.name for m in metrics if isinstance(m, RetentionMetric) and m.band[1] is None]
+    if open_bands:
+        _refuse("breakout.retention.completion", fn_name=fn_name, names=open_bands)
+
+
 def validate_readout_engine(request: ReadoutRequest) -> None:
     """Validate metric/method compatibility before source moments are read."""
     metrics = tuple(request.metrics)
@@ -766,8 +808,18 @@ def validate_readout_engine(request: ReadoutRequest) -> None:
                 view=view,
                 names=winsorized_names,
             )
+        reject_unbounded_retention(
+            metrics, view, remedy=UNBOUNDED_RETENTION_DAILY_REMEDY, supported_view="asof"
+        )
         # Daily values are descriptive; skip inferential compatibility rules.
         return
+
+    # A compliance-only request never reads outcome moments, so an outcome band's
+    # completion date is irrelevant to it.
+    estimands = request.estimands
+    compliance_only = estimands is not None and set(estimands) == {"compliance"}
+    if view == "asof" and request.completion_policy and not compliance_only:
+        reject_completed_windows_on_unbounded_retention(metrics, view)
 
     percentile_names = [
         metric.name
@@ -842,7 +894,6 @@ def validate_readout_engine(request: ReadoutRequest) -> None:
                     selected=selected,
                 )
 
-    estimands = request.estimands
     if estimands is not None and tuple(estimands) != ("itt",) and mechanism != "encouragement":
         _refuse(
             "readout.assignment.estimands",

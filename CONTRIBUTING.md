@@ -378,6 +378,20 @@ Every public capability declares its behavior for every metric type in
    gap.
 3. Back the classification with an executable probe.
 4. Update the path-by-capability documentation in `docs/limitations.md`.
+5. Decide where the refusal lives. A rule that does not depend on the data
+   source goes in the shared readout gate (`validate_request` and its owners).
+   Declare it in `GATE_POLICY` in `tests/test_source_capabilities.py` when it
+   varies over that table's axes (metric type, option, view). Rules a source
+   fixes at construction (sequential, observational, encouragement) are outside
+   those axes; the arm-contract sweeps in `tests/test_refusal_uniqueness.py` and
+   the pair cells in `tests/compatibility_catalog.py` own them. Add a
+   same-code-from-every-source test to `tests/test_refusal_uniqueness.py`.
+   A rule that every source expresses through its declared `capabilities` and
+   `breakouts` (grain, breakout dimension) is also shared:
+   `validate_readout_source` raises it under a `readout.source.*` code. Only a
+   limitation specific to one adapter is raised by that adapter under its own
+   `source.*` code and recorded in the enumerated parity harness
+   (`tests/parity_harness/`).
 
 Compatibility probes establish composition behavior. Statistical calibration
 belongs in the capability's dedicated tests.

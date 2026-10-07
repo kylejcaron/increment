@@ -52,6 +52,18 @@ _REFUSALS: dict[str, RefusalSpec] = refusals(
                 f"({', '.join(names)}); use run() for inferential reads"
             ),
         ),
+        # The code predates its shared home: day-axis callers catch it by name.
+        "breakout.retention.unbounded": RefusalSpec(
+            "breakout.retention.unbounded",
+            InvalidRequestError,
+            template="{fn_name}: retention metric(s) {names!r} declare an unbounded band, so their outcome never completes -- on this view every value would be a lower bound on itself, biased hardest for the least-observed units. {remedy}",
+            keys=frozenset({"supported_view"}),
+        ),
+        "breakout.retention.completion": RefusalSpec(
+            "breakout.retention.completion",
+            InvalidRequestError,
+            template="{fn_name}: completed_windows_only=True is contradictory for retention metric(s) {names!r} -- their bands are open on the right, so no unit's window ever completes and the gate would admit nothing. Drop completed_windows_only to get the cumulative monitoring series, or declare threshold_days: [a, b] to bound the band.",
+        ),
         "readout.assignment.estimands": RefusalSpec(
             "readout.assignment.estimands",
             InvalidRequestError,

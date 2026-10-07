@@ -2518,6 +2518,9 @@ class Analysis:
             Unsupported for registered sequential inference.
         estimands : Sequence[str] | None
             Under :class:`Encouragement` only: ``"itt"``/``"compliance"``/``"late"``, default all three.
+            A registered sequential checkpoint requested with exactly
+            ``("compliance",)`` reads uptake alone and consumes no outcome metric,
+            so a retention metric in the catalog does not affect it (see *Raises*).
         completed_windows_only : bool
             For fixed-horizon inference, ``False`` (default) is the provisional gate:
             a unit is admitted as soon as it is post-exposure, zero-filled
@@ -2550,12 +2553,15 @@ class Analysis:
         Raises
         ------
         ValueError
-            An unbounded retention band with *completed_windows_only*, an unmatched
-            *dimension*, or non-``("itt",)`` *estimands* under a non-encouragement
-            design.
+            An unbounded retention band with *completed_windows_only* in a request
+            that consumes outcome metrics, an unmatched *dimension*, or
+            non-``("itt",)`` *estimands* under a non-encouragement design.
         CapabilityError
-            A `RetentionMetric` under an :class:`Encouragement` design, or a
-            dimension requested with registered sequential inference.
+            A `RetentionMetric` under an :class:`Encouragement` design in a request
+            that consumes outcome metrics, or a dimension requested with registered
+            sequential inference. A registered compliance-only checkpoint
+            (``estimands=("compliance",)``) consumes no outcome metric, so neither
+            retention refusal applies to it.
         UnsupportedRequestError
             Segmented as-of BH or observational designs.
         """
