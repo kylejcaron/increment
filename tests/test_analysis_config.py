@@ -28,6 +28,7 @@ from increment.plan import compile_decision_plan
 from increment.semantics.design import AdjustmentSet, Observational
 from increment.semantics.models import (
     AnalysisPlan,
+    ConversionMetric,
     ExperimentMetric,
     MeanMetric,
     MethodSpec,
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
     from increment.decision import CompiledDecisionPlan
 
 REVENUE = MeanMetric(name="revenue", entity="user_id", fact="purchase", aggregation="sum")
+SIGNUP = ConversionMetric(name="signup", entity="user_id", fact="signup")
 ORDERS = MeanMetric(name="orders", entity="user_id", fact="purchase", aggregation="count")
 LATENCY = MeanMetric(name="latency", entity="user_id", fact="latency_fact", aggregation="avg_event")
 DECLARED = [REVENUE, ORDERS, LATENCY]
@@ -360,6 +362,32 @@ def test_resolve_configs_binding_roles_used_when_no_global():
     assert [m.name for m in revenue_procedure.sensitivity_methods] == ["cuped"]
     assert orders_procedure.decision_method == UNADJUSTED
     assert orders_procedure.sensitivity_methods == ()
+
+
+def test_a_binding_carries_conversion_inference_into_the_compiled_methods():
+    plan = AnalysisPlan(
+        primary=ExperimentMetric(
+            metric="signup",
+            decision_method=MethodSpec(name="unadjusted", conversion_inference="finite_sample"),
+        ),
+        secondaries=("revenue",),
+    )
+    compiled = compile_decision_plan(plan, [SIGNUP, REVENUE])
+    assert _procedure(compiled, "signup").decision_method == Method(
+        name="unadjusted", conversion_inference="finite_sample"
+    )
+    assert _procedure(compiled, "revenue").decision_method.conversion_inference == "auto"
+
+
+def test_call_time_methods_replace_a_binding_conversion_inference():
+    plan = AnalysisPlan(
+        primary=ExperimentMetric(
+            metric="signup",
+            decision_method=MethodSpec(name="unadjusted", conversion_inference="finite_sample"),
+        )
+    )
+    procedure = _procedure(compile_decision_plan(plan, [SIGNUP], methods=[UNADJUSTED]), "signup")
+    assert procedure.decision_method.conversion_inference == "auto"
 
 
 def test_resolve_configs_global_methods_override_binding_roles():

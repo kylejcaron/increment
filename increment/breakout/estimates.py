@@ -63,11 +63,13 @@ from increment.errors import (
 )
 from increment.estimation._readout_refusals import READOUT_REFUSALS
 from increment.estimation.armstats import ArmStats
+from increment.estimation.conversion_route import family_route_alpha
 from increment.estimation.diagnostics import ESTIMATION_DIAGNOSTICS_ALPHA
 from increment.estimation.encouragement import ESTIMANDS, estimate_encouragement
 from increment.estimation.engine import (
     UNBOUNDED_RETENTION_DAILY_REMEDY,
     Method,
+    _estimate_lift,
     _validate_methods,
     estimate_lift,
     reject_unbounded_retention,
@@ -1609,13 +1611,17 @@ def _binomial_gate_exempt_metrics(
     prior_by_metric: Mapping[str, Prior | None] | None = None,
 ) -> frozenset[str]:
     """Conversion/retention metrics exempt from the ddof/positive-mean gate
-    below because the exact binomial risk-ratio method admits them at ``n=1``
-    and with zero treatment/control means. The log-Normal delta method still
-    needs a ddof=1 variance and ``math.log`` of a positive mean.
+    below because the finite-sample binomial risk-ratio method admits them at
+    ``n=1`` and with zero treatment/control means. The log-Normal delta method
+    still needs a ddof=1 variance and ``math.log`` of a positive mean.
 
     This mirrors ``estimation.engine._binomial_eligible`` at this
-    row-partitioning layer. Mixed requests are exempt when an unadjusted method
-    can use the exact path; adjusted methods are partitioned per method.
+    row-partitioning layer, which decides only whether the count rule may route a
+    row: ``estimate_lift`` sends every row with a zero or sparse arm to the
+    finite-sample method and only rows whose four counts are all dense, hence
+    with a positive mean and variance, to the delta method. Mixed requests are
+    exempt when an unadjusted method can use that path; adjusted methods are
+    partitioned per method.
     """
     exempt: set[str] = set()
     for metric in metrics:
@@ -1872,9 +1878,10 @@ def _estimate_lift_computation_or_reason(
     alternative: str,
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None,
+    route_alpha: float | None = None,
 ) -> tuple[DecisionComputation[LiftEstimate] | None, str | None]:
     try:
-        computation = estimate_lift(
+        computation = _estimate_lift(
             metrics=[metric],
             summary=summary,
             control_group=control_group,
@@ -1884,6 +1891,7 @@ def _estimate_lift_computation_or_reason(
             alternative=alternative,
             inference=inference,
             method_roles=method_roles,
+            route_alpha=route_alpha,
         )
         from increment.decision import DecisionComputation
 
@@ -2235,6 +2243,9 @@ class _BreakoutContext(NamedTuple):
     all_pairs: set[tuple[str, str]]
     reliability_floor: int
     resolved_methods: list[Method]
+    # The smallest level a ``correction="bh"`` family decides a p-value at (``q`` over its
+    # hypothesis count), in ``alpha``'s convention; ``None`` outside a BH family.
+    route_alpha: float | None
 
 
 class _BreakoutRowsPass(NamedTuple):
@@ -2598,6 +2609,7 @@ def _estimate_breakout_slice_metrics(  # noqa: PLR0915
                     methods=method_group,
                     inference=context.inference,
                     method_roles=resolved_roles,
+                    route_alpha=context.route_alpha,
                 )
                 if computation is not None and computation.failures:
                     _keep_non_guard_failures(computation.failures, original_failures)
@@ -2725,6 +2737,19 @@ class _BreakoutFamilyContext(NamedTuple):
     method_roles_by_metric: Mapping[str, Mapping[str, Literal["decision", "sensitivity"]]] | None
 
 
+def _breakout_family_cells(
+    segments: Mapping[str, Sequence[Mapping[str, Any]]], all_pairs: set[tuple[str, str]]
+) -> list[tuple[str, str, str]]:
+    """``(segment value, metric, arm)`` of every hypothesis a ``correction="bh"`` family
+    tests: each treatment arm of each metric, in each segment that carries the metric."""
+    return [
+        (segment_value, metric_name, group_id)
+        for segment_value in sorted(segments)
+        for metric_name, group_id in sorted(all_pairs)
+        if metric_name in {str(row["metric"]) for row in segments[segment_value]}
+    ]
+
+
 def _apply_breakout_family_correction(
     results: list[BreakoutEstimate],
     context: _BreakoutFamilyContext,
@@ -2752,9 +2777,7 @@ def _apply_breakout_family_correction(
 
     family_keys = [
         SegmentHypothesisKey(metric_name, group_id, "itt", dimension, segment_value)
-        for segment_value in sorted(segments)
-        for metric_name, group_id in sorted(all_pairs)
-        if metric_name in {str(row["metric"]) for row in segments[segment_value]}
+        for segment_value, metric_name, group_id in _breakout_family_cells(segments, all_pairs)
     ]
     if correction != "bh" or not family_keys:
         return results
@@ -3100,6 +3123,10 @@ def run_breakout(  # noqa: PLR0913
     segment_count = len(segments)
     k = max(segment_count, 1) if correction == "bonferroni" else 1
     alpha_seg = _conservative_divide(alpha, k)
+    # A BH family reads each nominal p-value at a threshold as small as ``q / m``: route each
+    # conversion cell at that level, never at the looser per-segment one.
+    family_size = len(_breakout_family_cells(segments, all_pairs)) if correction == "bh" else 0
+    route_alpha = family_route_alpha(q, family_size)
     results: list[BreakoutEstimate] = []
     segment_computations: dict[tuple[str, str], DecisionComputation[LiftEstimate]] = {}
     warned_open_ended: set[str] = set()
@@ -3128,6 +3155,7 @@ def run_breakout(  # noqa: PLR0913
             all_pairs,
             reliability_floor,
             resolved_methods,
+            route_alpha,
         )
         prepared = _prepare_lift_slice(
             segment_rows,
@@ -3313,16 +3341,18 @@ def run_daily(
             )
             continue
 
-        arm = ArmStats(
-            study_id=str(row["experiment_id"]),
-            metric=metric,
-            group_id=group_id,
-            n=n,
-            ref_y=float(row["ref_y"]),
-            cy1=float(row["cy1"]),
-            cy2=float(row["cy2"]),
-            x_role=X_SLOT_ROLES["x"] if _opt(row.get("ref_x")) is not None else None,
-            **{slot: _opt(row.get(slot)) for slot in _DAY_VALUE_SLOTS},
+        arm = ArmStats.model_validate(
+            {
+                "study_id": str(row["experiment_id"]),
+                "metric": metric,
+                "group_id": group_id,
+                "n": n,
+                "ref_y": float(row["ref_y"]),
+                "cy1": float(row["cy1"]),
+                "cy2": float(row["cy2"]),
+                "x_role": X_SLOT_ROLES["x"] if _opt(row.get("ref_x")) is not None else None,
+                **{slot: _opt(row.get(slot)) for slot in _DAY_VALUE_SLOTS},
+            }
         )
         metric_type = metric_types[metric]
         variance_model = VARIANCE_MODELS.get(metric_type)

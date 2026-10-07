@@ -57,6 +57,7 @@ def _moment_rows(**extra: object) -> list[dict[str, object]]:
         "experiment_id": "e1",
         "metric": "revenue",
         "n": 2,
+        "successes": None,
         "ref_x": None,
         "cx1": None,
         "cx2": None,
@@ -73,7 +74,7 @@ def _moment_rows(**extra: object) -> list[dict[str, object]]:
         "winsor_n": None,
         "winsor_n_lower": None,
         "winsor_n_upper": None,
-        "moments_format": 7,
+        "moments_format": 10,
         **extra,
     }
     from increment.decision_wire import compiled_plan_to_json
@@ -92,8 +93,7 @@ def _moment_rows(**extra: object) -> list[dict[str, object]]:
     ]
 
 
-@pytest.mark.parametrize("version", [7, 8])
-def test_fixed_horizon_supported_moments_versions_round_trip(version, tmp_path):
+def test_current_fixed_horizon_moments_round_trip(tmp_path):
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -113,10 +113,84 @@ def test_fixed_horizon_supported_moments_versions_round_trip(version, tmp_path):
     path = tmp_path / "current.parquet"
     original.export(path)
     payload = pq.read_table(path).to_pylist()
-    assert {row["moments_format"] for row in payload} == {8}
-    payload = [{**row, "moments_format": version} for row in payload]
+    assert {row["moments_format"] for row in payload} == {10}
     replay = Analysis.from_moments(payload, metrics={"revenue": "mean"}, control="control")
     assert list(replay.run()) == list(original.run())
+
+
+@pytest.mark.parametrize("version", [7, 8])
+def test_legacy_moments_cannot_claim_exact_count_transport(version):
+    with pytest.raises(WireFormatError) as exc:
+        Analysis.from_moments(
+            _moment_rows(moments_format=version), metrics={"revenue": "mean"}, control="control"
+        )
+    assert exc.value.code == "moments.format.unsupported_legacy"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("n", float(2**61)), ("successes", float(2**61 - 513)), ("successes", True)],
+)
+def test_moments_refuse_counts_encoded_as_floats_or_booleans(field, value):
+    with pytest.raises(WireFormatError) as exc:
+        Analysis.from_moments(
+            _moment_rows(**{field: value}), metrics={"revenue": "mean"}, control="control"
+        )
+    assert exc.value.code == "moments.count_not_integer"
+
+
+def test_current_moments_require_the_nullable_success_count_field():
+    rows = _moment_rows()
+    del rows[0]["successes"]
+    with pytest.raises(WireFormatError) as exc:
+        Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="control")
+    assert exc.value.code == "moments.count_field_missing"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"), [("n", 0), ("n", -1), ("successes", -1), ("successes", 3)]
+)
+@pytest.mark.parametrize("selected", [True, False])
+def test_moments_count_ranges_are_validated_even_for_unselected_rows(field, value, selected):
+    rows = _moment_rows()
+    if selected:
+        rows[0][field] = value
+    else:
+        rows.append({**rows[0], "metric": "unselected", field: value})
+    with pytest.raises(WireFormatError) as exc:
+        Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="control")
+    assert exc.value.code == "moments.count_out_of_range"
+    assert exc.value.context["field"] == field
+
+
+@pytest.mark.parametrize(
+    ("field", "value"), [("n", 0), ("n", -1), ("successes", -1), ("successes", 3)]
+)
+def test_export_refuses_invalid_provider_counts_before_writing(field, value, monkeypatch, tmp_path):
+    import json
+
+    from increment._frame_validation import refuse_observational_quantile
+    from increment.sources import ASSIGNMENT_COUNTS_FIELD, MomentsSource, export_source_moments
+
+    source = MomentsSource(
+        _moment_rows(**{ASSIGNMENT_COUNTS_FIELD: json.dumps({"control": 2, "treatment": 2})}),
+        metrics=[MeanMetric(name="revenue", entity="user", fact="revenue")],
+        study_id="e1",
+    )
+    moments = source.moments
+
+    def invalid_moments(metric):
+        rows = [dict(row) for row in moments(metric)]
+        rows[0][field] = value
+        return rows
+
+    monkeypatch.setattr(source, "moments", invalid_moments)
+    path = tmp_path / "invalid.parquet"
+    with pytest.raises(WireFormatError) as exc:
+        export_source_moments(source, path, observational_refusal=refuse_observational_quantile)
+    assert exc.value.code == "moments.count_out_of_range"
+    assert exc.value.context["field"] == field
+    assert not path.exists()
 
 
 @pytest.mark.slow
@@ -134,9 +208,9 @@ def test_export_round_trips_through_from_moments(seeded_con, seeded_defs, tmp_pa
     import pyarrow.parquet as pq
 
     table = pq.read_table(p)
-    assert table.schema.metadata[b"increment.moments_format"] == b"8"
+    assert table.schema.metadata[b"increment.moments_format"] == b"10"
     rows = table.to_pylist()
-    assert {r["moments_format"] for r in rows} == {8}
+    assert {r["moments_format"] for r in rows} == {10}
     assert {r["metric"] for r in rows} == {"purchase_rate", "avg_session_duration", "d7_retention"}
 
     b = Analysis.from_moments(
@@ -501,7 +575,8 @@ def _v7_rows(experiment_id, ref_y_treatment, cy2):
         "winsor_n": None,
         "winsor_n_lower": None,
         "winsor_n_upper": None,
-        "moments_format": 7,
+        "successes": None,
+        "moments_format": 10,
         "decision_plan": plan,
     }
     return [

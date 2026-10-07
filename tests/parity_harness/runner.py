@@ -124,9 +124,29 @@ def _row_identity(row: Any) -> tuple:
     )
 
 
+def _p_value(row: Any) -> float | None:
+    """The row's presentation p-value where the row defines one (a fixed-horizon relative row
+    without a prior), else ``None``; a path that refuses it disagrees with one that does not."""
+    p_value = getattr(row, "p_value", None)
+    if (
+        p_value is None
+        or row.inference != "fixed"
+        or getattr(row, "prior_shrunk", False)
+        or row.null_abs is not None
+        or row.lift is None
+        and row.reference_kind != "binomial"
+    ):
+        return None
+    try:
+        return float(p_value())
+    except CodedError:
+        return None
+
+
 def _row_payload(row: Any) -> dict[str, Any]:
     """Every public field of the row, plus the derived values the dump does not carry."""
     payload = row.model_dump(mode="python", exclude=_PATH_SPECIFIC)
+    payload["p_value"] = _p_value(row)
     prior_shrunk = getattr(row, "prior_shrunk", False)
     payload["posterior_prob_favorable"] = row.prob_favorable() if prior_shrunk else None
     # `log_e` is a property of the result, not a dumped field. `sequential_result` is None on

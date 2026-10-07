@@ -196,6 +196,79 @@ def published_pair(publication):
         adopted.close()
 
 
+@_shared_publication
+@pytest.mark.parametrize("ingress", ["definitions", "artifact"])
+@pytest.mark.parametrize(
+    ("field", "value"), [("n", 0), ("n", -1), ("successes", -1), ("successes", "above_n")]
+)
+def test_fixed_export_refuses_invalid_backend_counts(
+    publication, ingress, field, value, monkeypatch, tmp_path
+):
+    import pyarrow as pa
+
+    from increment.errors import WireFormatError
+
+    connection, native, context, store, reference = publication
+    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    to_pyarrow = connection.to_pyarrow
+
+    def corrupted_counts(*args, **kwargs):
+        table = to_pyarrow(*args, **kwargs)
+        if (
+            isinstance(table, pa.Table)
+            and table.num_rows
+            and {"n", "successes"} <= set(table.column_names)
+        ):
+            values = table.column(field).to_pylist()
+            values[0] = table.column("n")[0].as_py() + 1 if value == "above_n" else value
+            index = table.schema.get_field_index(field)
+            table = table.set_column(
+                index, field, pa.array(values, type=table.schema.field(field).type)
+            )
+        return table
+
+    monkeypatch.setattr(connection, "to_pyarrow", corrupted_counts)
+    path = tmp_path / "invalid.parquet"
+    try:
+        analysis = native if ingress == "definitions" else adopted
+        with pytest.raises(WireFormatError) as exc:
+            analysis.export(path)
+        assert exc.value.code == "moments.count_out_of_range"
+        assert exc.value.context["field"] == field
+        assert not path.exists()
+    finally:
+        adopted.close()
+
+
+def test_nonbinary_native_and_artifact_exports_keep_nullable_integer_counts(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    import yaml
+
+    definitions = _definitions(tmp_path)
+    payload = yaml.safe_load(definitions.read_text())
+    experiment = next(
+        item for item in payload["experiments"] if item["name"] == "new_onboarding_v2"
+    )
+    experiment["plan"] = {"secondaries": ["avg_session_duration"]}
+    definitions.write_text(yaml.safe_dump(payload))
+    _connection, native, context, store = _native(definitions=definitions)
+    adopted = None
+    try:
+        reference = native.publish_unit_day_artifact(store)
+        adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+        for name, analysis in (("definitions", native), ("artifact", adopted)):
+            path = tmp_path / f"{name}.parquet"
+            analysis.export(path)
+            table = pq.read_table(path)
+            assert table.schema.field("successes").type == pa.int64(), name
+            assert table.column("successes").to_pylist() == [None, None], name
+    finally:
+        if adopted is not None:
+            adopted.close()
+        native.close()
+
+
 # One CUPED metric with breakout and factor evidence, published once for the
 # read-only covariate parity checks below.
 _shared_covariate_publication = pytest.mark.xdist_group("unit_day_artifact_covariate_parity")
@@ -1015,12 +1088,22 @@ def test_export_and_fused_breakout_summaries_match_the_definitions_source(
             for row in pq.read_table(adopted_path).to_pylist()
             if row["metric"] == "purchase_rate"
         ]
-        exported_fields = ("experiment_id", "metric", "group_id", "n", "ref_y", "cy1", "cy2")
+        exported_fields = (
+            "experiment_id",
+            "metric",
+            "group_id",
+            "n",
+            "ref_y",
+            "cy1",
+            "cy2",
+            "successes",
+        )
         _assert_rows_equal(
             [{field: row[field] for field in exported_fields} for row in native_rows],
             [{field: row[field] for field in exported_fields} for row in adopted_rows],
         )
-        assert {row["moments_format"] for row in adopted_rows} == {8}
+        assert all(type(row["successes"]) is int for row in adopted_rows)
+        assert {row["moments_format"] for row in adopted_rows} == {10}
     finally:
         adopted_source.close()
         adopted.close()
@@ -1656,7 +1739,7 @@ def test_adoption_known_total_horizon_preserves_unit_population(tmp_path, open_e
     import warnings
 
     from examples._seed import seed_event_log
-    from increment.query.builders import group_summary
+    from increment.query.builders import declared_binary_metrics, group_summary
 
     con, native, context, store = _native(definitions=_definitions(tmp_path, open_ended=open_ended))
     seed_event_log(con, n_units=200)
@@ -1670,7 +1753,9 @@ def test_adoption_known_total_horizon_preserves_unit_population(tmp_path, open_e
             for metric in source.context.metrics:
                 # Unit-grain still discovers the endpoint from the dense relation.
                 totals = source._reduction_query(metric, "unit")
-                expected = con.to_pyarrow(group_summary(totals)).to_pylist()
+                expected = con.to_pyarrow(
+                    group_summary(totals, binary_metrics=declared_binary_metrics([metric]))
+                ).to_pylist()
                 assert expected
                 _assert_rows_equal(expected, source._reduce(metric, "total"))
                 assert source._reduce(metric, "total", population_units=frozenset()) == []

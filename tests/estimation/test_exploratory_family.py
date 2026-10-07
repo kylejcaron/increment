@@ -90,6 +90,7 @@ def _binary_arm(n, successes, *, metric, group_id, country=None):
         "metric": metric,
         "group_id": group_id,
         "n": float(n),
+        "successes": successes,
         "sum_y": float(successes),
         "sum_y2": float(successes),
         "sum_x": None,
@@ -138,7 +139,10 @@ def _segment_summary(*, with_conversion=True) -> pd.DataFrame:
             rows.append(
                 _binary_arm(300, treatment, metric="conv", group_id="treatment", country=country)
             )
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    if with_conversion:
+        frame["successes"] = pd.array([row.get("successes") for row in rows], dtype="Int64")
+    return frame
 
 
 def _metrics(*, with_conversion=True):

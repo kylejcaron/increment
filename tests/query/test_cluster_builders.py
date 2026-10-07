@@ -494,6 +494,16 @@ def test_group_summary_columns_match_the_declared_contract(cl_exposure_events, c
     assert set(group_summary(totals, cluster="store_id").columns) == GROUP_SUMMARY
 
 
+def test_group_summary_cluster_rows_never_carry_a_success_count(
+    cl_exposure_events, cl_purchase_events
+):
+    """A cluster total is not a binary outcome, even for a declared binary metric name."""
+    totals = _totals(cl_exposure_events, cl_purchase_events, _experiment("store_id"))
+    names = sorted(set(totals.metric.execute()))
+    rows = group_summary(totals, cluster="store_id", binary_metrics=names).execute()
+    assert rows["successes"].isna().all()
+
+
 # ── refusals: total grain only, declared column must exist ───────────────
 
 

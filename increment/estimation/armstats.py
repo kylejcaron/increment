@@ -14,6 +14,7 @@ only unweighted canonical group summaries.
 from __future__ import annotations
 
 import math
+import numbers
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -36,6 +37,7 @@ from increment._moment_plan import (
     x_slot_variable,
 )
 from increment.errors import (
+    CapabilityError,
     CodedModel,
     IncrementRuntimeWarning,
     InvalidRequestError,
@@ -377,6 +379,13 @@ class CenteredMoments:
     Every term is ``O(delta**2)`` in the between-partition spread. The
     diagonal is written ``2.0 * delta * c1``, never ``delta * c1`` added
     twice: the two round differently.
+
+    ``successes`` is the exact number of units whose binary outcome ``y`` is 1, an integer kept
+    apart from the floating slots: ``None`` unless a producer declared ``y`` a 0/1 outcome of
+    each of the ``n`` units. It describes the outcome ``y`` itself, so it follows every
+    operation that leaves ``y`` untouched (renaming, aliasing or dropping other variables) and
+    is dropped by one that replaces or removes ``y``. Partitions add their counts as integers;
+    a partition without one leaves the pooled record without.
     """
 
     n: int
@@ -385,6 +394,7 @@ class CenteredMoments:
     c1: Mapping[tuple[Var, Mask], float]
     c2: Mapping[tuple[Var, Var, Mask], float]
     count: Mapping[Mask, float]
+    successes: int | None = None
 
     def __post_init__(self) -> None:
         order = {variable: index for index, variable in enumerate(self.variables)}
@@ -493,6 +503,9 @@ class CenteredMoments:
         def new(variable: Var) -> Var:
             return names.get(variable, variable)
 
+        outcome_kept = new("y") == "y" and all(
+            new(variable) != "y" for variable in self.variables if variable != "y"
+        )
         return CenteredMoments(
             n=self.n,
             variables=tuple(new(v) for v in self.variables),
@@ -500,6 +513,7 @@ class CenteredMoments:
             c1={(new(v), mask): value for (v, mask), value in self.c1.items()},
             c2={(new(a), new(b), mask): value for (a, b, mask), value in self.c2.items()},
             count=self.count,
+            successes=self.successes if outcome_kept else None,
         )
 
     def with_alias(self, alias: Var, *, of: Var) -> CenteredMoments:
@@ -522,6 +536,7 @@ class CenteredMoments:
             c1=c1,
             c2=c2,
             count=self.count,
+            successes=self.successes if alias != "y" else None,
         )
 
     def without(self, variable: Var) -> CenteredMoments:
@@ -533,6 +548,7 @@ class CenteredMoments:
             c1={key: value for key, value in self.c1.items() if key[0] != variable},
             c2={key: value for key, value in self.c2.items() if variable not in key[:2]},
             count=self.count,
+            successes=self.successes if variable != "y" else None,
         )
 
     # Combination across partitions
@@ -552,6 +568,11 @@ class CenteredMoments:
             "parts must share one declaration order"
         )
         n = sum(part.n for part in parts)
+        successes = (
+            sum(part.successes for part in parts if part.successes is not None)
+            if all(part.successes is not None for part in parts)
+            else None
+        )
         ref = {variable: _pooled_reference(parts, variable, n) for variable in head.variables}
         c1_keys = [key for key in head.c1 if all(key in part.c1 for part in parts)]
         c2_keys = [key for key in head.c2 if all(key in part.c2 for part in parts)]
@@ -581,7 +602,9 @@ class CenteredMoments:
                     )
             for mask in masks:
                 count[mask] += part.count[mask]
-        return cls(n=n, variables=head.variables, ref=ref, c1=c1, c2=c2, count=count)
+        return cls(
+            n=n, variables=head.variables, ref=ref, c1=c1, c2=c2, count=count, successes=successes
+        )
 
 
 def _slot_operands(by_slot: Mapping[str, Var | None], slot: Slot) -> tuple[Var, ...] | None:
@@ -677,7 +700,13 @@ class ArmStats(CodedModel, BaseModel):
     * ``cyd``/``cy2d``/``cxd``: the uptake-masked family, centered on the
       OVERALL partition reference, e.g. ``cyd = sum(d * (y - ref_y))``.
 
-    ``n``/``sum_d`` stay raw: integers are exact in float64 to 2**53.
+    ``n`` is an exact integer and ``sum_d`` a float sum, exact to 2**53 units.
+
+    ``successes`` is the exact number of units with ``y == 1``, set by a producer that declared
+    ``y`` a 0/1 outcome of each of the ``n`` units and ``None`` elsewhere (adjusted, ratio,
+    clustered, transformed or non-binary outcomes). Floating moments cannot identify a count
+    once an arm nears ``2**53`` units, so it travels as an integer beside them, and the
+    conversion route (:func:`binary_counts`) reads it as the count, never the moments.
 
     **``cy2d / (n - 1)`` is NOT ``Var(d*y)``**: the subgroup fields carry
     only WITHIN-subgroup dispersion; the between-group term, ``ref_y**2 *
@@ -707,6 +736,8 @@ class ArmStats(CodedModel, BaseModel):
     metric: str
     group_id: str
     n: int = Field(ge=1)  # a group_summary row exists only for a non-empty arm
+    # Exact units with y == 1 for a declared 0/1 outcome of every unit; None elsewhere.
+    successes: int | None = Field(default=None, strict=True)
     ref_y: float
     cy1: float
     cy2: float
@@ -759,6 +790,15 @@ class ArmStats(CodedModel, BaseModel):
                     metric=self.metric,
                     value=value,
                 )
+
+        if self.successes is not None and not 0 <= self.successes <= self.n:
+            _raise(
+                "estimation.binomial.reconstructed_counts_not_binary",
+                group_id=self.group_id,
+                metric=self.metric,
+                n=self.n,
+                sum_y=self.successes,
+            )
 
         families = (
             ("covariate", ("ref_x", "cx1", "cx2", "cxy")),
@@ -931,7 +971,15 @@ class ArmStats(CodedModel, BaseModel):
                 c2[(names[0], names[1], slot.mask)] = value
             else:
                 count[slot.mask] = value
-        return CenteredMoments(n=self.n, variables=variables, ref=ref, c1=c1, c2=c2, count=count)
+        return CenteredMoments(
+            n=self.n,
+            variables=variables,
+            ref=ref,
+            c1=c1,
+            c2=c2,
+            count=count,
+            successes=self.successes,
+        )
 
     @classmethod
     def from_moments(
@@ -950,6 +998,7 @@ class ArmStats(CodedModel, BaseModel):
             group_id=group_id,
             n=moments.n,
             **slot_fields(moments),
+            successes=moments.successes,
             **winsor,
         )
 
@@ -976,6 +1025,7 @@ class ArmStats(CodedModel, BaseModel):
         sum_yd: float | None = None,
         sum_y2d: float | None = None,
         sum_xd: float | None = None,
+        successes: int | None = None,
     ) -> ArmStats:
         """Adapt one format-1 (raw additive sums) record to this seam,
         through the same guarded exact-centering and refuse/warn bands the
@@ -987,6 +1037,13 @@ class ArmStats(CodedModel, BaseModel):
         beyond floating-point rounding; warns ``RuntimeWarning`` when a
         centered moment falls below the noise floor of the raw sums it
         was recovered from.
+
+        ``successes`` is the exact count of ones when the caller knows ``y`` is a 0/1 outcome of
+        all ``n`` units and holds that integer from its own inputs (a raw sum of floats cannot
+        establish it past ``2**53``, and is never read as one here). It is stamped as given: the
+        residual ``cy1`` stays the source float sum's own, so a sum that has drifted from the
+        count keeps its drift, and the stored moments are checked against the count where the
+        conversion route reads it (:func:`binary_counts`).
         """
         label = f"metric={metric!r} group={group_id!r}"
         ref_y = sum_y / n
@@ -1057,6 +1114,7 @@ class ArmStats(CodedModel, BaseModel):
             cyd=cyd,
             cy2d=cy2d,
             cxd=cxd,
+            successes=successes,
         )
 
     # Combination across partitions
@@ -1161,6 +1219,7 @@ class ArmStats(CodedModel, BaseModel):
             group_id=group_id,
             n=pooled.n,
             **slot_fields(pooled),
+            successes=pooled.successes,
             winsor_lower_percentile=winsor_lower_percentile,
             winsor_upper_percentile=winsor_upper_percentile,
             winsor_lower_bound=winsor_lower_bound,
@@ -1333,6 +1392,17 @@ class ArmStats(CodedModel, BaseModel):
 _BERNOULLI_CONSISTENCY_SLACK = 1024.0
 _UNIT_ROUNDOFF = 2.0**-53
 
+#: Absolute floor on the consistency check of a stored residual first moment.
+_FIRST_MOMENT_ABSOLUTE_TOLERANCE = Fraction(1e-6)
+
+
+def _float_or_inf(value: Fraction) -> float:
+    """``float(value)``, an infinity of its sign where the value exceeds float64."""
+    try:
+        return float(value)
+    except OverflowError:
+        return math.inf if value > 0 else -math.inf
+
 
 def _rounding_bound(units: int) -> float:
     """``gamma_k = k u / (1 - k u)``, the relative error of *units* compounded roundings;
@@ -1342,26 +1412,13 @@ def _rounding_bound(units: int) -> float:
 
 
 def binary_counts(arm: ArmStats, metric_type: str) -> tuple[int, int]:
-    """Reconstruct exact integer ``(successes, trials)`` from a pure,
-    unadjusted y-family arm -- the sole ingress to the exact binomial
-    risk-ratio method (see ``binomial_rr.py``).
+    """Read exact ``(successes, trials)`` for a declared, unadjusted binary outcome.
 
-    ``metric_type`` MUST already be independently known (e.g. from the
-    semantic layer's declared ``Metric.type``) to be ``"conversion"`` or
-    ``"retention"`` -- a structural 0/1-per-unit fact by construction, not
-    an inference from this arm's own moments. Matching moments alone can
-    never prove genuine Bernoulli provenance (a count/continuous metric
-    can share a mean/variance with a binary one); this function's own
-    integer-reconstruction check below is a CORRUPTION guard on top of
-    that declared provenance, not a substitute for it.
-
-    Refuses if the arm carries a CUPED covariate, ratio denominator, or
-    uptake-mask family: those describe an adjusted or non-unit-grain
-    quantity, not independent per-unit Bernoulli draws.
-
-    ``sum(y) == n*ref_y + cy1`` recovers exactly (see the class docstring),
-    so for genuinely 0/1 data this is always within float rounding of an
-    integer; a value that isn't is treated as corrupt/mismatched input.
+    Counts travel as integers alongside the centered moments. Rounded residuals do not
+    identify a success count at large scales; an arm missing that information must be
+    rebuilt from its original data. Metric provenance and independent-unit eligibility
+    remain separate requirements, and moment consistency is a corruption check, not proof
+    that an undeclared outcome is Bernoulli.
     """
     if metric_type not in ("conversion", "retention"):
         _raise("estimation.binomial.binary_provenance_required", metric_type=metric_type)
@@ -1371,16 +1428,38 @@ def binary_counts(arm: ArmStats, metric_type: str) -> tuple[int, int]:
             metric=arm.metric,
             group_id=arm.group_id,
         )
-    sum_y = arm.n * arm.ref_y + arm.cy1
-    successes = round(sum_y)
-    if not math.isclose(sum_y, successes, rel_tol=0.0, abs_tol=1e-6) or not (
-        0 <= successes <= arm.n
-    ):
+    successes = arm.successes
+    if successes is None:
+        _raise(
+            "estimation.binomial.exact_counts_required",
+            metric=arm.metric,
+            group_id=arm.group_id,
+        )
+    if isinstance(successes, bool) or not isinstance(successes, numbers.Integral):
         _raise(
             "estimation.binomial.reconstructed_counts_not_binary",
             metric=arm.metric,
             group_id=arm.group_id,
-            sum_y=sum_y,
+            sum_y=successes,
+            n=arm.n,
+        )
+    successes = int(successes)
+    reference = Fraction(arm.ref_y)
+    sum_y = arm.n * reference + Fraction(arm.cy1)
+    # Each producer rounds its per-unit subtraction and then sums the residuals.
+    # Counts are authoritative; this bounds their disagreement with that noisy sum.
+    spread = successes * abs(1 - reference) + (arm.n - successes) * abs(reference)
+    rounding = _rounding_bound(arm.n + 8)
+    consistent = not math.isfinite(rounding) or abs(sum_y - successes) <= max(
+        _FIRST_MOMENT_ABSOLUTE_TOLERANCE,
+        Fraction(math.nextafter(rounding, math.inf)) * spread,
+    )
+    if not consistent or not 0 <= successes <= arm.n:
+        _raise(
+            "estimation.binomial.reconstructed_counts_not_binary",
+            metric=arm.metric,
+            group_id=arm.group_id,
+            sum_y=_float_or_inf(sum_y),
             n=arm.n,
         )
     # A mean alone cannot distinguish 0/1 draws from, e.g., constant 0.5 outcomes. Bernoulli
@@ -1405,6 +1484,43 @@ def binary_counts(arm: ArmStats, metric_type: str) -> tuple[int, int]:
     return successes, arm.n
 
 
+def canonical_bernoulli_arm(arm: ArmStats, successes: int) -> ArmStats:
+    """``arm`` with its y family replaced by the exact moments of ``successes`` ones among its
+    ``arm.n`` units, every other field kept.
+
+    A declared binary arm is determined by its integer counts. Forming the y family from
+    those counts removes producer-dependent rounding in the stored moments, so runtime
+    and planning decide the same count pair identically.
+
+    The y family is ``ArmStats``' own centering, about the stored reference ``ref_y`` (the
+    correctly rounded rate): ``cy1 = successes - n * ref_y`` is exact, and ``cy2`` is the exact
+    centered sum of squares about the true mean, a rational of the integer counts rounded once,
+    plus the squared offset of ``ref_y`` from it, ``cy1**2 / n``. Nothing is cancelled between
+    raw sums, so the noise floor that polices a raw sum of squares does not apply: an arm with
+    many units and few failures keeps the variance of its failures, which a raw-sum centering
+    clamps to zero once ``n - successes`` falls below about ``8 * eps * n``. Counts outside
+    ``[0, n]`` are not a count of this arm's units and are refused as non-binary."""
+    n = arm.n
+    if (
+        isinstance(successes, bool)
+        or not isinstance(successes, numbers.Integral)
+        or not 0 <= successes <= n
+    ):
+        _raise(
+            "estimation.binomial.reconstructed_counts_not_binary",
+            metric=arm.metric,
+            group_id=arm.group_id,
+            sum_y=successes,
+            n=n,
+        )
+    ref_y = successes / n
+    cy1 = float(Fraction(successes) - n * Fraction(ref_y))
+    cy2 = float(Fraction(successes * (n - successes), n)) + scaled_cross_over_n(cy1, cy1, n)
+    return arm.model_copy(
+        update={"ref_y": ref_y, "cy1": cy1, "cy2": cy2, "successes": int(successes)}
+    )
+
+
 def centered_row_from_raw_sums(row: Mapping[str, Any]) -> dict[str, Any]:
     """Adapt one format-1 wire row (raw additive sums) to format 2.
 
@@ -1422,6 +1538,7 @@ def centered_row_from_raw_sums(row: Mapping[str, Any]) -> dict[str, Any]:
         n=int(row["n"]),  # type: ignore[call-overload]
         sum_y=float(row["sum_y"]),  # type: ignore[arg-type]
         sum_y2=float(row["sum_y2"]),  # type: ignore[arg-type]
+        successes=row.get("successes"),
         **{f: _opt_float(row.get(f)) for f in RAW_SUM_FIELDS[2:]},  # type: ignore[arg-type]
     )
     out.update({f: getattr(arm, f) for f in CENTERED_FIELDS})
@@ -1498,10 +1615,15 @@ _REFUSALS = refusals(
         "estimation.armstats.score_stats.se_needs_positive": "se() needs a positive normalizer, got {normalizer}",
         "estimation.binomial.binary_provenance_required": "binary_counts requires a declared conversion/retention metric type (a structural 0/1-per-unit fact), got metric_type={metric_type!r}: matching moments alone never proves a metric is genuinely Bernoulli",
         "estimation.binomial.independent_units_required": "binary_counts(metric={metric!r}, group_id={group_id!r}): the arm carries a CUPED covariate, ratio denominator, or uptake-mask family -- clustered, weighted, adjusted, or otherwise non-unit-grain observations are not independent Bernoulli units this method admits",
+        "estimation.binomial.exact_counts_required": RefusalSpec(
+            "estimation.binomial.exact_counts_required",
+            CapabilityError,
+            template="binary_counts(metric={metric!r}, group_id={group_id!r}) requires an exact integer successes count; rebuild from original unit data or re-export current moments, because floating centered moments cannot recover lost count information",
+        ),
         "estimation.binomial.reconstructed_counts_not_binary": RefusalSpec(
             "estimation.binomial.reconstructed_counts_not_binary",
             BinomialDataError,
-            template="binary_counts(metric={metric!r}, group_id={group_id!r}): reconstructed sum(y)={sum_y!r} over n={n!r} is not a clean integer in [0, n] -- this arm's y values are not genuinely 0/1",
+            template="binary_counts(metric={metric!r}, group_id={group_id!r}): success total {sum_y!r} over n={n!r} is not a valid integer count consistent with the binary moments",
         ),
         "estimation.binomial.inconsistent_bernoulli_variance": RefusalSpec(
             "estimation.binomial.inconsistent_bernoulli_variance",

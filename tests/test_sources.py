@@ -176,6 +176,7 @@ def _format3_row(**extra):
         "metric": "revenue",
         "group_id": "control",
         "n": 10,
+        "successes": None,
         "ref_y": 5.0,
         "cy1": 0.0,
         "cy2": 1.0,
@@ -204,7 +205,7 @@ def _format3_row(**extra):
         "winsor_n": 10,
         "winsor_n_lower": 0,
         "winsor_n_upper": 1,
-        "moments_format": 7,
+        "moments_format": 10,
         "decision_plan": wire_plan,
         **extra,
     }
@@ -221,8 +222,7 @@ def _plain_format_row(**extra):
     )
 
 
-@pytest.mark.parametrize("version", [7, 8])
-def test_moments_source_preserves_format3_winsorization_metadata(version):
+def test_moments_source_preserves_format3_winsorization_metadata():
     from increment.semantics.models import MeanMetric
     from increment.sources import MomentsSource
 
@@ -233,7 +233,7 @@ def test_moments_source_preserves_format3_winsorization_metadata(version):
         winsorization={"upper_value": 100.0},
     )
     source = MomentsSource(
-        [_format3_row(moments_format=version, winsor_upper_percentile=None)],
+        [_format3_row(winsor_upper_percentile=None)],
         metrics=[metric],
         study_id="exp",
     )
@@ -462,7 +462,7 @@ def test_runtime_prior_cannot_cross_compiled_plan_wire():
     assert raised.value.code == "wire.procedure.runtime_prior"
 
 
-@pytest.mark.parametrize("received", [1, 2, 3, 4, 5, 6])
+@pytest.mark.parametrize("received", [1, 2, 3, 4, 5, 6, 7, 8])
 def test_legacy_moments_format_is_refused_with_stable_context(received):
     from increment.errors import WireFormatError
     from increment.semantics.models import MeanMetric
@@ -476,7 +476,7 @@ def test_legacy_moments_format_is_refused_with_stable_context(received):
         )
     assert raised.value.code == "moments.format.unsupported_legacy"
     assert raised.value.context["received"] == received
-    assert raised.value.context["required"] == 8
+    assert raised.value.context["required"] == 10
 
 
 def test_future_moments_format_is_refused():
@@ -486,7 +486,7 @@ def test_future_moments_format_is_refused():
 
     with pytest.raises(WireFormatError) as raised:
         MomentsSource(
-            [_format3_row(moments_format=10)],
+            [_format3_row(moments_format=11)],
             metrics=[MeanMetric(name="revenue", entity="user", fact="revenue")],
             study_id="exp",
         )

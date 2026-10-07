@@ -279,6 +279,18 @@ def test_below_forty_total_clusters_warns_of_over_rejection():
     assert "estimation.engine.small_total_clusters" in warning_codes(caught)
 
 
+def test_the_small_cluster_advisory_names_the_estimate_lift_caller():
+    with pytest.warns(IncrementRuntimeWarning) as caught:
+        estimate_lift([METRIC], _k_clusters_rows(4), control_group="C", cluster="store")
+    advisories = [
+        w
+        for w in caught
+        if getattr(w.message, "code", None) == "estimation.engine.small_total_clusters"
+    ]
+    assert advisories
+    assert all(w.filename == __file__ for w in advisories)
+
+
 def test_forty_total_clusters_does_not_warn():
     import warnings
 

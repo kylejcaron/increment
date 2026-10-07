@@ -15,15 +15,21 @@ import sys
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
+from numbers import Integral
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from increment._literals import Alternative, PreferredDirection
+from increment._finite_sample_refusals import (
+    refuse_finite_sample_cuped,
+    refuse_finite_sample_metric_type,
+)
+from increment._literals import Alternative, ConversionInference, PreferredDirection
 from increment._moment_plan import CORE_SLOTS, OPTIONAL_SLOTS, X_ROLE_VARIABLES
 from increment.errors import (
+    PACKAGE_FRAMES,
     CapabilityError,
     CodedError,
     CodedModel,
@@ -41,7 +47,17 @@ from increment.errors import (
 from increment.estimation import binomial_rr
 from increment.estimation._readout_refusals import READOUT_REFUSALS as _READOUT_REFUSALS
 from increment.estimation._tails import two_sided_critical_value, wald_bounds
-from increment.estimation.armstats import ArmStats, binary_counts, welch_satterthwaite_df
+from increment.estimation.armstats import (
+    ArmStats,
+    binary_counts,
+    canonical_bernoulli_arm,
+    welch_satterthwaite_df,
+)
+from increment.estimation.conversion_route import (
+    finite_sample_blocker,
+    refuse_finite_sample_unavailable,
+    route_for_counts,
+)
 from increment.estimation.cuped import AdjustedRatioMoments, fit_cuped, fit_ratio_cuped
 from increment.estimation.inference import LiftGuardError, Prior, infer_lift
 from increment.estimation.results import (
@@ -115,6 +131,7 @@ _REFUSALS = refusals(
         "estimation.engine.method_name_observational": "Method(name={m!r}) is an observational adjustment (estimate_ate / Observational design); this randomized path would label an unadjusted randomized estimate with it.",
         "estimation.engine.metric_found_group": "Metric(s) {unknown} found in group_summary but not in the metrics list. Declared metrics: {metric_types}",
         "estimation.engine.control_group_found": "control_group '{control_group}' not found in arms. Available groups: {known_groups}",
+        "estimation.engine.route_alpha": "route_alpha must lie in (0, 1], got {route_alpha!r}",
     },
 )
 _refuse = raiser(_REFUSALS)
@@ -150,9 +167,21 @@ def _register_warning(
     return spec
 
 
-def _warn(code: str, /, *, stacklevel: int = 2, **context: object) -> None:
+def _warn(
+    code: str,
+    /,
+    *,
+    stacklevel: int = 2,
+    skip_file_prefixes: tuple[str, ...] = (),
+    **context: object,
+) -> None:
     # +1 absorbs this helper's own frame; errors.warn() absorbs its own.
-    warn(_WARNINGS[code], stacklevel=stacklevel + 1, context=context)
+    warn(
+        _WARNINGS[code],
+        stacklevel=stacklevel + 1,
+        skip_file_prefixes=skip_file_prefixes,
+        context=context,
+    )
 
 
 _register_warning(
@@ -189,13 +218,13 @@ def check_total_clusters(
     n_clusters: int,
     *,
     warn: bool = True,
-    stacklevel: int = 3,
 ) -> None:
     """Emit the small-K advisory without imposing an arbitrary floor.
 
     Estimator-specific support and positive-df requirements remain enforced
     by each admitted path; generic cluster sandwiches are explicitly
-    qualified as working asymptotic references.
+    qualified as working asymptotic references. The warning names the first caller outside
+    the package, whatever private layers the estimate passed through.
     """
     if warn and n_clusters < _WARN_TOTAL_CLUSTERS:
         _warn(
@@ -204,7 +233,7 @@ def check_total_clusters(
             n_clusters=n_clusters,
             cluster=cluster,
             floor=_WARN_TOTAL_CLUSTERS,
-            stacklevel=stacklevel,
+            skip_file_prefixes=PACKAGE_FRAMES,
         )
 
 
@@ -218,6 +247,25 @@ class Method(CodedModel, BaseModel):
     The reserved observational names (``"iptw"``/``"dml"``/``"aipw"``) are
     valid here - ``estimate_ate`` dispatches on them - but refused per-call
     by ``_validate_methods`` on the randomized path.
+
+    ``conversion_inference`` chooses the route for an unadjusted, unit-grain,
+    fixed-horizon conversion or retention contrast with no informative prior
+    (it has no effect on any other contrast):
+
+    * ``"auto"`` (the default): rows whose four per-arm success and failure
+      counts are all dense for the requested tail take the approximate
+      delta-method route every unadjusted mean uses (``reference_kind="t"``,
+      ``scale="log"``, no ``binomial_set``), on arm moments formed from those
+      counts; every other row takes the finite-sample route. The route is fixed
+      from those counts before any interval is computed and is labelled on each
+      row, and only rows with ``reference_kind="binomial"`` carry the
+      finite-sample guarantee.
+    * ``"finite_sample"``: every row takes the finite-sample independent-
+      binomial route (``reference_kind="binomial"``), valid at any count and
+      validated to ``binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE`` units per arm.
+      It is refused with ``variance_reduction="cuped"`` at construction and
+      with an informative prior, clustered units, or sequential inference
+      when the request is made.
 
     ``propensity_learner``/``outcome_learner``/``folds`` are the
     pluggable-nuisance seam for ``estimate_ate``'s adjustments (ignored by
@@ -237,6 +285,7 @@ class Method(CodedModel, BaseModel):
 
     name: str  # label carried on the LiftEstimate
     variance_reduction: str = "none"  # "none" | "cuped" (same Registry)
+    conversion_inference: ConversionInference = "auto"
     propensity_learner: Callable[[], Any] | None = None
     outcome_learner: Callable[[], Any] | None = None
     folds: int | None = None
@@ -244,6 +293,8 @@ class Method(CodedModel, BaseModel):
     @model_validator(mode="after")
     def _check_label_matches_configuration(self) -> Method:
         VARIANCE_REDUCTION.get(self.variance_reduction)  # raises if unregistered
+        if self.conversion_inference == "finite_sample" and self.variance_reduction == "cuped":
+            refuse_finite_sample_cuped(self.name)
         if self.name == "cuped" and self.variance_reduction != "cuped":
             _refuse("estimation.engine.method.name_without_variance", self=self.name)
         if self.name == "iptw" and (self.outcome_learner is not None or self.folds is not None):
@@ -295,6 +346,15 @@ def _refuse_weighted_fields(names: Collection[str], what: str) -> None:
         )
 
 
+def _nullish(value: Any) -> bool:
+    if value is None or type(value).__name__ in {"NAType", "NaTType"}:
+        return True
+    try:
+        return bool(value != value)
+    except (TypeError, ValueError):
+        return False
+
+
 def _infer_x_role(row: Mapping[str, Any]) -> str | None:
     """Read an x-family declaration, inferring only when its key is absent.
 
@@ -304,14 +364,6 @@ def _infer_x_role(row: Mapping[str, Any]) -> str | None:
     producer; ``cxden`` marks an ambiguous clustered row whose role cannot be
     inferred safely.
     """
-
-    def _nullish(value: Any) -> bool:
-        if value is None or type(value).__name__ in {"NAType", "NaTType"}:
-            return True
-        try:
-            return bool(value != value)
-        except (TypeError, ValueError):
-            return False
 
     def _present(col: str) -> bool:
         return not _nullish(row.get(col))
@@ -338,6 +390,10 @@ def _validate_required_count(value: Any, *, what: str) -> int:
     of silently truncating it (``int(2.9) == 2``) into a different arm
     size than the row declared.
     """
+    if isinstance(value, bool):
+        _refuse("estimation.engine.arm.invalid_count", what=what, value=value)
+    if isinstance(value, Integral):
+        return int(value)
     try:
         numeric = float(value)
     except (TypeError, ValueError):
@@ -405,6 +461,11 @@ def _df_to_arms(summary: IntoDataFrame | Iterable[Mapping[str, Any]]) -> list[Ar
             _refuse("estimation.engine.group_summary_row", missing=missing)
         metric = row["metric"]
         group_id = row["group_id"]
+        successes = row.get("successes")
+        if isinstance(successes, Integral) and not isinstance(successes, bool):
+            successes = int(successes)
+        elif _nullish(successes):
+            successes = None
         arms.append(
             # Internal producers are already centered: construct directly,
             # never through the format-1 adapter.
@@ -415,6 +476,7 @@ def _df_to_arms(summary: IntoDataFrame | Iterable[Mapping[str, Any]]) -> list[Ar
                 n=_validate_required_count(
                     row["n"], what=f"group_summary row 'n' ({metric}/{group_id})"
                 ),
+                successes=successes,
                 ref_y=float(row["ref_y"]),
                 cy1=float(row["cy1"]),
                 cy2=float(row["cy2"]),
@@ -589,6 +651,37 @@ def _validate_methods(methods: Sequence[Method]) -> None:
     for m in methods:
         if m.name in ADJUSTMENTS:
             _refuse("estimation.engine.method_name_observational", m=m.name)
+
+
+def _validate_conversion_inference(
+    metrics: Sequence[Metric],
+    methods_by_metric: Sequence[Sequence[Method]],
+    *,
+    cluster: str | None,
+    priors: Sequence[Prior | None],
+    sequential: bool,
+) -> None:
+    """Refuse an explicit ``finite_sample`` method on a metric whose request the
+    finite-sample route cannot serve, before any source is read."""
+    from increment.estimation.adjust import ADJUSTMENTS
+
+    for metric, methods, prior in zip(metrics, methods_by_metric, priors, strict=True):
+        explicit = [method for method in methods if method.conversion_inference == "finite_sample"]
+        if not explicit:
+            continue
+        if metric.type not in ("conversion", "retention"):
+            refuse_finite_sample_metric_type(metric.type, metric=metric.name)
+        if any(method.name in ADJUSTMENTS for method in explicit):
+            refuse_finite_sample_unavailable(
+                metric.name,
+                "the method is an observational adjustment, which fits propensity or "
+                "outcome models instead of comparing raw binomial counts",
+            )
+        reason = finite_sample_blocker(
+            cluster=cluster, prior_present=prior is not None, sequential=sequential
+        )
+        if reason is not None:
+            refuse_finite_sample_unavailable(metric.name, reason)
 
 
 def _validate_typed_direct_compatibility(
@@ -799,6 +892,13 @@ def validate_readout_engine(request: ReadoutRequest) -> None:
     if mechanism != "observational":
         for metric_methods in method_catalog:
             _validate_methods(metric_methods)
+    _validate_conversion_inference(
+        metrics,
+        method_catalog,
+        cluster=cluster,
+        priors=[config.prior for config in configs],
+        sequential=isinstance(request.plan.inference, SEQUENTIAL_POLICIES),
+    )
     winsorized_names = [
         metric.name for metric in metrics if getattr(metric, "winsorization", None) is not None
     ]
@@ -913,7 +1013,7 @@ def _is_open_ended(metric: Metric) -> bool:
     return metric.window_days is None
 
 
-def _warn_if_open_ended_sequential(metrics: Iterable[Metric], *, stacklevel: int = 3) -> None:
+def _warn_if_open_ended_sequential(metrics: Iterable[Metric]) -> None:
     """Warn per open-ended metric that the sequential guarantee is approximate.
 
     Shared by every sequential entry point that estimates from arm moments:
@@ -940,7 +1040,7 @@ def _warn_if_open_ended_sequential(metrics: Iterable[Metric], *, stacklevel: int
             metric_name=m.name,
             windows=windows,
             fix=fix,
-            stacklevel=stacklevel,
+            skip_file_prefixes=PACKAGE_FRAMES,
         )
 
 
@@ -1597,6 +1697,13 @@ def _prepare_lift_estimation(
         null_lift=null_lift,
         null_abs=null_abs,
     )
+    _validate_conversion_inference(
+        metrics,
+        [methods] * len(metrics),
+        cluster=cluster,
+        priors=[prior] * len(metrics),
+        sequential=inference is not None,
+    )
     code = sequential_support_refusal(
         SequentialSupportRequest(
             inference=inference,
@@ -1628,7 +1735,7 @@ def _prepare_lift_estimation(
             metric_types=sorted(metric_types),
         )
     if inference is not None:
-        _warn_if_open_ended_sequential((m for m in metrics if m.name in arm_metrics), stacklevel=4)
+        _warn_if_open_ended_sequential(m for m in metrics if m.name in arm_metrics)
     control_arms = [a for a in arms if a.group_id == control_group]
     if not control_arms:
         known_groups = sorted({a.group_id for a in arms})
@@ -1673,7 +1780,7 @@ def _select_lift_variance_strategy(
         variance_model = VARIANCE_MODELS.get("cluster")
         k_t, k_c = treatment.n, control.n
         n_clusters = k_t + k_c
-        check_total_clusters(treatment.metric, cluster, n_clusters, stacklevel=4)
+        check_total_clusters(treatment.metric, cluster, n_clusters)
         if k_t < 2 or k_c < 2:
             from increment.estimation.encouragement import ARM_NEEDS_TWO
 
@@ -1748,8 +1855,9 @@ def _binomial_eligible(
     control: ArmStats,
 ) -> bool:
     """Whether this (metric, method) contrast is a genuinely-binary,
-    unadjusted, unit-grain arm pair the exact binomial method (see
-    ``binomial_rr.py``) admits.
+    unadjusted, unit-grain arm pair whose route ``conversion_route`` chooses
+    from its counts: the finite-sample binomial method (see ``binomial_rr.py``)
+    or the delta-method contrast.
 
     A declared ``conversion``/``retention`` metric type is the sole
     structural provenance signal (a 0/1-per-unit fact by construction --
@@ -1757,10 +1865,10 @@ def _binomial_eligible(
     asymptotic inference rather than raw Bernoulli sufficient statistics.
     Clustered conversion/retention uses the linear joint Fieller path with
     cluster-robust covariance and a fixed-t working reference, not this
-    exact binomial construction. An attached uptake moment (``arm.sum_d``) does not
+    binomial construction. An attached uptake moment (``arm.sum_d``) does not
     disqualify eligibility either: it describes a different random
-    variable over the same units and is stripped before the exact-
-    binomial route reads the arm (see ``_without_unused_binomial_uptake``).
+    variable over the same units and is stripped before either route
+    reads the arm (see ``_without_unused_binomial_uptake``).
     """
     return (
         metric_type in ("conversion", "retention")
@@ -1795,7 +1903,7 @@ def _without_unused_binomial_uptake(arm: ArmStats) -> ArmStats:
     An encouragement design's uptake facts do not change the ITT's
     sufficient statistics for a binary outcome (x_c, n_c, x_t, n_t); only
     the assignment-level y family does. Stripping them here keeps the
-    exact independent-binomial route available for the ITT, while the
+    independent-binomial counts available to the ITT, while the
     design's own uptake/compliance/LATE estimation (encouragement.py)
     reads the untouched arm from the original summary.
     """
@@ -1837,41 +1945,26 @@ def _binomial_abs_bounds(abs_diff: float, abs_se: float, alpha_eff: float) -> tu
     return wald_bounds(abs_diff, crit, abs_se, what="binomial additive sidecar")
 
 
-def _infer_binomial_lift_result(
-    contrast: tuple[ArmStats, ArmStats],
-    method: Method,
-    metric_type: str,
+def _validate_binomial_request(
+    treatment: ArmStats,
+    *,
     prior: Prior | None,
     alpha: float,
     alternative: str,
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
-    method_role: Literal["decision", "sensitivity"],
     null_lift: float,
-    null_abs: float | None,
-    preferred_direction: PreferredDirection | None,
-) -> tuple[LiftEstimate | None, DecisionFailure | None]:
-    """Exact independent-binomial risk-ratio inference for one eligible
-    (conversion/retention, unadjusted, unit-grain) contrast.
+) -> tuple[Alternative, float]:
+    """Validate the request-level inputs every route of an eligible conversion contrast
+    shares and return ``(alternative, alpha_eff)``.
 
-    Bypasses the log-Normal delta method and its ``log_se >= .5``
-    admission rule entirely for this contrast -- that guard is a
-    computational admission rule for the Normal approximation, not a
-    scientific boundary this exact method needs. See ``binomial_rr.py``
-    for the method and its coverage argument.
-
-    Request-level misconfigurations (an informative prior; a sequential
-    guarantee) raise immediately, matching how ``infer_lift`` already
-    raises immediately for the analogous cluster/sequential/prior
-    combinations on the log-Normal path -- these are not per-arm data
-    guards. A per-arm data/numerical guard (bad reconstructed counts, an
-    unrepresentable tail) instead becomes a keyed ``DecisionFailure``,
-    matching ``LiftGuardError``'s existing soft-failure treatment.
+    Request-level misconfigurations (an informative prior; a sequential guarantee) raise
+    immediately, matching how ``infer_lift`` already raises immediately for the analogous
+    cluster/sequential/prior combinations on the log-Normal path -- these are not per-arm
+    data guards. ``alpha_eff`` is the persisted central-equivalent display level: a
+    directional alternative doubles ``alpha``, while each inversion still spends ``alpha``.
     """
-    from increment.estimation.decision_types import ArmHypothesisKey, DecisionFailure
     from increment.estimation.inference import INFER_ATE_NULL_LIFT_FINITE
 
-    treatment, control = contrast
-    hypothesis = ArmHypothesisKey(treatment.metric, treatment.group_id, "itt")
     alternative = binomial_rr.validate_alternative(alternative)
     if not math.isfinite(null_lift):
         refuse(INFER_ATE_NULL_LIFT_FINITE, null_lift=null_lift)
@@ -1898,9 +1991,6 @@ def _infer_binomial_lift_result(
             context={"metric": treatment.metric, "group_id": treatment.group_id},
         )
     alpha_eff = alpha if alternative == "two-sided" else 2.0 * alpha
-    # `alpha` is the actual tail budget. Directional rows double it only
-    # for the persisted central-equivalent display level used throughout
-    # this module; the exact one-sided inversion must still spend `alpha`.
     if not (0.0 < alpha_eff < 1.0):
         raise InvalidRequestError(
             f"alpha={alpha!r} doubled to {alpha_eff!r} for a directional alternative "
@@ -1908,23 +1998,84 @@ def _infer_binomial_lift_result(
             code="estimation.binomial.alpha_doubling_unrepresentable",
             context={"alpha": alpha, "alternative": alternative},
         )
+    return alternative, alpha_eff
+
+
+def _binomial_arm(arm: ArmStats) -> ArmStats:
+    """``arm`` as the binomial reading sees it: its unused covariate and uptake moments dropped."""
+    return _without_unused_binomial_uptake(_without_unused_binomial_covariate(arm))
+
+
+def _contrast_counts(
+    treatment: ArmStats, control: ArmStats, metric_type: str
+) -> tuple[int, int, int, int]:
+    """``(x_c, n_c, x_t, n_t)`` of an eligible conversion contrast, reconstructed from its
+    arm moments before any route is chosen, so a corrupted arm refuses identically under
+    every ``conversion_inference``."""
+    x_c, n_c = binary_counts(_binomial_arm(control), metric_type)
+    x_t, n_t = binary_counts(_binomial_arm(treatment), metric_type)
+    return x_c, n_c, x_t, n_t
+
+
+def _contrast_of_counts(
+    treatment: ArmStats, control: ArmStats, counts: tuple[int, int, int, int]
+) -> tuple[ArmStats, ArmStats]:
+    """The ``(treatment, control)`` arms of an eligible contrast the delta method reads: the
+    binomial arms with their y family formed from the counts (`canonical_bernoulli_arm`), so a
+    producer's accepted rounding in the stored moments never reaches the interval, and the
+    interval is a function of the four counts alone."""
+    x_c, _, x_t, _ = counts
+    return (
+        canonical_bernoulli_arm(_binomial_arm(treatment), x_t),
+        canonical_bernoulli_arm(_binomial_arm(control), x_c),
+    )
+
+
+def _binomial_data_failure(
+    treatment: ArmStats, exc: binomial_rr.BinomialDataError, method_role: str
+) -> tuple[None, DecisionFailure | None]:
+    """A per-arm data/numerical guard (bad reconstructed counts, an unrepresentable tail)
+    becomes a keyed ``DecisionFailure`` for the decision method, matching
+    ``LiftGuardError``'s existing soft-failure treatment."""
+    from increment.estimation.decision_types import ArmHypothesisKey, DecisionFailure
+
+    if method_role != "decision":
+        return None, None
+    hypothesis = ArmHypothesisKey(treatment.metric, treatment.group_id, "itt")
+    return None, DecisionFailure(hypothesis, exc.code, dict(exc.context))
+
+
+def _infer_binomial_lift_result(
+    contrast: tuple[ArmStats, ArmStats],
+    counts: tuple[int, int, int, int],
+    method: Method,
+    alpha: float,
+    alternative: Alternative,
+    method_role: Literal["decision", "sensitivity"],
+    null_lift: float,
+    null_abs: float | None,
+    preferred_direction: PreferredDirection | None,
+) -> tuple[LiftEstimate | None, DecisionFailure | None]:
+    """Exact independent-binomial risk-ratio inference for one eligible
+    (conversion/retention, unadjusted, unit-grain) contrast routed finite-sample.
+
+    Bypasses the log-Normal delta method and its ``log_se >= .5``
+    admission rule entirely for this contrast -- that guard is a
+    computational admission rule for the Normal approximation, not a
+    scientific boundary this exact method needs. See ``binomial_rr.py``
+    for the method and its coverage argument. ``counts`` and the request
+    were validated by the caller.
+    """
+    treatment, control = contrast
+    x_c, n_c, x_t, n_t = counts
+    alpha_eff = alpha if alternative == "two-sided" else 2.0 * alpha
     try:
-        control_binomial = _without_unused_binomial_uptake(
-            _without_unused_binomial_covariate(control)
-        )
-        treatment_binomial = _without_unused_binomial_uptake(
-            _without_unused_binomial_covariate(treatment)
-        )
-        x_c, n_c = binary_counts(control_binomial, metric_type)
-        x_t, n_t = binary_counts(treatment_binomial, metric_type)
         ci = binomial_rr.confidence_interval(
             x_c, n_c, x_t, n_t, alpha=alpha, alternative=alternative, null_r=1.0 + null_lift
         )
         point = binomial_rr.point_lift(x_c, n_c, x_t, n_t)
     except binomial_rr.BinomialDataError as exc:
-        if method_role != "decision":
-            return None, None
-        return None, DecisionFailure(hypothesis, exc.code, dict(exc.context))
+        return _binomial_data_failure(treatment, exc, method_role)
 
     lift_lower, lift_upper = binomial_rr.to_lift_bounds(ci)
     level = math.fsum((1.0, -alpha_eff))
@@ -2385,6 +2536,13 @@ def _estimate_registered_sequential(
 
     for metric in metrics:
         validate_sequential_methods(inference.registration, metric.name, methods or (), prior=prior)
+    _validate_conversion_inference(
+        metrics,
+        [methods or ()] * len(metrics),
+        cluster=cluster,
+        priors=[prior] * len(metrics),
+        sequential=True,
+    )
     if not isinstance(summary, SequentialSnapshot):
         sequential_refuse(
             "source.invalid",
@@ -2403,7 +2561,167 @@ def _estimate_registered_sequential(
     return estimate_sequential(summary, inference)
 
 
-def estimate_lift(  # noqa: PLR0913, PLR0915
+def _asymptotic_lift_outcome(
+    contrast: tuple[ArmStats, ArmStats],
+    method_strategy: _LiftMethodStrategy,
+    strategy: _LiftVarianceStrategy,
+    method_role: Literal["decision", "sensitivity"],
+    prior: Prior | None,
+    alpha: float,
+    alternative: str,
+    inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
+    null_lift: float,
+    null_abs: float | None,
+    preferred_direction: PreferredDirection | None,
+) -> tuple[LiftEstimate | None, DecisionFailure | None]:
+    """The delta-method contrast every unadjusted mean metric takes: log risk ratio
+    against a Welch-Satterthwaite ``t`` reference, with the additive Wald sidecar."""
+    treatment, control = contrast
+    try:
+        moments = (
+            _compute_lift_arm_moments(treatment, control, method_strategy, strategy)
+            if strategy.n_clusters is None
+            else None
+        )
+    except _NonPositiveMeanFailure as exc:
+        return _nonpositive_mean_outcome(
+            exc,
+            contrast,
+            strategy,
+            method_strategy.method,
+            method_role,
+            prior,
+            alpha,
+            alternative,
+            null_lift,
+            null_abs,
+            preferred_direction,
+        )
+    return _infer_lift_result(
+        contrast=contrast,
+        method=method_strategy.method,
+        moments=moments,
+        strategy=strategy,
+        prior=prior,
+        alpha=alpha,
+        alternative=alternative,
+        inference=inference,
+        method_role=method_role,
+        null_lift=null_lift,
+        null_abs=null_abs,
+        preferred_direction=preferred_direction,
+    )
+
+
+def _lift_for_method(  # noqa: PLR0913
+    contrast: tuple[ArmStats, ArmStats],
+    metric_type: str,
+    cluster: str | None,
+    method_strategy: _LiftMethodStrategy,
+    strategy: _LiftVarianceStrategy,
+    method_role: Literal["decision", "sensitivity"],
+    prior: Prior | None,
+    alpha: float,
+    alternative: str,
+    inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
+    null_lift: float,
+    null_abs: float | None,
+    preferred_direction: PreferredDirection | None,
+    route_alpha: float | None = None,
+) -> tuple[LiftEstimate | None, DecisionFailure | None]:
+    """One (contrast, method) row.
+
+    An unadjusted, unclustered, fixed-horizon conversion or retention contrast with no
+    informative prior chooses its route from its four reconstructed counts and the tail
+    allocation alone (``conversion_route.route_for_counts``): the finite-sample
+    independent-binomial inversion, or the delta-method contrast every unadjusted mean
+    takes, here on arms formed from those counts (`_contrast_of_counts`). Every other contrast
+    takes the delta-method contrast on its stored moments, and an explicit
+    ``finite_sample`` request on one is refused rather than served by it.
+    """
+    treatment, control = contrast
+    method = method_strategy.method
+    eligible = (
+        _binomial_eligible(metric_type, cluster, method_strategy, treatment, control)
+        and inference is None
+        and prior is None
+    )
+    if not eligible:
+        if method.conversion_inference == "finite_sample":
+            if metric_type not in ("conversion", "retention"):
+                refuse_finite_sample_metric_type(metric_type, metric=treatment.metric)
+            refuse_finite_sample_unavailable(
+                treatment.metric,
+                finite_sample_blocker(
+                    cluster=cluster,
+                    prior_present=prior is not None,
+                    sequential=inference is not None,
+                )
+                or "the arm moments carry a ratio denominator or a CUPED adjustment",
+            )
+        return _asymptotic_lift_outcome(
+            contrast,
+            method_strategy,
+            strategy,
+            method_role,
+            prior,
+            alpha,
+            alternative,
+            inference,
+            null_lift,
+            null_abs,
+            preferred_direction,
+        )
+    valid_alternative, alpha_eff = _validate_binomial_request(
+        treatment,
+        prior=prior,
+        alpha=alpha,
+        alternative=alternative,
+        inference=inference,
+        null_lift=null_lift,
+    )
+    try:
+        counts = _contrast_counts(treatment, control, metric_type)
+    except binomial_rr.BinomialDataError as exc:
+        return _binomial_data_failure(treatment, exc, method_role)
+    # A multiplicity procedure may read this row's p-value at a smaller family level
+    # (``route_alpha``, in ``alpha``'s convention): the route is the one valid at the smallest
+    # level the row can be decided at, never a looser one.
+    route_level = alpha_eff
+    if route_alpha is not None and method_role == "decision":
+        floor = route_alpha if valid_alternative == "two-sided" else 2.0 * route_alpha
+        route_level = min(alpha_eff, floor)
+    route = route_for_counts(
+        *counts, tail_alpha=route_level / 2.0, mode=method.conversion_inference
+    )
+    if route == "finite_sample":
+        return _infer_binomial_lift_result(
+            contrast,
+            counts,
+            method,
+            alpha,
+            valid_alternative,
+            method_role,
+            null_lift,
+            null_abs,
+            preferred_direction,
+        )
+    return _asymptotic_lift_outcome(
+        _contrast_of_counts(treatment, control, counts),
+        method_strategy,
+        strategy,
+        method_role,
+        prior,
+        alpha,
+        alternative,
+        inference,
+        null_lift,
+        null_abs,
+        preferred_direction,
+    )
+
+
+def estimate_lift(  # noqa: PLR0913
     metrics: Sequence[Metric],
     summary: SequentialSnapshot
     | IntoDataFrame
@@ -2444,6 +2762,18 @@ def estimate_lift(  # noqa: PLR0913, PLR0915
     statistic and the threshold. The note is advisory: the interval is
     reported unchanged.
 
+    An unadjusted, unclustered, fixed-horizon conversion or retention row with no
+    prior takes the route ``Method.conversion_inference`` selects. Under
+    ``"auto"`` the four per-arm success and failure counts and the tail
+    allocation alone decide it (``conversion_route.route_for_counts``): dense
+    counts take the delta-method contrast every unadjusted mean takes
+    (``reference_kind="t"``, ``scale="log"``), and any other counts the
+    finite-sample independent-binomial inversion (``reference_kind="binomial"``).
+    The row's ``reference_kind`` labels which; only the ``"binomial"`` rows
+    carry the finite-sample guarantee. A delta-method row of such a contrast is a function of
+    the four counts alone: the arms' moments are formed from the counts, not read as the
+    producer stored them, so the same counts give the same interval through every ingress.
+
     ``control_group`` is required - the engine never guesses by sort
     order. ``prior``/``alpha``/``alternative``/``null_lift``/``null_abs``/
     ``preferred_direction`` forward to fixed-horizon inference. Registered
@@ -2469,6 +2799,59 @@ def estimate_lift(  # noqa: PLR0913, PLR0915
     total clusters emits the qualified-reference warning (see
     ``check_total_clusters``).
     """
+    return _estimate_lift(
+        metrics,
+        summary,
+        control_group,
+        methods,
+        prior,
+        alpha,
+        alternative,
+        inference,
+        null_lift,
+        null_abs,
+        preferred_direction,
+        cluster,
+        method_roles,
+        raw_outcomes,
+        winsor_references,
+        summary_population=summary_population,
+    )
+
+
+def _estimate_lift(  # noqa: PLR0913
+    metrics: Sequence[Metric],
+    summary: SequentialSnapshot
+    | IntoDataFrame
+    | Iterable[Mapping[str, Any]],  # group_summary rows for ONE experiment
+    control_group: str,  # REQUIRED explicit control
+    methods: list[Method] | None = None,
+    prior: Prior | None = None,
+    alpha: float | None = None,
+    alternative: str | None = None,
+    inference: AsymptoticMean | AlwaysValid | MixedFamily | None = None,
+    null_lift: float | None = None,
+    null_abs: float | None = None,
+    preferred_direction: PreferredDirection | None = None,
+    cluster: str | None = None,
+    method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
+    raw_outcomes: Mapping[str, WinsorRawState] | None = None,
+    winsor_references: Mapping[tuple[str, str], BootstrapReference] | None = None,
+    *,
+    summary_population: Literal["assigned", "triggered"] | None = None,
+    route_alpha: float | None = None,
+) -> DecisionComputation[LiftEstimate]:
+    """``estimate_lift`` with the multiplicity routing level its families pass.
+
+    ``route_alpha`` is the smallest level (in ``alpha``'s convention) a multiplicity procedure
+    can later decide a decision row's p-value at, in ``(0, 1]``: a conversion decision row
+    takes the delta-method route only if its counts are dense at that level too, so an
+    approximate p-value is never read at a tail it was not validated at. Omitted, the row's
+    own ``alpha`` decides. Only the package's own families set it; the public function
+    never does, so a caller cannot move a row's ``reference_kind`` apart from a family.
+    """
+    if route_alpha is not None and not 0.0 < route_alpha <= 1.0:
+        _refuse("estimation.engine.route_alpha", route_alpha=route_alpha)
     percentile_metrics = [
         m for m in metrics if getattr(getattr(m, "winsorization", None), "has_percentile", False)
     ]
@@ -2544,7 +2927,7 @@ def estimate_lift(  # noqa: PLR0913, PLR0915
             preferred_direction,
         )
         if ordinary:
-            remaining = estimate_lift(
+            remaining = _estimate_lift(
                 metrics=ordinary,
                 summary=summary,
                 control_group=control_group,
@@ -2558,6 +2941,7 @@ def estimate_lift(  # noqa: PLR0913, PLR0915
                 preferred_direction=preferred_direction,
                 cluster=cluster,
                 method_roles=method_roles,
+                route_alpha=route_alpha,
             )
             from increment.estimation.decision_types import DecisionComputation
 
@@ -2633,61 +3017,22 @@ def estimate_lift(  # noqa: PLR0913, PLR0915
             method_role = prepared.resolved_method_roles.get(
                 method_strategy.method.name, "decision"
             )
-            exact_binomial = (
-                _binomial_eligible(metric_type, cluster, method_strategy, treatment, control)
-                and inference is None
-                and prior is None
+            result, failure = _lift_for_method(
+                (treatment, control),
+                metric_type,
+                cluster,
+                method_strategy,
+                strategy,
+                method_role,
+                prior,
+                alpha,
+                alternative,
+                inference,
+                null_lift,
+                null_abs,
+                preferred_direction,
+                route_alpha,
             )
-            if exact_binomial:
-                result, failure = _infer_binomial_lift_result(
-                    contrast=(treatment, control),
-                    method=method_strategy.method,
-                    metric_type=metric_type,
-                    prior=prior,
-                    alpha=alpha,
-                    alternative=alternative,
-                    inference=inference,
-                    method_role=method_role,
-                    null_lift=null_lift,
-                    null_abs=null_abs,
-                    preferred_direction=preferred_direction,
-                )
-            else:
-                try:
-                    moments = (
-                        _compute_lift_arm_moments(treatment, control, method_strategy, strategy)
-                        if strategy.n_clusters is None
-                        else None
-                    )
-                except _NonPositiveMeanFailure as exc:
-                    result, failure = _nonpositive_mean_outcome(
-                        exc,
-                        (treatment, control),
-                        strategy,
-                        method_strategy.method,
-                        method_role,
-                        prior,
-                        alpha,
-                        alternative,
-                        null_lift,
-                        null_abs,
-                        preferred_direction,
-                    )
-                else:
-                    result, failure = _infer_lift_result(
-                        contrast=(treatment, control),
-                        method=method_strategy.method,
-                        moments=moments,
-                        strategy=strategy,
-                        prior=prior,
-                        alpha=alpha,
-                        alternative=alternative,
-                        inference=inference,
-                        method_role=method_role,
-                        null_lift=null_lift,
-                        null_abs=null_abs,
-                        preferred_direction=preferred_direction,
-                    )
             if failure is not None:
                 guard_failures[failure.hypothesis] = failure
             if result is not None:

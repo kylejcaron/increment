@@ -407,6 +407,24 @@ def test_below_forty_total_clusters_warns_of_over_rejection():
     assert result.n_clusters == 20
 
 
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_the_small_cluster_advisory_names_the_estimate_ate_caller():
+    tbl = _table(k_per_arm=3, m=10, seed=5)
+    src = _source(tbl, cluster="store")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        estimate_ate(
+            src, DESIGN, methods=[Method(name="iptw", propensity_learner=ConstantPropensity)]
+        )
+    advisories = [
+        w
+        for w in caught
+        if getattr(w.message, "code", None) == "estimation.engine.small_total_clusters"
+    ]
+    assert advisories
+    assert all(w.filename == __file__ for w in advisories)
+
+
 @pytest.mark.parametrize("name", ["dml", "aipw"])
 def test_cross_fit_cluster_advisory_emitted_once(name):
     tbl = _table(k_per_arm=10, m=2, seed=5)

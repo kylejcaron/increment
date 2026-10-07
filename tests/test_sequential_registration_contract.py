@@ -818,7 +818,7 @@ def test_fixed_wire_refuses_sequential_version_before_payload_rehydration(typed)
 
 
 @pytest.mark.slow
-def test_fixed_moments_format9_requires_sequential_envelope(tmp_path):
+def test_fixed_moments_sequential_stamp_requires_sequential_envelope(tmp_path):
     import pyarrow.parquet as pq
 
     from increment import AnalysisPlan
@@ -842,7 +842,7 @@ def test_fixed_moments_format9_requires_sequential_envelope(tmp_path):
         path = tmp_path / "fixed.parquet"
         source.export(path)
         payload = pq.read_table(path).to_pylist()
-        assert payload and payload[0]["moments_format"] == 8
+        assert payload and payload[0]["moments_format"] == 10
         supported = Analysis.from_moments(
             payload,
             metrics=[MetricSpec(name="outcome", type="conversion")],

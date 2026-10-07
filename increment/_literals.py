@@ -14,6 +14,7 @@ ValueScale = Literal["relative", "absolute"]
 PreferredDirection = Literal["increase", "decrease", "neutral"]
 MultiplicityCorrection = Literal["none", "bh", "bonferroni", "e_bh"]
 Correction = Literal["none", "bh", "bonferroni"]
+ConversionInference = Literal["auto", "finite_sample"]
 
 ALTERNATIVE_VALUES = frozenset(get_args(Alternative))
 VALUE_SCALE_VALUES = frozenset(get_args(ValueScale))

@@ -8,7 +8,7 @@ verified by the cross-backend render tests in ``test_builders.py``.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from typing import Any, Literal, Never, assert_never, cast
 
 import ibis
@@ -1834,6 +1834,12 @@ def emit_centered_moments(
     then one aggregate sums the residual products against them, in the
     plan's moment order (family by family, winsor passthrough, then the
     masked family). No variance reduction here; that lives on ``ArmStats``.
+
+    A passthrough column is carried through unchanged: a ``max`` column by
+    maximum, a ``sum`` column by sum, and an ``int64`` sum as an exact integer
+    -- never routed through the float moments. ``successes`` is such a column:
+    an exact 0/1 integer per row of a declared binary outcome, ``NULL``
+    elsewhere, so a group's exact count is the integer sum of its rows.
     """
     group_cols = list(keys)
     window = ibis.window(group_by=group_cols)
@@ -1875,7 +1881,14 @@ def emit_centered_moments(
     for passthrough in plan.passthrough:
         if passthrough.column in centered.columns:
             column = centered[passthrough.column]
-            aggs[passthrough.column] = column.max() if passthrough.reduce == "max" else column.sum()
+            if passthrough.reduce == "max":
+                aggs[passthrough.column] = column.max()
+            elif passthrough.dtype == "int64":
+                # An integer sum stays an exact integer (never rides a float, and a
+                # backend's wider accumulator is narrowed back to the declared type).
+                aggs[passthrough.column] = column.sum().cast("int64")
+            else:
+                aggs[passthrough.column] = column.sum()
         else:
             aggs[passthrough.column] = null(passthrough.dtype)
     for moment in plan.masked_moments():
@@ -1894,6 +1907,15 @@ def emit_centered_moments(
     return summary.mutate(x_role=ibis.literal(X_SLOT_ROLES[x_var]))
 
 
+def declared_binary_metrics(metrics: Iterable[Metric]) -> list[str]:
+    """Names of the declared conversion/retention metrics among *metrics*.
+
+    Only these carry a unit-grain 0/1 outcome: a cluster sum, a transformed
+    or any other metric is never binary, whatever its observed values.
+    """
+    return [m.name for m in metrics if isinstance(m, ConversionMetric | RetentionMetric)]
+
+
 def group_summary(
     totals: ir.Table,
     by: list[str] | None = None,
@@ -1901,6 +1923,7 @@ def group_summary(
     cluster: str | None = None,
     ratio_metrics: Collection[str] | None = None,
     uptake: bool = False,
+    binary_metrics: Collection[str] | None = None,
 ) -> ir.Table:
     """Per-group centered moments from *unit_totals*.
 
@@ -1933,6 +1956,12 @@ def group_summary(
     uptake : bool
         Whether *totals*' ``d`` column carries a real encouragement uptake
         fact; read only under *cluster* (see above).
+    binary_metrics : Collection[str] | None
+        Names of metrics in *totals* declared conversion/retention, whose unit
+        ``y`` is an exact 0/1. Their rows carry the exact integer ``successes``
+        count (the sum of those 0/1 values); every other metric's is NULL.
+        Ignored under *cluster*: a cluster sum is not binary, so a clustered
+        row's ``successes`` is always an explicit NULL.
 
     The row shape comes from ``_moment_plan.UNIT_GRAIN`` (or the cluster
     plans under *cluster*): ``sum_d``/``cyd``/``cy2d``/``cxd`` are always
@@ -1997,14 +2026,26 @@ def group_summary(
         plan = CLUSTER_UPTAKE_GRAIN if uptake else CLUSTER_SIZE_GRAIN
         x_var = plan.x_variable()
         assert x_var is not None
-        return emit_centered_moments(
+        summary = emit_centered_moments(
             per_cluster, plan, keys=group_cols, columns={"y": "g", "den": "m", x_var: "x"}
         )
+        # A cluster total is never a binary outcome: keep the declared row shape with an
+        # explicit NULL count rather than any sum of cluster outcomes.
+        return summary.mutate(successes=ibis.null().cast("int64"))
 
     group_cols = ["experiment_id", "metric", "group_id", *(by or [])]
     columns = {"y": "y", "x": "x", "den": "y_den"}
     if "d" in totals.columns:
         columns["d"] = "d"
+    binary = sorted(binary_metrics or ())
+    if binary:
+        # Unit-grain y of a declared conversion/retention metric is an exact 0/1, so
+        # the integer cast loses nothing; every other metric's rows carry NULL.
+        totals = totals.mutate(
+            successes=totals.metric.isin(binary).ifelse(
+                totals.y.cast("int64"), ibis.null().cast("int64")
+            )
+        )
     return emit_centered_moments(totals, UNIT_GRAIN, keys=group_cols, columns=columns)
 
 
@@ -2046,6 +2087,9 @@ def daily_group_summary(
     group_cols = ["ds", "experiment_id", "metric", "group_id", *(by or [])]
 
     panel = _finalize_daily_state(panel, metric, part="numerator")
+    if isinstance(metric, ConversionMetric):
+        # The day's any-occurrence value is an exact 0/1 per unit: count it as an integer.
+        panel = panel.mutate(successes=(panel.n_events > 0).cast("int32").cast("int64"))
 
     if den_panel is not None:
         den_final = _finalize_daily_state(den_panel, metric, part="denominator")
@@ -2276,6 +2320,9 @@ def asof_group_summary(
             has_uptake=uptake_panel is not None,
         )
 
+    if isinstance(metric, ConversionMetric | RetentionMetric):
+        # The cumulative any-occurrence value is an exact 0/1 per unit: count it as an integer.
+        agg_source = agg_source.mutate(successes=agg_source.asof_value.cast("int64"))
     columns = {"y": "asof_value"}
     if "x" in agg_source.columns:
         columns["x"] = "x"
@@ -2355,6 +2402,8 @@ def cohort_group_summary(
     totals = joined.mutate(ds=joined.cohort_ds)
 
     group_cols = ["ds", "experiment_id", "metric", "group_id", *(by or [])]
+    # Unit totals of a retention metric are exact 0/1 values: count them as integers.
+    totals = totals.mutate(successes=totals.y.cast("int64"))
     columns = {"y": "y"}
     if "x" in totals.columns:
         columns["x"] = "x"

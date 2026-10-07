@@ -31,6 +31,7 @@ from increment.query.builders import (
     cohort_group_summary,
     daily_exposure_counts,
     daily_group_summary,
+    declared_binary_metrics,
     first_exposures,
     group_summary,
     join_breakout_dimension,
@@ -1035,6 +1036,48 @@ def test_group_summary_schema(totals):
     """Output columns match canonical schema."""
     summary = group_summary(totals)
     assert set(summary.columns) == GROUP_SUMMARY
+
+
+def _arrow_rows(con, expr) -> tuple[pa.Table, list[dict]]:
+    table = con.to_pyarrow(expr)
+    return table, table.to_pylist()
+
+
+def test_group_summary_successes_is_exact_integer_for_declared_binary(
+    con, exposures, purchase_events, experiment, conversion_metric
+):
+    """A declared conversion metric carries its exact int64 success count."""
+    events = metric_events(purchase_events, conversion_metric)
+    spine, stats = unit_day_spine_stats(exposures, events, experiment, conversion_metric.name)
+    totals = unit_totals(spine, stats, conversion_metric, experiment)
+    expected: dict[str, int] = {}
+    for row in con.to_pyarrow(totals).to_pylist():
+        expected[row["group_id"]] = expected.get(row["group_id"], 0) + int(row["y"])
+    table, rows = _arrow_rows(
+        con, group_summary(totals, binary_metrics=declared_binary_metrics([conversion_metric]))
+    )
+    assert table.schema.field("successes").type == pa.int64()
+    assert {row["group_id"]: row["successes"] for row in rows} == expected
+    assert all(isinstance(row["n"], int) for row in rows)
+
+
+def test_group_summary_successes_null_without_binary_declaration(
+    con, exposures, purchase_events, experiment, conversion_metric, totals, mean_metric
+):
+    """No declaration, a different declared name, or a nonbinary metric: NULL, never 0."""
+    events = metric_events(purchase_events, conversion_metric)
+    spine, stats = unit_day_spine_stats(exposures, events, experiment, conversion_metric.name)
+    conversion_totals = unit_totals(spine, stats, conversion_metric, experiment)
+    undeclared = con.to_pyarrow(group_summary(conversion_totals))
+    assert undeclared.schema.field("successes").type == pa.int64()
+    assert undeclared.column("successes").null_count == undeclared.num_rows
+    other = con.to_pyarrow(group_summary(conversion_totals, binary_metrics=["other"]))
+    assert other.column("successes").null_count == other.num_rows
+    mean = con.to_pyarrow(
+        group_summary(totals, binary_metrics=declared_binary_metrics([mean_metric]))
+    )
+    assert mean.schema.field("successes").type == pa.int64()
+    assert mean.column("successes").null_count == mean.num_rows
 
 
 def test_group_summary_centered_moments(totals):
@@ -4333,6 +4376,67 @@ def test_asof_conversion_repeated_days_remains_binary(con) -> None:
     assert rows["n"].tolist() == [1, 1]
     assert rows["ref_y"].tolist() == [1.0, 1.0]
     assert rows["cy1"].tolist() == [0.0, 0.0]
+    assert rows["successes"].tolist() == [1, 1]
+
+
+def test_day_axis_conversion_successes_are_exact_integers(
+    con, exposures, purchase_events, experiment, conversion_metric
+):
+    events = metric_events(purchase_events, conversion_metric)
+    panel = unit_day_panel(exposures, events, experiment, metric_name=conversion_metric.name)
+    daily = con.to_pyarrow(
+        daily_group_summary(window_bound_stats(panel, conversion_metric), metric=conversion_metric)
+    )
+    assert daily.schema.field("successes").type == pa.int64()
+    # Only u1's two purchases on its exposure day qualify; they count as one success.
+    assert {(row["ds"].day, row["group_id"]): row["successes"] for row in daily.to_pylist()} == {
+        (1, "control"): 0,
+        (1, "treatment"): 1,
+        (2, "treatment"): 0,
+    }
+    asof = con.to_pyarrow(asof_group_summary(panel, conversion_metric))
+    assert asof.schema.field("successes").type == pa.int64()
+    assert {(row["group_id"], row["successes"]) for row in asof.to_pylist()} == {
+        ("control", 0),
+        ("treatment", 1),
+    }
+
+
+def test_day_axis_retention_successes_are_exact_integers(
+    con, exposures, page_view_events, experiment, bounded_retention_metric
+):
+    metric = bounded_retention_metric
+    events = metric_events(page_view_events, metric)
+    panel = unit_day_panel(exposures, events, experiment, metric_name=metric.name)
+    asof = con.to_pyarrow(asof_group_summary(panel, metric))
+    assert asof.schema.field("successes").type == pa.int64()
+    # Only u1 returns in its [exposure+2, exposure+4) band.
+    assert {(row["group_id"], row["successes"]) for row in asof.to_pylist()} == {
+        ("control", 0),
+        ("treatment", 1),
+    }
+    spine, stats = unit_day_spine_stats(exposures, events, experiment, metric.name)
+    cohorts = con.to_pyarrow(cohort_group_summary(spine, stats, metric, experiment))
+    assert cohorts.schema.field("successes").type == pa.int64()
+    assert {(row["ds"].day, row["group_id"]): row["successes"] for row in cohorts.to_pylist()} == {
+        (1, "control"): 0,
+        (1, "treatment"): 1,
+        (2, "treatment"): 0,
+    }
+
+
+def test_day_axis_nonbinary_successes_stay_null(
+    con, exposures, purchase_events, experiment, mean_metric
+):
+    events = metric_events(purchase_events, mean_metric, value_column="amount")
+    panel = unit_day_panel(exposures, events, experiment, metric_name=mean_metric.name)
+    for expr in (
+        daily_group_summary(window_bound_stats(panel, mean_metric), metric=mean_metric),
+        asof_group_summary(panel, mean_metric),
+    ):
+        table = con.to_pyarrow(expr)
+        assert table.schema.field("successes").type == pa.int64()
+        assert table.column("successes").null_count == table.num_rows
 
 
 def test_asof_group_summary_ratio_plus_uptake_computes_both_correctly(con):

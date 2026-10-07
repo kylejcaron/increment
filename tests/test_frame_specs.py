@@ -680,6 +680,44 @@ def test_metric_spec_ratio_cuped_still_needs_a_covariate() -> None:
     assert exc_info.value.code == "frame.metric.declares_cuped_method"
 
 
+@pytest.mark.parametrize(
+    ("metric_type", "band"), [("conversion", {}), ("retention", {"threshold_days": 7})]
+)
+def test_metric_spec_accepts_a_finite_sample_method_on_a_binary_metric(metric_type, band) -> None:
+    spec = MetricSpec(
+        name="signup",
+        type=metric_type,
+        decision_method=Method(name="unadjusted", conversion_inference="finite_sample"),
+        **band,
+    )
+    assert spec.decision_method is not None
+    assert spec.decision_method.conversion_inference == "finite_sample"
+    assert MetricSpec(name="signup", type=metric_type, **band).decision_method is None
+
+
+@pytest.mark.parametrize("metric_type", ["mean", "ratio"])
+def test_metric_spec_refuses_a_finite_sample_method_off_a_binary_metric(metric_type) -> None:
+    extra = {"numerator": "rev", "denominator": "orders"} if metric_type == "ratio" else {}
+    with pytest.raises(InvalidRequestError) as exc_info:
+        MetricSpec(
+            name="revenue",
+            type=metric_type,
+            decision_method=Method(name="unadjusted", conversion_inference="finite_sample"),
+            **extra,
+        )
+    assert exc_info.value.code == "conversion_inference.finite_sample.metric_type"
+    assert exc_info.value.context == {"metric_type": metric_type, "metric": "revenue"}
+
+
+def test_metric_spec_refuses_a_finite_sample_sensitivity_method_on_a_mean_metric() -> None:
+    with pytest.raises(InvalidRequestError) as exc_info:
+        MetricSpec(
+            name="revenue",
+            sensitivity_methods=(Method(name="unadjusted", conversion_inference="finite_sample"),),
+        )
+    assert exc_info.value.code == "conversion_inference.finite_sample.metric_type"
+
+
 def test_metric_spec_cuped_method_rejected_on_quantile() -> None:
     with pytest.raises(InvalidRequestError) as exc_info:
         MetricSpec(

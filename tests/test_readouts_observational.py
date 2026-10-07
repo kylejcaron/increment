@@ -11,7 +11,8 @@ constructor.
 
 from __future__ import annotations
 
-from typing import Literal
+import warnings
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
 import pyarrow as pa
@@ -27,13 +28,17 @@ from increment.errors import (
 )
 from increment.estimation.diagnostics import SRMResult
 from increment.results import NotApplicable
-from tests.analysis_factory import lift_rows, make_analysis_like
+from tests.analysis_factory import _moment_source, lift_rows, make_analysis_like
 from tests.warning_codes import warning_codes, warning_context
 
+if TYPE_CHECKING:
+    from increment.sources import MomentSource
 
-def _v7_moment_fields() -> dict[str, object]:
+
+def _moment_fields() -> dict[str, object]:
     return {
-        "moments_format": 7,
+        "moments_format": 10,
+        "successes": None,
         "winsor_lower_percentile": None,
         "winsor_upper_percentile": None,
         "winsor_lower_bound": None,
@@ -408,7 +413,7 @@ def test_moments_source_observational_declared_relative_margin_refused_at_constr
     )
     rows = [
         {
-            **_v7_moment_fields(),
+            **_moment_fields(),
             "experiment_id": "e",
             "metric": "revenue",
             "group_id": "C",
@@ -417,7 +422,7 @@ def test_moments_source_observational_declared_relative_margin_refused_at_constr
             "sum_y2": 150.0,
         },
         {
-            **_v7_moment_fields(),
+            **_moment_fields(),
             "experiment_id": "e",
             "metric": "revenue",
             "group_id": "T",
@@ -522,7 +527,7 @@ def test_from_moments_observational_hits_capability_error():
 
     rows = [
         {
-            **_v7_moment_fields(),
+            **_moment_fields(),
             "experiment_id": "e",
             "metric": "revenue",
             "group_id": g,
@@ -1323,7 +1328,7 @@ def test_value_scale_refused_on_the_moments_only_analysis_path():
 
     rows = [
         {
-            **_v7_moment_fields(),
+            **_moment_fields(),
             "experiment_id": "e",
             "metric": "revenue",
             "group_id": g,
@@ -2041,3 +2046,305 @@ def test_quantile_over_scalar_moments_refuses_in_the_documented_precedence(
         with pytest.raises(CodedError) as raised:
             analysis.run()
     assert raised.value.code == code
+
+
+class _DriftingMoments:
+    """A source whose arm inventory changes after each metric's first moments read, as a
+    warehouse does when a late arm lands between a readout's reads. Every other attribute is
+    the late source's."""
+
+    def __init__(self, early, late):
+        self._late = late
+        self._early_moments = early.moments
+        self._late_moments = late.moments
+        self.reads: dict[str, int] = {}
+
+    def moments(self, metric, **options):
+        self.reads[metric.name] = self.reads.get(metric.name, 0) + 1
+        moments = self._early_moments if self.reads[metric.name] == 1 else self._late_moments
+        return moments(metric, **options)
+
+    def __getattr__(self, name):
+        return getattr(self._late, name)
+
+
+def _drifting_analysis(early, late):
+    source = _DriftingMoments(_moment_source(early), _moment_source(late))
+    # Capture both original reductions before substituting the drifting read behavior.
+    cast("Any", _moment_source(late)).moments = source.moments
+    return late, source
+
+
+_UNITS_PER_ARM = 12_000
+# Per-arm successes: with ``q = 0.1`` a conversion cell is dense (``auto`` routes it asymptotic)
+# at its family level only above 2140 of each count for two hypotheses, 3660 for four.
+_SUCCESSES = {"control": 4800, "T2": 3000}
+
+
+def _conversion_family_analysis(arms, t1_successes):
+    import polars as pl
+
+    from increment.frame import MetricSpec
+    from increment.semantics.models import AnalysisPlan
+
+    successes = {**_SUCCESSES, "T1": t1_successes}
+    rng = np.random.default_rng(3)
+    frames = []
+    for arm in arms:
+        y = np.r_[np.ones(successes[arm]), np.zeros(_UNITS_PER_ARM - successes[arm])]
+        rng.shuffle(y)
+        frames.append(
+            pl.DataFrame(
+                {
+                    "user_id": [f"{arm}-{i}" for i in range(_UNITS_PER_ARM)],
+                    "variant": arm,
+                    "a": y,
+                    "b": y[::-1].copy(),
+                    "x": rng.normal(size=_UNITS_PER_ARM),
+                }
+            )
+        )
+    return Analysis.from_unit_summary(
+        pl.concat(frames),
+        unit="user_id",
+        group="variant",
+        metrics=[MetricSpec(name="a", type="conversion"), MetricSpec(name="b", type="conversion")],
+        design=Observational(control_group="control", adjustment=AdjustmentSet(covariates=("x",))),
+        plan=AnalysisPlan(secondaries=["a", "b"]),
+    )
+
+
+@pytest.mark.parametrize("t1_successes", [4800, 3800], ids=["no_selection", "fcr_reinterval"])
+def test_observational_conversion_family_routes_from_the_evidence_it_estimates(t1_successes):
+    """A late arm between reads must not enter the estimates of a family sized without it: the
+    routing level ``q / m``, the BH family and every returned row (including an FCR reinterval)
+    come from the one moments read each metric was sized from."""
+    from increment.estimation.conversion_route import dense_min_count, family_route_alpha
+
+    early = _conversion_family_analysis(["control", "T1"], t1_successes)
+    late = _conversion_family_analysis(["control", "T1", "T2"], t1_successes)
+    drifting, source = _drifting_analysis(early, late)
+    try:
+        rows = list(lift_rows(drifting.run(decision_method=Method(name="unadjusted"))))
+    finally:
+        for analysis in (early, late):
+            analysis.close()
+
+    assert {(row.metric, row.group_id) for row in rows} == {("a", "T1"), ("b", "T1")}
+    assert source.reads == {"a": 1, "b": 1}
+    if t1_successes == 3800:
+        assert all(row.discovery for row in rows)
+    for row in rows:
+        if row.discovery:
+            continue
+        # An unselected cell is decided at its family's smallest level ``q / m``; its route is
+        # the one valid there.
+        assert row.family_q is not None
+        level = family_route_alpha(row.family_q, len(rows))
+        assert level is not None
+        dense = min(t1_successes, _UNITS_PER_ARM - t1_successes, 4800, 7200) >= dense_min_count(
+            level / 2
+        )
+        assert row.reference_kind == ("t" if dense else "binomial")
+
+
+def _mean_family_analysis(arms):
+    import polars as pl
+
+    from increment.semantics.models import AnalysisPlan
+
+    rng = np.random.default_rng(17)
+    per_arm = 150
+    effects = {"control": 0.0, "T1": 2.0, "T2": 3.0}
+    frames = []
+    for arm in arms:
+        x = rng.normal(size=per_arm)
+        frames.append(
+            pl.DataFrame(
+                {
+                    "user_id": [f"{arm}-{i}" for i in range(per_arm)],
+                    "variant": arm,
+                    "a": 1.0 + 0.5 * x + effects[arm] + rng.normal(scale=0.5, size=per_arm),
+                    "b": 2.0 - 0.4 * x + effects[arm] + rng.normal(scale=0.5, size=per_arm),
+                    "x": x,
+                }
+            )
+        )
+    return Analysis.from_unit_summary(
+        pl.concat(frames),
+        unit="user_id",
+        group="variant",
+        metrics={"a": "mean", "b": "mean"},
+        design=Observational(
+            control_group="control",
+            adjustment=AdjustmentSet(covariates=("x",)),
+            gate=IdentificationGate(overlap="trim"),
+        ),
+        plan=AnalysisPlan(secondaries=["a", "b"]),
+    )
+
+
+@pytest.mark.filterwarnings("ignore:(IPTW|DML|AIPW) covariate balance advisory:UserWarning")
+@pytest.mark.parametrize("method", ["unadjusted", "iptw", "aipw", "dml"])
+def test_observational_adjusted_family_estimates_only_the_inventory_it_selected_from(method):
+    early = _mean_family_analysis(["control", "T1"])
+    late = _mean_family_analysis(["control", "T1", "T2"])
+    drifting, source = _drifting_analysis(early, late)
+    try:
+        rows = list(lift_rows(drifting.run(decision_method=Method(name=method))))
+    finally:
+        for analysis in (early, late):
+            analysis.close()
+
+    assert {(row.metric, row.group_id) for row in rows} == {("a", "T1"), ("b", "T1")}
+    assert source.reads == {"a": 1, "b": 1}
+    # Both T1 cells are selected, so every row is the FCR reinterval of the held evidence.
+    assert all(row.discovery for row in rows)
+
+
+@pytest.mark.filterwarnings("ignore:(IPTW|DML|AIPW) covariate balance advisory:UserWarning")
+def test_estimate_ate_reads_each_metrics_moments_once_across_methods():
+    from increment.estimation.adjust import estimate_ate
+
+    early = _mean_family_analysis(["control", "T1"])
+    late = _mean_family_analysis(["control", "T1", "T2"])
+    drifting, source = _drifting_analysis(early, late)
+    try:
+        context = _moment_source(late).context
+        computation = estimate_ate(
+            cast("MomentSource", source),
+            cast("Observational", context.design),
+            methods=[Method(name="unadjusted"), Method(name="iptw")],
+            metrics=list(context.metrics),
+        )
+    finally:
+        for analysis in (early, late):
+            analysis.close()
+
+    assert {(row.metric, row.method, row.group_id) for row in computation.results} == {
+        (metric, method, "T1") for metric in ("a", "b") for method in ("unadjusted", "iptw")
+    }
+    assert source.reads == {"a": 1, "b": 1}
+
+
+def _snapshot_units(tag: str, arm: str, n: int, seed: int) -> list[dict[str, object]]:
+    from tests.covariate_cases import _unit_rows
+
+    rng = np.random.default_rng(seed)
+    rows: list[dict[str, object]] = []
+    for i in range(n):
+        tenure = float(rng.normal(100, 15))
+        revenue = 20.0 + 0.05 * tenure + (2.0 if arm != "control" else 0.0) + float(rng.normal())
+        rows.extend(_unit_rows("snap_obs", f"{tag}-{i}", arm, tenure, revenue))
+    return rows
+
+
+def _snapshot_analysis(tmp_path, name):
+    import ibis
+
+    from tests.covariate_cases import _defs_yaml
+
+    con = ibis.duckdb.connect()
+    rows = _snapshot_units("c", "control", 40, 1) + _snapshot_units("t", "treatment", 40, 2)
+    con.create_table("snap_events", obj=rows)
+    defs_path = tmp_path / f"{name}.yaml"
+    defs_path.write_text(_defs_yaml("snap_events", "snap_obs", observational=True))
+    return con, Analysis.from_definitions("snap_obs", defs_path, con)
+
+
+@pytest.mark.parametrize("method", ["iptw", "unadjusted"])
+def test_native_observational_readout_is_one_snapshot_when_arms_land_mid_readout(
+    tmp_path, monkeypatch, method
+):
+    """A warehouse that gains a new arm after each moments read still yields exactly the rows,
+    family stamps and intervals of the warehouse as it stood at the first read, while a later
+    unpinned readout does see the arms: moments, family size and every estimate share one
+    execution."""
+    from increment.query.native_source import DefinitionsMomentSource
+
+    clean_con, clean = _snapshot_analysis(tmp_path, "clean")
+    live_con, live = _snapshot_analysis(tmp_path, "live")
+    try:
+        decision = Method(name=method)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            expected = list(lift_rows(clean.run(decision_method=decision)))
+
+            original = DefinitionsMomentSource.moments
+            landed: list[str] = []
+
+            def moments_then_land_an_arm(self, metric, **options):
+                rows = original(self, metric, **options)
+                arm = f"late{len(landed)}"
+                landed.append(arm)
+                live_con.insert("snap_events", _snapshot_units(arm, arm, 40, 10 + len(landed)))
+                return rows
+
+            monkeypatch.setattr(DefinitionsMomentSource, "moments", moments_then_land_an_arm)
+            actual = list(lift_rows(live.run(decision_method=decision)))
+            monkeypatch.setattr(DefinitionsMomentSource, "moments", original)
+            fresh = list(lift_rows(live.run(decision_method=decision)))
+
+        assert landed, "the warehouse never changed, so nothing was pinned against"
+        assert {row.group_id for row in actual} == {"treatment"}
+        assert {row.group_id for row in fresh} > {"treatment"}
+        assert len(actual) == len(expected) == 1
+        for got, want in zip(actual, expected, strict=True):
+            # Two physical scans sum the same units in warehouse order: equal to rounding.
+            for field in ("value", "lb", "ub"):
+                assert getattr(got.require_lift(), field) == pytest.approx(
+                    getattr(want.require_lift(), field), rel=1e-9
+                )
+            assert got.reference_kind == want.reference_kind
+            assert (got.discovery, got.family_q, got.family_threshold) == (
+                want.discovery,
+                want.family_q,
+                want.family_threshold,
+            )
+    finally:
+        clean.close()
+        live.close()
+        clean_con.disconnect()
+        live_con.disconnect()
+
+
+def test_native_observational_empty_selection_touches_no_source(tmp_path, monkeypatch):
+    """An empty metric selection owns no evidence: it neither opens a snapshot (a definitions
+    capture writes TEMP tables) nor reads moments or unit frames, through the facade and
+    through the readout entry points that skip the facade's early return. A nonempty selection
+    still reads inside one source-owned snapshot."""
+    from increment import readouts
+    from increment.query.native_source import DefinitionsMomentSource
+
+    con, analysis = _snapshot_analysis(tmp_path, "empty")
+    touched: list[str] = []
+
+    def spy(name):
+        original = getattr(DefinitionsMomentSource, name)
+
+        def wrapped(self, *args, **kwargs):
+            touched.append(name)
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(DefinitionsMomentSource, name, wrapped)
+
+    try:
+        for name in ("readout_snapshot", "_pinned_source_execution", "moments", "unit_frame"):
+            spy(name)
+        source = _moment_source(analysis)
+        assert isinstance(source.context.design, Observational)
+
+        assert list(analysis.run(metrics=[])) == []
+        assert readouts.run(source, metrics=[]) == []
+        assert readouts.arm_moments(source, metrics=[]) == []
+        assert touched == []
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementWarning)
+            rows = list(lift_rows(analysis.run()))
+        assert len(rows) == 1
+        assert touched.count("readout_snapshot") == 1
+        assert "moments" in touched
+    finally:
+        analysis.close()
+        con.disconnect()

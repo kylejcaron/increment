@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Mapping
-from typing import Annotated, Any, Literal, NoReturn
+from typing import Annotated, Any, Literal, NoReturn, cast
 
 from pydantic import (
     BaseModel,
@@ -28,6 +28,7 @@ from pydantic import (
 from increment._immutable import _FrozenMapping
 from increment._literals import (
     Alternative,
+    ConversionInference,
     MultiplicityCorrection,
     PreferredDirection,
     Role,
@@ -72,8 +73,17 @@ class _WireBase(CodedModel, BaseModel):
 
 
 class WireMethod(_WireBase):
+    """A decision or sensitivity method on the wire.
+
+    The encoder always emits ``conversion_inference``. A payload written before the field existed
+    lacks it, and ``compiled_plan_from_dict`` / ``compiled_plan_from_json`` fill it from the
+    route that method ran under (see ``_legacy_conversion_inference``) before validation, so a
+    stored plan keeps its meaning; ``"auto"`` is the default of newly constructed ``Method`` and
+    ``MethodSpec`` objects, not of stored plans."""
+
     name: str = Field(min_length=1)
     variance_reduction: str = "none"
+    conversion_inference: ConversionInference
 
 
 class WireFixedInference(_WireBase):
@@ -363,12 +373,20 @@ def _method_to_wire(method: Method, *, metric: str, role: str) -> WireMethod:
             role=role,
             method=method.name,
         )
-    return WireMethod(name=method.name, variance_reduction=method.variance_reduction)
+    return WireMethod(
+        name=method.name,
+        variance_reduction=method.variance_reduction,
+        conversion_inference=method.conversion_inference,
+    )
 
 
 def _method_from_wire(method: WireMethod, *, metric: str, role: str) -> Method:
     try:
-        return Method(name=method.name, variance_reduction=method.variance_reduction)
+        return Method(
+            name=method.name,
+            variance_reduction=method.variance_reduction,
+            conversion_inference=method.conversion_inference,
+        )
     except (TypeError, ValueError) as exc:
         _raise(
             "wire.procedure.invalid_method",
@@ -658,10 +676,94 @@ def _refuse_legacy_plan(payload: Mapping[str, object]) -> None:
         refuse_legacy_asymptotic_family(inference.get("registration"))
 
 
+# The observational estimators that adjusted before ``conversion_inference`` existed. Frozen at
+# that wire shape: the live ``ADJUSTMENTS`` registry is mutable plugin state, and decoding a
+# stored plan must mean the same thing whatever is registered when it is read.
+_HISTORICAL_ADJUSTMENT_NAMES = frozenset(("iptw", "dml", "aipw"))
+
+
+def _legacy_conversion_inference(
+    procedure: Mapping[str, Any], method: Mapping[str, Any], metric_type: str | None
+) -> ConversionInference:
+    """The ``conversion_inference`` a stored method lacking the field ran under.
+
+    Before the field existed a fixed-horizon, prior-free conversion or retention row ran the
+    finite-sample route on either value scale (an absolute margin reads the same binomial set
+    through its additive sidecar) unless its method adjusted: only CUPED
+    (``variance_reduction == "cuped"``) and the observational estimators in
+    ``_HISTORICAL_ADJUSTMENT_NAMES`` did. ``Method.name`` is otherwise a free-form label that
+    never gated the route, so a method of that kind is ``"finite_sample"`` whatever it is
+    called, including a name an adjustment plugin registers later. Every other stored method
+    never had that route (a CUPED method, an observational adjustment, an informative prior,
+    sequential inference, or a metric that is not a conversion or retention rate) and is
+    ``"auto"``, which leaves it on the route it always took. ``metric_type`` is the stored
+    metric's declared type when the caller knows it; without it a metric is taken to be a
+    conversion rate. The wire carries no design, so a legacy method named for a plugin
+    estimator reads as a free-form label; a stored ``conversion_inference`` always wins."""
+    inference = procedure.get("inference")
+    kind = inference.get("kind", "fixed") if isinstance(inference, Mapping) else "fixed"
+    name = method.get("name")
+    historically_exact = (
+        procedure.get("prior") is None
+        and kind == "fixed"
+        and method.get("variance_reduction", "none") != "cuped"
+        and not (isinstance(name, str) and name in _HISTORICAL_ADJUSTMENT_NAMES)
+        and metric_type in (None, "conversion", "retention")
+    )
+    return "finite_sample" if historically_exact else "auto"
+
+
+def _with_legacy_conversion_inference(
+    payload: Mapping[str, object], metric_types: Mapping[str, str] | None
+) -> Mapping[str, object]:
+    """``payload`` with every method that lacks ``conversion_inference`` given the route it ran
+    under; a payload whose methods all carry it is returned unchanged."""
+    procedures = payload.get("procedures")
+    if not isinstance(procedures, Mapping):
+        return payload
+    resolved: dict[str, object] = {}
+    for name, stored in cast("Mapping[str, Any]", procedures).items():
+        if not isinstance(stored, Mapping):
+            resolved[name] = stored
+            continue
+        procedure = cast("Mapping[str, Any]", stored)
+        metric_type = (metric_types or {}).get(str(procedure.get("metric", name)))
+
+        def fill(method: object, procedure=procedure, metric_type=metric_type) -> object:
+            if not isinstance(method, Mapping) or "conversion_inference" in method:
+                return method
+            return {
+                **method,
+                "conversion_inference": _legacy_conversion_inference(
+                    procedure, cast("Mapping[str, Any]", method), metric_type
+                ),
+            }
+
+        sensitivity = procedure.get("sensitivity_methods")
+        resolved[name] = {
+            **procedure,
+            **(
+                {"decision_method": fill(procedure["decision_method"])}
+                if "decision_method" in procedure
+                else {}
+            ),
+            **(
+                {"sensitivity_methods": [fill(method) for method in sensitivity]}
+                if isinstance(sensitivity, (list, tuple))
+                else {}
+            ),
+        }
+    return {**payload, "procedures": resolved}
+
+
 def _decode_plan(
-    payload: Mapping[str, object], *, json_input: bool = False
+    payload: Mapping[str, object],
+    *,
+    json_input: bool = False,
+    metric_types: Mapping[str, str] | None = None,
 ) -> CompiledDecisionPlan:
     _refuse_legacy_plan(payload)
+    payload = _with_legacy_conversion_inference(payload, metric_types)
     try:
         dto = WireCompiledDecisionPlan.model_validate(
             payload, context=_JSON_RATIONAL_CONTEXT if json_input else None
@@ -675,8 +777,12 @@ def _decode_plan(
     return compiled_plan_from_dto(dto)
 
 
-def compiled_plan_from_dict(payload: Mapping[str, object]) -> CompiledDecisionPlan:
-    return _decode_plan(payload)
+def compiled_plan_from_dict(
+    payload: Mapping[str, object], *, metric_types: Mapping[str, str] | None = None
+) -> CompiledDecisionPlan:
+    """Decode one compiled plan from its dictionary form. ``metric_types`` maps metric names to
+    their declared types, for a stored plan whose methods predate ``conversion_inference``."""
+    return _decode_plan(payload, metric_types=metric_types)
 
 
 def compiled_plan_to_json(plan: CompiledDecisionPlan) -> str:
@@ -692,13 +798,17 @@ def _reject_duplicate_pairs(pairs: list[tuple[str, object]]) -> dict[str, object
     return result
 
 
-def compiled_plan_from_json(payload: str) -> CompiledDecisionPlan:
+def compiled_plan_from_json(
+    payload: str, *, metric_types: Mapping[str, str] | None = None
+) -> CompiledDecisionPlan:
     """Decode one compiled plan from its JSON text.
 
     Structural guards reject duplicate keys, group-sequential inference,
     sequential plans whose ``wire_version`` is not 3, and e-BH-selected
     asymptotic registrations without ``asymptotic_family`` before validation.
     The immutable context retains JSON numeric provenance without parsing twice.
+    ``metric_types`` maps metric names to their declared types, for a stored plan whose methods
+    predate ``conversion_inference``.
     """
     try:
         raw = json.loads(payload, object_pairs_hook=_reject_duplicate_pairs)
@@ -708,7 +818,7 @@ def compiled_plan_from_json(payload: str) -> CompiledDecisionPlan:
         _raise("wire.payload.invalid", f"invalid compiled decision plan JSON: {exc}")
     if not isinstance(raw, Mapping):
         _raise("wire.payload.invalid", "compiled decision plan JSON must be an object")
-    return _decode_plan(raw, json_input=True)
+    return _decode_plan(raw, json_input=True, metric_types=metric_types)
 
 
 __all__ = [

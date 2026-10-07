@@ -24,7 +24,7 @@ import pyarrow as pa
 import pytest
 from scipy.special import expit
 
-from increment.errors import IncrementWarning, InvalidRequestError
+from increment.errors import CodedError, IncrementWarning, InvalidRequestError
 from increment.estimation._adjust.aipw import aipw_estimate
 from increment.estimation._adjust.iptw import iptw_estimate
 from increment.estimation.adjust import estimate_ate
@@ -419,6 +419,49 @@ def test_uniform_absolute_multi_metric_prior_warns_about_incommensurable_units()
     assert "estimation.adjust.prior_absolute_scale_spans_metrics" in warning_codes(rec)
 
 
+def test_the_multi_metric_prior_advisory_names_the_estimate_ate_caller():
+    table = _oracle_table(n=600)
+    table = table.append_column("second", pa.array(np.asarray(table["revenue"].to_numpy())))
+    src = _src(table, metrics={"revenue": "mean", "second": "mean"})
+    with pytest.warns(IncrementWarning) as rec:
+        estimate_ate(
+            src,
+            _DESIGN,
+            value_scale={"revenue": "absolute", "second": "absolute"},
+            prior=Normal(mu=0.0, sigma=1.0),
+        )
+    advisories = [
+        w
+        for w in rec
+        if getattr(w.message, "code", None)
+        == "estimation.adjust.prior_absolute_scale_spans_metrics"
+    ]
+    assert advisories
+    assert all(w.filename == __file__ for w in advisories)
+
+
+@pytest.mark.filterwarnings("ignore:(IPTW|DML|AIPW) covariate balance advisory:UserWarning")
+def test_the_skipped_metric_advisory_names_the_estimate_ate_caller():
+    table = _oracle_table(n=200)
+    table = table.append_column("orders", pa.array(np.ones(200)))
+    src = _src(
+        table,
+        metrics=[
+            MetricSpec(name="revenue", type="mean"),
+            MetricSpec(name="rpo", type="ratio", numerator="revenue", denominator="orders"),
+        ],
+    )
+    with pytest.warns(IncrementWarning) as rec:
+        estimate_ate(src, _DESIGN, value_scale={"revenue": "absolute"})
+    advisories = [
+        w
+        for w in rec
+        if getattr(w.message, "code", None) == "estimation.adjust.skip_unsupported_metric"
+    ]
+    assert advisories
+    assert all(w.filename == __file__ for w in advisories)
+
+
 def test_prior_shared_false_skips_the_mixed_scale_refusal():
     """Two metrics on different value_scale (one relative, one absolute)
     each carrying their OWN declared prior must not trip the cross-
@@ -667,6 +710,42 @@ class TestRefusalMatrix:
                     prior=Normal(mu=0.0, sigma=10.0),
                 )
         assert exc_info.value.code == "adjust.winsorization.percentile_unsupported"
+
+    @pytest.mark.parametrize(
+        ("settings", "method", "code"),
+        [
+            (
+                {},
+                Method(name="iptw", variance_reduction="cuped"),
+                "adjust.variance_reduction.unsupported",
+            ),
+            (
+                {"winsorization": {"upper_percentile": 0.9}},
+                Method(name="iptw"),
+                "adjust.winsorization.percentile_unsupported",
+            ),
+            (
+                {},
+                Method(name="not_registered"),
+                "estimation.variance.registry.no_registered_available",
+            ),
+        ],
+    )
+    def test_static_adjustment_refusals_precede_unavailable_data(
+        self, monkeypatch, settings, method, code
+    ):
+        src = _src(
+            _oracle_table(n=200),
+            metrics=[MetricSpec.model_validate({"name": "revenue", **settings})],
+        )
+
+        def unavailable_data(*args, **kwargs):
+            raise RuntimeError("source data is unavailable")
+
+        monkeypatch.setattr(type(src), "moments", unavailable_data)
+        with pytest.raises(CodedError) as refused:
+            estimate_ate(src, _DESIGN, methods=[method])
+        assert refused.value.code == code
 
     def test_absolute_row_cannot_be_targeted_by_null_abs_at_estimate_ate(self):
         with pytest.raises(InvalidRequestError) as exc_info:

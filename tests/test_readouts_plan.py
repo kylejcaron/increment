@@ -440,7 +440,7 @@ def test_family_missing_control_reports_incomplete():
 
 def test_run_replays_advisory_before_reraising_unrelated_whole_window_cell_error(monkeypatch):
     src = _guarded_three_arm_source()
-    original = _passes.estimate_lift
+    original = _passes._estimate_lift
 
     def raise_unrelated(*args, **kwargs):
         if any(str(row["group_id"]) == "treatment_bad" for row in kwargs["summary"]):
@@ -448,7 +448,7 @@ def test_run_replays_advisory_before_reraising_unrelated_whole_window_cell_error
             raise ValueError("unexpected estimator failure")
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(_passes, "estimate_lift", raise_unrelated)
+    monkeypatch.setattr(_passes, "_estimate_lift", raise_unrelated)
     with pytest.warns(UserWarning, match="is open-ended"):
         with pytest.raises(ValueError, match="unexpected estimator failure"):
             readouts.run(src)
@@ -908,7 +908,8 @@ def _moments_row(metric_name: str, group_id: str, n: int, mean: float, var: floa
         "winsor_n": None,
         "winsor_n_lower": None,
         "winsor_n_upper": None,
-        "moments_format": 8,
+        "moments_format": 10,
+        "successes": None,
     }
 
 

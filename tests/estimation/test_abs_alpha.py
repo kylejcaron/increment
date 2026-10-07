@@ -98,6 +98,7 @@ def _conversion_row(**kwargs):
                 "metric": "m",
                 "group_id": group_id,
                 "n": 200.0,
+                "successes": successes,
                 "sum_y": float(successes),
                 "sum_y2": float(successes),
                 "sum_x": None,

@@ -11,8 +11,8 @@ shares the one control mean and its influence.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, cast
+from collections.abc import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -328,6 +328,7 @@ def iptw_estimate(
     null_abs: float | None = None,
     value_scale: ValueScale = "relative",
     preferred_direction: PreferredDirection | None = None,
+    moment_rows: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[LiftEstimate]:
     """IPTW (Hajek self-normalized) estimate of relative lift, one entry per
     non-control treatment arm present for *metric*. See the module
@@ -369,6 +370,7 @@ def iptw_estimate(
         null_abs=null_abs,
         value_scale=value_scale,
         preferred_direction=preferred_direction,
+        moment_rows=moment_rows,
     )
     if not requests:
         return []

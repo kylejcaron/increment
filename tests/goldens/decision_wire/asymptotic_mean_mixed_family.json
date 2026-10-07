@@ -127,6 +127,7 @@
       "alternative": "two-sided",
       "axis": "relative",
       "decision_method": {
+        "conversion_inference": "auto",
         "name": "unadjusted",
         "variance_reduction": "none"
       },
@@ -273,6 +274,7 @@
       "alternative": "two-sided",
       "axis": "relative",
       "decision_method": {
+        "conversion_inference": "auto",
         "name": "unadjusted",
         "variance_reduction": "none"
       },

@@ -2442,9 +2442,10 @@ def test_binomial_raw_rows_recompute_exact_interval_at_requested_alpha():
                 "metric": "conv",
                 "group_id": group_id,
                 "country": segment,
-                "n": 100.0,
+                "n": 100,
                 "sum_y": float(successes),
                 "sum_y2": float(successes),
+                "successes": successes,
                 "sum_x": None,
                 "sum_x2": None,
                 "sum_xy": None,
@@ -2493,9 +2494,10 @@ def _binomial_breakout(
                 "metric": "conv",
                 "group_id": group_id,
                 "country": segment,
-                "n": 1000.0,
+                "n": 1000,
                 "sum_y": float(successes),
                 "sum_y2": float(successes),
+                "successes": successes,
                 "sum_x": None,
                 "sum_x2": None,
                 "sum_xy": None,
@@ -2572,10 +2574,88 @@ def test_binomial_rebuild_with_an_unresolved_endpoint_search_is_withheld(monkeyp
     assert segments
 
 
-def test_segment_contrast_refuses_exact_binomial_reference():
+def test_segment_contrast_refuses_finite_sample_reference():
     estimates = _binomial_breakout()
 
     with pytest.raises(InvalidRequestError) as exc_info:
         segment_contrast(estimates, "US", "GB")
 
+    assert exc_info.value.code == "breakout.segment_contrast_reference_fixed_horizon"
+    assert exc_info.value.context["reference_kind"] == "binomial"
+
+
+def _conversion_breakout(segments: dict[str, tuple[int, int, int]], **kwargs: Any):
+    """``run_breakout`` over segments given as ``name: (n per arm, control successes,
+    treatment successes)``."""
+
+    def row(segment: str, group_id: str, n: int, successes: int) -> dict[str, Any]:
+        return centered_row_from_raw_sums(
+            {
+                "experiment_id": "exp1",
+                "metric": "conv",
+                "group_id": group_id,
+                "country": segment,
+                "n": n,
+                "sum_y": float(successes),
+                "sum_y2": float(successes),
+                "successes": successes,
+                "sum_x": None,
+                "sum_x2": None,
+                "sum_xy": None,
+                "sum_den": None,
+                "sum_den2": None,
+                "sum_yden": None,
+            }
+        )
+
+    rows = [
+        row(name, group, n, successes)
+        for name, (n, control, treatment) in segments.items()
+        for group, successes in (("control", control), ("treatment", treatment))
+    ]
+    return run_breakout(
+        rows,
+        [ConversionMetric(name="conv", entity="user", fact="conv")],
+        control_group="control",
+        dimension="country",
+        alpha=0.05,
+        **kwargs,
+    )
+
+
+_DENSE_SEGMENTS = {"US": (40_000, 8_000, 9_600), "GB": (40_000, 8_000, 8_800)}
+
+
+def test_dense_conversion_segments_are_contrastable_by_default():
+    """A segment whose four counts are all dense takes the delta-method route, so its row
+    carries the working-scale moments a Wald contrast reads."""
+    estimates = _conversion_breakout(_DENSE_SEGMENTS)
+    assert {row.reference_kind for row in estimates} == {"t"}
+    contrast = segment_contrast(estimates, "US", "GB")
+    assert contrast.lb is not None and contrast.ub is not None
+    assert contrast.lb < contrast.value < contrast.ub
+    # US lifts by 20% and GB by 10%: the contrast of the two recovers their ratio.
+    assert contrast.value == pytest.approx(1.2 / 1.1 - 1.0, rel=0.02)
+    _, segments = segment_heterogeneity(estimates, alpha=0.05)
+    assert segments
+
+
+def test_a_sparse_segment_refuses_the_contrast_beside_a_dense_one():
+    estimates = _conversion_breakout({**_DENSE_SEGMENTS, "FR": (1_000, 100, 130)})
+    kinds = {row.dimension_value: row.reference_kind for row in estimates}
+    assert kinds == {"US": "t", "GB": "t", "FR": "binomial"}
+    segment_contrast(estimates, "US", "GB")
+    with pytest.raises(InvalidRequestError) as exc_info:
+        segment_contrast(estimates, "US", "FR")
+    assert exc_info.value.code == "breakout.segment_contrast_reference_fixed_horizon"
+    assert exc_info.value.context["dimension_value"] == "FR"
+
+
+def test_dense_segments_pinned_to_finite_sample_refuse_the_contrast():
+    estimates = _conversion_breakout(
+        _DENSE_SEGMENTS, methods=[Method(name="unadjusted", conversion_inference="finite_sample")]
+    )
+    assert {row.reference_kind for row in estimates} == {"binomial"}
+    with pytest.raises(InvalidRequestError) as exc_info:
+        segment_contrast(estimates, "US", "GB")
     assert exc_info.value.code == "breakout.segment_contrast_reference_fixed_horizon"

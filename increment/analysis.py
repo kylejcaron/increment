@@ -931,8 +931,9 @@ class Analysis:
         (day axis, ``panel_sql``, ``run_breakout``, ``materialize``).
 
         *rows* must carry centered ``group_summary`` columns, a mandatory
-        ``moments_format=8`` stamp, and a complete embedded ``decision_plan``
-        payload on every fixed-horizon row. Registered sequential exports use
+        ``moments_format=10`` stamp, integer ``n``, nullable integer ``successes``,
+        and a complete embedded ``decision_plan`` on every fixed-horizon row.
+        Declared binary outcomes require exact success counts. Sequential exports use
         ``moments_format=9`` checkpoint envelopes and a version-3 sequential
         wire plan; their version-2 registration and exact snapshot are required
         for replay. The payload is validated and stripped before readouts;
@@ -943,7 +944,7 @@ class Analysis:
         match the exported cohort. A
         cube without that state cannot provide design-level compliance.
         An empty-metric fixed-horizon Encouragement export instead carries one
-        complete format-8 ``design_summary`` envelope. Reload it with
+        complete format-10 ``design_summary`` envelope. Reload it with
         ``metrics=[]``; both its embedded and effective plans must remain
         fixed-horizon and metric-free, even when *plan* is supplied.
 

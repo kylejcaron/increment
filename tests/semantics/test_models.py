@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from increment.errors import DefinitionError
+from increment.errors import DefinitionError, InvalidRequestError
 from increment.semantics.models import (
     AdjustmentCovariate,
     AnalysisPlan,
@@ -2607,6 +2607,163 @@ def test_cuped_method_name_without_reduction_rejected_in_binding():
     with pytest.raises(DefinitionError) as exc_info:
         MethodSpec(name="cuped", variance_reduction="none")
     assert exc_info.value.code == "definition.method.methodspec_name_cuped"
+
+
+def test_method_spec_conversion_inference_defaults_to_auto_and_round_trips():
+    assert MethodSpec(name="unadjusted").conversion_inference == "auto"
+    assert MethodSpec.model_validate({"name": "unadjusted"}).conversion_inference == "auto"
+    explicit = MethodSpec(name="unadjusted", conversion_inference="finite_sample")
+    assert MethodSpec.model_validate(explicit.model_dump(mode="json")) == explicit
+    binding = ExperimentMetric.model_validate(
+        {
+            "metric": "orders",
+            "decision_method": {"name": "unadjusted", "conversion_inference": "finite_sample"},
+        }
+    )
+    assert binding.wants_finite_sample
+    assert not ExperimentMetric(metric="orders").wants_finite_sample
+
+
+def test_method_spec_refuses_finite_sample_with_cuped_and_unknown_values():
+    with pytest.raises(InvalidRequestError) as exc_info:
+        MethodSpec(name="cuped", variance_reduction="cuped", conversion_inference="finite_sample")
+    assert exc_info.value.code == "conversion_inference.finite_sample.cuped"
+    with pytest.raises(ValidationError):
+        MethodSpec(name="unadjusted", conversion_inference="asymptotic")  # ty: ignore[invalid-argument-type]
+
+
+def _finite_sample_definitions(metric_type: str) -> dict:
+    return {
+        "dialect": "duckdb",
+        "fact_sources": [
+            {
+                "name": "events",
+                "sql": "SELECT * FROM events",
+                "timestamp_column": "event_at",
+                "entities": ["user_id"],
+                "facts": [
+                    {"name": "exposure", "column": None},
+                    {"name": "purchase", "column": "revenue"},
+                ],
+            }
+        ],
+        "exposures": [{"name": "assignment", "fact": "exposure"}],
+        "metrics": [
+            {
+                "type": metric_type,
+                "name": "orders",
+                "entity": "user_id",
+                "fact": "purchase",
+                **(
+                    {"threshold_days": [7, 14]}
+                    if metric_type == "retention"
+                    else {"window_days": 7}
+                ),
+                **({"aggregation": "sum"} if metric_type == "mean" else {}),
+            }
+        ],
+        "experiments": [
+            {
+                "name": "exp",
+                "exposure": "assignment",
+                "unit": "user_id",
+                "start": "2026-01-01",
+                "end": "2026-01-14",
+                "control_group": "control",
+                "plan": {
+                    "primary": {
+                        "metric": "orders",
+                        "decision_method": {
+                            "name": "unadjusted",
+                            "conversion_inference": "finite_sample",
+                        },
+                    }
+                },
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize("metric_type", ["conversion", "retention"])
+def test_a_finite_sample_binding_is_accepted_on_a_conversion_or_retention_metric(metric_type):
+    definitions = Definitions.model_validate(_finite_sample_definitions(metric_type))
+    (experiment,) = definitions.experiments
+    assert experiment.bindings["orders"].wants_finite_sample
+
+
+def test_a_finite_sample_binding_on_a_mean_metric_is_refused_at_definition_load():
+    with pytest.raises(InvalidRequestError) as exc_info:
+        Definitions.model_validate(_finite_sample_definitions("mean"))
+    assert exc_info.value.code == "conversion_inference.finite_sample.metric_type"
+    assert exc_info.value.context == {"metric_type": "mean", "metric": "orders"}
+
+
+@pytest.mark.parametrize(
+    "metric",
+    [
+        {"type": "total", "name": "orders", "fact": "purchase", "aggregation": "sum"},
+        {"type": "active", "name": "orders", "entity": "user_id", "fact": "purchase"},
+    ],
+    ids=["total", "active"],
+)
+def test_a_finite_sample_binding_on_a_report_only_metric_reports_the_report_only_error(metric):
+    """A report-only metric cannot join an experiment at all, so that is what a definition
+    consumer sees - not advice to switch the metric's inference to ``auto``."""
+    definitions = _finite_sample_definitions("conversion")
+    definitions["metrics"] = [metric]
+    with pytest.raises(DefinitionError) as exc_info:
+        Definitions.model_validate(definitions)
+    assert exc_info.value.code == "definition.invalid"
+    assert "definition.validate_experiment.metric_report_type" in {
+        code
+        for code, _ in exc_info.value.context["errors"]  # ty: ignore[not-iterable]
+    }
+
+
+def test_a_finite_sample_metric_type_refusal_does_not_mask_other_definition_errors():
+    """The shared refusal is the code for an otherwise eligible experiment; once another
+    definition error exists, every error is reported together instead of only the first."""
+    definitions = _finite_sample_definitions("mean")
+    definitions["experiments"][0]["exposure"] = "nope"
+    with pytest.raises(DefinitionError) as exc_info:
+        Definitions.model_validate(definitions)
+    assert exc_info.value.code == "definition.invalid"
+    assert "definition.validate_experiment.references_unknown_exposure" in {
+        code
+        for code, _ in exc_info.value.context["errors"]  # ty: ignore[not-iterable]
+    }
+
+
+def test_one_hazard_has_one_code_and_context_across_every_layer():
+    """A ``finite_sample`` request on a metric that is not a conversion or retention rate, and
+    on a CUPED-adjusted method, is refused with the same code and typed context whether a
+    definition, a frame metric, an estimator method or a power plan carries it."""
+    from increment._metric_specs import MetricSpec
+    from increment.estimation.arm_contract import ArmPlanningProcedure
+    from increment.estimation.engine import Method
+
+    metric_code = "conversion_inference.finite_sample.metric_type"
+    cuped_code = "conversion_inference.finite_sample.cuped"
+    finite = {"conversion_inference": "finite_sample"}
+
+    with pytest.raises(InvalidRequestError) as definition_metric:
+        Definitions.model_validate(_finite_sample_definitions("mean"))
+    assert definition_metric.value.context == {"metric_type": "mean", "metric": "orders"}
+    with pytest.raises(InvalidRequestError) as frame_metric:
+        MetricSpec(name="m", decision_method=Method(name="unadjusted", **finite))
+    with pytest.raises(InvalidRequestError) as plan_metric:
+        ArmPlanningProcedure.standard("mean", **finite)  # ty: ignore[invalid-argument-type]
+    metric_errors = (definition_metric.value, frame_metric.value, plan_metric.value)
+    assert {error.code for error in metric_errors} == {metric_code}
+    assert {error.context["metric_type"] for error in metric_errors} == {"mean"}
+
+    cuped = {"name": "cuped", "variance_reduction": "cuped", **finite}
+    with pytest.raises(InvalidRequestError) as definition_cuped:
+        MethodSpec(**cuped)  # ty: ignore[invalid-argument-type]
+    with pytest.raises(InvalidRequestError) as method_cuped:
+        Method(**cuped)  # ty: ignore[invalid-argument-type]
+    assert {definition_cuped.value.code, method_cuped.value.code} == {cuped_code}
+    assert definition_cuped.value.context == method_cuped.value.context
 
 
 def test_prior_spec_requires_positive_sigma():

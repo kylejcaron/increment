@@ -99,6 +99,7 @@ def _format3_row(
         "metric": metric,
         "group_id": group,
         "n": 2,
+        "successes": None,
         "ref_y": 2.0 if group == "control" else 4.0,
         "cy1": 0.0,
         "cy2": 1.0,
@@ -129,7 +130,7 @@ def _format3_row(
     return row
 
 
-def _format7_rows(
+def _format10_rows(
     rows: list[dict[str, Any]], *, assignment_counts: str | None = None
 ) -> list[dict[str, Any]]:
     from increment.decision_wire import compiled_plan_to_json
@@ -141,7 +142,7 @@ def _format7_rows(
         result.append(
             {
                 **row,
-                "moments_format": 7,
+                "moments_format": 10,
                 "decision_plan": wire,
                 **(
                     {"assignment_counts": assignment_counts}
@@ -153,8 +154,8 @@ def _format7_rows(
     return result
 
 
-def _format7_row(*, group: str, assignment_counts: str | None = None) -> dict[str, Any]:
-    return _format7_rows(
+def _format10_row(*, group: str, assignment_counts: str | None = None) -> dict[str, Any]:
+    return _format10_rows(
         [_format3_row(group=group)],
         assignment_counts=assignment_counts,
     )[0]
@@ -231,7 +232,7 @@ def moments_source() -> Any:
 
     metric = mean_metric()
     return MomentsSource(
-        _format7_rows([_format3_row(group="control"), _format3_row(group="treatment")]),
+        _format10_rows([_format3_row(group="control"), _format3_row(group="treatment")]),
         metrics=[metric],
         study_id="moments-conformance",
         design=Randomized(control_group="control"),
@@ -246,7 +247,7 @@ def moments_with_assignment_counts_source() -> Any:
 
     metric = mean_metric()
     counts = json.dumps({"control": 2, "treatment": 2}, separators=(",", ":"))
-    rows = _format7_rows(
+    rows = _format10_rows(
         [_format3_row(group="control"), _format3_row(group="treatment")],
         assignment_counts=counts,
     )

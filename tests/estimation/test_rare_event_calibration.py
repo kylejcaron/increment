@@ -81,6 +81,7 @@ def _summary_df(rows: list[tuple[str, int, int]]) -> pd.DataFrame:
             metric="conv",
             group_id=group_id,
             n=n,
+            successes=successes,
             sum_y=float(successes),
             sum_y2=float(successes),
         )
@@ -89,7 +90,8 @@ def _summary_df(rows: list[tuple[str, int, int]]) -> pd.DataFrame:
                 "experiment_id": arm.study_id,
                 "metric": arm.metric,
                 "group_id": arm.group_id,
-                "n": float(arm.n),
+                "n": arm.n,
+                "successes": arm.successes,
                 "ref_y": arm.ref_y,
                 "cy1": arm.cy1,
                 "cy2": arm.cy2,

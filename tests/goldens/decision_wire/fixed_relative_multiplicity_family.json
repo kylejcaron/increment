@@ -12,6 +12,7 @@
       "alternative": "greater",
       "axis": "relative",
       "decision_method": {
+        "conversion_inference": "auto",
         "name": "cuped",
         "variance_reduction": "cuped"
       },
@@ -45,6 +46,7 @@
       "scale": "relative",
       "sensitivity_methods": [
         {
+          "conversion_inference": "auto",
           "name": "unadjusted",
           "variance_reduction": "none"
         }

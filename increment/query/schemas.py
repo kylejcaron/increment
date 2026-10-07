@@ -6,7 +6,7 @@ Every builder declares its output columns here.  Downstream tasks
 
 from types import MappingProxyType
 
-from increment._moment_plan import DAY_GRAIN, UNIT_GRAIN, WINSOR_PASSTHROUGH
+from increment._moment_plan import DAY_GRAIN, UNIT_GRAIN
 
 EXPOSURES = frozenset(
     {
@@ -70,7 +70,8 @@ UNIT_TOTALS = frozenset(
 )
 
 # Keys, `n`, the unit-grain plan's sixteen slots (what each carries, `cxden`
-# included, is documented on increment._moment_plan.SLOTS), x_role, winsor metadata.
+# included, is documented on increment._moment_plan.SLOTS), x_role, and the plan's
+# passthrough columns (winsor metadata, exact binary `successes`).
 GROUP_SUMMARY = frozenset(
     {
         "experiment_id",
@@ -78,12 +79,20 @@ GROUP_SUMMARY = frozenset(
         "group_id",
         *UNIT_GRAIN.names.values(),
         "x_role",
-        *(passthrough.column for passthrough in WINSOR_PASSTHROUGH),
+        *(passthrough.column for passthrough in UNIT_GRAIN.passthrough),
     }
 )
 
 DAILY_GROUP_SUMMARY = frozenset(
-    {"ds", "experiment_id", "metric", "group_id", *DAY_GRAIN.names.values(), "x_role"}
+    {
+        "ds",
+        "experiment_id",
+        "metric",
+        "group_id",
+        *DAY_GRAIN.names.values(),
+        "x_role",
+        *(passthrough.column for passthrough in DAY_GRAIN.passthrough),
+    }
 )
 
 DAILY_EXPOSURE_COUNTS = frozenset(

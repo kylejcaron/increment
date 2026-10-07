@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import os
 import string
 import sys
 import warnings
@@ -400,6 +401,11 @@ class WarningSpec:
             )
 
 
+#: ``skip_file_prefixes`` that attribute a warning to the first frame outside this package: the
+#: caller of the public API, however many private layers the call passes through.
+PACKAGE_FRAMES: tuple[str, ...] = (os.path.join(os.path.dirname(os.path.abspath(__file__)), ""),)
+
+
 def warn(
     spec: WarningSpec,
     /,
@@ -779,6 +785,8 @@ RETIRED_CODES: Mapping[str, str | tuple[str, ...] | None] = MappingProxyType(
             "definition.experiment.observation_end_before_end",
             "definition.experiment.observation_end_requires_end",
         ),
+        "definition.method.finite_sample_cuped": "conversion_inference.finite_sample.cuped",
+        "definition.validate_experiment.finite_sample_metric_type": "conversion_inference.finite_sample.metric_type",
         "estimation.absorption.alpha": "estimation.diagnostics.alpha",
         "estimation.adjust_aipw.aipw_control_mean": None,
         "estimation.adjust_dml.dml_control_mean": None,
@@ -786,6 +794,7 @@ RETIRED_CODES: Mapping[str, str | tuple[str, ...] | None] = MappingProxyType(
         "estimation.adjust_overlap.unit_ids_shape": "estimation.crossfit.fold_assignments_unit_ids_shape",
         "estimation.armstats.arm_stats.family_field_finite": "estimation.armstats.arm_stats.cross_field_finite",
         "estimation.armstats.arm_stats.var_d_needs_uptake_sum": "estimation.armstats.arm_stats.mean_d_needs_uptake_sum",
+        "estimation.binomial.arm_too_large_for_exact_enumeration": "estimation.binomial.finite_sample_arm_ceiling_exceeded",
         "estimation.cate.alpha": "estimation.diagnostics.alpha",
         "estimation.contrast.contrast_partition.control_group_treatment": "estimation.contrast.contrast_stats.control_group_treatment",
         "estimation.contrast.contrast_partition.positive_cycles_contain_least_one": "estimation.contrast.contrast_partition.contain_least_one",
@@ -799,6 +808,7 @@ RETIRED_CODES: Mapping[str, str | tuple[str, ...] | None] = MappingProxyType(
         "estimation.encouragement.prepare_encouragement_estimation_unknown_alternative": "estimation.binomial.unknown_alternative",
         "estimation.encouragement.retention": "readout.encouragement.retention",
         "estimation.engine.cluster.arm_needs_two": "estimation.encouragement.cluster.arm_needs_two",
+        "estimation.engine.method.cuped_finite_sample": "conversion_inference.finite_sample.cuped",
         "estimation.family.e_bh_select_q_finite": "estimation.family.bh_select_q_finite",
         "estimation.inference.alpha_eff_underflows": "estimation.encouragement.alpha_eff_too",
         "estimation.inference.alpha_in_unit_interval": "estimation.diagnostics.alpha",
@@ -845,6 +855,7 @@ RETIRED_CODES: Mapping[str, str | tuple[str, ...] | None] = MappingProxyType(
         "estimation.winsor.empty_region": None,
         "facade.analysis.source_context_design_disagrees_contrast": "facade.analysis.source_context_design_disagrees_arm",
         "frame.frame_panel.metric_was_declared": "frame.frame_totals.metric_was_declared",
+        "frame.metric.finite_sample_metric_type": "conversion_inference.finite_sample.metric_type",
         "frame.moments.metric_covariate_column": "frame.validation.metric_covariate_impute_all_null",
         "plan.contrast_configs_template_mismatch": "plan.compile_configs_template_mismatch",
         "plan.contrast_configs_wrong_type": "plan.compile_configs_wrong_type",
@@ -902,6 +913,7 @@ __all__ = [
     "IncrementWarning",
     "InvalidRequestError",
     "MODEL_FIELD_REFUSALS",
+    "PACKAGE_FRAMES",
     "RETIRED_CODES",
     "RefusalSpec",
     "UnsupportedRequestError",

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from increment._policy_alpha import resolve_cell_alpha
 from increment.breakout.estimates import reject_quantile_metrics
 from increment.errors import InvalidRequestError
+from increment.estimation.conversion_route import family_route_alpha
 from increment.estimation.encouragement import (
     ESTIMANDS,
+    _estimate_encouragement,
     estimate_compliance,
     estimate_encouragement,
 )
@@ -58,6 +60,20 @@ def _encouragement_family_config(
     return config_by_metric, family_metric_names
 
 
+class _EncouragementCellGroup(NamedTuple):
+    """Metrics ``estimate_encouragement`` can batch into one call: it takes the policy as call-wide
+    scalars, so every metric of a group shares them."""
+
+    methods: list[Method]
+    prior: Prior | None
+    alternative: str
+    alpha: float
+    null_lift: float
+    null_abs: float | None
+    route_alpha: float | None
+    metrics: list[Metric]
+
+
 def _encouragement_cell_groups(
     metrics: Sequence[Metric],
     configs: Sequence[ResolvedMetricConfig],
@@ -66,48 +82,64 @@ def _encouragement_cell_groups(
     alternative_by_metric: Mapping[str, str],
     null_lift_by_metric: Mapping[str, float],
     null_abs_by_metric: Mapping[str, float | None],
-) -> list[tuple[list[Method], Prior | None, str, float, float, float | None, list[Metric]]]:
-    groups: list[
-        tuple[list[Method], Prior | None, str, float, float, float | None, list[Metric]]
-    ] = []
+    route_alpha_by_metric: Mapping[str, float | None],
+) -> list[_EncouragementCellGroup]:
+    groups: list[_EncouragementCellGroup] = []
     for metric, config in zip(metrics, configs, strict=True):
         alternative = alternative_by_metric[metric.name]
         alpha = alpha_by_metric[metric.name]
         null_lift = null_lift_by_metric[metric.name]
         null_abs = null_abs_by_metric[metric.name]
+        route_alpha = route_alpha_by_metric[metric.name]
         metric_methods = _runtime_methods(config, design)
-        for (
-            group_methods,
-            group_prior,
-            group_alt,
-            group_alpha,
-            group_null_lift,
-            group_null_abs,
-            group_metrics,
-        ) in groups:
+        for group in groups:
             if (
-                group_methods == metric_methods
-                and group_prior == config.prior
-                and group_alt == alternative
-                and group_alpha == alpha
-                and group_null_lift == null_lift
-                and group_null_abs == null_abs
+                group.methods == metric_methods
+                and group.prior == config.prior
+                and group.alternative == alternative
+                and group.alpha == alpha
+                and group.null_lift == null_lift
+                and group.null_abs == null_abs
+                and group.route_alpha == route_alpha
             ):
-                group_metrics.append(metric)
+                group.metrics.append(metric)
                 break
         else:
             groups.append(
-                (
+                _EncouragementCellGroup(
                     metric_methods,
                     config.prior,
                     alternative,
                     alpha,
                     null_lift,
                     null_abs,
+                    route_alpha,
                     [metric],
                 )
             )
     return groups
+
+
+def _family_route_alphas(
+    metrics: Sequence[Metric],
+    family_metric_names: set[str],
+    rows_by_metric: Mapping[str, list[Mapping[str, Any]]],
+    q: float,
+    control: str,
+) -> dict[str, float | None]:
+    """The level each metric's p-values are routed at: a secondary family reads each ITT p-value
+    at a threshold as small as ``q / m`` (``m`` its metric x arm hypotheses), so its members are
+    routed at that level and never a looser one; every other metric at its own."""
+    hypotheses = sum(
+        len({str(row["group_id"]) for row in rows_by_metric[name]} - {control})
+        for name in family_metric_names
+    )
+    return {
+        metric.name: family_route_alpha(q, hypotheses)
+        if metric.name in family_metric_names
+        else None
+        for metric in metrics
+    }
 
 
 def encouragement_rows(
@@ -185,7 +217,6 @@ def encouragement_rows(
         cell_alpha_by_metric[metric.name] = resolve_cell_alpha(plan, test, n_arms=n_arms, view=None)
         cell_alternative_by_metric[metric.name] = test.alternative
     config_by_metric, family_metric_names = _encouragement_family_config(metrics, configs, plan)
-
     groups = _encouragement_cell_groups(
         metrics,
         configs,
@@ -194,6 +225,7 @@ def encouragement_rows(
         cell_alternative_by_metric,
         cell_null_lift_by_metric,
         cell_null_abs_by_metric,
+        _family_route_alphas(metrics, family_metric_names, rows_by_metric, plan.q, control),
     )
 
     compliance_summary = (
@@ -202,42 +234,35 @@ def encouragement_rows(
     results: list[LiftEstimate] = []
     computations: list[DecisionComputation[LiftEstimate]] = []
     family_refusal_deferred = False
-    for (
-        group_methods,
-        group_prior,
-        group_alt,
-        group_alpha,
-        group_null_lift,
-        group_null_abs,
-        group_metrics,
-    ) in groups:
-        summary = [row for m in group_metrics for row in rows_by_metric[m.name]]
-        method_roles = _runtime_method_roles(group_methods)
+    for group in groups:
+        summary = [row for m in group.metrics for row in rows_by_metric[m.name]]
+        method_roles = _runtime_method_roles(group.methods)
         try:
-            computation = estimate_encouragement(
-                metrics=group_metrics,
+            computation = _estimate_encouragement(
+                metrics=group.metrics,
                 summary=summary,
                 design=design,
                 estimands=tuple(name for name in wanted if name != "compliance"),
-                methods=group_methods,
-                prior=group_prior,
-                alpha=group_alpha,
-                alternative=group_alt,
-                null_lift=group_null_lift or None,
-                null_abs=group_null_abs,
+                methods=group.methods,
+                prior=group.prior,
+                alpha=group.alpha,
+                alternative=group.alternative,
+                null_lift=group.null_lift or None,
+                null_abs=group.null_abs,
                 cluster=cluster,
                 method_roles=method_roles,
+                route_alpha=group.route_alpha,
             )
         except InvalidRequestError as exc:
             if exc.code != "estimation.encouragement.control.missing" or any(
-                metric.name not in family_metric_names for metric in group_metrics
+                metric.name not in family_metric_names for metric in group.metrics
             ):
                 raise
             family_refusal_deferred = True
             from increment.decision import ArmHypothesisKey, DecisionComputation, DecisionFailure
 
             failures: dict[Any, Any] = {}
-            for metric in group_metrics:
+            for metric in group.metrics:
                 for row in rows_by_metric[metric.name]:
                     group_id = str(row["group_id"])
                     if group_id == str(design.control_group):

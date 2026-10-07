@@ -4,7 +4,7 @@ import warnings
 from typing import TYPE_CHECKING, Any, Literal
 
 from increment._literals import PreferredDirection, Role
-from increment.estimation.engine import Method, estimate_lift
+from increment.estimation.engine import Method, _estimate_lift, estimate_lift
 from increment.estimation.engine import merge_decision_computations as _merge_decision_computations
 from increment.estimation.inference import LiftGuardError
 from increment.estimation.quantile import estimate_quantile_lift_computation
@@ -128,6 +128,7 @@ def _estimate_lift_cells(  # noqa: PLR0913
     advisory_seen: set[tuple[str, str]] | None = None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
     family: bool = False,
+    route_alpha: float | None = None,
 ) -> tuple[list[LiftEstimate], list[tuple[str, str, str, str]], DecisionComputation[LiftEstimate]]:
     """Estimate randomized whole-window cells independently.
 
@@ -179,7 +180,7 @@ def _estimate_lift_cells(  # noqa: PLR0913
             captured: list[Any] = []
             try:
                 with warnings.catch_warnings(record=True) as captured:
-                    computation = estimate_lift(
+                    computation = _estimate_lift(
                         metrics=[metric],
                         summary=[control, treatment],
                         control_group=control_group,
@@ -193,6 +194,7 @@ def _estimate_lift_cells(  # noqa: PLR0913
                         preferred_direction=preferred_direction,
                         method_roles=method_roles,
                         cluster=cluster,
+                        route_alpha=route_alpha,
                     )
                     cell_results = computation.results
                     computations.append(computation)
@@ -264,7 +266,7 @@ def _raise_if_all_lift_cells_refused(
         _raise("readout.estimate_lift_every")
 
 
-def _estimate_pass(
+def _estimate_pass(  # noqa: PLR0913
     src: MomentSource,
     metric: Metric,
     evidence: Any,
@@ -278,6 +280,7 @@ def _estimate_pass(
     advisory_seen: set[tuple[str, str]] | None,
     retry: Literal["cells", "family", "whole", "whole_asof"] = "cells",
     methods: list[Method],
+    route_alpha: float | None = None,
 ) -> tuple[list[LiftEstimate], list[tuple[str, str, str, str]], DecisionComputation[LiftEstimate]]:
     """Run one randomized estimation pass with role, alpha, and retry policy.
 
@@ -340,7 +343,7 @@ def _estimate_pass(
         )
 
     if retry in ("whole", "whole_asof"):
-        computation = estimate_lift(
+        computation = _estimate_lift(
             metrics=[metric],
             summary=evidence or [],
             control_group=design.control_group,
@@ -354,6 +357,7 @@ def _estimate_pass(
             preferred_direction=metric.declared_preferred_direction,
             method_roles=method_roles,
             cluster=src.context.cluster,
+            route_alpha=route_alpha,
         )
         return (
             [row.model_copy(update={"role": role}) for row in computation.results],
@@ -377,5 +381,6 @@ def _estimate_pass(
         method_roles=method_roles,
         advisory_seen=advisory_seen,
         family=retry == "family",
+        route_alpha=route_alpha,
     )
     return [row.model_copy(update={"role": role}) for row in rows_est], refused, computation

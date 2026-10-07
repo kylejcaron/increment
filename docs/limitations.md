@@ -104,7 +104,8 @@ data. What differs is the approximation each family layers on to get there:
 
 | Family | How uncertainty is obtained |
 |---|---|
-| Conversion and retention arm lift (unadjusted, unit-grain, no informative prior) | Exact independent-binomial risk-ratio test inversion (Berger-Boos restricted-nuisance construction) -- no delta method, no Normal reference |
+| Conversion and retention arm lift (unadjusted, unit-grain, no informative prior), all four success and failure counts dense | Delta-method log-scale uncertainty against a Welch-Satterthwaite t reference (`reference_kind="t"`), as every unadjusted mean -- an approximation with no finite-sample guarantee, checked at the dense-count threshold (`conversion_inference="auto"`, the default) |
+| Conversion and retention arm lift (same eligibility), any sparse count, or `conversion_inference="finite_sample"` | Exact independent-binomial risk-ratio test inversion (Berger-Boos restricted-nuisance construction) -- no delta method, no Normal reference (`reference_kind="binomial"`) |
 | Unit-grain mean/ratio lift and CUPED, no informative prior | Delta-method log-scale uncertainty against a Welch-Satterthwaite t reference, whose degrees of freedom are persisted on the row |
 | Clustered unadjusted arm lift | Joint additive/control covariance, Fieller relative set; separate additive uncertainty |
 | Sequential | Separate registered observation-model contract; fixed-horizon approximations do not establish anytime validity |
@@ -125,8 +126,12 @@ path's approximation and not an additional one.
 Approximate inference paths do not promise finite-sample exactness for a discrete outcome.
 Eligible fixed-horizon conversion/retention results with `reference_kind="binomial"`
 retain a finite-sample guarantee for the relative-risk confidence set and its
-relative-scale decisions. Their additive `abs_lb`/`abs_ub` sidecar, when available,
-uses a Normal-Wald approximation; that interval is not exact.
+relative-scale decisions. Only those rows do: the default `conversion_inference="auto"`
+labels a row with dense counts `reference_kind="t"`, an approximation whose noncoverage was
+measured to stay within a stated tolerance at the dense-count threshold (see the next
+section) and is not a finite-sample guarantee; the default is never a universally
+finite-sample route. Their additive `abs_lb`/`abs_ub` sidecar, when available,
+uses a Normal-Wald approximation on either route; that interval is not exact.
 Asymptotic and empirically qualified methods are labeled as such rather than treated as
 exact; an unfinished or unsupported capability refuses before producing a result.
 No result field diagnoses model misspecification.
@@ -156,7 +161,8 @@ refusal to the caller: past the infeasible boundary it treats the construction a
 exclude the null" and stops searching there, rather than raising.
 
 Calibration is metric-specific for approximate methods. Unadjusted unit-grain
-conversion/retention uses the exact binomial method below at every event count.
+conversion/retention uses the delta method only where every success and failure count is
+dense and the exact binomial method below at every other event count.
 CUPED and ratio-denominator routes retain their delta approximation. Clustered
 unadjusted arm lift instead retains joint covariance and relative-set geometry;
 that representation prevents misleading finite intervals near zero controls,
@@ -272,22 +278,123 @@ variance of the estimate. Unequal allocation and arm-specific slopes are outside
 
 ## Metric types with no supported estimand
 
-### Rare events on an unadjusted conversion/retention arm are estimated exactly, not refused
+### Conversion and retention arms: dense counts use the delta method, sparse counts are estimated exactly, not refused
 
 An unadjusted (no CUPED, no declared cluster), unit-grain conversion or retention arm pair
-uses an exact independent-binomial risk-ratio method (Berger-Boos restricted-nuisance test
-inversion; see `increment/estimation/binomial_rr.py`), not the log-scale delta method. It
-handles every event count directly, with no `log_se >= 0.5` admission rule and no
-continuity correction:
+has two routes, and a rule that reads only the four per-arm success and failure counts and
+the tail allocation (`alpha / 2` per tail two-sided, `alpha` directional) picks one before any
+interval is computed. It never compares an interval or a p-value, and it labels the row:
 
-An Encouragement design's ITT on a conversion metric keeps
-this route (ITT and LATE readouts of a retention metric under an Encouragement design are refused
+* **Delta-method route** (`reference_kind="t"`, `scale="log"`, no `binomial_set`): the log
+  risk ratio against a Welch-Satterthwaite t reference that every unadjusted mean uses,
+  taken when the smallest of `x_c`, `n_c - x_c`, `x_t` and `n_t - x_t` is at least
+  `dense_min_count(tail)`. It has no arm-size ceiling and no `log_se >= 0.5` risk (every
+  count is at least 9 there, which keeps the combined log standard error below
+  `sqrt(2/9)`), and it carries no finite-sample guarantee.
+* **Finite-sample route** (`reference_kind="binomial"`, `scale="linear"`, a `binomial_set`):
+  an exact independent-binomial risk-ratio method (Berger-Boos restricted-nuisance test
+  inversion; see `increment/estimation/binomial_rr.py`) for every other count pair. It
+  handles every event count directly, with no admission rule and no continuity correction,
+  and only these rows carry the finite-sample guarantee. The hybrid default is never a
+  universally finite-sample route.
+
+`Method.conversion_inference` selects: `"auto"` (the default, on `Method`, `MethodSpec` and the
+wire format) routes by counts, and `"finite_sample"` always takes the finite-sample route
+(refused by code, `estimation.binomial.finite_sample_unavailable`, with an informative prior,
+clustered units, sequential inference or an observational adjustment; and on a metric that is
+not a conversion or retention rate or on a CUPED-adjusted method, with
+`conversion_inference.finite_sample.metric_type` and `conversion_inference.finite_sample.cuped`,
+the one code per hazard whether a definition, a frame metric, a method or a plan carries it).
+There is no forced
+delta-method value and no analysis-wide knob. A multiplicity family that reads p-values at
+levels below the row's own routes each row at the smallest level it can be decided at (for a
+BH family, `q` over the hypotheses it tests), never at a looser one. A stored plan or wire payload
+written before the field existed decodes each method to the route it ran under: `"finite_sample"`
+for a prior-free, fixed-horizon method on a conversion or retention metric, whatever its
+`Method.name` label, unless it is CUPED or an observational estimator; `"auto"` for every other method.
+
+`dense_min_count(tail) = max(412, ceil(145 z^4))` with `z = Phi^-1(1 - tail)`. It is an envelope
+of a measured requirement, not a fit: the requirement is the least count at which the
+delta-method interval's one-sided noncoverage in the boundary cells below stays within
+`tests.mc.scientific_delta(tail)` of the tail (a tenth of the tail below 0.05, 0.005 at and above
+it) at that count and at every larger step of a geometric ladder (ratio 1.15) through 1.25 times
+it. The law is at least 1.25 times the requirement at every production tail; the 0.1 tail sets
+its floor and the 0.0005 tail its slope. The tail error of a log risk ratio Wald interval grows
+like `z^3` relative to the tail, so extreme tails need thousands of events. The requirement
+grows more slowly than `z^4` below them, so the middle tails carry a margin well above 1.25
+(about 3.7 times at 0.025 and 0.05), and counts the interval already covers take the
+finite-sample route there, which is valid at every count. A tail below 0.0005 is extrapolated by
+the same formula, not measured. Per tail, the requirement is a step of a ladder of that ratio
+with every step of that candidate's own ladder through 1.25 times it measured; the ladders are
+anchored at 10 for the tails from 0.025 up and at 1,637 below (the 0.005 tail's on the
+continuation of an interrupted scan, at 2,489.5). A scan records its ladder with every step.
+The same numeric rung counts regardless of which scan measured it, but a differently numbered
+rung cannot replace a missing candidate rung. `python -m calibration.conversion_route required`
+reads saved scans, inferring compatible anchors for legacy rows and refusing a legacy scan
+that no single ladder fits:
+
+| One-sided tail | 0.0005 | 0.001 | 0.005 | 0.01 | 0.025 | 0.05 | 0.1 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Measured requirement | 13,320 | 10,072 | 2,863 | 2,165 | 576 | 286 | 329 |
+| `dense_min_count` | 17,000 | 13,224 | 6,384 | 4,247 | 2,140 | 1,062 | 412 |
+| Law over requirement | 1.28 | 1.31 | 2.23 | 1.96 | 3.72 | 3.71 | 1.25 |
+
+`python -m calibration.conversion_route select` integrates the interval's noncoverage over
+the exact binomial lattice in rare, failure-limited and central boundary cells (control sizes
+1e3 to 1e7 at every 1, 2 and 5 of a decade, allocations 1:1, 1:4 and 4:1, risk ratios 0.5 to 2)
+and reports, per tail, the worst excess over the tail in tolerance units (at most 1 passes); the
+failure-limited cells bind at every tail. The excess just below each requirement and at it:
+
+| One-sided tail | 0.0005 | 0.001 | 0.005 | 0.01 | 0.025 | 0.05 | 0.1 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Last failing step | 11,583 | 8,758 | 2,490 | 1,883 | 501 | 249 | 286 |
+| Worst excess there | 1.15 | 1.09 | 1.29 | 1.01 | 1.16 | 1.21 | 1.03 |
+| Requirement | 13,320 | 10,072 | 2,863 | 2,165 | 576 | 286 | 329 |
+| Worst excess there | 0.87 | 0.98 | 0.97 | 0.99 | 0.98 | 0.93 | 0.97 |
+
+and, at counts every tail was measured at (worst excess in tolerance units):
+
+| Count `m` | 0.0005 | 0.001 | 0.005 | 0.01 | 0.025 | 0.05 | 0.1 |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 435 | 6.84 | 5.47 | 3.07 | 2.25 | 1.39 | 0.88 | 0.95 |
+| 1,637 | 2.86 | 2.35 | 1.37 | 1.03 | 0.64 | 0.41 | 0.45 |
+| 2,165 | 2.73 | 2.25 | 1.31 | 0.99 | 0.62 | 0.39 | 0.42 |
+
+`verify` re-checks the shipped count at each tail and at 1.25 times it in the same cells; every
+cell passes (worst excess in tolerance units, at the count and at 1.25 times it):
+
+| One-sided tail | 0.0005 | 0.001 | 0.005 | 0.01 | 0.025 | 0.05 | 0.1 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| At `dense_min_count` | 0.84 | 0.72 | 0.62 | 0.69 | 0.62 | 0.56 | 0.97 |
+| At 1.25 times it | 0.83 | 0.71 | 0.65 | 0.60 | 0.47 | 0.42 | 0.76 |
+
+The 0.1 tail passes by 3% at its floor. `hybrid` sums the production pipeline's noncoverage
+exactly over the count lattice at design counts two below to two above the shipped count (the
+three cells with the most routed noncoverage at each offset, two-sided at `alpha = 2 * tail`,
+plus the worst cell read directionally at `alpha = tail`: `greater`, and `less` at the tails a
+production alpha reaches directionally, run at the 0.1 and 0.05 tails). At every one of the
+seven tails every cell stays within tolerance; the worst excess over each tail's cells is
+0.50 / +0.34 / +0.40 / +0.48 / +0.53 / +0.63 / +0.67 at the 0.1 / 0.05 / 0.025 / 0.01 / 0.005 /
+0.001 / 0.0005 tails. The production pipeline on 57,601, 30,400 and 62,400 seeded draws at the
+0.1, 0.05 and 0.025 tails agrees with the exact value within four Monte Carlo standard errors;
+that check was not run below the 0.025 tail. The calibration-only vectorised interval agreed
+with `estimate_lift` within `2.1e-14` (relative), and the interpolated Student quantile agreed
+with `t.isf` within `1.7e-15`, on the measured `conformance` cells. These empirical comparisons
+are not numerical certificates; planning and exact enumeration use the runtime calculation
+directly. A bounded grid is evidence at those cells, not coverage for every data-generating
+process.
+
+A BH-selected row is re-estimated at its own corrected level and routed there, so its label can
+differ from the label of the nominal row whose p-value selected it.
+
+An Encouragement design's ITT on a conversion metric takes the same
+routes (ITT and LATE readouts of a retention metric under an Encouragement design are refused
 with `readout.encouragement.retention`; a compliance-only request, `estimands=("compliance",)`,
 ignores the retention outcome and is measured to succeed on `from_definitions` only, see the
 [capabilities table](reference/capabilities-by-entry-point.md#what-runs-where)): the
 design's uptake (first-stage compliance) moments are a
 different random variable over the same units and do not change the
-ITT's own sufficient statistics, so they are stripped before this route
+ITT's own sufficient statistics, so they are stripped before either route
 reads the arm rather than disqualifying it.
 
 | Observations | Point estimate | Confidence set |
@@ -305,21 +412,23 @@ and reportability are three distinct, independently tracked properties; a point-
 never a failed one. An unbounded ceiling is represented as `upper=None` on the set, never as
 a serialized infinity.
 
-This exact method is fixed-horizon: it does not itself prove validity under optional
+Both routes are fixed-horizon: neither proves validity under optional
 stopping or repeated peeking (see the sequential-inference limitations elsewhere on this
 page for that separate guarantee). A conversion/retention request with an informative
-prior uses the established Normal approximation. A registered sequential specification
+prior uses the established Normal approximation on every count. A registered sequential specification
 instead uses its declared raw-observation likelihood and matching sequential inversion,
 subject to the registered sampling and finalized-window contract.
 
-It also has two further boundaries, both refusals rather than silent degradation:
+The finite-sample route also has three boundaries, each a refusal rather than silent degradation (dense counts under `auto` meet none of them):
 
 * **Arm size.** Each arm is capped at `binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE`
   (1,000,000,000; it replaces `binomial_rr.MAX_ARM_SIZE`, which capped arms at 4,000,000 and is
   removed without an alias -- code that imported the old name imports the new one and gets the
   new cap). This is a compute-resource applicability boundary, not a statistical
   one: a call with either arm above the cap refuses immediately
-  (`estimation.binomial.arm_too_large_for_exact_enumeration`, the cap in `max_arm_size`)
+  (`estimation.binomial.finite_sample_arm_ceiling_exceeded`, the cap in `max_arm_size`; it replaces the retired
+  `estimation.binomial.arm_too_large_for_exact_enumeration`, which `increment.errors.RETIRED_CODES` maps to it;
+  a dense cell runs at any size under `auto`)
   rather than running a search whose cost keeps growing with the arm. The cap is the
   largest arm the numerical safeguards were validated at against an independent decimal
   oracle (`calibration/binomial_oracle.py`, run by `scripts/measure_binomial_ceiling.py`
@@ -327,12 +436,14 @@ It also has two further boundaries, both refusals rather than silent degradation
   per arm): the SciPy binomial primitives' error allowance (the worst relative error of a
   pmf, cdf or sf that bears weight, as a share of `n` units of `2^-52`, was 0.198, 0.245,
   0.212, 0.236 and 0.226 at those sizes, against an allowance of one), the Clopper-Pearson
-  enclosure, the support window's omitted mass (each held at every size), and count recovery from the
-  producer's float moments, whose Bernoulli second-moment check scales with `n`: the
-  DuckDB producer's counts were accepted at every size and rate measured (0.5, 0.002, 1e-4
-  and a single success), the second-moment error reaching at most 0.24 of the check's
-  rounding bound (2,442 times `variance_slack` at a billion units), and a constant-0.5
-  arm was refused at every size. Count thresholds are computed in exact
+  enclosure, the support window's omitted mass (each held at every size), and exact-count
+  transport from the DuckDB producer: the integer `successes` it exports is the count the
+  route uses, and the float first and second moments only validate it, the Bernoulli
+  second-moment check scaling with `n`. The producer's counts passed that validation at
+  every size and rate measured (0.5, 0.002, 1e-4 and a single success), the second-moment
+  error reaching at most 0.24 of the check's rounding bound (2,442 times `variance_slack` at
+  a billion units), and a constant-0.5 arm, which carries no integer count, was refused at
+  every size. Count thresholds are computed in exact
   integers, which a float quotient cannot keep above about 67,000,000 per arm. The error
   model was measured with fused multiply-subtract on arm64; an x86 build has not been run.
 * **Latency.** Cost grows with arm size. Cold CPU seconds and peak resident set of one
@@ -387,8 +498,8 @@ It also has two further boundaries, both refusals rather than silent degradation
   search that cannot reach it keeps its conservative
   endpoint and says so in the row's `note`. The process caches up to 24 MiB of control and
   24 MiB of treatment tail vectors between searches. A readout multiplies this across
-  metrics, arms, and breakout cells. There is no opt-out: every eligible
-  unadjusted conversion/retention contrast takes this route. A further large
+  metrics, arms, and breakout cells. Only sparse counts, or an explicit
+  `conversion_inference="finite_sample"`, take this route. A further large
   speedup would need a genuinely different tail-evaluation construction (a
   closed-form or recurrence update between adjacent risk-ratio candidates);
   none is implemented today. Reduce the number of eligible contrasts in a single
@@ -408,18 +519,17 @@ It also has two further boundaries, both refusals rather than silent degradation
   level leaves after the nuisance budget (`alpha / 2 - min(1e-6, alpha / 32)` two-sided,
   `alpha - min(1e-6, alpha / 32)` one-sided) no p-value read from an evaluated tail can be
   certified below the tail, and the call refuses with the same code (context `alpha`,
-  `margin`, `n_c`, `n_t`) instead of returning a set that extends to wherever
-  the structure alone stops it. The one exception is a null the structure alone rejects: a
-  two-sided or "less" test of a null ratio above `1 / a`, `a` the control arm's
-  Clopper-Pearson lower bound at the nuisance budget, has an empty nuisance domain, so its
-  p-value is the budget itself (doubled two-sided) with no tail evaluated, and the upper
-  endpoint is the first candidate above `1 / a`, which the control arm certifies by itself;
-  that call is answered, the lower endpoint at zero. A row persisted from such a call
-  carries that guard: `stat_sig()`/`p_value()` and the table adapters recompute its verdict
-  from the persisted counts, so re-reading them at a null the structure does not reject (the
-  unshifted null, for one) refuses with the same code and context a fresh call at that null
-  does, never a margin-floored non-rejection. For equal arms the two-sided threshold is
-  about `3.8e-9` at 4,000,000 per arm, `9.5e-8` at 100,000,000 and `9.5e-7` at
+  `margin`, `n_c`, `n_t`) instead of returning a set that extends to wherever the structure
+  alone stops it. The one exception is a null the structure alone rejects: a two-sided or
+  "less" test of a null ratio above `1 / a`, `a` the control arm's Clopper-Pearson lower
+  bound at the nuisance budget, has an empty nuisance domain, so its p-value is the budget
+  itself (doubled two-sided) with no tail evaluated, and the upper endpoint is the first
+  candidate above `1 / a`, which the control arm certifies by itself; that call is answered,
+  the lower endpoint at zero. Persisted rows retain that guard: `stat_sig()`/`p_value()` and
+  table adapters refuse a non-structural null with the same code and context as fresh
+  inference, rather than reporting a margin-floored non-rejection. For equal arms the
+  two-sided threshold is about `3.8e-9` at
+  4,000,000 per arm, `9.5e-8` at 100,000,000 and `9.5e-7` at
   1,000,000,000 (one-sided, about half of that); it passes the `3.2e-8` solver floor at
   about 34,000,000 per arm, so below that size the solver floor binds. The margin is
   absent from ordinary levels. Its effect depends on its ratio to the tail level, so it was
@@ -430,7 +540,8 @@ It also has two further boundaries, both refusals rather than silent degradation
   leaves the runtime deciding no count pair, so it has no power to plan and is refused, not
   planned as zero. Under a dominating margin the runtime decides only the count pairs whose
   control count rejects the null on its Clopper-Pearson bound alone, and refuses the rest;
-  a plan whose control window at the baseline rate holds a refused count is refused too, never
+  a `finite_sample` plan whose control window at the baseline rate holds a refused count is
+  refused too, and an `auto` plan whose refused pairs carry more than half of `1e-6`, never
   planned with those pairs as non-rejections. `achieved_power`, `minimum_detectable_effect`
   and each `power_curve` row refuse it with `power.binomial_tail_level_unrepresentable`
   (context `alpha`, `beta`, `tail_alpha`, `margin`, `n_c`, `n_t`, `p_c`, `decided_from` -- the
@@ -443,13 +554,34 @@ It also has two further boundaries, both refusals rather than silent degradation
   margin that starts dominating only at larger arms ends the search at that size with
   `power.binomial_size_search_unreachable` (context `power`, `maximum_power`, `n_per_arm`,
   `max_arm_size`). An allocation so lopsided that the smallest design has an arm above the arm
-  ceiling is refused with `power.binomial_arm_ceiling_below_smallest_design`. There is no exact
-  route at a smaller alpha; use a larger alpha.
+  ceiling is refused with `power.binomial_arm_ceiling_below_smallest_design`. There is no
+  finite-sample route at a smaller alpha; use a larger alpha, or `conversion_inference="auto"`,
+  which takes the delta-method route at counts dense for the tail and has neither floor.
+
+For these fixed-horizon binomial plans, public power is a model-based point
+probability, not a conservative numerical lower bound. Enumeration publishes
+computed rejection mass only when its internal enclosure establishes maximum
+absolute error at most `1e-6`; otherwise it refuses with
+`power.binomial_probability_unresolved`. The dense closed-form route instead
+reports its model's point probability; its validation tolerance remains
+`0.005`, not a universal bound or finite-sample calibration guarantee.
+Binomial MDE locates the earliest detectable region to `1e-8` absolute plus
+`1e-8` relative tolerance on the relative-effect scale. It does not promise the
+first IEEE-representable effect or silently skip materially earlier unresolved
+bands. Unresolved MDE searches refuse with
+`power.minimum_detectable_effect.numerical_resolution`, or leave a companion
+MDE unavailable with `mde_unavailable_reason="numerical_resolution"`.
+The reported power is evaluated at the returned effect. Internal accuracy
+bounds address numerical evaluation, not model misspecification; calibration
+remains a separate, deferred diagnostic. The planning model is
+`hybrid_finite_plus_delta_v3`, and persisted v1/v2 plans require recomputation.
+See [power planning](guides/power-analysis.md#conversion-and-retention-planning-follows-the-runtimes-route)
+for replay limits and comparisons with other tests.
 
 CUPED and unit-grain ratio-denominator conversion/retention retain their log-scale
 guards; their sufficient statistics are not raw Bernoulli count pairs. A clustered
 unadjusted arm instead uses joint relative inference, without the scalar log-SE
-admission rule. None of those approximate routes inherits exact-binomial validity.
+admission rule. None of those approximate routes inherits finite-sample validity.
 The remaining scalar log-path refusal is:
 
 ```text
@@ -703,47 +835,104 @@ The three arm solvers evaluate the treatment and control terms at their own
 means under the alternative. Starting from the control-arm effective variance
 `v`, mean-like metrics assume equal absolute variance in the two arms
 (`v_treatment = v`). Conversion and retention metrics that the runtime does not
-decide with the exact binomial test (CUPED, clustered, absorbed-factor,
-sequential) instead rescale `v` by the Bernoulli shape at the alternative rate:
+decide with the finite-sample binomial test (CUPED, clustered, absorbed-factor,
+sequential, and counts the runtime takes the delta-method route at) instead rescale `v` by the Bernoulli shape at the alternative rate:
 `v_treatment = v * p_treatment * (1 - p_treatment) / (p_control * (1 - p_control))`.
 These are explicit planning assumptions (`power_basis="asymptotic"`). They do
 not guarantee that a future data-generating process has either variance shape.
 
-### Conversion planning matches the exact binomial decision only within a budget
+### Conversion planning follows the runtime's route; the finite-sample replay is bounded
 
-Unadjusted, unclustered, fixed-horizon conversion and retention plans report
-the rejection probability of the runtime's exact binomial risk-ratio decision only on the
-exact route. With at most 16,000 retained (control, treatment) cells at the null rate the
-decision set is replayed exactly (`power_basis="exact"`); up to 10,000,000 cells the
-replay uses Normal conditional tails (`power_basis="approximate"`), a model of the decision
-whose rejection probability is what that route reports and encloses: its numerical
-certificates are model-only and do not bound the model's departure from the runtime, measured
-at up to 0.8 percentage points below the runtime's power (unequal allocation,
-shifted null) and able to misclassify rare-event count pairs near the tail
-allocation. The runtime's own control-arm window and floating-point
-allowance carry over to both routes. A binomial plan's call takes seconds
-rather than milliseconds. Measured on an Apple M3 Pro: exact route at 701 per
-arm, about 0.8 s for achieved power or MDE and 1.9 s for sizing; approximate
-route at 10,000 / 20,000 / 35,000 per arm (10% baseline), 1.2 / 2.6 / 3.9 s
-for achieved power and 6.3 / 15.5 / 22 s for sizing, and at 20,000 per arm
-with a 50% baseline 6.4 s and 67 s. Every count pair's decision comes from its
-own replay, except counts the replay's first step would settle: those are
-inferred from a neighbouring count's margin through the step's monotonicity
-in the treatment count, which assumes each computed tail lies within the larger of
-`5e-11` and the decision's float margin (see **Extreme alpha**) of its exact-arithmetic
-value. Sizing returns a verified bracket crossing, not a proven global minimum.
+Unadjusted, unclustered, fixed-horizon conversion and retention plans mirror the runtime's
+count rule. A count pair is decided by the delta method when its four per-arm success and
+failure counts are all at least `m = dense_min_count` for the plan's tail allocation and by the
+finite-sample test otherwise, so a plan's power is the rejection probability of that union
+over the count lattice: the production delta decision on the routed rectangle plus the replayed
+finite-sample decision on the rest (`power_basis="exact"` or `"approximate"`).
+Public `power` is the computed rejection mass, admitted only when its internal
+enclosure establishes absolute error at most `1e-6`. It is neither
+route's power: a plan whose counts straddle the threshold is not the smaller of the two. A plan
+whose counts are dense with probability at least `1 - 1e-6` (`P(m <= X <= n - m)` per arm, the
+arms independent) is enumerated while its lattice has at most 100,000 cells (a cost limit,
+the same for every design), retaining any undecided finite-route mass in the upper bound.
+Larger dense lattices use the closed-form model above (`power_basis="asymptotic"`, no replay,
+no cell budget, no arm ceiling, so a dense plan above a billion units per arm is planned).
+Its figures have the measured 0.005 agreement criterion, not a runtime lower-bound guarantee.
+A decision the runtime refuses in full on the finite-sample
+route (a tail level its margin dominates, an arm above its ceiling) is refused for a plan that
+keeps more than half of `1e-6` of its counts there, never reported as zero power; under a
+dominating margin the finite-sample route still decides the count pairs whose control count
+alone rejects a shifted null (see **Extreme alpha**), and a plan is refused only when the
+counts it keeps on that route *below* that control count carry more than half of `1e-6`, the
+context's `decided_from` naming the count. A minimum
+detectable effect whose whole path from the null is closed-form is solved without a lattice.
+Every enumerated plan is subject to the cell bound below, including sparse and borderline
+`auto` plans. `conversion_inference="finite_sample"` always uses enumeration; sufficiently
+dense `auto` plans can instead use the closed-form route.
 
-Every computed probability carries the runtime's SciPy error allowance (`n` units in
-the last place of each binomial weight) and the rounding of its sums. The resulting
-interval is about `1e-12` of the power at 1,000 units per arm and `4e-7` at a billion.
-Sizing uses its lower end to verify the target. MDE instead uses computed point
-power and effect tolerance `1e-8 + 1e-8 * abs(effect)`, without promising the first
-representable passing effect. Internal bounds exclude earlier intervals; an earlier
-uncertain interval wider than the effect tolerance cannot be skipped for a later band.
-If the search cannot resolve it, the companion `mde_relative` is `None` with
-`numerical_resolution`, while a supplied-effect power remains available.
-The interval covers integration of the replayed decision set, not the approximate
-route's separate model error. Triggered plans use rounded analyzed counts.
+For these eligible dense rows, the runtime reconstructs Bernoulli moments from the validated
+integer counts before computing the delta interval. Accepted producer-rounding differences
+therefore cannot change the decision for identical counts. Other metrics and adjusted
+conversion rows continue to use their supplied moments.
+
+`python -m calibration.conversion_route bound` compares each route's plan with the pipeline's
+exact rejection probability, summed over the count lattice, and judges each by the claim of its
+route. The 534 designs run so far reach every production tail at central and rare-event rates,
+with falls (negative lifts) at the 0.01, 0.025, 0.05 and 0.1 tails; the `tails` and `window`
+grids define every production request at its own alpha, two-sided against a rise and
+directional in both directions, and the directional requests have been run at the 0.05 and 0.1
+tails (central and rare-event) and two 0.01 designs. Those figures were measured against the
+interim planner (the smaller of the replayed and the closed-form power for a plan whose counts
+straddle the threshold, and a Normal-tail replay above 16,000 cells): a sparse plan was
+between 1.8e-5 above and 3.3e-4 below the pipeline's exact probability, and a borderline plan
+between 1.6e-5 above and 0.072 below it. Neither is a claim of the hybrid planner, whose
+enclosure is checked against the same enumeration with no tolerance beyond its own undecided
+mass and numerical error (the dense closed form keeps its 0.005 ceiling; its two failures, at
+1,236 per arm and a 50% baseline with a 6% lift, are now enumerated).
+
+A `bound --out` checkpoint records each design's enumeration beside the finite-sample
+construction and routing floor it was summed under, and its plan beside the planner model. A
+resumed run retains compatible runtime enumerations and replans retired-model records with the
+current planner, `hybrid_finite_plus_delta_v3`. Its v1 and v2 predecessors must be
+recomputed, not relabelled. Unknown models and earlier undated layouts refuse with
+the file line and a route to a new `--out`. Saved earlier files remain unchanged as evidence.
+
+A plan not evaluated in closed form integrates the count lattice with a bounded decision
+budget. Evaluated pairs use the runtime's delta-method calculation on the routed rectangle
+and the finite-sample replay elsewhere. Each evaluation selects at most 100,000 routed pairs
+and 150,000 finite-sample directional pairs from its own count windows, prioritising heavier
+cells and retaining unprocessed probability in the upper bound. Selection depends on the
+request, not cached decisions: shared, repeated and fresh evaluations report the same enclosure.
+An enumeration that cannot establish maximum point error at most `1e-6` refuses
+with `power.binomial_probability_unresolved`; it does not substitute the lower
+endpoint. Diagnostic enclosures can remain wide. The Normal-tail replay only proposes sizes.
+The runtime's control-arm window and floating-point allowance carry over.
+
+On a loaded 12-core Apple machine, evaluating a dense 62,500-cell plan (1,236 per arm) with
+the runtime calculation took 10 to 20 seconds. Public calls that also search for an effect
+require further evaluations. Broader calibration certification of this implementation is
+pending; the saved campaign results above describe the interim planner.
+
+Each evaluated finite-sample pair uses its own replay or a root exit settled by the replay's
+first step; no pair inherits a neighbour's decision, because the runtime's stopped search
+need not be monotone in a count. Sizing returns a verified bracket crossing,
+not a proven global minimum.
+
+The internal numerical enclosure accounts for the runtime's SciPy allowance,
+summation error, omitted support and unresolved decisions. Public solvers compare
+the admitted computed point power with the target, not an enclosure endpoint.
+The closed-form route reports its own model probability; its dense agreement
+criterion remains `0.005`, not a universal runtime error bound.
+
+MDE searches the earliest detectable region to `1e-8` absolute plus `1e-8`
+relative effect tolerance, not the first representable floating-point effect.
+It excludes an earlier interval only with a valid upper bound and cannot skip
+a materially earlier unresolved region. Reported power is evaluated at the
+reported effect. If the search cannot resolve that region, a supplied-effect
+answer preserves its valid power and has `mde_relative=None` with
+`mde_unavailable_reason="numerical_resolution"`. A direct
+`minimum_detectable_effect` refusal additionally retains structured context.
+Triggered plans use the rounded analyzed counts.
 
 A solve's replay is bounded by the cells it stores: at most 10,000,000 (control, treatment)
 count cells, the control window by the treatment windows at the null rate and at every
@@ -768,37 +957,55 @@ supplied-effect rectangles fit, and a search that reaches that ceiling refuses w
 search have their own codes (see the sizing table in the power-analysis guide): the arm
 ceiling or a float margin that dominates the tail level at larger arms ends it with
 `power.binomial_size_search_unreachable` and `maximum_power`, and a decision refused at the
-smallest design is refused before any search (see **Extreme alpha**). A supplied effect
+smallest design is refused before any search (see **Extreme alpha**). Under `conversion_inference="finite_sample"` a supplied effect
 reaches the bound at about a million units per arm at a 5% baseline, about 190,000 at 50%,
 and at any arm the runtime admits at a rate expecting up to about 48,000 events per arm.
-Measured with `scripts/measure_binomial_ceiling.py planning` on an Apple M3 Pro, cold CPU
-seconds and peak resident set, under a shared load that varied by a factor of about two
-between runs (null cells are the null rectangle). The cells marked † were re-measured at
-`45829f1`, after a companion effect search became a solve of its own (it no longer inherits
-the supplied effect's cells, so an unresolved companion costs what a refused
-`minimum_detectable_effect` does); the others are from `2da355f`, before it, and a
-companion effect there was cheaper to refuse:
+Under default `"auto"`, dense plans using the closed-form route have no replay and no
+such bound; small enumerated dense plans remain subject to the replay bound. Measured with
+`scripts/measure_binomial_ceiling.py planning` (`--conversion-inference finite_sample` or
+`auto`) on a 12-core machine, cold CPU seconds of the call and the process's peak resident set,
+under a shared load that varied by several times between cells (null cells are the null
+rectangle). Explicit `finite_sample` plans at 1e5, 1e6, 5e6 and 5e7 units per arm, dense (a 5%
+baseline) and sparse (about a hundred events per arm):
 
 | Baseline, units per arm | Call | CPU / peak | Outcome |
 |---|---|---:|---|
-| 5%, 100,000 | `achieved_power`, lift 5% | 6.3 s / 1.3 GiB | 0.97M null cells, companion effect available |
+| 5%, 100,000 | `achieved_power`, lift 5% | 9.8 s / 1.34 GiB | 0.97M null cells, companion effect available |
+| 5%, 1,000,000 | `achieved_power`, lift 1.5% | 198 s / 1.72 GiB | 9.67M null cells; companion effect `numerical_resolution` |
+| 5%, 5,000,000 | `achieved_power` or `minimum_detectable_effect` | refused within 1 ms / 0.12 GiB | 48.3M null cells |
+| 5%, 50,000,000 | `achieved_power` or `minimum_detectable_effect` | refused within 1 ms / 0.12 GiB | 483M null cells |
+| 0.1% at 1e5, 0.01% at 1e6, 0.002% at 5e6, 0.0002% at 5e7 (100 events) | `achieved_power`, lift 50%, and `minimum_detectable_effect` | 0.19 to 0.20 s / 0.21 to 0.26 GiB | 20,164 null cells at each size, answered (`approximate`) |
+
+The same calls under `"auto"`:
+
+| Baseline, units per arm | Call | CPU / peak | Outcome |
+|---|---|---:|---|
+| 5%, 1e5 to 5e7 | `achieved_power`, `minimum_detectable_effect` and `required_sample_size` | 1 ms / 0.12 GiB | `power_basis="asymptotic"`; at 5e6 the power for lift 1% is 0.951 and the MDE 0.77%, at 5e7 the power for lift 0.3% is 0.930 and the MDE 0.24% |
+| 50%, 1e5 and 1.9e5 | `minimum_detectable_effect`, `achieved_power` | 1 ms / 0.12 GiB | asymptotic, answered where the replay refuses |
+| 100 events per arm at 1e5, 1e6, 5e6, 5e7 | `achieved_power`, lift 50% | 0.19 to 0.21 s / 0.23 to 0.25 GiB | the sparse replay, unchanged (`approximate`) |
+
+Earlier measurements of the replay at other sizes (an Apple M3 Pro at `45829f1`, `2da355f`),
+which an explicit `finite_sample` plan still takes and which were not repeated at this commit.
+The cells marked † were re-measured at `45829f1`, after a companion effect search became a solve
+of its own (it no longer inherits the supplied effect's cells, so an unresolved companion costs
+what a refused `minimum_detectable_effect` does); the others are from `2da355f`:
+
+| Baseline, units per arm | Call | CPU / peak | Outcome |
+|---|---|---:|---|
 | 5%, 250,000 | `achieved_power`, lift 3% | 16.5 s / 1.6 GiB | 2.4M null cells, companion effect available |
 | 5%, 500,000 † | `achieved_power`, lift 2% | 35.3 s / 1.8 GiB | 4.8M null cells, companion effect available |
 | 5%, 500,000 † | `minimum_detectable_effect` | 35.7 s / 1.9 GiB | answered |
-| 5%, 1,000,000 † | `achieved_power`, lift 1.5% | 119 s / 1.8 GiB | 9.7M null cells; companion effect `numerical_resolution` |
 | 5%, 1,000,000 † | `minimum_detectable_effect` | refused after 61.0 s / 1.8 GiB | needs 19.7M cells |
 | 5%, lift 1.75% | `required_sample_size` | 277 s / 1.7 GiB | 993,064 per arm; companion effect `numerical_resolution` (not re-measured) |
 | 50%, 100,000 | `minimum_detectable_effect` | refused after 57.5 s / 1.3 GiB | needs 10.6M cells (5.1M null) |
 | 50%, 190,000 † | `achieved_power`, lift 3% | 201 s / 1.7 GiB | 9.7M null cells; companion effect `numerical_resolution` |
 | 50%, 190,000 † | `minimum_detectable_effect` | refused after 210 s / 1.1 GiB | needs 10.8M cells |
 | 1e-4 at 1e6, 1e-6 at 1e8, 1e-7 at 1e9 (100 events) | `achieved_power`, lift 50% | 0.85 s / 0.2 GiB | 20,164 null cells, answered |
-| 5%, 5,000,000 | `achieved_power`, lift 1% | refused after 0.7 s / 0.1 GiB | 48.3M null cells |
 
-Not measured: `required_sample_size` at a 50% baseline or beyond a million units per arm,
-and the 5% sizing row since a companion effect became its own solve (its time can only have
-grown). Planning a design above the bound has no exact route: the replay is the only
-construction that reproduces the runtime's decision. Before the bound existed a call took
-574 s and 3.4 GiB at 4,000,000 per arm (39 million cells).
+Not measured: `required_sample_size` at a 50% baseline or beyond a million units per arm under
+`finite_sample`. Planning a design above the bound has no replay: under `auto` a dense one is
+planned in closed form, an explicit `finite_sample` one is refused. Before the bound existed a
+call took 574 s and 3.4 GiB at 4,000,000 per arm (39 million cells).
 
 Bounded-metric baselines and implied null/alternative rates must stay strictly
 positive and at most 1. A requested rate above 1 is refused rather than treated

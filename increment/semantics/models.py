@@ -26,8 +26,18 @@ from pydantic import (
     model_validator,
 )
 
+from increment._finite_sample_refusals import (
+    refuse_finite_sample_cuped,
+    refuse_finite_sample_metric_type,
+)
 from increment._immutable import _FrozenMapping
-from increment._literals import ALTERNATIVE_VALUES, Alternative, Correction, PreferredDirection
+from increment._literals import (
+    ALTERNATIVE_VALUES,
+    Alternative,
+    ConversionInference,
+    Correction,
+    PreferredDirection,
+)
 from increment.errors import CodedModel, CodedValidationMixin, DefinitionError, RefusalSpec
 from increment.semantics.design import (
     ExclusionRestriction,
@@ -1732,10 +1742,17 @@ def _validate_day_boundary(v: str) -> str:
 class MethodSpec(_Base):
     """Serializable estimation-method declaration - the YAML-safe subset
     of ``increment.estimation.engine.Method`` (learners/folds are
-    call-time-only, never declared here)."""
+    call-time-only, never declared here).
+
+    ``conversion_inference`` mirrors ``Method.conversion_inference``:
+    ``"auto"`` (the default) routes an unadjusted conversion or retention
+    contrast by its counts, and ``"finite_sample"`` always uses the
+    finite-sample binomial route. It is refused with CUPED and, on a
+    metric that is not a conversion or retention rate, at definition load."""
 
     name: str
     variance_reduction: Literal["none", "cuped"] = "none"
+    conversion_inference: ConversionInference = "auto"
 
     @model_validator(mode="after")
     def _no_mislabel(self) -> "MethodSpec":
@@ -1745,6 +1762,8 @@ class MethodSpec(_Base):
                 "MethodSpec(name='cuped') without variance_reduction='cuped' "
                 "would label an unadjusted estimate as CUPED-adjusted",
             )
+        if self.conversion_inference == "finite_sample" and self.variance_reduction == "cuped":
+            refuse_finite_sample_cuped(self.name)
         return self
 
 
@@ -1790,6 +1809,13 @@ class ExperimentMetric(_Base):
             () if self.decision_method is None else (self.decision_method,)
         ) + self.sensitivity_methods
         return any(method.variance_reduction == "cuped" for method in methods)
+
+    @property
+    def wants_finite_sample(self) -> bool:
+        methods = (
+            () if self.decision_method is None else (self.decision_method,)
+        ) + self.sensitivity_methods
+        return any(method.conversion_inference == "finite_sample" for method in methods)
 
 
 def _plan_entry_name(entry: "PlanEntry") -> str:
@@ -2615,6 +2641,7 @@ class Definitions(CodedModel, _Base):
         self._validate_exposures(index, errors)
         self._validate_experiments(index, errors)
         self._raise_errors(errors)
+        self._refuse_finite_sample_on_unsupported_metrics(index)
         return self
 
     def _index_sources_and_validate_names(self, errors: list[tuple[str, str]]) -> _DefinitionIndex:
@@ -2980,6 +3007,25 @@ class Definitions(CodedModel, _Base):
                 index,
                 errors,
             )
+
+    def _refuse_finite_sample_on_unsupported_metrics(self, index: _DefinitionIndex) -> None:
+        """Raise the shared finite-sample metric-type refusal for the first binding that
+        requests it on a metric that is not a conversion or retention rate.
+
+        Runs only once the definition is otherwise consistent: a metric the experiment
+        cannot serve at all (report-only, unknown, wrong entity) is the more fundamental
+        error and is reported with the rest of the aggregated definition errors, instead
+        of being masked by advice to switch to ``auto``.
+        """
+        for experiment in self.experiments:
+            for name, binding in experiment.bindings.items():
+                metric = index.metric_by_name.get(name)
+                if (
+                    binding.wants_finite_sample
+                    and metric is not None
+                    and metric.type not in ("conversion", "retention")
+                ):
+                    refuse_finite_sample_metric_type(metric.type, metric=name)
 
     @staticmethod
     def _validate_experiment_metric(

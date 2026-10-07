@@ -21,12 +21,16 @@ path = "increment.errors"
 depends_on = []
 
 [[modules]]
+path = "increment._finite_sample_refusals"
+depends_on = ["increment.errors"]
+
+[[modules]]
 path = "increment.compatibility"
 depends_on = ["increment.errors"]
 
 [[modules]]
 path = "increment.semantics"
-depends_on = ["increment._immutable", "increment._literals", "increment.winsor", "increment.errors", "increment._canonical"]
+depends_on = ["increment._finite_sample_refusals", "increment._immutable", "increment._literals", "increment.winsor", "increment.errors", "increment._canonical"]
 
 [[modules]]
 path = "increment._canonical"
@@ -152,7 +156,7 @@ depends_on = [
 
 [[modules]]
 path = "increment._metric_specs"
-depends_on = ["increment._literals", "increment.errors", "increment.estimation", "increment.semantics"]
+depends_on = ["increment._finite_sample_refusals", "increment._literals", "increment.errors", "increment.estimation", "increment.semantics"]
 
 # Shared source and decision types live in leaf modules, keeping the core
 # decision/plan/source/request/config dependency graph acyclic.
@@ -216,6 +220,7 @@ depends_on = []
 [[modules]]
 path = "increment.estimation"
 depends_on = [
+  "increment._finite_sample_refusals",
   "increment._literals",
   "increment._identity",
   "increment._moment_plan",
@@ -292,7 +297,7 @@ depends_on = [
 [[modules]]
 path = "increment.power.core"
 depends_on = [
-  "increment._literals", "increment.compatibility", "increment.decision", "increment.errors",
+  "increment._finite_sample_refusals", "increment._literals", "increment.compatibility", "increment.decision", "increment.errors",
   "increment.estimation", "increment.estimation.sequential", "increment.semantics",
   "increment.power._binomial", "increment.power._noncentral_t", "increment.power._search",
   "increment.power._validation", "increment.power.sequential",
@@ -329,7 +334,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.power._binomial"
-depends_on = ["increment._literals", "increment.estimation"]
+depends_on = ["increment._literals", "increment.errors", "increment.estimation"]
 
 [[modules]]
 path = "increment.power._validation"
@@ -525,6 +530,7 @@ expose = [
   "IncrementWarning",
   "InvalidRequestError",
   "RefusalSpec",
+  "PACKAGE_FRAMES",
   "RETIRED_CODES",
   "UnsupportedRequestError",
   "WarningSpec",

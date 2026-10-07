@@ -141,8 +141,11 @@ as its ITT row (both test the same null), but `discovery` itself is
 reported on the ITT row only -- LATE is a derived presentation, not a
 second hypothesis test.
 
-Unadjusted, independent-unit binary ITT keeps its exact binomial reference even
-when the source also carries uptake moments. This includes conversion breakouts
+Unadjusted, independent-unit binary ITT takes the same count-routed conversion route as
+an ordinary arm pair even when the source also carries uptake moments: dense counts
+the delta-method route (`reference_kind="t"`), sparse counts the exact binomial
+reference (`"binomial"`; `Method(name="unadjusted",
+conversion_inference="finite_sample")` selects it at every size). This includes conversion breakouts
 from `from_definitions`, `from_unit_day_artifact`, and `from_unit_panel`: zero
 control conversions can leave the point lift unavailable while retaining a
 confidence set. Summary and portable sources carry no breakout dimension.

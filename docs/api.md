@@ -53,8 +53,10 @@ change without notice.
 - A code that is retired keeps its entry in
   `increment.errors.RETIRED_CODES`, which maps it to its replacement code, a
   tuple of replacements when it split, or `None` when it was removed with no
-  replacement. Retiring a code is a contract change and is listed in the
-  release notes.
+  replacement. For example,
+  `estimation.binomial.arm_too_large_for_exact_enumeration` maps to
+  `estimation.binomial.finite_sample_arm_ceiling_exceeded`. Retiring a code is
+  a contract change and is listed in the release notes.
 - Consumers of results must preserve numeric nulls and the reason, guarantee
   and reference metadata that accompany a number. Dropping a null reason or
   reading a value without its reference label changes what the number claims.
@@ -69,18 +71,31 @@ writer:
 
 | Format | Written by | Read by `from_moments` |
 |---|---|---|
-| 7 | no longer written | yes (fixed horizon) |
-| 8 | fixed-horizon `export` | yes |
 | 9 | registered sequential `export` (one typed checkpoint envelope) | yes |
-| below 7 | no longer written | refused, `moments.format.unsupported_legacy` |
-| above 9 | not written by this release | refused, `moments.format.unsupported_future` |
+| 10 | fixed-horizon `export`, with integer `n` and nullable integer `successes` | yes |
+| below 9 | no longer written | refused, `moments.format.unsupported_legacy` |
+| above 10 | not written by this release | refused, `moments.format.unsupported_future` |
 
 A cube must use one format (`moments.format.mixed`) and repeat no
-`(metric, group_id)` row (`moments.rows.duplicate`). Format 8 files from a
-sequential analysis cannot resume the sequential process: they are refused with
-`sequential.continuation.legacy`. Re-export from the raw definitions with the
+`(metric, group_id)` row (`moments.rows.duplicate`). Every row stamped below 9,
+including each row of a sequential analysis written as format 8, is refused with
+`moments.format.unsupported_legacy` before any plan is read. Only a
+checkpoint envelope restamped below 9 reaches `sequential.continuation.legacy`:
+a checkpoint resumes only from the current format.
+Re-export from the raw definitions with the
 current release, or pin the release that wrote the file. Nothing is
 downgraded or filled in silently.
+
+Fixed-horizon formats 7 and 8 must be re-exported from their original data.
+Format 10 carries exact success counts for eligible unit-grain, declared
+conversion and retention outcomes. Cluster-aggregate rows and other outcomes
+carry `successes=null`. Every ordinary row requires integer `n >= 1` and,
+when present, integer `0 <= successes <= n`; import and export refuse invalid
+ranges with `moments.count_out_of_range`, including unselected imported rows.
+Exact counts travel as these integers; the floating centered moments are used only
+to check that a count agrees with them and are not a source from which to recover
+one. Preserve count columns as integers through storage and partition
+merges; do not cast them through floating point. Sequential format 9 is unchanged.
 
 **Unit-day artifacts.** Artifact context format 2 is the only supported
 context. It carries no fact, dimension or exposure SQL; source recipes are
@@ -502,6 +517,23 @@ for method assumptions, finalization, and the qualified asymptotic guarantee.
 
 ## Power planning
 
+Fixed-horizon binomial planning reports model-based point power. Enumerated
+rejection mass is published only when internal bounds establish absolute error
+at most `1e-6`; a materially unresolved probability refuses with
+`power.binomial_probability_unresolved`, rather than returning its lower bound.
+The dense closed-form route reports its model's point probability.
+`PowerResult` has no public numerical-bracket field or accuracy tuning knob.
+Binomial MDE searches the earliest detectable region to `1e-8` absolute plus
+`1e-8` relative tolerance on the relative-effect scale, not the first
+representable float, and reports power evaluated at the returned effect.
+A resolved supplied-effect result may have `mde_relative=None` and
+`mde_unavailable_reason="numerical_resolution"`; a standalone unresolved MDE
+refuses with `power.minimum_detectable_effect.numerical_resolution`.
+The planning identity is `hybrid_finite_plus_delta_v3`; persisted v1/v2
+binomial plans must be recomputed. See the
+[planning guide](guides/power-analysis.md#conversion-and-retention-planning-follows-the-runtimes-route)
+for route assumptions and comparison with statsmodels.
+
 Switchback users can obtain a fitted baseline with
 `source.planning_baseline(metric)` and pass it to the three `switchback_*`
 solvers. No manually supplied reference effect, covariance, or population
@@ -732,11 +764,14 @@ outcomes. `InvalidRequestError` codes and their `context`:
 `CodedModel` and every definition model in `increment.semantics.models`
 (which use `CodedValidationMixin`) surface coded validator refusals from direct
 construction and direct `model_validate`, `model_validate_json`, and
-`model_validate_strings` calls: a declaration refused by one of its own
-validators raises its `DefinitionError` with its code. Pydantic schema
-boundaries such as `TypeAdapter` and an ordinary `BaseModel` containing one of
-these models still raise `ValidationError`: Pydantic captures the refusal
-because `CodedError` intentionally remains compatible with `ValueError`.
+`model_validate_strings` calls. Definition-specific validators raise
+`DefinitionError`; shared finite-sample metric-type and CUPED refusals raise
+`InvalidRequestError` with the same `conversion_inference.finite_sample.*` code
+and structured context as frame, estimation and planning requests. Catch
+`CodedError` when handling both kinds by code. Pydantic schema boundaries such
+as `TypeAdapter` and an ordinary `BaseModel` containing one of these models
+still raise `ValidationError`: Pydantic captures the refusal because
+`CodedError` intentionally remains compatible with `ValueError`.
 Recover the coded refusal explicitly at those boundaries:
 
 Only `CodedModel` (including `Definitions`) also translates declared-field

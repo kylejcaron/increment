@@ -1,9 +1,11 @@
-"""Planning for the runtime's exact binomial risk-ratio decision.
+"""Planning for the runtime's finite-sample binomial risk-ratio decision.
 
-A binomial-eligible conversion or retention plan reports the probability that
-the unchanged runtime decision (``binomial_rr.p_plus``/``p_minus`` below the
-compiled tail allocation) rejects, integrated over the binomial count law at
-the analyzed integer counts.
+A binomial-eligible conversion or retention plan on ``conversion_inference="finite_sample"``
+reports the probability that the unchanged runtime decision (``binomial_rr.p_plus``/
+``p_minus`` below the compiled tail allocation) rejects, integrated over the binomial count
+law at the analyzed integer counts. Every plan here pins ``finite_sample``: the default
+``auto`` plans the delta-method route where the runtime takes it
+(``test_conversion_route_planning.py``).
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from increment.power import (
     Baseline,
     PowerDesign,
     PowerResult,
+    _binomial,
     achieved_power,
     minimum_detectable_effect,
     power_curve,
@@ -41,6 +44,7 @@ from increment.power._binomial import (
     ReplayBoundExceeded,
     window_cells,
 )
+from increment.power.core import planned_enclosure
 from tests.power._procedures import make_procedure
 
 
@@ -71,6 +75,11 @@ def _runtime_power(
 
 
 def _conversion(**overrides: Any) -> ArmPlanningProcedure:
+    """A randomized conversion plan pinned to ``finite_sample``; CUPED has no such decision."""
+    overrides.setdefault(
+        "conversion_inference",
+        "auto" if overrides.get("decision_method") == "cuped" else "finite_sample",
+    )
     return make_procedure(
         metric_type="conversion",
         identification="randomized",
@@ -171,7 +180,7 @@ class TestConversionExample:
     reported 0.8004; the runtime decision rejects with probability 0.7144."""
 
     _BASELINE = Baseline.from_proportion(0.1)
-    _PROCEDURE = ArmPlanningProcedure.standard("conversion")
+    _PROCEDURE = ArmPlanningProcedure.standard("conversion", conversion_inference="finite_sample")
 
     @pytest.mark.slow
     def test_achieved_power_is_the_runtime_rejection_probability(self):
@@ -199,7 +208,7 @@ def test_triggered_sizing_agrees_with_achieved_power_at_its_assigned_size():
     its assigned predecessor are judged at the analyzed counts
     ``achieved_power`` uses."""
     baseline = Baseline(mean=0.3, var=0.21, trigger_rate=0.35)
-    procedure = ArmPlanningProcedure.standard("conversion")
+    procedure = ArmPlanningProcedure.standard("conversion", conversion_inference="finite_sample")
     sized = required_sample_size(0.8, baseline, procedure)
     replay = achieved_power(sized.n_per_arm, 0.8, baseline, procedure)
     assert (replay.power, replay.power_basis) == (sized.power, sized.power_basis)
@@ -451,8 +460,10 @@ class TestAShiftedNullTheControlArmAloneRejects:
         key = self._key("less")
         floor = _binomial.structural_floor(key)
         assert floor is not None and not _binomial.window_decided(key, 0.5)
-        with pytest.raises(AssertionError):
+        # Every pair of the window is refused: the finite route is unavailable for all its mass.
+        with pytest.raises(_binomial.FiniteRouteUnavailable) as unavailable:
             _binomial.RejectionGeometry(key, "exact").evaluate(0.5, 1.0)
+        assert unavailable.value.mass > 0.999
 
         procedure = _conversion(alpha=self.ALPHA, alternative="less", null_lift=1.0)
         baseline = Baseline.from_proportion(0.5)
@@ -897,10 +908,8 @@ _FAR_END = _conversion(alternative="greater")
 
 
 class TestPlanningNumericalEnclosure:
-    """A computed power is not an exact probability: every pmf it reads is a SciPy value within
-    the runtime's error allowance and every dot product rounds. The planner encloses the
-    runtime's rejection probability, and bounds it across an interval of rates, against exact
-    rational arithmetic and the decimal oracle; a target inside the enclosure is not decided."""
+    """Internal bounds enclose rejection probability; admitted point estimates need not
+    equal either endpoint."""
 
     _CASES = [
         (15, 20, 1.0, 0.05, 0.025, "two-sided", 0.3, 0.55),
@@ -963,14 +972,18 @@ class TestPlanningNumericalEnclosure:
             assert Decimal(result.lower) <= retained <= Decimal(result.upper)
 
     def test_endpoint_target_uses_point_power_not_its_lower_bound(self):
+        """The endpoint power is 11/32; roundoff no longer forces a lower-bound target."""
         baseline = Baseline.from_proportion(0.5)
-        endpoint = achieved_power(6, 1.0, baseline, _FAR_END)
+        endpoint = planned_enclosure(6, 1.0, baseline, _FAR_END)
+        assert Fraction(endpoint.lower) <= Fraction(11, 32) <= Fraction(endpoint.upper)
+        assert endpoint.absolute_error <= _binomial.RESOLUTION
         target = min(11 / 32, endpoint.power)
         found = minimum_detectable_effect(6, baseline, _FAR_END, PowerDesign(power=target))
         assert found.mde_relative is not None
         assert found.mde_relative == pytest.approx(1.0, abs=2e-8)
         assert found.power >= target
-        assert found.power == achieved_power(6, found.mde_relative, baseline, _FAR_END).power
+        at_effect = achieved_power(6, found.mde_relative, baseline, _FAR_END)
+        assert found.power == at_effect.power
 
         with pytest.raises(InvalidRequestError) as above:
             minimum_detectable_effect(6, baseline, _FAR_END, PowerDesign(power=11 / 32 + 1e-9))
@@ -979,13 +992,10 @@ class TestPlanningNumericalEnclosure:
         below = minimum_detectable_effect(6, baseline, _FAR_END, PowerDesign(power=11 / 32 - 1e-9))
         assert below.power >= 11 / 32 - 1e-9
 
-    def test_large_arm_point_power_survives_numerically_unavailable_effect(self):
-        """Effect localization can be unresolved even when supplied point power is usable."""
-        eps = float(np.finfo(np.float64).eps)
+    @pytest.mark.slow
+    def test_large_arm_point_admission_does_not_require_a_certified_mde(self):
+        """Numerical PMF allowance is bounded internally rather than subtracted from power."""
         target = PowerDesign().power
-
-        def allowance(units: int) -> float:
-            return binomial_rr._ulp_allowance(units) * eps
 
         n, p_c = 1_000_000_000, 2e-7
         baseline, procedure = Baseline.from_proportion(p_c), _conversion()
@@ -994,7 +1004,7 @@ class TestPlanningNumericalEnclosure:
         except InvalidRequestError as raised:
             assert raised.code == "power.minimum_detectable_effect.numerical_resolution"
             supplied = achieved_power(n, 0.5, baseline, procedure)
-            assert supplied.power >= target
+            assert supplied.power == planned_enclosure(n, 0.5, baseline, procedure).power
             assert supplied.mde_unavailable_reason == "numerical_resolution"
         else:
             assert effect.mde_relative is not None and effect.power >= target
@@ -1002,9 +1012,99 @@ class TestPlanningNumericalEnclosure:
 
         sized = required_sample_size(0.5, baseline, procedure)
         units = sized.n_per_arm
-        assert units > 10**8 and sized.power >= target * (1.0 + 2.0 * allowance(units))
+        computed = planned_enclosure(units, 0.5, baseline, procedure)
+        assert units > 10**8 and sized.power == computed.power >= target
+        assert computed.absolute_error <= _binomial.RESOLUTION
         predecessor = achieved_power(units - 1, 0.5, baseline, procedure)
-        assert predecessor.power < target * (1.0 + 3.0 * allowance(units))
+        assert predecessor.power < target
+
+
+class TestPublishedPowerIsTheAdmittedPoint:
+    """Every public path reports computed rejection mass within its error allowance."""
+
+    @pytest.mark.parametrize(
+        ("n_t", "allocation", "p_c", "lift", "overrides"),
+        [
+            (15, 0.6, 0.3, 0.8, {}),
+            (12, 0.5, 0.25, 0.9, {"alternative": "greater", "null_lift": 0.2, "alpha": 0.01}),
+            (10, 0.4, 0.5, -0.6, {"alternative": "less", "null_lift": -0.2}),
+        ],
+    )
+    def test_achieved_power_matches_enumerated_runtime_probability(
+        self, n_t, allocation, p_c, lift, overrides
+    ):
+        procedure = _conversion(**overrides)
+        design = PowerDesign(allocation=allocation)
+        baseline = Baseline.from_proportion(p_c)
+        result = achieved_power(n_t, lift, baseline, procedure, design)
+        computed = planned_enclosure(n_t, lift, baseline, procedure, design)
+        runtime = _runtime_power(
+            result.n_total - result.n_per_arm, n_t, p_c, p_c * (1.0 + lift), procedure
+        )
+        assert result.power_basis == computed.basis == "exact"
+        assert computed.lower < computed.power
+        assert result.power == computed.power
+        assert abs(result.power - runtime) <= computed.absolute_error
+
+    def test_a_target_the_computed_mass_meets_is_met_at_its_size(self):
+        """The point estimate, not its lower bound, determines whether a size reaches target."""
+        baseline, procedure, lift, n = Baseline.from_proportion(0.3), _conversion(), 1.0, 26
+        computed = planned_enclosure(n, lift, baseline, procedure)
+        design = PowerDesign(power=computed.power)
+        assert computed.lower < design.power
+        at_size = achieved_power(n, lift, baseline, procedure, design)
+        sized = required_sample_size(lift, baseline, procedure, design)
+        assert sized.n_per_arm == n
+        assert at_size.power == design.power <= sized.power
+
+    def test_every_public_path_publishes_the_same_point(self):
+        baseline, procedure = Baseline.from_proportion(0.3), _conversion()
+        n, lifts, targets = 24, [1.0, 0.6], [0.9, 0.8]
+        curve = power_curve(
+            n_per_arm=n, relative_lift=lifts, baseline=baseline, procedure=procedure, max_workers=1
+        )
+        for point, lift in zip(curve, lifts, strict=True):
+            computed = planned_enclosure(n, lift, baseline, procedure)
+            direct = achieved_power(n, lift, baseline, procedure)
+            assert point.power == direct.power == computed.power
+
+        # Solved effects may be shared, but numerical answers must not depend on prior targets.
+        effects = power_curve(
+            n_per_arm=n, target_power=targets, baseline=baseline, procedure=procedure, max_workers=1
+        )
+        for point, target in zip(effects, targets, strict=True):
+            direct = minimum_detectable_effect(n, baseline, procedure, PowerDesign(power=target))
+            assert point.mde_relative is not None and point.mde_relative == direct.mde_relative
+            at_effect = planned_enclosure(n, point.mde_relative, baseline, procedure)
+            assert point.power == direct.power == at_effect.power >= target
+            assert point.power_basis == direct.power_basis == at_effect.basis
+
+    def test_an_unattainable_target_names_the_endpoint_point_power(self):
+        """The maximum named is the model's computed rejection mass."""
+        with pytest.raises(InvalidRequestError) as refused:
+            minimum_detectable_effect(
+                6, Baseline.from_proportion(0.5), _FAR_END, PowerDesign(power=11 / 32 + 1e-9)
+            )
+        assert refused.value.code == "power.minimum_detectable_effect.unattainable"
+        context: dict[str, Any] = dict(refused.value.context)
+        assert context["maximum_power"] == pytest.approx(11 / 32, abs=1e-12)
+
+    @pytest.mark.parametrize("alternative", ["greater", "less"])
+    def test_shifted_null_and_compliance_report_power_at_the_returned_effect(self, alternative):
+        baseline = Baseline(mean=0.3, var=0.21, compliance=0.8)
+        procedure = _conversion(alternative=alternative, null_lift=0.1)
+        design = PowerDesign(power=0.5)
+        found = minimum_detectable_effect(60, baseline, procedure, design)
+        assert found.mde_relative is not None
+        implied = (
+            math.expm1(math.log1p(0.1) + math.log1p(found.mde_relative * baseline.compliance))
+            / baseline.compliance
+        )
+        evaluated = achieved_power(60, implied, baseline, procedure, design)
+        assert found.power >= design.power
+        assert found.power == pytest.approx(evaluated.power, abs=1e-12)
+        assert found.power_basis == evaluated.power_basis
+        assert found.mde_relative > 0 if alternative == "greater" else found.mde_relative < 0
 
 
 _LATTICE_ARM, _LATTICE_RATE = 300, 0.05
@@ -1087,17 +1187,16 @@ def _lattice_effect(target: float) -> PowerResult:
 
 
 class TestEarliestDetectableRegionOnANonMonotoneLattice:
-    """Find the earliest detectable region to numerical effect tolerance.
-
-    An independent binomial-law scan and root solve locate the reference crossings.
-    Earlier unresolved intervals cannot be skipped for later detectable bands.
-    """
+    """Interval exclusion must find the earliest band, within numerical effect tolerance,
+    without assuming that point power or its selected cells vary monotonically."""
 
     def test_a_target_at_the_null_point_is_a_zero_effect_not_numerically_unresolved(self):
         baseline = Baseline.from_proportion(0.9)
         procedure = _conversion(null_lift=-0.25)
         allocation = 0.35
-        at_null = achieved_power(10, -0.25, baseline, procedure, PowerDesign(allocation=allocation))
+        at_null = planned_enclosure(
+            10, -0.25, baseline, procedure, PowerDesign(allocation=allocation)
+        )
         at_top = achieved_power(10, 0.11, baseline, procedure, PowerDesign(allocation=allocation))
         assert at_top.power < at_null.power / 2
 
@@ -1141,7 +1240,8 @@ class TestEarliestDetectableRegionOnANonMonotoneLattice:
     def test_the_first_of_two_bands_is_found_across_the_trough_between_them(
         self, monkeypatch, target, band
     ):
-        """The first band reaches 0.33 but not 0.40; the second reaches both."""
+        """The first band reaches 0.33 but not 0.40; the second reaches both.
+        The answer must not jump across the first band just because later power is higher."""
         rows = _lattice_rows(0.10, 0.25, 0.20, 0.45)
         rules = [
             (*rows[0], "minus", 19),
@@ -1150,7 +1250,6 @@ class TestEarliestDetectableRegionOnANonMonotoneLattice:
             (*rows[3], "plus", 180),
         ]
         _decide_by_rows(monkeypatch, rules)
-        target = _lattice_power(_LATTICE_RATE, rules) if target is None else target
         expected = _lattice_crossing(rules, target)
         assert (expected < 2.0) == (band == "first")
 
@@ -1159,10 +1258,9 @@ class TestEarliestDetectableRegionOnANonMonotoneLattice:
         assert found.mde_relative == pytest.approx(expected, rel=1e-8, abs=1e-8)
         assert found.power >= target
 
-    def test_a_target_at_the_peak_of_a_band_is_neither_answered_nor_called_unattainable(
-        self, monkeypatch
-    ):
-        """At a flat peak, report an evaluated passing point or explicit numerical uncertainty."""
+    def test_a_peak_target_is_found_near_its_peak_or_explicitly_unresolved(self, monkeypatch):
+        """A tangent target has no transverse crossing. It may be met by an admitted
+        evaluated point or explicitly refused, but never silently moved to a later band."""
         rows = _lattice_rows(0.10, 0.25, 0.20, 0.45)
         rules = [(*rows[0], "minus", 19), (*rows[1], "plus", 30), (*rows[2], "minus", 36)]
         _decide_by_rows(monkeypatch, rules)
@@ -1199,11 +1297,14 @@ class TestEarliestDetectableRegionOnANonMonotoneLattice:
         )
         assert reached.mde_relative < peak_effect
 
-    def test_closure_bounds_a_rejection_set_with_holes(self, monkeypatch):
-        """A monotone closure also bounds a rejection set with holes."""
+    def test_closure_encloses_runtime_and_gapped_rejection_probabilities(self, monkeypatch):
+        """A tail closure includes a band's non-rejecting gaps; it remains an upper bound."""
         from increment.power import _binomial
 
         decision = BinomialDecision(40, 40, 1.0, binomial_rr.nuisance_beta(0.05), 0.025, "greater")
+        runtime = RejectionGeometry(decision, "exact")
+        evaluated = runtime.evaluate(0.2, 0.4)
+        assert runtime.closure_bound(0.2, 0.4, 0.4) >= evaluated.lower
 
         band = np.arange(14, 19)
         monkeypatch.setattr(
@@ -1220,7 +1321,7 @@ class TestEarliestDetectableRegionOnANonMonotoneLattice:
         gapped.evaluate(0.2, 0.4)
         bound = gapped.closure_bound(0.2, 0.4, 0.4)
         exact = float(binom.pmf(band, 40, 0.4).sum())
-        assert bound >= exact
+        assert bound > exact + 0.1
 
 
 @pytest.mark.parametrize(
@@ -1306,10 +1407,24 @@ class TestApproximateRoute:
         assert runtime == [False, True, True, True]
         assert plus[0].tolist() == [False, False, True, True]
 
-    def test_plans_beyond_the_cell_budget_are_approximate(self):
-        result = achieved_power(2_600, 0.1, Baseline.from_proportion(0.1), _conversion())
-        assert result.power_basis == "approximate"
-        assert 0.0 < result.power < 1.0
+    def test_a_plan_beyond_the_replay_budget_leaves_its_lightest_pairs_ambiguous(self, monkeypatch):
+        """Budgeted mass remains diagnostic when the remaining probability is material."""
+        n, p_c, p_t = 300, 0.1, 0.2
+        procedure = _conversion()
+        beta = binomial_rr.nuisance_beta(procedure.compiled_alpha)
+        decision = BinomialDecision(n, n, 1.0, beta, procedure.compiled_tail_alpha, "two-sided")
+        plus, minus = RejectionGeometry(decision, "exact").cells(0, n, 0, n)
+        weights = np.outer(binom.pmf(np.arange(n + 1), n, p_c), binom.pmf(np.arange(n + 1), n, p_t))
+        exact = float(weights[plus | minus].sum())
+
+        monkeypatch.setattr(_binomial, "EVALUATION_REPLAY_BUDGET", 2_000)
+        enclosure = planned_enclosure(n, p_t / p_c - 1.0, Baseline.from_proportion(p_c), procedure)
+        assert enclosure.basis == "approximate"
+        assert enclosure.ambiguous > _binomial.RESOLUTION
+        assert enclosure.lower <= enclosure.power <= exact + 1e-12
+        assert enclosure.lower <= exact <= enclosure.upper
+        # What the budget keeps is the heaviest part, so little mass is left out.
+        assert enclosure.ambiguous < 0.05
 
     @pytest.mark.parametrize(
         ("n_c", "n_t", "p", "ratio", "alternative"),

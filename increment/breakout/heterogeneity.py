@@ -117,8 +117,12 @@ _REFUSALS = refusals(
                 f"dof={dof!r}, inference={inference!r}, "
                 f"reference_kind={reference_kind!r}, reference_df={reference_df!r}; "
                 + (
-                    "an exact-binomial confidence set does not encode the Normal "
-                    "variance this contrast requires. Re-run run_breakout with a "
+                    "a finite-sample confidence set does not encode the Normal "
+                    "variance this contrast requires. A segment whose success and "
+                    "failure counts are all dense takes the delta-method route under the "
+                    "default conversion_inference='auto' and can be contrasted; this one "
+                    "took the finite-sample route (sparse counts, or "
+                    "conversion_inference='finite_sample'). Re-run run_breakout with a "
                     "fixed-horizon Normal-reference method (for example, CUPED with "
                     "valid covariate moments) before calling segment_contrast."
                     if reference_kind == "binomial"
@@ -376,7 +380,7 @@ def segment_contrast(
         )
 
     for row in (row_a, row_b):
-        # Exact-binomial and sequential widths do not provide Normal variance or
+        # Finite-sample and sequential widths do not provide Normal variance or
         # a critical-value-times-SE representation, so they cannot enter a Wald
         # contrast. A t reference can enter when its cut moments were persisted;
         # otherwise no working-scale variance is available.

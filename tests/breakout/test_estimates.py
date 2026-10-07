@@ -29,6 +29,7 @@ from increment.breakout.estimates import (
 from increment.errors import CapabilityError, IncrementWarning, InvalidRequestError
 from increment.estimation.armstats import centered_row_from_raw_sums
 from increment.estimation.binomial_rr import FINITE_SAMPLE_MAX_ARM_SIZE
+from increment.estimation.conversion_route import dense_min_count
 from increment.estimation.engine import Method, estimate_lift
 from increment.estimation.family import bh_select, e_bh_select
 from increment.estimation.inference import Normal
@@ -71,7 +72,8 @@ def _make_arm_row(
             "metric": metric,
             "group_id": group_id,
             "country": country,
-            "n": float(n),
+            "n": n,
+            "successes": None,
             "sum_y": sum_y,
             "sum_y2": sum_y2,
             "sum_x": sum_x,
@@ -134,9 +136,10 @@ def _conversion_arm_row(
             "metric": metric,
             "group_id": group_id,
             "country": country,
-            "n": float(n),
+            "n": n,
             "sum_y": float(successes),
             "sum_y2": float(successes),  # y in {0, 1}: y**2 == y
+            "successes": successes,
             "sum_x": 0.0 if with_covariate else None,
             "sum_x2": 0.0 if with_covariate else None,
             "sum_xy": 0.0 if with_covariate else None,
@@ -173,7 +176,7 @@ class TestPreferredDirectionReachesTheLiftEstimate:
         )
         # A moments cube needs its format stamp and the plan it was reduced under.
         stamp = {
-            "moments_format": 8,
+            "moments_format": 10,
             "winsor_lower_percentile": None,
             "winsor_upper_percentile": None,
             "winsor_lower_bound": None,
@@ -1084,6 +1087,91 @@ class TestRunBreakoutBHCorrection:
         assert len(real) == 3
         assert all(r.role == "exploratory" for r in real)
         assert all(r.discovery is not None for r in real)
+
+
+class TestRunBreakoutBHRoutesAtTheFamilysSmallestLevel:
+    """A flat BH family reads each cell's nominal p-value at a threshold as small as ``q / m``
+    (``m`` the family's hypothesis count), so a conversion cell is routed at that level: a cell
+    dense at the nominal level but not at ``q / m`` must take the finite-sample route."""
+
+    @staticmethod
+    def _segment_rows(country: str, smallest: int, *, metric: str = "conv") -> list[dict[str, Any]]:
+        """A 5% conversion contrast whose sparsest of the four counts is ``smallest``, the
+        treatment arm five conversions up."""
+        return [
+            _conversion_arm_row(
+                20 * smallest, successes, country=country, group_id=group, metric=metric
+            )
+            for group, successes in (("control", smallest), ("treatment", smallest + 5))
+        ]
+
+    @staticmethod
+    def _kinds(estimates: BreakoutEstimates, metric: str = "conv") -> dict[str, str | None]:
+        return {
+            row.dimension_value: row.reference_kind for row in estimates if row.metric == metric
+        }
+
+    @pytest.mark.parametrize(
+        ("alternative", "alpha", "q"), [("two-sided", 0.2, 0.2), ("greater", 0.1, 0.1)]
+    )
+    def test_a_member_of_a_two_cell_family_is_routed_at_q_over_two(self, alternative, alpha, q):
+        # Both nominal levels are a 0.1 tail; q / 2 is a 0.05 tail, whose threshold the "GB"
+        # cell clears and the "US" cell, dense at the nominal tail, does not.
+        nominal, family = dense_min_count(0.1), dense_min_count(0.05)
+        between = (nominal + family) // 2
+        assert nominal < between < family
+        estimates = run_breakout(
+            [*self._segment_rows("US", between), *self._segment_rows("GB", 2 * family)],
+            [_conversion_metric()],
+            control_group="control",
+            dimension="country",
+            alpha=alpha,
+            alternative=alternative,
+            correction="bh",
+            q=q,
+        )
+        assert self._kinds(estimates) == {"US": "binomial", "GB": "t"}
+
+    @pytest.mark.parametrize("correction", ["none", "bonferroni"])
+    def test_the_same_counts_without_a_bh_family_are_routed_at_their_own_level(self, correction):
+        nominal, family = dense_min_count(0.1), dense_min_count(0.05)
+        between = (nominal + family) // 2
+        estimates = run_breakout(
+            [*self._segment_rows("US", between), *self._segment_rows("GB", 2 * family)],
+            [_conversion_metric()],
+            control_group="control",
+            dimension="country",
+            alpha=0.2,
+            correction=correction,
+            q=0.2,
+        )
+        # Bonferroni divides alpha by the two segments: a 0.05 tail, the level it is routed at.
+        expected = "binomial" if correction == "bonferroni" else "t"
+        assert self._kinds(estimates) == {"US": expected, "GB": "t"}
+
+    def test_the_family_size_counts_only_the_cells_present(self):
+        """``other`` is carried by one segment only: the family is three cells, so its smallest
+        level is ``q / 3`` (the 0.05 tail here), not ``q / 4``."""
+        family, deeper = dense_min_count(0.05), dense_min_count(0.0375)
+        assert family < deeper
+        between_levels = (family + deeper) // 2
+        nominal = dense_min_count(0.1)
+        with pytest.warns(IncrementWarning) as rec:
+            estimates = run_breakout(
+                [
+                    *self._segment_rows("US", (nominal + family) // 2),
+                    *self._segment_rows("US", 4 * family, metric="other"),
+                    *self._segment_rows("GB", between_levels),
+                ],
+                [_conversion_metric(), _conversion_metric("other")],
+                control_group="control",
+                dimension="country",
+                alpha=0.2,
+                correction="bh",
+                q=0.3,
+            )
+        assert "breakout.estimates.no_row_for_group_metric" in warning_codes(rec)
+        assert self._kinds(estimates) == {"US": "binomial", "GB": "t"}
 
 
 # alternative= forwarding: one-sided per-segment testing.
@@ -2470,9 +2558,32 @@ class TestRunBreakoutBinomialGateExemption:
         assert row.reference_kind == "binomial"
         assert row.lift is not None
 
-    def test_exact_binomial_failure_is_not_labelled_a_lift_guard_exclusion(self):
-        """An arm above the exact method's size ceiling fails with a binomial
+    def test_finite_sample_failure_is_not_labelled_a_lift_guard_exclusion(self):
+        """An arm above the finite-sample method's size ceiling fails with a binomial
         code, not a lift guard, so its row must not claim an extreme ratio."""
+        big = FINITE_SAMPLE_MAX_ARM_SIZE + 1
+        rows = [
+            _conversion_arm_row(big, big // 10, country="GB", group_id="control"),
+            _conversion_arm_row(big, big // 9, country="GB", group_id="treatment"),
+            _conversion_arm_row(1000, 100, country="US", group_id="control"),
+            _conversion_arm_row(1000, 130, country="US", group_id="treatment"),
+        ]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = run_breakout(
+                rows,
+                [_conversion_metric()],
+                control_group="control",
+                dimension="country",
+                methods=[Method(name="unadjusted", conversion_inference="finite_sample")],
+            )
+        by_segment = {row.dimension_value: row for row in result}
+        assert by_segment["GB"].excluded == "estimation_failed"
+        assert by_segment["US"].excluded is None
+
+    def test_a_dense_segment_above_the_ceiling_is_estimated_by_default(self):
+        """Under ``auto`` a dense segment never reaches the finite-sample ceiling: it takes
+        the delta-method route beside a sparse segment on the finite-sample route."""
         big = FINITE_SAMPLE_MAX_ARM_SIZE + 1
         rows = [
             _conversion_arm_row(big, big // 10, country="GB", group_id="control"),
@@ -2486,8 +2597,10 @@ class TestRunBreakoutBinomialGateExemption:
                 rows, [_conversion_metric()], control_group="control", dimension="country"
             )
         by_segment = {row.dimension_value: row for row in result}
-        assert by_segment["GB"].excluded == "estimation_failed"
+        assert by_segment["GB"].excluded is None
+        assert by_segment["GB"].reference_kind == "t"
         assert by_segment["US"].excluded is None
+        assert by_segment["US"].reference_kind == "binomial"
 
     def test_one_arm_binomial_failure_beside_an_estimated_arm(self):
         """Only t2 exceeds the exact method's ceiling: t2 is an estimation
@@ -2602,6 +2715,7 @@ class TestRunBreakoutBinomialGateExemption:
                     "sum_d": count,
                     "sum_yd": count,
                     "sum_y2d": count,
+                    "successes": row["successes"],
                 }
             )
             for row, count in zip(bare, (0.0, 25.0), strict=True)

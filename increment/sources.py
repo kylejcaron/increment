@@ -283,9 +283,9 @@ _BREAKOUT_COMPLIANCE = _RefusalSpec(
 # Fixed-horizon wire-format version stamped on exported moments cubes; the column
 # survives parquet -> to_pylist round-trips. Registered sequential checkpoints
 # use the separate sequential format below.
-MOMENTS_FORMAT = 8
+MOMENTS_FORMAT = 10
 SEQUENTIAL_MOMENTS_FORMAT = 9
-_SUPPORTED_MOMENTS_FORMATS = frozenset({7, 8, 9})
+_SUPPORTED_MOMENTS_FORMATS = frozenset({MOMENTS_FORMAT, SEQUENTIAL_MOMENTS_FORMAT})
 
 ASSIGNMENT_COUNTS_FIELD = "assignment_counts"
 DECISION_PLAN_FIELD = "decision_plan"
@@ -321,7 +321,22 @@ _MOMENTS_DUPLICATE_KEY = _RefusalSpec(
 _MOMENTS_WINSORIZATION_FIELDS_MISSING = _RefusalSpec(
     "moments.v7_rows_missing_winsorization_fields",
     _WireFormatError,
-    template="moments_format 7 rows are missing canonical winsorization metadata fields: {missing}",
+    template="moments rows are missing canonical winsorization metadata fields: {missing}",
+)
+_MOMENTS_COUNT_FIELD_MISSING = _RefusalSpec(
+    "moments.count_field_missing",
+    _WireFormatError,
+    template="current moments rows require {field!r}; re-export from the original data",
+)
+_MOMENTS_COUNT_NOT_INTEGER = _RefusalSpec(
+    "moments.count_not_integer",
+    _WireFormatError,
+    template="moments field {field!r} must retain an integer, not {value!r}; re-export from the original data",
+)
+_MOMENTS_COUNT_OUT_OF_RANGE = _RefusalSpec(
+    "moments.count_out_of_range",
+    _WireFormatError,
+    template="moments field {field!r} has invalid count {value!r} for n={n}; require n >= 1 and 0 <= successes <= n when successes is present",
 )
 _READOUT_SOURCE_GRAIN = _RefusalSpec(
     "readout.source.grain",
@@ -496,7 +511,7 @@ def _strip_sequential_envelope(stripped: dict[str, object], *, version: int, n_r
         if version == SEQUENTIAL_MOMENTS_FORMAT:
             sequential_refuse(
                 "source.invalid",
-                "format 9 moments require exactly one typed sequential checkpoint envelope",
+                f"format {SEQUENTIAL_MOMENTS_FORMAT} moments require exactly one typed sequential checkpoint envelope",
             )
         return False
     if version != SEQUENTIAL_MOMENTS_FORMAT or not isinstance(checkpoint, str):
@@ -534,7 +549,7 @@ def _validate_moments_plan_format_pair(version: int, plans: set[str]) -> None:
         if version == SEQUENTIAL_MOMENTS_FORMAT and kind == "fixed":
             sequential_refuse(
                 "source.invalid",
-                "format 9 moments require a sequential checkpoint plan",
+                f"format {SEQUENTIAL_MOMENTS_FORMAT} moments require a sequential checkpoint plan",
             )
 
 
@@ -561,6 +576,23 @@ def _cube_compliance_state(rows: Sequence[Mapping[str, object]]) -> dict[str, ob
     return candidate
 
 
+def _validate_moment_counts(row: Mapping[str, object]) -> None:
+    """Count columns never pass through floating-point serialization."""
+    for field in ("n", "successes"):
+        if field not in row:
+            _refuse(_MOMENTS_COUNT_FIELD_MISSING, field=field)
+        value = row[field]
+        if field == "successes" and value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, Integral):
+            _refuse(_MOMENTS_COUNT_NOT_INTEGER, field=field, value=value)
+        minimum = 1 if field == "n" else 0
+        count = int(value)
+        n = cast("int", row["n"])
+        if count < minimum or (field == "successes" and count > n):
+            _refuse(_MOMENTS_COUNT_OUT_OF_RANGE, field=field, value=count, n=int(n))
+
+
 def _check_moments_format(
     rows: Sequence[Mapping[str, object]],
     *,
@@ -573,7 +605,7 @@ def _check_moments_format(
     dict[str, object] | None,
     str | None,
 ]:
-    """Strip the current or fixed-horizon legacy stamp and optional compiled-plan/count/compliance payloads."""
+    """Validate and strip current format, plan, count and compliance envelopes."""
     out: list[dict[str, object]] = []
     versions: set[int] = set()
     plans: set[str] = set()
@@ -645,6 +677,7 @@ def _check_moments_format(
     _validate_moment_experiment_identity(out)
     seen_keys: set[tuple[str, str]] = set()
     for row in out:
+        _validate_moment_counts(row)
         key = (str(row.get("metric")), str(row.get("group_id")))
         if key in seen_keys:
             _refuse(_MOMENTS_DUPLICATE_ROWS, key=key)
@@ -952,7 +985,10 @@ class MomentsSource(SequentialSourceMixin):
         if plan_payload is not None and (plan is None or envelope_identity is not None):
             from increment.decision_wire import compiled_plan_from_json
 
-            stored_plan = compiled_plan_from_json(plan_payload)
+            stored_plan = compiled_plan_from_json(
+                plan_payload,
+                metric_types={metric.name: metric.type for metric in metric_catalog},
+            )
         if plan is None and stored_plan is not None:
             compiled = stored_plan
             missing = [
@@ -1224,6 +1260,7 @@ def export_source_moments(
     for metric in context.metrics:
         for raw in source.moments(metric):
             row = dict(cast("Mapping[str, object]", raw))
+            _validate_moment_counts(row)
             row.update(
                 {
                     "moments_format": MOMENTS_FORMAT,
@@ -1239,6 +1276,9 @@ def export_source_moments(
     table = pa.Table.from_pylist(rows).replace_schema_metadata(
         {b"increment.moments_format": str(MOMENTS_FORMAT).encode()}
     )
+    if "successes" in table.column_names:
+        index = table.schema.get_field_index("successes")
+        table = table.set_column(index, "successes", table["successes"].cast(pa.int64()))
     pq.write_table(table, str(path))
 
 

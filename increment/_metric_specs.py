@@ -12,6 +12,7 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
+from increment._finite_sample_refusals import refuse_finite_sample_metric_type
 from increment._literals import PreferredDirection
 from increment.errors import (
     CodedModel,
@@ -262,6 +263,10 @@ class MetricSpec(CodedModel, BaseModel):
             _raise("frame.metric.cuped_supported_metrics", name=self.name, type=self.type)
         if wants_cuped and self.covariate is None:
             _raise("frame.metric.declares_cuped_method", name=self.name)
+        if self.type not in ("conversion", "retention") and any(
+            method.conversion_inference == "finite_sample" for method in methods
+        ):
+            refuse_finite_sample_metric_type(self.type, metric=self.name)
         return self
 
     @property

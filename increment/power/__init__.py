@@ -3,18 +3,24 @@
 The arm solvers invert the estimator's log-ratio variance with each arm
 evaluated at its own mean under the alternative. Mean-like planning assumes
 equal absolute effective arm variances; conversion and retention planning use
-the Bernoulli variance shape at the implied treatment rate -- except plans
-the runtime decides with the exact binomial risk-ratio test (unadjusted,
-unclustered, fixed horizon): with ``PowerResult.power_basis`` ``"exact"`` their
-power is that decision's rejection probability; with ``"approximate"`` it is the
-rejection probability of a Normal-conditional-tail model of the decision, whose
-numerical certificates are model-only and do not bound its departure from the
-runtime. Segment-pairwise planning deliberately retains its separate
-baseline-only approximation.
+the Bernoulli variance shape at the implied treatment rate. Where the runtime
+routes an unadjusted, unclustered, fixed-horizon conversion or retention
+contrast by its counts (``conversion_inference``), planning follows the route: the
+rejection probability of the runtime's union of the delta-method decision on dense counts
+and the finite-sample binomial risk-ratio decision on the rest, summed over the count lattice
+(``power_basis`` ``"exact"`` or ``"approximate"``), reported as computed rejection
+mass only when internal numerical bounds establish absolute error at most ``1e-6``.
+Materially unresolved probabilities are refused, not reported as lower bounds.
+Where counts are dense with near certainty and the lattice is too large to
+enumerate, ``"asymptotic"`` reports the closed-form model's own point probability.
+Segment-pairwise planning deliberately retains its separate baseline-only
+approximation.
 
 A valid supplied-effect result can have no admissible or numerically resolved
 companion MDE. In that case ``mde_relative`` is ``None`` and
 ``mde_unavailable_reason`` records why.
+Binomial MDE uses a numerical effect tolerance, not a first-representable-float
+guarantee, and reports point power evaluated at the returned effect.
 
 Sequential planning is declared through ``ArmPlanningProcedure.standard(
 inference=InferenceSpec(kind="asymptotic_mean"))``, the runtime's own
