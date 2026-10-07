@@ -147,7 +147,6 @@ if TYPE_CHECKING:
     from increment.sources import Grain, MomentSource
 
 
-
 class DefinitionsMomentSource(SequentialSourceMixin):
     """MomentSource over the definitions/ibis pipeline - the warehouse
     sibling of SqlPanelSource, FrameTotalsSource, FramePanelSource,
