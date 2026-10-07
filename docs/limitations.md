@@ -24,7 +24,9 @@ moments exported from any of the others).
 
 The warehouse is the primary route. The table records measured behavior on
 every path, using the dataframe unit-summary path as the oracle against which
-the others are checked.
+the other matched-arm paths are checked. The switchback panel estimates a
+different quantity (a fixed-horizon contrast over a switchback schedule), so it is
+exercised on its own and never compared row for row with that oracle.
 
 Reproduce this table with `uv run --extra demo --extra tables --extra dashboard python scripts/probe_capability_table.py`.
 

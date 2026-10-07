@@ -2,13 +2,15 @@
 emitted rows, point estimates, interval bounds, retained sequential state,
 and every multiplicity-bearing field a role-based plan produces.
 
-Row identity is (metric, arm, estimand, value_scale, segment,
-analysis_population) -- `analysis_population` is part of IDENTITY, not
+Row identity is (metric, arm, estimand, value_scale, segment, analysis_population, ds,
+ds_basis) -- `analysis_population` is part of IDENTITY, not
 payload, because an assigned-population row and a triggered-population row
 for the same metric/arm are two DIFFERENT rows that must never collide
 under one key (a probe of a triggered case confirmed a collision without
 it: the triggered row silently overwrote the assigned row in `_normalize`'s
 dict, and the harness could not have caught a triggered-only regression).
+`ds`/`ds_basis` name a day-axis row's day. A second row under one identity and method is
+a defect (a join fan-out), refused by `_normalize` rather than overwritten.
 `method` moved out of identity into payload: a decision-method estimate
 and its sensitivity-method sibling for the SAME (metric, arm, estimand)
 are compared as two entries under the same identity's `by_method` mapping,
@@ -16,17 +18,21 @@ so a path that silently drops the sensitivity row is still caught by
 dict-key comparison, not lost inside a tuple identity a caller has to know
 to split on.
 
-The compared payload is the full additive-and-relative surface: value, lb,
-ub, level, role, discovery, family_q, family_threshold, family_guarantee,
-family_nominal_alpha, family_axes, alternative, reference_kind, note,
-inference, null_lift, null_abs, abs_diff, abs_se, abs_lb, abs_ub, abs_alpha,
-abs_reference_kind, abs_reference_df, reference_df, dof, quantile_p_value,
-relative_unavailable_reason, relative_confidence_set (structurally, via
-`model_dump()`), BreakoutEstimate's own `excluded`, and a sequential row's
-own evidence (`sequential_result.log_e`/`decision_alpha` and its
-checkpoint's `status`) -- every one of these plus emitted row sets, values,
-bounds, failure/refusal codes, and retained sequential state, matching the
-parity contract this harness exists to enforce.
+The compared payload is every public field of the emitted row (its `model_dump()`), so a
+field added to a result model is compared without a harness edit: the interval and its
+`alpha`/`log_mean`/`log_se`, winsorization thresholds, counts and `confidence_set`,
+`n_clusters`, the Fieller and binomial sets, null reasons (`unavailable`,
+`relative_unavailable_reason`, `excluded`), family and policy metadata, and a sequential
+row's own evidence (the whole `sequential_result`: `alpha_ceiling`, `decision_alpha`,
+`point_reason`, the certificate, the bounds and the checkpoint's model, cell, arm states and
+`status`, plus its derived `log_e`). Floats agree within `TOLERANCE` relative with the same
+absolute floor; all other values (including exact rationals) agree exactly. Only what names
+the path rather than the result is dropped (`_PATH_SPECIFIC`): the resolved fact `source`
+(known to warehouse routes only), the three identifiers a sequential checkpoint derives from
+its registration (`registration_id`, `filtration_id`, `prefix_id`; they hash the path's
+observation mapping, see below) and, inside a winsor confidence set's raw pool, `study_id`
+(the source's identity) and `missingness` (a frame names its declared policy, a warehouse its
+inclusion rule); the pool's outcome multisets, quantile, support and inference are compared.
 Failure/refusal codes are covered by strict
 row-SET equality (a per-cell failure that silently drops a row on one path
 but not another IS a row-set mismatch) plus `waived_refusal_codes`'
@@ -71,87 +77,41 @@ Every one of the six constructor names in `CONSTRUCTORS` must appear in
 
 from __future__ import annotations
 
+import inspect
 import warnings
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
+from increment import Analysis
 from increment._analysis_config import UNSET
 from increment.errors import CodedError, IncrementWarning
 from tests.warning_codes import warning_codes
 
-from .cases import CONSTRUCTORS, ParityCase, _close_parity_analysis
+from .cases import CONSTRUCTORS, Absence, ParityCase, _close_parity_analysis
 from .comparison import nested_close
 
-_NUMERIC_FIELDS = (
-    "value",
-    "lb",
-    "ub",
-    "level",
-    "abs_diff",
-    "abs_se",
-    "abs_lb",
-    "abs_ub",
-    "abs_alpha",
-    "abs_reference_df",
-    "reference_df",
-    "dof",
-    "quantile_p_value",
-    "null_lift",
-    "null_abs",
-    "posterior_prob_favorable",
-    # `family_nominal_alpha` is the family's own nominal significance level
-    # (the other arm of `fcr_alpha = min(family_threshold, family_nominal_alpha)`,
-    # `increment/estimation/results.py`) -- as float-valued and as
-    # parity-relevant as `family_threshold`/`family_q` beside it.
-    "family_nominal_alpha",
-    # `sequential_result.log_e`/`decision_alpha` carry the e-BH/e-process
-    # evidence and its reinverted allocation -- a path that landed on the
-    # same bounds from different evidence, or reinverted at a different
-    # alpha, would otherwise pass unnoticed.
-    "sequential_log_e",
-    "sequential_decision_alpha",
-)
-_EXACT_FIELDS = (
-    "role",
-    "method_role",
-    "discovery",
-    "family_q",
-    "family_threshold",
-    "alternative",
-    "reference_kind",
-    "note",
-    "family_guarantee",
-    "inference",
-    "abs_reference_kind",
-    "relative_unavailable_reason",
-    "prior_shrunk",
-    "prior_spec",
-    # `BreakoutEstimate`-only; `getattr(..., None)` on a `LiftEstimate` row
-    # is a correct absence, not a skipped comparison -- same rule as
-    # `_row_identity`'s `analysis_population`.
-    "excluded",
-    # The axes a family correction ran over (e.g. `("metric", "arm")` vs
-    # `("metric", "arm", "segment")`) -- a path mislabeling which axes it
-    # corrected over would otherwise pass with equal bounds.
-    "family_axes",
-    # The retained checkpoint's freeze state ("current"/"frozen"/"missing")
-    # behind `sequential_result` -- the freeze the numeric e-value fields
-    # above don't carry.
-    "sequential_checkpoint_status",
-)
-# `relative_confidence_set` nests an `Estimate`-bearing model: compared via
-# `model_dump()` with the same numeric tolerance as every other bound,
-# because two paths reaching the same Fieller set can differ in the last
-# ULP of a bound the way `lift.value`/`lb`/`ub` already do.
-_NESTED_FIELDS = ("relative_confidence_set",)
+# Dropped from the compared payload because they name the path, not the result (see the
+# module docstring): the fact `source`, the identifiers a sequential row's checkpoint derives
+# from its registration (`registration_id`, `filtration_id` and `prefix_id` hash the
+# path's observation mapping), and the path labels of a winsor confidence set's raw pool.
+_POOL_LABELS = {"raw": {"study_id": True, "missingness": True}}
+_PATH_SPECIFIC: dict[str, Any] = {
+    "source": True,
+    "sequential_result": {
+        "checkpoint": {"registration_id": True, "filtration_id": True, "prefix_id": True}
+    },
+    "confidence_set": {**_POOL_LABELS, "reference": _POOL_LABELS},
+}
 
 
 def _row_identity(row: Any) -> tuple:
     # `BreakoutEstimate` has no `analysis_population`; getattr yields None for
-    # every breakout row, so breakout rows still compare consistently.
+    # every breakout row, so breakout rows still compare consistently. `ds` and
+    # `ds_basis` name a day-axis row's day; they are None on every other row.
     return (
         row.metric,
         row.group_id,
@@ -159,90 +119,76 @@ def _row_identity(row: Any) -> tuple:
         row.value_scale,
         getattr(row, "dimension_value", None),
         getattr(row, "analysis_population", None),
+        getattr(row, "ds", None),
+        getattr(row, "ds_basis", None),
     )
 
 
 def _row_payload(row: Any) -> dict[str, Any]:
-    lift = row.lift
-    relative_confidence_set = getattr(row, "relative_confidence_set", None)
-    # `sequential_result` (log_e, decision_alpha, checkpoint.status) is
-    # None on a non-sequential row -- both sides then compare as None,
-    # the same absence rule `_row_identity`'s `analysis_population` uses.
-    sequential_result = getattr(row, "sequential_result", None)
+    """Every public field of the row, plus the derived values the dump does not carry."""
+    payload = row.model_dump(mode="python", exclude=_PATH_SPECIFIC)
     prior_shrunk = getattr(row, "prior_shrunk", False)
-    prior_spec = getattr(row, "prior_spec", None)
-    return {
-        "value": lift.value if lift is not None else None,
-        "lb": lift.lb if lift is not None else None,
-        "ub": lift.ub if lift is not None else None,
-        "level": lift.level if lift is not None else None,
-        # `role`/`discovery` are `LiftEstimate`-only; `BreakoutEstimate` rows
-        # compare as None here and carry family_q/family_threshold instead.
-        "role": getattr(row, "role", None),
-        "method_role": row.method_role,
-        "discovery": getattr(row, "discovery", None),
-        "family_q": row.family_q,
-        "family_threshold": row.family_threshold,
-        "alternative": row.alternative,
-        "reference_kind": row.reference_kind,
-        "note": row.note,
-        # `family_guarantee` lands in a follow-up; `getattr` keeps this
-        # harness runnable against a LiftEstimate that does not carry the
-        # field yet -- both sides compare as None until then, which is a
-        # correct absence, not a silently-skipped comparison.
-        "family_guarantee": getattr(row, "family_guarantee", None),
-        "family_nominal_alpha": row.family_nominal_alpha,
-        "inference": row.inference,
-        "null_lift": row.null_lift,
-        "null_abs": row.null_abs,
-        "prior_shrunk": prior_shrunk,
-        "prior_spec": prior_spec.model_dump(mode="json") if prior_spec is not None else None,
-        "posterior_prob_favorable": row.prob_favorable() if prior_shrunk else None,
-        "abs_diff": row.abs_diff,
-        "abs_se": row.abs_se,
-        "abs_lb": row.abs_lb,
-        "abs_ub": row.abs_ub,
-        "abs_alpha": row.abs_alpha,
-        "abs_reference_kind": row.abs_reference_kind,
-        "abs_reference_df": row.abs_reference_df,
-        "reference_df": row.reference_df,
-        "dof": row.dof,
-        # `quantile_p_value` is `LiftEstimate`-only; `BreakoutEstimate` has
-        # no such field at all -- same absence rule as above.
-        "quantile_p_value": getattr(row, "quantile_p_value", None),
-        "relative_unavailable_reason": row.relative_unavailable_reason,
-        "relative_confidence_set": (
-            relative_confidence_set.model_dump() if relative_confidence_set is not None else None
-        ),
-        # `BreakoutEstimate`-only; absent on `LiftEstimate` rows.
-        "excluded": getattr(row, "excluded", None),
-        "family_axes": row.family_axes,
-        "sequential_log_e": (
-            float(sequential_result.log_e) if sequential_result is not None else None
-        ),
-        "sequential_decision_alpha": (
-            float(sequential_result.decision_alpha) if sequential_result is not None else None
-        ),
-        "sequential_checkpoint_status": (
-            sequential_result.checkpoint.status if sequential_result is not None else None
-        ),
-    }
+    payload["posterior_prob_favorable"] = row.prob_favorable() if prior_shrunk else None
+    # `log_e` is a property of the result, not a dumped field. `sequential_result` is None on
+    # a non-sequential row: both sides then compare as None.
+    sequential_result = getattr(row, "sequential_result", None)
+    payload["sequential_log_e"] = (
+        float(sequential_result.log_e) if sequential_result is not None else None
+    )
+    return payload
+
+
+def _record(
+    out: dict[tuple, dict[str, dict[str, Any]]], key: tuple, method: str, payload: dict[str, Any]
+) -> None:
+    methods = out.setdefault(key, {})
+    if method in methods:
+        raise AssertionError(
+            f"a path emitted more than one row for {key}/{method}: a duplicate (for example a "
+            "join fan-out) must not compare equal to a single row"
+        )
+    methods[method] = payload
 
 
 def _normalize(estimates: Any) -> dict[tuple, dict[str, dict[str, Any]]]:
     """`{identity: {method: payload}}` -- `method` (decision vs. every
     sensitivity method) nests under identity rather than joining it, so a
     missing sensitivity row is a missing dict key, caught the same way a
-    missing top-level row is."""
+    missing top-level row is. A repeated identity and method raises."""
+    from increment.breakout.estimates import DailyMetricValue
     from increment.estimation.contrast_results import ContrastResult
 
     out: dict[tuple, dict[str, dict[str, Any]]] = {}
     for row in estimates:
         if isinstance(row, ContrastResult):
-            key = (row.metric, row.treatment_group, row.estimand, "absolute", None, None)
-            out.setdefault(key, {})[row.method] = {"contrast": row.model_dump(mode="json")}
+            key = (
+                row.metric,
+                row.treatment_group,
+                row.estimand,
+                "absolute",
+                None,
+                None,
+                None,
+                None,
+            )
+            _record(out, key, row.method, {"contrast": row.model_dump(mode="json")})
             continue
-        out.setdefault(_row_identity(row), {})[row.method] = _row_payload(row)
+        if isinstance(row, DailyMetricValue):
+            # A per-day absolute value has no method, estimand or lift; `source`
+            # names the resolved fact source, which only warehouse paths know.
+            key = (
+                row.metric,
+                row.group_id,
+                "value",
+                "absolute",
+                row.dimension_value,
+                None,
+                row.ds,
+                row.ds_basis,
+            )
+            _record(out, key, "value", {"daily_value": row.model_dump(exclude={"source"})})
+            continue
+        _record(out, _row_identity(row), row.method, _row_payload(row))
     return out
 
 
@@ -286,6 +232,63 @@ class CaseResult:
     rows: dict[str, dict[tuple, dict[str, dict[str, Any]]]]
     refusals: dict[str, str]
     sequential_state: dict[str, SequentialCapture] = field(default_factory=dict)
+    # Ingresses whose constructor signature or schema cannot express the request: name ->
+    # the `Absence` the attempt raised (a `TypeError` for an unsupported keyword). They
+    # have no refusal code and are never row-compared.
+    absences: dict[str, Absence] = field(default_factory=dict)
+
+
+def _read(analysis: Any, case: ParityCase) -> Any:
+    """Read the one method `case` names: `run`/`run_breakout`, or a single day-axis method
+    (`run_daily`, `run_daily_lift`, `run_asof`, `run_asof_lift`). A day-axis value series and
+    its lift are separate cases, so one refusing never hides the other's rows."""
+    estimand_kwargs = {"estimands": case.estimands} if case.estimands else {}
+    prior_kwargs = {"prior": case.prior} if case.prior is not UNSET else {}
+    metric_kwargs = {"metrics": list(case.metrics)} if case.metrics is not None else {}
+    if case.view is None:
+        if case.breakout_dimension:
+            return analysis.run_breakout(**estimand_kwargs, **prior_kwargs, **metric_kwargs)
+        return analysis.run(**estimand_kwargs, **prior_kwargs, **metric_kwargs)
+    dimension = {"dimension": case.breakout_dimension} if case.breakout_dimension else {}
+    match case.view:
+        case "daily":
+            return analysis.run_daily(**metric_kwargs, **dimension)
+        case "daily_lift":
+            return analysis.run_daily_lift(**prior_kwargs, **metric_kwargs, **dimension)
+        case "asof":
+            return analysis.run_asof(**metric_kwargs, **dimension)
+        case _:
+            return analysis.run_asof_lift(
+                **estimand_kwargs, **prior_kwargs, **metric_kwargs, **dimension
+            )
+
+
+def _assert_names_absent_field(case_id: str, name: str, exc: Exception, absent: Absence) -> None:
+    """The constructor failed because of the declared field, not for another reason.
+
+    A schema absence must carry a validation error that locates the field and rejects it as
+    an unknown input. A keyword absence must name a keyword the constructor's signature does
+    not accept. A case declaring several unsupported inputs is held only to the one it names,
+    so each is checked by the cell that declares it alone.
+    """
+    if isinstance(exc, ValidationError):
+        located = [
+            error
+            for error in exc.errors()
+            if absent.field in error["loc"] and error["type"] == "extra_forbidden"
+        ]
+        assert located, (
+            f"{case_id}: {name} raised a validation error, but none rejects {absent.field!r} "
+            f"as an unknown input: {[(e['loc'], e['type']) for e in exc.errors()]}"
+        )
+        return
+    parameters = inspect.signature(getattr(Analysis, name)).parameters.values()
+    assert not any(
+        p.name == absent.field or p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters
+    ), f"{case_id}: {name} accepts {absent.field!r}, so its absence is not structural"
+    assert absent.field in str(exc), (
+        f"{case_id}: {name} raised {type(exc).__name__} without naming {absent.field!r}: {exc}"
+    )
 
 
 def run_case(case: ParityCase) -> CaseResult:
@@ -309,14 +312,27 @@ def run_case(case: ParityCase) -> CaseResult:
     """
     rows: dict[str, dict[tuple, dict[str, dict[str, Any]]]] = {}
     refusals: dict[str, str] = {}
+    absences: dict[str, Absence] = {}
     sequential_state: dict[str, SequentialCapture] = {}
     for name, build in case.build.items():
         analysis = None
         try:
-            analysis = build()
-            estimand_kwargs = {"estimands": case.estimands} if case.estimands else {}
-            prior_kwargs = {"prior": case.prior} if case.prior is not UNSET else {}
-            metric_kwargs = {"metrics": list(case.metrics)} if case.metrics is not None else {}
+            try:
+                analysis = build()
+            except Exception as exc:
+                # Absence is the constructor refusing to express the request. An error of
+                # the same type raised later, once it accepted it, is a defect and propagates.
+                absent = case.expected_absence.get(name)
+                if absent is None:
+                    raise
+                if type(exc) is not absent.error:
+                    raise AssertionError(
+                        f"{case.id}: {name} was declared absent via {absent.error.__name__} "
+                        f"but raised {type(exc).__name__}: {exc}"
+                    ) from exc
+                _assert_names_absent_field(case.id, name, exc, absent)
+                absences[name] = absent
+                continue
             if case.sequential:
                 as_of = getattr(analysis, "_sequential_as_of", None)
                 snapshot_kwargs = {"as_of": as_of} if as_of is not None else {}
@@ -345,11 +361,7 @@ def run_case(case: ParityCase) -> CaseResult:
             with warning_context as caught:
                 if expected_warnings:
                     warnings.simplefilter("always", IncrementWarning)
-                results = (
-                    analysis.run_breakout(**estimand_kwargs, **prior_kwargs, **metric_kwargs)
-                    if case.breakout_dimension
-                    else analysis.run(**estimand_kwargs, **prior_kwargs, **metric_kwargs)
-                )
+                results = _read(analysis, case)
                 if case.readout_probe is not None:
                     case.readout_probe(results)
                 if case.source_probe is not None:
@@ -358,7 +370,9 @@ def run_case(case: ParityCase) -> CaseResult:
                 assert caught is not None
                 assert set(warning_codes(caught)) == set(expected_warnings)
             rows[name] = _normalize(results)
-        except CodedError as exc:
+        except Exception as exc:
+            if not isinstance(exc, CodedError):
+                raise
             expected = case.waived_refusal_codes.get(name)
             if expected is None:
                 raise AssertionError(
@@ -376,38 +390,22 @@ def run_case(case: ParityCase) -> CaseResult:
                 _close_parity_analysis(analysis)
     if case.sequential_probe is not None:
         case.sequential_probe()
-    return CaseResult(rows=rows, refusals=refusals, sequential_state=sequential_state)
+    return CaseResult(
+        rows=rows, refusals=refusals, sequential_state=sequential_state, absences=absences
+    )
 
 
 def _assert_payload_equal(
     case_id: str, name: str, oracle_name: str, key: tuple, method: str, expected: dict, actual: dict
 ) -> None:
-    if "contrast" in expected:
-        assert actual.keys() == expected.keys()
-        assert nested_close(expected["contrast"], actual["contrast"]), (
-            f"{case_id}: {name}/{oracle_name} disagree on contrast {key}/{method}"
-        )
-        return
-    for field_name in _NUMERIC_FIELDS:
-        e, a = expected[field_name], actual[field_name]
-        if e is None or a is None:
-            assert e is None and a is None, (
-                f"{case_id}: {name}/{oracle_name} disagree on availability of "
-                f"{field_name} for {key}/{method}: {a!r} vs {e!r}"
-            )
-            continue
+    assert actual.keys() == expected.keys(), (
+        f"{case_id}: {name} vs {oracle_name} compare different fields for {key}/{method}"
+    )
+    for field_name, e in expected.items():
+        a = actual[field_name]
         assert nested_close(e, a), (
-            f"{case_id}: {name} vs {oracle_name} disagree on {field_name} for {key}/{method}: {a} != {e}"
-        )
-    for field_name in _EXACT_FIELDS:
-        e, a = expected[field_name], actual[field_name]
-        assert e == a, (
-            f"{case_id}: {name} vs {oracle_name} disagree on {field_name} for {key}/{method}: {a!r} != {e!r}"
-        )
-    for field_name in _NESTED_FIELDS:
-        e, a = expected[field_name], actual[field_name]
-        assert nested_close(e, a), (
-            f"{case_id}: {name} vs {oracle_name} disagree on {field_name} for {key}/{method}: {a!r} != {e!r}"
+            f"{case_id}: {name} vs {oracle_name} disagree on {field_name} "
+            f"for {key}/{method}: {a!r} != {e!r}"
         )
 
 
@@ -429,12 +427,19 @@ def _assert_no_silent_skip(case: ParityCase) -> None:
                 f"{case.id}: {name} has a waived_refusal_codes entry but is not in "
                 "build -- a coded waiver requires actually attempting the constructor"
             )
+        elif name in case.expected_absence:
+            assert name in case.build, (
+                f"{case.id}: {name} has an expected_absence entry but is not in "
+                "build -- a declared absence requires actually attempting the constructor"
+            )
         else:
             assert name not in case.build, (
                 f"{case.id}: {name} is in build but only reason-waived (no "
                 "waived_refusal_codes entry) -- either attempt it for real "
                 "comparison or add the code it is expected to raise"
             )
+    for name in case.expected_absence:
+        assert name in case.waive, f"{case.id}: {name} is declared absent but has no waive reason"
 
 
 def assert_parity(case: ParityCase, result: CaseResult) -> None:
@@ -452,6 +457,24 @@ def assert_parity(case: ParityCase, result: CaseResult) -> None:
             f"{case.waived_refusal_codes[name]!r} but produced rows instead "
             "of refusing -- the waiver is stale, the capability now works"
         )
+    for name, absent in case.expected_absence.items():
+        assert result.absences.get(name) == absent, (
+            f"{case.id}: {name} was declared absent via {absent.error.__name__} on "
+            f"{absent.field!r} but the attempt did not raise it -- the signature now "
+            "expresses the request"
+        )
+    if case.refusal_only:
+        # Every attempted ingress must refuse or be absent: an unwaived constructor that
+        # produced rows would otherwise self-compare as `live` and pass.
+        assert case.build, f"{case.id}: refusal_only but no ingress was attempted"
+        assert not result.rows, (
+            f"{case.id}: refusal_only but {sorted(result.rows)} produced rows instead of refusing"
+        )
+        assert set(case.build) == set(result.refusals) | set(result.absences), (
+            f"{case.id}: every attempted ingress must refuse or be absent, but "
+            f"{sorted(set(case.build) - set(result.refusals) - set(result.absences))} did neither"
+        )
+        return
     live = {name: r for name, r in result.rows.items() if name not in case.waived_refusal_codes}
     if not live:
         pytest.fail(f"{case.id}: every constructor was waived -- nothing to compare")
