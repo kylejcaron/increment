@@ -170,6 +170,7 @@ def _binomial_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
             alpha=alpha_eff,
             level=level,
             geometry=interval.geometry,
+            method=bset.method,
             x_c=bset.x_c,
             n_c=bset.n_c,
             x_t=bset.x_t,
