@@ -342,21 +342,39 @@ def _fast_binom_pmf(k: np.ndarray, n: int, p: float | np.ndarray) -> np.ndarray:
     return np.where((k < 0) | (k > n), 0.0, out)
 
 
+def _read_only(array: np.ndarray) -> np.ndarray:
+    array.flags.writeable = False
+    return array
+
+
 @lru_cache(maxsize=32)
 def _control_pmf(n_c: int, q: float, i_lo: int, i_hi: int) -> np.ndarray:
-    return _fast_binom_pmf(np.arange(i_lo, i_hi + 1), n_c, q)
+    return _read_only(_fast_binom_pmf(np.arange(i_lo, i_hi + 1), n_c, q))
 
 
 @lru_cache(maxsize=32)
 def _plus_threshold(n_c: int, n_t: int, k: int, i_lo: int, i_hi: int) -> np.ndarray:
     i = np.arange(i_lo, i_hi + 1)
-    return np.ceil((k + n_t * i) / n_c).astype(np.int64) - 1
+    return _read_only(np.ceil((k + n_t * i) / n_c).astype(np.int64) - 1)
 
 
 @lru_cache(maxsize=32)
 def _minus_threshold(n_c: int, n_t: int, k: int, i_lo: int, i_hi: int) -> np.ndarray:
     i = np.arange(i_lo, i_hi + 1)
-    return np.floor((k + n_t * i) / n_c).astype(np.int64)
+    return _read_only(np.floor((k + n_t * i) / n_c).astype(np.int64))
+
+
+# A search asks for each treatment vector (a function of `p` alone; the control PMF carries `q`)
+# repeatedly: `eval_at(v)` and the corner bound of every interval ending at `v` share `p(v)`.
+# Caching returns the identical array a rebuild would, so the dot product and margins are
+# untouched. 64 entries capture every reuse in simulated LRU traces of the 100k/1M-per-arm searches.
+@lru_cache(maxsize=64)
+def _treatment_tail(
+    kind: Literal["plus", "minus"], n_c: int, n_t: int, k: int, i_lo: int, i_hi: int, p: float
+) -> np.ndarray:
+    if kind == "plus":
+        return _read_only(_fast_binom_sf(_plus_threshold(n_c, n_t, k, i_lo, i_hi), n_t, p))
+    return _read_only(_fast_binom_cdf(_minus_threshold(n_c, n_t, k, i_lo, i_hi), n_t, p))
 
 
 def _tail_plus(
@@ -368,8 +386,7 @@ def _tail_plus(
     """
     i_lo, i_hi, omitted = window
     pmf_i = _control_pmf(n_c, q, i_lo, i_hi)
-    thresh = _plus_threshold(n_c, n_t, k, i_lo, i_hi)
-    sf = _fast_binom_sf(thresh, n_t, p)
+    sf = _treatment_tail("plus", n_c, n_t, k, i_lo, i_hi, p)
     raw = float(np.dot(pmf_i, sf)) + omitted
     return min(1.0, raw + _eps_margin(i_hi - i_lo + 1))
 
@@ -380,8 +397,7 @@ def _tail_minus(
     """Certified (outward-rounded) upper bound on ``F_-(q,p) = P(K <= k)``."""
     i_lo, i_hi, omitted = window
     pmf_i = _control_pmf(n_c, q, i_lo, i_hi)
-    thresh = _minus_threshold(n_c, n_t, k, i_lo, i_hi)
-    cdf = _fast_binom_cdf(thresh, n_t, p)
+    cdf = _treatment_tail("minus", n_c, n_t, k, i_lo, i_hi, p)
     raw = float(np.dot(pmf_i, cdf)) + omitted
     return min(1.0, raw + _eps_margin(i_hi - i_lo + 1))
 

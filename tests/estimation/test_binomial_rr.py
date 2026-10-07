@@ -431,6 +431,51 @@ class TestSupportWindowTruncation:
         assert wide_budget_window[2] > default_window[2]
 
 
+def _clear_every_cache() -> None:
+    for value in vars(brr).values():
+        if hasattr(value, "cache_clear"):
+            value.cache_clear()
+
+
+class TestCachedResultsEqualUncachedResults:
+    """Reusing tail vectors inside a search must never change a result: every
+    p-value and interval is ``==`` between a run whose ``_treatment_tail`` is
+    the uncached function (nothing is ever reused) and a run that uses the
+    cache, including reuse inside a single search."""
+
+    CELLS = [
+        (6, 60, 9, 60),  # full enumeration
+        (40, 400, 55, 400),  # windowed control support
+        (0, 30, 5, 30),  # zero control
+        (5, 30, 0, 30),  # zero treatment
+        (10, 10, 10, 10),  # all success
+        (20, 2_000, 50, 5_000),  # unequal arms
+    ]
+    RATIOS = (0.5, 1.0, 1.3, 2.0)
+
+    @staticmethod
+    def _observe(x_c: int, n_c: int, x_t: int, n_t: int):
+        beta = brr.nuisance_beta(0.05)
+        observed = []
+        for r in TestCachedResultsEqualUncachedResults.RATIOS:
+            observed.append(brr.p_plus(r, x_c, n_c, x_t, n_t, beta))
+            observed.append(brr.p_minus(r, x_c, n_c, x_t, n_t, beta))
+        for alternative in ("two-sided", "greater", "less"):
+            ci = brr.confidence_interval(x_c, n_c, x_t, n_t, alpha=0.05, alternative=alternative)
+            observed.append((ci.lower, ci.upper, ci.geometry, ci.p_value_null))
+        return observed
+
+    @pytest.mark.parametrize("x_c,n_c,x_t,n_t", CELLS)
+    def test_cached_tails_reproduce_uncached_results_exactly(self, x_c, n_c, x_t, n_t, monkeypatch):
+        with monkeypatch.context() as patch:
+            patch.setattr(brr, "_treatment_tail", brr._treatment_tail.__wrapped__)
+            _clear_every_cache()
+            uncached = self._observe(x_c, n_c, x_t, n_t)
+        _clear_every_cache()
+        cached = self._observe(x_c, n_c, x_t, n_t)
+        assert cached == uncached
+
+
 class TestScipyBinomErrorBudget:
     """The shared SciPy allowance is an empirical numerical assumption of the
     risk-ratio certificate. Check representative CDF ranks against
