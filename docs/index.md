@@ -38,6 +38,9 @@ Before acting on a result, read [Statistical limitations](limitations.md). It
 states in one place what each estimator assumes and where its approximations
 bite.
 
+Which estimators have frozen third-party references, and which regimes have none, is
+inventoried in [External validation coverage](validation.md#reference-inventory).
+
 <!-- invisible-code-block: python
 import random
 

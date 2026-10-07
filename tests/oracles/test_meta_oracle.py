@@ -51,7 +51,7 @@ _TOL = _FIXTURE["tolerance"]
 @pytest.mark.parametrize("case", _CASES, ids=[c["id"] for c in _CASES])
 def test_dl_tau2_matches_metafor(case):
     het = cochran_q(case["input"]["est"], case["input"]["var"], alpha=case["input"]["alpha"])
-    assert het.tau2 == pytest.approx(case["dl_tau2"], rel=_TOL["dl_tau2_rel"])
+    assert het.tau2 == pytest.approx(case["dl_tau2"], rel=_TOL["dl_tau2_rel"], abs=0.0)
 
 
 @pytest.mark.parametrize("case", _CASES, ids=[c["id"] for c in _CASES])

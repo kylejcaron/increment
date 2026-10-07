@@ -63,6 +63,7 @@ nav:
   - Home: index.md
   - API Reference: api.md
   - Statistical Limitations: limitations.md
+  - Validation: validation.md
   - Guides:
       - Which Method Should I Use?: guides/choose-a-method.md
       - Method Compatibility Reference: guides/compatibility.md

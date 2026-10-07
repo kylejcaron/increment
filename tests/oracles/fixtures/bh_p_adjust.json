@@ -1,0 +1,142 @@
+{
+  "generator": "tests/oracles/generate/gen_bh_oracle.R",
+  "package_versions": {
+    "r": "R version 4.4.2 (2024-10-31)",
+    "jsonlite": "1.8.9"
+  },
+  "generated_on": "2026-10-03",
+  "increment_commit": "37b9b346ca26e41a509cddcf7307212a86b3454b",
+  "estimand": "Benjamini-Hochberg step-up rejection set at FDR level q over a fixed p-value family, ties selected together.",
+  "tolerance": {
+    "exact": true,
+    "note": "The compared quantity is a set of indices, so agreement is exact; there is no numeric tolerance. Vectors avoid p-values within floating point of a k * q / m boundary."
+  },
+  "cases": [
+    {
+      "id": "mixed_unsorted_q0.05",
+      "p": [0.212, 0.001, 0.074, 0.039, 0.008, 0.205, 0.042, 0.06, 0.0004, 0.041],
+      "q": 0.05,
+      "rejected": [2, 5, 9]
+    },
+    {
+      "id": "mixed_unsorted_q0.1",
+      "p": [0.212, 0.001, 0.074, 0.039, 0.008, 0.205, 0.042, 0.06, 0.0004, 0.041],
+      "q": 0.1,
+      "rejected": [2, 3, 4, 5, 7, 8, 9, 10]
+    },
+    {
+      "id": "mixed_unsorted_q0.25",
+      "p": [0.212, 0.001, 0.074, 0.039, 0.008, 0.205, 0.042, 0.06, 0.0004, 0.041],
+      "q": 0.25,
+      "rejected": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    },
+    {
+      "id": "all_null_q0.05",
+      "p": [0.2, 0.4, 0.6, 0.8, 0.95],
+      "q": 0.05,
+      "rejected": []
+    },
+    {
+      "id": "all_null_q0.1",
+      "p": [0.2, 0.4, 0.6, 0.8, 0.95],
+      "q": 0.1,
+      "rejected": []
+    },
+    {
+      "id": "all_null_q0.25",
+      "p": [0.2, 0.4, 0.6, 0.8, 0.95],
+      "q": 0.25,
+      "rejected": []
+    },
+    {
+      "id": "all_selected_q0.05",
+      "p": [1e-06, 3e-07, 2e-05, 4e-08],
+      "q": 0.05,
+      "rejected": [1, 2, 3, 4]
+    },
+    {
+      "id": "all_selected_q0.1",
+      "p": [1e-06, 3e-07, 2e-05, 4e-08],
+      "q": 0.1,
+      "rejected": [1, 2, 3, 4]
+    },
+    {
+      "id": "all_selected_q0.25",
+      "p": [1e-06, 3e-07, 2e-05, 4e-08],
+      "q": 0.25,
+      "rejected": [1, 2, 3, 4]
+    },
+    {
+      "id": "tied_values_q0.05",
+      "p": [0.01, 0.5, 0.01, 0.01, 0.19],
+      "q": 0.05,
+      "rejected": [1, 3, 4]
+    },
+    {
+      "id": "tied_values_q0.1",
+      "p": [0.01, 0.5, 0.01, 0.01, 0.19],
+      "q": 0.1,
+      "rejected": [1, 3, 4]
+    },
+    {
+      "id": "tied_values_q0.25",
+      "p": [0.01, 0.5, 0.01, 0.01, 0.19],
+      "q": 0.25,
+      "rejected": [1, 3, 4, 5]
+    },
+    {
+      "id": "tied_at_cutoff_q0.05",
+      "p": [0.5, 0.012, 0.012, 0.9, 0.012, 0.3, 0.012],
+      "q": 0.05,
+      "rejected": [2, 3, 5, 7]
+    },
+    {
+      "id": "tied_at_cutoff_q0.1",
+      "p": [0.5, 0.012, 0.012, 0.9, 0.012, 0.3, 0.012],
+      "q": 0.1,
+      "rejected": [2, 3, 5, 7]
+    },
+    {
+      "id": "tied_at_cutoff_q0.25",
+      "p": [0.5, 0.012, 0.012, 0.9, 0.012, 0.3, 0.012],
+      "q": 0.25,
+      "rejected": [2, 3, 5, 7]
+    },
+    {
+      "id": "single_q0.05",
+      "p": [0.01],
+      "q": 0.05,
+      "rejected": [1]
+    },
+    {
+      "id": "single_q0.1",
+      "p": [0.01],
+      "q": 0.1,
+      "rejected": [1]
+    },
+    {
+      "id": "single_q0.25",
+      "p": [0.01],
+      "q": 0.25,
+      "rejected": [1]
+    },
+    {
+      "id": "step_up_rescues_larger_p_q0.05",
+      "p": [0.011, 0.02, 0.0195, 0.0199, 0.2, 0.7, 0.0199, 0.012],
+      "q": 0.05,
+      "rejected": [1, 2, 3, 4, 7, 8]
+    },
+    {
+      "id": "step_up_rescues_larger_p_q0.1",
+      "p": [0.011, 0.02, 0.0195, 0.0199, 0.2, 0.7, 0.0199, 0.012],
+      "q": 0.1,
+      "rejected": [1, 2, 3, 4, 7, 8]
+    },
+    {
+      "id": "step_up_rescues_larger_p_q0.25",
+      "p": [0.011, 0.02, 0.0195, 0.0199, 0.2, 0.7, 0.0199, 0.012],
+      "q": 0.25,
+      "rejected": [1, 2, 3, 4, 5, 7, 8]
+    }
+  ]
+}

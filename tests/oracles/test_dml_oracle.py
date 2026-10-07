@@ -93,10 +93,10 @@ def test_dml_matches_doubleml_external_predictions():
     ).results
     ref = _FIXTURE["dml"]
     assert est.lift is not None
-    assert est.lift.value == pytest.approx(ref["theta"], rel=_TOL["dml_theta_rel"])
+    assert est.lift.value == pytest.approx(ref["theta"], rel=_TOL["dml_theta_rel"], abs=0.0)
     # log_se carries the raw pre-prior SE for whichever value_scale was
     # requested (see Estimate.log_mean/log_se docstring), not a log-scale-only field.
-    assert est.lift.log_se == pytest.approx(ref["se"], rel=_TOL["dml_se_rel"])
+    assert est.lift.log_se == pytest.approx(ref["se"], rel=_TOL["dml_se_rel"], abs=0.0)
 
 
 def test_aipw_matches_doubleml_irm_ate_score():
@@ -119,8 +119,8 @@ def test_aipw_matches_doubleml_irm_ate_score():
     ).results
     ref = _FIXTURE["aipw"]
     assert est.lift is not None
-    assert est.lift.value == pytest.approx(ref["theta"], rel=_TOL["aipw_theta_rel"])
-    assert est.lift.log_se == pytest.approx(ref["se"], rel=_TOL["aipw_se_rel"])
+    assert est.lift.value == pytest.approx(ref["theta"], rel=_TOL["aipw_theta_rel"], abs=0.0)
+    assert est.lift.log_se == pytest.approx(ref["se"], rel=_TOL["aipw_se_rel"], abs=0.0)
 
 
 def test_iptw_matches_statsmodels_wls_hajek():
@@ -139,5 +139,5 @@ def test_iptw_matches_statsmodels_wls_hajek():
     ).results
     ref = _FIXTURE["iptw"]
     assert est.lift is not None
-    assert est.lift.value == pytest.approx(ref["theta"], rel=_TOL["iptw_theta_rel"])
-    assert est.lift.log_se == pytest.approx(ref["se"], rel=_TOL["iptw_se_rel"])
+    assert est.lift.value == pytest.approx(ref["theta"], rel=_TOL["iptw_theta_rel"], abs=0.0)
+    assert est.lift.log_se == pytest.approx(ref["se"], rel=_TOL["iptw_se_rel"], abs=0.0)

@@ -1,0 +1,42 @@
+{
+  "generator": "tests/oracles/generate/gen_welch_oracle.R",
+  "package_versions": {
+    "r": "R version 4.4.2 (2024-10-31)",
+    "jsonlite": "1.8.9"
+  },
+  "generated_on": "2026-10-03",
+  "increment_commit": "37b9b346ca26e41a509cddcf7307212a86b3454b",
+  "estimand": "Treatment-minus-control difference of arm means, Welch variance, Welch-Satterthwaite df, two-sided 95% t interval.",
+  "tolerance": {
+    "rel": 1e-12,
+    "note": "Relative tolerance on diff, se, df, lower and upper. Measured after the first generation run: the largest observed relative difference was 6.7e-15 (the lower endpoint of near_equal_variance_small_n, where the interval nearly straddles zero), so 1e-12 leaves about two orders of magnitude of floating-point headroom, not a methodological band."
+  },
+  "cases": [
+    {
+      "id": "unequal_n_unequal_variance",
+      "input": {
+        "control": [9.41, 10.869999999999999, 8.119999999999999, 11.35, 9.960000000000001, 10.199999999999999, 12.039999999999999, 7.88, 10.51, 9.07, 11.619999999999999, 8.74, 10.09, 9.33],
+        "treatment": [12.5, 14.800000000000001, 9.1, 17.300000000000001, 11.699999999999999, 13.4, 19.600000000000001, 10.199999999999999, 15.9, 12.800000000000001, 8.4, 16.100000000000001, 13, 18.199999999999999, 11.1, 14.4, 9.800000000000001, 15.300000000000001, 12.199999999999999, 20.5, 10.9, 13.699999999999999],
+        "alpha": 0.05
+      },
+      "diff": 3.735129870129871,
+      "se": 0.7820626061659985,
+      "df": 29.303965502150245,
+      "lower": 2.136352611088514,
+      "upper": 5.333907129171227
+    },
+    {
+      "id": "near_equal_variance_small_n",
+      "input": {
+        "control": [5.2, 6.1, 4.8, 5.9, 5.5],
+        "treatment": [6, 6.9, 5.4, 6.6, 6.3, 5.8],
+        "alpha": 0.05
+      },
+      "diff": 0.666666666666667,
+      "se": 0.3236939569682724,
+      "df": 8.769969146045177,
+      "lower": -0.06851815466487808,
+      "upper": 1.401851487998212
+    }
+  ]
+}
