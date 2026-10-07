@@ -351,6 +351,8 @@ It also has two further boundaries, both refusals rather than silent degradation
   none is implemented today. Reduce the number of eligible contrasts in a single
   call (narrow `metrics=`, run large-arm breakouts separately) if latency
   matters more than exactness at your arm sizes.
+  FCR-selected rows refresh this disclosure for the returned interval; an
+  obsolete nominal disclosure is removed while unrelated notes are retained.
 * **Extreme alpha.** The frozen nuisance tail budget passed to the Clopper-Pearson
   endpoint solver is `min(1e-6, alpha / 32)`. Below `1e-9` (i.e. `alpha < 3.2e-8`), SciPy's
   iterative beta-quantile solver has demonstrated large relative error against an exact
