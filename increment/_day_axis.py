@@ -43,7 +43,7 @@ from increment.errors import (
 from increment.estimation.encouragement import ESTIMANDS, estimate_compliance
 from increment.estimation.engine import _validate_methods
 from increment.estimation.inference import validate_readout_inference
-from increment.query.native_source import NativeViewSource
+from increment.query.native_contract import NativeViewSource
 from increment.semantics.design import Encouragement, Observational, Randomized
 from increment.semantics.models import RetentionMetric
 from increment.sources import MomentSource, require_operation
@@ -52,7 +52,7 @@ if TYPE_CHECKING:
     from increment.decision import CompiledDecisionPlan
     from increment.estimation.engine import Method
     from increment.estimation.inference import Prior
-    from increment.query.native_source import DayEvidenceSource
+    from increment.query.native_contract import DayEvidenceSource
     from increment.semantics.models import Experiment, Metric
 
 DayAxisGrain = Literal["daily", "asof"]

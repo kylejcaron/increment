@@ -58,6 +58,11 @@ from increment.query.builders import (
     group_summary,
     winsorize_unit_totals,
 )
+from increment.query.native_contract import (
+    _NATIVE_COVARIATE_RESERVED,
+    DimensionedDayEvidence,
+    SitewideEvidence,
+)
 from increment.semantics.artifact import (
     ArtifactContext,
     RatioMetricMeasure,
@@ -938,8 +943,6 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
     ) -> Any:
         cluster = self.context.cluster
         if "cluster_id" in covariates and cluster != "cluster_id":
-            from increment.query.native_source import _NATIVE_COVARIATE_RESERVED
-
             refuse(_NATIVE_COVARIATE_RESERVED, covariate="cluster_id", cluster=cluster)
         # A requested declared cluster column reuses the attached metadata column.
         requested = [name for name in dict.fromkeys(covariates) if name != "cluster_id"]
@@ -1091,8 +1094,6 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         completed_windows_only: bool = False,
         include_covariate: bool = False,
     ) -> Any:
-        from increment.query.native_source import DimensionedDayEvidence
-
         self._preflight_cluster_grain(grain, operation="breakout_moments")
         extension = self._extension(
             {
@@ -1338,7 +1339,6 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
 
     def sitewide_evidence(self, metric: Metric, *, include_ratio: bool = False) -> Any:
         from increment.estimation.engine import _df_to_arms
-        from increment.query.native_source import SitewideEvidence
 
         metric = self.validated_metric(metric)
         entries = unit_day_artifact_extension_catalog(self._expected_context)
