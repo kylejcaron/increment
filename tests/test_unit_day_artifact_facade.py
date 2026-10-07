@@ -447,6 +447,7 @@ def test_dashboard_snapshot_reads_the_pinned_source_and_leaves_the_outer_analysi
             allocation_history_refusal=None,
             estimates=(),
             group_data=(),
+            explore=(),
         )
 
     try:
