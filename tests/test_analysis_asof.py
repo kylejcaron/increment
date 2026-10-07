@@ -2212,6 +2212,7 @@ def test_asof_unit_rows_emits_only_observed_rows_after_window_freezes():
             ],
             "unit_id": ["u2", "u1", "u1", "u1"],
             "group_id": ["control", "control", "control", "control"],
+            "identity_ordinal": [1, 0, 0, 0],
             "revenue": [99.0, 1.0, 2.0, 100.0],
         },
         backend="polars",
@@ -2242,6 +2243,7 @@ def test_asof_unit_rows_emits_only_observed_rows_after_window_freezes():
         uptake=None,
         uptake_window_days=None,
         completed_windows_only=False,
+        identity_ordinal="identity_ordinal",
     ).iter_rows(named=True)
 
     assert [(row["unit_id"], row["ds"], row["y"]) for row in rows] == [

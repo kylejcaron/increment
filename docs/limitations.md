@@ -445,7 +445,10 @@ The finite-sample route also has three boundaries, each a refusal rather than si
   a billion units), and a constant-0.5 arm, which carries no integer count, was refused at
   every size. Count thresholds are computed in exact
   integers, which a float quotient cannot keep above about 67,000,000 per arm. The error
-  model was measured with fused multiply-subtract on arm64; an x86 build has not been run.
+  allowance is derived for the stated SciPy/Boost model and measured against a decimal oracle
+  on arm64 with fused multiply-subtract; it is not a uniform proof across library or compiler
+  builds. The x86 build has not been run, which remains a verification gap, not a reproduced
+  failure.
 * **Latency.** Cost grows with arm size. Cold CPU seconds and peak resident set of one
   two-sided `alpha=0.05` `confidence_interval` with the treatment count at a risk ratio of
   1.02 of the control rate, measured on an Apple M3 Pro with
@@ -561,10 +564,10 @@ The finite-sample route also has three boundaries, each a refusal rather than si
 For these fixed-horizon binomial plans, public power is a model-based point
 probability, not a conservative numerical lower bound. Enumeration publishes
 computed rejection mass only when its internal enclosure establishes maximum
-absolute error at most `1e-6`; otherwise it refuses with
-`power.binomial_probability_unresolved`. The dense closed-form route instead
-reports its model's point probability; its validation tolerance remains
-`0.005`, not a universal bound or finite-sample calibration guarantee.
+absolute error at most `1e-6` conditional on the deployed SciPy/Boost
+special-function error model; this is not a cross-build floating-point proof.
+The dense closed-form route instead reports its model's point probability; its validation
+tolerance remains `0.005`, not a universal bound or finite-sample calibration guarantee.
 Binomial MDE locates the earliest detectable region to `1e-8` absolute plus
 `1e-8` relative tolerance on the relative-effect scale. It does not promise the
 first IEEE-representable effect or silently skip materially earlier unresolved
@@ -850,9 +853,11 @@ finite-sample test otherwise, so a plan's power is the rejection probability of 
 over the count lattice: the production delta decision on the routed rectangle plus the replayed
 finite-sample decision on the rest (`power_basis="exact"` or `"approximate"`).
 Public `power` is the computed rejection mass, admitted only when its internal
-enclosure establishes absolute error at most `1e-6`. It is neither
-route's power: a plan whose counts straddle the threshold is not the smaller of the two. A plan
-whose counts are dense with probability at least `1 - 1e-6` (`P(m <= X <= n - m)` per arm, the
+enclosure establishes absolute error at most `1e-6` conditional on the deployed
+SciPy/Boost special-function error model; this is not a cross-build floating-point
+proof. It is neither route's power: a plan whose counts straddle the threshold is not the
+smaller of the two. An `"approximate"` diagnostic makes no runtime-power claim.
+A plan whose counts are dense with probability at least `1 - 1e-6` (`P(m <= X <= n - m)` per arm, the
 arms independent) is enumerated while its lattice has at most 100,000 cells (a cost limit,
 the same for every design), retaining any undecided finite-route mass in the upper bound.
 Larger dense lattices use the closed-form model above (`power_basis="asymptotic"`, no replay,
@@ -903,10 +908,10 @@ and the finite-sample replay elsewhere. Each evaluation selects at most 100,000 
 and 150,000 finite-sample directional pairs from its own count windows, prioritising heavier
 cells and retaining unprocessed probability in the upper bound. Selection depends on the
 request, not cached decisions: shared, repeated and fresh evaluations report the same enclosure.
-An enumeration that cannot establish maximum point error at most `1e-6` refuses
+An enumeration that cannot establish maximum point error at most `1e-6`
+conditional on the deployed SciPy/Boost special-function error model refuses
 with `power.binomial_probability_unresolved`; it does not substitute the lower
 endpoint. Diagnostic enclosures can remain wide. The Normal-tail replay only proposes sizes.
-The runtime's control-arm window and floating-point allowance carry over.
 
 On a loaded 12-core Apple machine, evaluating a dense 62,500-cell plan (1,236 per arm) with
 the runtime calculation took 10 to 20 seconds. Public calls that also search for an effect
@@ -919,10 +924,12 @@ need not be monotone in a count. Sizing returns a verified bracket crossing,
 not a proven global minimum.
 
 The internal numerical enclosure accounts for the runtime's SciPy allowance,
-summation error, omitted support and unresolved decisions. Public solvers compare
-the admitted computed point power with the target, not an enclosure endpoint.
-The closed-form route reports its own model probability; its dense agreement
-criterion remains `0.005`, not a universal runtime error bound.
+summation error, omitted support and unresolved decisions, conditional on the
+stated SciPy/Boost special-function error model. It is not a uniform proof
+across builds. Public solvers compare the admitted computed point power with
+the target, not an enclosure endpoint. The closed-form route reports its own
+model probability; its dense agreement criterion remains `0.005`, not a
+universal runtime error bound.
 
 MDE searches the earliest detectable region to `1e-8` absolute plus `1e-8`
 relative effect tolerance, not the first representable floating-point effect.
@@ -974,7 +981,7 @@ baseline) and sparse (about a hundred events per arm):
 | 5%, 1,000,000 | `achieved_power`, lift 1.5% | 198 s / 1.72 GiB | 9.67M null cells; companion effect `numerical_resolution` |
 | 5%, 5,000,000 | `achieved_power` or `minimum_detectable_effect` | refused within 1 ms / 0.12 GiB | 48.3M null cells |
 | 5%, 50,000,000 | `achieved_power` or `minimum_detectable_effect` | refused within 1 ms / 0.12 GiB | 483M null cells |
-| 0.1% at 1e5, 0.01% at 1e6, 0.002% at 5e6, 0.0002% at 5e7 (100 events) | `achieved_power`, lift 50%, and `minimum_detectable_effect` | 0.19 to 0.20 s / 0.21 to 0.26 GiB | 20,164 null cells at each size, answered (`approximate`) |
+| 0.1% at 1e5, 0.01% at 1e6, 0.002% at 5e6, 0.0002% at 5e7 (100 events) | `achieved_power`, lift 50%, and `minimum_detectable_effect` | 0.19 to 0.20 s / 0.21 to 0.26 GiB | Historical timing for 20,164 null cells per size on the internal Normal-tail sizing proposal, not a returned power or MDE. Current public calls admit only a resolved exact value or refuse. |
 
 The same calls under `"auto"`:
 
@@ -982,7 +989,7 @@ The same calls under `"auto"`:
 |---|---|---:|---|
 | 5%, 1e5 to 5e7 | `achieved_power`, `minimum_detectable_effect` and `required_sample_size` | 1 ms / 0.12 GiB | `power_basis="asymptotic"`; at 5e6 the power for lift 1% is 0.951 and the MDE 0.77%, at 5e7 the power for lift 0.3% is 0.930 and the MDE 0.24% |
 | 50%, 1e5 and 1.9e5 | `minimum_detectable_effect`, `achieved_power` | 1 ms / 0.12 GiB | asymptotic, answered where the replay refuses |
-| 100 events per arm at 1e5, 1e6, 5e6, 5e7 | `achieved_power`, lift 50% | 0.19 to 0.21 s / 0.23 to 0.25 GiB | the sparse replay, unchanged (`approximate`) |
+| 100 events per arm at 1e5, 1e6, 5e6, 5e7 | `achieved_power`, lift 50% | 0.19 to 0.21 s / 0.23 to 0.25 GiB | Historical timing of the internal Normal-tail sizing proposal; not a returned power. Current public calls admit only resolved exact/asymptotic values or refuse; no current timing was re-measured here. |
 
 Earlier measurements of the replay at other sizes (an Apple M3 Pro at `45829f1`, `2da355f`),
 which an explicit `finite_sample` plan still takes and which were not repeated at this commit.

@@ -5,12 +5,13 @@ evaluated at its own mean under the alternative. Mean-like planning assumes
 equal absolute effective arm variances; conversion and retention planning use
 the Bernoulli variance shape at the implied treatment rate. Where the runtime
 routes an unadjusted, unclustered, fixed-horizon conversion or retention
-contrast by its counts (``conversion_inference``), planning follows the route: the
-rejection probability of the runtime's union of the delta-method decision on dense counts
-and the finite-sample binomial risk-ratio decision on the rest, summed over the count lattice
-(``power_basis`` ``"exact"`` or ``"approximate"``), reported as computed rejection
-mass only when internal numerical bounds establish absolute error at most ``1e-6``.
-Materially unresolved probabilities are refused, not reported as lower bounds.
+contrast by its counts (``conversion_inference``), planning follows that route:
+the rejection probability of the runtime's union of the delta-method decision on dense counts
+and the finite-sample binomial risk-ratio decision on the rest, summed over the count lattice.
+An admitted finite-sample point resolves to absolute error at most ``1e-6`` conditional on the
+deployed SciPy/Boost special-function error model; this is not a cross-build floating-point
+proof. An ``"approximate"`` basis is an unresolved diagnostic with no runtime-power claim, and
+materially unresolved probabilities are refused.
 Where counts are dense with near certainty and the lattice is too large to
 enumerate, ``"asymptotic"`` reports the closed-form model's own point probability.
 Segment-pairwise planning deliberately retains its separate baseline-only

@@ -1044,6 +1044,21 @@ class TestPowerResultInvariants:
         assert result.power == 0.8
         assert result.mde_unavailable_reason is None
 
+    @pytest.mark.parametrize(
+        ("basis", "qualification"),
+        [
+            ("asymptotic", "closed_form_model_only_v1"),
+            ("exact", "scipy_special_function_error_model_conditional_v1"),
+            ("approximate", "unclaimed_approximation_diagnostic_v1"),
+        ],
+    )
+    def test_numerical_qualification_is_serialized_and_matches_basis(self, basis, qualification):
+        result = self._result(power_basis=basis)
+        assert result.numerical_qualification == qualification
+        payload = result.model_dump(mode="json")
+        assert payload["numerical_qualification"] == qualification
+        assert PowerResult.model_validate_json(result.model_dump_json()) == result
+
     @pytest.mark.parametrize("reason", ["unattainable", "unrepresentable", "numerical_resolution"])
     def test_accepts_a_missing_mde_with_its_reason_and_round_trips(self, reason):
         result = self._result(mde_relative=None, mde_unavailable_reason=reason)

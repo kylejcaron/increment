@@ -278,6 +278,72 @@ def test_summary_reveal_order_ranks_day_labels_numerically():
     )
 
 
+def test_sparse_panel_sequential_cohort_and_continuation_match_dense() -> None:
+    """Sparse zero events preserve finalized cohorts and continuation state."""
+    import pandas as pd
+
+    specs = [MetricSpec(name="outcome", type="conversion", window_days=2)]
+    plan = _plan(specs, "bernoulli", date="day", exposure_date="exposed")
+    registration = plan.inference.registration
+    assert registration is not None
+    reveal = registration.reveal.model_copy(update={"longest_window_days": 2})
+    plan = plan.model_copy(
+        update={
+            "inference": InferenceSpec(
+                kind="always_valid",
+                registration=registration.model_copy(update={"reveal": reveal}),
+            )
+        }
+    )
+    days = [date(2026, 1, day) for day in range(1, 5)]
+    sparse_rows = []
+    dense_rows = []
+    for unit_index in range(8):
+        exposure = days[0] if unit_index % 2 == 0 else days[2]
+        event = float(unit_index % 3 == 0)
+        for day in days:
+            row = {
+                "unit": f"u{unit_index}",
+                "arm": "control" if unit_index < 4 else "treatment",
+                "day": day,
+                "exposed": exposure,
+                "outcome": event if day == exposure else 0.0,
+            }
+            dense_rows.append(row)
+            if day == exposure:
+                sparse_rows.append(row)
+
+    def source(rows):
+        return Analysis.from_unit_panel(
+            pd.DataFrame(rows),
+            unit="unit",
+            group="arm",
+            date="day",
+            exposure_date="exposed",
+            control="control",
+            metrics=specs,
+            experiment_id="experiment",
+            observation_end=days[-1],
+            plan=plan,
+        )
+
+    sparse = source(sparse_rows)
+    dense = source(dense_rows)
+    early = [
+        analysis.capture_sequential(finalized=True, as_of=days[1]) for analysis in (sparse, dense)
+    ]
+    assert early[0] == early[1]
+    assert len(early[0].records) == 4
+    continued = [
+        analysis.capture_sequential(finalized=True, as_of=days[3], previous=snapshot)
+        for analysis, snapshot in zip((sparse, dense), early, strict=True)
+    ]
+    assert continued[0] == continued[1]
+    assert continued[0].parent_id == early[0].prefix_id
+    assert len(continued[0].records) == 8
+    assert continued[0].states == continued[1].states
+
+
 def test_sequential_summary_without_exposure_refuses_before_reading_frame():
     from tests.sequential_cases import UnreadFrame
 

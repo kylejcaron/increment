@@ -62,6 +62,7 @@ from increment.estimation.cuped import AdjustedRatioMoments, fit_cuped, fit_rati
 from increment.estimation.inference import LiftGuardError, Prior, infer_lift
 from increment.estimation.results import (
     BINOMIAL_METHOD,
+    BINOMIAL_NUMERICAL_QUALIFICATION,
     BinomialConfidenceSet,
     Estimate,
     LiftEstimate,
@@ -2086,6 +2087,7 @@ def _infer_binomial_lift_result(
         level=level,
         geometry=ci.geometry,
         method=BINOMIAL_METHOD,
+        numerical_qualification=BINOMIAL_NUMERICAL_QUALIFICATION,
         x_c=x_c,
         n_c=n_c,
         x_t=x_t,

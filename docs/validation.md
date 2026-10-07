@@ -84,6 +84,36 @@ Rules for every row:
 6. A row publishes when each cell cites an existing source or says `unknown`; a campaign finishing
    changes only the evidence cell.
 
+### Numerical qualification reconciliation
+
+The exact-binomial confidence-set construction and enumerated power use SciPy special functions
+and float64 summation. Their finite-sample statistical construction is distinct from the
+arithmetic enclosure, which is conditional on the deployed SciPy/Boost error model. The
+`scipy_special_function_error_model_conditional_v1` result metadata does not claim a uniform
+proof across builds. The repository lock currently resolves SciPy 1.18.0, but the cited decimal
+oracle evidence does not identify that locked version as the executed build. The prior measured
+error envelope was arm64 with fused multiply-subtract; x86 has not been executed. This is a
+verification gap, not a reproduced bound failure.
+
+PR38–45 implemented the previously open caching/support-window, endpoint-tolerance, nuisance
+stopping/error-model/ceiling, and automatic dense-route changes; those completed changes are not
+open validation items here. `1tce` remains an investigation of the special-function allowance
+above about $2^{26}$ trials per arm; undercoverage has not been demonstrated. `xeth` remains the
+separate deployed-numerics verification obligation for sequential Bernoulli likelihood,
+inversion and decisions. Neither is discharged by the local qualification label.
+
+Targeted independent review remains pending in tracker `0p4v`: the risk-ratio nuisance
+construction and error bounds; quantile-bracket-to-interval conversion; and the sequential
+likelihood, inversion and decision chain. This repository's own probes and derivations are not
+independent cases or outside review.
+
+The older binomial evidence rows retain references to trackers that predate these
+implementation credits. Do not interpret those references as a claim that PR38–45
+changes were absent: the remaining documented numerical investigation is `1tce`,
+the sequential deployed-numerics obligation is `xeth`, and targeted independent review
+is pending in `0p4v`. `4xwx` separately owns remeasuring the remaining planning cost;
+no current large-design timing is inferred from the earlier PR45 probes.
+
 ## Reference inventory
 
 ### Reference classes
@@ -145,6 +175,20 @@ exists beyond the frozen comparisons above.
 | `EV-CATE-CLUSTER-SCREEN` | Clustered `validate_cate` statistics (AUTOC, Qini, GATES, CLAN) and clustered `estimate_cate` | `asymptotic`: clustered `estimate_cate` uses a weighted CR1/HC0 score sandwich with `K-1` reference degrees of freedom; the held-out validation statistics carry no distribution-free finite-cluster coverage ([limitations](limitations.md#clustered-cate-uncertainty-is-cluster-asymptotic)) | Null screen of the held-out validation statistics on frozen oracle scores: 72 designs (10, 40 or 200 clusters; equal sizes of 20 or repeating sizes 5/20/100; intracluster correlation 0, 0.2 or 0.5; Gaussian or skewed errors with one high-leverage score per cluster; two cluster weightings), 256 replications and 199 bootstrap draws each, held to family-aware binomial miss bounds. A separate 288-cell diagnostic of the `estimate_cate` covariance (128 draws per cell) gates variance moments and records, but does not gate, coverage and Wald rejection. A public-path replay of `validate_cate`, `targeting_rule` and `select_targeting_rule` on eight fixed cluster witnesses records behavior | `calibration_evidence` | `tests/test_cate_calibration.py::test_c07_cluster_null_rejection_and_coverage`, `::test_cluster_fit_covariance_moments_and_coverage_diagnostics`, `::test_e6v0_original_varying_noise_cluster_public_replay` | A regression screen, not a guarantee: it calls the internal validation function with frozen oracle scores rather than a fitted pipeline, and the replay is not an error-control certificate. Few unequal clusters with skewed errors still undercover |
 
 ## Methods without an independent reference
+
+Finite-sample binomial confidence sets distinguish their statistical construction from the
+arithmetic qualification: new rows record `scipy_special_function_error_model_conditional_v1`,
+conditional on the deployed SciPy/Boost error model rather than a uniform cross-build proof.
+Rows saved before that marker existed use `legacy_unrecorded_v1` and make no numerical
+qualification claim. Enumerated binomial planning points likewise publish only when their
+computed enclosure resolves to absolute error at most `1e-6` conditional on that model;
+`power_basis="approximate"` is an unresolved diagnostic with no runtime-power claim.
+
+In the binomial-planning inventory row, the Normal-tail conditional route describes an
+internal sizing proposal when exact replay geometry exceeds its budget. It is not a
+public `power_basis="approximate"` result: a public point is returned only when its
+computed enclosure resolves (`power_basis="exact"`) or through the stated asymptotic
+planning model, and unresolved finite-sample results are refused.
 
 Status values: `none_found` (a matched reference was not found or does not match the estimand),
 `derivation_only` (in-repo derivation or enumeration, with no Monte Carlo evidence),

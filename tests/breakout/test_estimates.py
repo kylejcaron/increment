@@ -2695,6 +2695,13 @@ class TestRunBreakoutBinomialGateExemption:
         assert row.lift is None
         assert row.binomial_set is not None
         assert row.binomial_set.point_available is False
+        import narwhals as nw
+
+        frame = nw.from_native(result.to_frame(), eager_only=True)
+        assert "set_numerical_qualification" in frame.columns
+        assert frame["set_numerical_qualification"].to_list() == [
+            "scipy_special_function_error_model_conditional_v1"
+        ]
 
     def test_ancillary_uptake_preserves_exact_binary_breakout_sets(self):
         metric = _conversion_metric()

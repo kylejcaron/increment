@@ -743,7 +743,27 @@ def _rendered_metadata_columns(
                     verdict = "No" if _decision_available(row) else "Unavailable"
                 verdicts.append(verdict)
             columns["Significant"] = verdicts
+    binomial_sets = _column_values(frame, "binomial_set")
+    if binomial_sets is not None:
+        qualifications = [_binomial_qualification_disclosure(value) for value in binomial_sets]
+        if any(qualifications):
+            columns["Numerical qualification"] = qualifications
     return columns
+
+
+def _binomial_qualification_disclosure(value: Any) -> str:
+    if _is_missing(value):
+        return ""
+    qualification = (
+        value.get("numerical_qualification")
+        if isinstance(value, Mapping)
+        else getattr(value, "numerical_qualification", None)
+    )
+    if qualification == "scipy_special_function_error_model_conditional_v1":
+        return "Computed enclosure conditional on deployed SciPy/Boost special-function error model"
+    if qualification == "legacy_unrecorded_v1":
+        return "Numerical qualification not recorded in legacy result"
+    return "No numerical qualification claim"
 
 
 def _decision_available(row: Mapping[str, Any]) -> bool:
@@ -912,6 +932,11 @@ def readout_table(  # noqa: C901, PLR0915
     reference line. Row caveats (``note``, ``excluded``,
     ``low_reliability``, ``inference``) ride along in the frame and
     render nowhere.
+
+    For ``binomial_set`` rows, the table adds a ``Numerical qualification``
+    column. Its values identify ``scipy_special_function_error_model_conditional_v1``
+    (an enclosure conditional on the deployed SciPy/Boost error model) or
+    ``legacy_unrecorded_v1`` (no arithmetic qualification claim in an older result).
 
     A ``role`` column with at least one non-``None`` value sections the
     table by concise role labels (coeftable's ``groups=`` +

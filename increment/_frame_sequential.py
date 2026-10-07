@@ -252,7 +252,6 @@ def capture_frame_panel(source, *, as_of, finalized, previous=None):
 
     from increment._frame_moments import _collapse_to_unit_totals, _reduce_spec
     from increment._frame_panel import (
-        _censor_units,
         _day_axis_label_order,
         _observable_end_index,
         _resolve_window_days,
@@ -281,35 +280,39 @@ def capture_frame_panel(source, *, as_of, finalized, previous=None):
     if previous is not None and previous.registration != registration:
         sequential_refuse("continuation.rewrite", "registration changed before panel access")
     dimensions = tuple(sorted({k for c in registration.roster for k, _ in c.segment}))
-    day_panel = source._day_panel()
-    labels = day_panel.get_column("ds").unique().to_list()
+    labels = source._sparse_panel.get_column("ds").unique().to_list()
     order = _day_axis_label_order([*labels, as_of])
     retained = [label for label in labels if order[label] <= order[as_of]]
-    indexed, day_index = _with_day_index(
-        day_panel.filter(nw.col("ds").is_in(retained)), source._exposure
-    )
-    kept, _, _ = _censor_units(
-        indexed,
-        final_maturity_day=max(0, registration.reveal.longest_window_days - 1),
-        observable_end_idx=_observable_end_index(source._exposure, as_of),
-    )
     keys = ["unit_id", "group_id", *dimensions]
-    joint = kept.select(*keys).unique()
+    observable = _observable_end_index(source._exposure, as_of)
+    maturity = max(0, registration.reveal.longest_window_days - 1)
+    kept = (
+        source._day_identity()
+        .join(observable, on="unit_id", how="left")
+        .filter(nw.col("__observable_days__") >= maturity)
+        .select(*keys)
+    )
+    retained_panel = source._sparse_panel.filter(nw.col("ds").is_in(retained))
+    indexed, day_index = _with_day_index(retained_panel, source._exposure)
+    joint = kept
     columns = {}
     for i, model in enumerate(registration.models):
         if model.observable == "uptake":
-            totals = _collapse_to_unit_totals(
-                kept,
+            uptake_totals = _collapse_to_unit_totals(
+                indexed,
                 (),
                 uptake=source._uptake,
                 window_days=source._window_days,
                 first_exposure=source._first_exposure,
                 by=dimensions,
             ).rename({source._uptake: "__y__"})
+            totals = kept.join(uptake_totals, on=keys, how="left").with_columns(
+                nw.col("__y__").fill_null(0.0)
+            )
         else:
             metric, spec = metrics[model.metric], source._specs_by_name[model.metric]
             right = _resolve_window_days(metric)
-            bounded = kept.filter((nw.col(day_index) >= 0) & (nw.col(day_index) < right))
+            bounded = indexed.filter((nw.col(day_index) >= 0) & (nw.col(day_index) < right))
             totals = _reduce_spec(
                 bounded,
                 spec,
