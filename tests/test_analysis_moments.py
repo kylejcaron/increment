@@ -169,6 +169,7 @@ def test_moments_count_ranges_are_validated_even_for_unselected_rows(field, valu
 def test_export_refuses_invalid_provider_counts_before_writing(field, value, monkeypatch, tmp_path):
     import json
 
+    from increment._frame_validation import refuse_observational_quantile
     from increment.sources import ASSIGNMENT_COUNTS_FIELD, MomentsSource, export_source_moments
 
     source = MomentsSource(
@@ -186,7 +187,7 @@ def test_export_refuses_invalid_provider_counts_before_writing(field, value, mon
     monkeypatch.setattr(source, "moments", invalid_moments)
     path = tmp_path / "invalid.parquet"
     with pytest.raises(WireFormatError) as exc:
-        export_source_moments(source, path)
+        export_source_moments(source, path, observational_refusal=refuse_observational_quantile)
     assert exc.value.code == "moments.count_out_of_range"
     assert exc.value.context["field"] == field
     assert not path.exists()

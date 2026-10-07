@@ -899,16 +899,6 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
             design.control_group,
         )
 
-    winsor_diagnostics: dict[str, dict[str, dict[str, int | float | None]]] = {}
-    for declared_metric in selected:
-        if getattr(declared_metric, "winsorization", None) is None:
-            continue
-        winsor_diagnostics[declared_metric.name] = _winsorization_diagnostics(
-            src,
-            declared_metric,
-            design.control_group,
-        )
-
     results: list[LiftEstimate] = []
     refused_failures: dict[Any, DecisionFailure] = {}
     any_attempted = False
