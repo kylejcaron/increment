@@ -21,7 +21,9 @@ and an authority independent of the refusal itself. The statuses are
 ``construction_limited`` the estimator or readout is not defined for the combination
                          (``CONSTRUCTION:``/``COMBINATION:``)
 ``not_expressible``      the axis value cannot be declared on that ingress; the outcome is
-                         the declaration-time refusal
+                         the declaration-time refusal, or, where the constructor has no
+                         parameter or schema field for it, the ``TypeError`` or pydantic
+                         ``ValidationError`` it raises (no refusal code exists)
 ``unfinished``           supportable or unifiable but not implemented; carries a tracker
                          (``UNFINISHED(<ref>):``)
 ``unsound``              mathematically invalid; carries a derivation
@@ -301,7 +303,7 @@ _FRAMES = ("from_unit_summary", "from_unit_panel", "from_moments", "from_switchb
 _WAREHOUSE = ("from_definitions", "from_unit_day_artifact")
 
 _CATALOG = "tests/compatibility_catalog.py::MATRIX"
-_LIMITATIONS = 'docs/limitations.md "What runs where"'
+_CAPABILITIES = 'docs/reference/capabilities-by-entry-point.md "What runs where"'
 _METRIC_SPECS = "increment/_metric_specs.py"
 _DAY_AXIS = "increment/_day_axis.py"
 _RUN_ASOF_LIFT = "Analysis.run_asof_lift docstring"
@@ -362,15 +364,15 @@ _SPECS: dict[str, Spec] = {
         "not_expressible",
         "a warehouse Metric cannot express a missing-value policy: absent events are zero by "
         "construction of the event log",
-        f"{_LIMITATIONS}: MetricSpec(missing=...) row, warehouse routes",
+        f"{_CAPABILITIES}: MetricSpec(missing=...) row, warehouse routes",
         "declaration",
         fact="no Definitions metric has a missing field",
     ),
     "EXC:TypeError#cluster": Spec(
-        "source_limited",
+        "not_expressible",
         "from_switchback_panel takes no cluster= parameter: a switchback contrast has no "
         "arm-cluster shape",
-        f"Analysis.from_switchback_panel signature; {_LIMITATIONS} clustered rows",
+        f"Analysis.from_switchback_panel signature; {_CAPABILITIES} clustered rows",
         "declaration",
         fact="from_switchback_panel has no cluster= keyword",
     ),
@@ -390,14 +392,14 @@ _SPECS: dict[str, Spec] = {
     "REF:frame.metric.missing_impute": Spec(
         "construction_limited",
         "filling an outcome with its pooled mean shrinks variance and biases the estimate",
-        f"{_LIMITATIONS}: impute.pooled_mean_outcome row; {_METRIC_SPECS}::MetricSpec",
+        f"{_CAPABILITIES}: impute.pooled_mean_outcome row; {_METRIC_SPECS}::MetricSpec",
         "declaration",
     ),
     "REF:frame.metric.window_days_supported": Spec(
         "unfinished",
         "a windowed quantile is declared by the warehouse model and read from per-unit "
         "totals, yet refused on the frame path with no stated statistical reason",
-        f"{_LIMITATIONS}: quantile row; {_METRIC_SPECS}::MetricSpec._check_windowing",
+        f"{_CAPABILITIES}: quantile row; {_METRIC_SPECS}::MetricSpec._check_windowing",
         "declaration",
         tracker=_T_WINDOWED_QUANTILE,
     ),
@@ -432,44 +434,44 @@ _SPECS: dict[str, Spec] = {
         "source_limited",
         "the source carries no breakout catalog: run_breakout needs a native or panel source",
         "Analysis.from_unit_summary and Analysis.from_moments docstrings; "
-        f"{_LIMITATIONS}: breakout rows",
+        f"{_CAPABILITIES}: breakout rows",
     ),
     "REF:source.moments.grain": Spec(
         "source_limited",
         "a moments cube offers only the grains it was exported with: total, not asof",
         "increment/sources.py::MomentsSource (source.moments.grain reports the offered set); "
-        f"{_LIMITATIONS}: checkpoint replay",
+        f"{_CAPABILITIES}: checkpoint replay",
     ),
     "REF:source.moments.cluster_grain": Spec(
         "source_limited",
         "the moments wire format has no cluster marker, so clustered inference cannot be "
         "transported",
-        f"{_LIMITATIONS}: clustered rows (source.moments.cluster_grain)",
+        f"{_CAPABILITIES}: clustered rows (source.moments.cluster_grain)",
         "declaration",
     ),
     "REF:source.frame_panel.cluster_grain": Spec(
         "source_limited",
         "a per-day panel collapses to one row per unit before clustering could apply; "
         "the collapse is ambiguous on this shape",
-        f"{_LIMITATIONS}: clustered rows (from_unit_panel(cluster=...) refuses)",
+        f"{_CAPABILITIES}: clustered rows (from_unit_panel(cluster=...) refuses)",
         "declaration",
     ),
     "REF:source.moments.unit_grain": Spec(
         "source_limited",
         "a quantile reads per-unit outcomes and a moments cube holds only arm totals, so a "
         "quantile declared over a real scalar-moments cube has nothing to estimate from",
-        f"{_LIMITATIONS}: quantile rows; {_CATALOG}['from_moments']['quantile'] "
+        f"{_CAPABILITIES}: quantile rows; {_CATALOG}['from_moments']['quantile'] "
         "(needs unit-grain rows)",
     ),
     "REF:source.moments.covariate_unavailable": Spec(
         "source_limited",
         "a moments cube holds no per-unit rows to attach an adjustment covariate to",
-        f"{_LIMITATIONS}: observational rows (source.moments.covariate_unavailable)",
+        f"{_CAPABILITIES}: observational rows (source.moments.covariate_unavailable)",
     ),
     "REF:source.frame.unit_frame_panel": Spec(
         "source_limited",
         "a windowed or retention panel has no per-unit collapse to serve a unit frame",
-        f"{_LIMITATIONS}: panel covariate paragraph; increment/_frame_validation.py",
+        f"{_CAPABILITIES}: panel covariate paragraph; increment/_frame_validation.py",
     ),
     "REF:source.frame.retention_daily": Spec(
         "source_limited",
@@ -492,7 +494,7 @@ _SPECS: dict[str, Spec] = {
         "construction_limited",
         "a windowed or retention metric has no per-unit collapse a pre-period covariate "
         "can attach to; take the pre-period value into from_unit_summary",
-        f"{_LIMITATIONS}: panel covariate paragraph (CONSTRUCTION)",
+        f"{_CAPABILITIES}: panel covariate paragraph (CONSTRUCTION)",
         "declaration",
     ),
     # -- construction-limited at request time: one hazard, one code -----------------------
@@ -520,7 +522,7 @@ _SPECS: dict[str, Spec] = {
     "REF:facade.analysis.clustered_day_axis": Spec(
         "construction_limited",
         "a declared cluster is total-grain only: cluster-robust inference has no per-day form",
-        f"{_DAY_AXIS}::_CLUSTERED_DAY_AXIS; {_LIMITATIONS}: clustered rows",
+        f"{_DAY_AXIS}::_CLUSTERED_DAY_AXIS; {_CAPABILITIES}: clustered rows",
     ),
     "REF:definition.invalid#cluster": Spec(
         "construction_limited",
@@ -571,13 +573,13 @@ _SPECS: dict[str, Spec] = {
     "REF:sequential.route.unsupported#unbounded": Spec(
         "construction_limited",
         "every observation window must be bounded by the common registered reveal window",
-        f"{_LIMITATIONS}: sequential rows; AGENTS.md (a sequential transform must be "
+        f"{_CAPABILITIES}: sequential rows; AGENTS.md (a sequential transform must be "
         "predictable when each observation arrives)",
     ),
     "REF:sequential.route.unsupported#panel_unbounded": Spec(
         "construction_limited",
         "panel metrics need bounded windows covered by the common joint-reveal window",
-        f"{_LIMITATIONS}: sequential rows; Analysis.from_unit_panel docstring",
+        f"{_CAPABILITIES}: sequential rows; Analysis.from_unit_panel docstring",
         "declaration",
     ),
     "REF:sequential.route.unsupported#metric_type": Spec(
@@ -597,7 +599,7 @@ _SPECS: dict[str, Spec] = {
         "construction_limited",
         "a breakout readout under sequential inference needs one registered segment "
         "dimension; none is declared",
-        f"{_LIMITATIONS}: registered segmented sequential family",
+        f"{_CAPABILITIES}: registered segmented sequential family",
     ),
     "REF:readout.metric.quantile_grain": Spec(
         "construction_limited",
@@ -646,7 +648,7 @@ _SPECS: dict[str, Spec] = {
         "unfinished",
         "an unbounded-window sequential request raises a source code here while the "
         "definitions and panel routes raise sequential.route.unsupported",
-        f"{_LIMITATIONS}: sequential rows",
+        f"{_CAPABILITIES}: sequential rows",
         tracker=_T_SEQUENTIAL_UNBOUNDED,
     ),
     "REF:readout.metric.quantile_alternative": Spec(
@@ -669,19 +671,20 @@ _SPECS: dict[str, Spec] = {
         "source_limited",
         "a switchback frame identifies a Randomized design only: restricted, observational and "
         "encouragement designs are unsupported",
-        f"{_LIMITATIONS}: observational rows (refused, SOURCE -- no design=)",
+        f"{_CAPABILITIES}: observational rows (not expressible as `design=`; "
+        "refused as `identification=`, SOURCE)",
         "declaration",
     ),
     "REF:source.frame.switchback.metric#type": Spec(
         "source_limited",
         "switchback metrics must be a mean or a conversion",
-        f"{_LIMITATIONS}: quantile rows (refused at the metric-type gate)",
+        f"{_CAPABILITIES}: quantile rows (refused at the metric-type gate)",
         "declaration",
     ),
     "REF:source.frame.switchback.metric#method": Spec(
         "source_limited",
         "switchback procedures apply no decision-method variance reduction",
-        f"{_LIMITATIONS}: the switchback panel supports neither sequential inference nor CUPED",
+        f"{_CAPABILITIES}: the switchback panel supports neither sequential inference nor CUPED",
         "declaration",
     ),
     "REF:source.frame.switchback.metric#missing": Spec(
@@ -705,7 +708,7 @@ _SPECS: dict[str, Spec] = {
     "REF:source.frame.switchback.plan#inference": Spec(
         "source_limited",
         "switchback contrasts support fixed inference only",
-        f"{_LIMITATIONS}: the switchback panel supports neither sequential inference nor CUPED",
+        f"{_CAPABILITIES}: the switchback panel supports neither sequential inference nor CUPED",
         "declaration",
     ),
     "REF:source.frame.switchback.plan#margin": Spec(
@@ -741,21 +744,21 @@ _OVERRIDES: dict[tuple[str, str], Spec] = {
         "a cube is exported by a producer; under a drop policy the only producer of a windowed "
         "or retention metric is the dataframe panel, which refuses a pre-period covariate (the "
         "warehouse producer that carries one declares no missing policy)",
-        f"{_LIMITATIONS}: panel covariate paragraph (CONSTRUCTION)",
+        f"{_CAPABILITIES}: panel covariate paragraph (CONSTRUCTION)",
         "declaration",
     ),
     ("from_unit_day_artifact", "REF:frame.metric.window_days_supported"): Spec(
         "unfinished",
         "the artifact route reads a windowed quantile through the frame declaration and refuses "
         "it, while the definitions route that published it runs",
-        f"{_LIMITATIONS}: quantile row; {_METRIC_SPECS}::MetricSpec._check_windowing",
+        f"{_CAPABILITIES}: quantile row; {_METRIC_SPECS}::MetricSpec._check_windowing",
         tracker=_T_WINDOWED_QUANTILE,
     ),
     ("from_moments", "REF:sequential.source.invalid"): Spec(
         "source_limited",
         "a cube replays an exported checkpoint; it holds no per-unit source to start a "
         "sequential process from",
-        f"{_LIMITATIONS}: checkpoint replay",
+        f"{_CAPABILITIES}: checkpoint replay",
         "declaration",
     ),
 }
@@ -826,12 +829,12 @@ _CATALOG_CAPABILITY = {
 }
 _OPTION_AUTHORITY = {
     "none": "",
-    "cuped": f"{_LIMITATIONS}: Mean/Ratio CUPED rows",
-    "winsor_fixed": f"{_LIMITATIONS}: fixed-threshold winsorization row; docs/guides/metric-types.md",
+    "cuped": f"{_CAPABILITIES}: Mean/Ratio CUPED rows",
+    "winsor_fixed": f"{_CAPABILITIES}: fixed-threshold winsorization row; docs/guides/metric-types.md",
     "winsor_percentile": "docs/guides/metric-types.md (percentile winsorization on a mean)",
-    "cluster": f"{_LIMITATIONS}: clustered rows",
-    "sequential": f"{_LIMITATIONS}: sequential rows",
-    "observational": f"{_LIMITATIONS}: Observational IPTW row",
+    "cluster": f"{_CAPABILITIES}: clustered rows",
+    "sequential": f"{_CAPABILITIES}: sequential rows",
+    "observational": f"{_CAPABILITIES}: Observational IPTW row",
     "ni_margin": "increment/semantics/models.py::ExperimentMetric.margin (guardrail margin)",
 }
 _OPTION_PREREQUISITE = {

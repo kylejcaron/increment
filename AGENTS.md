@@ -84,7 +84,7 @@ harness for every capability; path presence alone is not evidence of parity.
 Where a path cannot support a capability, refuse explicitly and distinguish a
 source that cannot supply required input from an estimator or construction
 that is unfinished. Keep the path-by-capability table in
-`docs/limitations.md` aligned with measured behavior.
+`docs/reference/capabilities-by-entry-point.md` aligned with measured behavior.
 
 ## Method compatibility and limitations
 

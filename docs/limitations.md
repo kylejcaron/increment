@@ -11,6 +11,73 @@ does not. Where the package offers a better route, this page names it.
 
 Read the section that matches the decision you are making. Each entry says what
 the library does, what it assumes, and when the assumption matters.
+For how evidence is labelled see [Evidence status](validation.md#evidence-status).
+
+## How to read a refusal
+
+A refusal is a coded early stop, not a silent fallback: branch on `.code`
+([Machine-readable contracts](api.md#machine-readable-contracts)). The labels in the
+[capabilities table](reference/capabilities-by-entry-point.md#what-runs-where) say where a
+refusal comes from, not whether it is permanent.
+
+Not every unavailable capability is a refusal. Where the entry point has no parameter or
+constructor for the request, the table says **not expressible**: the call cannot be written, so
+Python raises `TypeError` (or there is nothing to call) and there is no `.code` to branch on.
+`from_switchback_panel(..., design=...)` and `from_switchback_panel(..., cluster=...)` are
+examples, as is every logged-policy request made through an `Analysis` entry point.
+
+- **SOURCE**: the entry point's input does not carry what the capability needs, as when a
+  moments cube carries no per-unit rows to attach a covariate to. This is a current absence
+  unless the text says structural, as the `from_switchback_panel` encouragement, observational
+  and cluster rows (not expressible) and quantile requests (a coded refusal) do.
+- **CONSTRUCTION**: no admissible construction exists for the request on that path. Five
+  reasons are stated: filling an outcome with its pooled mean shrinks variance; the margin
+  verdict is carried by `itt`; JSON object keys are strings; windowed and retention metrics
+  have no per-unit collapse for a CUPED covariate (use `from_unit_summary`); and the repair
+  for adaptive logging is not implemented (tracker-owned).
+- **COMBINATION**: stored state from an earlier release meets the current reader, recipe or
+  roster, as when a format-1 artifact context reaches the current reader.
+- **not comparable**: the capability concerns something that entry point lacks, such as an
+  artifact store, so there is no result to compare. The cell also names a SOURCE reason.
+
+The parity harness (`tests/parity_harness/matrix.py`) calls SOURCE `source_limited` and
+CONSTRUCTION `construction_limited`; its waiver strings label the "no switchback schedule"
+cells `COMBINATION:` where this page says SOURCE.
+
+## At a glance
+
+One row per entry on this page. Rows carry no numbers or codes; the entry is authoritative.
+
+| Entry | Kind | Check it when |
+|---|---|---|
+| [Uncertainty is estimated on every path](#uncertainty-is-estimated-on-every-path) | approximation | Reading any interval; approximations are weakest at small samples. |
+| [The switchback t reference is itself an approximation](#the-switchback-t-reference-is-itself-an-approximation) | approximation | Few switchback units, skewed outcomes, or assignment far from even. |
+| [Cluster references are qualified working approximations](#cluster-references-are-qualified-working-approximations) | approximation | Clusters are few, unbalanced, or skewed. |
+| [CUPED treats its adjustment coefficient as known](#cuped-treats-its-adjustment-coefficient-as-known) | approximation | Coefficient treated as known: interval narrower than a known-coefficient comparator in the tested design (equal allocation, one homogeneous slope); unequal allocation and arm-specific slopes untested. |
+| [Rare events on an unadjusted conversion/retention arm are estimated exactly, not refused](#rare-events-on-an-unadjusted-conversionretention-arm-are-estimated-exactly-not-refused) | scope of guarantee | Reading a conversion or retention interval's route, size limits, or extreme alpha. |
+| [Signed effects require a suitable scale and reference](#signed-effects-require-a-suitable-scale-and-reference) | assumption | A control mean can be zero or negative. |
+| [A quantile's reported interval depends on the alpha you asked for](#a-quantiles-reported-interval-depends-on-the-alpha-you-asked-for) | scope of guarantee | Comparing quantile intervals across analyses that allocated different alpha. |
+| [A quantile metric's planned variance is a projection from the pilot, not a certified bound](#a-quantile-metrics-planned-variance-is-a-projection-from-the-pilot-not-a-certified-bound) | approximation | Sizing a quantile experiment from a pilot, or extrapolating far past it. |
+| [Switchback carryover is assumed away, not tested](#switchback-carryover-is-assumed-away-not-tested) | assumption | Choosing a switchback washout; carryover is declared, not verified. |
+| [Switchback inference requires independent units or blocks](#switchback-inference-requires-independent-units-or-blocks) | assumption | Switchback units may correlate, interfere, or share schedules. |
+| [Sequential information fractions are unit counts, not Fisher information](#sequential-information-fractions-are-unit-counts-not-fisher-information) | approximation | Allocation or variance drifts during sequential monitoring. |
+| [The sequential certification campaign has not been executed](#the-sequential-certification-campaign-has-not-been-executed) | tracked work | Relying on sequential or cluster evidence beyond its bounded release checks; see [Unvalidated regimes](validation.md#unvalidated-regimes). |
+| [Off-policy evaluation of logged decisions is calibrated only under a fixed logger](#off-policy-evaluation-of-logged-decisions-is-calibrated-only-under-a-fixed-logger) | scope of guarantee | Evaluating logged decisions: interval is asymptotic and needs a fixed logger. |
+| [Arm power planning depends on declared alternative-arm variance shapes](#arm-power-planning-depends-on-declared-alternative-arm-variance-shapes) | assumption | Planning with alternative-arm variances that future data may not follow. |
+| [Conversion planning matches the exact binomial decision only within a budget](#conversion-planning-matches-the-exact-binomial-decision-only-within-a-budget) | approximation | Planning conversion or retention beyond the exact-replay budget. |
+| [Switchback planning requires its own model](#switchback-planning-requires-its-own-model) | approximation | Sizing a switchback from a pilot; estimation uncertainty is not included. |
+| [DML reports a partially-linear slope, not an average treatment effect](#dml-reports-a-partially-linear-slope-not-an-average-treatment-effect) | narrower estimand | Effects are heterogeneous and DML is read as an average effect. |
+| [Only untrimmed native-logistic IPTW accounts for fitting its propensity](#only-untrimmed-native-logistic-iptw-accounts-for-fitting-its-propensity) | approximation | Trimmed or generic propensity fits: standard error omits propensity estimation. |
+| [Trimming changes which population you estimated](#trimming-changes-which-population-you-estimated) | narrower estimand | Overlap trimming removes units; the estimand changes. |
+| [The positivity gate is a fixed threshold with no weight diagnostics](#the-positivity-gate-is-a-fixed-threshold-with-no-weight-diagnostics) | scope of guarantee | Relying on weighting; passing the gate is not evidence of overlap. See [Unvalidated regimes](validation.md#unvalidated-regimes). |
+| [Fixed-horizon FDR control assumes a dependence condition that is not checked](#fixed-horizon-fdr-control-assumes-a-dependence-condition-that-is-not-checked) | assumption | Fixed-horizon selection over correlated outcomes; the dependence condition is not checked. |
+| [Sequential selected intervals use the same stopped likelihood](#sequential-selected-intervals-use-the-same-stopped-likelihood) | scope of guarantee | Reading a selected interval as coverage for one metric picked afterwards. |
+| [Stopping-date guarantees require the registered reveal contract](#stopping-date-guarantees-require-the-registered-reveal-contract) | assumption | Monitoring departs from the registered reveal contract, or flags accumulate across dates. |
+| [Clustered CATE uncertainty is cluster-asymptotic](#clustered-cate-uncertainty-is-cluster-asymptotic) | approximation | Clustered CATE with few, unbalanced, or high-leverage clusters. |
+| [Targeting validation depends on identification and overlap](#targeting-validation-depends-on-identification-and-overlap) | assumption | Validating targeting on observational data; ignorability cannot be checked. |
+| [The targeting workflow carries no joint error control](#the-targeting-workflow-carries-no-joint-error-control) | scope of guarantee | Acting on the strongest of many targeting-workflow tests. |
+| [Meta-analysis can be anticonservative at small K](#meta-analysis-can-be-anticonservative-at-small-k) | approximation | Pooling few segments; HKSJ can undercover in the tested design. |
+| [The read-only SQL gate is a screen, not a sandbox](#the-read-only-sql-gate-is-a-screen-not-a-sandbox) | operational | Definitions could come from anyone you do not fully trust. |
 
 ## What runs where
 
@@ -22,199 +89,11 @@ points in three families: **dataframe** (`from_unit_summary`, one row per unit;
 into the warehouse); and **portable** (`from_moments`, a file of pre-reduced
 moments exported from any of the others).
 
-The warehouse is the primary route. The table records measured behavior on
-every path, using the dataframe unit-summary path as the oracle against which
-the other matched-arm paths are checked. The switchback panel estimates a
+The table records measured behavior on every path, using the dataframe unit-summary
+path as the oracle against which the other matched-arm paths are checked. The switchback panel estimates a
 different quantity (a fixed-horizon contrast over a switchback schedule), so it is
-exercised on its own and never compared row for row with that oracle.
-
-Reproduce this table with `uv run --extra demo --extra tables --extra dashboard python scripts/probe_capability_table.py`.
-
-| Capability | Unit summary | Unit panel | Switchback panel | Definitions | Unit-day artifact | Portable moments |
-|---|---|---|---|---|---|---|
-| Mean CUPED, fixed horizon | yes | yes | refused | yes | yes | yes |
-| Ratio CUPED, fixed horizon | yes | yes | refused | yes | yes | yes |
-| Ratio denominator-precision advisory, fixed horizon | yes | yes | refused | yes | yes | yes |
-| Informative Normal/Student-t/mixture log-lift priors, fixed-horizon mean/ratio/conversion/mean CUPED | yes | yes | not comparable (SOURCE — matched parallel-arm data has no switchback schedule) | yes | yes | yes |
-| Fixed-threshold winsorization under sequential inference | yes | yes | refused | yes | yes | checkpoint replay |
-| Ratio metric under sequential inference | yes | yes | refused | yes | yes | checkpoint replay |
-| CUPED under sequential inference | asymptotic route | refused | refused | asymptotic route | asymptotic route | checkpoint replay |
-| Ratio CUPED under sequential inference | asymptotic route | refused | refused | asymptotic route | asymptotic route | checkpoint replay |
-| Bounded conversion under asymptotic sequential inference | yes, pre-windowed per-unit outcomes with `exposure_date` | yes | refused | yes | yes | checkpoint replay |
-| Bounded retention (`threshold_days=(start, end)`) under asymptotic sequential inference (parity: the enumerated variant cells run by `tests/test_parity_matrix.py::test_asymptotic_retention_cell`, ids ending `-asymptotic_mean`, counts in `tests/parity_harness/COVERAGE.md`; in the `run` cells the four live ingresses agree and each retains the `scalar_mean` law) | refused (SOURCE, `source.frame.constructor` -- the summary carries no dates to resolve `threshold_days` against) | yes | refused | yes | yes | checkpoint replay |
-| Bounded conversion under automatic exact Bernoulli monitoring (`always_valid` without a registration) | yes, pre-windowed per-unit outcomes with `exposure_date` | yes | refused | yes | yes | checkpoint replay |
-| Bounded retention under automatic exact Bernoulli monitoring (`always_valid` without a registration) | refused (SOURCE, `source.frame.constructor` -- same as above) | yes | refused | yes | yes | checkpoint replay |
-| Automatic exact multi-arm bounded-conversion monitoring | yes, pre-windowed per-unit outcomes with `exposure_date` | yes | refused (SOURCE, `source.frame.switchback.identification` -- a switchback frame takes exactly one treatment arm; a sequential plan is refused separately) | yes | yes | checkpoint replay |
-| Automatic exact multi-arm bounded-retention monitoring | refused (SOURCE, `source.frame.constructor` -- same as above) | not measured: no parity case exercises multi-arm retention | refused (SOURCE, `source.frame.switchback.identification` -- same as above) | not measured | not measured | not measured |
-| Unbounded conversion under sequential inference (`conversion-run-sequential-utc-error`; unfinished routes tracked in `1cr4`) | refused (`sequential.source.invalid`; unfinished) | refused (`sequential.route.unsupported`; unfinished) | refused (SOURCE, `source.frame.switchback.plan`) | refused (`sequential.route.unsupported`; unfinished) | refused (`sequential.route.unsupported`; unfinished) | refused (SOURCE, `sequential.source.invalid` -- no checkpoint can be captured for replay) |
-| Unbounded retention (`threshold_days=int`) under sequential inference | refused (SOURCE, `source.frame.constructor`) | no recorded disposition | refused | refused (`sequential.route.unsupported` -- an unbounded band has no finalized observation window) | no recorded disposition | no sequential process can start |
-| Randomized registered segmented sequential family (automatic predeclared levels or explicit roster) | yes | yes | refused (SOURCE -- no sequential construction) | refused (SOURCE, `sequential.route.unsupported` -- relational capture has no immutable segment-property contract) | refused (SOURCE, `sequential.route.unsupported` -- artifact capture has no immutable segment-property contract) | retained-state replay only; breakout readout refused (SOURCE, `readout.source.dimension` -- no breakout catalog) |
-| Boolean and null segment labels in a registered segmented sequential family (canonical `true`/`false`/`__null__`, matching the string-labelled oracle) | yes (previously `missing_arm` on summary; measured on pandas, Polars and Arrow Boolean columns, automatic and explicit rosters) | yes (same three column kinds) | refused (SOURCE -- no sequential construction) | refused (SOURCE, `sequential.route.unsupported`) | refused (SOURCE, `sequential.route.unsupported`) | retained-state replay only; breakout readout refused (SOURCE, `readout.source.dimension`) |
-| Continuing a checkpoint recorded under earlier raw Boolean/null spellings (`True`, `None`) with canonically labelled units | refused (COMBINATION -- earlier prefix by canonical source, `sequential.continuation.rewrite`); the same string spellings still continue, and the checkpoint replays unchanged | refused (COMBINATION, `sequential.continuation.rewrite`) | refused (SOURCE -- no sequential construction) | refused (SOURCE, `sequential.route.unsupported`) | refused (SOURCE, `sequential.route.unsupported`) | replay only (SOURCE -- no per-unit source to continue from) |
-| Artifact context format 2 (hash-only source recipes; no source SQL) | not comparable (SOURCE -- no warehouse artifact) | not comparable (SOURCE -- no warehouse artifact) | not comparable (SOURCE -- no warehouse artifact) | yes, publishes format 2 | yes, reads format 2 only; a format-1 context is refused (COMBINATION -- stored older artifact by current reader, `artifact.format.unsupported`) and must be republished from trusted definitions | not comparable (SOURCE -- moments cubes carry no artifact context) |
-| Experiment window days (`start_day`, `end_day`, `observation_horizon_day`) follow `day_boundary`: naive value = wall clock at the boundary, aware value converted | not comparable (SOURCE -- `from_unit_summary` accepts no `Experiment` declaration, so there is no window to place) | not comparable (SOURCE -- same; a frame has no window lever) | not comparable (SOURCE -- same) | yes; a native sequential registration made before this change is refused (COMBINATION -- earlier registration by current recipe, `sequential.source.invalid`) and must be re-registered | yes, the context binds `window_days`; a context without it is refused (COMBINATION -- stored older artifact by current reader, `artifact.context.mismatch`) and must be republished | not comparable (SOURCE -- moments cubes carry no experiment window) |
-| Publication abort after the manifest insert began invalidates the generation (tombstone first, then relation erase; reads refused with `artifact.generation.dropped`; if the tombstone cannot be written the relations are kept and named, and `abandon_generation` from a fresh process hides the generation before they are dropped) | not comparable (SOURCE -- no artifact store) | not comparable (SOURCE -- no artifact store) | not comparable (SOURCE -- no artifact store) | yes, `WarehouseArtifactStore` publication | yes, reads of a dropped generation refuse | not comparable (SOURCE -- no artifact store) |
-| `increment.impute.pooled_mean` with declared `roles=`; `MetricSpec(missing="impute")` | roles honored: an `outcome` role refuses (CONSTRUCTION -- filling an outcome with its pooled mean shrinks variance, `impute.pooled_mean_outcome`); an undeclared role warns (`impute.pooled_mean_role_undeclared`); `MetricSpec(missing="impute")` refuses (CONSTRUCTION, `frame.metric.missing_impute`) | same | same | not comparable (SOURCE -- a warehouse `Metric` cannot express `missing="impute"`; the helper prepares dataframes only) | not comparable (SOURCE -- same) | not comparable (SOURCE -- no per-unit rows) |
-| Encouragement ITT, compliance and LATE, fixed horizon, declared via `design:` | yes | yes | refused (SOURCE -- `from_switchback_panel` takes no `design=`) | yes | yes | yes |
-| Explicit ITT/compliance without a LATE exclusion declaration (fixed horizon or supported sequential monitoring) | yes | yes | refused (SOURCE -- `from_switchback_panel` takes no `design=`) | yes | yes | yes; sequential checkpoint replay |
-| Fixed-horizon design-level compliance with an empty outcome catalog | yes, `metrics=[]` | yes, `metrics=[]` | refused (SOURCE -- no `design=`) | yes | yes | yes, format-8 `design_summary` and `metrics=[]` |
-| Encouragement guardrail with a declared non-inferiority margin | yes, ITT row carries the margin verdict; refused (CONSTRUCTION, `readout.encouragement.margin`) if a request excludes `itt` | yes, ITT row carries the margin verdict; refused (CONSTRUCTION) if `itt` is excluded | refused (SOURCE -- no `design=`) | yes, ITT row carries the margin verdict; refused (CONSTRUCTION) if `itt` is excluded | yes, ITT row carries the margin verdict; refused (CONSTRUCTION) if `itt` is excluded | yes, ITT row carries the margin verdict; refused (CONSTRUCTION) if `itt` is excluded |
-| Encouragement BH-selected secondary's LATE row re-estimated at the corrected level | yes | yes | refused (SOURCE -- no `design=`) | yes | yes | yes |
-| Encouragement ITT on a conversion metric keeps the exact binomial route | yes | yes | refused (SOURCE -- no `design=`) | yes | yes | yes |
-| Encouragement design with a retention metric (ITT and LATE readouts) | refused (SOURCE, `source.frame.constructor` -- no per-unit dates to resolve `threshold_days` against) | refused (CONSTRUCTION, `readout.encouragement.retention`) | refused (SOURCE -- no `design=`) | refused (CONSTRUCTION, `readout.encouragement.retention`) | refused (CONSTRUCTION, `readout.encouragement.retention`) | refused (CONSTRUCTION, `readout.encouragement.retention`) |
-| Encouragement conversion ITT breakouts retain exact confidence sets at zero control counts | refused (SOURCE -- no declared breakout dimension) | yes | not comparable (SOURCE -- no switchback schedule) | yes | yes | refused (SOURCE -- no per-unit breakout dimension) |
-| Bounded-retention breakouts with mature exposure cohorts (`audit-retention-breakout-cohorts`) | refused (SOURCE -- no exposure-date cohort stream, `source.frame.constructor`) | yes, `run_breakout` | not comparable (SOURCE -- no switchback schedule) | yes, `run_breakout` and cohort-aware `breakout_summaries` | yes, `run_breakout` and cohort-aware `breakout_summaries` | refused (SOURCE -- no breakout operation, `facade.analysis.operation`) |
-| Encouragement continuous ITT + Bernoulli uptake compliance, jointly monitored (composed sequential family, e-BH selected) | yes | yes | refused (SOURCE -- no `design=`, no sequential construction) | yes | yes | checkpoint replay |
-| Uptake-only sequential compliance with an empty outcome catalog (`always_valid` and a compliance policy) | yes, `metrics=[]` | yes, `metrics=[]` | refused (SOURCE -- no `design=`, no sequential construction) | yes | yes | checkpoint replay with `metrics=[]` |
-| Uptake-only sequential compliance that retains an unbounded retention metric in the outcome catalog (explicit uptake-only registration over that catalog; compliance-only `run_asof_lift`/`run` succeeds; an ITT request refuses with `breakout.retention.encouragement` on `run_asof_lift`, or `sequential.source.invalid` on `run` because the outcome has no registered sampling law) | refused (SOURCE -- a one-row-per-unit summary has no per-unit dates to resolve a retention band against, `source.frame.constructor`) | refused (COMBINATION -- a unit panel refuses a retention metric under an Encouragement design at construction, `readout.encouragement.retention`) | refused (SOURCE -- no `design=`, no sequential construction) | yes, catalog retained | yes, the retention metric declared on the experiment and its catalog retained | checkpoint replay with the retention metric in `metrics=` |
-| Observational IPTW covariate adjustment | yes | yes | refused (SOURCE -- no `design=`) | yes | yes | refused (SOURCE -- a moments cube carries no per-unit rows to attach a covariate to) |
-| Observational AIPW/DML covariate adjustment | yes | yes | refused (SOURCE -- no `design=`) | yes | yes | refused (SOURCE -- same as above) |
-| Categorical observational adjustment (string covariates) | yes | yes | refused (SOURCE -- no `design=`) | yes | yes | refused (SOURCE, `source.moments.covariate_unavailable` -- no per-unit covariates) |
-| Categorical nulls with a nondefault missing-value policy | yes | yes | refused (SOURCE -- no `design=`) | default missing-value refusal; YAML does not accept policy overrides | default missing-value refusal inherited from definitions | refused (SOURCE -- no per-unit covariates) |
-| Observational primary + secondary + guardrail together (role multiplicity) | yes | yes | refused (SOURCE -- no `design=`) | yes | yes | refused (SOURCE -- same as above) |
-| Quantile inference on tied/rounded outcomes | yes | yes (unwindowed only -- the panel's per-unit collapse is the same per-unit total mean/ratio already use; a windowed quantile metric can never be declared on the frame path at all, `frame.metric.window_days_supported`) | refused (SOURCE -- a quantile metric is refused at the metric-type gate before any frame is read) | yes | yes | refused (SOURCE, `source.frame.quantile_no_moments` on `export()` -- a quantile has no moments representation, so no quantile cube exists to replay; a quantile declared over an existing scalar-moments cube is refused on `run()` with `source.moments.unit_grain` because the cube holds no per-unit values, on `run_breakout()` with `facade.analysis.operation`, and on the day-axis methods with `facade.analysis.no_definitions`) |
-| Quantile metric under an `Observational` design (two-sided, zero-null request; an absolute `margin_abs` is refused first with `readout.metric.quantile_alternative`, a relative margin at construction with `plan.observational.relative_margin`) | refused (CONSTRUCTION, `readout.observational.quantile` -- the order-statistic interval assumes randomized arms, so no observational quantile estimator exists) | refused (CONSTRUCTION, `readout.observational.quantile` -- same) | refused (SOURCE -- no `design=`) | refused (CONSTRUCTION, `readout.observational.quantile` -- same) | refused (CONSTRUCTION, `readout.observational.quantile` -- same) | refused (CONSTRUCTION, `readout.observational.quantile` on a two-sided, zero-null `run()` -- an observational frame cannot export a quantile cube (`export()` raises the same code), so this is a quantile declared over an existing scalar-moments cube. No source could supply the estimator an input, so the estimator refusal precedes the source limit the same declaration meets under a randomized design (`source.moments.unit_grain`). A request with an absolute `margin_abs` is refused first with `readout.metric.quantile_alternative`, and a relative margin at construction with `plan.observational.relative_margin`. `run_breakout()` still raises `facade.analysis.operation` and the day-axis methods `facade.analysis.no_definitions`, SOURCE limits raised before any estimator is reached) |
-| Clustered ratio metric with a non-positive control-arm numerator | yes | refused (SOURCE -- `from_unit_panel(cluster=...)` refuses unconditionally; build clustered arm totals with `from_unit_summary(cluster=...)`) | refused (SOURCE -- a clustered arm-lift ratio has no switchback contrast shape) | yes | yes | refused (SOURCE, `source.moments.cluster_grain` -- clustered moments transport needs a complete encouragement compliance payload) |
-| Clustered zero relative variance retains its point and any available additive interval | yes | refused (SOURCE -- no clustered arm moments; use `from_unit_summary`) | refused (SOURCE -- a switchback contrast has no arm-cluster shape) | yes | yes | refused (SOURCE, `source.moments.cluster_grain` -- clustered moments transport needs a complete encouragement compliance payload) |
-| `Analysis.planning_baseline`, mean metric | yes | yes | yes (the pilot-fitted `SwitchbackBaseline` for the `switchback_*` solvers) | yes | yes | yes |
-| `Analysis.planning_baseline`, quantile metric | yes | yes (same unwindowed-only reach as the row above) | refused (SOURCE -- a quantile metric is refused at the switchback metric-type gate before any frame is read) | yes | yes | refused (SOURCE, `analysis.planning_baseline.quantile_source_unavailable` -- no per-unit control-arm values to draw a pilot sample from; a quantile cube cannot be exported, `source.frame.quantile_no_moments`) |
-| `Analysis.planning_baseline` with a declared cluster (per-unit mean/var; ICC on the metric's per-unit score) | yes | refused (SOURCE -- `from_unit_panel` takes no cluster) | refused (SOURCE -- a switchback contrast has no arm cluster) | yes | yes | refused (SOURCE, `source.moments.cluster_grain` -- clustered moments are not exported) |
-| `Analysis.planning_baseline` under a declared trigger (triggered-population moments and `trigger_rate`) | refused (SOURCE -- `from_unit_summary` accepts no `Experiment` declaration, so `planning_baseline`'s `trigger` always resolves `None`; the assigned population is analyzed instead) | refused (SOURCE -- same as `from_unit_summary`) | refused (SOURCE -- same as `from_unit_summary`) | yes | yes with the `trigger_population` and `assignment_counts` extensions; otherwise refused (SOURCE, `analysis.planning_baseline.trigger_evidence_unavailable`) | refused (SOURCE -- same as `from_unit_summary`) |
-| Logged-policy contrast (`estimate_policy_contrast`) | refused (SOURCE -- no `Analysis` constructor carries a decision trace: the per-decision chosen action, exact logged propensity, logging policy version and reward boundary; the family's own ingress is `LoggedTrace.from_records` / `from_frame`) | refused (SOURCE -- same) | refused (SOURCE -- same) | refused (SOURCE -- same) | refused (SOURCE -- same) | refused (SOURCE -- same) |
-| TabularPolicy persistence (`model_dump_json` / `model_validate_json`) | not comparable (SOURCE -- no `Analysis` constructor carries a policy table; the policy is a `LoggedTrace` input) | not comparable (SOURCE -- same) | not comparable (SOURCE -- same) | not comparable (SOURCE -- same) | not comparable (SOURCE -- same) | not comparable (SOURCE -- same). Within the family: JSON roundtrips string-keyed tables only; any other key type refuses (CONSTRUCTION -- JSON object keys are strings, `logged_policy.policy.json_context_key`); typed keys persist through `model_dump(mode="python")` or trusted pickle |
-| Metrics added after the plan: `Analysis.available_metrics` and `exploratory_metrics=` on `run`, `run_breakout`, `run_asof_lift`, `run_asof`, `run_daily` | refused (SOURCE, `facade.analysis.exploratory_metrics_source_limited` -- no saved definitions to add from; use `Analysis.from_definitions`) | refused (SOURCE, same code) | refused (SOURCE, same code) | yes, `role="exploratory"` under the default unassigned procedure; refused under registered sequential inference (`facade.analysis.exploratory_metrics_sequential` -- an added metric is chosen after data are visible, so no registered model covers it) | refused (SOURCE, same code) | refused (SOURCE, same code) |
-
-For `from_definitions`, pinning preserves dimensions joined by freshness-bearing
-fact sources. Qualifying non-enrolled events can establish that later data has
-arrived without entering the enrolled outcome population. In `from_unit_panel`,
-natural day labels such as `d9` and `d10` use numeric order when inferring
-maturity, matching the same explicitly declared observation bound.
-Windowed ratios use the earlier numerator/denominator observation bound for
-totals and completed as-of cohorts. An entirely null component under
-`missing="zero"` retains the panel-extent fallback; an explicitly supplied
-`observation_end` remains authoritative.
-
-An added metric is read through the same estimators as a declared one: CUPED, ratio
-and winsorized metrics follow the call-wide `decision_method` you pass (the metric has no
-declared binding, so the default estimator applies: IPTW under an observational design,
-unadjusted otherwise), clustering and breakouts
-follow the experiment's declaration, and the day-axis refusals (clustered, winsorized,
-quantile, dimensioned `run_daily` of an undeclared metric) keep their codes. It joins
-no plan family and never changes a declared row; under a breakout multiplicity plan its
-segment cells form a family of their own.
-
-For clustered triggered planning, `from_definitions` and `from_unit_day_artifact`
-retain both populations: assigned mean cluster size determines recruitment;
-contributing-cluster participation, analyzed size CV, and analyzed-score ICC
-determine the planning approximation. The artifact needs `cluster_identity`
-as well as the trigger and assignment-count extensions. These pilot estimates
-do not certify future participation or finite-sample coverage. Other
-constructors cannot supply the declared trigger membership identified in the table.
-Both clustered trigger routes refuse a pilot whose metric rows omit
-trigger-eligible control units (SOURCE,
-`analysis.planning_baseline.trigger_metric_population_unavailable`).
-Missing rows can reflect unfinished windows or outcomes undefined even after
-full follow-up, such as `avg_event` for a unit with no events. Complete
-unfinished windows; for structurally undefined outcomes, choose a metric
-defined for every eligible unit. The adapter does not silently substitute a
-complete-case population for the declared trigger population.
-
-Mean/Ratio CUPED on the unit panel resolves the declared covariate the same
-way observational adjustment already does: through the per-unit value
-`unit_frame()`/`moments(grain="total")` join in, constant across a unit's
-own rows, refused by name (`frame.frame_panel.unit_covariate_varies`) when
-it genuinely varies. A windowed or retention metric still refuses a CUPED
-covariate (CONSTRUCTION, `frame.validation.from_unit_panel`): those metrics
-have no per-unit collapse for that value to attach to. For a windowed
-metric, compute each unit's windowed value upstream and declare it as an
-unwindowed metric on `from_unit_summary`; no frame source serves a per-unit
-retention value, so remove the covariate to run retention without CUPED.
-The switchback panel supports neither sequential inference
-nor CUPED; its contrasts are fixed-horizon. "Asymptotic route" means CUPED
-is admitted under `InferenceSpec(kind="asymptotic_mean")`: fitted coefficients
-use retained joint moments, whose confidence sequence accounts for their
-estimation; pre-period coefficients use the scalar-mean adjustment. The exact
-Bernoulli e-process route (`AlwaysValid`) admits neither form of CUPED.
-"Checkpoint replay" means `from_moments` cannot start a sequential process,
-because it holds no per-unit source to register against, but reproduces an
-exported checkpoint exactly. On the warehouse the covariate for a ratio metric
-is the numerator's pre-period total; a separate denominator covariate is not
-expressible, and the CUPED guide says why. An encouragement design's continuous
-ITT and Bernoulli-uptake compliance, monitored jointly, compose into one
-sequential family automatically (no explicit registration to declare); the
-family reports one shared `family_guarantee`, equal to the weakest regime any
-member carries -- with an asymptotic scalar-mean ITT cell in the family, that
-value is `asymptotic_sequential` on every selected row, including the exact
-Bernoulli compliance cell's own row, not "exact for one cell, asymptotic for
-the other." The `from_switchback_panel` SOURCE refusal on the encouragement,
-observational and quantile rows above is structural, not a gap: that
-constructor accepts only a switchback-shaped frame and an
-`identification: Randomized` design, so it never reaches an `Encouragement`,
-`Observational`, or quantile-metric case built for the other five paths.
-
-Parity is asserted, not assumed: identical per-unit data through each path must
-reproduce the same adjusted moments and interval, and the same retained
-sequential state byte for byte. That check runs against DuckDB in the ordinary
-suite and against a live PostgreSQL in the warehouse gate. For the two binary
-rows it reads one per-unit dataset through the unit panel (under the same
-two-day window the definitions declare), the definitions reader, the unit-day
-artifact reader and a replayed portable checkpoint, and requires each to retain
-the unit-summary oracle's state, registration and interval exactly.
-
-The informative-prior row uses the existing approximate Normal likelihood
-on log lift, including for conversion metrics; it is not a binomial
-posterior or a finite-sample sampling guarantee. The three enumerated
-prior cases compare posterior bounds, probabilities, metadata and row
-identity across all five applicable constructors on DuckDB and PostgreSQL.
-See [Priors and Bayesian decisions](guides/priors-and-decisions.md) for
-binary boundary behavior and the distinction from prior-free sampling.
-
-Binary sequential monitoring (either automatic route) composes as follows, measured on
-`from_unit_summary` and pinned per axis. Multiplicity: every in-family secondary on the
-metric/arm axis -- Bernoulli, scalar-mean, or a mix of both -- is registered into the
-family at a nominal per-cell allocation and selected by e-BH at the plan's `q`
-(supported); a selected member's interval is reinverted at `min(q * R / m, nominal_alpha)`,
-and the family reports one shared `family_guarantee` (`finite_sample` only when every
-member is exact, `asymptotic_sequential` when any member is asymptotic). This is
-unrelated to the registered breakout/segment axis, whose own correction is declared per
-registration: a continuous (scalar-mean) breakout registers `correction="bonferroni"` and
-keeps fixed per-cell Bonferroni (FWER, no reselection); a discrete (Bernoulli) breakout
-registers `correction="bh"` and is selected by the same e-BH-at-`q` family as an ordinary
-metric/arm secondary, reinverted the same way. This is also unrelated to guardrails, which test at the
-full plan `alpha` outside every family. CUPED: a pre-period coefficient and centre declared through
-`InferenceSpec.adjustments` is supported on the asymptotic route; an in-experiment
-coefficient is refused on the exact route (`sequential.transform.unpredictable`) because
-it re-weights past increments with information unavailable when they were revealed, a
-construction this package does not have; the asymptotic route retains the joint moments
-instead. Clustered assignment: refused before any observation is read
-(`sequential.route.unsupported`); no cluster-robust sequential boundary is built.
-Winsorization: it does not apply to a 0/1 outcome, so a binary metric refuses a
-percentile or fixed clip at declaration (`frame.metric.winsorization_applies_type`); on a
-mean metric a fixed clip is supported and a percentile clip refuses
-(`sequential.transform.unpredictable`) because its threshold depends on accumulated data.
-Quantile metrics: refused on the exact route (`definition.inference.always_valid_metric_type`)
-because the Bernoulli law does not describe them; use fixed-horizon inference (valid for one planned analysis, not repeated looks).
-Breakouts: `InferenceSpec.segments` fixes one string-valued dimension and its
-allowed levels before outcomes on `from_unit_summary` and `from_unit_panel`;
-an explicit registration is optional. Empty levels stay in the roster.
-Asymptotic segment membership must be determined before assignment and uses
-the existing fixed-roster Bonferroni construction, not BH. Segment labels are
-canonical strings on both frame routes: `true`/`false` for Booleans and
-`__null__` for missing values, so summary and panel sources label the same
-units identically. A checkpoint recorded under an earlier raw spelling (`True`,
-`None`) replays unchanged but cannot be continued by a canonically labelled
-source (COMBINATION -- earlier recorded prefix with a different roster
-spelling; `sequential.continuation.rewrite`). That is a correction of an earlier
-inconsistency, not an inherent limitation.
-`from_definitions` and `from_unit_day_artifact` still refuse segmented capture
-(`sequential.route.unsupported`). A moments cube can replay retained segment
-state but has no breakout catalog, so `run_breakout` refuses
-(`readout.source.dimension`). Switchback: refused before any frame is read
-(`source.frame.switchback.plan`, reason `unsupported_inference`) for every sequential kind,
-automatic or explicit; the switchback contrast has no sequential construction.
-Continuous intent-to-treat under an encouragement design registers under the public asymptotic
-mean law exactly as a randomized design does (`sequential.route.unsupported` still names the
-Bernoulli route on any other mechanism).
+exercised on its own and never compared row for row with that oracle. It lives in
+[Capabilities by entry point](reference/capabilities-by-entry-point.md#what-runs-where).
 
 ## What the intervals assume
 
@@ -404,7 +283,8 @@ continuity correction:
 An Encouragement design's ITT on a conversion metric keeps
 this route (ITT and LATE readouts of a retention metric under an Encouragement design are refused
 with `readout.encouragement.retention`; a compliance-only request, `estimands=("compliance",)`,
-ignores outcome configuration and succeeds where the constructor accepts the declaration): the
+ignores the retention outcome and is measured to succeed on `from_definitions` only, see the
+[capabilities table](reference/capabilities-by-entry-point.md#what-runs-where)): the
 design's uptake (first-stage compliance) moments are a
 different random variable over the same units and do not change the
 ITT's own sufficient statistics, so they are stripped before this route
@@ -606,12 +486,13 @@ the roster unit, so a uniformly cloned roster changes neither the estimate nor i
 
 Both laws target the mean-unit retained-window additive effect. Results record
 `observation_steps` and `retained_steps=observation_steps-carryover_order`; the
-total/conversion estimand labels explicitly name that retained window. A schedule
-integrity check cannot establish either independent randomization or absence of
-carryover. The original degenerate all-CT witness (`ct=320, tc=0` under a unit-cycle
-declaration) now refuses before statistics are constructed. Earlier refusal of
-unsupported shared declarations did not prevent de facto shared data from entering
-the unit-cycle path. Correctly declared, nondegenerate shared schedules are supported.
+total/conversion estimand labels explicitly name that retained window.
+
+A schedule integrity check cannot establish either independent randomization or absence of
+carryover. Under a unit-cycle declaration, a realized schedule too lopsided to be plausible
+(for example 320 CT and 0 TC unit-cycle draws) refuses before statistics are constructed
+with `source.frame.switchback.schedule` and reason `implausible_realized_split`. Correctly
+declared, nondegenerate shared schedules are supported.
 
 ### Sequential information fractions are unit counts, not Fisher information
 
@@ -650,6 +531,9 @@ Incomplete or insufficiently precise checks remain unverified. This narrower
 release evidence requirement does not claim completion of the full campaigns
 or change the separate unit-cycle research obligations.
 
+Evidence status for these campaigns is recorded under
+[Unvalidated regimes](validation.md#unvalidated-regimes).
+
 ### Off-policy evaluation of logged decisions is calibrated only under a fixed logger
 
 `estimate_policy_contrast` evaluates a target policy against a reference policy from a
@@ -683,6 +567,9 @@ that drove the propensities down. The construction that repairs both (stabilized
 adaptively weighted estimators with a martingale variance; Hadad et al. 2021, Zhang,
 Janson and Murphy 2021) is not implemented, so the refusal names one policy version per
 trace as the route forward.
+
+The record of where these figures come from is under
+[Unvalidated regimes](validation.md#unvalidated-regimes).
 
 Under a fixed logger the interval is nominal from the effective-sample-size floor up.
 Measured on 26 fixed-logger cells over target divergence, horizon and unit count (9188
@@ -850,6 +737,8 @@ A handful of near-boundary units can dominate an IPTW or AIPW estimate while the
 passes, producing an estimate that looks precise and is not stable. If you are relying on
 weighting, compute weight diagnostics yourself.
 
+For the evidence record see [Unvalidated regimes](validation.md#unvalidated-regimes).
+
 ## Multiple comparisons
 
 ### Fixed-horizon FDR control assumes a dependence condition that is not checked
@@ -866,6 +755,9 @@ pre-data declarations; timestamps and observed means do not establish them.
 
 ### Sequential selected intervals use the same stopped likelihood
 
+What this assumes is the family's declared common joint-unit filtration. It matters when a
+selected interval is read as coverage for one metric chosen afterwards, which is a different
+statement.
 Sequential families retain every registered cell, including missing or abstaining
 cells. Selected intervals are reinverted at `min(q * R / m, nominal alpha)` on
 the checkpoint used for selection. This selected-set statement is distinct from
@@ -1140,6 +1032,9 @@ different question.
 ## Operational limits
 
 ### The read-only SQL gate is a screen, not a sandbox
+
+The gate assumes definitions are trusted code; it matters whenever a definitions file could
+come from someone you do not trust.
 
 Every SQL string in a definitions file is admitted as exactly one read-only query. The check
 parses the string with the declared (or the connection's) dialect and rejects:

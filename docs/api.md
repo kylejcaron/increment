@@ -11,8 +11,9 @@ prereleases, what is written to disk or a warehouse, and how to migrate. It is
 a software-compatibility policy, not scientific certification: a stable
 interface says nothing about whether a method's assumptions hold for your
 experiment. Method assumptions and known gaps live in
-[Statistical limitations](limitations.md), whose path table remains the single
-statement of what runs where.
+[Statistical limitations](limitations.md); the
+[capabilities by entry point](reference/capabilities-by-entry-point.md) table remains the
+single statement of what runs where.
 
 ### Promised surface
 
@@ -136,6 +137,13 @@ the same units canonically is refused with `sequential.continuation.rewrite`.
 That refusal is not permission to restart monitoring and spend alpha again:
 keep the earlier checkpoint as the record, or register a new protocol you can
 defend. See [Sequential inference](guides/sequential-inference.md).
+
+**Frame segment labels and degenerate shared schedules.** A frame sequential registration
+whose segment labels were not canonical used to report `missing_arm` on the unit summary;
+labels are now canonical, as above. A degenerate shared schedule declared as a unit-cycle
+order could previously enter the unit-cycle path; a realized schedule too lopsided to be
+plausible now refuses before statistics are constructed with
+`source.frame.switchback.schedule` and reason `implausible_realized_split`.
 
 **Encodings are format-specific.** Aliases, tuple encoding, collection order,
 duplicate rejection and which values are runtime-only are defined by each

@@ -41,7 +41,7 @@ Verdicts are per leg: a day-axis view has a value leg and a lift leg that refuse
 | from_unit_day_artifact | 672 | 0 | 500 | 3,976 | 228 | 0 |
 | from_unit_summary | 102 | 1,536 | 1,544 | 1,824 | 370 | 0 |
 | from_unit_panel | 480 | 920 | 1,940 | 1,632 | 404 | 0 |
-| from_switchback_panel | 4 | 2,216 | 1,428 | 1,440 | 288 | 0 |
+| from_switchback_panel | 4 | 1,736 | 1,428 | 1,920 | 288 | 0 |
 | from_moments | 144 | 1,582 | 1,628 | 1,728 | 294 | 0 |
 
 Cells where, in at least one leg, an ingress runs and another does not (each non-runner carries a status, reason and authority): 522.

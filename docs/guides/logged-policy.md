@@ -9,9 +9,11 @@ The estimator answers how much better a candidate policy would have done than a
 reference policy over the same horizon, without deploying either.
 
 This family has its own ingress. It does not run through any `Analysis`
-constructor, because none of them carries a decision trace; the "What runs
-where" table in [Statistical limitations](../limitations.md) records that as a
-SOURCE refusal on every path.
+constructor or method, because none of them carries a decision trace; the "What runs
+where" table in
+[Capabilities by entry point](../reference/capabilities-by-entry-point.md#what-runs-where)
+records the capability as not expressible on every entry point: there is no `Analysis`
+call to write and no `.code`. Build the trace with `LoggedTrace` instead (see below).
 
 ## What it estimates
 

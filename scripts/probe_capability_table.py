@@ -1,4 +1,4 @@
-"""Reproduce docs/limitations.md's "What runs where" table.
+"""Reproduce docs/reference/capabilities-by-entry-point.md's "What runs where" table.
 
 Run with `uv run --extra demo --extra tables --extra dashboard python
 scripts/probe_capability_table.py`.
@@ -17,8 +17,8 @@ disagreement), or, for the two probes that call `Analysis.planning_baseline`
 directly rather than `.run()`, one line per constructor naming the value or
 the coded refusal.
 
-Transcribe exactly what this prints into docs/limitations.md's "What runs
-where" table -- never a value carried over from a stale draft without
+Transcribe exactly what this prints into docs/reference/capabilities-by-entry-point.md's
+"What runs where" table -- never a value carried over from a stale draft without
 having been measured on this checkout.
 """
 
@@ -294,8 +294,9 @@ _CONSTRUCTORS = (
 
 def _row_logged_policy_contrast() -> None:
     """The logged-policy family consumes a `LoggedTrace`, which no `Analysis`
-    surface produces: a SOURCE refusal on every constructor, checked against
-    the live signatures rather than asserted from prose."""
+    surface produces or accepts: not expressible on every constructor (nothing to
+    call, no `.code`), checked against the live signatures rather than asserted
+    from prose."""
     import inspect
 
     from increment.logged_policy import LoggedTrace, estimate_policy_contrast
@@ -310,11 +311,13 @@ def _row_logged_policy_contrast() -> None:
         and "LoggedTrace" in str(inspect.signature(member).return_annotation)
     ]
     assert not producers, producers
+    assert not hasattr(Analysis, "estimate_policy_contrast")
     for constructor in _CONSTRUCTORS:
         assert callable(getattr(Analysis, constructor))
         print(
-            f"logged_policy_contrast: {constructor}: refused (SOURCE -- no Analysis "
-            "surface yields a LoggedTrace; ingress is LoggedTrace.from_records / from_frame)"
+            f"logged_policy_contrast: {constructor}: not expressible (no Analysis "
+            "surface yields a LoggedTrace or takes a decision trace, so there is no call to "
+            "make and no .code; ingress is LoggedTrace.from_records / from_frame)"
         )
 
 

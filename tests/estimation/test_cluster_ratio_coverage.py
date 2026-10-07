@@ -119,7 +119,8 @@ def test_clustered_ratio_cis_beat_iid_coverage_smoke():
 @pytest.mark.slow
 @pytest.mark.parameter_recovery
 def test_clustered_ratio_cis_are_nominal_with_a_negative_control_mean():
-    """docs/limitations.md:270-286 promises a signed control mean on the
+    """The "Signed effects require a suitable scale and reference" entry in
+    docs/limitations.md promises a signed control mean on the
     clustered route; this is the coverage proof, not just an admission
     check -- both arms share mu=-5.0 so the true lift is still 0, but
     every control-arm cluster total (num_j) is now negative, the exact
