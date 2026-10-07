@@ -23,6 +23,7 @@ from increment.estimation.results import (
     _alpha_eff_for,
     _fcr_alpha_for,
     _fixed_fcr_parameters,
+    _reinverted_binomial_note,
     open_bound_from_two_sided_at_target,
     relative_confidence_set,
 )
@@ -175,7 +176,8 @@ def _binomial_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
             n_t=bset.n_t,
             nuisance_beta=binomial_rr.nuisance_beta(alpha),
             decision_alpha=alpha,
-        )
+        ),
+        "note": _reinverted_binomial_note(view.note, interval),
     }
     if view.lift is not None:
         updates["lift"] = view.lift.model_copy(
