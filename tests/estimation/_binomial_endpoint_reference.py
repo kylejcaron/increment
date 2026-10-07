@@ -1,9 +1,10 @@
 """Finer-resolution reference for the exact binomial endpoint search.
 
-The reference searches the same evaluated p-envelope (`binomial_rr.p_plus` / `p_minus`) as
-production, but with a different inversion (doubling, then arithmetic bisection) taken to a
-relative bracket of ``2**-40``, so a reported endpoint can be compared against a near-exact
-crossing instead of a pinned bit pattern.
+The reference reads the p-envelope (`binomial_rr.p_plus` / `p_minus`) with no tail level, so
+each p-value is refined to its full relative gap and is never looser than the probe production
+settles against its tail level at the same risk ratio. It inverts with a different method
+(doubling, then arithmetic bisection) taken to a relative bracket of ``2**-40``, so a reported
+endpoint can be compared against a finer crossing instead of a pinned bit pattern.
 """
 
 from __future__ import annotations

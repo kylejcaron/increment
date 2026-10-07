@@ -323,27 +323,44 @@ It also has two further boundaries, both refusals rather than silent degradation
   higher cap or a closed-form/recurrence tail evaluation (out of scope here).
 * **Latency.** Cost grows with arm size: measured on commodity hardware
   (two-sided, `alpha=0.05`, cold, CPU seconds on a shared machine, so read them as
-  upper-side estimates), a 5% control rate takes roughly 0.3s at 100,000 per arm,
-  0.9s at 1,000,000 and 2.4s at 4,000,000 (`MAX_ARM_SIZE`); a 1e-4 rate at
-  1,000,000 per arm takes about 0.04s, because the control-count window follows
+  upper-side estimates), a 5% control rate takes roughly 0.5s at 100,000 per arm,
+  2s at 1,000,000 and 4s at 4,000,000 (`MAX_ARM_SIZE`); a 1e-4 rate at
+  1,000,000 per arm takes about 0.03s, because the control-count window follows
   the nuisance rate. The window is widest at a 50% control rate, which costs
-  roughly 0.8s, 3s and 7s at the same three sizes; a dense 90% rate costs 0.4s,
-  1.6s and 3.6s. The 5% figures are down from an unoptimized ~13s and ~60s at
-  100,000 and 1,000,000 per arm: about 3x from reusing treatment tail vectors
-  and the rate-aware window, and the rest from locating each endpoint with
-  interpolated probes that stop at a declared resolution instead of refining
-  to floating-point precision, without weakening the certified interval in any
-  tested regime, including rare events. The resolution is relative: each
-  endpoint is the outer end of a search bracket no wider than 0.05% (2^-11) and
-  no wider than 1/128 of the log risk ratio's standard error, whichever is finer,
-  so the search works harder as arms grow and the standard error shrinks. At
-  50% and 90% control rates with 1,000,000 or more per arm that costs more than
-  the earlier fixed ten-bisection stop (1.5s to 3.6s at 90% and 4,000,000 per
-  arm), which was faster there because its bracket spanned up to two-thirds of
-  the interval's half-width. The stop is the resolution of the evaluated tail
-  envelope only, not a bound on the nuisance-search certification gap or on
-  SciPy's primitive error; a search that cannot reach it keeps its conservative
-  endpoint and says so in the row's `note`. A readout multiplies this across
+  roughly 1.3s at 100,000 per arm and 3.3s at 1,000,000. These are about
+  1.5 times the cost of stopping each search after a fixed 60 splits, which could
+  leave a p-value near the tail level far looser than reported.
+  Each p-value bounds a supremum over the control rate's Clopper-Pearson
+  interval. The search splits that interval until the bound's distance above a
+  witnessed lower end of the supremum is within 2^-14 of the larger of the p-value
+  and the tail level it is compared with, plus the certificate's own float noise
+  (2e-12 to 1.4e-11 from 1,000 to 4,000,000 per arm, which no search narrows), or
+  after 2,048 splits. The reported directional p-value is therefore a certified upper
+  bound that exceeds the supremum-based p-value by no more than that gap: 2^-14 of the
+  p-value above the tail level and 2^-14 of the tail level below it (1.5e-6 at a 0.025
+  tail, 6.1e-7 at a 0.01 tail). A two-sided p-value is twice the smaller directional
+  one, so it exceeds its ideal by at most twice that. The target is never tighter than
+  a fixed 1e-6 stop at a tail level of 0.0164 or more. A certificate whose bounds still
+  straddle the tail level is conservatively non-rejecting; a certified upper bound below
+  the tail rejects even within the declared gap. The endpoint search only compares
+  p-values with the tail level, so each probe also stops once that comparison is certified
+  either way. A search the cap ends is not an error: its p-value stays a valid,
+  conservative bound, and the row's `note` says how many probes ended so and the largest
+  gap they left, in units of the p-value the row reports (twice a directional gap on a
+  two-sided row). No tolerance beyond that disclosure is promised. The stop rule is part of
+  the construction every `BinomialConfidenceSet` records (`binomial_bb_difference_v2`): a
+  row persisted under `binomial_bb_difference_v1`, which stopped each search at an absolute
+  1e-6 or after 60 splits, or without naming a construction at all, is refused when read
+  (`estimation.results.binomial.obsolete_construction`) rather than shown with endpoints
+  its counts no longer reproduce beside a verdict recomputed with the tighter bound;
+  re-run the analysis to cut it again. Each endpoint is the outer end of a search
+  bracket no wider than 0.05% (2^-11) and no wider than 1/128 of the log risk
+  ratio's standard error, whichever is finer, so the search works harder as
+  arms grow and the standard error shrinks. The stop is the resolution of the
+  evaluated tail envelope only, not a bound on SciPy's primitive error; a
+  search that cannot reach it keeps its conservative
+  endpoint and says so in the row's `note`. The process caches up to 24 MiB of control and
+  24 MiB of treatment tail vectors between searches. A readout multiplies this across
   metrics, arms, and breakout cells. There is no opt-out: every eligible
   unadjusted conversion/retention contrast takes this route. A further large
   speedup would need a genuinely different tail-evaluation construction (a

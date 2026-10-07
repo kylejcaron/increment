@@ -45,6 +45,7 @@ from increment.estimation.armstats import ArmStats, binary_counts, welch_sattert
 from increment.estimation.cuped import AdjustedRatioMoments, fit_cuped, fit_ratio_cuped
 from increment.estimation.inference import LiftGuardError, Prior, infer_lift
 from increment.estimation.results import (
+    BINOMIAL_METHOD,
     BinomialConfidenceSet,
     Estimate,
     LiftEstimate,
@@ -1281,8 +1282,10 @@ def _lift_decision_bundle(  # noqa: PLR0915
             )
             continue
         if result.reference_kind == "binomial":
+            bset = result.binomial_set
+            assert bset is not None, "validated: reference_kind='binomial' rows carry a set"
             evidence[hypothesis] = PValueEvidence(
-                hypothesis, result.method, result.p_value(), "binomial_bb_difference_v1"
+                hypothesis, result.method, result.p_value(), bset.method
             )
             continue
         evidence_row, failure_row = _raw_stats_evidence(result, hypothesis)
@@ -1931,6 +1934,7 @@ def _infer_binomial_lift_result(
         alpha=alpha_eff,
         level=level,
         geometry=ci.geometry,
+        method=BINOMIAL_METHOD,
         x_c=x_c,
         n_c=n_c,
         x_t=x_t,

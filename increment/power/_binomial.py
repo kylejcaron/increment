@@ -5,11 +5,12 @@ unit-grain raw binary counts, fixed horizon; see
 ``increment.estimation.engine._binomial_eligible``) is decided at runtime by
 the Berger-Boos test in ``increment.estimation.binomial_rr``: for observed
 counts ``(i, j)`` at analyzed arm sizes ``(n_c, n_t)`` it reports the finite
-nuisance-search certificates ``p_+ = p_plus(r0, i, n_c, j, n_t, beta)`` and
+nuisance-search certificates ``p_+ = p_plus(r0, i, n_c, j, n_t, beta, tail=u)`` and
 ``p_- = p_minus(...)`` with ``r0 = 1 + null_lift`` and ``beta =
 nuisance_beta(alpha_d)``, ``alpha_d`` the compiled decision alpha, and rejects
 when the directional certificate is strictly below its tail allocation ``u``
-(``compiled_tail_alpha``): ``p_+ < u`` for "greater", ``p_- < u`` for "less",
+(``compiled_tail_alpha``, the level its refinement is read against): ``p_+ < u`` for
+"greater", ``p_- < u`` for "less",
 and either for "two-sided". A count pair whose runtime row fails to build is a
 ``DecisionFailure`` and never a rejection.
 
@@ -28,7 +29,7 @@ Two routes classify ``D``:
 * ``exact``: replays the runtime's own nuisance search -- the same
   Clopper-Pearson domains, support windows, endpoint and coordinate-corner
   evaluations, largest-bound-first split order with its tie order,
-  tolerance, iteration ceiling and floating-point floor -- over many count
+  tail-floored relative-gap stop rule, split cap and floating-point floor -- over many count
   pairs at once. Its tails use the runtime's binomial special functions
   elementwise; only the summation order differs, within the per-row
   allowance ``delta``. Every comparison of the replay is carried out with
@@ -52,7 +53,6 @@ retained (control, treatment) cell count at the null rate is within
 
 from __future__ import annotations
 
-import inspect
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -70,11 +70,6 @@ from increment.estimation import binomial_rr as _rr
 Kind = Literal["plus", "minus"]
 Route = Literal["exact", "approximate"]
 
-_SEARCH_DEFAULTS = inspect.signature(_rr._certified_sup).parameters
-#: The runtime nuisance search's own tolerance and iteration ceiling, read from
-#: its signature so the replay cannot drift from it.
-_TOL: float = _SEARCH_DEFAULTS["tol"].default
-_MAX_ITER: int = _SEARCH_DEFAULTS["max_iter"].default
 _EPS = float(np.finfo(np.float64).eps)
 
 #: Per-side mass each outer count window may omit. The omitted mass is
@@ -169,21 +164,23 @@ class _Leaves:
     fv: np.ndarray
     bound: np.ndarray  # runtime (capped) bound
     raw: np.ndarray  # bound before the cap at one
-    mono: np.ndarray  # capped coordinate-corner tail
-    term: np.ndarray  # curvature term, inf at a singular endpoint
     reach: np.ndarray  # largest value reportable from inside the leaf
     count: np.ndarray
 
-    _FIELDS = ("u", "v", "pu", "pv", "fu", "fv", "bound", "raw", "mono", "term", "reach")
+    _FIELDS = ("u", "v", "pu", "pv", "fu", "fv", "bound", "raw", "reach")
+
+    @staticmethod
+    def _blank(name: str, rows: int, capacity: int) -> np.ndarray:
+        if name in ("pu", "pv"):
+            return np.zeros((rows, capacity), np.int64)
+        blank = np.zeros((rows, capacity))
+        if name in ("bound", "reach"):
+            blank.fill(-np.inf)
+        return blank
 
     @classmethod
     def empty(cls, rows: int, capacity: int) -> _Leaves:
-        arrays = {
-            name: np.zeros((rows, capacity), np.int64 if name in ("pu", "pv") else np.float64)
-            for name in cls._FIELDS
-        }
-        arrays["bound"].fill(-np.inf)
-        arrays["reach"].fill(-np.inf)
+        arrays = {name: cls._blank(name, rows, capacity) for name in cls._FIELDS}
         return cls(**arrays, count=np.ones(rows, np.int64))
 
     def take(self, rows: np.ndarray, *, capacity: int) -> _Leaves:
@@ -195,9 +192,13 @@ class _Leaves:
         return taken
 
     def grow(self, capacity: int) -> None:
-        grown = self.take(np.arange(self.u.shape[0]), capacity=capacity)
-        for name in (*self._FIELDS, "count"):
-            setattr(self, name, getattr(grown, name))
+        """Widen every field to *capacity* slots, one field at a time so a field's old array is
+        released before the next is replaced and the transient is one field, not a second copy."""
+        width = self.u.shape[1]
+        for name in self._FIELDS:
+            grown = self._blank(name, self.u.shape[0], capacity)
+            grown[:, :width] = getattr(self, name)
+            setattr(self, name, grown)
 
 
 def _curvature(u: np.ndarray, v: np.ndarray, r: float, n_c: int, n_t: int) -> np.ndarray:
@@ -267,18 +268,18 @@ def _settle(
     lv: _Leaves,
     batch: _Batch,
     rows: np.ndarray,
+    leaves: int,
 ) -> None:
     """Boolean exits: an achieved endpoint at or above the tail allocation
     already fixes non-rejection (the reported value never falls below it);
-    every current leaf's reachable bound below it fixes rejection."""
+    every current leaf's reachable bound below it fixes rejection. Each row of
+    *act* holds *leaves* leaves."""
     decision = batch.decision
     beta, u_alpha = decision.beta, decision.tail_alpha
     dl = batch.delta[rows[act]]
     accept = beta + best[act] - dl >= u_alpha
     status[act[accept]] = _Outcome.ACCEPT
-    width = lv.u.shape[1]
-    valid = np.arange(width)[None, :] < lv.count[act, None]
-    reach = np.where(valid, lv.reach[act], -np.inf).max(axis=1)
+    reach = lv.reach[:, :leaves][act].max(axis=1)
     reject = ~accept & (beta + np.maximum(reach, best[act]) + dl < u_alpha)
     status[act[reject]] = _Outcome.REJECT
 
@@ -310,18 +311,146 @@ def _leaf_bounds(
     return bound, raw, mono, term
 
 
+@dataclass(slots=True)
+class _Search:
+    """The rows of one replay still being searched, with their leaves; every array is indexed
+    by position in ``rows``, the batch row each of them replays."""
+
+    rows: np.ndarray
+    lv: _Leaves
+    best: np.ndarray
+    delta: np.ndarray
+    guard: np.ndarray
+    status: np.ndarray
+    final: np.ndarray
+
+    def take(self, ids: np.ndarray) -> _Search:
+        """A copy of the search rows *ids*, so a chunk can deepen on its own."""
+        return _Search(
+            self.rows[ids],
+            self.lv.take(ids, capacity=self.lv.u.shape[1]),
+            self.best[ids],
+            self.delta[ids],
+            self.guard[ids],
+            self.status[ids],
+            self.final[ids],
+        )
+
+
+def _finish(search: _Search, done: np.ndarray, top: np.ndarray, beta: float) -> None:
+    best = search.best[done]
+    search.final[done] = np.minimum(1.0, beta + np.minimum(1.0, np.maximum(top, best)))
+    search.status[done] = _Outcome.FINISHED
+
+
+def _advance(
+    batch: _Batch,
+    tails: _ExactTails | _SurrogateTails,
+    search: _Search,
+    splits: range,
+    *,
+    exact: bool,
+    rule: _rr._StopRule,
+) -> None:
+    """Runs the search iterations *splits* of every row still searching, in place."""
+    decision = batch.decision
+    beta = decision.beta
+    lv, rows, best, delta, guard = search.lv, search.rows, search.best, search.delta, search.guard
+    status = search.status
+    for iteration in splits:
+        act = np.flatnonzero(status == _Outcome.SEARCHING)
+        if act.size == 0:
+            break
+        if iteration + 2 > lv.u.shape[1]:
+            lv.grow(min(splits.stop + 1, 2 * lv.u.shape[1]))  # no wider than the stage needs
+        leaves = iteration + 1  # every row still searching has split once per past iteration
+        bnd = lv.bound[:, :leaves][act]
+        top = bnd.max(axis=1)
+        k = np.argmin(np.where(bnd == top[:, None], lv.u[:, :leaves][act], np.inf), axis=1)
+        lower = np.maximum(0.0, best[act] - guard[act])
+        gap = np.maximum(top, best[act]) - lower
+        allowed = rule.gap_fraction * np.maximum(beta + lower, decision.tail_alpha) + guard[act]
+        stop = gap <= allowed
+        if exact:
+            dl = delta[act][:, None]
+            others = bnd.copy()
+            others[np.arange(act.size), k] = -np.inf
+            runner = others.max(axis=1)
+            capped_ties = np.all((bnd != 1.0) | (lv.raw[:, :leaves][act] >= 1.0 + dl), axis=1)
+            order = (top - runner <= 2.0 * dl[:, 0]) & ~(
+                (top == 1.0) & (runner == 1.0) & capped_ties
+            )
+            unsettled = (order & ~stop) | (
+                np.abs(gap - allowed) <= (2.0 + rule.gap_fraction) * dl[:, 0] + 4.0 * _EPS
+            )
+            status[act[unsettled]] = _Outcome.AMBIGUOUS
+            act, k, top, stop = act[~unsettled], k[~unsettled], top[~unsettled], stop[~unsettled]
+        _finish(search, act[stop], top[stop], beta)
+        act, k, top = act[~stop], k[~stop], top[~stop]
+        u = lv.u[act, k]
+        v = lv.v[act, k]
+        mid = (u + v) / 2.0
+        floor = (mid <= u) | (mid >= v)
+        _finish(search, act[floor], top[floor], beta)
+        act, k, u, v, mid = act[~floor], k[~floor], u[~floor], v[~floor], mid[~floor]
+        if act.size == 0:
+            continue
+        pu, pv = lv.pu[act, k], lv.pv[act, k]
+        fm_raw, left_raw, right_raw, pm = tails.split(batch, rows[act], u, mid, v, pu, pv)
+        fm = np.minimum(1.0, fm_raw)
+        fu, fv = lv.fu[act, k], lv.fv[act, k]
+        best[act] = np.maximum(best[act], fm)
+        # The left child replaces the split leaf, the right child takes the next slot.
+        owner = np.concatenate([act, act])
+        slot = np.concatenate([k, lv.count[act]])
+        cu, cv = np.concatenate([u, mid]), np.concatenate([mid, v])
+        cfu, cfv = np.concatenate([fu, fm]), np.concatenate([fm, fv])
+        lv.u[owner, slot], lv.v[owner, slot] = cu, cv
+        lv.pu[owner, slot], lv.pv[owner, slot] = np.concatenate([pu, pm]), np.concatenate([pm, pv])
+        lv.fu[owner, slot], lv.fv[owner, slot] = cfu, cfv
+        leaf = _leaf_bounds(cfu, cfv, np.concatenate([left_raw, right_raw]), cu, cv, decision)
+        lv.bound[owner, slot], lv.raw[owner, slot] = leaf[0], leaf[1]
+        lv.reach[owner, slot] = tails.reach(rows[owner], cu, cv, leaf[0], leaf[2], leaf[3])
+        lv.count[act] += 1
+        _settle(status, act, best, lv, batch, rows, leaves + 1)
+
+
+def _finish_unsettled(search: _Search, beta: float) -> None:
+    """Rows still searching after their last split report their largest remaining bound."""
+    rest = np.flatnonzero(search.status == _Outcome.SEARCHING)
+    if rest.size:
+        lv = search.lv
+        leaves = int(lv.count[rest].max())
+        _finish(search, rest, lv.bound[:, :leaves][rest].max(axis=1), beta)
+
+
 # One vectorized pass mirrors the runtime's single heap loop step for step.
-def _replay(  # noqa: PLR0915
-    batch: _Batch, tails: _ExactTails | _SurrogateTails, *, exact: bool
-) -> np.ndarray:
+def _replay(batch: _Batch, tails: _ExactTails | _SurrogateTails, *, exact: bool) -> np.ndarray:
     """Outcome per row: ACCEPT, REJECT, or (exact route) AMBIGUOUS.
 
     Replays ``binomial_rr._certified_sup`` for every row at once. Each step
     takes the leaf with the largest bound, ties to the smaller left endpoint
-    (the heap's tuple order for disjoint leaves); stops at the tolerance,
-    the floating-point floor or the iteration ceiling; and reports ``min(1,
-    beta + min(1, max(remaining bounds, best endpoint)))``. On the exact route
-    a comparison within the summation allowance marks the row AMBIGUOUS.
+    (the heap's tuple order for disjoint leaves); stops when the gap to the
+    best evaluated point, deflated as ``tail_lower_enclosure`` deflates it,
+    is within ``NUISANCE_STOP.gap_fraction`` of the larger of ``beta`` plus that deflated
+    value and the tail allocation, plus the certification noise (the deflation itself),
+    at the floating-point floor or after ``NUISANCE_STOP.max_iter``
+    splits (read when the replay runs); and reports ``min(1, beta + min(1,
+    max(remaining bounds, best endpoint)))``. The runtime's test after its
+    last split only sets its ``stopped`` flag, never the reported value. On
+    the exact route a comparison within the summation allowance marks the row
+    AMBIGUOUS.
+
+    The approximate route runs the first ``_COMMON_SPLITS`` splits of every row together;
+    rows still searching then continue in chunks sized for the full split cap
+    (`_chunk_rows`), so the few rows that need deep searches never keep the whole batch's
+    leaf arrays at that depth. The root's arrays are released once the searching rows have
+    copied theirs, the chunks' copies are taken before the first stage's arrays are released,
+    and a chunk deepens beside the copies still waiting; `_batch_rows` and `_chunk_rows` size
+    the stages so that none of those moments holds more than the leaf budget, whatever share
+    of the rows survive. The exact route keeps one pass: its tails register each nuisance
+    point once for the treatment counts of the rows then active, so rows may leave a search
+    but never join one.
     """
     decision = batch.decision
     beta, u_alpha = decision.beta, decision.tail_alpha
@@ -340,84 +469,45 @@ def _replay(  # noqa: PLR0915
     lv.pu[:, 0], lv.pv[:, 0] = tails.root_points(batch)
     lv.fu[:, 0], lv.fv[:, 0] = fa, fb
     bounds = _leaf_bounds(fa, fb, mono_raw, a, hi, decision)
-    lv.bound[:, 0], lv.raw[:, 0], lv.mono[:, 0], lv.term[:, 0] = bounds
+    lv.bound[:, 0], lv.raw[:, 0] = bounds[0], bounds[1]
     everyone = np.arange(n_rows)
     lv.reach[:, 0] = tails.reach(everyone, a, hi, bounds[0], bounds[2], bounds[3])
     best = np.maximum(fa, fb)
-    _settle(outcome, everyone, best, lv, batch, everyone)
+    _settle(outcome, everyone, best, lv, batch, everyone, 1)
     rows = np.flatnonzero(outcome == _Outcome.SEARCHING)
     if rows.size == 0:
         return outcome
-    lv = lv.take(rows, capacity=8)
-    best = best[rows]
-    delta = batch.delta[rows]
-    status = np.full(rows.size, _Outcome.SEARCHING, np.int64)
-    final = np.full(rows.size, np.nan)
-
-    def finish(done: np.ndarray, top: np.ndarray) -> None:
-        final[done] = np.minimum(1.0, beta + np.minimum(1.0, np.maximum(top, best[done])))
-        status[done] = _Outcome.FINISHED
-
-    for iteration in range(_MAX_ITER):
-        act = np.flatnonzero(status == _Outcome.SEARCHING)
-        if act.size == 0:
-            break
-        if iteration + 2 > lv.u.shape[1]:
-            lv.grow(min(_MAX_ITER + 1, 2 * lv.u.shape[1]))
-        width = lv.u.shape[1]
-        valid = np.arange(width)[None, :] < lv.count[act, None]
-        bnd = np.where(valid, lv.bound[act], -np.inf)
-        top = bnd.max(axis=1)
-        k = np.argmin(np.where(bnd == top[:, None], lv.u[act], np.inf), axis=1)
-        gap = top - best[act]
-        stop = gap <= _TOL
-        if exact:
-            dl = delta[act][:, None]
-            others = bnd.copy()
-            others[np.arange(act.size), k] = -np.inf
-            runner = others.max(axis=1)
-            capped_ties = np.all(~(valid & (bnd == 1.0)) | (lv.raw[act] >= 1.0 + dl), axis=1)
-            order = (top - runner <= 2.0 * dl[:, 0]) & ~(
-                (top == 1.0) & (runner == 1.0) & capped_ties
-            )
-            unsettled = (order & ~stop) | (np.abs(gap - _TOL) <= 2.0 * dl[:, 0] + 4.0 * _EPS)
-            status[act[unsettled]] = _Outcome.AMBIGUOUS
-            act, k, top, stop = act[~unsettled], k[~unsettled], top[~unsettled], stop[~unsettled]
-        finish(act[stop], top[stop])
-        act, k, top = act[~stop], k[~stop], top[~stop]
-        u = lv.u[act, k]
-        v = lv.v[act, k]
-        mid = (u + v) / 2.0
-        floor = (mid <= u) | (mid >= v)
-        finish(act[floor], top[floor])
-        act, k, u, v, mid = act[~floor], k[~floor], u[~floor], v[~floor], mid[~floor]
-        if act.size == 0:
-            continue
-        pu, pv = lv.pu[act, k], lv.pv[act, k]
-        fm_raw, left_raw, right_raw, pm = tails.split(batch, rows[act], u, mid, v, pu, pv)
-        fm = np.minimum(1.0, fm_raw)
-        fu, fv = lv.fu[act, k], lv.fv[act, k]
-        best[act] = np.maximum(best[act], fm)
-        new = lv.count[act]
-        for slot, (cu, cv, cpu, cpv, cfu, cfv, cm_raw) in (
-            (k, (u, mid, pu, pm, fu, fm, left_raw)),
-            (new, (mid, v, pm, pv, fm, fv, right_raw)),
-        ):
-            lv.u[act, slot], lv.v[act, slot] = cu, cv
-            lv.pu[act, slot], lv.pv[act, slot] = cpu, cpv
-            lv.fu[act, slot], lv.fv[act, slot] = cfu, cfv
-            leaf = _leaf_bounds(cfu, cfv, cm_raw, cu, cv, decision)
-            lv.bound[act, slot], lv.raw[act, slot], lv.mono[act, slot], lv.term[act, slot] = leaf
-            lv.reach[act, slot] = tails.reach(rows[act], cu, cv, leaf[0], leaf[2], leaf[3])
-        lv.count[act] += 1
-        _settle(status, act, best, lv, batch, rows)
-    rest = np.flatnonzero(status == _Outcome.SEARCHING)
-    if rest.size:
-        valid = np.arange(lv.u.shape[1])[None, :] < lv.count[rest, None]
-        finish(rest, np.where(valid, lv.bound[rest], -np.inf).max(axis=1))
+    rule = _rr.NUISANCE_STOP
+    search = _Search(
+        rows,
+        lv.take(rows, capacity=_START_SLOTS),
+        best[rows],
+        batch.delta[rows],
+        batch.guard[rows],
+        np.full(rows.size, _Outcome.SEARCHING, np.int64),
+        np.full(rows.size, np.nan),
+    )
+    del lv  # the root's arrays are not needed again
+    common = _common_splits(rule.max_iter, exact=exact)
+    _advance(batch, tails, search, range(common), exact=exact, rule=rule)
+    if common == rule.max_iter:
+        _finish_unsettled(search, beta)
+    else:
+        survivors = np.flatnonzero(search.status == _Outcome.SEARCHING)
+        size = _chunk_rows(rule.max_iter)
+        chunks = [survivors[start : start + size] for start in range(0, survivors.size, size)]
+        deeper: list[_Search | None] = [search.take(ids) for ids in chunks]
+        search.lv = _Leaves.empty(0, 1)  # the first stage's arrays are not needed again
+        for index, ids in enumerate(chunks):
+            rest, deeper[index] = deeper[index], None  # release each chunk once it is done
+            assert rest is not None
+            _advance(batch, tails, rest, range(common, rule.max_iter), exact=exact, rule=rule)
+            _finish_unsettled(rest, beta)
+            search.status[ids], search.final[ids] = rest.status, rest.final
+    status, final = search.status, search.final
     finished = status == _Outcome.FINISHED
     if exact:
-        close = finished & (np.abs(final - u_alpha) <= delta + 4.0 * _EPS)
+        close = finished & (np.abs(final - u_alpha) <= search.delta + 4.0 * _EPS)
         status[close] = _Outcome.AMBIGUOUS
         finished &= ~close
     status[finished] = np.where(final[finished] < u_alpha, _Outcome.REJECT, _Outcome.ACCEPT)
@@ -797,10 +887,11 @@ class _SurrogateTails:
     def split(self, batch, rows, u, mid, v, pu, pv):
         del pu, pv
         plus = batch.groups.kind[batch.group[rows]] == 0
-        pm = self._p(rows, mid)
-        fm = self._tail(rows, mid, pm)
-        left = self._tail(rows, np.where(plus, u, mid), np.where(plus, pm, self._p(rows, u)))
-        right = self._tail(rows, np.where(plus, mid, v), np.where(plus, self._p(rows, v), pm))
+        three = np.concatenate([rows, rows, rows])
+        p_mid, p_u, p_v = np.split(self._p(three, np.concatenate([mid, u, v])), 3)
+        q = np.concatenate([mid, np.where(plus, u, mid), np.where(plus, mid, v)])
+        p = np.concatenate([p_mid, np.where(plus, p_mid, p_u), np.where(plus, p_v, p_mid)])
+        fm, left, right = np.split(self._tail(three, q, p), 3)
         return fm, left, right, np.zeros(rows.size, np.int64)
 
 
@@ -816,17 +907,87 @@ class _Request:
 
 
 def _runtime_rejects(decision: BinomialDecision, kind: Kind, x_c: int, x_t: int) -> bool:
-    """The unchanged runtime decision of one directional test."""
-    tail = _rr.p_plus if kind == "plus" else _rr.p_minus
+    """The unchanged runtime decision of one directional test, read against its tail level."""
+    test = _rr.p_plus if kind == "plus" else _rr.p_minus
     try:
-        p = tail(decision.null_ratio, x_c, decision.n_c, x_t, decision.n_t, decision.beta)
+        p = test(
+            decision.null_ratio,
+            x_c,
+            decision.n_c,
+            x_t,
+            decision.n_t,
+            decision.beta,
+            tail=decision.tail_alpha,
+        )
     except _rr.BinomialDataError:
         return False
     return p < decision.tail_alpha
 
 
-#: Rows per classification batch: bounds the per-row replay arrays.
-_BATCH_ROWS = 65_536
+#: Bytes of leaf arrays (`_Leaves`) one replay may hold at once, whatever the data: every
+#: `_Leaves` alive together, counting the field `_Leaves.grow` holds beside its replacement.
+#: A search's other arrays (its per-row bookkeeping, one iteration's temporaries) are not counted.
+_LEAF_BUDGET_BYTES = 350e6
+#: Splits the approximate route runs for every row of a batch together.
+_COMMON_SPLITS = 63
+#: Leaf slots a search's arrays start with; `_advance` widens them only as far as its splits need.
+_START_SLOTS = 8
+
+
+def _stage_slots(splits: int) -> int:
+    """Leaf slots a search's arrays hold after a stage of *splits* splits: a row holds
+    ``splits + 1`` leaves after that many splits, and the arrays never start narrower than
+    `_START_SLOTS`."""
+    return max(_START_SLOTS, splits + 1)
+
+
+def _leaf_bytes(slots: int) -> int:
+    """Bytes of one row's leaf arrays of *slots* slots: an eight-byte value per field
+    (`_Leaves._FIELDS`) and slot, and the row's eight-byte count."""
+    return 8 * (len(_Leaves._FIELDS) * slots + 1)
+
+
+def _widening_bytes(slots: int) -> int:
+    """Most bytes of one row's leaf arrays while `_Leaves.grow` widens them to *slots* slots.
+    `grow` replaces one field at a time, so beside the fields it has widened it holds the one
+    it is replacing, which is narrower than its replacement."""
+    return _leaf_bytes(slots) + 8 * slots
+
+
+def _common_splits(max_iter: int, *, exact: bool) -> int:
+    """Splits every row of a batch runs together before any continue alone: all *max_iter* on the
+    exact route, whose rows are never copied, at most ``_COMMON_SPLITS`` on the approximate."""
+    return max_iter if exact else min(max_iter, _COMMON_SPLITS)
+
+
+def _chunk_rows(max_iter: int) -> int:
+    """Rows of a chunk the approximate route deepens to *max_iter* splits while the copies of
+    the other chunks wait: half the leaf budget, the copies keeping the other half
+    (`_batch_rows`)."""
+    return max(1, int(_LEAF_BUDGET_BYTES // 2 // _widening_bytes(_stage_slots(max_iter))))
+
+
+def _batch_rows(*, exact: bool) -> int:
+    """Rows per classification batch, so the replay's leaf arrays stay within the leaf budget
+    however many of its rows keep searching.
+
+    A one-stage replay (the exact route, or an approximate one capped at its common splits)
+    peaks either while copying the root into search arrays or widening to the last width.
+    A two-stage replay peaks in one of two moments. Having copied the rows still searching
+    beside the first stage's arrays, which the copies equal when every row survives, it holds both and the
+    one field `_Leaves.take` gathers of the chunk it is copying: the batch takes half the
+    budget less that gather. Then the copies wait beside a chunk that deepens, which takes the
+    other half (`_chunk_rows`). The moments before these, the root's arrays beside the first
+    rows' and the first stage widening, hold less."""
+    max_iter = _rr.NUISANCE_STOP.max_iter
+    common = _common_splits(max_iter, exact=exact)
+    if common == max_iter:
+        slots = _stage_slots(max_iter)
+        root_copy = _leaf_bytes(1) + _leaf_bytes(_START_SLOTS) + 8
+        return max(1, int(_LEAF_BUDGET_BYTES // max(root_copy, _widening_bytes(slots))))
+    first = _stage_slots(common)
+    gather = 8 * first * _chunk_rows(max_iter)
+    return max(1, int((_LEAF_BUDGET_BYTES - gather) // (2 * _leaf_bytes(first))))
 
 
 def classify(
@@ -841,32 +1002,49 @@ def classify(
     the treatment count, forces it (``_root_settled``; it assumes each
     computed tail lies within ``_ROOT_ROUNDING`` of its exact-arithmetic
     value). Every other count is replayed."""
-    results: list[np.ndarray | None] = [None] * len(requests)
+    results: list[np.ndarray | None] = []
+    slots: list[list[int]] = []
     live: list[tuple[int, _Request, float, float, tuple[int, int, float]]] = []
     pending = 0
-    for n, req in enumerate(requests):
+    batch_rows = _batch_rows(exact=route == "exact")
+    for req in requests:
         size = req.j1 - req.j0 + 1
         try:
             a, b = _rr.clopper_pearson(req.x_c, decision.n_c, decision.beta)
         except _rr.BinomialDataError:
             # The runtime row cannot be built: a decision failure, never a rejection.
-            results[n] = np.zeros(size, bool)
+            results.append(np.zeros(size, bool))
+            slots.append([len(results) - 1])
             continue
         hi = b
         if req.kind == "minus":
             hi = b if decision.null_ratio <= 0.0 else min(b, 1.0 / decision.null_ratio)
             if hi < a:
                 # Empty nuisance domain: the runtime reports beta alone.
-                results[n] = np.full(size, min(1.0, decision.beta) < decision.tail_alpha)
+                results.append(np.full(size, min(1.0, decision.beta) < decision.tail_alpha))
+                slots.append([len(results) - 1])
                 continue
-        live.append((n, req, a, hi, _rr._support_window(decision.n_c, a, hi)))
-        pending += size
-        if pending >= _BATCH_ROWS:
-            _classify_live(decision, route, live, results)
-            live, pending = [], 0
+        window = _rr._support_window(decision.n_c, a, hi)
+        mine: list[int] = []
+        # A request larger than a batch is replayed in pieces of at most a batch: each count
+        # pair has its own replay, so a piece decides exactly as the whole would.
+        for j0 in range(req.j0, req.j1 + 1, batch_rows):
+            piece = _Request(req.x_c, req.kind, j0, min(req.j1, j0 + batch_rows - 1))
+            rows = piece.j1 - piece.j0 + 1
+            if live and pending + rows > batch_rows:
+                _classify_live(decision, route, live, results)
+                live, pending = [], 0
+            results.append(None)
+            mine.append(len(results) - 1)
+            live.append((len(results) - 1, piece, a, hi, window))
+            pending += rows
+        slots.append(mine)
     if live:
         _classify_live(decision, route, live, results)
-    return [r if r is not None else np.zeros(0, bool) for r in results]
+    return [
+        np.concatenate([results[slot] for slot in mine]) if mine else np.zeros(0, bool)
+        for mine in slots
+    ]
 
 
 def _classify_live(decision, route, live, results) -> None:

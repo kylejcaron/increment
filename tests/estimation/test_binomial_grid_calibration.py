@@ -160,8 +160,8 @@ def _brute_two_sided_covered_mass(x_c_obs, n_c, n_t, alpha, r0, p_t):
     alloc = alpha / 2.0
     mass = 0.0
     for xt in range(n_t + 1):
-        pp = binomial_rr.p_plus(r0, x_c_obs, n_c, xt, n_t, beta)
-        pm = binomial_rr.p_minus(r0, x_c_obs, n_c, xt, n_t, beta)
+        pp = binomial_rr.p_plus(r0, x_c_obs, n_c, xt, n_t, beta, tail=alloc)
+        pm = binomial_rr.p_minus(r0, x_c_obs, n_c, xt, n_t, beta, tail=alloc)
         if pp >= alloc and pm >= alloc:
             mass += float(_binom.pmf(xt, n_t, p_t))
     return mass
@@ -171,11 +171,8 @@ def _brute_one_sided_accept_mass(direction, x_c_obs, n_c, n_t, target, r0, p_t):
     beta = binomial_rr.nuisance_beta(0.05)
     mass = 0.0
     for xt in range(n_t + 1):
-        v = (
-            binomial_rr.p_plus(r0, x_c_obs, n_c, xt, n_t, beta)
-            if direction == "plus"
-            else binomial_rr.p_minus(r0, x_c_obs, n_c, xt, n_t, beta)
-        )
+        test = binomial_rr.p_plus if direction == "plus" else binomial_rr.p_minus
+        v = test(r0, x_c_obs, n_c, xt, n_t, beta, tail=target)
         if v >= target:
             mass += float(_binom.pmf(xt, n_t, p_t))
     return mass
@@ -369,13 +366,19 @@ def test_reported_error_bounds_enclose_full_joint_enumeration(risk_ratio):
     for xc in range(cell.n_c + 1):
         for xt in range(cell.n_t + 1):
             mass = float(_binom.pmf(xc, cell.n_c, cell.p_c) * _binom.pmf(xt, cell.n_t, cell.p_t))
-            plus = binomial_rr.p_plus(1.0, xc, cell.n_c, xt, cell.n_t, beta)
-            minus = binomial_rr.p_minus(1.0, xc, cell.n_c, xt, cell.n_t, beta)
+            plus = binomial_rr.p_plus(1.0, xc, cell.n_c, xt, cell.n_t, beta, tail=alpha / 2.0)
+            minus = binomial_rr.p_minus(1.0, xc, cell.n_c, xt, cell.n_t, beta, tail=alpha / 2.0)
+            plus_one = binomial_rr.p_plus(1.0, xc, cell.n_c, xt, cell.n_t, beta, tail=alpha)
+            minus_one = binomial_rr.p_minus(1.0, xc, cell.n_c, xt, cell.n_t, beta, tail=alpha)
             totals["two"] += mass * (min(plus, minus) < alpha / 2.0)
-            totals["greater"] += mass * (plus < alpha)
-            totals["less"] += mass * (minus < alpha)
-            true_plus = binomial_rr.p_plus(risk_ratio, xc, cell.n_c, xt, cell.n_t, beta)
-            true_minus = binomial_rr.p_minus(risk_ratio, xc, cell.n_c, xt, cell.n_t, beta)
+            totals["greater"] += mass * (plus_one < alpha)
+            totals["less"] += mass * (minus_one < alpha)
+            true_plus = binomial_rr.p_plus(
+                risk_ratio, xc, cell.n_c, xt, cell.n_t, beta, tail=alpha / 2.0
+            )
+            true_minus = binomial_rr.p_minus(
+                risk_ratio, xc, cell.n_c, xt, cell.n_t, beta, tail=alpha / 2.0
+            )
             miss = min(true_plus, true_minus) < alpha / 2.0
             totals["noncoverage"] += mass * miss
             totals["point_noncoverage"] += mass * miss * (xc > 0)
@@ -539,7 +542,14 @@ class TestUsefulnessAcceptance:
                 binomial_rr,
                 "confidence_interval",
                 lambda *a, **kw: binomial_rr.BinomialInterval(
-                    0.0, None, "central", 1.0, endpoint_log_width=0.0, resolution_reached=True
+                    0.0,
+                    None,
+                    "central",
+                    1.0,
+                    endpoint_log_width=0.0,
+                    resolution_reached=True,
+                    nuisance_gap_max=0.0,
+                    capped_probes=0,
                 ),
             )
         elif fault == "null_set":

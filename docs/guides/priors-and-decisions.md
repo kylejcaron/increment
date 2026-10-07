@@ -116,7 +116,11 @@ Student-t and mixtures are call-time `run(prior=...)` options.
 `stat_sig()` reads the row's own interval directly -- `lift.lb`/`lift.ub`
 against `null_lift` (or `abs_lb`/`abs_ub` against `null_abs` on an
 absolute-margin row) -- and works on every row's own decision: fixed-
-horizon or sequential, Normal-referenced or cluster-robust.
+horizon or sequential, Normal-referenced or cluster-robust. An exact-binomial
+row (`reference_kind="binomial"`) instead recomputes the test its interval was
+inverted from out of its persisted counts, so the two agree; a row persisted under
+an earlier construction of that test, or without naming its construction, is
+refused when read rather than shown beside a verdict its endpoints can contradict.
 
 `prob_favorable()` and `p_value()` instead reconstruct the actual
 posterior or sampling distribution the row's interval was cut from, so

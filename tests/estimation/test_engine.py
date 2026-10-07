@@ -2256,6 +2256,67 @@ class TestBinomialDirectionalAlphaConvention:
             direct
         )
 
+    @pytest.mark.parametrize("alternative", ["greater", "less"])
+    def test_fcr_reinversion_places_its_endpoint_against_the_rows_own_null(self, alternative):
+        """An unshifted full-alpha inversion reports an endpoint that its own count pair
+        rejects as a null. A row testing exactly that null keeps the reinverted endpoint on
+        the rejecting side of it, so the displayed interval and ``stat_sig()`` agree."""
+        from increment.estimation import binomial_rr
+        from increment.estimation.engine import estimate_lift
+        from increment.estimation.results import open_bound_from_two_sided_at_target
+
+        fcr_alpha = 0.05
+        unshifted = binomial_rr.confidence_interval(
+            200, 4000, 260, 4000, alpha=fcr_alpha, alternative=alternative
+        )
+        edge = unshifted.lower if alternative == "greater" else unshifted.upper
+        assert edge is not None
+        null_lift = edge - 1.0
+        assert 1.0 + null_lift == edge
+        arms = [
+            ArmStats.from_raw_sums(
+                study_id="exp1", metric="conv", group_id=group, n=4000, sum_y=x, sum_y2=x
+            )
+            for group, x in (("control", 200.0), ("treatment", 260.0))
+        ]
+        [parent] = estimate_lift(
+            metrics=[_conversion_metric()],
+            summary=_summary_df(arms),
+            control_group="control",
+            alpha=fcr_alpha / 2.0,
+            alternative=alternative,
+            null_lift=null_lift,
+        ).results
+
+        row = open_bound_from_two_sided_at_target(parent)
+
+        lift = row.require_lift()
+        assert row.stat_sig()
+        if alternative == "greater":
+            assert lift.lb is not None and lift.lb > null_lift
+        else:
+            assert lift.ub is not None and lift.ub < null_lift
+
+    @pytest.mark.parametrize("alternative", ["two-sided", "greater", "less"])
+    def test_a_produced_row_round_trips_from_a_dump_without_defaults(self, alternative):
+        """The engine stamps the binomial construction on the set it cuts, so a row dumped
+        without defaults, and the same row after an FCR reinversion, read back unchanged."""
+        from increment.estimation.engine import estimate_lift
+        from increment.estimation.results import LiftEstimate, open_bound_from_two_sided_at_target
+
+        control, treatment = self._binomial_arms()
+        [row] = estimate_lift(
+            metrics=[_conversion_metric()],
+            summary=_summary_df([control, treatment]),
+            control_group="control",
+            alpha=0.025,
+            alternative=alternative,
+        ).results
+
+        for produced in (row, open_bound_from_two_sided_at_target(row)):
+            lean = produced.model_dump_json(exclude_defaults=True)
+            assert LiftEstimate.model_validate_json(lean) == produced
+
     @pytest.mark.parametrize("x_role", ["cluster_size", "uptake_total"])
     def test_non_covariate_x_family_is_not_projected_into_iid_binomial(self, x_role):
         arms = []
@@ -2365,6 +2426,34 @@ class TestBinomialDirectionalAlphaConvention:
         monkeypatch.setattr(binomial_rr, "confidence_interval", unresolved)
         flagged = open_bound_from_two_sided_at_target(superseded)
         assert flagged.note == " | ".join(filter(None, (kept, disclosure)))
+
+    @pytest.mark.parametrize("alternative", ["greater", "less"])
+    def test_fcr_reinversion_replaces_the_nuisance_cap_disclosure(self, alternative, monkeypatch):
+        """A first pass whose nuisance search hit its cap says so on its row; the reinverted
+        row carries its own such note once, next to whatever else the row said."""
+        from increment.estimation import binomial_rr
+        from increment.estimation.engine import estimate_lift
+        from increment.estimation.results import open_bound_from_two_sided_at_target
+
+        control, treatment = self._binomial_arms()
+        monkeypatch.setattr(binomial_rr, "NUISANCE_STOP", binomial_rr._StopRule(2.0**-14, 3))
+        [nominal] = estimate_lift(
+            metrics=[_conversion_metric()],
+            summary=_summary_df([control, treatment]),
+            control_group="control",
+            alpha=0.05,
+            alternative=alternative,
+        ).results
+        assert nominal.note is not None
+        assert nominal.note.startswith(binomial_rr.NUISANCE_NOTE_PREFIX)
+
+        reinverted = open_bound_from_two_sided_at_target(
+            nominal.model_copy(update={"note": f"kept | {nominal.note}"})
+        )
+        assert reinverted.note is not None
+        parts = reinverted.note.split(" | ")
+        assert parts[0] == "kept"
+        assert [part.startswith(binomial_rr.NUISANCE_NOTE_PREFIX) for part in parts[1:]] == [True]
 
 
 class TestEncouragementItiRetainsBinomialRoute:

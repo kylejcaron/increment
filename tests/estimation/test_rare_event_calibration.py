@@ -423,6 +423,19 @@ class TestNumericalStability:
         assert 1.0 + bset.lower == pytest.approx(1.0 + expected.lower, rel=1e-3)
         assert 1.0 + bset.upper == pytest.approx(1.0 + expected.upper, rel=1e-3)
 
+    def test_nuisance_cap_exhaustion_is_disclosed_on_the_row(self, monkeypatch):
+        """A nuisance search that runs out of iterations near the decision still reports valid
+        bounds, says how loose they may be, and only widens the set; the default rule is silent."""
+        resolved = _estimate(3, 100, 8, 100)
+        assert resolved.note is None
+        monkeypatch.setattr(binomial_rr, "NUISANCE_STOP", binomial_rr._StopRule(2.0**-14, 3))
+        row = _estimate(3, 100, 8, 100)
+        assert row.note is not None and row.note.startswith(binomial_rr.NUISANCE_NOTE_PREFIX)
+        assert resolved.binomial_set is not None and row.binomial_set is not None
+        assert row.binomial_set.lower <= resolved.binomial_set.lower
+        assert row.binomial_set.upper is not None and resolved.binomial_set.upper is not None
+        assert row.binomial_set.upper >= resolved.binomial_set.upper
+
 
 # --- Request-level refusals --------------------------------------------------
 

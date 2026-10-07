@@ -178,7 +178,7 @@ by the exact Berger-Boos risk-ratio test on the raw counts. For these plans
 the analyzed integer counts, integrating the binomial count law over windows
 that leave out at most about `1e-12` of mass. At 701 units per arm, a 10%
 baseline and a 50% lift this is 0.7144 (the log-ratio model said 0.8004), and
-the planned size for 80% power is 832 per arm. Power depends on the baseline
+the planned size for 80% power is 831 per arm. Power depends on the baseline
 rate alone; `var` does not enter.
 
 - `power_basis="exact"`: the decision set is built by replaying the runtime's

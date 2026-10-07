@@ -190,6 +190,12 @@ class Estimate(CodedModel, BaseModel):
         return self.lb > null or self.ub < null
 
 
+BinomialMethod = Literal["binomial_bb_difference_v2"]
+#: The construction `BinomialConfidenceSet` reads: the exact test inversion under its current
+#: nuisance stop rule. A producer stamps it on every set it cuts.
+BINOMIAL_METHOD: BinomialMethod = "binomial_bb_difference_v2"
+
+
 class BinomialConfidenceSet(CodedModel, BaseModel):
     """A typed relative-lift confidence set from the exact independent-
     binomial risk-ratio method (see ``binomial_rr.py``).
@@ -208,6 +214,14 @@ class BinomialConfidenceSet(CodedModel, BaseModel):
     infinity. ``lower`` is never ``None``: the relative-lift scale's
     natural floor, ``-1`` (``R = 0``), is always a legitimate finite
     value, attainable and closed.
+
+    ``method`` is required and names the construction the endpoints were cut under, nuisance
+    stop rule included: ``LiftEstimate.stat_sig()``/``p_value()`` recompute from the counts
+    with the current rule, so a set cut under another one would sit beside a verdict its own
+    interval can contradict. A set that names another construction, or none, is refused when
+    read, not interpreted with the current rule. The marker is never a default: a payload
+    dumped without its defaults would otherwise read as the current construction whatever
+    cut it.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -221,12 +235,28 @@ class BinomialConfidenceSet(CodedModel, BaseModel):
     # sitewide central-equivalent display alpha above, so these differ in
     # ordinary inference and coincide after directional FCR reinversion.
     geometry: Literal["central", "lower_bound", "upper_bound"]
-    method: Literal["binomial_bb_difference_v1"] = "binomial_bb_difference_v1"
+    method: BinomialMethod
     x_c: int = Field(ge=0)
     n_c: int = Field(ge=1)
     x_t: int = Field(ge=0)
     n_t: int = Field(ge=1)
     nuisance_beta: float = Field(gt=0.0, lt=1.0, allow_inf_nan=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _cut_under_the_current_construction(cls, data: Any) -> Any:
+        recorded = (
+            data.get("method") if isinstance(data, Mapping) else getattr(data, "method", None)
+        )
+        if recorded != BINOMIAL_METHOD:
+            _raise(
+                "estimation.results.binomial.obsolete_construction",
+                method=recorded
+                if recorded is None or isinstance(recorded, str)
+                else repr(recorded),
+                supported=BINOMIAL_METHOD,
+            )
+        return data
 
     @model_validator(mode="after")
     def _validate_binomial_set(self):
@@ -292,6 +322,25 @@ class BinomialConfidenceSet(CodedModel, BaseModel):
     def point_available(self) -> bool:
         """Whether these counts admit a finite empirical-lift point (``x_c > 0``)."""
         return self.x_c > 0
+
+    def null_p_value(self, null_lift: float, alternative: str) -> float:
+        """The exact p-value for ``H0: R = 1 + null_lift`` under *alternative*, from these
+        persisted counts and nuisance budget, refined against the level the verdict compares
+        it with (``decision_alpha``, halved for the two-sided test): the recompute behind
+        ``LiftEstimate.stat_sig()``/``p_value()`` and the tables' twin of them."""
+        from increment.estimation.binomial_rr import null_p_value
+
+        tail = self.decision_alpha / 2.0 if alternative == "two-sided" else self.decision_alpha
+        return null_p_value(
+            1.0 + null_lift,
+            self.x_c,
+            self.n_c,
+            self.x_t,
+            self.n_t,
+            self.nuisance_beta,
+            alternative=alternative,
+            tail=tail,
+        )
 
 
 def _reference_fields(dof: float | None) -> dict[str, Any]:
@@ -400,6 +449,7 @@ _REFUSALS = refusals(
         "estimation.results.binomial.interval_inverted": "binomial confidence set has lower={lower} > upper={upper}",
         "estimation.results.binomial.counts_out_of_range": "binomial confidence set counts out of range: x_c={x_c}, n_c={n_c}, x_t={x_t}, n_t={n_t}",
         "estimation.results.binomial.decision_metadata": "binomial confidence set has inconsistent decision metadata: {reason}",
+        "estimation.results.binomial.obsolete_construction": "binomial confidence set records method {method!r} (None: none recorded); this version reads only {supported!r}. A set cut under another construction, or persisted without naming one, may hold endpoints from a different nuisance stop rule than the p-value recomputed from its counts now uses, so its interval and verdict could disagree. Re-run the analysis to cut the set again.",
         "estimation.results.binomial.posterior_unavailable": "metric={metric!r} group_id={group_id!r}: no Normal/lognormal posterior exists for a reference_kind='binomial' row -- the exact binomial method is a frequentist test-inversion, not a posterior; chance_to_beat/prob_beyond/prob_within/risk_if_shipped and their favorable variants are unavailable here. Use stat_sig()/p_value() (both binomial-set-aware) or the persisted lift/binomial_set bounds directly.",
         "estimation.results.lift.binomial_lift_availability": "metric={metric!r} group_id={group_id!r}: {reason}",
         "estimation.results.lift.absolute_reference_mismatch": "absolute reference {kind!r} requires df exactly for t, got {df!r}",
@@ -1467,21 +1517,6 @@ class LiftEstimate(_RowIdentity):
             return self.risk_if_shipped()
         return self._posterior().expected_positive_part(scale=self.scale)
 
-    def _binomial_tails(self, null_lift: float) -> tuple[float, float]:
-        """``(p_+(r0), p_-(r0))`` at ``r0 = 1 + null_lift`` for this row's
-        persisted counts and nuisance budget -- the shared recompute both
-        ``stat_sig()`` and ``p_value()`` use for a ``reference_kind=
-        "binomial"`` row, point-backed or not.
-        """
-        from increment.estimation.binomial_rr import p_minus, p_plus
-
-        bset = self.binomial_set
-        assert bset is not None, "validated: reference_kind='binomial' rows carry a set"
-        r0 = 1.0 + null_lift
-        pp = p_plus(r0, bset.x_c, bset.n_c, bset.x_t, bset.n_t, bset.nuisance_beta)
-        pm = p_minus(r0, bset.x_c, bset.n_c, bset.x_t, bset.n_t, bset.nuisance_beta)
-        return pp, pm
-
     def require_sequential_result(self) -> SequentialResult:
         """Return the authoritative stopped likelihood state or refuse a fixed row."""
         if self.sequential_result is None:
@@ -1551,14 +1586,10 @@ class LiftEstimate(_RowIdentity):
         if self.relative_confidence_set is not None:
             return self.relative_confidence_set.contains(self.null_lift) is False
         if self.reference_kind == "binomial":
-            pp, pm = self._binomial_tails(self.null_lift)
             bset = self.binomial_set
             assert bset is not None
-            if self.alternative == "greater":
-                return pp < bset.decision_alpha
-            if self.alternative == "less":
-                return pm < bset.decision_alpha
-            return min(pp, pm) < bset.decision_alpha / 2.0
+            # ``p_two < alpha`` is ``min(p_+, p_-) < alpha / 2``: doubling is exact.
+            return bset.null_p_value(self.null_lift, self.alternative) < bset.decision_alpha
         if self.alternative == "greater":
             assert self.lift is not None
             return self.lift.lb is not None and self.lift.lb > self.null_lift
@@ -1669,12 +1700,9 @@ class LiftEstimate(_RowIdentity):
                     metric=self.metric,
                     null_lift=self.null_lift,
                 )
-            pp, pm = self._binomial_tails(self.null_lift)
-            if self.alternative == "greater":
-                return pp
-            if self.alternative == "less":
-                return pm
-            return min(1.0, 2.0 * min(pp, pm))
+            bset = self.binomial_set
+            assert bset is not None
+            return bset.null_p_value(self.null_lift, self.alternative)
         if self.reference_kind == "t" or self.n_clusters is not None:
             if self.inference != "fixed":
                 self._posterior()  # raises the sequential-inference refusal
@@ -1844,7 +1872,7 @@ def _open_joint_far_bound(relative: RelativeConfidenceSet) -> Estimate | None:
 
 
 def _reinverted_binomial_note(note: str | None, ci: BinomialInterval) -> str | None:
-    """*note* with any superseded endpoint-resolution disclosure replaced by *ci*'s own."""
+    """*note* with any superseded precision disclosure replaced by *ci*'s own."""
     from increment.estimation.binomial_rr import precision_note, without_precision_note
 
     return " | ".join(filter(None, (without_precision_note(note), precision_note(ci)))) or None
@@ -1858,7 +1886,8 @@ def open_bound_from_two_sided_at_target(estimate: LiftEstimate) -> LiftEstimate:
     certified sequential rows are already inverted at their exact tail and
     are returned unchanged. A
     ``reference_kind="binomial"`` row instead reinverts the relevant
-    Berger-Boos tail directly at the full stored alpha (never a Normal/t
+    Berger-Boos tail directly at the full stored alpha, placing its endpoint
+    against the row's own ``null_lift`` as the first pass did (never a Normal/t
     endpoint reconstruction -- that would silently drop the exact method's
     coverage guarantee). Alpha and its nominal level remain unchanged.
     Absolute sidecars retain their central parent intervals. Two-sided,
@@ -1911,6 +1940,7 @@ def open_bound_from_two_sided_at_target(estimate: LiftEstimate) -> LiftEstimate:
             bset.n_t,
             alpha=bset.alpha,
             alternative=_validate_alternative(estimate.alternative),
+            null_r=1.0 + estimate.null_lift,
         )
         ci_lower, ci_upper = _to_lift_bounds(ci)
         new_lift = (
