@@ -2315,6 +2315,57 @@ class TestBinomialDirectionalAlphaConvention:
         assert round_tripped.require_lift().lb == lift.lb
         assert round_tripped.require_lift().ub == lift.ub
 
+    @pytest.mark.parametrize("alternative", ["greater", "less"])
+    @pytest.mark.parametrize(
+        ("template", "kept"),
+        [
+            ("{}", None),
+            ("{}; kept", "kept"),
+            ("front | {} | kept; more", "front | kept; more"),
+            ("kept; more | {}", "kept; more"),
+        ],
+    )
+    def test_fcr_reinversion_replaces_the_precision_disclosure(
+        self, alternative, template, kept, monkeypatch
+    ):
+        """The reinverted interval supersedes the first pass, so its disclosure does too: a
+        note about the superseded search is dropped (other text and its separators
+        survive), and an unresolved reinversion is disclosed after what the row already
+        said."""
+        from dataclasses import replace
+
+        from increment.estimation import binomial_rr
+        from increment.estimation.engine import estimate_lift
+        from increment.estimation.results import open_bound_from_two_sided_at_target
+
+        control, treatment = self._binomial_arms()
+        [nominal] = estimate_lift(
+            metrics=[_conversion_metric()],
+            summary=_summary_df([control, treatment]),
+            control_group="control",
+            alpha=0.05,
+            alternative=alternative,
+        ).results
+        assert nominal.note is None
+
+        real = binomial_rr.confidence_interval
+
+        def unresolved(*args, **kwargs):
+            return replace(
+                real(*args, **kwargs), endpoint_log_width=math.inf, resolution_reached=False
+            )
+
+        disclosure = binomial_rr.precision_note(
+            unresolved(20, 200, 40, 200, alpha=0.1, alternative=alternative)
+        )
+        assert disclosure is not None
+        superseded = nominal.model_copy(update={"note": template.format(disclosure)})
+        assert open_bound_from_two_sided_at_target(superseded).note == kept
+
+        monkeypatch.setattr(binomial_rr, "confidence_interval", unresolved)
+        flagged = open_bound_from_two_sided_at_target(superseded)
+        assert flagged.note == " | ".join(filter(None, (kept, disclosure)))
+
 
 class TestEncouragementItiRetainsBinomialRoute:
     """Uptake moments (sum_d) attached to an arm alongside its conversion

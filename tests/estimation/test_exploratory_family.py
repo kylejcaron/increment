@@ -339,6 +339,40 @@ def test_selected_intervals_equal_run_breakout_bh(alternative, q):
         )
 
 
+@pytest.mark.parametrize("alternative", ["two-sided", "greater"])
+@pytest.mark.parametrize("row_kind", ["whole", "breakout"])
+def test_binomial_fcr_replaces_nominal_precision_disclosure(alternative, row_kind):
+    from increment.estimation.binomial_rr import PRECISION_NOTE_PREFIX
+
+    if row_kind == "breakout":
+        nominal = list(_breakout(alternative))
+    else:
+        nominal = list(
+            estimate_lift(
+                [ConversionMetric(name="conv", entity="user", fact="conv")],
+                [
+                    _binary_arm(300, 60, metric="conv", group_id="control"),
+                    _binary_arm(300, 96, metric="conv", group_id="treatment"),
+                ],
+                control_group="control",
+                alternative=alternative,
+            ).results
+        )
+    reference = select_exploratory_family(nominal, q=0.05)
+    stale = f"source advisory | {PRECISION_NOTE_PREFIX}: nominal search"
+    corrected = select_exploratory_family(
+        [row.model_copy(update={"note": stale}) for row in nominal], q=0.05
+    )
+    selected = False
+    for row, expected in zip(corrected, reference, strict=True):
+        if row.discovery and row.reference_kind == "binomial":
+            selected = True
+            assert row.note == " | ".join(filter(None, ("source advisory", expected.note)))
+        else:
+            assert row.note == stale
+    assert selected
+
+
 def test_cuped_decision_rows_equal_run_breakout_bh():
     rows = []
     for country, treatment_mean in (("US", 12.0), ("CA", 10.05), ("MX", 11.0)):

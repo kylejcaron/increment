@@ -402,6 +402,27 @@ class TestNumericalStability:
         assert result.require_lift().lb is not None and result.require_lift().ub is not None
         assert -0.3 < result.require_lift().lb < 0.10 < result.require_lift().ub < 0.6
 
+    def test_endpoint_resolution_not_reached_is_disclosed_on_the_row(self, monkeypatch):
+        """A search that cannot reach its stop still reports conservative bounds and says so
+        on the row; a resolved row carries no such note. A stop finer than float64 can
+        resolve forces the case through the public path."""
+        resolved = _estimate(3, 100, 8, 100)
+        assert resolved.note is None
+        binomial_rr._confidence_interval_cached.cache_clear()
+        monkeypatch.setattr(binomial_rr, "_ENDPOINT_RESOLUTION", 0.0)
+        monkeypatch.setattr(binomial_rr, "_ENDPOINT_FLOOR", 1e-30)
+        try:
+            row = _estimate(3, 100, 8, 100)
+        finally:
+            binomial_rr._confidence_interval_cached.cache_clear()
+        assert row.note is not None and row.note.startswith(binomial_rr.PRECISION_NOTE_PREFIX)
+        assert (row.stat_sig(), row.p_value()) == (resolved.stat_sig(), resolved.p_value())
+        bset, expected = row.binomial_set, resolved.binomial_set
+        assert bset is not None and expected is not None and expected.upper is not None
+        assert bset.upper is not None
+        assert 1.0 + bset.lower == pytest.approx(1.0 + expected.lower, rel=1e-3)
+        assert 1.0 + bset.upper == pytest.approx(1.0 + expected.upper, rel=1e-3)
+
 
 # --- Request-level refusals --------------------------------------------------
 

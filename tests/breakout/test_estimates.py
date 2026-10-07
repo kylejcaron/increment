@@ -34,6 +34,7 @@ from increment.estimation.inference import Normal
 from increment.estimation.results import Estimate, LiftEstimate
 from increment.estimation.sequential import AlwaysValid
 from increment.semantics.models import ConversionMetric, MeanMetric, Measure, RatioMetric
+from tests.estimation._binomial_endpoint_reference import assert_set_contains_finer_reference
 from tests.warning_codes import warning_codes
 
 # Helpers mirroring test_engine.py's arm/summary/metric fixture
@@ -2612,10 +2613,13 @@ class TestRunBreakoutBinomialGateExemption:
         assert actual.excluded is None
         assert actual.lift is None
         assert actual.reference_kind == "binomial"
+        reference = expected.binomial_set
+        assert reference is not None
+        assert_set_contains_finer_reference(reference)
         for result in (expected, engine, actual):
             region = result.binomial_set
             assert region is not None
-            assert region.lower == pytest.approx(1.232421875)
+            assert (region.lower, region.upper) == (reference.lower, reference.upper)
             assert region.upper is None
             assert region.point_available is False
             assert (region.x_c, region.n_c, region.x_t, region.n_t) == (0, 50, 25, 50)

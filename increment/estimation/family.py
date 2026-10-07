@@ -696,7 +696,7 @@ _FAMILY_FIELDS = (
     "family_nominal_alpha",
     "family_size",
 )
-#: The interval-bearing fields a reissued row replaces; everything else is the row's own.
+#: Reissued interval fields and their disclosures; everything else is the row's own.
 _INTERVAL_FIELDS = (
     "lift",
     "binomial_set",
@@ -704,6 +704,7 @@ _INTERVAL_FIELDS = (
     "abs_lb",
     "abs_ub",
     "abs_alpha",
+    "note",
 )
 #: Each selected row is capped at its own nominal level below, so selection runs uncapped.
 _UNCAPPED = math.nextafter(1.0, 0.0)
