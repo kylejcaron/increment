@@ -322,15 +322,20 @@ It also has two further boundaries, both refusals rather than silent degradation
   method is asked to support today; a workload with a genuinely larger arm would need a
   higher cap or a closed-form/recurrence tail evaluation (out of scope here).
 * **Latency.** Cost grows with arm size: measured on commodity hardware
-  (two-sided, `alpha=0.05`, cold), roughly 1.7s at 100,000 per arm and
-  an extrapolated 6-9s at 1,000,000 (`MAX_ARM_SIZE`) -- down from an
-  unoptimized ~13s and ~60s respectively, a measured 7-8x reduction from
-  tightening the boundary-search iteration budget without weakening the
-  certified interval in any tested regime, including rare events. A
-  readout multiplies this across metrics, arms, and breakout cells.
-  There is no opt-out: every eligible unadjusted conversion/retention
-  contrast takes this route. A further speedup to sub-few-second
-  latency at the largest admitted arm size would need a genuinely
+  (two-sided, `alpha=0.05`, cold, a 5% control rate), roughly 0.4s at
+  100,000 per arm, 1.6s at 1,000,000 and 2.7s at 4,000,000 (`MAX_ARM_SIZE`);
+  a 1e-4 rate at 1,000,000 per arm takes about 0.05s, because the
+  control-count window follows the nuisance rate. The window is widest at a
+  50% control rate, which costs roughly 1.2s, 3s and 5s of CPU at the same
+  three sizes (measured on a loaded machine; read it as an upper-side
+  estimate). The 5% figures are down from an unoptimized ~13s and ~60s at
+  100,000 and 1,000,000 per arm: a measured 7-8x reduction from tightening
+  the boundary-search iteration budget, then
+  about 3x from reusing treatment tail vectors and the rate-aware window,
+  without weakening the certified interval in any tested regime, including
+  rare events. A readout multiplies this across metrics, arms, and breakout
+  cells. There is no opt-out: every eligible unadjusted conversion/retention
+  contrast takes this route. A further large speedup would need a genuinely
   different tail-evaluation construction (a closed-form or recurrence
   update between adjacent risk-ratio candidates); none is implemented
   today. Reduce the number of eligible contrasts in a single call

@@ -97,10 +97,12 @@ Scalability: a full evaluation of ``F_+``/``F_-`` enumerates every
 control-success count ``i`` in ``0..n_c`` (the conditional sum over
 ``X_c``). For large ``n_c`` this is enumerated only near its concentration
 window (the control's binomial mass is exponentially concentrated around
-``n_c*q``, Hoeffding 1963); the omitted tail mass is bounded above and
-ADDED to the returned value, keeping every evaluation a valid conservative
-upper bound while making the per-evaluation cost ``O(sqrt(n_c))`` instead
-of ``O(n_c)``. See ``_support_window``.
+``n_c*q``; the window is cut with the Chernoff bound of
+``_binomial_support``, which follows the nuisance rate); the omitted tail
+mass is bounded above and ADDED to the returned value, keeping every
+evaluation a valid conservative upper bound while making the
+per-evaluation cost ``O(sqrt(n_c*q*(1-q)))`` instead of ``O(n_c)``. See
+``_support_window``.
 """
 
 from __future__ import annotations
@@ -118,6 +120,7 @@ from scipy.stats import beta as _beta_dist
 
 from increment._literals import ALTERNATIVE_VALUES, Alternative
 from increment.errors import CodedError, InvalidRequestError, RefusalSpec, raiser, refusals
+from increment.estimation._binomial_support import chernoff_support
 from increment.estimation._tails import SCIPY_BINOMIAL_ULP_ALLOWANCE
 
 
@@ -268,8 +271,8 @@ def clopper_pearson(x: int, n: int, beta: float) -> tuple[float, float]:
 
 
 # --- Joint-binomial tail sums (conditional summation over X_c) -----------
-# Large arms scan only `_support_window`'s Hoeffding window and add the omitted mass back,
-# so truncation cannot make a tail anti-conservative.
+# Large arms scan only `_support_window`'s rate-aware Chernoff window and add the omitted mass
+# back, so truncation cannot make a tail anti-conservative.
 #: Benchmarked arm size below which a full scan beats building that window.
 _FULL_ENUMERATION_THRESHOLD = 256
 
@@ -280,17 +283,6 @@ _FULL_ENUMERATION_THRESHOLD = 256
 _SUPPORT_TRUNCATION_BUDGET = 1e-12
 
 
-def _hoeffding_half_width(n: int, budget: float) -> float:
-    """Half-width ``t`` such that, for ANY true success probability ``q``,
-    ``P(X < n*q - t) + P(X > n*q + t) <= budget`` for ``X ~ Binomial(n,
-    q)`` -- Hoeffding's inequality (exact/proven for any q in [0, 1], not
-    an empirical/asymptotic approximation).
-    """
-    if budget <= 0.0 or budget >= 1.0:
-        return float(n)
-    return math.sqrt(n * math.log(2.0 / budget) / 2.0)
-
-
 @lru_cache(maxsize=64)
 def _support_window(
     n_c: int, a: float, b: float, budget: float = _SUPPORT_TRUNCATION_BUDGET
@@ -298,21 +290,19 @@ def _support_window(
     """A control-success-count window ``(i_lo, i_hi)`` and a rigorous
     upper bound on the PMF mass it omits, valid SIMULTANEOUSLY for every
     ``q`` in ``[a, b]`` -- computed once per distinct ``(n_c, a, b)`` and
-    reused across every tail evaluation in that search, so the O(n_c)
-    enumeration shrinks to O(sqrt(n_c) + (b - a) * n_c) (dominated by the
-    O(sqrt(n_c)) Hoeffding half-width once the Clopper-Pearson interval is
-    narrow, which it always is for n_c large enough to make full
-    enumeration slow).
+    reused across every tail evaluation in that search.
+
+    Each end omits at most ``budget / 2`` (`chernoff_support`, worst at the
+    nuisance interval's end on that side), and an end the bound cannot cut omits
+    nothing, so the window spans about ``sqrt(n_c * q * (1 - q))`` counts
+    around the Clopper-Pearson interval instead of ``sqrt(n_c)``. A budget
+    outside ``(0, 1)`` omits nothing.
     """
-    if n_c <= _FULL_ENUMERATION_THRESHOLD:
+    if n_c <= _FULL_ENUMERATION_THRESHOLD or not 0.0 < budget < 1.0:
         return 0, n_c, 0.0
-    t = _hoeffding_half_width(n_c, budget)
-    i_lo = max(0, math.floor(a * n_c - t))
-    i_hi = min(n_c, math.ceil(b * n_c + t))
-    if i_hi - i_lo >= n_c:
-        return 0, n_c, 0.0
-    omitted = 2.0 * math.exp(-2.0 * t * t / n_c)
-    return int(i_lo), int(i_hi), float(omitted)
+    tail = budget / 2.0
+    i_lo, i_hi = chernoff_support(n_c, a, b, tail)
+    return i_lo, i_hi, tail * ((i_lo > 0) + (i_hi < n_c))
 
 
 # `scipy.stats.binom` adds fixed per-call `rv_discrete` overhead that dominates the thousands

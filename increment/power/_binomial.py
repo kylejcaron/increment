@@ -30,15 +30,13 @@ Two routes classify ``D``:
   evaluations, largest-bound-first split order with its tie order,
   tolerance, iteration ceiling and floating-point floor -- over many count
   pairs at once. Its tails use the runtime's binomial special functions
-  elementwise; only the summation order differs, plus control counts whose
-  total mass at every nuisance rate is below ``exp(-_SUPPORT_EXPONENT)`` per
-  side (Chernoff), together at most the per-row allowance ``delta``. Every
-  comparison of the replay is carried out with that allowance: one it cannot
-  settle hands the count pair to the unchanged runtime functions. Two proved
-  exits stop a replay once its Boolean outcome is fixed: an achieved endpoint
-  already at the tail allocation cannot reject, and once every current
-  leaf's reachable bound (``_eventual_bound``) is below it the runtime must
-  reject.
+  elementwise; only the summation order differs, within the per-row
+  allowance ``delta``. Every comparison of the replay is carried out with
+  that allowance: one it cannot settle hands the count pair to the unchanged
+  runtime functions. Two proved exits stop a replay once its Boolean outcome
+  is fixed: an achieved endpoint already at the tail allocation cannot
+  reject, and once every current leaf's reachable bound (``_eventual_bound``)
+  is below it the runtime must reject.
 * ``approximate``: replays the same search with a continuity-corrected Normal
   tail for the conditional sum and exact single-binomial tails when either
   arm is deterministic, keeping every allowance and cap the runtime adds. It
@@ -871,58 +869,6 @@ def classify(
     return [r if r is not None else np.zeros(0, bool) for r in results]
 
 
-#: Chernoff exponent of the control mass the exact route leaves out of each
-#: runtime tail sum: at most ``exp(-_SUPPORT_EXPONENT)`` per side for every
-#: nuisance rate of the group, charged to the summation allowance (the
-#: total, below ``5e-16``, is added to it).
-_SUPPORT_EXPONENT = 36.0
-_DROPPED = 2.0 * math.exp(-_SUPPORT_EXPONENT)
-
-
-def _kl(x: np.ndarray, q: np.ndarray) -> np.ndarray:
-    """Bernoulli Kullback-Leibler divergence ``D(x || q)``."""
-    with np.errstate(divide="ignore", invalid="ignore"):
-        first = np.where(x > 0.0, x * np.log(x / q), 0.0)
-        second = np.where(x < 1.0, (1.0 - x) * (np.log1p(-x) - np.log1p(-q)), 0.0)
-    return first + second
-
-
-def _effective_support(
-    n: int, q_lo: np.ndarray, q_hi: np.ndarray, lo: np.ndarray, hi: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
-    """Control counts ``[s_lo, s_hi]`` within ``[lo, hi]`` outside which every
-    ``Bin(n, q)``, ``q`` in ``[q_lo, q_hi]``, has at most ``exp(-E)`` mass per
-    side (Chernoff: ``P(X <= n x) <= exp(-n D(x || q))`` for ``x <= q``, and
-    symmetrically above; the lower tail is largest at ``q_lo``, the upper at
-    ``q_hi``). Bisection keeps the side where the exponent is at least ``E``."""
-    target = _SUPPORT_EXPONENT / n
-    s_lo = lo.copy()
-    s_hi = hi.copy()
-    cut_lo = (q_lo > 0.0) & (-np.log1p(-np.minimum(q_lo, 1.0)) > target)
-    cut_hi = (q_hi < 1.0) & (-np.log(np.maximum(q_hi, 1e-300)) > target)
-    if cut_lo.any():
-        left = np.zeros(q_lo.size)  # exponent >= target
-        right = q_lo.copy()  # exponent 0
-        for _ in range(64):
-            mid = 0.5 * (left + right)
-            big = _kl(mid, q_lo) >= target
-            left = np.where(big, mid, left)
-            right = np.where(big, right, mid)
-        drop = np.floor(n * left * (1.0 - 1e-12)).astype(np.int64) - 1
-        s_lo = np.where(cut_lo, np.maximum(lo, drop + 1), s_lo)
-    if cut_hi.any():
-        left = q_hi.copy()  # exponent 0
-        right = np.ones(q_hi.size)  # exponent >= target
-        for _ in range(64):
-            mid = 0.5 * (left + right)
-            big = _kl(mid, q_hi) >= target
-            right = np.where(big, mid, right)
-            left = np.where(big, left, mid)
-        drop = np.ceil(n * right * (1.0 + 1e-12)).astype(np.int64) + 1
-        s_hi = np.where(cut_hi, np.minimum(hi, drop - 1), s_hi)
-    return s_lo, np.maximum(s_hi, s_lo)
-
-
 def _classify_live(decision, route, live, results) -> None:
     n_c, n_t = decision.n_c, decision.n_t
     count = len(live)
@@ -933,29 +879,24 @@ def _classify_live(decision, route, live, results) -> None:
     hi = np.array([item[3] for item in live])
     kinds = [item[1].kind for item in live]
     x_c = np.array([item[1].x_c for item in live], np.int64)
-    if exact:
-        slo, shi = _effective_support(n_c, a, hi, wlo, whi)
-    else:
-        slo, shi = wlo, whi
-    terms = shi - slo + 1
-    tmax = int(terms.max()) if exact else 1
+    widths = whi - wlo + 1
+    tmax = int(widths.max()) if exact else 1
     offsets = np.zeros((count, tmax), np.int64)
     dmin = np.zeros(count, np.int64)
     dmax = np.zeros(count, np.int64)
     if exact:
         for n in range(count):
-            s = np.arange(slo[n], shi[n] + 1, dtype=np.int64)
+            s = np.arange(wlo[n], whi[n] + 1, dtype=np.int64)
             d = _threshold_offsets(kinds[n], n_c, n_t, int(x_c[n]), s)
             offsets[n, : d.size] = d
             dmin[n], dmax[n] = d[0], d[-1]
-    widths = whi - wlo + 1
     groups = _Groups(
         kind=np.array([0 if kind == "plus" else 1 for kind in kinds], np.int64),
         x_c=x_c,
         a=a,
         hi=hi,
-        wlo=slo,
-        width=terms,
+        wlo=wlo,
+        width=widths,
         omitted=np.array([w[2] for *_, w in live]),
         margin=np.array([_rr._eps_margin(int(w)) for w in widths]),
         j0=np.array([item[1].j0 for item in live], np.int64),
@@ -975,9 +916,9 @@ def _classify_live(decision, route, live, results) -> None:
     if exact:
         # Two summation orders of ``width`` nonnegative products (each at most one, total at most
         # two) are each within ``(width - 1) * eps / 2`` of the exact total, so differ by at most
-        # ``width * eps``; adding the omitted mass and margin rounds once each. Omitting control
-        # counts outside the Chernoff support moves the sum by at most ``_DROPPED``.
-        delta = ((2.0 * widths + 8.0) * _EPS + _DROPPED)[group[band]]
+        # ``width * eps``; adding the omitted mass and margin rounds once each. Both orders sum
+        # the runtime's own support window.
+        delta = ((2.0 * widths + 8.0) * _EPS)[group[band]]
     else:
         delta = np.zeros(band.size)
     guard = (groups.omitted + 2.0 * groups.margin)[group[band]]
