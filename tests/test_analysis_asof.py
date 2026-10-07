@@ -2122,12 +2122,13 @@ def test_native_dimensioned_asof_retention_lift_supports_cuped(retention_cuped_c
 def test_native_asof_value_readout_does_not_build_pre_period_stats(
     seeded_pre_period_con, monkeypatch
 ):
-    from increment.query import native_source
+    from increment.query import _native_day_source, native_source
 
     def fail(*args, **kwargs):
         raise AssertionError("value-only as-of readout requested pre-period stats")
 
     monkeypatch.setattr(native_source, "pre_period_stats", fail)
+    monkeypatch.setattr(_native_day_source, "pre_period_stats", fail)
     analysis = Analysis("new_onboarding_v2", "examples/definitions", seeded_pre_period_con)
     assert analysis.run_asof(metrics=["purchase_rate"])
 

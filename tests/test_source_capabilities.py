@@ -10,9 +10,7 @@ import pytest
 from increment._source_operations import PanelSQLOperation, SummarySqlOperation
 from increment.analysis import Analysis
 from increment.errors import CapabilityError
-from increment.query.native_source import (
-    TriggeredPopulationSource,
-)
+from increment.query._native_triggered import TriggeredPopulationSource
 from increment.sources import (
     MomentSource,
     SourceOperation,

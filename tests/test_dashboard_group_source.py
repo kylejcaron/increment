@@ -210,7 +210,7 @@ def test_group_quantiles_preserve_linear_interpolation_through_backend_compilers
     import pyarrow as pa
     import sqlglot
 
-    from increment.query.native_source import _dashboard_quantiles
+    from increment.query._native_dashboard import _dashboard_quantiles
 
     samples = {
         "control": [0.75 + index / 2 for index in range(30)],
