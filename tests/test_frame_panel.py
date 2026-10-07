@@ -784,11 +784,11 @@ def test_infinite_date_on_numeric_axis_refuses() -> None:
     assert exc.value.code == "source.frame.non_finite"
 
 
-def test_sparse_panel_is_densified_before_daily_moments() -> None:
-    """Regression for the measured 2.333-vs-7.000 divergence.
+def test_sparse_panel_daily_moments_include_inactive_units_as_zero() -> None:
+    """Logical zero population preserves the measured 2.333-vs-7.000 result.
 
-    3 units, one inactive on day 2. Dense: n=3, ref_y=7/3, mean 2.333.
-    Sparse (a bug that skips densification): n=1, mean 7.000 - 3x off.
+    Three units, one inactive on day 2: n=3 and mean 7/3; omitting the logical
+    zero would yield n=1 and mean 7.0.
     """
     sparse_rows = [
         ("u1", "control", "d1", 1.0, 1.0),
@@ -817,6 +817,294 @@ def test_sparse_panel_is_densified_before_daily_moments() -> None:
     assert day2["n"] * day2["ref_y"] + day2["cy1"] == pytest.approx(7.0)
     assert day2["ref_y"] == pytest.approx(2.333, abs=1e-3)
     assert day2["ref_y"] != pytest.approx(7.0)
+
+
+def _assert_sparse_panel_moments_match(
+    actual_rows: Mapping[tuple[Any, ...], dict[str, Any]],
+    oracle: Mapping[tuple[Any, ...], dict[str, Any]],
+    scenario: str,
+) -> None:
+    import math
+
+    assert actual_rows.keys() == oracle.keys()
+    for key, row in actual_rows.items():
+        expected = oracle[key]
+        assert row.keys() == expected.keys()
+        for name, value in row.items():
+            wanted = expected[name]
+            if isinstance(value, float):
+                assert math.isfinite(value), (scenario, key, name, value)
+                assert value == pytest.approx(wanted, rel=1e-9, abs=1e-12), (
+                    scenario,
+                    key,
+                    name,
+                )
+            else:
+                assert value == wanted, (scenario, key, name)
+
+
+def _sparse_panel_oracle_fixture(
+    scenario: str,
+) -> tuple[list[date], list[dict[str, Any]], list[dict[str, Any]]]:
+    import numpy as np
+
+    days = [date(2026, 1, day) for day in range(1, 7)]
+    sparse_rows: list[dict[str, Any]] = []
+    dense_rows: list[dict[str, Any]] = []
+    low = np.float64(1e150)
+    high = np.nextafter(low, np.inf)
+    tiny = np.float64(1e-150)
+    tiny_high = np.nextafter(tiny, np.inf)
+    for unit_index in range(8):
+        unit = f"u{unit_index}"
+        arm = "control" if unit_index < 4 else "treatment"
+        country = "CA" if unit_index % 2 == 0 else "US"
+        exposure_index = 0 if scenario == "precision_order" else unit_index % 2
+        exposure = days[exposure_index]
+        observed: dict[date, dict[str, Any]] = {}
+        for day_index, day in enumerate(days):
+            before_exposure = day_index == exposure_index - 1
+            boundary = day_index == exposure_index + 3
+            after_boundary = day_index == exposure_index + 4
+            window_days = 4 if scenario == "precision_order" else 3
+            in_window = exposure_index <= day_index < exposure_index + window_days
+            global_last_date = day_index == len(days) - 1
+            should_observe = (
+                before_exposure
+                or boundary
+                or after_boundary
+                or global_last_date
+                or (
+                    in_window
+                    and (
+                        scenario == "precision_order"
+                        or (unit_index + day_index) % 3 != 0
+                        or day_index == exposure_index
+                    )
+                )
+            )
+            if not should_observe:
+                continue
+            precision_values = (
+                (1e16, 1.0, -1e16, 1.0) if unit_index < 4 else (1e16, 1.0, -1e16, 2.0)
+            )
+            observed[day] = {
+                "numerator": float(low if (unit_index + day_index) % 2 == 0 else high),
+                "denominator": float(tiny if (unit_index + day_index) % 2 == 0 else tiny_high),
+                "retained": float(day_index in (exposure_index - 1, exposure_index + 1)),
+                "outcome": float(day_index in (exposure_index, exposure_index + 3)),
+                "clicked": float(day_index in (exposure_index, exposure_index + 3)),
+                "precision": (
+                    precision_values[day_index - exposure_index]
+                    if 0 <= day_index - exposure_index < len(precision_values)
+                    else 0.0
+                ),
+            }
+        for day in days:
+            values = observed.get(
+                day,
+                {
+                    "numerator": 0.0,
+                    "denominator": 0.0,
+                    "retained": 0.0,
+                    "outcome": 0.0,
+                    "clicked": 0.0,
+                    "precision": 0.0,
+                },
+            )
+            row = {
+                "unit": unit,
+                "arm": arm,
+                "country": country,
+                "day": day,
+                "exposed": exposure,
+                **values,
+            }
+            dense_rows.append(row)
+            if day in observed:
+                sparse_rows.append(row)
+    return days, sparse_rows, dense_rows
+
+
+@pytest.mark.parametrize("scenario", ["windowed_ratio", "retention", "uptake", "precision_order"])
+def test_sparse_panel_oracle_matches_dense_across_execution_kernels(
+    scenario: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Compare public sparse and explicit-zero populations across cutover, gates, and row order."""
+
+    import increment.frame as frame_module
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    days, sparse_rows, dense_rows = _sparse_panel_oracle_fixture(scenario)
+    if scenario == "windowed_ratio":
+        specs = [
+            MetricSpec(
+                name="ratio",
+                type="ratio",
+                numerator="numerator",
+                denominator="denominator",
+                window_days=3,
+            )
+        ]
+        uptake = None
+        design = None
+        grains = ("daily", "asof")
+    elif scenario == "retention":
+        specs = [
+            MetricSpec(
+                name="retention",
+                type="retention",
+                value_column="retained",
+                threshold_days=(0, 2),
+            )
+        ]
+        uptake = None
+        design = None
+        grains = ("asof",)
+    elif scenario == "precision_order":
+        specs = [MetricSpec(name="precision", type="mean", value_column="precision", window_days=4)]
+        uptake = None
+        design = None
+        grains = ("asof",)
+    else:
+        specs = [MetricSpec(name="outcome", type="mean", value_column="outcome", window_days=3)]
+        uptake = "clicked"
+        design = Encouragement(
+            control_group="control",
+            uptake=UptakeSpec(fact="clicked", window_days=3),
+            exclusion_restriction=ExclusionRestriction(
+                acknowledged=True, justification="assignment affects outcome only through uptake"
+            ),
+        )
+        grains = ("daily", "asof")
+
+    breakouts = [] if scenario == "precision_order" else ["country"]
+
+    def build(rows: list[dict[str, Any]], *, layout: str) -> FramePanelSource:
+        if layout == "unchunked":
+            panel = pa.Table.from_pylist(rows)
+        else:
+            day_slices = (days[:2], days[2:]) if layout == "forward" else (days[2:], days[:2])
+            panel = pa.concat_tables(
+                [
+                    pa.Table.from_pylist([row for row in rows if row["day"] in day_slice])
+                    for day_slice in day_slices
+                ]
+            )
+        return from_unit_panel(
+            panel,
+            unit="unit",
+            group="arm",
+            date="day",
+            exposure_date="exposed",
+            control="control",
+            metrics=specs,
+            breakouts=breakouts,
+            uptake=uptake,
+            design=design,
+            observation_end=days[-1],
+        )
+
+    def read(
+        rows: list[dict[str, Any]], budget: int, *, layout: str
+    ) -> dict[tuple[Any, ...], dict[str, Any]]:
+        monkeypatch.setattr(frame_module, "_DAY_PANEL_SCRATCH_BUDGET_BYTES", budget)
+        source = build(rows, layout=layout)
+        metric = _metric(source, specs[0].name)
+        result: dict[tuple[Any, ...], dict[str, Any]] = {}
+        for grain in grains:
+            for completed in (False, True):
+                actual = source.moments(
+                    metric,
+                    grain=grain,
+                    by=breakouts,
+                    completed_windows_only=completed,
+                )
+                result.update(
+                    {
+                        (
+                            grain,
+                            completed,
+                            row["ds"],
+                            row["group_id"],
+                            *(row[name] for name in breakouts),
+                        ): row
+                        for row in actual
+                    }
+                )
+        return result
+
+    oracle = read(dense_rows, 64 * 1024 * 1024, layout="unchunked")
+    chunked_oracle = read(dense_rows, 64 * 1024 * 1024, layout="forward")
+    reversed_batch_oracle = read(dense_rows, 64 * 1024 * 1024, layout="reverse")
+    vectorized_sparse = read(list(reversed(sparse_rows)), 64 * 1024 * 1024, layout="forward")
+    streaming_sparse = read(sparse_rows, 0, layout="forward")
+    streaming_reversed = read(list(reversed(sparse_rows)), 0, layout="reverse")
+    _assert_sparse_panel_moments_match(chunked_oracle, oracle, f"{scenario}/chunked")
+    _assert_sparse_panel_moments_match(
+        reversed_batch_oracle, oracle, f"{scenario}/reversed batches"
+    )
+    _assert_sparse_panel_moments_match(vectorized_sparse, oracle, scenario)
+    _assert_sparse_panel_moments_match(streaming_sparse, oracle, scenario)
+    _assert_sparse_panel_moments_match(streaming_reversed, oracle, scenario)
+    if scenario == "uptake":
+        assert any(key[0] == "asof" and row["sum_d"] > 0.0 for key, row in streaming_sparse.items())
+    if scenario == "retention":
+        assert any(row["successes"] > 0 for row in streaming_sparse.values())
+
+
+def test_sparse_daily_and_asof_match_explicit_zero_panel_in_any_input_order() -> None:
+    days = [date(2026, 1, day) for day in range(1, 5)]
+    sparse = [
+        {"unit": unit, "arm": arm, "day": days[index], "value": value}
+        for unit, arm, index, value in [
+            ("c1", "control", 0, 2.0),
+            ("c2", "control", 1, 4.0),
+            ("t1", "treatment", 2, 6.0),
+            ("t2", "treatment", 3, 8.0),
+        ]
+    ]
+    dense = [
+        {
+            "unit": row["unit"],
+            "arm": row["arm"],
+            "day": day,
+            "value": row["value"] if day == row["day"] else 0.0,
+        }
+        for row in sparse
+        for day in days
+    ]
+
+    def source(rows):
+        return from_unit_panel(
+            pa.Table.from_pylist(rows),
+            unit="unit",
+            group="arm",
+            date="day",
+            control="control",
+            metrics={"value": "mean"},
+        )
+
+    sparse_source = source(sparse)
+    dense_source = source(list(reversed(dense)))
+    assert sparse_source.densified_cells == 12
+    assert dense_source.densified_cells == 0
+    metric = _metric(sparse_source, "value")
+    dense_metric = _metric(dense_source, "value")
+    for grain in ("daily", "asof"):
+        actual = sparse_source.moments(metric, grain=grain)
+        expected = dense_source.moments(dense_metric, grain=grain)
+        assert {(r["ds"], r["group_id"]) for r in actual} == {
+            (r["ds"], r["group_id"]) for r in expected
+        }
+        by_key = {(r["ds"], r["group_id"]): r for r in expected}
+        for row in actual:
+            wanted = by_key[(row["ds"], row["group_id"])]
+            for name, value in row.items():
+                if isinstance(value, float):
+                    assert value == pytest.approx(wanted[name], rel=1e-9, abs=1e-12)
+                else:
+                    assert value == wanted[name]
 
 
 def test_panel_breakouts_preserve_declared_order() -> None:
@@ -1594,6 +1882,295 @@ def _panel_backend(backend: str, columns: Mapping[str, Sequence[object]]) -> Any
     return table.to_pandas()
 
 
+@pytest.mark.parametrize("budget", [0, 64 * 1024 * 1024])
+def test_daily_accepts_free_form_day_labels_for_every_kernel(
+    budget: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import increment.frame as frame_module
+
+    monkeypatch.setattr(frame_module, "_DAY_PANEL_SCRATCH_BUDGET_BYTES", budget)
+    source = from_unit_panel(
+        pa.table(
+            {
+                "unit": ["u1", "u2"],
+                "arm": ["control", "control"],
+                "day": ["2025-9", "2025-10"],
+                "value": [1.0, 2.0],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        date="day",
+        control="control",
+        metrics={"value": "mean"},
+    )
+    rows = source.moments(_metric(source, "value"), grain="daily")
+    assert {row["ds"] for row in rows} == {"2025-9", "2025-10"}
+
+
+@pytest.mark.parametrize("budget", [0, 64 * 1024 * 1024])
+def test_panel_unit_identity_does_not_sort_mixed_public_ids(
+    budget: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pandas as pd
+
+    import increment.frame as frame_module
+
+    monkeypatch.setattr(frame_module, "_DAY_PANEL_SCRATCH_BUDGET_BYTES", budget)
+    frame = pd.DataFrame(
+        {
+            "unit": pd.Series([1, "two"], dtype=object),
+            "arm": ["control", "control"],
+            "day": [0, 1],
+            "value": [1.0, 2.0],
+        }
+    )
+    source = from_unit_panel(
+        frame,
+        unit="unit",
+        group="arm",
+        date="day",
+        control="control",
+        metrics={"value": "mean"},
+    )
+    rows = source.moments(_metric(source, "value"), grain="daily")
+    assert {row["ds"] for row in rows} == {0, 1}
+    assert all(row["n"] == 2 for row in rows)
+
+    asof_rows = source.moments(_metric(source, "value"), grain="asof")
+    assert {row["ds"] for row in asof_rows} == {0, 1}
+    assert all(row["n"] == 2 for row in asof_rows)
+
+
+@pytest.mark.parametrize("budget", [0, 64 * 1024 * 1024])
+def test_completed_ratio_asof_mixed_unit_ids_use_dense_and_streamed_kernels(
+    budget: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import narwhals as nw
+    import pandas as pd
+
+    import increment.frame as frame_module
+
+    monkeypatch.setattr(frame_module, "_DAY_PANEL_SCRATCH_BUDGET_BYTES", budget)
+    units = [1, "two", 2, "three"]
+    groups = ["control", "treatment", "control", "treatment"]
+    frame = pd.DataFrame(
+        {
+            "unit": pd.Series([unit for unit in units for _ in range(3)], dtype=object),
+            "arm": [group for group in groups for _ in range(3)],
+            "day": [day for _ in units for day in range(3)],
+            "exposed": [0] * 12,
+            "numerator": [
+                float(unit_index + 1) * (day + 1) for unit_index in range(4) for day in range(3)
+            ],
+            "denominator": [float(unit_index + 1) for unit_index in range(4) for _ in range(3)],
+        }
+    )
+    source = from_unit_panel(
+        frame,
+        unit="unit",
+        group="arm",
+        date="day",
+        exposure_date="exposed",
+        control="control",
+        metrics=[
+            MetricSpec(
+                name="ratio",
+                type="ratio",
+                numerator="numerator",
+                denominator="denominator",
+                window_days=2,
+            )
+        ],
+    )
+    original_join = nw.DataFrame.join
+    join_count = 0
+
+    def reorder_join(self, other, *args, **kwargs):
+        nonlocal join_count
+        joined = original_join(self, other, *args, **kwargs)
+        if "unit_id" in self.columns and "unit_id" in other.columns:
+            ordinal = next(
+                (name for name in joined.columns if name.startswith("__unit_ordinal")),
+                None,
+            )
+            if ordinal is not None:
+                join_count += 1
+                current = joined.get_column(ordinal).to_list()
+                day = self.get_column("ds").to_list()[0] if "ds" in self.columns else join_count
+                offset = (int(day) + 1) % len(current)
+                rotated = current[offset:] + current[:offset]
+                ranks = {value: index for index, value in enumerate(rotated)}
+                helper = f"__join_order_{join_count}"
+                return joined.with_columns(
+                    nw.new_series(
+                        helper, [ranks[value] for value in current], backend=joined.implementation
+                    )
+                ).sort(helper)
+        return joined
+
+    monkeypatch.setattr(nw.DataFrame, "join", reorder_join)
+    rows = source.moments(_metric(source, "ratio"), grain="asof", completed_windows_only=True)
+    assert join_count > 0
+    assert {row["ds"] for row in rows} == {2}
+    assert {row["group_id"] for row in rows} == {"control", "treatment"}
+    assert all(row["n"] == 2 for row in rows)
+    by_group = {row["group_id"]: row for row in rows}
+    assert _sum_y(by_group["control"]) == pytest.approx(12.0)
+    assert _sum_y(by_group["treatment"]) == pytest.approx(18.0)
+    assert _sum_den(by_group["control"]) == pytest.approx(8.0)
+    assert _sum_den(by_group["treatment"]) == pytest.approx(12.0)
+
+
+@pytest.mark.parametrize("backend", ["arrow", "polars", "pandas"])
+@pytest.mark.parametrize("exposure_mode", ["explicit", "inferred"])
+def test_streamed_asof_restores_identity_after_reordered_exposure_joins(
+    backend: str, exposure_mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import narwhals as nw
+
+    import increment.frame as frame_module
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    days = range(6)
+    sparse_rows = []
+    dense_rows = []
+    for index in range(6):
+        exposure = index % 3
+        for day in range(exposure, 6):
+            event = float(index % 2 == 0 and day == exposure + 1)
+            row = {
+                "unit": f"u{index}",
+                "arm": "control" if index < 3 else "treatment",
+                "day": day,
+                "outcome": event,
+                "clicked": event,
+            }
+            if exposure_mode == "explicit":
+                row["exposed"] = exposure
+            dense_rows.append(row)
+            if day in (exposure, exposure + 1, 4, 5):
+                sparse_rows.append(row)
+
+    specs = [
+        MetricSpec(
+            name="outcome",
+            type="mean",
+            value_column="outcome",
+            window_days=3 if exposure_mode == "explicit" else None,
+        )
+    ]
+    design = Encouragement(
+        control_group="control",
+        uptake=UptakeSpec(fact="clicked", window_days=3),
+        exclusion_restriction=ExclusionRestriction(
+            acknowledged=True, justification="assignment affects outcome only through uptake"
+        ),
+    )
+    exposure_column = "exposed" if exposure_mode == "explicit" else None
+
+    def build(rows: list[dict[str, Any]]) -> FramePanelSource:
+        columns = {name: [row[name] for row in rows] for name in rows[0]}
+        return from_unit_panel(
+            _panel_backend(backend, columns),
+            unit="unit",
+            group="arm",
+            date="day",
+            exposure_date=exposure_column,
+            control="control",
+            metrics=specs,
+            uptake="clicked",
+            design=design,
+            observation_end=max(days),
+        )
+
+    def read(source: FramePanelSource) -> dict[tuple[Any, ...], dict[str, Any]]:
+        metric = _metric(source, "outcome")
+        return {
+            (completed, row["ds"], row["group_id"]): row
+            for completed in ((False, True) if exposure_mode == "explicit" else (False,))
+            for row in source.moments(metric, grain="asof", completed_windows_only=completed)
+        }
+
+    expected = read(build(dense_rows))
+    sparse_source = build(sparse_rows)
+    monkeypatch.setattr(frame_module, "_DAY_PANEL_SCRATCH_BUDGET_BYTES", 0)
+    original_join = nw.DataFrame.join
+    join_count = 0
+
+    def reorder_join(self, other, *args, **kwargs):
+        nonlocal join_count
+        joined = original_join(self, other, *args, **kwargs)
+        if "unit_id" in self.columns and "unit_id" in other.columns:
+            join_count += 1
+            ordinal = next(
+                (name for name in joined.columns if name.startswith("__unit_ordinal")),
+                None,
+            )
+            if ordinal is not None:
+                current = joined.get_column(ordinal).to_list()
+                offset = join_count % len(current)
+                rotated = current[offset:] + current[:offset]
+                ranks = {value: index for index, value in enumerate(rotated)}
+                helper = f"__join_order_{join_count}"
+                return joined.with_columns(
+                    nw.new_series(
+                        helper, [ranks[value] for value in current], backend=joined.implementation
+                    )
+                ).sort(helper)
+        return joined
+
+    monkeypatch.setattr(nw.DataFrame, "join", reorder_join)
+    actual = read(sparse_source)
+    assert join_count > 0
+    _assert_sparse_panel_moments_match(actual, expected, f"{backend}/{exposure_mode}")
+    assert any(row["sum_d"] > 0.0 for row in actual.values())
+
+
+@pytest.mark.parametrize("backend", ["arrow", "polars", "pandas"])
+def test_streamed_asof_allows_outcome_and_uptake_to_share_a_column(
+    backend: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import increment.frame as frame_module
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    monkeypatch.setattr(frame_module, "_DAY_PANEL_SCRATCH_BUDGET_BYTES", 0)
+    design = Encouragement(
+        control_group="control",
+        uptake=UptakeSpec(fact="clicked", window_days=2),
+        exclusion_restriction=ExclusionRestriction(
+            acknowledged=True, justification="assignment affects outcomes only through uptake"
+        ),
+    )
+    source = from_unit_panel(
+        _panel_backend(
+            backend,
+            {
+                "unit": ["c1", "c2", "t1", "t2"],
+                "arm": ["control", "control", "treatment", "treatment"],
+                "day": [0, 0, 1, 1],
+                "exposed": [0, 0, 1, 1],
+                "clicked": [1.0, 0.0, 0.0, 1.0],
+            },
+        ),
+        unit="unit",
+        group="arm",
+        date="day",
+        exposure_date="exposed",
+        control="control",
+        metrics=[
+            MetricSpec(
+                name="clicked_conversion", type="conversion", value_column="clicked", window_days=2
+            )
+        ],
+        uptake="clicked",
+        design=design,
+    )
+    metric = _metric(source, "clicked_conversion")
+    rows = source.moments(metric, grain="asof")
+    assert rows and any(row["sum_d"] > 0.0 for row in rows)
+
+
 @pytest.mark.parametrize("backend", ["arrow", "polars", "pandas"])
 @pytest.mark.parametrize("canonical_name", ["unit_id", "group_id", "ds"])
 def test_panel_refuses_metric_declarations_colliding_with_canonical_roles(
@@ -1985,6 +2562,34 @@ def test_panel_covariate_varying_within_unit_refuses(panel_frame: pa.Table) -> N
     with pytest.raises(InvalidRequestError) as exc:
         src.moments(_metric(src, "revenue"), grain="total")
     assert exc.value.code == "frame.frame_panel.unit_covariate_varies"
+
+
+def test_panel_covariate_varies_with_mixed_public_unit_ids() -> None:
+    import pandas as pd
+
+    frame = pd.DataFrame(
+        {
+            "unit": pd.Series([1, 1, "two", "two"], dtype=object),
+            "arm": ["control", "control", "treatment", "treatment"],
+            "day": [0, 1, 0, 1],
+            "revenue": [1.0, 2.0, 3.0, 4.0],
+            "orders": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+    source = from_unit_panel(
+        frame,
+        unit="unit",
+        group="arm",
+        date="day",
+        control="control",
+        metrics=[MetricSpec(name="revenue", covariate="orders")],
+    )
+
+    with pytest.raises(InvalidRequestError) as exc:
+        source.moments(_metric(source, "revenue"), grain="total")
+
+    assert exc.value.code == "frame.frame_panel.unit_covariate_varies"
+    assert exc.value.context["units"] == ("two", 1)
 
 
 def test_panel_cuped_moments_and_interval_match_unit_summary() -> None:

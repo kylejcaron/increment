@@ -137,7 +137,11 @@ def test_sequential_replay_rejects_fixed_horizon_metadata(foreign_reference):
     from increment import estimate_sequential
     from increment.errors import CodedError
     from increment.estimation.binomial_rr import confidence_interval, nuisance_beta
-    from increment.estimation.results import BINOMIAL_METHOD, BinomialConfidenceSet
+    from increment.estimation.results import (
+        BINOMIAL_METHOD,
+        BINOMIAL_NUMERICAL_QUALIFICATION,
+        BinomialConfidenceSet,
+    )
     from tests.sequential_cases import registered_bernoulli
 
     snapshot, policy = registered_bernoulli(n=4)
@@ -170,6 +174,7 @@ def test_sequential_replay_rejects_fixed_horizon_metadata(foreign_reference):
             decision_alpha=0.05,
             geometry="central",
             method=BINOMIAL_METHOD,
+            numerical_qualification=BINOMIAL_NUMERICAL_QUALIFICATION,
             x_c=0,
             n_c=4,
             x_t=2,

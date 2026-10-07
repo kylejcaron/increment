@@ -1533,18 +1533,17 @@ _PROBABILITY_UNRESOLVED = RefusalSpec(
 
 @dataclass(frozen=True, slots=True)
 class BinomialPower:
-    """Computed rejection mass, split into plus rejections and remaining minus rejections.
+    """Computed rejection mass with its arithmetic enclosure.
 
-    ``power`` sums the weight of the cells decided to reject in float64: the computed central
-    mass, which the error of the weights it reads and the rounding of its sum can put above the
-    exact mass of those cells. ``omitted`` bounds the mass outside the retained windows,
-    ``ambiguous`` the mass of retained cells no decision was made for (cells a replay budget left
-    out, or a finite-sample route the runtime refuses would have decided), and ``inflation`` (at
-    least one) the numerical error of the sum, so the runtime's rejection probability lies in
-    ``[lower, upper]``. ``reported`` admits the central mass only within `RESOLUTION`.
-    A ``closed_form`` figure is the delta-method model and encloses only itself; a
-    figure that is not ``certified`` is a heuristic with no claim on the runtime,
-    enclosed by ``[0, 1]``."""
+    ``power`` sums the weight of cells decided to reject in float64. ``omitted`` bounds mass
+    outside retained windows, ``ambiguous`` bounds retained undecided cells and ``inflation``
+    carries the numerical allowance. The resulting enclosure is conditional on the deployed
+    SciPy special-function error model; it is not a cross-build floating-point proof. Statistical
+    finiteness of the decision construction and this arithmetic qualification are separate claims.
+    ``closed_form`` is only the delta-method model and ``certified=False`` is a diagnostic with
+    no claim on runtime power.
+
+    """
 
     plus: float
     minus: float
@@ -1585,8 +1584,7 @@ class BinomialPower:
 
     @property
     def lower(self) -> float:
-        """No larger than the exact mass of the cells decided to reject, hence than the runtime's
-        rejection probability: what the decided cells certify."""
+        """Computed lower endpoint conditional on the stated SciPy error allowance."""
         if self.closed_form:
             return self.power
         if not self.certified:
@@ -1595,9 +1593,7 @@ class BinomialPower:
 
     @property
     def upper(self) -> float:
-        """No smaller than the runtime's rejection probability: the exact mass of the cells
-        decided to reject at the most the computed sum allows, plus the mass of every cell left
-        undecided and of everything outside the retained windows."""
+        """Computed upper endpoint conditional on the stated SciPy error allowance."""
         if self.closed_form:
             return self.power
         if not self.certified:
@@ -1606,8 +1602,7 @@ class BinomialPower:
 
     @property
     def basis(self) -> Literal["asymptotic", "exact", "approximate"]:
-        """``asymptotic`` for the closed-form model, ``exact`` for a resolved runtime
-        enumeration, and ``approximate`` for an unresolved or heuristic diagnostic."""
+        """Planning route for this value."""
         if self.closed_form:
             return "asymptotic"
         if self.resolved:

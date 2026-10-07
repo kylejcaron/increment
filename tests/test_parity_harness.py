@@ -334,7 +334,11 @@ def _assert_equal(left, right, key):
 def _binomial_set(*, lower: float = 1.232421875):
     """A zero-control-count exact-binomial set (no finite point); only `lower` varies."""
     from increment.estimation.binomial_rr import nuisance_beta
-    from increment.estimation.results import BINOMIAL_METHOD, BinomialConfidenceSet
+    from increment.estimation.results import (
+        BINOMIAL_METHOD,
+        BINOMIAL_NUMERICAL_QUALIFICATION,
+        BinomialConfidenceSet,
+    )
 
     return BinomialConfidenceSet(
         lower=lower,
@@ -344,6 +348,7 @@ def _binomial_set(*, lower: float = 1.232421875):
         decision_alpha=0.05,
         geometry="central",
         method=BINOMIAL_METHOD,
+        numerical_qualification=BINOMIAL_NUMERICAL_QUALIFICATION,
         x_c=0,
         n_c=10,
         x_t=2,

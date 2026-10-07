@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 import narwhals as nw
@@ -559,107 +560,78 @@ def _moment_rows(
 def _daily_moment_rows(
     panel: nw.DataFrame[Any],
     *,
+    bounded_dense: bool,
+    identity: nw.DataFrame[Any],
+    identity_ordinal: str,
     metrics: Sequence[MetricSpec],
     synthesised: Sequence[Metric],
     experiment_id: str,
     exposure: nw.DataFrame[Any] | None,
     by: Sequence[str] = (),
 ) -> tuple[list[dict[str, Any]], dict[str, _DeferredRefusal]]:
-    """Per-(day, group, metric) centered moments - the ``DAILY_GROUP_SUMMARY`` shape.
+    """Reduce bounded dense workspaces at once and larger panels one day at a time."""
+    from increment._frame_panel import _day_population
 
-    The covariate family (``ref_x``/``cx1``/``cx2``/``cxy``) is always
-    ``None``: a per-day CUPED covariate is nonsensical, matching
-    ``daily_group_summary``'s own contract.
-
-    A windowed mean/conversion/ratio metric applies the day-0..right-edge
-    band here (``0 <= day_idx < window_days``) - never whole-unit
-    censoring (a unit still mid-window must keep showing its partial
-    daily data, not vanish from every day it was ever measured) and
-    never a retention band's variable left edge (bounded separately, per
-    band, in the total-grain reduce). Mirrors
-    ``builders.window_bound_stats``'s documented asymmetry with
-    ``unit_totals``'s whole-window aggregate exactly.
-    A retention or quantile *spec* is silently EXCLUDED from this batch
-    (not raised on): "returned within the observation band" is not a
-    property of a single day, and quantiles do not decompose into
-    per-day moments - mirroring
-    ``increment.breakout.estimates.reject_retention_metrics``'s identical
-    rejection of retention on the day-axis ``run_daily`` view. But
-    ``metrics`` here is the SOURCE's full registered list
-    (``FramePanelSource.moments()`` batches and caches this call across
-    every metric on the source, see its own docstring), so a
-    co-registered retention or quantile metric must never block a daily
-    read for any OTHER metric on the same source. ``moments()`` itself
-    raises :class:`CapabilityError` lazily, only when the metric the
-    CALLER actually asked for is retention- or quantile-typed.
-
-    A collapsed-percentile-bound refusal (:data:`_WINSOR_COLLAPSED_BOUND`)
-    is data-dependent, discovered only while reducing one spec's own rows -
-    unlike the static type checks above, it cannot be checked before this
-    batch runs. Caught per spec; only its :class:`RefusalSpec` and
-    immutable ``.context`` payload are returned in the second element,
-    keyed by metric name - never the exception instance itself, which
-    would keep its traceback (and the reducer's dataframe intermediates)
-    alive for the source's lifetime. ``moments()`` reconstructs a fresh
-    exception from the stored spec/context, generically, only for a
-    caller that actually requested that metric.
-    """
-    if exposure is not None:
-        indexed, day_index = _with_day_index(panel, exposure)
-        admitted = indexed.filter(nw.col(day_index) >= 0)
-    else:
-        indexed = None
-        day_index = None
-        admitted = panel
-
+    labels = panel.get_column("ds").unique().to_list()
     rows: list[dict[str, Any]] = []
     failures: dict[str, _DeferredRefusal] = {}
-
     for spec, metric in zip(metrics, synthesised, strict=True):
         if spec.type in ("retention", "quantile"):
-            # Both refuse lazily in moments() when actually asked for; a
-            # co-registered one must not block other metrics' daily read.
             continue
         has_den = spec.denominator is not None
-
         right_edge = _resolve_window_days(metric)
-        source = admitted
-        if right_edge is not None:
-            assert (
-                indexed is not None and day_index is not None
-            )  # exposure required whenever a spec is windowed
-            source = admitted.filter(nw.col(day_index) < right_edge)
-
-        exprs = [nw.col(spec.y_column).alias("y")]
-        if spec.denominator is not None:
-            exprs.append(nw.col(spec.denominator).alias("y_den"))
-
-        long = source.select(
-            nw.col("ds"), *[nw.col(name) for name in by], nw.col("group_id"), *exprs
-        )
         spec_rows: list[dict[str, Any]] = []
         try:
-            for record, winsor_metadata in _day_moment_records(
-                long, spec, by=by, has_den=has_den, has_d=False
-            ):
-                spec_rows.append(
-                    {
-                        "ds": record["ds"],
-                        **{name: str(record[name]) for name in by},
-                        "experiment_id": experiment_id,
-                        "metric": spec.name,
-                        "group_id": record["group_id"],
-                        **_moment_fields(record),
-                        **winsor_metadata,
-                    }
+            for ds in labels if not bounded_dense else [None]:
+                if bounded_dense:
+                    population = panel
+                else:
+                    values = [spec.y_column]
+                    if spec.denominator is not None:
+                        values.append(spec.denominator)
+                    population = _day_population(
+                        panel,
+                        identity=identity,
+                        ds=ds,
+                        value_columns=values,
+                        ordinal=identity_ordinal,
+                    )
+                if exposure is not None:
+                    indexed, day_index = _with_day_index(population, exposure)
+                    population = indexed.filter(nw.col(day_index) >= 0)
+                    if right_edge is not None:
+                        population = population.filter(nw.col(day_index) < right_edge)
+                long = population.select(
+                    nw.col("ds"),
+                    *[nw.col(name) for name in by],
+                    nw.col("group_id"),
+                    nw.col(spec.y_column).alias("y"),
+                    *(
+                        [nw.col(spec.denominator).alias("y_den")]
+                        if spec.denominator is not None
+                        else []
+                    ),
                 )
+                for record, winsor_metadata in _day_moment_records(
+                    long, spec, by=by, has_den=has_den, has_d=False
+                ):
+                    spec_rows.append(
+                        {
+                            "ds": record["ds"],
+                            **{name: str(record[name]) for name in by},
+                            "experiment_id": experiment_id,
+                            "metric": spec.name,
+                            "group_id": record["group_id"],
+                            **_moment_fields(record),
+                            **winsor_metadata,
+                        }
+                    )
         except CapabilityError as exc:
             if exc.code != _WINSOR_COLLAPSED_BOUND.code:
                 raise
             failures[spec.name] = (_WINSOR_COLLAPSED_BOUND, exc.context)
             continue
         rows.extend(spec_rows)
-
     return rows, failures
 
 
@@ -711,10 +683,12 @@ def _asof_day_rank(ds: nw.Series[Any]) -> tuple[np.ndarray, int]:
     return coded.astype(np.int64, copy=False), position + 1
 
 
-def _asof_unit_code(unit: nw.Series[Any]) -> tuple[np.ndarray, int]:
-    """Dense code per unit, numbered in the unit id's own sort order, and the unit count."""
-    labels = sorted(unit.unique().to_list())
-    coded = unit.replace_strict(labels, list(range(len(labels))), return_dtype=nw.Int64).to_numpy()
+def _asof_unit_code(ordinal: nw.Series[Any]) -> tuple[np.ndarray, int]:
+    """Dense unit codes from the stable identity ordinal, never public identifiers."""
+    labels = sorted(ordinal.unique().to_list())
+    coded = ordinal.replace_strict(
+        labels, list(range(len(labels))), return_dtype=nw.Int64
+    ).to_numpy()
     return coded.astype(np.int64, copy=False), len(labels)
 
 
@@ -820,6 +794,7 @@ def _asof_unit_rows(
     uptake: str | None,
     uptake_window_days: int | None,
     completed_windows_only: bool,
+    identity_ordinal: str,
 ) -> nw.DataFrame[Any]:
     """One cumulative, admitted outcome row per unit and observed day.
 
@@ -830,7 +805,7 @@ def _asof_unit_rows(
     ``+0.0``. Retention
     enters once its band opens (or closes when final-only rows are
     requested), then ratchets as a binary outcome; its bounded band freezes
-    after the right edge. Rows come out day-major, units in id order.
+    after the right edge. Rows come out day-major, units in identity-ordinal order.
     """
     if isinstance(metric, QuantileMetric):
         refuse(_ASOF_QUANTILE_UNSUPPORTED, metric=metric.name)
@@ -838,6 +813,8 @@ def _asof_unit_rows(
     band_start, band_end = metric.band if is_retention else (0, None)
     if is_retention and completed_windows_only and band_end is None:
         _raise("frame.moments.asof_moments_completed", metric=metric.name, band=metric.band)
+    if is_retention and exposure is None:
+        _raise("frame.moments.asof_unit_rows")
 
     source, day_index_name, uptake_index_name = _asof_source_with_indices(
         panel, exposure=exposure, first_exposure=first_exposure, uptake=uptake
@@ -860,10 +837,8 @@ def _asof_unit_rows(
         return nw.from_dict({name: [] for name in columns}, backend=panel.implementation)
 
     day_rank, n_days = _asof_day_rank(source.get_column("ds"))
-    unit_code, n_units = _asof_unit_code(source.get_column("unit_id"))
+    unit_code, n_units = _asof_unit_code(source.get_column(identity_ordinal))
     cells, filled = _asof_spine_cells(day_rank, unit_code, n_days=n_days, n_units=n_units)
-    if is_retention and exposure is None:
-        _raise("frame.moments.asof_unit_rows")
 
     day_index = _asof_grid(source, cells, day_index_name) if day_index_name is not None else None
     admitted = filled if day_index is None else (filled & ~(day_index < 0))
@@ -904,7 +879,7 @@ def _asof_unit_rows(
         assert day_index is not None and gate is not None
         keep = keep & ~(day_index < gate)
 
-    # Day-major emission (ds rank, then unit id), the order the row loop sorted in.
+    # Day-major emission (ds rank, then identity ordinal), the order the row loop sorted in.
     emitted = keep.T.reshape(-1)
     rows = source.select("ds", "unit_id", "group_id", *by)[cells.T.reshape(-1)[emitted]]
     rows = rows.with_columns(
@@ -936,100 +911,306 @@ def _effective_observable_end(
     return min((numerator_end, denominator_end), key=panel_order.__getitem__)
 
 
+@dataclass(frozen=True)
+class _AsOfSettings:
+    identity: nw.DataFrame[Any]
+    identity_ordinal: str
+    bounded_dense: bool
+    synthesised: Sequence[Metric]
+    experiment_id: str
+    uptake: str | None
+    uptake_window_days: int | None
+    first_exposure: nw.DataFrame[Any] | None
+    exposure: nw.DataFrame[Any] | None
+    completed_windows_only: bool
+    observation_end: dt.date | dt.datetime | str | int | float | None
+    fact_max_ds: Mapping[str, Any]
+    by: Sequence[str]
+
+
+@dataclass
+class _AsOfState:
+    y: np.ndarray
+    denominator: np.ndarray
+    uptake: np.ndarray
+
+
+def _asof_completion_days(metric: Metric, settings: _AsOfSettings) -> int | None:
+    if not settings.completed_windows_only:
+        return None
+    right_edge = _resolve_window_days(metric)
+    if settings.uptake is not None and (right_edge is None or settings.uptake_window_days is None):
+        _raise("frame.moments.asof_completed_requires_uptake_window")
+    if settings.uptake is not None or (
+        not isinstance(metric, RetentionMetric) and right_edge is not None
+    ):
+        assert right_edge is not None
+        return max(right_edge, settings.uptake_window_days or 0)
+    return None
+
+
+def _asof_update_uptake(
+    population: nw.DataFrame[Any],
+    settings: _AsOfSettings,
+    admitted: np.ndarray,
+    day_index_values: np.ndarray | None,
+    state: _AsOfState,
+) -> np.ndarray | None:
+    if settings.uptake is None:
+        return None
+    if day_index_values is not None:
+        uptake_day_values = day_index_values
+    else:
+        if settings.first_exposure is None:
+            _raise("frame.moments.asof_source_uptake_needs_anchor")
+        anchor = _scratch_name(population, "__exposure__")
+        anchored = population.join(
+            settings.first_exposure.select("unit_id", nw.col("__first_exposure__").alias(anchor)),
+            on="unit_id",
+            how="left",
+        ).sort(settings.identity_ordinal)
+        uptake_day_values = (
+            anchored.with_columns(_uptake_day_elapsed(anchored, anchor).alias("__uptake_day__"))
+            .get_column("__uptake_day__")
+            .to_numpy()
+            .astype(np.float64, copy=False)
+        )
+    uptake_open = admitted & (uptake_day_values >= 0)
+    if settings.uptake_window_days is not None:
+        uptake_open &= uptake_day_values < settings.uptake_window_days
+    taken = _asof_float_column(population, settings.uptake) != 0.0
+    state.uptake = np.maximum(state.uptake, (uptake_open & taken).astype(np.float64))
+    return uptake_day_values
+
+
+def _asof_stream_day(
+    panel: nw.DataFrame[Any],
+    identity: nw.DataFrame[Any],
+    spec: MetricSpec,
+    metric: Metric,
+    ds: Any,
+    settings: _AsOfSettings,
+    state: _AsOfState,
+    completion_days: int | None,
+) -> nw.DataFrame[Any]:
+    from increment._frame_panel import _day_population
+
+    is_retention = isinstance(metric, RetentionMetric)
+    band_start, band_end = metric.band if is_retention else (0, None)
+    right_edge = _resolve_window_days(metric)
+    value_columns = list(
+        dict.fromkeys(
+            [
+                spec.y_column,
+                *([spec.denominator] if spec.denominator is not None else []),
+                *([settings.uptake] if settings.uptake is not None else []),
+            ]
+        )
+    )
+    population = _day_population(
+        panel,
+        identity=identity,
+        ds=ds,
+        value_columns=value_columns,
+        ordinal=settings.identity_ordinal,
+    )
+    day_index_values = None
+    if settings.exposure is not None:
+        population, day_index = _with_day_index(population, settings.exposure)
+        population = population.sort(settings.identity_ordinal)
+        day_index_values = (
+            population.get_column(day_index).to_numpy().astype(np.float64, copy=False)
+        )
+        admitted = day_index_values >= 0
+    else:
+        admitted = np.ones(identity.shape[0], dtype=bool)
+
+    y = _asof_float_column(population, spec.y_column)
+    if is_retention:
+        assert day_index_values is not None
+        outcome_open = admitted & (day_index_values >= band_start)
+        if band_end is not None:
+            outcome_open &= day_index_values < band_end
+    elif right_edge is None or day_index_values is None:
+        outcome_open = admitted
+    else:
+        outcome_open = admitted & (day_index_values < right_edge)
+    if is_retention or spec.type == "conversion":
+        state.y = np.maximum(state.y, (outcome_open & (y != 0.0)).astype(np.float64))
+    else:
+        state.y += np.where(outcome_open, y, 0.0)
+    if spec.denominator is not None:
+        den = _asof_float_column(population, spec.denominator)
+        state.denominator += np.where(outcome_open, den, 0.0)
+
+    uptake_day_values = _asof_update_uptake(population, settings, admitted, day_index_values, state)
+    keep = admitted.copy()
+    if completion_days is not None:
+        completion_index = day_index_values if day_index_values is not None else uptake_day_values
+        assert completion_index is not None
+        keep &= completion_index >= completion_days
+    if is_retention:
+        assert day_index_values is not None
+        gate = band_end if settings.completed_windows_only else band_start
+        assert gate is not None
+        keep &= day_index_values >= gate
+    state_columns = [nw.new_series("y", state.y, backend=panel.implementation)]
+    if spec.denominator is not None:
+        state_columns.append(
+            nw.new_series("y_den", state.denominator, backend=panel.implementation)
+        )
+    if settings.uptake is not None:
+        state_columns.append(nw.new_series("d", state.uptake, backend=panel.implementation))
+    return (
+        population.with_columns(
+            *state_columns,
+            nw.new_series("__keep", keep, backend=panel.implementation),
+        )
+        .filter(nw.col("__keep"))
+        .select(
+            "ds",
+            *settings.by,
+            "group_id",
+            "y",
+            *(["y_den"] if spec.denominator is not None else []),
+            *(["d"] if settings.uptake is not None else []),
+        )
+    )
+
+
+def _asof_metric_rows(
+    records: nw.DataFrame[Any],
+    spec: MetricSpec,
+    settings: _AsOfSettings,
+) -> list[dict[str, Any]]:
+    result = []
+    if records.is_empty():
+        return result
+    for record, winsor_metadata in _day_moment_records(
+        records,
+        spec,
+        by=settings.by,
+        has_den=spec.denominator is not None,
+        has_d=settings.uptake is not None,
+    ):
+        result.append(
+            {
+                "ds": record["ds"],
+                **{name: str(record[name]) for name in settings.by},
+                "experiment_id": settings.experiment_id,
+                "metric": spec.name,
+                "group_id": record["group_id"],
+                **_moment_fields(record),
+                **winsor_metadata,
+            }
+        )
+    return result
+
+
+def _asof_streamed_rows(
+    panel: nw.DataFrame[Any],
+    identity: nw.DataFrame[Any],
+    spec: MetricSpec,
+    metric: Metric,
+    labels: Sequence[Any],
+    settings: _AsOfSettings,
+) -> list[dict[str, Any]]:
+    state = _AsOfState(
+        np.zeros(identity.shape[0], dtype=np.float64),
+        np.zeros(identity.shape[0], dtype=np.float64),
+        np.zeros(identity.shape[0], dtype=np.float64),
+    )
+    completion_days = _asof_completion_days(metric, settings)
+    result = []
+    for ds in labels:
+        records = _asof_stream_day(
+            panel, identity, spec, metric, ds, settings, state, completion_days
+        )
+        result.extend(_asof_metric_rows(records, spec, settings))
+    return result
+
+
+def _asof_dense_rows(
+    panel: nw.DataFrame[Any],
+    spec: MetricSpec,
+    metric: Metric,
+    metric_identity: nw.DataFrame[Any],
+    settings: _AsOfSettings,
+) -> list[dict[str, Any]]:
+    metric_panel = panel.join(metric_identity.select("unit_id"), on="unit_id", how="semi")
+    records = _asof_unit_rows(
+        metric_panel,
+        spec=spec,
+        metric=metric,
+        by=settings.by,
+        exposure=settings.exposure,
+        first_exposure=settings.first_exposure,
+        uptake=settings.uptake,
+        uptake_window_days=settings.uptake_window_days,
+        completed_windows_only=settings.completed_windows_only,
+        identity_ordinal=settings.identity_ordinal,
+    )
+    return _asof_metric_rows(records, spec, settings)
+
+
 def _asof_moment_rows(
     panel: nw.DataFrame[Any],
     specs: Sequence[MetricSpec],
-    *,
-    synthesised: Sequence[Metric],
-    experiment_id: str,
-    uptake: str | None,
-    uptake_window_days: int | None,
-    first_exposure: nw.DataFrame[Any] | None,
-    exposure: nw.DataFrame[Any] | None,
-    completed_windows_only: bool,
-    observation_end: dt.date | dt.datetime | str | int | float | None,
-    fact_max_ds: Mapping[str, Any],
-    by: Sequence[str] = (),
+    settings: _AsOfSettings,
 ) -> tuple[list[dict[str, Any]], dict[str, _DeferredRefusal]]:
-    """Cumulative unit state reduced to canonical per-day centered moments.
+    """Advance cumulative states chronologically with O(units) retained state."""
+    from increment._frame_panel import _day_labels
 
-    A collapsed-percentile-bound refusal is data-dependent (see
-    :func:`_daily_moment_rows`'s matching note): caught per spec, storing
-    its :class:`RefusalSpec` and immutable ``.context`` payload keyed by
-    metric name - never the exception instance, which would keep its
-    traceback alive - so one metric's collapsed cap never blocks a
-    sibling metric's as-of read.
-    """
+    labels = _day_labels(panel)
     rows: list[dict[str, Any]] = []
     failures: dict[str, _DeferredRefusal] = {}
-    panel_order: Mapping[Any, tuple[Any, ...]] | None = None
-    panel_ds_max = None
-    for spec, metric in zip(specs, synthesised, strict=True):
-        # Preserve lazy refusal: a co-registered unsupported metric must not
-        # block an as-of read for a supported metric on the same source.
+    if not labels:
+        return rows, failures
+    panel_order = _day_axis_label_order(labels)
+    panel_ds_max = max(labels, key=panel_order.__getitem__)
+    for spec, metric in zip(specs, settings.synthesised, strict=True):
         if spec.type == "quantile" or (
-            completed_windows_only
+            settings.completed_windows_only
             and isinstance(metric, RetentionMetric)
             and metric.band[1] is None
         ):
             continue
-        has_den = spec.denominator is not None
-        metric_panel = panel
-        final_maturity_day = _final_maturity_day(metric)
-        if completed_windows_only and has_den and final_maturity_day is not None:
-            assert exposure is not None
-            if panel_order is None:
-                panel_labels = panel.get_column("ds").unique().to_list()
-                panel_order = _day_axis_label_order(panel_labels)
-                panel_ds_max = max(panel_labels, key=panel_order.__getitem__, default=None)
+        if isinstance(metric, RetentionMetric) and settings.exposure is None:
+            _raise("frame.moments.asof_unit_rows")
+        metric_identity = settings.identity
+        maturity = _final_maturity_day(metric)
+        if (
+            settings.completed_windows_only
+            and spec.denominator is not None
+            and maturity is not None
+        ):
+            assert settings.exposure is not None
             observable_end = _effective_observable_end(
                 spec,
                 panel_ds_max=panel_ds_max,
                 panel_order=panel_order,
-                observation_end=observation_end,
-                fact_max_ds=fact_max_ds,
+                observation_end=settings.observation_end,
+                fact_max_ds=settings.fact_max_ds,
             )
             if observable_end is not None:
-                observable = _observable_end_index(exposure, observable_end)
-                eligible = observable.filter(
-                    nw.col("__observable_days__") >= final_maturity_day
-                ).select("unit_id")
-                metric_panel = panel.join(eligible, on="unit_id", how="semi")
-        long = _asof_unit_rows(
-            metric_panel,
-            spec=spec,
-            metric=metric,
-            by=by,
-            exposure=exposure,
-            first_exposure=first_exposure,
-            uptake=uptake,
-            uptake_window_days=uptake_window_days,
-            completed_windows_only=completed_windows_only,
-        )
-        if long.is_empty():
-            continue
-        spec_rows: list[dict[str, Any]] = []
+                observable = _observable_end_index(settings.exposure, observable_end)
+                eligible = observable.filter(nw.col("__observable_days__") >= maturity).select(
+                    "unit_id"
+                )
+                metric_identity = settings.identity.join(eligible, on="unit_id", how="semi")
         try:
-            for record, winsor_metadata in _day_moment_records(
-                long, spec, by=by, has_den=has_den, has_d=uptake is not None
-            ):
-                spec_rows.append(
-                    {
-                        "ds": record["ds"],
-                        **{name: str(record[name]) for name in by},
-                        "experiment_id": experiment_id,
-                        "metric": spec.name,
-                        "group_id": record["group_id"],
-                        **_moment_fields(record),
-                        **winsor_metadata,
-                    }
+            if settings.bounded_dense:
+                metric_rows = _asof_dense_rows(panel, spec, metric, metric_identity, settings)
+            else:
+                metric_rows = _asof_streamed_rows(
+                    panel, metric_identity, spec, metric, labels, settings
                 )
         except CapabilityError as exc:
             if exc.code != _WINSOR_COLLAPSED_BOUND.code:
                 raise
             failures[spec.name] = (_WINSOR_COLLAPSED_BOUND, exc.context)
             continue
-        rows.extend(spec_rows)
+        rows.extend(metric_rows)
     return rows, failures
 
 

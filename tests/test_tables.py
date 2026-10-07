@@ -473,6 +473,15 @@ class TestLiftEstimateToRowBinomialSetOnly:
         assert row["higher"] == est.binomial_set.upper
         assert row["level"] == pytest.approx(est.binomial_set.level)
 
+    def test_readout_table_discloses_binomial_numerical_qualification(self):
+        pytest.importorskip("coeftable")
+        est = _binomial_lift_estimate(x_c=0, n_c=200, x_t=100, n_t=200)
+
+        html = readout_table(estimates_to_readout([est])).gt().as_raw_html()
+
+        assert "Numerical qualification" in html
+        assert "conditional on deployed SciPy/Boost special-function error model" in html
+
     def test_zero_control_count_confident_separation_is_stat_sig(self):
         """Control never converted (0/200); treatment converted at 50%
         (100/200) - the confidence set clears the null even with no

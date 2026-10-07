@@ -23,6 +23,7 @@ EXPECTED_COLUMNS = [
     "alpha",
     "power",
     "power_basis",
+    "numerical_qualification",
     "mde_relative",
     "mde_unavailable_reason",
     "effective_var",
@@ -569,6 +570,14 @@ class TestPowerCurveCollection:
         assert [row.n_per_arm for row in combined] == [1_000, 2_000]
         assert [row.n_per_arm for row in left] == [1_000, 2_000]
 
+    def test_approximate_diagnostic_has_no_runtime_power_claim(self):
+        point = _point().model_copy(update={"power_basis": "approximate"})
+
+        assert point.numerical_qualification == "unclaimed_approximation_diagnostic_v1"
+        assert PowerCurve([point]).to_dicts()[0]["numerical_qualification"] == (
+            "unclaimed_approximation_diagnostic_v1"
+        )
+
     @pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])
     def test_to_frame_has_stable_columns(self, backend: Literal["pandas", "polars", "pyarrow"]):
         frame: Any = PowerCurve([_point()]).to_frame(backend=backend)
@@ -634,6 +643,7 @@ class TestUnavailableCompanionMde:
         for point in curve:
             restored = PowerCurvePoint.model_validate_json(point.model_dump_json())
             assert restored == point
+            assert restored.numerical_qualification == point.numerical_qualification
         dumped = curve.to_dicts()
         assert dumped[0]["mde_relative"] is None
         assert dumped[0]["mde_unavailable_reason"] == "unattainable"
@@ -648,6 +658,10 @@ class TestUnavailableCompanionMde:
         assert frame.schema["mde_unavailable_reason"] == nw.String
         assert frame["mde_relative"].is_null().to_list() == [True, False]
         assert frame["mde_unavailable_reason"].is_null().to_list() == [False, True]
+        assert frame["numerical_qualification"].to_list() == [
+            "closed_form_model_only_v1",
+            "closed_form_model_only_v1",
+        ]
         assert frame["mde_unavailable_reason"][0] == "unattainable"
 
     @pytest.mark.parametrize("backend", ["pandas", "polars", "pyarrow"])

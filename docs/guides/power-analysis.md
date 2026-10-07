@@ -187,12 +187,16 @@ route does not serve). Power depends on the baseline rate alone; `var` does not 
 Public `power` is a model-based point probability, not the lower endpoint of a
 numerical enclosure:
 
-- `power_basis="exact"` or `"approximate"`: the computed rejection mass from the
-  count-law enumeration. Internal bounds account for summation error, omitted
-  support and unresolved count pairs. The point is published only when those
-  bounds establish a maximum absolute error of `1e-6`. `"exact"` describes the
-  decision-law calculation, not error-free floating-point arithmetic or a
-  finite-sample guarantee for the hybrid delta-method route.
+- `power_basis="exact"`: the computed rejection mass from the count-law
+  enumeration. Internal bounds account for summation error, omitted support
+  and unresolved count pairs. The point is published only when the computed
+  enclosure resolves to absolute error at most `1e-6`, conditional on the
+  deployed SciPy/Boost special-function error model; this is not a cross-build
+  floating-point proof. `"exact"` describes the decision-law calculation, not
+  error-free arithmetic or a finite-sample guarantee for the hybrid delta-method
+  route.
+- `power_basis="approximate"`: an unresolved diagnostic with no claim on runtime
+  power. Materially unresolved results are refused rather than published.
 - `power_basis="asymptotic"`: the closed-form model above, where counts route to
   the delta method with near certainty (unrouted mass at most `1e-6`) and the
   lattice has more than 100,000 cells. This is the model's own probability,
@@ -201,9 +205,9 @@ numerical enclosure:
   for every design or data-generating process.
 - If the enumeration cannot resolve the probability to `1e-6`, the public
   request refuses with `power.binomial_probability_unresolved` (context
-  `lower`, `upper`, `error`, `tolerance`). It does not publish a lower endpoint, midpoint
-  or substitute approximation. Internal diagnostic enclosures may remain wide;
-  they are not additional `PowerResult` fields or user tuning parameters.
+  `lower`, `upper`, `error`, `tolerance`). It does not publish a lower endpoint,
+  midpoint or substitute approximation. Internal diagnostic enclosures may remain
+  wide; they are not public `PowerResult` fields or user tuning parameters.
 
 Enumeration has deterministic work and memory limits, not a timing-dependent
 answer. Delta-decision enumeration is bounded at 100,000 count pairs, and
@@ -444,8 +448,9 @@ unit-randomized sequential planning.
 |---|---|
 | `n_per_arm` | Assigned units in the treatment arm |
 | `n_total` | Assigned units across the two-arm contrast |
-| `power` | Planned power at the returned integer size, under `power_basis`; for `exact` and `approximate`, the runtime's rejection probability as an admitted point, published only once its maximum absolute error is at most `1e-6` (a materially unresolved enclosure is refused, not reported as a lower endpoint); for `asymptotic`, the model's own probability |
-| `power_basis` | `asymptotic` (log-ratio model, for counts the runtime takes the delta-method route at with near certainty in a lattice too large to enumerate), `exact` (the runtime's decision, delta-method on dense counts and finite-sample on the rest, summed over the count lattice), or `approximate` (that sum with the replay budget leaving mass undecided) |
+| `power` | Planned power at the returned integer size under `power_basis`; an admitted finite-sample point is published only when its computed enclosure resolves to absolute error at most `1e-6`, conditional on the deployed SciPy/Boost special-function error model. An unresolved diagnostic is not runtime-power evidence; an asymptotic result is the model's own probability. |
+| `power_basis` | `asymptotic` (log-ratio model, for counts the runtime takes the delta-method route with near certainty in a lattice too large to enumerate), `exact` (the runtime's decision summed over the count lattice), or `approximate` (an unresolved diagnostic, making no runtime-power claim) |
+| `numerical_qualification` | `closed_form_model_only_v1`, `scipy_special_function_error_model_conditional_v1`, or `unclaimed_approximation_diagnostic_v1`, respectively; the finite-sample label is conditional on the deployed SciPy/Boost special-function error model, not a cross-build proof |
 | `mde_relative` | Detectable relative effect at the target power, rescaled for `compliance`; `None` when no admissible numeric answer is certified |
 | `mde_unavailable_reason` | `unattainable`, `unrepresentable`, or `numerical_resolution` when `mde_relative` is `None`; otherwise `None` |
 | `effective_var` | Per-unit control-arm variance for asymptotic planning, after decision-method reductions and cluster design effect; sensitivity-only CUPED receives no credit, so this can differ from the caller's `Baseline.effective_var`. For a `QuantileBaseline`, its pilot-implied variance. Exact/approximate binomial power uses event rates and counts, not this reported variance. |

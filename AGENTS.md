@@ -88,6 +88,29 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
 - Use `make fmt` for formatting. Build documentation with `nox -s docs`, not
   bare MkDocs; the Nox session exports the notebook-backed pages first.
 
+## Parallel work and handoffs
+
+- Record the user-selected integration branch, absolute worktree path, and
+  source SHA before dispatch. Every worker uses its assigned absolute path;
+  a session's working directory is not evidence of the intended branch.
+- Ignored planning notes, contracts, and temporary measurement scripts remain
+  local. Do not force-add them to obtain commit-based reviews. Ship product
+  documentation and behavioral verification, not execution scaffolding.
+- Review a design contract at its agreed gate, resolve remaining decisions,
+  then verify the implementation. Do not restart a design-only review loop
+  for every clarification or treat a contract as an implemented capability.
+- Give shared result schemas and serialization boundaries one integration
+  writer. Consumers use a concrete, exercised implementation handoff, not
+  independently invented carriers based on the same design document.
+- Coordinate aggregate test workers across the host. Use focused checks
+  during implementation; one coordinator owns broad integration checks.
+  Docs-only clarifications do not justify repeated broad suites. Performance
+  measurements require an uncontended window; label contended timings.
+- A handoff names exact commits, dirty and untracked files, verification
+  evidence, unresolved decisions, and the next action. Distinguish
+  implemented, verified, integrated, and issue-closed work. Preserve partial
+  edits and stop old workers before a new coordinator takes ownership.
+
 ## Analysis ingress and parity
 
 The public analysis ingress surface is:

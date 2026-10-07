@@ -466,12 +466,15 @@ estimand and its unit-cycle `standard_error_unavailable_reason`,
 Every result list converts to a frame in your preferred library. The call is
 `to_frame(backend="polars")` for `LiftEstimates` and, by keyword only, for
 `ContrastResults`. A set-only exact binomial row keeps its interval in the
-`set_lower`, `set_upper`, and `set_level` columns. Those columns come from
-`binomial_set` only. A sequential row's set is in `sequential_lower`,
-`sequential_upper`, `sequential_status`, and `sequential_components`. A
-`relative_confidence_set` or winsor `confidence_set` appears in the frame only
-as a `repr` text column of the same name, so read the set from the result
-object, and use `abs_lb` and `abs_ub` for the additive interval:
+`set_lower`, `set_upper`, `set_level`, and `set_numerical_qualification` columns.
+`set_numerical_qualification` is `scipy_special_function_error_model_conditional_v1`
+for an enclosure conditional on the deployed SciPy/Boost special-function error
+model, or `legacy_unrecorded_v1` when an older serialized set records no arithmetic
+qualification claim. These columns come from `binomial_set` only. A sequential row's
+set is in `sequential_lower`, `sequential_upper`, `sequential_status`, and
+`sequential_components`. A `relative_confidence_set` or winsor `confidence_set`
+appears in the frame only as a `repr` text column of the same name, so read the set
+from the result object, and use `abs_lb` and `abs_ub` for the additive interval:
 
 ```python
 table = results.to_frame(backend="polars")

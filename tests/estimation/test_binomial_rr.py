@@ -27,7 +27,11 @@ from increment.estimation import binomial_rr as brr
 from increment.estimation._binomial_support import chernoff_support, exponent_lower_bound
 from increment.estimation._tails import SCIPY_BINOMIAL_ULP_ALLOWANCE
 from increment.estimation.binomial_rr import _find_boundary
-from increment.estimation.results import BINOMIAL_METHOD, BinomialConfidenceSet
+from increment.estimation.results import (
+    BINOMIAL_METHOD,
+    BINOMIAL_NUMERICAL_QUALIFICATION,
+    BinomialConfidenceSet,
+)
 from scripts import measure_binomial_ceiling as measure
 from tests.estimation._binomial_endpoint_reference import assert_endpoints_contain_finer_reference
 
@@ -593,6 +597,7 @@ class TestToLiftBounds:
             level=0.95,
             geometry="central",
             method=BINOMIAL_METHOD,
+            numerical_qualification=BINOMIAL_NUMERICAL_QUALIFICATION,
             x_c=1,
             n_c=1,
             x_t=1,

@@ -191,9 +191,16 @@ class Estimate(CodedModel, BaseModel):
 
 
 BinomialMethod = Literal["binomial_bb_difference_v3"]
+#: The arithmetic assumption under which finite-sample labels are numerically qualified.
+BinomialNumericalQualification = Literal[
+    "scipy_special_function_error_model_conditional_v1", "legacy_unrecorded_v1"
+]
 #: The construction `BinomialConfidenceSet` reads: its nuisance envelope, integer thresholds
 #: and numerical stop rule. A producer stamps it on every set it cuts.
 BINOMIAL_METHOD: BinomialMethod = "binomial_bb_difference_v3"
+BINOMIAL_NUMERICAL_QUALIFICATION: BinomialNumericalQualification = (
+    "scipy_special_function_error_model_conditional_v1"
+)
 
 
 class BinomialConfidenceSet(CodedModel, BaseModel):
@@ -216,12 +223,13 @@ class BinomialConfidenceSet(CodedModel, BaseModel):
     value, attainable and closed.
 
     ``method`` is required and names the construction the endpoints were cut under, nuisance
-    stop rule included: ``LiftEstimate.stat_sig()``/``p_value()`` recompute from the counts
-    with the current rule, so a set cut under another one would sit beside a verdict its own
-    interval can contradict. A set that names another construction, or none, is refused when
-    read, not interpreted with the current rule. The marker is never a default: a payload
-    dumped without its defaults would otherwise read as the current construction whatever
-    cut it.
+    stop rule included. ``numerical_qualification`` records that a newly produced finite-sample
+    construction depends on the deployed SciPy/Boost error allowance; it is not a cross-build
+    proof. Rows saved before that field existed default to ``legacy_unrecorded_v1``, which makes
+    no arithmetic qualification claim. ``LiftEstimate.stat_sig()``/``p_value()`` recompute from
+    the counts with the current rule, so a set cut under another construction would sit beside a
+    verdict its own interval can contradict. A set that names another construction or
+    qualification is refused when read.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -236,6 +244,7 @@ class BinomialConfidenceSet(CodedModel, BaseModel):
     # ordinary inference and coincide after directional FCR reinversion.
     geometry: Literal["central", "lower_bound", "upper_bound"]
     method: BinomialMethod
+    numerical_qualification: BinomialNumericalQualification = "legacy_unrecorded_v1"
     x_c: int = Field(ge=0)
     n_c: int = Field(ge=1)
     x_t: int = Field(ge=0)
