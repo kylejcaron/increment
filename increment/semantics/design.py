@@ -307,12 +307,14 @@ class Observational(CodedValidationMixin, BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _refuse_allocation_scheme(cls, value: object) -> object:
-        if isinstance(value, Mapping) and value.get("allocation_scheme") is not None:
-            refuse(
-                ALLOCATION_SCHEME_INCOMPATIBLE,
-                design="observational",
-                allocation_scheme=value["allocation_scheme"],
-            )
+        if isinstance(value, Mapping):
+            allocation_scheme = value.get("allocation_scheme")
+            if allocation_scheme is not None:
+                refuse(
+                    ALLOCATION_SCHEME_INCOMPATIBLE,
+                    design="observational",
+                    allocation_scheme=allocation_scheme,
+                )
         return value
 
 

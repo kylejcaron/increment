@@ -26,11 +26,13 @@ rates, so the planning power is the polynomial
     power(p_c, p_t) = sum_i sum_j Bin(i; n_c, p_c) Bin(j; n_t, p_t) D(i, j),
 
 the delta decision's rejections on ``R`` plus the finite-sample decision's on the rest. Neither
-route's power, and no function of the two, is that sum. It is integrated over outer count
+route's power, nor a function of the two, is that sum. It is integrated over outer count
 windows each omitting at most ``_OUTER_TAIL`` of its arm's mass; the omitted mass is measured,
-not renormalized. Every SciPy pmf, cdf and sf value read carries the runtime's relative error
-allowance (``binomial_rr._ulp_allowance``, ``n`` ULPs, the same one its float margin is built
-on) and every dot product rounds, so a computed value is never an exact probability.
+not renormalized. Its numerical enclosure is conditional on the deployed SciPy/Boost error
+model and producing build, not a cross-build proof. Every SciPy pmf, cdf and sf value read
+carries the runtime's relative error allowance (``binomial_rr._ulp_allowance``, ``n`` ULPs,
+the same one its float margin is built on) and every dot product rounds, so the computed
+interval is never an exact probability.
 
 `BinomialPower` encloses the runtime's rejection probability in ``[lower, upper]``: the weight
 of the pairs decided to reject, less and plus that error, with the mass of the pairs no

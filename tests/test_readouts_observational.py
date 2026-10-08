@@ -643,8 +643,9 @@ def test_from_unit_panel_daily_ratio_ignores_observational_adjustment_capability
 
 def test_randomized_frame_path_unchanged():
     # control="C" sugar still builds Randomized and yields unadjusted estimates.
+    table = _confounded_table(200, seed=11)
     an = Analysis.from_unit_summary(
-        _confounded_table(200, seed=11),
+        table,
         unit="user_id",
         group="variant",
         control="C",
@@ -652,7 +653,17 @@ def test_randomized_frame_path_unchanged():
     )
     (est,) = lift_rows(an.run())
     assert est.method == "unadjusted"
-    assert isinstance(an.srm(expected={"C": 0.5, "T": 0.5}), SRMResult)
+
+    from increment.semantics.design import Randomized
+
+    declared = Analysis.from_unit_summary(
+        table,
+        unit="user_id",
+        group="variant",
+        metrics={"revenue": "mean"},
+        design=Randomized(control_group="C", allocation_scheme="independent"),
+    )
+    assert isinstance(declared.srm(expected={"C": 0.5, "T": 0.5}), SRMResult)
 
 
 # The absolute (additive) channel at the readout layer: margins_abs
@@ -937,10 +948,10 @@ def test_run_absolute_metric_in_one_group_does_not_refuse_an_unadjusted_sibling_
 
 
 def test_run_groups_observational_dispatch_by_declared_priors():
-    """Two metrics with distinct declared `prior`s split into separate
-    `estimate_ate` groups - each shrinks toward its OWN prior, proving
-    `readouts.run`'s grouping forwards `config.prior` (not the call-wide
-    scalar) per group."""
+    """Distinct declared priors change only each metric's posterior sidecar.
+
+    Their prior-free sampling estimates stay identical to the no-prior run.
+    """
     from increment.estimation.engine import Method
     from increment.estimation.inference import Normal
     from increment.frame import MetricSpec, from_unit_summary
@@ -973,14 +984,28 @@ def test_run_groups_observational_dispatch_by_declared_priors():
         ],
         design=_OBS_TRIM,
     )
-    shrunk_by_metric = {
+    prior_by_metric = {
         r.metric: r for r in ro.run(bound_src, decision_method=Method(name="unadjusted"))
     }
 
     for name in ("revenue", "signups"):
-        assert abs(shrunk_by_metric[name].require_lift().value) < abs(
-            flat_by_metric[name].require_lift().value
-        ), f"{name}: declared prior did not shrink its own estimate"
+        prior_row = prior_by_metric[name]
+        flat_row = flat_by_metric[name]
+        for field in ("value", "lb", "ub"):
+            assert getattr(prior_row.require_lift(), field) == pytest.approx(
+                getattr(flat_row.require_lift(), field)
+            )
+        assert prior_row.p_value() == pytest.approx(flat_row.p_value())
+        assert prior_row.stat_sig() == flat_row.stat_sig()
+        assert prior_row.sampling_available is True
+        assert prior_row.posterior_available is True
+        assert prior_row.posterior_estimate is not None
+
+    revenue_posterior = prior_by_metric["revenue"].posterior_estimate
+    signups_posterior = prior_by_metric["signups"].posterior_estimate
+    assert revenue_posterior is not None
+    assert signups_posterior is not None
+    assert revenue_posterior < signups_posterior
 
 
 def _two_metric_src(specs):
@@ -1008,12 +1033,18 @@ class _ConstantPropensity:
         return np.full(X.shape[0], self._probability)
 
 
+def _revenue_constant_propensity() -> _ConstantPropensity:
+    return _ConstantPropensity()
+
+
+def _signups_constant_propensity() -> _ConstantPropensity:
+    return _ConstantPropensity()
+
+
 def _split_spec_shapes():
     """Three `MetricSpec` pairs: one that collapses to a single
     `estimate_ate` group, and two that split into one group per metric -
-    by distinct method names, and by distinct-but-functionally-identical
-    learner callables (a plain callable compares by object identity, so
-    two separately-built factories never group)."""
+    by distinct method names, and by distinct importable learner factories."""
     from increment.estimation.engine import Method
     from increment.frame import MetricSpec
 
@@ -1027,13 +1058,13 @@ def _split_spec_shapes():
             MetricSpec(
                 name="revenue",
                 decision_method=Method(
-                    name="iptw", propensity_learner=lambda: _ConstantPropensity()
+                    name="iptw", propensity_learner=_revenue_constant_propensity
                 ),
             ),
             MetricSpec(
                 name="signups",
                 decision_method=Method(
-                    name="iptw", propensity_learner=lambda: _ConstantPropensity()
+                    name="iptw", propensity_learner=_signups_constant_propensity
                 ),
             ),
         ],
@@ -1143,6 +1174,41 @@ def test_all_ratio_metrics_refuse_at_validation_with_capability_code():
     with pytest.raises(UnsupportedRequestError) as exc:
         ro.run(source)
     assert exc.value.code == "estimation.adjust_common.supported_ratio_metric"
+
+
+def test_ratio_unsupported_sensitivity_does_not_refuse_supported_decision_method():
+    from increment import readouts as ro
+    from increment.estimation.engine import Method
+    from increment.frame import MetricSpec, from_unit_summary
+
+    table = _confounded_table(80, seed=8).append_column("sessions", pa.array(np.ones(80)))
+    source = from_unit_summary(
+        table,
+        unit="user_id",
+        group="variant",
+        control="C",
+        metrics=[
+            MetricSpec(
+                name="rev_per_session",
+                type="ratio",
+                numerator="revenue",
+                denominator="sessions",
+            )
+        ],
+        design=_OBS_TRIM,
+    )
+
+    with pytest.warns(IncrementWarning) as record:
+        rows = ro.run(
+            source,
+            decision_method=Method(name="unadjusted"),
+            sensitivity_methods=[Method(name="iptw")],
+        )
+    assert "estimation.adjust.skip_unsupported_metric" in warning_codes(record)
+
+    decision = next(row for row in rows if row.method_role == "decision")
+    assert decision.method == "unadjusted"
+    assert decision.sampling_available is True
 
 
 def test_global_prior_counts_custom_ratio_adjustment(monkeypatch):
@@ -1805,7 +1871,12 @@ def test_categorical_adjustment_readout_matches_dummy_oracle(constructor, method
             )
         )
     assert [row.method for row in actual] == [method]
-    assert_rows_match([row.model_dump() for row in oracle], [row.model_dump() for row in actual])
+    # The oracle and categorical input have distinct source/family identities; compare inference.
+    assert_rows_match(
+        [row.model_dump() for row in oracle],
+        [row.model_dump() for row in actual],
+        skip=("source_snapshot_id", "family_id"),
+    )
 
 
 # The same contract on the definitions-backed paths: a declared string
@@ -1898,7 +1969,8 @@ def test_categorical_adjustment_on_definitions_paths_matches_the_dummy_oracle(
     )
     actual = _normalize(analysis.run(decision_method=Method(name=method)))
     assert {method_name for methods in actual.values() for method_name in methods} == {method}
-    assert_rows_match(oracle, actual)
+    # The dummy oracle and definitions-backed source intentionally have different identities.
+    assert_rows_match(oracle, actual, skip=("source_snapshot_id", "family_id"))
 
 
 @pytest.mark.filterwarnings("ignore:(IPTW|DML|AIPW) covariate balance advisory:UserWarning")
@@ -1923,7 +1995,12 @@ def test_categorical_null_level_in_warehouse_source_matches_frame_when_imputed(t
     oracle_rows = lift_rows(oracle.run())
     warehouse_rows = lift_rows(warehouse.run())
     assert [row.estimand for row in warehouse_rows] == ["ate"]
-    assert_rows_match(_normalize(oracle_rows), _normalize(warehouse_rows))
+    # The frame oracle and warehouse source have distinct provenance identities.
+    assert_rows_match(
+        _normalize(oracle_rows),
+        _normalize(warehouse_rows),
+        skip=("source_snapshot_id", "family_id"),
+    )
 
 
 @pytest.mark.parametrize("constructor", ["from_definitions", "from_unit_day_artifact"])

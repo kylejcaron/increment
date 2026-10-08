@@ -233,8 +233,9 @@ class TestRowsCarryTheirRoute:
 
         assert readout["binomial_set"] == row.binomial_set
         assert readout["stat_sig"] == row.stat_sig()
-        assert readout["chance_to_beat (advisory)"] is None
-        assert readout["risk_if_shipped (advisory)"] is None
+        assert readout["posterior_chance_to_beat"] is None
+        assert readout["posterior_risk_if_shipped"] is None
+        assert not {"chance_to_beat (advisory)", "risk_if_shipped (advisory)"} & readout.keys()
 
     def test_a_corrupted_arm_refuses_identically_under_both_modes(self):
         """Exact counts and binary moments are validated before route selection."""
@@ -420,14 +421,25 @@ class TestExplicitFiniteSample:
         assert row.binomial_set is None
 
     def test_the_prior_is_served_by_auto_on_the_delta_method_path_as_before(self):
-        computation = estimate_lift(
+        summary = count_summary(3_000, 10_000, 3_300, 10_000)
+        (baseline,) = estimate_lift(
             metrics=[CONVERSION_METRIC],
-            summary=count_summary(300, 10_000, 330, 10_000),
+            summary=summary,
+            control_group="control",
+        ).results
+        (row,) = estimate_lift(
+            metrics=[CONVERSION_METRIC],
+            summary=summary,
             control_group="control",
             prior=Normal(mu=0.0, sigma=0.1),
-        )
-        (row,) = computation.results
+        ).results
         assert row.binomial_set is None
+        assert row.reference_kind == "t"
+        assert row.lift is not None and baseline.lift is not None
+        assert row.lift.value == baseline.lift.value
+        assert row.posterior_available is True
+        assert row.posterior_estimate is not None
+        assert row.posterior_estimate != row.lift.value
 
 
 class TestPlanningRoute:

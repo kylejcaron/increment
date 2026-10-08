@@ -174,6 +174,9 @@ def _secondary_rows_without_fcr(family, nominal_by_metric, outcome, family_recor
                 "family_threshold": (
                     family_record["family_threshold"] if row.method_role == "decision" else None
                 ),
+                "family_size": family_record["family_size"]
+                if row.method_role == "decision"
+                else None,
             }
         )
         for metric, *_rest in family
@@ -309,6 +312,7 @@ def _estimate_randomized_secondary_family(
         "family_axes": ("metric", "arm"),
         "family_q": outcome.q,
         "family_threshold": outcome.realized_threshold,
+        "family_size": outcome.n_family,
     }
     if fcr_alpha is None:
         out.extend(_secondary_rows_without_fcr(family, nominal_by_metric, outcome, family_record))

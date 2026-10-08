@@ -315,14 +315,14 @@ the artifact contract modules.
 | `ClusterIdentityExtension` | Identifies the clustering relation. |
 | `CupedPreperiodExtension` | Supplies a pre-period measure. |
 | `AssignmentCountsExtension` | Captures assignment population counts. |
-| `TriggerPopulationExtension` | Captures the trigger population relation. |
+| `TriggerPopulationExtension` | Version-3, cutoff-bound trigger membership with trigger-feed completeness evidence. |
+| `TriggerMeasureStatsExtension` | Singleton metric trigger-relative per-unit/day sufficient statistics bound to trigger membership. |
 | `EncouragementUptakeExtension` | Captures encouragement uptake data. |
 | `SiteVolumeExtension` | Records site-level measure volume and freshness. |
 | `UnitCovariateExtension` | Carries one declared numeric per-unit covariate. |
 | `UnitCovariateLevelExtension` | Carries one declared categorical per-unit covariate, including nulls. |
-| `ArtifactExtensionCatalogEntry` | Stores a canonical extension definition and source recipe. |
-| `ArtifactExtensionRef` | Tagged union of the ten concrete extension references. |
-| `ArtifactExtensionRequest` | Tagged union of the ten concrete extension requests. |
+| `ArtifactExtensionRef` | Tagged union of the eleven concrete extension references. |
+| `ArtifactExtensionRequest` | Tagged union of the eleven concrete extension requests. |
 
 These are Pydantic models and tagged unions importable from `increment`; see
 `increment.semantics.artifact` for full field detail.
@@ -344,7 +344,8 @@ These are Pydantic models and tagged unions importable from `increment`; see
 ### Artifact extensions
 
 Extension references and descriptors define the supported dimensions,
-assignment, uptake, and site-volume extensions.
+assignment, trigger membership and metric-specific trigger outcomes, uptake,
+and site-volume extensions.
 
 ### Artifact requests
 
@@ -363,6 +364,7 @@ Requests validate caller-supplied extension definitions before publication.
 ::: increment.AssignmentCountsRequest
 
 ::: increment.TriggerPopulationRequest
+:::: increment.TriggerMeasureStatsRequest
 
 ::: increment.EncouragementUptakeRequest
 
@@ -373,6 +375,21 @@ Requests validate caller-supplied extension definitions before publication.
 ::: increment.UnitCovariateLevelRequest
 
 ### Artifact publication and storage
+
+`Analysis.from_definitions(..., source_snapshot_evidence=...)` accepts an
+`increment.SourceSnapshotEvidence` only when the upstream source supplies an
+explicit timezone-aware event-time cutoff and optional per-feed certified
+complete-through instants. If omitted, no cutoff is fabricated: assigned-only
+operations remain available, while triggered membership, triggered outcomes,
+and publication of trigger evidence refuse with
+`source.native.trigger_evidence_required`. Missing feed certification remains
+unknown; observed maximum timestamps, publication time, and experiment end are
+never treated as completeness evidence. Triggered artifact outcome requests
+select one `trigger_measure_stats` entry per `(trigger, metric)` and are bound
+to the version-3 trigger membership relation digest and its same pinned cutoff.
+
+::: increment.SourceSnapshotEvidence
+
 
 Publication handles connect validated context to immutable snapshots in the
 authorized artifact store.

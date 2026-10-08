@@ -73,6 +73,11 @@ the randomized log-relative working likelihood; those routes do not gain
 mixture support from separating sampling and posterior payloads. Pass a
 `Normal` prior where the support matrix allows one.
 
+Fixed-horizon encouragement compliance and LATE rows with a supported
+Normal prior likewise retain their prior-free `lift` and store the Normal
+posterior separately. Sequential and declared cluster-prior exclusions still
+apply; the posterior is available only when the row records a supported update.
+
 No prior, including `Normal`, is settable on a switchback contrast call.
 `run()` accepts only `UNSET` for `prior`/`decision_method`/
 `sensitivity_methods` on a switchback source. `StudentTPrior.nu` is capped
@@ -127,9 +132,10 @@ sampling p-value whether or not a prior was declared. Both require
 `AsymptoticMean`) refuses on both, since a confidence sequence has no
 fixed endpoint distribution to summarize. `p_value()` additionally
 handles a cluster-robust (`reference_kind="t"`) row directly against its
-own t reference, while posterior access remains unavailable for unsupported
-cluster-prior requests. `prob_favorable()` also needs `preferred_direction`
-declared on the metric (`"increase"`/`"decrease"`/`"neutral"`) -- it is
+own t reference. Posterior access follows `posterior_available`: declared
+cluster-prior requests remain refused, and an unavailable posterior is never
+reconstructed from cluster sampling fields. `prob_favorable()` also needs
+`preferred_direction` declared on the metric (`"increase"`/`"decrease"`/`"neutral"`) -- it is
 not derived from `alternative`, which can point the opposite way on a
 harm/futility test.
 

@@ -9,7 +9,7 @@ import ibis
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, readouts
+from increment import Analysis, SourceSnapshotEvidence, readouts
 from increment.errors import CapabilityError, CodedError, IncrementRuntimeWarning
 from increment.estimation.encouragement import estimate_compliance
 from increment.frame import from_unit_panel
@@ -213,11 +213,15 @@ def native_fixture(
         definitions = Definitions.model_validate(body)
         table = con.table("events")
         con.create_table("uptake_events", obj=table.filter(table.event == "clicked"), temp=True)
-    supplied = None if declared else design(uptake_window)
-    if supplied is None:
-        analysis = make_analysis(con, definitions)
-    else:
-        analysis = make_analysis(con, definitions, _design=supplied)
+    cutoff = start + timedelta(days=30)
+    evidence = SourceSnapshotEvidence(cutoff, {"events": cutoff}) if triggered else None
+    supplied = None if declared else design(window=uptake_window)
+    analysis = make_analysis(
+        con,
+        definitions,
+        _design=supplied,
+        source_snapshot_evidence=evidence,
+    )
     context = artifact_context(
         definitions, definitions.experiments[0], "error", encouragement_uptake=supplied
     )
@@ -795,7 +799,7 @@ def test_triggered_compliance_matches_population_across_sources(tmp_path, cluste
         extensions = [
             entry.request
             for entry in unit_day_artifact_extension_catalog(context)
-            if entry.request.kind == "trigger_population"
+            if entry.request.kind in {"trigger_population", "trigger_measure_stats"}
         ]
         ref = analysis.publish_unit_day_artifact(store, extensions=extensions)
         with open_artifact(store, ref, expected_context=context) as artifact:

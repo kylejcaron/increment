@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 from scipy.stats import norm as _norm
@@ -299,6 +299,22 @@ def normal_posterior(
     return Normal(mu=posterior_mu, sigma=posterior_sigma)
 
 
+class PosteriorFields(TypedDict, total=False):
+    posterior_available: bool
+    posterior_model: Literal["normal", "mixture"]
+    posterior_scale: Literal["log", "linear"]
+    posterior_estimate: float
+    posterior_lb: float
+    posterior_ub: float
+    posterior_level: float
+    posterior_alpha: float
+    posterior_latent_mean: float | None
+    posterior_latent_sd: float | None
+    posterior_prob_favorable: float | None
+    posterior_components: PosteriorComponents | None
+    prior_spec: StudentTPrior | MixturePrior | None
+
+
 def posterior_fields(
     point: float,
     se: float,
@@ -308,7 +324,9 @@ def posterior_fields(
     alternative: str,
     scale: Literal["log", "linear"],
     preferred_direction: PreferredDirection | None,
-) -> dict[str, object]:
+    null_lift: float = 0.0,
+    null_abs: float | None = None,
+) -> PosteriorFields:
     """Persist the supported working-likelihood posterior separately."""
     if prior is None:
         return {}
@@ -353,10 +371,10 @@ def posterior_fields(
         "posterior_latent_mean": latent_mean,
         "posterior_latent_sd": latent_sd,
         "posterior_prob_favorable": (
-            posterior.cdf(0.0)
-            if preferred_direction == "decrease"
-            else posterior.survival(0.0)
-            if preferred_direction == "increase"
+            posterior.cdf(null_lift if scale == "linear" else math.log1p(null_lift))
+            if null_abs is None and preferred_direction == "decrease"
+            else posterior.survival(null_lift if scale == "linear" else math.log1p(null_lift))
+            if null_abs is None and preferred_direction == "increase"
             else None
         ),
         "posterior_components": posterior_components,
@@ -666,6 +684,8 @@ def infer_lift(  # noqa: PLR0913
             alternative=alternative,
             scale="log",
             preferred_direction=preferred_direction,
+            null_lift=null_lift,
+            null_abs=null_abs,
         ),
         scale="log",
         abs_diff=abs_diff,
@@ -974,6 +994,8 @@ def infer_ate(  # noqa: PLR0913
             alternative=alternative,
             scale="linear",
             preferred_direction=preferred_direction,
+            null_lift=null_lift,
+            null_abs=null_abs,
         ),
         abs_diff=abs_diff,
         abs_se=abs_se,

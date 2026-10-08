@@ -14,7 +14,7 @@ import ibis
 import pytest
 from pydantic import ValidationError
 
-from increment import Analysis, IdentificationError
+from increment import Analysis, IdentificationError, Method
 from increment.breakout.estimates import (
     BreakoutEstimates,
     DailyLiftEstimates,
@@ -27,13 +27,12 @@ from increment.errors import (
     InvalidRequestError,
     UnsupportedRequestError,
 )
-from increment.estimation.diagnostics import SRMResult
-from increment.estimation.engine import Method
+from increment.estimation.diagnostics import NotApplicable, SRMResult
 from increment.estimation.results import LiftEstimate
 from increment.frame import MetricSpec
 from increment.query.artifact_contract import ArtifactContractError
 from increment.readouts import _run as run_readout
-from increment.semantics.design import AdjustmentSet, Observational
+from increment.semantics.design import AdjustmentSet, Observational, Randomized
 from increment.semantics.models import (
     AnalysisPlan,
     Definitions,
@@ -447,7 +446,11 @@ def test_analysis_from_unit_summary_srm():
         }
     )
     a = Analysis.from_unit_summary(
-        df, unit="user_id", group="variant", control="control", metrics={"revenue": "mean"}
+        df,
+        unit="user_id",
+        group="variant",
+        metrics={"revenue": "mean"},
+        design=Randomized(control_group="control", allocation_scheme="independent"),
     )
     result = a.srm(expected={"control": 0.5, "treatment": 0.5})
     assert isinstance(result, SRMResult)
@@ -469,8 +472,8 @@ def test_analysis_srm_defaults_to_anytime_valid_inference():
         frame,
         unit="user_id",
         group="group",
-        control="control",
         metrics={"revenue": "mean"},
+        design=Randomized(control_group="control", allocation_scheme="independent"),
     )
 
     result = analysis.srm(expected={"control": 0.5, "treatment": 0.5})
@@ -478,6 +481,31 @@ def test_analysis_srm_defaults_to_anytime_valid_inference():
     assert isinstance(result, SRMResult)
     assert result.inference == "always_valid"
     assert result.alpha == 0.001
+
+
+def test_analysis_srm_is_not_applicable_without_declared_independent_scheme():
+    import pandas as pd
+
+    frame = pd.DataFrame(
+        {
+            "user_id": range(8),
+            "group": ["control"] * 4 + ["treatment"] * 4,
+            "revenue": [1.0] * 8,
+        }
+    )
+    analysis = Analysis.from_unit_summary(
+        frame,
+        unit="user_id",
+        group="group",
+        control="control",
+        metrics={"revenue": "mean"},
+    )
+
+    result = analysis.srm(expected={"control": 0.5, "treatment": 0.5})
+
+    assert isinstance(result, NotApplicable)
+    assert result.check == "srm"
+    assert result.reason.startswith("integrity.allocation_scheme_missing")
 
 
 def test_analysis_srm_forwards_explicit_fixed_inference():
@@ -507,10 +535,7 @@ def test_analysis_srm_forwards_explicit_fixed_inference():
 
 
 def test_analysis_from_unit_summary_on_unassigned_threads_through():
-    """The facade forwards on_unassigned to the frame source: default
-    refuses null group labels naming the knob; 'exclude' surfaces the
-    excluded count in unit_counts() and beside srm() with no phantom arm,
-    no extra estimate, and no chi-square degree of freedom."""
+    """The facade forwards on_unassigned to the frame source and counts excluded rows."""
     import pandas as pd
 
     df = pd.DataFrame(
@@ -525,16 +550,16 @@ def test_analysis_from_unit_summary_on_unassigned_threads_through():
             df, unit="user_id", group="variant", control="control", metrics={"revenue": "mean"}
         )
     assert raised.value.code == "source.frame.unassigned"
-    a = Analysis.from_unit_summary(
+    analysis = Analysis.from_unit_summary(
         df,
         unit="user_id",
         group="variant",
-        control="control",
         metrics={"revenue": "mean"},
+        design=Randomized(control_group="control", allocation_scheme="independent"),
         on_unassigned="exclude",
     )
-    assert [e.group_id for e in _lift_rows(a.run())] == ["treatment"]
-    result = a.srm(expected={"control": 0.5, "treatment": 0.5})
+    assert [e.group_id for e in _lift_rows(analysis.run())] == ["treatment"]
+    result = analysis.srm(expected={"control": 0.5, "treatment": 0.5})
     assert isinstance(result, SRMResult)
     assert result.observed == {"treatment": 4, "control": 4}
     assert result.df == 1
@@ -1256,6 +1281,7 @@ def test_run_composes_cuped_with_prior(informative_prior_summary_frame):
         analysis.run(decision_method=cuped_method[0], prior=Normal(mu=0.0, sigma=0.01))
     )[0]
 
+    assert cuped.require_lift().value < unadjusted.require_lift().value
     assert shrunk.require_lift() == cuped.require_lift()
     assert shrunk.posterior_estimate != pytest.approx(cuped.require_lift().value)
 

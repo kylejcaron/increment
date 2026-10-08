@@ -235,9 +235,7 @@ class MixturePosterior:
             per = sigmas * _norm.pdf(z) - means * _norm.cdf(-z)
         elif scale == "log":
             a = -z
-            per = _norm.cdf(a) - np.exp(means + 0.5 * sigmas**2) * _norm.cdf(
-                a - sigmas
-            )
+            per = _norm.cdf(a) - np.exp(means + 0.5 * sigmas**2) * _norm.cdf(a - sigmas)
         else:
             _raise("estimation.priors.mixture_posterior.expected_negative_part_scale", scale=scale)
         return float((weights * per).sum())
@@ -252,9 +250,7 @@ class MixturePosterior:
             per = sigmas * _norm.pdf(z) + means * _norm.cdf(z)
         elif scale == "log":
             a = -z
-            per = np.exp(means + 0.5 * sigmas**2) * _norm.cdf(
-                sigmas - a
-            ) - _norm.cdf(-a)
+            per = np.exp(means + 0.5 * sigmas**2) * _norm.cdf(sigmas - a) - _norm.cdf(-a)
         else:
             _raise("estimation.priors.mixture_posterior.expected_positive_part_scale", scale=scale)
         return float((weights * per).sum())

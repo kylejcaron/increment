@@ -8,6 +8,7 @@ degenerate trigger is refused rather than analyzed.
 
 from __future__ import annotations
 
+import datetime as dt
 from typing import cast
 
 import ibis
@@ -15,8 +16,13 @@ import numpy as np
 import pyarrow as pa
 import pytest
 
-from increment import Analysis
-from increment.errors import CapabilityError, DefinitionError, IncrementWarning, InvalidRequestError
+from increment import Analysis, SourceSnapshotEvidence
+from increment.errors import (
+    CapabilityError,
+    DefinitionError,
+    IncrementWarning,
+    InvalidRequestError,
+)
 from increment.estimation.results import LiftEstimate
 from increment.semantics import load
 from tests.warning_codes import warning_codes
@@ -26,13 +32,21 @@ def _lift_rows(rows: object) -> list[LiftEstimate]:
     return cast(list[LiftEstimate], rows)
 
 
-def _defs_yaml(trigger: str | None = "saw_surface", *, allocation_scheme: str | None = None) -> str:
+def _defs_yaml(
+    trigger: str | None = "saw_surface",
+    *,
+    allocation_scheme: str | None = None,
+    end: str | None = None,
+    observation_end: str | None = None,
+) -> str:
     trigger_line = f"    trigger: {trigger}\n" if trigger else ""
     scheme_line = (
         f"    allocation: {{C: 0.5, T: 0.5}}\n    allocation_scheme: {allocation_scheme}\n"
         if allocation_scheme
         else ""
     )
+    end_line = f"    end: {end}\n" if end else ""
+    observation_end_line = f"    observation_end: {observation_end}\n" if observation_end else ""
     return f"""
 dialect: duckdb
 fact_sources:
@@ -62,7 +76,7 @@ metrics:
 experiments:
   - name: exp
     exposure: assignment
-{trigger_line}    unit: user_id
+{trigger_line}{end_line}{observation_end_line}    unit: user_id
 {scheme_line}
     start: 2024-01-01T00:00:00
     control_group: C
@@ -71,10 +85,149 @@ experiments:
 """
 
 
-def _write_defs(tmp_path, trigger="saw_surface", *, allocation_scheme=None):
+def _write_defs(tmp_path, trigger="saw_surface", *, allocation_scheme=None, end=None):
     p = tmp_path / "defs.yml"
-    p.write_text(_defs_yaml(trigger, allocation_scheme=allocation_scheme))
+    p.write_text(_defs_yaml(trigger, allocation_scheme=allocation_scheme, end=end))
     return p
+
+
+def test_triggered_request_requires_explicit_snapshot_evidence_but_assigned_does_not(
+    tmp_path, monkeypatch
+):
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=_events(n_per_arm=10))
+    analysis = Analysis.from_definitions("exp", _write_defs(tmp_path), con)
+    try:
+        assert analysis._src.unit_counts()
+
+        def fail_if_source_query():
+            pytest.fail("trigger evidence must be required before source queries")
+
+        monkeypatch.setattr(analysis._src, "_validate_mixed_assignments", fail_if_source_query)
+        with pytest.raises(CapabilityError) as raised:
+            analysis.trigger_rates()
+        assert raised.value.code == "source.native.trigger_evidence_required"
+    finally:
+        analysis.close()
+
+
+def test_triggered_encouragement_uptake_remains_assignment_anchored(tmp_path):
+    definitions = _defs_yaml(end='"2024-01-10"', observation_end='"2024-01-31"')
+    definitions = definitions.replace(
+        "      - name: saw_surface\n        column: null",
+        "      - name: saw_surface\n        column: null\n      - name: clicked\n        column: null",
+    )
+    definitions = definitions.replace(
+        "    control_group: C\n",
+        "    control_group: C\n"
+        "    design:\n"
+        "      mechanism: encouragement\n"
+        "      uptake:\n"
+        "        fact: clicked\n"
+        "        window_days: 2\n"
+        "      one_sided: true\n"
+        "      exclusion_restriction:\n"
+        "        acknowledged: true\n"
+        "        justification: button gates revenue\n",
+    )
+    path = tmp_path / "encouragement.yml"
+    path.write_text(definitions)
+    rows = {
+        "user_id": ["C0", "T0", "C0", "T0", "T0", "C0", "T0"],
+        "group_id": ["C", "T", "C", "T", "T", "C", "T"],
+        "ts": [
+            np.datetime64("2024-01-02T00:00:00"),
+            np.datetime64("2024-01-02T00:00:00"),
+            np.datetime64("2024-01-04T00:00:00"),
+            np.datetime64("2024-01-04T00:00:00"),
+            np.datetime64("2024-01-03T00:00:00"),
+            np.datetime64("2024-01-05T00:00:00"),
+            np.datetime64("2024-01-05T00:00:00"),
+        ],
+        "event": [
+            "enrolled",
+            "enrolled",
+            "saw_surface",
+            "saw_surface",
+            "clicked",
+            "revenue",
+            "revenue",
+        ],
+        "value": [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0],
+        "experiment_id": ["exp"] * 7,
+    }
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=pa.table(rows))
+    analysis = Analysis.from_definitions(
+        "exp",
+        path,
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            dt.datetime(2024, 1, 31, tzinfo=dt.UTC),
+            {"events": dt.datetime(2024, 1, 31, tzinfo=dt.UTC)},
+        ),
+    )
+    try:
+        moments = analysis._src._moments_for_metrics(population="triggered").to_pylist()
+        by_group = {row["group_id"]: row for row in moments}
+        assert by_group["T"]["sum_d"] == 1.0
+        assert by_group["C"]["sum_d"] == 0.0
+    finally:
+        analysis.close()
+
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_trigger_after_enrollment_end_remains_eligible_at_snapshot_cutoff(tmp_path):
+    rows = {
+        "user_id": ["C1", "T1", "C1", "T1", "C1", "T1"],
+        "group_id": ["C", "T", "C", "T", "C", "T"],
+        "ts": [
+            np.datetime64("2024-01-12T09:00:00"),
+            np.datetime64("2024-01-12T09:00:00"),
+            np.datetime64("2024-01-17T14:00:00"),
+            np.datetime64("2024-01-17T14:00:00"),
+            np.datetime64("2024-01-23T09:00:00"),
+            np.datetime64("2024-01-23T09:00:00"),
+        ],
+        "event": ["enrolled", "enrolled", "saw_surface", "saw_surface", "revenue", "revenue"],
+        "value": [0.0, 0.0, 0.0, 0.0, 1.0, 2.0],
+        "experiment_id": ["exp"] * 6,
+    }
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=pa.table(rows))
+    extended_definitions = tmp_path / "extended_observation.yml"
+    default_definitions = tmp_path / "default_observation.yml"
+    end = "2024-01-15T00:00:00"
+    extended_definitions.write_text(_defs_yaml(end=end, observation_end="2024-01-24T00:00:00"))
+    default_definitions.write_text(_defs_yaml(end=end))
+    evidence = SourceSnapshotEvidence(
+        dt.datetime(2024, 1, 23, 12, tzinfo=dt.UTC),
+        {"events": dt.datetime(2024, 1, 23, 12, tzinfo=dt.UTC)},
+    )
+    analysis = Analysis.from_definitions(
+        "exp", extended_definitions, con, source_snapshot_evidence=evidence
+    )
+    default_analysis = Analysis.from_definitions(
+        "exp", default_definitions, con, source_snapshot_evidence=evidence
+    )
+    try:
+        grain, randomization_counts, unit_counts = analysis._src.triggered_counts()
+        assert grain == "unit"
+        assert randomization_counts == {"C": 1, "T": 1}
+        assert unit_counts == {}
+        with pytest.warns(IncrementWarning):
+            extended_rows = analysis._src.unit_frame(
+                analysis.metrics[0], population="triggered"
+            ).to_pylist()
+        assert extended_rows == []
+        with pytest.warns(IncrementWarning):
+            default_rows = default_analysis._src.unit_frame(
+                default_analysis.metrics[0], population="triggered"
+            ).to_pylist()
+        assert default_rows == []
+    finally:
+        analysis.close()
+        default_analysis.close()
 
 
 def test_unknown_trigger_refused_at_load(tmp_path):
@@ -153,6 +306,10 @@ def _analysis(
         _write_defs(tmp_path, trigger, allocation_scheme=allocation_scheme),
         con,
         on_mixed_assignment=on_mixed_assignment,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+            complete_through_by_feed={"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
+        ),
     )
 
 
@@ -214,6 +371,10 @@ def test_trigger_rates_enforces_assignment_policy(tmp_path, policy, warning):
         _write_defs(tmp_path),
         con,
         on_mixed_assignment=policy,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+            complete_through_by_feed={"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
+        ),
     )
     con.raw_sql("UPDATE events SET group_id = NULL WHERE user_id = 'C0' AND event = 'enrolled'")
 
@@ -230,6 +391,31 @@ def test_trigger_rates_enforces_assignment_policy(tmp_path, policy, warning):
     else:
         rates = an.trigger_rates()
     assert set(rates) == {"C", "T"}
+
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_triggered_assignment_counts_exclude_assigned_audit_counts(tmp_path):
+    from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
+
+    rows = _events(trigger_rate=0.2).to_pylist()
+    assignments = [row for row in rows if row["event"] == "enrolled"]
+    mixed_row = dict(assignments[0])
+    mixed_row["group_id"] = "T" if mixed_row["group_id"] == "C" else "C"
+    unassigned_row = dict(assignments[1])
+    unassigned_row["group_id"] = None
+    rows.extend((mixed_row, unassigned_row))
+
+    analysis = _analysis(tmp_path, pa.Table.from_pylist(rows), on_mixed_assignment="exclude")
+    try:
+        assigned_counts = analysis._src.assignment_counts()
+        triggered_counts = analysis._src.assignment_counts(population="triggered")
+
+        assert assigned_counts[MIXED_ASSIGNMENT_LABEL] == 1
+        assert assigned_counts[UNASSIGNED_LABEL] == 1
+        assert set(triggered_counts) == {"C", "T"}
+        assert analysis._src.triggered_counts()[1] == triggered_counts
+    finally:
+        analysis.close()
 
 
 def test_one_arm_trigger_refused(tmp_path):
@@ -288,7 +474,11 @@ def test_srm_population_triggered_counts_the_narrowed_population(tmp_path):
     """srm(population='triggered') is a real guardrail: a trigger
     correlated with assignment shows up as an allocation imbalance there
     even when enrollment itself is balanced."""
-    an = _analysis(tmp_path, _events(trigger_rate=0.2, n_per_arm=500))
+    an = _analysis(
+        tmp_path,
+        _events(trigger_rate=0.2, n_per_arm=500),
+        allocation_scheme="independent",
+    )
     expected = {"C": 0.5, "T": 0.5}
     assigned = an.srm(expected=expected)
     triggered = an.srm(expected=expected, population="triggered")
@@ -405,6 +595,7 @@ def test_registered_sequential_trigger_run_reuses_assigned_integrity(monkeypatch
     assert any(
         component["kind"] == "assignment_counts" for component in results.source["components"]
     )
+
 
 def test_srm_population_triggered_refuses_on_a_seam_instance():
     import pandas as pd
@@ -550,7 +741,15 @@ def test_clustered_experiment_with_trigger_narrows_to_the_triggered_population(t
     )
     defs_path = tmp_path / "defs.yml"
     defs_path.write_text(_defs_yaml_clustered())
-    an = Analysis.from_definitions("exp", defs_path, con)
+    an = Analysis.from_definitions(
+        "exp",
+        defs_path,
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+            complete_through_by_feed={"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
+        ),
+    )
     rows = _lift_rows(an.run())
     by_pop = {r.analysis_population: r for r in rows if r.metric == "revenue"}
     assert set(by_pop) == {"assigned", "triggered"}
@@ -560,6 +759,81 @@ def test_clustered_experiment_with_trigger_narrows_to_the_triggered_population(t
     # recovers it. Equal or reversed values would mean both read the assigned source.
     assert triggered.require_lift().value > assigned.require_lift().value
     assert triggered.require_lift().value == pytest.approx(effect, rel=0.3)
+
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_staggered_cluster_trigger_windows_censor_by_each_member_anchor(tmp_path):
+    definitions = _defs_yaml_clustered().replace(
+        "    start: 2024-01-01T00:00:00",
+        "    start: 2024-01-01T00:00:00\n"
+        "    end: 2024-01-01T00:00:00\n"
+        "    observation_end: 2024-01-20T00:00:00",
+    )
+    path = tmp_path / "staggered-clusters.yml"
+    path.write_text(definitions)
+    rows = []
+    for arm in ("C", "T"):
+        for timing, trigger_day, revenue_day, value in (
+            ("early", 2, 3, 1.0),
+            ("late", 8, 9, 2.0),
+        ):
+            unit_id = f"{arm}-{timing}"
+            cluster_id = f"{arm}-store-{timing}"
+            rows.extend(
+                [
+                    {
+                        "user_id": unit_id,
+                        "group_id": arm,
+                        "store_id": cluster_id,
+                        "event": "enrolled",
+                        "ts": np.datetime64("2024-01-01T00:00:00"),
+                        "value": 0.0,
+                        "experiment_id": "exp",
+                    },
+                    {
+                        "user_id": unit_id,
+                        "group_id": arm,
+                        "store_id": cluster_id,
+                        "event": "saw_surface",
+                        "ts": np.datetime64(f"2024-01-{trigger_day:02d}T00:00:00"),
+                        "value": 0.0,
+                        "experiment_id": "exp",
+                    },
+                    {
+                        "user_id": unit_id,
+                        "group_id": arm,
+                        "store_id": cluster_id,
+                        "event": "revenue",
+                        "ts": np.datetime64(f"2024-01-{revenue_day:02d}T00:00:00"),
+                        "value": value,
+                        "experiment_id": "exp",
+                    },
+                ]
+            )
+    con = ibis.duckdb.connect()
+    con.create_table("cluster_trigger_events", obj=pa.Table.from_pylist(rows))
+    analysis = Analysis.from_definitions(
+        "exp",
+        path,
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            dt.datetime(2024, 1, 12, tzinfo=dt.UTC),
+            {"events": dt.datetime(2024, 1, 12, tzinfo=dt.UTC)},
+        ),
+    )
+    try:
+        with pytest.warns(IncrementWarning):
+            frame = analysis._src.unit_frame(
+                analysis.metrics[0], population="triggered"
+            ).to_pylist()
+        assert {row["unit_id"] for row in frame} == {"C-early", "T-early"}
+        assert {row["cluster_id"] for row in frame} == {
+            "C-store-early",
+            "T-store-early",
+        }
+    finally:
+        analysis.close()
+        con.disconnect()
 
 
 def _defs_yaml_quantile(trigger: str | None = "saw_surface") -> str:
@@ -644,7 +918,15 @@ def test_quantile_experiment_with_trigger_narrows_to_the_triggered_population(tm
     con.create_table("quantile_trigger_events", obj=_quantile_trigger_events())
     defs_path = tmp_path / "defs.yml"
     defs_path.write_text(_defs_yaml_quantile())
-    an = Analysis.from_definitions("exp", defs_path, con)
+    an = Analysis.from_definitions(
+        "exp",
+        defs_path,
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
+        ),
+    )
     rows = _lift_rows(an.run())
     by_pop = {r.analysis_population: r for r in rows if r.metric == "p90_latency"}
     assert set(by_pop) == {"assigned", "triggered"}

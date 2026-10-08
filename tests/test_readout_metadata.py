@@ -3,6 +3,7 @@
 import pickle
 from copy import deepcopy
 
+from increment.estimation.decision_types import EValueEvidence
 from increment.estimation.readout_types import CellKey, IntegrityResult, StreamingDigest
 
 
@@ -46,8 +47,12 @@ def test_cell_identity_retains_sampling_axes():
         "analysis_population": "assigned",
         "group_id": "treatment",
     }
-    assert CellKey(**base, value_scale="relative") != CellKey(**base, value_scale="absolute")
-    assert CellKey(**base, inference="fixed") != CellKey(**base, inference="always_valid")
+    assert CellKey.model_validate({**base, "value_scale": "relative"}) != CellKey.model_validate(
+        {**base, "value_scale": "absolute"}
+    )
+    assert CellKey.model_validate({**base, "inference": "fixed"}) != CellKey.model_validate(
+        {**base, "inference": "always_valid"}
+    )
 
 
 def test_sampling_inference_accepts_zero_likelihood_evidence():
@@ -63,72 +68,73 @@ def test_sampling_inference_accepts_zero_likelihood_evidence():
         for item in bundle.evidence.values()
         if item.hypothesis.group_id == missing_row.group_id
     )
-    assert evidence.log_e == -inf
+    assert isinstance(evidence, EValueEvidence)
 
     sampling = SamplingInference(available=True, evidence=evidence)
     restored = SamplingInference.model_validate_json(sampling.model_dump_json())
 
     assert restored.available is True
     assert restored.evidence is not None
+    assert isinstance(restored.evidence, EValueEvidence)
     assert restored.evidence.log_e == -inf
 
 
-def test_triggered_sequential_scope_uses_explicit_unsupported_placeholder():
-    from types import SimpleNamespace
+def test_triggered_sequential_scope_uses_explicit_unsupported_placeholder(tmp_path):
+    from datetime import date
 
-    from increment.readouts._sequential_scope import scope_sequential_results
-    from tests.estimation.test_sequential_public_proof_acceptance import _public_family
+    import pyarrow.parquet as pq
 
-    registration, policy, bundle, _ = _public_family(0, 0, 0, 0, "two-sided")
-    result = bundle.results[0].require_sequential_result()
-    plan = SimpleNamespace(
-        alpha=float(registration.roster[0].alpha),
-        q=float(registration.q),
-        inference=policy,
-    )
-    source = SimpleNamespace(
-        context=SimpleNamespace(
-            plan=plan,
-            design=SimpleNamespace(control_group="control"),
-            trigger_name="registered_trigger",
+    from increment import Analysis
+    from increment.estimation.readout_types import ReadoutResults
+    from increment.estimation.results import LiftEstimate
+    from increment.frame import MetricSpec
+    from increment.semantics.design import Randomized
+    from tests.test_sequential_public_sources import _native_fixture
+
+    _connection, definitions, analysis = _native_fixture("bernoulli", triggered=True)
+    try:
+        analysis.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
+        results = analysis.run()
+        assert results.metadata is not None
+        by_population = {}
+        for row in results:
+            assert isinstance(row, LiftEstimate)
+            by_population[row.analysis_population] = row
+        assert set(by_population) == {"assigned", "triggered"}
+        assigned = by_population["assigned"]
+        placeholder = by_population["triggered"]
+        assert placeholder.failure_code == "readout.cell.unsupported_request"
+        assert placeholder.failure_context["reason"] == "triggered_sequential"
+        assert placeholder.inference == "always_valid"
+        assert placeholder.reference_kind == "sequential"
+        assert placeholder.sequential_result is None
+        assert placeholder.sampling_available is False
+        assert (
+            placeholder.estimand,
+            placeholder.value_scale,
+            placeholder.alternative,
+        ) == (assigned.estimand, assigned.value_scale, assigned.alternative)
+        restored = ReadoutResults.model_validate_json(results.model_dump_json())
+        assert restored.metadata == results.metadata
+
+        path = tmp_path / "sequential-moments.parquet"
+        analysis.export(path)
+        wire_rows = pq.read_table(path).to_pylist()
+        assert wire_rows[0]["trigger_name"] == "triggered"
+        replay = Analysis.from_moments(
+            wire_rows,
+            metrics=[MetricSpec(name="outcome", type="conversion", window_days=2)],
+            design=Randomized(control_group="control"),
+            plan=definitions.experiments[0].plan,
         )
-    )
-    from increment.sequential_state import registration_id
-
-    snapshot = SimpleNamespace(registration_id=registration_id(registration), prefix_id="prefix")
-
-    scoped = scope_sequential_results(
-        source,
-        bundle.results,
-        snapshot,
-        metrics=("outcome",),
-        estimands=("itt",),
-    )
-
-    placeholder = next(
-        row
-        for row in scoped
-        if row.analysis_population == "triggered" and row.group_id == "first"
-    )
-    assert placeholder.failure_code == "readout.cell.unsupported_request"
-    assert placeholder.failure_context["reason"] == "triggered_sequential"
-    assert placeholder.inference == "always_valid"
-    assert placeholder.reference_kind == "sequential"
-    assert placeholder.sequential_result is None
-    assert placeholder.sampling_available is False
-
-    other_source = SimpleNamespace(
-        context=SimpleNamespace(
-            plan=plan,
-            design=SimpleNamespace(control_group="control"),
-            trigger_name="another_trigger",
-        )
-    )
-    other = scope_sequential_results(
-        other_source,
-        bundle.results,
-        snapshot,
-        metrics=("outcome",),
-        estimands=("itt",),
-    )
-    assert other.metadata.scope.snapshot_id != scoped.metadata.scope.snapshot_id
+        replayed = replay.run()
+        replayed_by_population = {}
+        for row in replayed:
+            assert isinstance(row, LiftEstimate)
+            replayed_by_population[row.analysis_population] = row
+        assert set(replayed_by_population) == {"assigned", "triggered"}
+        assert replayed.metadata is not None
+        assert replayed_by_population["triggered"].failure_context == placeholder.failure_context
+        assert replayed.metadata.scope.snapshot_id == results.metadata.scope.snapshot_id
+    finally:
+        analysis.close()

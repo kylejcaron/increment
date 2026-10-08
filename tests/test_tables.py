@@ -728,6 +728,44 @@ def test_estimates_to_readout_qualifies_only_stored_posterior_values():
     assert "risk_if_shipped" not in row
 
 
+def test_readout_uses_stored_posterior_for_clustered_and_binomial_rows():
+    from increment.estimation.engine import Method
+    from increment.estimation.inference import Normal
+    from increment.estimation.results import LiftEstimate
+
+    posterior = _valid_estimate(
+        metric="conv",
+        prior=Normal(mu=0.0, sigma=0.1),
+    )
+    clustered = LiftEstimate.model_validate(
+        {**posterior.model_dump(mode="python"), "n_clusters": 3}
+    )
+    exact = _binomial_lift_estimate(
+        x_c=10,
+        n_c=100,
+        x_t=20,
+        n_t=100,
+        methods=[Method(name="unadjusted", conversion_inference="finite_sample")],
+    )
+    assert exact.binomial_set is not None
+    payload = posterior.model_dump(mode="python")
+    payload.update(
+        reference_kind="binomial",
+        lift=exact.lift,
+        binomial_set=exact.binomial_set,
+    )
+    binomial = LiftEstimate.model_validate(payload)
+
+    (clustered_row, binomial_row) = estimates_to_readout([clustered, binomial])
+    for estimate, rendered in (
+        (clustered, clustered_row),
+        (binomial, binomial_row),
+    ):
+        assert estimate.posterior_available is True
+        assert rendered["posterior_chance_to_beat"] == pytest.approx(estimate.chance_to_beat())
+        assert rendered["posterior_risk_if_shipped"] == pytest.approx(estimate.risk_if_shipped())
+
+
 def test_estimates_to_readout_preserves_direction_aware_stored_posterior():
     from increment.estimation.inference import Normal, infer_lift
 
@@ -764,14 +802,15 @@ def test_estimates_to_readout_preserves_persisted_favorable_probability_at_shift
         preferred_direction="increase",
         prior=Normal(mu=0.0, sigma=0.1),
     )
-    assert est.posterior_prob_favorable != est.prob_favorable()
+    assert est.posterior_prob_favorable == pytest.approx(est.prob_favorable())
+    assert est.posterior_prob_favorable != pytest.approx(est.chance_to_beat())
     (row,) = estimates_to_readout([est])
     assert row["posterior_prob_favorable"] == est.posterior_prob_favorable
 
 
 def test_estimates_to_readout_preserves_breakout_and_daily_posterior_probability():
-    from increment.estimation.inference import Normal, infer_lift
     from increment.breakout.estimates import _copy_common_fields
+    from increment.estimation.inference import Normal, infer_lift
 
     lift = infer_lift(
         metric="revenue",
@@ -799,7 +838,6 @@ def test_estimates_to_readout_preserves_breakout_and_daily_posterior_probability
         assert row["posterior_prob_favorable"] == lift.posterior_prob_favorable
 
 
-
 def test_readout_rows_keep_canonical_mixture_components_for_every_result_view():
     from increment._canonical import canonical_json_bytes
     from increment.breakout.estimates import _copy_common_fields
@@ -817,6 +855,7 @@ def test_readout_rows_keep_canonical_mixture_components_for_every_result_view():
         preferred_direction="increase",
         prior=MixturePrior(weights=(0.4, 0.6), means=(0.0, 0.1), sigmas=(0.02, 0.15)),
     )
+    assert lift.posterior_components is not None
     expected = canonical_json_bytes(lift.posterior_components.model_dump(mode="json")).decode()
     breakout = BreakoutEstimate(
         **_copy_common_fields(lift), dimension="country", dimension_value="US", source="observed"

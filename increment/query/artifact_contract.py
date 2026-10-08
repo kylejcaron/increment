@@ -138,10 +138,11 @@ _EXTENSION_KIND_RANK: Mapping[str, int] = MappingProxyType(
         "cuped_preperiod": 3,
         "assignment_counts": 4,
         "trigger_population": 5,
-        "encouragement_uptake": 6,
-        "site_volume": 7,
-        "unit_covariate": 8,
-        "unit_covariate_level": 9,
+        "trigger_measure_stats": 6,
+        "encouragement_uptake": 7,
+        "site_volume": 8,
+        "unit_covariate": 9,
+        "unit_covariate_level": 10,
     }
 )
 
@@ -843,7 +844,9 @@ def _covariate_catalog_entries(definitions: Any, experiment: Any) -> list[Any]:
     return entries
 
 
-def _identity_catalog_entries(definitions: Any, experiment: Any) -> list[Any]:
+def _identity_catalog_entries(
+    definitions: Any, experiment: Any, metric_names: tuple[str, ...]
+) -> list[Any]:
     entries: list[Any] = []
     if experiment.cluster is not None:
         request = _model("ClusterIdentityRequest").model_validate(
@@ -875,6 +878,31 @@ def _identity_catalog_entries(definitions: Any, experiment: Any) -> list[Any]:
                 "trigger": experiment.trigger,
             },
         )
+        for metric_name in metric_names:
+            request = _model("TriggerMeasureStatsRequest").model_validate(
+                {
+                    "kind": "trigger_measure_stats",
+                    "trigger_name": experiment.trigger,
+                    "metric_names": (metric_name,),
+                }
+            )
+            metric = next(metric for metric in definitions.metrics if metric.name == metric_name)
+            _catalog_add(
+                entries,
+                request,
+                {
+                    "kind": "trigger_measure_stats",
+                    "trigger_name": experiment.trigger,
+                    "metric_names": (metric_name,),
+                    "metric": _dump(metric),
+                },
+                {
+                    "experiment": _dump(experiment),
+                    "trigger": _exposure_recipe(definitions, experiment, experiment.trigger),
+                    "metric": _dump(metric),
+                    "definitions_fact_sources": _dump(definitions.fact_sources),
+                },
+            )
     return entries
 
 
@@ -1110,7 +1138,7 @@ def _compile_extension_catalog(
 ) -> list[Any]:
     experiment = resolution.experiment
     entries = _dimension_catalog_entries(definitions, experiment)
-    entries.extend(_identity_catalog_entries(definitions, experiment))
+    entries.extend(_identity_catalog_entries(definitions, experiment, resolution.metric_names))
     entries.extend(_cuped_catalog_entries(definitions, experiment, resolution.metric_names))
     entries.append(_assignment_catalog_entry(definitions, experiment, on_mixed_assignment))
     entries.extend(

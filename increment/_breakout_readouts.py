@@ -160,12 +160,16 @@ class BreakoutReadouts:
                 correction=req.correction,
                 q=req.q,
             )
-        results = []
+        results: BreakoutEstimates | None = None
         for breakout_slice in self._slices(req, route):
             segment_results = readouts.breakout(
                 breakout_slice.source,
                 breakout_slice.dimension,
-                source_name=breakout_slice.source_name,
+                source_name=(
+                    breakout_slice.stamp_source
+                    if breakout_slice.stamp_source is not None
+                    else breakout_slice.source_name
+                ),
                 decision_method=req.decision_method,
                 sensitivity_methods=req.sensitivity_methods,
                 prior=req.prior,
@@ -173,15 +177,8 @@ class BreakoutReadouts:
                 correction=req.correction,
                 q=req.q,
             )
-            if breakout_slice.stamp_source is not None:
-                segment_results = BreakoutEstimates(
-                    [
-                        row.model_copy(update={"source": breakout_slice.stamp_source})
-                        for row in segment_results
-                    ]
-                )
-            results.extend(segment_results)
-        return BreakoutEstimates(results)
+            results = segment_results if results is None else results.concat(segment_results)
+        return BreakoutEstimates([]) if results is None else results
 
 
 __all__ = ["BreakoutReadouts", "BreakoutRequest"]

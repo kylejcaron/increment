@@ -21,8 +21,8 @@ declared or selected; it does not apply a new correction:
 | `None` | `undeclared_plan` | No metric role was declared; unadjusted. |
 | `unassigned` | `unassigned_in_plan` | A plan exists, but this metric has no assigned role; unadjusted. |
 | `primary`, `secondary`, `guardrail` | `declared_plan` | Retains the existing role-specific allocation and procedure. |
-| `exploratory`, outside a BH/e-BH family | `exploratory_unadjusted` | Exploratory, without BH/e-BH family selection. |
-| `exploratory`, inside a BH/e-BH family | `exploratory_family` | Exploratory member of the named selection family. |
+| `exploratory`, outside a BH/e-BH or Bonferroni family | `exploratory_unadjusted` | Exploratory, without family adjustment. |
+| `exploratory`, inside a BH/e-BH or Bonferroni family | `exploratory_family` | Member of the named adjusted family: BH/e-BH selection or Bonferroni alpha division. |
 
 For example, five metrics without a declared plan each retain alpha `0.05`
 and report `undeclared_plan`; five declared primaries share alpha `0.05`,

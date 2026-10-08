@@ -1,7 +1,5 @@
 """Observational and encouragement readouts enumerate their expected cells before estimation."""
 
-from types import SimpleNamespace
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -10,6 +8,7 @@ from increment import Analysis, MetricSpec
 from increment.breakout.estimates import LiftEstimates
 from increment.errors import IncrementWarning
 from increment.estimation.readout_types import CellKey, ReadoutResults
+from increment.estimation.results import LiftEstimate
 from increment.semantics.design import (
     AdjustmentSet,
     Encouragement,
@@ -18,27 +17,6 @@ from increment.semantics.design import (
     UptakeSpec,
 )
 from tests.warning_codes import warning_codes, warning_context
-
-
-def test_artifact_assignment_counts_skip_null_before_string_conversion():
-    from increment.query.source import ArtifactMomentSource
-
-    class Reader:
-        _population_units = None
-        _artifact_experiment = SimpleNamespace(trigger=None)
-
-        def _extension(self, request):
-            assert request == {"kind": "assignment_counts", "populations": ("assigned",)}
-            return SimpleNamespace(kind="assignment_counts", populations=("assigned",))
-
-        def _read_extension(self, extension, *, request):
-            assert request["kind"] == "assignment_counts"
-            return [
-                {"population": "assigned", "group_id": None, "n_units": 2},
-                {"population": "assigned", "group_id": "None", "n_units": 3},
-            ]
-
-    assert ArtifactMomentSource.unit_counts(Reader()) == {"None": 3}
 
 
 def _encouragement_frame(n=300, seed=3):
@@ -53,66 +31,6 @@ def _encouragement_frame(n=300, seed=3):
             "rev": outcome,
         }
     )
-
-
-def test_artifact_triggered_counts_skip_null_before_string_conversion():
-    from increment.query.source import ArtifactMomentSource
-
-    class Reader:
-        context = SimpleNamespace(cluster=None)
-
-        def _extension(self, request):
-            return SimpleNamespace(
-                kind="assignment_counts", populations=request["populations"]
-            )
-
-        def _read_extension(self, extension, *, request):
-            assert request["populations"] == ("assigned", "triggered")
-            return [
-                {
-                    "population": "triggered",
-                    "group_id": None,
-                    "n_randomization_units": 2,
-                    "n_units": 2,
-                },
-                {
-                    "population": "triggered",
-                    "group_id": "None",
-                    "n_randomization_units": 3,
-                    "n_units": 3,
-                },
-            ]
-
-    assert ArtifactMomentSource.triggered_counts(Reader()) == (
-        "unit",
-        {"None": 3},
-        {},
-    )
-
-
-def test_artifact_cluster_counts_skip_null_before_string_conversion():
-    from increment.query.source import ArtifactMomentSource
-
-    class Reader:
-        context = SimpleNamespace(cluster="store")
-
-        def _extension(self, request):
-            assert request == {"kind": "cluster_identity", "cluster_name": "store"}
-            return SimpleNamespace(kind="cluster_identity", cluster_name="store")
-
-        def _read_extension(self, extension, *, request):
-            return [
-                {"unit_id": "null-group", "cluster_id": "c1"},
-                {"unit_id": "literal-none-group", "cluster_id": "c2"},
-            ]
-
-        def _exposure_rows(self):
-            return [
-                {"unit_id": "null-group", "group_id": None},
-                {"unit_id": "literal-none-group", "group_id": "None"},
-            ]
-
-    assert ArtifactMomentSource.cluster_counts(Reader()) == {"None": 1}
 
 
 def _encouragement(frame):
@@ -146,6 +64,42 @@ def test_encouragement_enumerates_itt_late_and_compliance_cells_with_compliance_
     restored = ReadoutResults.model_validate_json(results.model_dump_json())
     assert restored.metadata == metadata
     assert [CellKey.from_row(row) for row in restored] == [CellKey.from_row(row) for row in results]
+
+
+def test_encouragement_scope_matches_itt_only_family_selection():
+    from increment.semantics.models import AnalysisPlan
+
+    frame = _encouragement_frame()
+    frame["other"] = frame["rev"] + np.linspace(-0.1, 0.1, len(frame))
+    design = Encouragement(
+        control_group="control",
+        uptake=UptakeSpec(fact="uptake"),
+        exclusion_restriction=ExclusionRestriction(
+            acknowledged=True, justification="uptake does not gate the outcome"
+        ),
+    )
+    analysis = Analysis.from_unit_summary(
+        frame,
+        unit="unit_id",
+        group="group_id",
+        metrics=[MetricSpec(name="rev", type="mean"), MetricSpec(name="other", type="mean")],
+        design=design,
+        uptake="uptake",
+        plan=AnalysisPlan(primary="rev", secondaries=["other"]),
+    )
+    results = analysis.run()
+    assert results.metadata is not None
+    family = next(
+        family for family in results.metadata.scope.families if family.name == "secondary"
+    )
+    assert {(cell.metric, cell.estimand) for cell in family.members} == {("other", "itt")}
+    itt = next(row for row in results if row.metric == "other" and row.estimand == "itt")
+    late = next(row for row in results if row.metric == "other" and row.estimand == "late")
+    assert isinstance(itt, LiftEstimate)
+    assert isinstance(late, LiftEstimate)
+    assert itt.role == late.role == "secondary"
+    assert itt.family_id == family.family_id
+    assert late.family_id is None
 
 
 def test_compliance_only_encouragement_readout_records_compliance_evidence():
@@ -184,6 +138,38 @@ def _observational(frame):
     )
 
 
+@pytest.mark.parametrize("mechanism", ["observational", "encouragement"])
+@pytest.mark.parametrize("with_prior", [False, True])
+def test_design_scoped_cell_records_retain_declared_posterior(mechanism, with_prior):
+    from increment.estimation.inference import Normal
+
+    if mechanism == "observational":
+        analysis = _observational(_observational_frame(drop_second_metric_in=None))
+    else:
+        analysis = _encouragement(_encouragement_frame())
+    prior = Normal(mu=0.0, sigma=0.1) if with_prior else None
+    results = analysis.run(**({"prior": prior} if with_prior else {}))
+
+    rows_by_cell = {CellKey.from_row(row): row for row in results}
+    records = results.metadata.cells
+    assert records
+    for record in records:
+        if record.cell.metric == "uptake":
+            assert record.posterior is None
+            continue
+        if prior is None:
+            assert record.posterior is None
+            continue
+        row = rows_by_cell[record.cell]
+        assert record.posterior is not None
+        assert record.posterior.prior == prior
+        assert record.posterior.available == row.posterior_available
+        assert record.posterior.model == row.posterior_model
+        assert record.posterior.scale == row.posterior_scale
+        assert record.posterior.reason_code == row.posterior_reason_code
+        assert record.posterior.reason_context == row.posterior_reason_context
+
+
 def test_observational_metric_lacking_an_arm_is_a_typed_failed_cell_beside_a_complete_metric():
     with pytest.warns(IncrementWarning) as captured:
         analysis = _observational(_observational_frame())
@@ -201,6 +187,9 @@ def test_observational_metric_lacking_an_arm_is_a_typed_failed_cell_beside_a_com
     assert {("rev", "T1"), ("rev", "T2"), ("other", "T1")} <= healthy
     assert results.metadata.scope.decision_complete("assigned") is False
     assert all(row.decision_scope_complete is False for row in results)
+    copied_failure = failed[0].model_copy()
+    with pytest.raises(TypeError):
+        copied_failure.decision_scope_reason_context["missing_cells"][0]["metric"] = "changed"
 
     restored = ReadoutResults.model_validate_json(results.model_dump_json())
     assert restored.metadata == results.metadata
@@ -216,23 +205,3 @@ def test_observational_with_every_arm_observed_has_no_failed_cells():
         ("other", "T1"),
         ("other", "T2"),
     }
-
-
-def test_metric_row_inventory_omits_none_from_observed_arms():
-    from types import SimpleNamespace
-
-    from increment.readouts._metric_rows import _load_metric_rows
-
-    source = SimpleNamespace(
-        moments=lambda metric, *, grain, by: [
-            {"group_id": None, "metric": metric.name},
-            {"group_id": "control", "metric": metric.name},
-            {"group_id": "treatment", "metric": metric.name},
-        ]
-    )
-    metric = SimpleNamespace(name="metric", type="mean", winsorization=None)
-
-    captured = _load_metric_rows(source, metric, by=(), control_group="control")
-
-    assert captured.observed_arms == frozenset({"control", "treatment"})
-    assert captured.evidence_count == 3

@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import math
 from contextlib import contextmanager
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 import ibis
 import pytest
 
+from increment import SourceSnapshotEvidence
 from increment.analysis import Analysis
-from increment.errors import CapabilityError
+from increment.errors import CapabilityError, IncrementWarning
 from increment.query.artifact_contract import (
     ArtifactContractError,
     ArtifactStore,
@@ -68,6 +69,16 @@ _EXPECTED_ARTIFACT_SCHEMAS = {
         ("unit_id", "STRING", False),
         ("first_trigger_ts", "TIMESTAMP_UTC_US", False),
     ),
+    "trigger_measure_stats": (
+        ("experiment_id", "STRING", False),
+        ("unit_id", "STRING", False),
+        ("ds", "DATE", False),
+        ("measure_key", "STRING", False),
+        ("n_events", "INT64", False),
+        ("sum_value", "FLOAT64", False),
+        ("min_value", "FLOAT64", False),
+        ("max_value", "FLOAT64", False),
+    ),
     "encouragement_uptake": (
         ("experiment_id", "STRING", False),
         ("unit_id", "STRING", False),
@@ -92,6 +103,7 @@ _EXPECTED_ARTIFACT_PRIMARY_KEYS = {
     "cuped_preperiod": ("experiment_id", "unit_id"),
     "assignment_counts": ("experiment_id", "population", "group_id"),
     "trigger_population": ("experiment_id", "unit_id"),
+    "trigger_measure_stats": ("experiment_id", "unit_id", "ds", "measure_key"),
     "encouragement_uptake": ("experiment_id", "unit_id"),
     "site_volume": ("experiment_id", "ds", "measure_key"),
 }
@@ -137,6 +149,45 @@ def _metric(source: Any, name: str = "purchase_rate") -> Any:
 def _artifact_source(store: Any, reference: Any, context: Any) -> Any:
     """Open the public artifact source an adopted facade reads through."""
     return open_artifact(store, reference, expected_context=context)
+
+
+def _triggered_definitions(
+    tmp_path: Path, *, window_days: int | None, observation_end: str | None = None
+) -> Path:
+    import yaml
+
+    definitions = _definitions(tmp_path, trigger="session_start", observation_end=observation_end)
+    payload = yaml.safe_load(definitions.read_text())
+    metric = next(item for item in payload["metrics"] if item["name"] == "purchase_rate")
+    metric["window_days"] = window_days
+    definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
+    return definitions
+
+
+def _insert_purchase_for_first_trigger_user(connection: Any, event_at: datetime) -> str:
+    event_log = connection.table("event_log", database="analytics")
+    first = connection.to_pyarrow(
+        event_log.filter(
+            (event_log.experiment_id == "new_onboarding_v2") & (event_log.event == "page_view")
+        )
+        .order_by(event_log.event_at)
+        .limit(1)
+    ).to_pylist()[0]
+    user_id = str(first["user_id"])
+    timestamp = event_at.astimezone(UTC).replace(tzinfo=None).isoformat(sep=" ")
+    connection.raw_sql(
+        f"""
+        INSERT INTO analytics.event_log
+        SELECT TIMESTAMP '{timestamp}', user_id, session_id || '_trigger_regression',
+               'purchase', 100.0, NULL, country_code, device_type, plan, NULL, NULL
+        FROM analytics.event_log
+        WHERE user_id = '{user_id}' AND experiment_id = 'new_onboarding_v2'
+          AND event = 'page_view'
+        ORDER BY event_at
+        LIMIT 1
+        """
+    )
+    return user_id
 
 
 def _artifact_relation_table(role: str, rows: list[dict[str, Any]]) -> Any:
@@ -881,8 +932,15 @@ def test_adopted_daily_breakout_summaries_match_the_native_day_axis(
 
 def test_triggered_operations_match_and_preserve_zero_arm_counts(tmp_path: Path) -> None:
     definitions = _definitions(tmp_path, trigger="session_start")
-    _connection, native, context, store = _native(definitions=definitions)
-    requests = _extensions(context, "assignment_counts", "trigger_population")
+    evidence = SourceSnapshotEvidence(
+        datetime(2030, 1, 1, tzinfo=UTC), {"event_log": datetime(2030, 1, 1, tzinfo=UTC)}
+    )
+    _connection, native, context, store = _native(
+        definitions=definitions, source_snapshot_evidence=evidence
+    )
+    requests = _extensions(
+        context, "assignment_counts", "trigger_population", "trigger_measure_stats"
+    )
     reference = native.publish_unit_day_artifact(store, extensions=requests)
     adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
     adopted_source = _artifact_source(store, reference, context)
@@ -891,6 +949,9 @@ def test_triggered_operations_match_and_preserve_zero_arm_counts(tmp_path: Path)
         assert "triggered_counts" in adopted_source.operations
         assert "triggered_source" in adopted_source.operations
         assert adopted_source.triggered_counts() == native_source.triggered_counts()
+        assert adopted_source.assignment_counts(population="triggered") == (
+            native_source.assignment_counts(population="triggered")
+        )
         assert adopted_source.trigger_rates() == pytest.approx(native_source.trigger_rates())
         native_metric = _metric(native_source)
         adopted_metric = _metric(adopted_source)
@@ -904,6 +965,220 @@ def test_triggered_operations_match_and_preserve_zero_arm_counts(tmp_path: Path)
     finally:
         adopted_source.close()
         adopted.close()
+        native.close()
+
+
+@pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+def test_triggered_window_past_observation_end_matches_after_publish_reopen(
+    tmp_path: Path,
+) -> None:
+    definitions = _triggered_definitions(tmp_path, window_days=30, observation_end="2025-02-20")
+    cutoff = datetime(2030, 1, 1, tzinfo=UTC)
+    connection, native, context, store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": cutoff}),
+    )
+    reference = native.publish_unit_day_artifact(
+        store, extensions=_extensions(context, "trigger_population", "trigger_measure_stats")
+    )
+    adopted_source = _artifact_source(store, reference, context)
+    try:
+        native_source = _native_source(native)
+        native_triggered = native_source.triggered_source()
+        adopted_triggered = adopted_source.triggered_source()
+        metric = _metric(native_source)
+        with pytest.warns(IncrementWarning):
+            native_rows = cast(Any, native_triggered.moments(metric))
+        adopted_rows = adopted_triggered.moments(_metric(adopted_source))
+        triggered_count = sum(native_triggered.unit_counts().values())
+        eligible_count = sum(int(row["n"]) for row in native_rows)
+        assert 0 < eligible_count < triggered_count
+        _assert_rows_equal(
+            native_rows,
+            adopted_rows,
+            ignored_fields=frozenset({"ref_x", "cx1", "cx2", "cxy", "cxd", "x_role"}),
+        )
+    finally:
+        adopted_source.close()
+        native.close()
+
+
+@pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+def test_triggered_unwindowed_outcome_after_watermark_matches_native(tmp_path: Path) -> None:
+    definitions = _triggered_definitions(tmp_path, window_days=None)
+    cutoff = datetime(2030, 1, 1, tzinfo=UTC)
+    watermark = datetime(2025, 1, 16, tzinfo=UTC)
+    with pytest.warns(IncrementWarning):
+        connection, native, context, store = _native(
+            definitions=definitions,
+            source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": watermark}),
+        )
+    user_id = _insert_purchase_for_first_trigger_user(
+        connection, datetime(2025, 1, 16, 12, tzinfo=UTC)
+    )
+    reference = native.publish_unit_day_artifact(
+        store, extensions=_extensions(context, "trigger_population", "trigger_measure_stats")
+    )
+    adopted_source = _artifact_source(store, reference, context)
+    try:
+        native_source = _native_source(native)
+        native_metric = _metric(native_source)
+        adopted_metric = _metric(adopted_source)
+        extension = next(
+            item
+            for item in adopted_source.manifest.extensions
+            if item.kind == "trigger_measure_stats" and item.metric_names == (adopted_metric.name,)
+        )
+        stats_rows = connection.to_pyarrow(
+            connection.table(
+                extension.relation.relation.name,
+                database=extension.relation.relation.schema_name,
+            )
+        ).to_pylist()
+        assert any(
+            row["unit_id"] == user_id and row["ds"] == date(2025, 1, 16) for row in stats_rows
+        )
+        with pytest.warns(IncrementWarning):
+            native_rows = cast(Any, native_source.triggered_source().moments(native_metric))
+        adopted_rows = adopted_source.triggered_source().moments(adopted_metric)
+        _assert_rows_equal(
+            native_rows,
+            adopted_rows,
+            ignored_fields=frozenset({"ref_x", "cx1", "cx2", "cxy", "cxd", "x_role"}),
+        )
+    finally:
+        adopted_source.close()
+        native.close()
+
+
+def test_v3_trigger_population_count_mismatch_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    definitions = _definitions(tmp_path, trigger="session_start")
+    _connection, native, context, store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(datetime(2030, 1, 1, tzinfo=UTC)),
+    )
+    reference = native.publish_unit_day_artifact(
+        store, extensions=_extensions(context, "assignment_counts", "trigger_population")
+    )
+    source = _artifact_source(store, reference, context)
+    try:
+        original_read = source._read_extension
+
+        def corrupted_read(extension: Any, *, request: Any) -> list[dict[str, Any]]:
+            rows = original_read(extension, request=request)
+            if extension.kind == "assignment_counts":
+                for row in rows:
+                    if row["population"] == "triggered":
+                        row["n_units"] += 1
+            return rows
+
+        monkeypatch.setattr(source, "_read_extension", corrupted_read)
+        with pytest.raises(ArtifactContractError) as raised:
+            source.triggered_counts()
+        assert raised.value.code == "artifact.extension.invalid"
+    finally:
+        source.close()
+        native.close()
+
+
+@pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+def test_trigger_measure_cutoff_day_publishes_and_reopens(tmp_path: Path) -> None:
+    cutoff = datetime(2025, 1, 20, 12, tzinfo=UTC)
+    definitions = _triggered_definitions(tmp_path, window_days=None)
+    with pytest.warns(IncrementWarning):
+        connection, native, context, store = _native(
+            definitions=definitions,
+            source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": cutoff}),
+        )
+    user_id = _insert_purchase_for_first_trigger_user(
+        connection, datetime(2025, 1, 20, 10, tzinfo=UTC)
+    )
+    assert (
+        _insert_purchase_for_first_trigger_user(connection, datetime(2025, 1, 20, 13, tzinfo=UTC))
+        == user_id
+    )
+    reference = native.publish_unit_day_artifact(
+        store,
+        extensions=_extensions(context, "trigger_population", "trigger_measure_stats"),
+    )
+    source = _artifact_source(store, reference, context)
+    try:
+        triggered = source.triggered_source()
+        metric = _metric(triggered)
+        extension = next(
+            item
+            for item in source.manifest.extensions
+            if item.kind == "trigger_measure_stats" and item.metric_names == (metric.name,)
+        )
+        rows = connection.to_pyarrow(
+            connection.table(
+                extension.relation.relation.name,
+                database=extension.relation.relation.schema_name,
+            )
+        ).to_pylist()
+        cutoff_day_rows = [
+            row for row in rows if row["unit_id"] == user_id and row["ds"] == date(2025, 1, 20)
+        ]
+        assert len(cutoff_day_rows) == 1
+        assert cutoff_day_rows[0]["n_events"] == 1
+        native_source = _native_source(native)
+        with pytest.warns(IncrementWarning):
+            native_rows = cast(
+                Any,
+                native_source.triggered_source().moments(_metric(native_source)),
+            )
+        adopted_rows = triggered.moments(metric)
+        _assert_rows_equal(
+            native_rows,
+            adopted_rows,
+            ignored_fields=frozenset({"ref_x", "cx1", "cx2", "cxy", "cxd", "x_role"}),
+        )
+    finally:
+        source.close()
+        native.close()
+
+
+@pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+def test_native_snapshot_asof_spine_excludes_partial_and_post_cutoff_days(
+    tmp_path: Path,
+) -> None:
+    cutoff = datetime(2025, 1, 19, 23, 59, tzinfo=UTC)
+    definitions = _triggered_definitions(tmp_path, window_days=5)
+    connection, native, _context, _store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": cutoff}),
+    )
+    user_id = _insert_purchase_for_first_trigger_user(
+        connection, datetime(2025, 1, 19, 12, tzinfo=UTC)
+    )
+    assert (
+        _insert_purchase_for_first_trigger_user(connection, datetime(2025, 1, 20, 12, tzinfo=UTC))
+        == user_id
+    )
+    try:
+        source = _native_source(native)
+        metric = _metric(source)
+
+        def latest_spine_day(population: Literal["assigned", "triggered"]) -> date | None:
+            exposures = (
+                source._get_exposures()
+                if population == "assigned"
+                else source._get_trigger_population(operation="triggered_outcomes")
+            )
+            _, spine, *_ = source._build_panel_for_metric(
+                exposures,
+                metric,
+                population=population,
+                use_cache=False,
+            )
+            result = connection.to_pyarrow(spine.aggregate(edge=spine.ds.max())).to_pylist()[0]
+            return result["edge"]
+
+        assert latest_spine_day("assigned") == date(2025, 1, 18)
+        assert latest_spine_day("triggered") == date(2025, 1, 18)
+    finally:
         native.close()
 
 

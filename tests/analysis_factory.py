@@ -18,7 +18,7 @@ from increment.analysis import Analysis
 from increment.breakout.estimates import LiftEstimates
 from increment.estimation.contrast_results import ContrastResults
 from increment.query.native_source import DefinitionsMomentSource
-from increment.query.session import WarehouseSession
+from increment.query.session import SourceSnapshotEvidence, WarehouseSession
 
 if TYPE_CHECKING:
     from increment.semantics.models import Definitions, Experiment, Metric
@@ -61,6 +61,7 @@ def make_analysis(
     on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
     metrics: list[Metric] | None = None,
     plan: Any = None,
+    source_snapshot_evidence: SourceSnapshotEvidence | None = None,
     **overrides: Any,
 ) -> Analysis:
     """Build a test analysis through the same source/context constructor."""
@@ -116,7 +117,7 @@ def make_analysis(
             design=design,
         )
     )
-    session = WarehouseSession(con, defs)
+    session = WarehouseSession(con, defs, source_snapshot_evidence=source_snapshot_evidence)
     session.drop_materialized()
     src = DefinitionsMomentSource(
         session,

@@ -61,6 +61,7 @@ from increment.semantics.artifact import (
     FactorDimensionExtension,
     Freshness,
     SiteVolumeExtension,
+    TriggerMeasureStatsExtension,
     TriggerPopulationExtension,
     UnitCovariateExtension,
     UnitCovariateLevelExtension,
@@ -256,6 +257,23 @@ def _generic_model(
     base = _model_base(relation, entry)
     base.update({ext_attr: getattr(request, req_attr) for ext_attr, req_attr in spec.fields})
     return spec.model_cls.model_validate(base)
+
+
+def _trigger_population_model(
+    *,
+    relation: ArtifactRelationRef,
+    entry: ArtifactExtensionCatalogEntry,
+    definition: Mapping[str, Any],
+    **_kwargs: Any,
+) -> ArtifactExtensionRef:
+    request: Any = entry.request
+    base = _model_base(relation, entry)
+    base.update(
+        trigger_name=request.trigger_name,
+        observation_cutoff_ts=definition["observation_cutoff_ts"],
+        complete_through_ts=definition["complete_through_ts"],
+    )
+    return TriggerPopulationExtension.model_validate(base)
 
 
 def _dimension_source_rows(source: Any, request: Any, _experiment_id: str | None) -> Any:
@@ -690,8 +708,15 @@ def _validate_cuped_row(row: Mapping[str, Any]) -> None:
 
 
 def _validate_trigger_row(row: Mapping[str, Any]) -> None:
-    if not isinstance(row["first_trigger_ts"], datetime):
+    value = row["first_trigger_ts"]
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
         _reject("artifact.extension.invalid", "trigger timestamp domain is invalid")
+
+
+def _validate_trigger_measure_stats_row(row: Mapping[str, Any]) -> None:
+    if not isinstance(row["ds"], date) or isinstance(row["ds"], datetime):
+        _reject("artifact.extension.invalid", "trigger measure date domain is invalid")
+    _validate_stats_row(row, 1)
 
 
 def _validate_encouragement_row(row: Mapping[str, Any]) -> None:
@@ -1091,6 +1116,20 @@ def _identity_encouragement(
     )
 
 
+def _identity_trigger_population(
+    extension: Any, request: Mapping[str, Any], definition: Mapping[str, Any] | None
+) -> bool:
+    if extension.trigger_name != request.get("trigger_name"):
+        return False
+    if definition is None:
+        return True
+    dumped = extension.model_dump(mode="json")
+    return all(
+        field not in definition or dumped.get(field) == definition[field]
+        for field in ("observation_cutoff_ts", "complete_through_ts")
+    )
+
+
 def _identity_site_volume(
     extension: Any, _request: Mapping[str, Any], definition: Mapping[str, Any] | None
 ) -> bool:
@@ -1427,7 +1466,25 @@ _HANDLERS = {
             fields=(("trigger_name", "trigger_name"),),
             row_validator=_validate_trigger_row,
             source_rows=_source_trigger_population_rows,
+            model=_trigger_population_model,
+            identity_matches=_identity_trigger_population,
             validate_exposure=_validate_trigger_exposure_coverage,
+        )
+    ),
+    "trigger_measure_stats": _build_handler(
+        ExtensionKindSpec(
+            kind="trigger_measure_stats",
+            role="trigger_measure_stats",
+            operation="triggered_source",
+            protocol=TriggeredPopulationOperation,
+            model_cls=TriggerMeasureStatsExtension,
+            fields=(("trigger_name", "trigger_name"), ("metric_names", "metric_names")),
+            row_validator=_validate_trigger_measure_stats_row,
+            source_rows=lambda _source, _request, _experiment_id: _reject(
+                "artifact.evidence.unavailable",
+                "trigger-measure statistics must be built from raw events by the publisher",
+            ),
+            validate_exposure=_validate_noop_exposure_coverage,
         )
     ),
     "encouragement_uptake": _build_handler(

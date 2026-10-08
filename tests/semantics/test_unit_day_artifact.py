@@ -70,7 +70,9 @@ def _manifest():
     context_json = canonical_json_bytes(
         {
             "context_format": 2,
+            "extension_catalog": [],
             "definitions": {
+                "day_boundary": "UTC",
                 "metrics": [
                     {
                         "entity": "unit_id",
@@ -78,7 +80,7 @@ def _manifest():
                         "name": "conversion",
                         "type": "mean",
                     }
-                ]
+                ],
             },
             "experiment": experiment.model_dump(mode="json"),
             "experiment_name": "exp",

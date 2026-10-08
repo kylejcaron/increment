@@ -520,6 +520,7 @@ def test_report_buckets_by_the_declared_day_boundary_not_utc():
     frame = report.metric("rev", grain="day", start=dt.date(2025, 1, 1)).to_frame()
     values = dict(zip(frame.period, frame.value, strict=True))
     assert values[dt.date(2025, 1, 1)] == 10.0
+    assert max(values) == dt.date(2025, 1, 1)
     assert values.get(dt.date(2025, 1, 2), 0.0) == 0.0
 
 
@@ -601,7 +602,7 @@ def test_default_report_horizon_capacity(grain, span):
                 "span": span,
             }
             with pytest.raises(TypeError):
-                raised.value.context["span"] = 1
+                cast(dict[str, object], raised.value.context)["span"] = 1
         else:
             default_trend = report.metric("revenue", grain=grain, start=start)
             assert default_trend.end is None
@@ -793,6 +794,22 @@ def test_omitted_end_population_admission_precedes_data_execution(report, monkey
             population=ibis.memtable({"not_unit_id": ["u1"]}),
         )
     assert raised.value.code == "query.calendar.population_unit_id"
+    assert executions == []
+
+
+def test_omitted_end_rejects_unknown_grain_before_horizon_execution(report, monkeypatch):
+    executions = []
+
+    monkeypatch.setattr(
+        report._con,
+        "execute",
+        lambda expression, *args, **kwargs: executions.append(expression),
+    )
+
+    with pytest.raises(InvalidRequestError) as raised:
+        report.metric("revenue", grain="fortnight", start=dt.date(2026, 1, 5))
+
+    assert raised.value.code == "query.calendar.period_start_unknown_grain"
     assert executions == []
 
 

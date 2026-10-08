@@ -209,6 +209,15 @@ def _scalar_date(value: object) -> dt.date | None:
     return cast("dt.date", value)
 
 
+def _day_edge_scalar(value: dt.date | ir.Scalar | None) -> ir.Scalar:
+    """Convert a Python or expression day edge to a date scalar."""
+    if value is None:
+        return cast("ir.Scalar", ibis.null().cast("date"))
+    if isinstance(value, dt.date):
+        return ibis.literal(value, type="date")
+    return cast("ir.Scalar", value.cast("date"))
+
+
 def _outcome_edge(
     measures: Sequence[MeasureManifest],
     stats: ir.Table,
@@ -569,6 +578,16 @@ class _MetricResolution:
     spec: MetricSpec
     binding: SimpleMetricMeasure | RatioMetricMeasure
     definition: Mapping[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class _TriggeredReductionInputs:
+    """Trigger-local relations, event spine edge, and certified data edge."""
+
+    exposures: ir.Table
+    measure_stats: ir.Table
+    finalized_as_of: dt.date
+    spine_edge: ir.Scalar
 
 
 def _validate_metric_identity(resolution: _MetricResolution) -> None:
@@ -1043,6 +1062,35 @@ class ArtifactMomentSource(SequentialSourceMixin):
         )
         return _rows(self._snapshot.execute(query))
 
+    def reduce_triggered(
+        self,
+        metric: Metric,
+        grain: Grain,
+        *,
+        inputs: _TriggeredReductionInputs,
+        by: str | None = None,
+        properties_table: ir.Table | None = None,
+        cluster: str | None = None,
+        cluster_table: ir.Table | None = None,
+        pre_stats: ir.Table | None = None,
+        population_units: frozenset[str] | None = None,
+        completed_windows_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Reduce one metric with trigger-local relations without changing reader state."""
+        query = self._reduction_query(
+            metric,
+            grain,
+            by=by,
+            properties_table=properties_table,
+            cluster=cluster,
+            cluster_table=cluster_table,
+            pre_stats=pre_stats,
+            population_units=population_units,
+            completed_windows_only=completed_windows_only,
+            trigger_inputs=inputs,
+        )
+        return _rows(self._snapshot.execute(query))
+
     def _unit_frame(
         self,
         metric: Metric,
@@ -1051,6 +1099,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
         resolve_cluster: Callable[[], ir.Table | None],
         population_units: frozenset[str] | None = None,
         outcome_stage: Literal["transformed", "raw"] = "transformed",
+        trigger_inputs: _TriggeredReductionInputs | None = None,
     ) -> IntoDataFrame:
         """Resolve, project, and execute a unit frame on the pinned snapshot."""
         if outcome_stage not in ("raw", "transformed"):
@@ -1063,6 +1112,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
             cluster=cluster,
             cluster_table=resolve_cluster(),
             population_units=population_units,
+            trigger_inputs=trigger_inputs,
         )
         columns = {name: totals[name] for name in ("unit_id", "group_id", "y")}
         if (
@@ -1130,7 +1180,15 @@ class ArtifactMomentSource(SequentialSourceMixin):
             return fallback_edge, fallback_edge
         return fallback_edge, max(fallback_edge, compliance_edge)
 
-    def _reduction_query(
+    def _uptake_inputs(self) -> tuple[ir.Table | None, int | None, bool]:
+        design = self.context.design
+        if not isinstance(design, Encouragement):
+            return None, None, False
+        relation = self._uptake_relation(design)
+        events = relation.filter(relation.uptake).select("unit_id", ts=relation.first_uptake_ts)
+        return events, design.uptake.window_days, True
+
+    def _reduction_query(  # noqa: PLR0915
         self,
         metric: Metric,
         grain: Grain | Literal["unit"],
@@ -1142,6 +1200,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
         pre_stats: ir.Table | None = None,
         population_units: frozenset[str] | None = None,
         completed_windows_only: bool = False,
+        trigger_inputs: _TriggeredReductionInputs | None = None,
         finalized_as_of: dt.date | None = None,
     ) -> ir.Table:
         """Reduce every artifact source through the same observation spine."""
@@ -1154,19 +1213,17 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 route="request total- or unit-grain moments",
             )
         metric = self._normalize_metric(metric)
-        design = self.context.design
-        uptake_relation = (
-            self._uptake_relation(design) if isinstance(design, Encouragement) else None
+        uptake_events, uptake_window_days, has_uptake = self._uptake_inputs()
+        exposures = (
+            self._ensure("exposures") if trigger_inputs is None else trigger_inputs.exposures
         )
-        uptake_events = (
-            uptake_relation.filter(uptake_relation.uptake).select(
-                "unit_id", ts=uptake_relation.first_uptake_ts
-            )
-            if uptake_relation is not None
-            else None
+        stats = (
+            self._ensure("measure_stats")
+            if trigger_inputs is None
+            else trigger_inputs.measure_stats
         )
-        exposures = self._ensure("exposures")
-        stats = self._ensure("measure_stats")
+        if trigger_inputs is not None:
+            finalized_as_of = trigger_inputs.finalized_as_of
         if population_units is not None:
             exposures = restrict_to_units(exposures, population_units)
             stats = restrict_to_units(stats, population_units)
@@ -1199,6 +1256,23 @@ class ArtifactMomentSource(SequentialSourceMixin):
             n_pre_periods=1 if pre_stats is not None else 0,
             plan=AnalysisPlan(),
         )
+        declared_end = self._declared_observation_end()
+        if trigger_inputs is not None:
+            if declared_end is not None and (
+                trigger_inputs.finalized_as_of == dt.date.min
+                or declared_end < trigger_inputs.finalized_as_of
+            ):
+                experiment = experiment.model_copy(
+                    update={"observation_end": dt.datetime.combine(declared_end, dt.time())}
+                )
+            elif trigger_inputs.finalized_as_of != dt.date.min:
+                experiment = experiment.model_copy(
+                    update={
+                        "observation_end": dt.datetime.combine(
+                            trigger_inputs.finalized_as_of, dt.time()
+                        )
+                    }
+                )
         # Use the declared end or union source horizon for the shared day axis.
         # Keep each metric's maturity watermark separate from that spine boundary.
         metric_edge = (
@@ -1206,21 +1280,31 @@ class ArtifactMomentSource(SequentialSourceMixin):
             if finalized_as_of is not None
             else _outcome_edge(self._manifest.measures, stats, measure_keys, self._snapshot.execute)
         )
-        outcome_spine_edge, spine_edge = (
-            (finalized_as_of, finalized_as_of)
-            if finalized_as_of is not None
-            else self._observation_spine_edge(
+        if trigger_inputs is not None:
+            # A known watermark supplies zero-activity spine days through the
+            # last fully certified local day; sparse event maxima are not an
+            # observation horizon. Without a watermark, keep the observed
+            # relation edge but do not treat it as completeness evidence.
+            outcome_spine_edge = (
+                trigger_inputs.spine_edge
+                if trigger_inputs.finalized_as_of == dt.date.min
+                else min(
+                    trigger_inputs.finalized_as_of,
+                    declared_end if declared_end is not None else trigger_inputs.finalized_as_of,
+                )
+            )
+            spine_edge = outcome_spine_edge
+        elif finalized_as_of is not None:
+            outcome_spine_edge, spine_edge = finalized_as_of, finalized_as_of
+        else:
+            outcome_spine_edge, spine_edge = self._observation_spine_edge(
                 measure_keys,
                 stats,
                 exposures=exposures,
                 experiment=experiment,
                 uptake_events=uptake_events if grain == "asof" else None,
             )
-        )
-        end_date_expr = cast(
-            "ir.Scalar",
-            ibis.literal(spine_edge) if spine_edge is not None else ibis.null().cast("date"),
-        )
+        end_date_expr = _day_edge_scalar(spine_edge)
         spine = panel_spine(exposures, experiment, end_date=end_date_expr)
 
         def panel_for(measure_key: str) -> Any:
@@ -1262,11 +1346,13 @@ class ArtifactMomentSource(SequentialSourceMixin):
         by_list = [by] if by else None
         if grain in ("total", "unit"):
             total_experiment = experiment
-            if grain == "total" and spine_edge is not None:
+            if grain == "total" and spine_edge is not None and trigger_inputs is None:
                 # Every observed spine ends at this edge; null-day units stay censored.
                 # Reuse the bound instead of re-aggregating the dense relation.
                 total_experiment = experiment.model_copy(
-                    update={"observation_end": dt.datetime.combine(spine_edge, dt.time())}
+                    update={
+                        "observation_end": dt.datetime.combine(cast(dt.date, spine_edge), dt.time())
+                    }
                 )
             totals = unit_totals(
                 spine,
@@ -1276,9 +1362,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 pre_stats=pre_stats,
                 den_stats=den_stats,
                 uptake_events=uptake_events,
-                uptake_window_days=design.uptake.window_days
-                if isinstance(design, Encouragement)
-                else None,
+                uptake_window_days=uptake_window_days,
                 by=by_list,
                 properties_table=properties_table,
                 data_as_of=metric_edge,
@@ -1296,7 +1380,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 by=by_list,
                 cluster=cluster,
                 ratio_metrics=[metric.name] if isinstance(metric, RatioMetric) else None,
-                uptake=uptake_relation is not None,
+                uptake=has_uptake,
                 binary_metrics=declared_binary_metrics([metric]),
             )
         if properties_table is not None:
@@ -1342,13 +1426,11 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 den_panel=den_panel,
                 completed_windows_only=completed_windows_only,
                 uptake_panel=uptake_panel,
-                uptake_window_days=design.uptake.window_days
-                if isinstance(design, Encouragement)
-                else None,
+                uptake_window_days=uptake_window_days,
                 _uptake_elapsed_windowed=uptake_panel is not None,
                 _outcome_observation_end=(
-                    ibis.literal(outcome_spine_edge, type="date")
-                    if uptake_panel is not None
+                    _day_edge_scalar(outcome_spine_edge)
+                    if uptake_panel is not None and outcome_spine_edge is not None
                     else None
                 ),
             )
@@ -1688,10 +1770,9 @@ class ArtifactMomentSource(SequentialSourceMixin):
         self, *, population: Literal["assigned", "triggered"] = "assigned"
     ) -> dict[str, int]:
         if population != "assigned":
-            raise CapabilityError(
+            _relation_refuse(
+                "artifact.evidence.unavailable",
                 "artifact base does not carry triggered assignment counts",
-                code="artifact.evidence.unavailable",
-                context={},
             )
         return self.unit_counts()
 

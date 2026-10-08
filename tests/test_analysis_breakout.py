@@ -299,14 +299,13 @@ def test_native_breakout_keeps_declared_prior_separate_from_sampling(con, correc
     assert_same_sampling(prior_lifts, baseline_lifts)
     assert any(row.posterior_estimate is not None for row in prior_lifts.values())
 
-
-    mixture_prior = MixturePrior(
-        weights=(0.4, 0.6), means=(0.0, 0.1), sigmas=(0.02, 0.15)
-    )
+    mixture_prior = MixturePrior(weights=(0.4, 0.6), means=(0.0, 0.1), sigmas=(0.02, 0.15))
     mixture_results = baseline.run_breakout(prior=mixture_prior)
     mixture_lifts = keyed_lifts(mixture_results)
     assert_same_sampling(mixture_lifts, baseline_lifts)
-    mixture_row = next(row for row in mixture_lifts.values() if row.posterior_components is not None)
+    mixture_row = next(
+        row for row in mixture_lifts.values() if row.posterior_components is not None
+    )
     assert mixture_row.prior_spec == mixture_prior
     family_view = mixture_row._family_view()
     assert family_view is not None
@@ -319,7 +318,8 @@ def test_native_breakout_keeps_declared_prior_separate_from_sampling(con, correc
     saved_family_view = saved_row._family_view()
     assert saved_family_view is not None
     assert saved_family_view.chance_to_beat() == pytest.approx(chance_to_beat)
-    mixture_frame = mixture_results.to_frame()
+    mixture_frame = mixture_results.to_frame(backend="pandas")
+    assert isinstance(mixture_frame, pd.DataFrame)
     frame_record = next(
         record
         for record in mixture_frame.to_dict(orient="records")
@@ -335,6 +335,7 @@ def test_native_breakout_keeps_declared_prior_separate_from_sampling(con, correc
     assert frame_family_view is not None
     assert frame_family_view.posterior_components == mixture_row.posterior_components
     assert frame_family_view.chance_to_beat() == pytest.approx(chance_to_beat)
+
 
 def test_run_breakout_plan_declared_multiplicity_controls_level(con):
     """Breakout correction and alpha are read from the resolved plan."""
@@ -523,20 +524,18 @@ def test_run_breakout_bh_family_survives_a_degenerate_segment_cell():
 
     for row in degenerate_rows:
         assert BreakoutEstimate.model_validate_json(row.model_dump_json()) == row
-    frame = results.to_frame()
+    frame = results.to_frame(backend="pandas")
+    assert isinstance(frame, pd.DataFrame)
     failed_frame = frame[(frame["metric"] == "refunds") & (frame["dimension_value"] == "GB")]
     assert len(failed_frame) == len(degenerate_rows)
     assert pd.isna(failed_frame["lift"]).all()
     rendered = estimates_to_readout(results)
     failed_readout = [
-        row
-        for row in rendered
-        if row["metric"] == "refunds" and row["segment"] == "GB"
+        row for row in rendered if row["metric"] == "refunds" and row["segment"] == "GB"
     ]
     assert len(failed_readout) == len(degenerate_rows)
     assert all(
-        row["excluded"] == "nonpositive_mean" and row["lift"] is None
-        for row in failed_readout
+        row["excluded"] == "nonpositive_mean" and row["lift"] is None for row in failed_readout
     )
 
 
@@ -815,6 +814,20 @@ def test_run_breakout_registered_raw_frame_results_roundtrip():
         "CA": -0.25,
     }
     assert all(row.discovery for row in result)
+    from increment.breakout.estimates import run_breakout as estimate_breakout
+    from increment.estimation.sequential import AlwaysValid
+
+    inference = analysis._plan.inference
+    assert isinstance(inference, AlwaysValid)
+    registered = estimate_breakout(
+        analysis.sequential_snapshot(),
+        analysis.metrics,
+        control_group="control",
+        dimension="country",
+        correction="bh",
+        inference=inference,
+    )
+    assert {row.multiplicity_status for row in registered} == {"exploratory_family"}
     for row in result:
         assert row.sequential_result is not None
         assert BreakoutEstimate.model_validate_json(row.model_dump_json()) == row

@@ -39,6 +39,15 @@ if TYPE_CHECKING:
 
 RouteName = Literal["artifact", "moments", "native"]
 
+
+def _as_lift_estimates(rows: Sequence[LiftEstimate]) -> LiftEstimates:
+    from increment.breakout.estimates import LiftEstimates
+
+    if isinstance(rows, LiftEstimates):
+        return rows
+    return LiftEstimates(rows)
+
+
 # The source cannot serve `operation`; context names it for callers.
 _ANALYSIS_OPERATION = RefusalSpec(
     "facade.analysis.operation",
@@ -168,7 +177,7 @@ class WholeWindowReadouts:
                 prior=req.prior,
                 value_scale=req.value_scale,
             )
-            return result
+            return _as_lift_estimates(result)
         design_summary_only = _design_compliance_only(self._src, req.estimands)
         if not req.metrics and not design_summary_only:
             from increment.breakout.estimates import LiftEstimates
@@ -180,14 +189,17 @@ class WholeWindowReadouts:
 
     def _run_seam_family(self, req: WholeWindowRequest) -> LiftEstimates:
         metric_names = [m.name for m in req.metrics]
-        results = self._arm_moments(
-            self._src,
-            decision_method=req.decision_method,
-            sensitivity_methods=req.sensitivity_methods,
-            prior=req.prior,
-            metrics=metric_names,
-            estimands=req.estimands,
-            value_scale=req.value_scale,
+
+        results = _as_lift_estimates(
+            self._arm_moments(
+                self._src,
+                decision_method=req.decision_method,
+                sensitivity_methods=req.sensitivity_methods,
+                prior=req.prior,
+                metrics=metric_names,
+                estimands=req.estimands,
+                value_scale=req.value_scale,
+            )
         )
         if classify_source(self._src) == "artifact":
             assert self._experiment is not None
@@ -200,15 +212,17 @@ class WholeWindowReadouts:
                 decision_method=req.decision_method,
                 sensitivity_methods=req.sensitivity_methods,
             )
-            triggered_rows = self._arm_moments(
-                triggered_src,
-                decision_method=req.decision_method,
-                sensitivity_methods=req.sensitivity_methods,
-                prior=req.prior,
-                metrics=metric_names,
-                estimands=req.estimands,
-                value_scale=req.value_scale,
-                population="triggered",
+            triggered_rows = _as_lift_estimates(
+                self._arm_moments(
+                    triggered_src,
+                    decision_method=req.decision_method,
+                    sensitivity_methods=req.sensitivity_methods,
+                    prior=req.prior,
+                    metrics=metric_names,
+                    estimands=req.estimands,
+                    value_scale=req.value_scale,
+                    population="triggered",
+                )
             )
             results = results.concat(triggered_rows)
         return results
@@ -224,14 +238,16 @@ class WholeWindowReadouts:
             *,
             population: Literal["assigned", "triggered"] = "assigned",
         ) -> LiftEstimates:
-            return self._arm_moments(
-                source,
-                decision_method=req.decision_method,
-                sensitivity_methods=req.sensitivity_methods,
-                prior=req.prior,
-                metrics=metric_names,
-                estimands=req.estimands,
-                population=population,
+            return _as_lift_estimates(
+                self._arm_moments(
+                    source,
+                    decision_method=req.decision_method,
+                    sensitivity_methods=req.sensitivity_methods,
+                    prior=req.prior,
+                    metrics=metric_names,
+                    estimands=req.estimands,
+                    population=population,
+                )
             )
 
         results = _run_arm(

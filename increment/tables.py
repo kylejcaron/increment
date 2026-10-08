@@ -23,11 +23,8 @@ from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate, to
 from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.estimation.contrast import contrast_evidence_available
 from increment.estimation.contrast_results import ContrastResult
-from increment.estimation.results import (
-    BinomialConfidenceSet,
-    LiftEstimate,
-    _refuse_legacy_sampling,
-)
+from increment.estimation.readout_types import refuse_legacy_sampling
+from increment.estimation.results import BinomialConfidenceSet, LiftEstimate
 
 if TYPE_CHECKING:
     from coeftable import CoefTable, Theme
@@ -110,7 +107,7 @@ def _stat_sig(est: LiftEstimate | BreakoutEstimate | DailyLiftEstimate) -> bool 
     if sampling_available is None and (
         isinstance(est, DailyLiftEstimate) or getattr(est, "prior_shrunk", False)
     ):
-        _refuse_legacy_sampling(est)
+        refuse_legacy_sampling(est)
     if getattr(est, "low_reliability", False):
         return False
     if isinstance(est, LiftEstimate):
@@ -292,18 +289,7 @@ def _decision_stat_columns(
     est: LiftEstimate | BreakoutEstimate | DailyLiftEstimate,
 ) -> dict[str, Any]:
     """Best-effort posterior-derived values, explicitly model-qualified."""
-    if est.sequential_result is not None or getattr(est, "n_clusters", None) is not None:
-        return {"posterior_chance_to_beat": None, "posterior_risk_if_shipped": None}
-    if (
-        getattr(est, "failure_code", None) is not None
-        or getattr(est, "sampling_available", None) is False
-        or getattr(est, "excluded", None) is not None
-        or getattr(est, "unavailable", None) is not None
-        or getattr(est, "confidence_set", None) is not None
-        or getattr(est, "binomial_set", None) is not None
-        or getattr(est, "relative_confidence_set", None) is not None
-        or getattr(est, "relative_unavailable_reason", None) is not None
-    ):
+    if est.sequential_result is not None or getattr(est, "posterior_available", None) is not True:
         return {"posterior_chance_to_beat": None, "posterior_risk_if_shipped": None}
     try:
         if est.alternative == "less" or getattr(est, "preferred_direction", None) == "decrease":
@@ -317,7 +303,6 @@ def _decision_stat_columns(
         }
     except (AttributeError, ValueError):
         return {"posterior_chance_to_beat": None, "posterior_risk_if_shipped": None}
-
 
 
 def contrast_results_to_readout(
@@ -437,6 +422,7 @@ def estimates_to_readout(
     for est in estimates:
         if isinstance(est, ContrastResult):
             row = contrast_results_to_readout([est])[0]
+            row["view_partial"] = view_partial
             row["posterior_chance_to_beat"] = None
             row["posterior_risk_if_shipped"] = None
             row["posterior_prob_favorable"] = None

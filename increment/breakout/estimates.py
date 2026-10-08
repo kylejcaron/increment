@@ -957,9 +957,7 @@ def _append_frame_value(
         from increment._canonical import canonical_json_bytes
 
         data[name].append(
-            None
-            if value is None
-            else canonical_json_bytes(value.model_dump(mode="json")).decode()
+            None if value is None else canonical_json_bytes(value.model_dump(mode="json")).decode()
         )
     elif name == estimate_field:
         data[name].append(None if value is None else value.value)
@@ -1687,7 +1685,9 @@ class DailyLiftEstimates(EstimateList[DailyLiftEstimate]):
     _model = DailyLiftEstimate
 
 
-def daily_sequential_projection(rows: Sequence[LiftEstimate]) -> DailyLiftEstimates:
+def daily_sequential_projection(
+    rows: Sequence[LiftEstimate], *, correction: Correction
+) -> DailyLiftEstimates:
     output = []
     for row in rows:
         result = row.require_sequential_result()
@@ -1720,7 +1720,7 @@ def daily_sequential_projection(rows: Sequence[LiftEstimate]) -> DailyLiftEstima
                 family_nominal_alpha=row.family_nominal_alpha,
             )
         )
-    return DailyLiftEstimates(stamp_multiplicity_status(output))
+    return DailyLiftEstimates(stamp_multiplicity_status(output, correction=correction))
 
 
 def _relative_meta_moments(row: BreakoutEstimate) -> tuple[float | None, float | None]:
@@ -1815,9 +1815,11 @@ def _binomial_gate_exempt_metrics(
     prior_by_metric: Mapping[str, Prior | None] | None = None,
 ) -> frozenset[str]:
     """Conversion/retention metrics exempt from the ddof/positive-mean gate
-    below because the finite-sample binomial risk-ratio method admits them at
-    ``n=1`` and with zero treatment/control means. The log-Normal delta method
-    still needs a ddof=1 variance and ``math.log`` of a positive mean.
+    when an unadjusted method can use the finite-sample binomial route, which
+    admits ``n=1`` and zero treatment/control means. An informative prior
+    retains this exemption only for ``conversion_inference="auto"``; the
+    explicit finite-sample route still refuses a prior. The log-Normal delta
+    method needs a ddof=1 variance and a positive mean.
 
     This mirrors ``estimation.engine._binomial_eligible`` at this
     row-partitioning layer, which decides only whether the count rule may route a
@@ -1829,14 +1831,16 @@ def _binomial_gate_exempt_metrics(
     """
     exempt: set[str] = set()
     for metric in metrics:
-        if metric.type not in ("conversion", "retention"):
+        if metric.type not in ("conversion", "retention") or inference is not None:
             continue
         metric_prior = (prior_by_metric or {}).get(metric.name, prior)
-        if inference is not None or metric_prior is not None:
-            continue
         configured = (methods_by_metric or {}).get(metric.name, methods)
         configured = configured or [Method(name="unadjusted")]
-        if any(method.variance_reduction != "cuped" for method in configured):
+        if any(
+            method.variance_reduction != "cuped"
+            and (metric_prior is None or method.conversion_inference == "auto")
+            for method in configured
+        ):
             exempt.add(metric.name)
     return frozenset(exempt)
 
@@ -3187,7 +3191,7 @@ def _snapshot_breakout(
                 family_threshold=row.family_threshold,
             )
         )
-    return BreakoutEstimates(stamp_multiplicity_status(output))
+    return BreakoutEstimates(stamp_multiplicity_status(output, correction=request.correction))
 
 
 def run_breakout(  # noqa: PLR0913
@@ -3404,7 +3408,7 @@ def run_breakout(  # noqa: PLR0913
     if policy_name != "default_exploratory":
         results = [row.model_copy(update={"policy_name": policy_name}) for row in results]
 
-    output = BreakoutEstimates(stamp_multiplicity_status(results))
+    output = BreakoutEstimates(stamp_multiplicity_status(results, correction=correction))
     return output
 
 
@@ -3637,6 +3641,7 @@ def _nan_lift_rows(  # noqa: PLR0913
                     .get(method.name, "decision"),
                     inference=inference,
                     reference_kind="sequential" if inference != "fixed" else "normal",
+                    sampling_available=False,
                     alternative=policy.alternative,
                     null_lift=policy.null_lift,
                     null_abs=policy.null_abs,
@@ -4065,7 +4070,7 @@ def _resolve_daily_cell_policy(
 
 
 def _snapshot_daily_lift(
-    summary, metrics, requested_estimands, context: _DailyLiftContext
+    summary, metrics, requested_estimands, context: _DailyLiftContext, *, correction: Correction
 ) -> DailyLiftEstimates:
     assert isinstance(context.inference, SEQUENTIAL_POLICIES)
     from increment.estimation.sequential_runtime import (
@@ -4129,7 +4134,8 @@ def _snapshot_daily_lift(
         nominal_alpha=context.alpha if context.plan is None else context.plan.alpha,
     )
     return daily_sequential_projection(
-        [row.model_copy(update={"ds": summary.reveal_cursor}) for row in results]
+        [row.model_copy(update={"ds": summary.reveal_cursor}) for row in results],
+        correction=correction,
     )
 
 
@@ -4217,6 +4223,16 @@ def run_daily_lift(  # noqa: PLR0913
         requested ``late`` row, leaving only the explanatory
         ``compliance`` row.
     """
+    effective_correction = correction if plan is None else "none"
+    if plan is not None and view == "asof":
+        from increment._analysis_config import normalize_display_correction
+
+        asof_policy = plan.view_policies.for_view(
+            "asof",
+            mechanism=getattr(design, "mechanism", None),
+            segmented=dimension is not None,
+        )
+        effective_correction = normalize_display_correction(asof_policy.correction)
     inference_label, encouragement_asof, requested_estimands = _validate_daily_lift_request(
         metrics,
         correction=correction,
@@ -4246,7 +4262,9 @@ def run_daily_lift(  # noqa: PLR0913
             method_roles_by_metric,
             plan,
         )
-        return _snapshot_daily_lift(summary, metrics, requested_estimands, context)
+        return _snapshot_daily_lift(
+            summary, metrics, requested_estimands, context, correction=effective_correction
+        )
     if isinstance(summary, SequentialSnapshot):
         sequential_refuse("source.invalid", "as-of exact snapshot requires its registered policy")
     _validate_methods(methods if methods is not None else [Method(name="unadjusted")])
@@ -4392,6 +4410,7 @@ def run_daily_lift(  # noqa: PLR0913
         )
     return DailyLiftEstimates(
         stamp_multiplicity_status(
-            _stamp_asof_monitoring_notes(results, view=view, inference=inference, design=design)
+            _stamp_asof_monitoring_notes(results, view=view, inference=inference, design=design),
+            correction=effective_correction,
         )
     )

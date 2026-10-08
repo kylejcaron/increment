@@ -422,7 +422,6 @@ def test_raw_warehouse_transform_roundtrip():
 
 
 def test_confidence_set_wire_unbounded_undefined_and_no_posterior():
-    from increment.errors import CodedError
     from increment.estimation.results import LiftEstimate
     from increment.estimation.winsor import estimate_winsor_lift
     from increment.tables import estimates_to_readout
@@ -445,9 +444,9 @@ def test_confidence_set_wire_unbounded_undefined_and_no_posterior():
         + restored.confidence_set.reference.cutoff_alpha
         <= 0.05
     )
-    with pytest.raises(CodedError) as error:
-        restored.chance_to_beat()
-    assert error.value.code == "estimation.winsor.posterior_unavailable"
+    # A confidence set is sampling evidence, not a posterior; see
+    # docs/guides/priors-and-decisions.md:142-145.
+    assert restored.chance_to_beat() is None
     reinverted = restored.reintervalize(0.01)
     assert reinverted.reference_kind == "confidence_set"
     assert reinverted.confidence_set is not None
@@ -858,12 +857,13 @@ def test_public_readout_uses_raw_pool(include_plain):
     "inference_method", ["positive-log-kernel-bootstrap-t-v1", "joint-rank-projection-v1"]
 )
 def test_definitions_source_preserves_raw_pool_and_wire(tmp_path, volatile, inference_method):  # noqa: PLR0915
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     import ibis
     import narwhals as nw
     import pyarrow as pa
 
+    from increment import SourceSnapshotEvidence
     from increment.analysis import Analysis
     from increment.estimation.winsor import raw_state_from_source
     from increment.results import LiftEstimate
@@ -946,7 +946,16 @@ experiments:
         from increment.errors import IncrementWarning
 
         with pytest.warns(IncrementWarning):
-            analysis = Analysis.from_definitions("e", definitions, con, store="none")
+            analysis = Analysis.from_definitions(
+                "e",
+                definitions,
+                con,
+                store="none",
+                source_snapshot_evidence=SourceSnapshotEvidence(
+                    observation_cutoff_ts=datetime(2031, 1, 1, tzinfo=UTC),
+                    complete_through_by_feed={"events": datetime(2031, 1, 1, tzinfo=UTC)},
+                ),
+            )
         from tests.analysis_factory import _native_source
 
         source = _native_source(analysis)
@@ -979,7 +988,11 @@ experiments:
         from increment.query.artifact_reader import ArtifactMomentSource
         from increment.query.session import WarehouseArtifactStore
         from increment.query.source import open_artifact
-        from increment.semantics.artifact import AssignmentCountsRequest, TriggerPopulationRequest
+        from increment.semantics.artifact import (
+            AssignmentCountsRequest,
+            TriggerMeasureStatsRequest,
+            TriggerPopulationRequest,
+        )
         from increment.semantics.loader import load
 
         with pytest.warns(IncrementWarning):
@@ -991,6 +1004,7 @@ experiments:
             extensions=[
                 TriggerPopulationRequest(trigger_name="activated"),
                 AssignmentCountsRequest(populations=("assigned", "triggered")),
+                TriggerMeasureStatsRequest(trigger_name="activated", metric_names=(metric.name,)),
             ],
         )
         # Two raw reads and publication each capture the volatile stream once.

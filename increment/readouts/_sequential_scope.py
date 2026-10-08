@@ -5,7 +5,7 @@ from __future__ import annotations
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any
 
-from increment._canonical import canonical_json_bytes
+from increment._canonical import canonical_digest_bytes, canonical_json_bytes
 from increment.breakout.estimates import LiftEstimates
 from increment.estimation.assignment_integrity import assignment_integrity
 from increment.estimation.decision_types import (
@@ -17,6 +17,7 @@ from increment.estimation.readout_types import (
     CellFailure,
     CellKey,
     CellRecord,
+    Population,
     PopulationRoster,
     ReadoutMetadata,
     ReadoutScope,
@@ -85,7 +86,7 @@ def _snapshot_identity(
                     "kind": "assignment_counts",
                     "metric": None,
                     "population": "assigned",
-                    "sha256": sha256(canonical_json_bytes(assignment_counts)).hexdigest(),
+                    "sha256": sha256(canonical_digest_bytes(assignment_counts)).hexdigest(),
                 }
             )
         source = {
@@ -143,11 +144,9 @@ def scope_sequential_results(
         if existing_source_scope is not None:
             existing_integrity = existing_source_scope.integrity[0]
             existing_source = rows.source
-
     if existing_source_scope is None:
-        _arms, _roster_source, _roster_complete, _counts, integrity_counts = resolve_roster(
-            src, design, "assigned", {}
-        )
+        roster = resolve_roster(src, design, "assigned", {})
+        integrity_counts = roster.integrity_counts
     else:
         integrity_counts = None
     snapshot_id, source = _snapshot_identity(
@@ -160,7 +159,16 @@ def scope_sequential_results(
         source=existing_source,
     )
 
-    assigned_rows = {CellKey.from_row(row): row for row in rows}
+    family_cells = tuple(sorted({CellKey.from_row(row) for row in rows}, key=cell_order))
+    metric_names = None if metrics is None else set(metrics)
+    estimand_names = None if estimands is None else set(estimands)
+    visible_rows = [
+        row
+        for row in rows
+        if (metric_names is None or row.metric in metric_names or row.estimand == "compliance")
+        and (estimand_names is None or row.estimand in estimand_names)
+    ]
+    assigned_rows = {CellKey.from_row(row): row for row in visible_rows}
     decision_assigned = [cell for cell in assigned_rows if cell.method_role == "decision"]
     triggered_cells = {}
     if trigger_name is not None:
@@ -173,7 +181,7 @@ def scope_sequential_results(
     )
 
     output = []
-    records = []
+    records: list[CellRecord] = []
     for cell in sorted(assigned_rows, key=cell_order):
         row = assigned_rows[cell].model_copy(
             update={
@@ -201,7 +209,10 @@ def scope_sequential_results(
                 group_id=cell.group_id,
                 method=cell.method,
                 method_role=cell.method_role,
+                estimand=cell.estimand,
                 analysis_population="triggered",
+                value_scale=cell.value_scale,
+                alternative=cell.alternative,
                 reference_kind="sequential",
                 scale="linear",
                 inference=assigned_row.inference,
@@ -231,7 +242,7 @@ def scope_sequential_results(
 
     all_cells = tuple(sorted({*assigned_rows, *triggered_cells}, key=cell_order))
     decision_cells = tuple(sorted({*decision_assigned, *triggered_cells}, key=cell_order))
-    complete = {"assigned": bool(decision_assigned)}
+    complete: dict[Population, bool] = {"assigned": bool(decision_assigned)}
     rosters = [
         PopulationRoster(
             analysis_population="assigned",
@@ -263,7 +274,7 @@ def scope_sequential_results(
     )
     output, families = attach_multiplicity_scope(
         output,
-        all_cells,
+        tuple(dict.fromkeys((*family_cells, *all_cells))),
         plan,
         src.context.configs,
         snapshot_id,
@@ -285,10 +296,14 @@ def scope_sequential_results(
         families=families,
         by_source={snapshot_id: source_scope},
     )
+
+    def cell_record_order(record: Any):
+        if not isinstance(record, CellRecord):
+            raise TypeError(f"unexpected sequential cell record: {record!r}")
+        return record.source_snapshot_id, cell_order(record.cell)
+
     metadata = ReadoutMetadata(
         scope=scope,
-        cells=tuple(
-            sorted(records, key=lambda record: (record.source_snapshot_id, cell_order(record.cell)))
-        ),
+        cells=tuple(sorted(records, key=cell_record_order)),
     )
     return LiftEstimates(output, metadata=metadata, source=source, sequential_snapshot=snapshot)

@@ -29,6 +29,7 @@ from increment.query.calendar import (
     rolling_active_values,
     rolling_total_values,
     total_period_values,
+    validate_period_grain,
 )
 from increment.semantics.models import ActiveMetric, ConversionMetric, MeanMetric, TotalMetric
 
@@ -144,13 +145,21 @@ def test_range_beyond_capacity_refused(con):
         "span": (dt.date(2036, 2, 1) - dt.date(2026, 1, 1)).days + 1,
     }
     with pytest.raises(TypeError):
-        exc_info.value.context["span"] = 1
+        cast("dict[str, object]", exc_info.value.context)["span"] = 1
 
 
 def test_period_start_expr_refuses_unknown_grain():
     ds = ibis.literal(dt.date(2026, 1, 5))
     with pytest.raises(InvalidRequestError) as exc_info:
         period_start_expr(ds, "fortnight", "monday")  # ty: ignore[invalid-argument-type]
+    assert exc_info.value.code == "query.calendar.period_start_unknown_grain"
+    assert exc_info.value.context["grain"] == "fortnight"
+
+
+def test_validate_period_grain_refuses_unknown_grain():
+    assert validate_period_grain("month") == "month"
+    with pytest.raises(InvalidRequestError) as exc_info:
+        validate_period_grain("fortnight")
     assert exc_info.value.code == "query.calendar.period_start_unknown_grain"
     assert exc_info.value.context["grain"] == "fortnight"
 

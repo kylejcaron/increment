@@ -446,6 +446,7 @@ def test_panel_common_window_only_reveals_finalized_units_and_current_asof(axis,
     assert _row(analysis).stat_sig()
     daily = analysis.run_asof_lift(completed_windows_only=True)
     assert len(daily) == 1
+    assert daily[0].multiplicity_status == "declared_plan"
     assert daily[0].sequential_result == _row(analysis).require_sequential_result()
     assert daily[0].n_control == 96
     assert daily[0].ds == label(14)

@@ -1520,8 +1520,10 @@ def _infer_adjusted_contrast(
                     (posterior_scores or scores).se(),
                     request.prior,
                     alpha=request.alpha,
+                    null_lift=request.null_lift,
                     alternative=request.alternative,
                     scale="linear",
+                    null_abs=request.null_abs,
                     preferred_direction=request.preferred_direction,
                 ),
             }

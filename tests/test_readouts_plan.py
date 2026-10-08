@@ -20,6 +20,7 @@ import pyarrow as pa
 import pytest
 
 from increment import Analysis, readouts
+from increment.breakout.estimates import LiftEstimates
 from increment.compatibility import _conservative_ratio
 from increment.decision import ArmHypothesisKey, FixedInference
 from increment.errors import (
@@ -33,6 +34,7 @@ from increment.estimation.armstats import centered_row_from_raw_sums
 from increment.estimation.engine import Method, estimate_lift
 from increment.estimation.family import bh_select, e_bh_select
 from increment.estimation.inference import Normal
+from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import AlwaysValid
 from increment.frame import FrameTotalsSource, MetricSpec
 from increment.readouts import _passes
@@ -295,9 +297,7 @@ def _guarded_three_arm_source(*, all_degenerate: bool = False, secondary: bool =
         control="control",
         metrics=[MetricSpec(name="revenue")],
         plan=(
-            AnalysisPlan(secondaries=["revenue"])
-            if secondary
-            else AnalysisPlan(primary="revenue")
+            AnalysisPlan(secondaries=["revenue"]) if secondary else AnalysisPlan(primary="revenue")
         ),
     )
 
@@ -321,7 +321,9 @@ def test_run_retains_valid_whole_window_cells_after_guard():
     failed = next(row for row in results if row.group_id == "treatment_bad")
     assert failed.lift is None
     assert failed.failure_code == "estimation.engine.lift_guard"
+    assert failed.failure_context is not None
     assert failed.failure_context["reason"] == "zero_variance"
+    assert isinstance(results, LiftEstimates)
     assert results.metadata is not None
     assert any(record.failure is not None for record in results.metadata.cells)
 
@@ -335,14 +337,14 @@ def test_secondary_fcr_pass_keeps_producer_failure_in_scoped_results():
     failed = next(row for row in results if row.group_id == "treatment_bad")
     surviving = next(row for row in results if row.group_id == "treatment_good")
     assert failed.failure_code == "estimation.engine.lift_guard"
+    assert failed.failure_context is not None
     assert failed.failure_context["reason"] == "zero_variance"
     assert failed.lift is None
     assert surviving.lift is not None
+    assert isinstance(results, LiftEstimates)
     assert results.metadata is not None
     failed_record = next(
-        record
-        for record in results.metadata.cells
-        if record.cell.group_id == "treatment_bad"
+        record for record in results.metadata.cells if record.cell.group_id == "treatment_bad"
     )
     assert failed_record.failure is not None
     assert failed_record.failure.code == "estimation.engine.lift_guard"
@@ -608,7 +610,10 @@ def test_secondary_discovery_matches_hand_bh():
     assert {r.metric for r in secondary} == {"m_a", "m_b", "m_c", "m_d"}
 
     p_values = [r.p_value() for r in secondary]
-    selected_idx, _threshold = bh_select(p_values, plan.q)
+    assert all(p_value is not None for p_value in p_values)
+    selected_idx, _threshold = bh_select(
+        [p_value for p_value in p_values if p_value is not None], plan.q
+    )
     selected_set = set(selected_idx)
     assert [r.discovery for r in secondary] == [i in selected_set for i in range(len(secondary))]
     assert selected_set == {i for i, r in enumerate(secondary) if r.metric == "m_a"}
@@ -681,7 +686,10 @@ def test_secondary_discovery_tracks_selection_with_one_sided_fcr_interval():
     # discovery matches BH on the rows' own (one-sided) p_values -- m_a
     # is the sole discovery.
     p_values = [r.p_value() for r in secondary]
-    selected_idx, _threshold = bh_select(p_values, plan.q)
+    assert all(p_value is not None for p_value in p_values)
+    selected_idx, _threshold = bh_select(
+        [p_value for p_value in p_values if p_value is not None], plan.q
+    )
     selected_set = set(selected_idx)
     assert [r.discovery for r in secondary] == [i in selected_set for i in range(len(secondary))]
     assert selected_set == {i for i, r in enumerate(secondary) if r.metric == "m_a"}
@@ -705,7 +713,11 @@ def test_secondary_discovery_tracks_selection_with_one_sided_fcr_interval():
         plan=AnalysisPlan(alternative="two-sided"),
     )
     two_sided = [r for r in readouts.run(two_sided_src) if r.role == "secondary"]
-    two_sided_selected, _ = bh_select([r.p_value() for r in two_sided], plan.q)
+    two_sided_p_values = [r.p_value() for r in two_sided]
+    assert all(p_value is not None for p_value in two_sided_p_values)
+    two_sided_selected, _ = bh_select(
+        [p_value for p_value in two_sided_p_values if p_value is not None], plan.q
+    )
     m_a_index = next(i for i, r in enumerate(two_sided) if r.metric == "m_a")
     assert m_a_index not in two_sided_selected
 
@@ -751,7 +763,9 @@ def test_secondary_discovery_can_disagree_with_stat_sig_when_nominal_cap_binds()
     results = readouts.run(src)
     (row,) = [r for r in results if r.role == "secondary"]
 
-    assert row.p_value() < plan.q  # clears BH's own (generous) selection bar
+    p_value = row.p_value()
+    assert p_value is not None
+    assert p_value < plan.q  # clears BH's own (generous) selection bar
     assert row.discovery is True
     assert row.family_threshold == pytest.approx(plan.q)  # realized R*q/m, uncapped
     lift = row.require_lift()
@@ -964,7 +978,9 @@ def test_prior_bound_secondary_remains_in_sampling_family():
         _moments_row("family_metric_2", "control", n, 10.0, 4.0),
         _moments_row("family_metric_2", "treatment", n, 10.02, 4.0),  # null -- not selected
         _moments_row("prior_bound_metric", "control", n, 10.0, 4.0),
-        _moments_row("prior_bound_metric", "treatment", n, 12.0, 4.0),  # large sampling-family member
+        _moments_row(
+            "prior_bound_metric", "treatment", n, 12.0, 4.0
+        ),  # large sampling-family member
     ]
     metrics = [
         MeanMetric(name=name, entity="user_id", fact=name, aggregation="avg_event")
@@ -994,6 +1010,7 @@ def test_prior_bound_secondary_remains_in_sampling_family():
     results = readouts.run(src)
     by_metric = {r.metric: r for r in results}
     assert by_metric["prior_bound_metric"].discovery is True
+    assert by_metric["prior_bound_metric"].family_size == 3
     assert by_metric["prior_bound_metric"].family_axes == ("metric", "arm")
     assert by_metric["prior_bound_metric"].family_q == pytest.approx(plan.q)
     assert (
@@ -1042,14 +1059,16 @@ def test_prior_bound_secondary_remains_in_sampling_family():
         assert row.discovery == oracle.discovery
         assert row.family_size == oracle.family_size
         assert row.family_threshold == oracle.family_threshold
-        assert (row.require_lift().value, row.require_lift().lb, row.require_lift().ub) == pytest.approx(
+        assert (
+            row.require_lift().value,
+            row.require_lift().lb,
+            row.require_lift().ub,
+        ) == pytest.approx(
             (oracle.require_lift().value, oracle.require_lift().lb, oracle.require_lift().ub)
         )
     assert inherited["prior_bound_metric"].posterior_estimate != pytest.approx(
         inherited["prior_bound_metric"].require_lift().value
     )
-
-
 
     from increment.estimation.priors import MixturePrior
 
@@ -1072,6 +1091,9 @@ def test_prior_bound_secondary_remains_in_sampling_family():
     assert directional_row.discovery is True
     assert directional_row.posterior_available is True
     assert directional_row.posterior_components is not None
+    directional_interval = directional_row.require_lift()
+    assert directional_interval.open_side == "upper"
+    assert directional_interval.ub is None
     assert directional_row.p_value() is not None
 
 
@@ -1257,8 +1279,12 @@ def test_secondary_family_dedups_by_method_not_by_method_x_arm():
         assert decision.discovery is not None
         assert sensitivity.discovery is None
 
-    assert by_metric["m_a"][0].discovery is True
-    assert by_metric["m_b"][0].discovery is False
+    decision_by_metric = {
+        metric: next(row for row in rows if row.method == "unadjusted")
+        for metric, rows in by_metric.items()
+    }
+    assert decision_by_metric["m_a"].discovery is True
+    assert decision_by_metric["m_b"].discovery is False
 
     # m=2 (metric x arm), not 4 (metric x method x arm): the selected rows'
     # alpha must be q*1/2, not q*1/4.
@@ -1369,6 +1395,71 @@ def test_always_valid_margin_bearing_secondary_discovery_matches_stat_sig():
         assert replay.require_sequential_result() == row.require_sequential_result()
         assert replay.discovery == row.discovery
         assert replay.stat_sig() == row.stat_sig()
+
+
+def test_welch_mean_posterior_favorable_uses_declared_null():
+    n = 80
+    table = pd.DataFrame(
+        [
+            {"unit": f"{group}-{i}", "arm": group, "revenue": base + i % 5}
+            for group, base in (("control", 10.0), ("treatment", 11.0))
+            for i in range(n)
+        ]
+    )
+    analysis = Analysis.from_unit_summary(
+        table,
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                prior=Normal(mu=0.0, sigma=0.1),
+                preferred_direction="increase",
+            )
+        ],
+        plan=AnalysisPlan(secondaries=[ExperimentMetric(metric="revenue", margin=0.02)]),
+    )
+
+    (row,) = analysis.run()
+    assert isinstance(row, LiftEstimate)
+    assert row.reference_kind == "t"
+    assert row.null_lift == pytest.approx(-0.02)
+    assert row.posterior_prob_favorable == pytest.approx(row.prob_favorable())
+    assert row.posterior_prob_favorable != pytest.approx(row.chance_to_beat())
+
+
+def test_dense_conversion_posterior_favorable_uses_declared_null():
+    n = 6000
+    table = pd.DataFrame(
+        [
+            {"unit": f"{group}-{i}", "arm": group, "converted": int(i < successes)}
+            for group, successes in (("control", n // 2), ("treatment", n // 2 + n // 60))
+            for i in range(n)
+        ]
+    )
+    analysis = Analysis.from_unit_summary(
+        table,
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[
+            MetricSpec(
+                name="converted",
+                type="conversion",
+                prior=Normal(mu=0.0, sigma=0.1),
+                preferred_direction="increase",
+            )
+        ],
+        plan=AnalysisPlan(secondaries=[ExperimentMetric(metric="converted", margin=0.02)]),
+    )
+
+    (row,) = analysis.run()
+    assert isinstance(row, LiftEstimate)
+    assert row.binomial_set is None
+    assert row.null_lift == pytest.approx(-0.02)
+    assert row.posterior_prob_favorable == pytest.approx(row.prob_favorable())
+    assert row.posterior_prob_favorable != pytest.approx(row.chance_to_beat())
 
 
 @pytest.mark.parametrize("q", [0.01, 0.50], ids=["uncapped", "capped"])
@@ -2490,8 +2581,14 @@ def test_explicit_none_prior_matches_prior_free_analysis_family_decision():
                 assert wanted is not None
                 assert getattr(actual.require_lift(), field) == pytest.approx(wanted)
         for actual in (inherited_before, inherited_after):
-            assert actual.discovery is None
-            assert actual.family_axes is None
+            assert actual.discovery is True
+            assert actual.family_axes == ("metric", "arm")
+            assert actual.sampling_available is True
+            assert actual.posterior_available is True
+            for field in ("value", "lb", "ub"):
+                wanted = getattr(expected.require_lift(), field)
+                assert wanted is not None
+                assert getattr(actual.require_lift(), field) == pytest.approx(wanted)
         for field in ("value", "lb", "ub"):
             assert getattr(inherited_after.require_lift(), field) == pytest.approx(
                 getattr(inherited_before.require_lift(), field)

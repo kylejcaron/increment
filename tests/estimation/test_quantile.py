@@ -976,7 +976,6 @@ def test_quantile_sampling_inversion_is_prior_independent_at_multiple_levels():
         assert informed.evidence[key] == baseline.evidence[key]
 
 
-
 def test_excludes_never_flips_back_false_as_alpha_grows():
     """Fine alpha-grid scan: once the reported interval excludes the null
     at some alpha, it must keep excluding it at every larger alpha up to
@@ -1058,6 +1057,7 @@ def test_p_value_is_dual_to_the_reported_interval_on_tied_data():
     metric = QuantileMetric(name="lat", entity="u", fact="f", quantile=0.5)
     (est0,) = estimate_quantile_lift(_UnitSource(df, metric), metric, "control", alpha=0.05)
     p = est0.p_value()
+    assert p is not None
     for alpha in (0.9, 0.5, 0.2, 0.10, 0.05, 0.01, 1e-4, p * 1.001, p / 1.001):
         (est,) = estimate_quantile_lift(_UnitSource(df, metric), metric, "control", alpha=alpha)
         assert est.p_value() == p
@@ -1083,6 +1083,7 @@ def test_p_value_is_dual_to_the_reported_interval_on_resolved_tied_arms():
     metric = QuantileMetric(name="lat", entity="u", fact="f", quantile=0.5)
     (est0,) = estimate_quantile_lift(_UnitSource(df, metric), metric, "control", alpha=0.05)
     p = est0.p_value()
+    assert p is not None
     assert p <= 0.05
     for alpha in (0.5, 0.2, 0.05, 0.01, 1e-3, 1e-4, p * 1.001, p / 1.001):
         (est,) = estimate_quantile_lift(_UnitSource(df, metric), metric, "control", alpha=alpha)

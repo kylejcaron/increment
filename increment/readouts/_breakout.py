@@ -151,6 +151,34 @@ def breakout(
         q=q,
     )
     validate_request(request)
+    from increment._day_axis import _day_axis_source_route
+    from increment.readouts._multiplicity_scope import scoped_collection
+    from increment.readouts._run import _config_snapshot
+
+    scope_request = {
+        "metrics": [metric.model_dump(mode="json") for metric in selected],
+        "configs": [_config_snapshot(config) for config in resolved_configs],
+        "dimension": dimension,
+        "estimands": None if estimands is None else tuple(estimands),
+        "correction": correction,
+        "q": q,
+        "source_name": source_name,
+    }
+
+    def scoped(rows):
+        return scoped_collection(
+            rows,
+            BreakoutEstimates,
+            plan,
+            resolved_configs,
+            scope_request,
+            route=_day_axis_source_route(src),
+            view="breakout",
+            design=design,
+            dimension=dimension,
+            source=source_name,
+        )
+
     if isinstance(plan.inference, SEQUENTIAL_POLICIES):
         from increment._sequential_readouts import sequential_readout
         from increment.sequential_state import sequential_refuse
@@ -178,7 +206,7 @@ def breakout(
                     family_threshold=row.family_threshold,
                 )
             )
-        return BreakoutEstimates(stamp_multiplicity_status(output))
+        return scoped(stamp_multiplicity_status(output))
 
     methods_by_metric = {
         config.metric.name: _runtime_methods(config, design) for config in resolved_configs
@@ -252,7 +280,7 @@ def breakout(
                             ),
                         )
                     )
-        return BreakoutEstimates(
+        return scoped(
             stamp_multiplicity_status(
                 [row.model_copy(update={"policy_name": "compiled_plan"}) for row in enc_results]
             )
@@ -311,4 +339,4 @@ def breakout(
                     policy_name="compiled_plan",
                 )
             )
-    return BreakoutEstimates(stamp_multiplicity_status(results))
+    return scoped(stamp_multiplicity_status(results))

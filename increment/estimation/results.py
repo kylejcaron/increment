@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from datetime import date, datetime
 from decimal import Decimal, localcontext
 from fractions import Fraction
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, TypedDict, cast
 
 from pydantic import (
     BaseModel,
@@ -355,11 +355,19 @@ class BinomialConfidenceSet(CodedModel, BaseModel):
         )
 
 
-def _reference_fields(dof: float | None) -> dict[str, Any]:
+class _ReferenceFields(TypedDict):
+    dof: float | None
+    reference_kind: Literal["normal", "t", "sequential"]
+    reference_df: float | None
+
+
+def _reference_fields(
+    dof: float | None, *, kind: Literal["normal", "t", "sequential"] | None = None
+) -> _ReferenceFields:
     """Build the persisted reference triple from a legacy degrees of freedom."""
     return {
         "dof": dof,
-        "reference_kind": "t" if dof is not None else "normal",
+        "reference_kind": kind or ("t" if dof is not None else "normal"),
         "reference_df": dof,
     }
 
@@ -405,6 +413,7 @@ _REFUSALS = refusals(
         "estimation.results.estimate.open_side_needs_calibrated_bound": "open_side is set but the calibrated bound on that side is None",
         "estimation.results.estimate.open_side_bound_must_be_none": "open_side is set; {field} must be None (never a numeric sentinel), got a finite value",
         "estimation.results.lift.open_side_alternative_mismatch": "open_side={open_side!r} does not match alternative={alternative!r}",
+        "estimation.results.lift.open_interval_unrecoverable": "The selected interval endpoint cannot be recovered from its persisted sampling reference; recompute the analysis from source data.",
         "estimation.results.lift.posterior_decision_stats_sequential": "LiftEstimate for {metric!r}/{group_id!r}: decision stats are undefined for inference={inference!r} -- a sequential confidence sequence's radius is not a posterior standard deviation, so recovering (mu, sigma) from it would give a silently wrong probability. Only inference='fixed' (single-look) estimates support chance_to_beat/prob_beyond/prob_within/risk_if_shipped/p_value.",
         "estimation.results.lift.posterior_decision_stats_cluster_robust": RefusalSpec(
             "estimation.results.lift.posterior_decision_stats_cluster_robust",
@@ -426,6 +435,7 @@ _REFUSALS = refusals(
         "estimation.results.lift.liftestimate_carries_no": "LiftEstimate for {metric!r}/{group_id!r} carries no interval -- decision stats need lb/ub/level (run inference with an alpha, which is the default)",
         "estimation.results.lift.liftestimate_value_lb": "LiftEstimate for {metric!r}/{group_id!r}: value/lb <= -1 is not representable on the log scale (value={e_value}, lb={e_lb}) -- not a genuine infer_lift output",
         "estimation.results.lift.liftestimate_interval_symmetric": "LiftEstimate for {metric!r}/{group_id!r}: interval is not a symmetric Normal quantile interval on the {scale} scale -- decision stats are only defined for fixed-horizon estimates produced by infer_lift/infer_ate",
+        "estimation.results.lift.fcr_prior_unsupported": "This legacy prior-bound interval has no proven prior-free sampling state for FCR conversion; recompute the analysis from source data.",
         "estimation.results.lift.threshold_representable_log": "threshold <= -1 is not representable on the log scale, got {threshold}",
         "estimation.results.lift.liftestimate_prob_favorable": "LiftEstimate for {metric!r}/{group_id!r}: prob_favorable() requires preferred_direction to be set -- it was not resolved from a Metric declaration for this estimate",
         "estimation.results.lift.prob_within_threshold_positive": "threshold must be > 0, got {threshold}",
@@ -470,22 +480,6 @@ _REFUSALS = refusals(
     },
 )
 _raise = raiser(_REFUSALS)
-
-
-def _refuse_legacy_sampling(row: Any) -> NoReturn:
-    from increment.estimation.readout_types import refuse_readout
-
-    refuse_readout(
-        "readout.legacy.sampling_unreconstructible",
-        cell_key={
-            "metric": row.metric,
-            "group_id": row.group_id,
-            "method": row.method,
-            "estimand": row.estimand,
-        },
-        missing_fields=("prior_free_reference_kind", "prior_free_reference_df"),
-        remedy="recompute_from_source",
-    )
 
 
 def _validate_absolute_reference_fields(row: Any) -> Any:
@@ -641,6 +635,8 @@ class _RowIdentity(CodedModel, BaseModel):
     posterior_alpha: float | None = None
     posterior_latent_mean: float | None = None
     posterior_latent_sd: float | None = None
+    # Stored at the declared relative null on the metric's good side; None for
+    # absolute-margin nulls.
     posterior_prob_favorable: float | None = None
     failure_code: str | None = None
     failure_context: Mapping[str, object] | None = None
@@ -696,6 +692,7 @@ class _RowIdentity(CodedModel, BaseModel):
             if value is not None:
                 object.__setattr__(self, name, freeze(value))
         return self
+
     @model_validator(mode="after")
     def _validate_posterior_payload(self):
         payload = (
@@ -755,11 +752,12 @@ class _RowIdentity(CodedModel, BaseModel):
                 or self.posterior_latent_sd is not None
                 or getattr(self, "prior_spec", None) is None
             ):
-                invalid("mixture posterior requires stored components and a separate declared prior")
+                invalid(
+                    "mixture posterior requires stored components and a separate declared prior"
+                )
         else:
             invalid("available posterior model is unsupported")
         return self
-
 
     @field_serializer(
         "sampling_reason_context",
@@ -822,11 +820,11 @@ class LiftEstimate(_RowIdentity):
     """A lift estimate, carrying the metadata to identify which (metric,
     method, group) and its persisted inference reference.
 
-    ``value`` is ``exp(mu_n) - 1`` for ``scale="log"`` estimates (under a
-    near-flat prior this equals ``treatment_mean / control_mean - 1``), or
-    ``mu_n`` directly for ``scale="linear"`` estimates, which already carry
-    the posterior on the relative scale. The CI is the same posterior's
-    quantile, back-transformed to this scale.
+    ``value`` is the prior-free sampling estimate: ``exp(log_mean) - 1``
+    for ``scale="log"`` or ``log_mean`` for ``scale="linear"``. The CI is
+    the corresponding sampling interval on this scale. Posterior estimates
+    and decision probabilities are persisted separately and never replace
+    the sampling estimate or interval.
 
     Normal posterior latent parameters are stored separately from the sampling
     interval. A mixture posterior is stored exactly in
@@ -1485,7 +1483,7 @@ class LiftEstimate(_RowIdentity):
         """Read only the posterior state persisted on this row."""
         if getattr(self, "posterior_available", None) is not True:
             return None
-        if self.inference != "fixed" or self.n_clusters is not None:
+        if self.inference != "fixed":
             return None
         if self.posterior_model == "normal":
             if self.posterior_latent_mean is None or self.posterior_latent_sd is None:
@@ -1522,6 +1520,9 @@ class LiftEstimate(_RowIdentity):
 
     def prob_favorable(self) -> float | None:
         """Stored posterior probability on the metric's declared good side."""
+        posterior = self._posterior()
+        if posterior is None:
+            return None
         if self.null_abs is not None and (
             self.reference_kind == "t" or self.n_clusters is not None
         ):
@@ -1533,8 +1534,7 @@ class LiftEstimate(_RowIdentity):
                 group_id=self.group_id,
                 metric=self.metric,
             )
-        posterior = self._posterior()
-        if posterior is None or self.preferred_direction is None or self.null_abs is not None:
+        if self.preferred_direction is None or self.null_abs is not None:
             return None
         threshold = math.log1p(self.null_lift) if self.posterior_scale == "log" else self.null_lift
         if self.preferred_direction == "decrease":
@@ -1615,7 +1615,9 @@ class LiftEstimate(_RowIdentity):
     def _sampling_availability(self) -> bool | None:
         available = getattr(self, "sampling_available", None)
         if available is None and self.prior_shrunk:
-            _refuse_legacy_sampling(self)
+            from increment.estimation.readout_types import refuse_legacy_sampling
+
+            refuse_legacy_sampling(self)
         return available
 
     def stat_sig(self) -> bool:
@@ -1856,7 +1858,6 @@ def _working_value(estimate: LiftEstimate, value: float) -> float:
 
 def _fixed_fcr_parameters(estimate: LiftEstimate) -> tuple[float, float] | None:
     """Reconstruct the prior-free constructor's center and working SE."""
-    from increment.estimation.inference import normal_posterior
 
     e = estimate.lift
     assert e is not None, "validated: lift is None only for reference_kind='binomial'"
@@ -2021,9 +2022,8 @@ def open_bound_from_two_sided_at_target(estimate: LiftEstimate) -> LiftEstimate:
     lower = estimate.alternative == "greater"
     bound = e.lb if lower else e.ub
     if estimate.inference == "fixed":
-        if (
-            estimate.sampling_available is not True
-            and (estimate.prior_shrunk or estimate.prior_spec is not None)
+        if estimate.sampling_available is not True and (
+            estimate.prior_shrunk or estimate.prior_spec is not None
         ):
             _raise("estimation.results.lift.fcr_prior_unsupported")
         if e.alpha is None:

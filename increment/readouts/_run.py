@@ -110,6 +110,10 @@ def run(
     read through one: the arm gate, family size and routing level, estimates
     and FCR re-estimates all come from that one execution.
 
+    Every arm row carries an explicit ``analysis_population`` axis (``assigned`` or
+    ``triggered``); rows from distinct populations are separate identities.
+    Registered triggered cells that a source cannot estimate are retained as typed
+    unavailable rows and make the triggered decision scope incomplete.
     decision_method, sensitivity_methods, and prior are call-wide overrides; without one, each metric
     falls back to its own declared value, then the design default.
     """
@@ -125,6 +129,10 @@ def run(
         value_scale=value_scale,
         population=_population,
     )
+    # Snapshot validation is pure and must refuse non-portable learner factories
+    # before any source snapshot or evidence read begins.
+    for config in configs:
+        _config_snapshot(config)
     # Percentile readouts need the raw source snapshot, and an observational readout reads
     # unit frames and moments that must be one execution. An empty selection reads nothing, so
     # it never opens a snapshot (a definitions-backed capture writes TEMP tables). Metadata/
@@ -177,14 +185,21 @@ def _as_collection(rows: list[LiftEstimate]) -> LiftEstimates:
 
 def _config_snapshot(config):
     from increment.estimation.readout_types import refuse_readout
+    from increment.readouts._design_scope import _request_snapshot
 
+    def method_snapshot(method, field):
+        return _request_snapshot(method.model_dump(mode="python"), field=field)
+
+    decision_method_snapshot = method_snapshot(config.decision_method, "configs.decision_method")
+    sensitivity_method_snapshots = [
+        method_snapshot(method, f"configs.sensitivity_methods[{index}]")
+        for index, method in enumerate(config.sensitivity_methods)
+    ]
     try:
         return {
             "metric": config.metric.model_dump(mode="json"),
-            "decision_method": config.decision_method.model_dump(mode="json"),
-            "sensitivity_methods": [
-                method.model_dump(mode="json") for method in config.sensitivity_methods
-            ],
+            "decision_method": decision_method_snapshot,
+            "sensitivity_methods": sensitivity_method_snapshots,
             "prior": None if config.prior is None else config.prior.model_dump(mode="json"),
             "prior_is_global": config.prior_is_global,
             "methods_explicitly_empty": config.methods_explicitly_empty,
@@ -197,7 +212,7 @@ def _config_snapshot(config):
 def _randomized_source(selected, evidence_components, assignment_counts, population):
     from hashlib import sha256
 
-    from increment._canonical import canonical_json_bytes
+    from increment._canonical import canonical_digest_bytes, canonical_json_bytes
 
     components = [
         {"kind": kind, "metric": metric.name, "population": population, "sha256": digest}
@@ -210,7 +225,7 @@ def _randomized_source(selected, evidence_components, assignment_counts, populat
                 "kind": "assignment_counts",
                 "metric": None,
                 "population": population,
-                "sha256": sha256(canonical_json_bytes(assignment_counts)).hexdigest(),
+                "sha256": sha256(canonical_digest_bytes(assignment_counts)).hexdigest(),
             }
         )
     components.sort(
@@ -285,57 +300,20 @@ def _randomized_cell_record(cell, row, failure, config, snapshot_id):
     )
 
 
-def _scoped_randomized_results(
-    src,
-    selected,
-    configs,
-    design,
-    plan,
-    rows,
-    computations,
-    observed_by_metric,
-    evidence_components,
-    population,
+def _randomized_cell_registry(
+    selected, configs, design, plan, computations, roster_arms, population
 ):
-    """Attach the complete randomized arm roster and captured cell outcomes."""
-    from increment.estimation.readout_types import (
-        CellFailure,
-        PopulationRoster,
-        ReadoutMetadata,
-        SourceReadoutScope,
-    )
     from increment.readouts._common import _runtime_method_roles
-    from increment.readouts._design_scope import _roster_evidence_arms, resolve_roster
-
-    roster_arms, roster_source, roster_complete, assignment_counts, integrity_counts = (
-        resolve_roster(src, design, population, observed_by_metric)
-    )
-    known_roster_arms = _roster_evidence_arms(observed_by_metric, assignment_counts)
-    source = _randomized_source(selected, evidence_components, assignment_counts, population)
-    request = {
-        "view": "run",
-        "population": population,
-        "metrics": [metric.model_dump(mode="json") for metric in selected],
-        "configs": [_config_snapshot(config) for config in configs],
-        "design": design.model_dump(mode="json"),
-        "alpha": plan.alpha,
-        "q": plan.q,
-        "declared": plan.declared,
-        "procedures": {
-            name: value.model_dump(mode="json") for name, value in plan.procedures.items()
-        },
-    }
-    trigger_name = src.context.trigger_name
-    if trigger_name is not None:
-        request["trigger_declared"] = True
-        request["trigger_name"] = trigger_name
-    snapshot_id = _randomized_snapshot_id(source, request)
 
     failure_by_cell = {}
+    methodless_failures = []
     for computation in computations:
         for key, failure in computation.failures.items():
-            method = str(failure.context.get("method", ""))
-            failure_by_cell[(key.metric, key.group_id, method)] = failure
+            method = failure.context.get("method")
+            if method is None:
+                methodless_failures.append((key, failure))
+            else:
+                failure_by_cell[(key.metric, key.group_id, method)] = failure
     method_info = {}
     cells = []
     decision_cells = []
@@ -376,13 +354,47 @@ def _scoped_randomized_results(
                     config,
                     test,
                 )
+    for hypothesis, failure in methodless_failures:
+        candidates = {
+            method_name
+            for metric_name, group_id, method_name, _role in method_info
+            if metric_name == hypothesis.metric and group_id == hypothesis.group_id
+        }
+        if len(candidates) == 1:
+            method = next(iter(candidates))
+            failure_by_cell[(hypothesis.metric, hypothesis.group_id, method)] = failure
+    return failure_by_cell, method_info, cells, decision_cells
+
+
+def _randomized_cell_failures(
+    method_info,
+    failure_by_cell,
+    rows,
+    observed_by_metric,
+    known_roster_arms,
+    roster_source,
+    population,
+    decision_cells,
+    roster_complete,
+):
+    from increment.estimation.readout_types import CellFailure
+
+    row_by_cell = {(row.metric, row.group_id, row.method, row.method_role): row for row in rows}
+    returned_cells = set(row_by_cell)
     cell_failures = {}
     for key, (cell, _config, _test) in method_info.items():
         metric_name, group_id, method_name, _method_role = key
         failure = failure_by_cell.get((metric_name, group_id, method_name))
+        row = row_by_cell.get(key)
         if failure is not None:
             cell_failures[cell] = CellFailure(
-                hypothesis=failure.hypothesis, code=failure.code, context=failure.context
+                hypothesis=cell.hypothesis(), code=failure.code, context=failure.context
+            )
+        elif row is not None and row.failure_code is not None:
+            cell_failures[cell] = CellFailure(
+                hypothesis=cell.hypothesis(),
+                code=row.failure_code,
+                context=row.failure_context or {},
             )
         elif group_id not in observed_by_metric.get(metric_name, set()):
             observed = sorted(observed_by_metric.get(metric_name, set()))
@@ -401,6 +413,12 @@ def _scoped_randomized_results(
                     "roster_source": roster_source,
                 },
             )
+        elif key not in returned_cells:
+            cell_failures[cell] = CellFailure(
+                hypothesis=cell.hypothesis(),
+                code="readout.cell.unsupported_request",
+                context={"reason": "no_estimate_returned", "analysis_population": population},
+            )
     complete = (
         bool(decision_cells)
         and roster_complete
@@ -410,13 +428,96 @@ def _scoped_randomized_results(
         cell.model_dump(mode="json") for cell in decision_cells if cell in cell_failures
     ]
     scope_reason_context = None if complete else freeze({"missing_cells": missing_cells})
+    return cell_failures, complete, scope_reason_context
+
+
+def _scoped_randomized_results(
+    src,
+    selected,
+    configs,
+    design,
+    plan,
+    rows,
+    computations,
+    observed_by_metric,
+    evidence_components,
+    population,
+):
+    """Attach the complete randomized arm roster and captured cell outcomes."""
+    from increment.estimation.readout_types import (
+        PopulationRoster,
+        ReadoutMetadata,
+        SourceReadoutScope,
+    )
+    from increment.readouts._design_scope import resolve_roster
+
+    roster = resolve_roster(src, design, population, observed_by_metric)
+    roster_arms = roster.arms
+    assignment_counts = roster.counts
+    integrity_counts = roster.integrity_counts
+    known_roster_arms = roster.known_arms
+    roster_source = roster.source
+    source = _randomized_source(selected, evidence_components, assignment_counts, population)
+    request = {
+        "view": "run",
+        "population": population,
+        "metrics": [metric.model_dump(mode="json") for metric in selected],
+        "configs": [_config_snapshot(config) for config in configs],
+        "design": design.model_dump(mode="json"),
+        "alpha": plan.alpha,
+        "q": plan.q,
+        "declared": plan.declared,
+        "procedures": {
+            name: value.model_dump(mode="json") for name, value in plan.procedures.items()
+        },
+    }
+    trigger_name = src.context.trigger_name
+    if trigger_name is not None:
+        request["trigger_declared"] = True
+        request["trigger_name"] = trigger_name
+    snapshot_id = _randomized_snapshot_id(source, request)
+
+    failure_by_cell, method_info, cells, decision_cells = _randomized_cell_registry(
+        selected, configs, design, plan, computations, roster_arms, population
+    )
+    cell_failures, complete, scope_reason_context = _randomized_cell_failures(
+        method_info,
+        failure_by_cell,
+        rows,
+        observed_by_metric,
+        known_roster_arms,
+        roster_source,
+        population,
+        decision_cells,
+        roster.complete,
+    )
 
     result_by_cell = {}
     for row in rows:
         result_by_cell[(row.metric, row.group_id, row.method, row.method_role)] = row
     output = []
     records = []
-    for cell in sorted(cells, key=cell_order):
+    # Keep returned rows in request/registry order; only persisted scope keys are canonical-sorted.
+    for cell in cells:
+        if (
+            cell.kind != "arm"
+            or cell.group_id is None
+            or cell.method is None
+            or cell.method_role is None
+            or cell.estimand is None
+            or cell.value_scale is None
+            or cell.inference is None
+            or cell.alternative is None
+        ):
+            raise ValueError(f"randomized readout contains an incomplete arm cell: {cell!r}")
+        assert cell.estimand in (
+            "itt",
+            "compliance",
+            "late",
+            "ate",
+            "plr_slope",
+            "overlap_subpopulation_ate",
+        )
         failure = cell_failures.get(cell)
         row = result_by_cell.get((cell.metric, cell.group_id, cell.method, cell.method_role))
         if row is None and failure is not None:
@@ -449,9 +550,9 @@ def _scoped_randomized_results(
                     "analysis_population": population,
                     "sampling_available": failure is None,
                     "sampling_reason_code": None if failure is None else failure.code,
-                    "sampling_reason_context": None if failure is None else failure.context,
+                    "sampling_reason_context": None if failure is None else freeze(failure.context),
                     "failure_code": None if failure is None else failure.code,
-                    "failure_context": None if failure is None else failure.context,
+                    "failure_context": None if failure is None else freeze(failure.context),
                     "decision_scope_complete": complete,
                     "decision_scope_reason_code": None
                     if complete
@@ -480,7 +581,7 @@ def _scoped_randomized_results(
                 analysis_population=population,
                 arms=roster_arms,
                 source=roster_source,
-                complete=roster_complete,
+                complete=roster.complete,
             ),
         ),
         decision_complete_by_population={population: complete},
@@ -495,6 +596,7 @@ def _scoped_randomized_results(
         families=families,
         by_source={snapshot_id: source_scope},
     )
+    records.sort(key=lambda record: cell_order(record.cell))
     metadata = ReadoutMetadata(scope=scope, cells=tuple(records))
     return LiftEstimates(output, metadata=metadata, source=source)
 
@@ -520,7 +622,9 @@ def _run_prepared(
         from increment.sequential_source import source_snapshot
 
         _refuse_segmented_registration(plan.inference)
-        rows = sequential_readout(src, metrics=selected, estimands=estimands)
+        rows = sequential_readout(
+            src, metrics=selected, estimands=estimands, _include_unrequested=True
+        )
         return scope_sequential_results(
             src,
             rows,
@@ -559,16 +663,10 @@ def _run_prepared(
                     design.control_group,
                 )
         from increment.readouts._design_scope import (
-            eligible_late_cells,
             encouragement_expected,
             scope_design_results,
         )
 
-        eligible_late = (
-            eligible_late_cells(rows_by_metric, design, cluster)
-            if "late" in (estimands or ("itt", "compliance", "late"))
-            else set()
-        )
         capture: dict[str, Any] = {}
         rows = encouragement_rows(
             src=src,
@@ -597,6 +695,7 @@ def _run_prepared(
             capture.get("computations", []),
             configs=configs,
             population=population,
+            estimands=estimands,
             expected_for=lambda arms: encouragement_expected(
                 selected,
                 configs,
@@ -604,7 +703,6 @@ def _run_prepared(
                 plan,
                 estimands=estimands,
                 arms=arms,
-                eligible_late=eligible_late,
                 cluster=cluster,
             ),
             evidence_rows=rows_by_metric,
@@ -702,7 +800,7 @@ def _run_prepared(
     refused_cells.extend(secondary_refused)
     if selected:
         _refuse_if_no_treatment_arm(observed_arms, design.control_group)
-    if not out and refused_cells:
+    if refused_cells and not any(row.failure_code is None for row in out):
         _raise_if_all_lift_cells_refused(refused_cells, computations)
     order = {metric.name: i for i, metric in enumerate(selected)}
     out.sort(key=lambda row: order[row.metric])

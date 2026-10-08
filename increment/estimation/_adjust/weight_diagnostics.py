@@ -20,10 +20,13 @@ def _weight_summary(
     Cluster summaries describe arm-weight concentration, not score support or
     a residual degree of freedom. Arm-wise normalization cancels in both ratios.
     """
-    scaled = weights / float(np.max(weights))
+    scaled = np.asarray(weights, dtype=np.float64) / float(np.max(weights))
     if cluster_index is not None:
         assert n_clusters is not None
-        scaled = np.bincount(cluster_index, weights=scaled, minlength=n_clusters)
+        scaled = np.asarray(
+            np.bincount(cluster_index, weights=scaled, minlength=n_clusters),
+            dtype=np.float64,
+        )
         scaled /= float(np.max(scaled))
     total = math.fsum(scaled)
     squares = float(np.dot(scaled, scaled))

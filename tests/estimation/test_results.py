@@ -157,7 +157,11 @@ def test_directional_fcr_reissues_sampling_with_stored_mixture_posterior():
     assert converted.p_value() == expected_p
     assert converted.require_lift().ub is None
     assert converted.require_lift().open_side == "upper"
-    assert (converted.posterior_model, converted.posterior_prob_favorable, converted.prior_spec) == posterior
+    assert (
+        converted.posterior_model,
+        converted.posterior_prob_favorable,
+        converted.prior_spec,
+    ) == posterior
 
 
 def test_open_side_rejects_alternative_mismatch():
@@ -888,9 +892,12 @@ class TestPValueClusterRobust:
         est_less = _clustered_lift_estimate(
             log_mean=log_mean, log_se=log_se, dof=dof, alternative="less"
         )
-        assert est_greater.p_value() == pytest.approx(_t.sf(log_mean / log_se, dof))
-        assert est_less.p_value() == pytest.approx(_t.cdf(log_mean / log_se, dof))
-        assert est_greater.p_value() > est_less.p_value()
+        p_greater = est_greater.p_value()
+        p_less = est_less.p_value()
+        assert p_greater is not None and p_less is not None
+        assert p_greater == pytest.approx(_t.sf(log_mean / log_se, dof))
+        assert p_less == pytest.approx(_t.cdf(log_mean / log_se, dof))
+        assert p_greater > p_less
 
     def test_public_gaussian_sequential_estimate_refuses_before_row_access(self):
         from increment import estimate_sequential
@@ -1421,10 +1428,12 @@ class TestLiftEstimateBinomialCrossInvariants:
             lower=lower, upper=upper, x_c=counts[0], n_c=counts[1], x_t=counts[2], n_t=counts[3]
         )
         row = LiftEstimate(**_binomial_row(binomial_set=bset))
-
         assert lower > row.null_lift
         assert row.stat_sig()
-        assert row.p_value() < 0.05
+
+        p_value = row.p_value()
+        assert p_value is not None
+        assert p_value < 0.05
         assert LiftEstimate.model_validate_json(row.model_dump_json()) == row
 
     @pytest.mark.parametrize("alternative", ["two-sided", "less"])

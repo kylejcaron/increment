@@ -111,7 +111,7 @@ from increment.query.fact_resolution import _require_design
 from increment.query.integrity import validate_trigger_fires_in_every_arm
 from increment.query.native_contract import NativeCoreSource, NativeViewSource
 from increment.query.native_source import DefinitionsMomentSource
-from increment.query.session import WarehouseSession
+from increment.query.session import SourceSnapshotEvidence, WarehouseSession
 from increment.query.source import open_artifact
 from increment.semantics.artifact import (
     ArtifactContext,
@@ -340,13 +340,17 @@ def _stamp_exploratory_rows(rows):
         return LiftEstimates(updated, source=rows.source)
 
     moved = {(row.source_snapshot_id, CellKey.from_row(row)) for row in source_rows}
-    families = []
-    for family in metadata.scope.families:
+    families: list[FamilyScope] = []
+    for declared_family in metadata.scope.families:
+        family = FamilyScope.model_validate(declared_family)
+        assert isinstance(family, FamilyScope)
         retained = tuple(
             cell for cell in family.members if (family.source_snapshot_id, cell) not in moved
         )
         if retained:
-            families.append(family.model_copy(update={"members": retained}))
+            retained_family = family.model_copy(update={"members": retained})
+            assert isinstance(retained_family, FamilyScope)
+            families.append(retained_family)
 
     family_ids = {}
     by_family = {}
@@ -383,7 +387,16 @@ def _stamp_exploratory_rows(rows):
         cells=metadata.scope.cells,
         decision_cells=metadata.scope.decision_cells,
         populations=metadata.scope.populations,
-        families=tuple(sorted(families, key=lambda family: family.family_id)),
+        families=tuple(
+            sorted(
+                families,
+                key=lambda family: (
+                    family.family_id
+                    if isinstance(family, FamilyScope)
+                    else str(family["family_id"])
+                ),
+            )
+        ),
         by_source=metadata.scope.by_source,
     )
     metadata = ReadoutMetadata(
@@ -436,6 +449,7 @@ class Analysis:
         backend: str | None = None,
         store: Literal["auto", "always", "none"] = "auto",
         on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
+        source_snapshot_evidence: SourceSnapshotEvidence | None = None,
     ) -> None:
         if on_mixed_assignment not in ("error", "warn", "exclude"):
             _refuse(_INVALID_MIXED_ASSIGNMENT_POLICY, on_mixed_assignment=on_mixed_assignment)
@@ -482,7 +496,7 @@ class Analysis:
             path="warehouse",
             design=design,
         )
-        session = WarehouseSession(con, defs)
+        session = WarehouseSession(con, defs, source_snapshot_evidence=source_snapshot_evidence)
         verify_sql_admission_matches_execution(defs, con)
         session.drop_materialized()
         src = DefinitionsMomentSource(
@@ -774,9 +788,15 @@ class Analysis:
         backend: str | None = None,
         store: Literal["auto", "always", "none"] = "auto",
         on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
+        source_snapshot_evidence: SourceSnapshotEvidence | None = None,
     ) -> Analysis:
         """Build an :class:`Analysis` from a definitions YAML path/directory.
 
+        Supply ``source_snapshot_evidence`` when the upstream source provides an
+        explicit event-time cutoff; optional per-feed watermarks record only
+        certified completeness, and absent certification stays unknown.
+        Triggered membership, outcomes, and trigger-evidence publication refuse
+        without this evidence; assigned-only operations do not require it.
         Unknown experiment names raise ``InvalidRequestError`` before warehouse access.
         """
         return cls(
@@ -786,6 +806,7 @@ class Analysis:
             backend=backend,
             store=store,
             on_mixed_assignment=on_mixed_assignment,
+            source_snapshot_evidence=source_snapshot_evidence,
         )
 
     @classmethod
@@ -1854,6 +1875,9 @@ class Analysis:
             non-control arm). Switchback evidence returns one contrast per
             selected metric. Switchback calls accept only UNSET role/prior overrides;
             ``estimands`` and ``value_scale`` remain arm-only.
+            Each arm estimate carries an explicit ``analysis_population`` axis
+            (``assigned`` or ``triggered``); the two populations are distinct
+            result identities.
         """
         added = self._exploratory_metrics(exploratory_metrics, caller="run")
         if isinstance(self._state, ContrastAnalysisState):
@@ -2238,6 +2262,14 @@ class Analysis:
         inference = self._plan.inference
         if correction is not None and getattr(inference, "registration", None) is not None:
             _refuse(_UNCORRECTED_SEQUENTIAL, inference=type(inference).__name__)
+        breakout_policy = self._plan.view_policies.for_view(
+            "breakout",
+            mechanism=getattr(getattr(self, "_design", None), "mechanism", None),
+            segmented=True,
+        )
+        effective_correction = correction or normalize_display_correction(
+            breakout_policy.correction
+        )
         selected = select_metrics(
             cast("Sequence[Metric]", self._src.context.metrics), metrics, caller="run_breakout"
         )
@@ -2254,21 +2286,30 @@ class Analysis:
         )
         if added:
             exploratory = self._exploratory_analysis(added, caller="run_breakout")
-            rows = BreakoutEstimates(
-                [
-                    *rows,
-                    *exploratory._breakout_rows(
-                        added,
-                        decision_method=decision_method,
-                        sensitivity_methods=sensitivity_methods,
-                        prior=prior,
-                        correction=correction,
-                    ),
-                ]
+            exploratory_rows = exploratory._breakout_rows(
+                added,
+                decision_method=decision_method,
+                sensitivity_methods=sensitivity_methods,
+                prior=prior,
+                correction=correction,
             )
-        from increment.estimation.multiplicity import stamp_multiplicity_status
+            rows = exploratory_rows if not rows else rows.concat(exploratory_rows)
+        from increment.estimation.multiplicity import row_multiplicity_status
 
-        return BreakoutEstimates(stamp_multiplicity_status(rows))
+        return BreakoutEstimates(
+            [
+                row.model_copy(
+                    update={
+                        "multiplicity_status": row_multiplicity_status(
+                            row,
+                            correction=effective_correction if row.family_id is not None else None,
+                        )
+                    }
+                )
+                for row in rows
+            ],
+            metadata=rows.metadata,
+        )
 
     def _breakout_rows(
         self,
@@ -2400,8 +2441,13 @@ class Analysis:
         return select_metrics((), [*selected, *added], caller=caller, allow_undeclared_objects=True)
 
     @staticmethod
-    def _stamp_exploratory(rows: DailyLiftEstimates, added: Sequence[Metric]) -> DailyLiftEstimates:
-        """*rows* with the added metrics' rows marked ``role="exploratory"``."""
+    def _stamp_exploratory(
+        rows: DailyLiftEstimates,
+        added: Sequence[Metric],
+        *,
+        correction: Correction | None = None,
+    ) -> DailyLiftEstimates:
+        """Mark added metrics exploratory under the effective view correction."""
         names = {metric.name for metric in added}
         if not names:
             return rows
@@ -2412,8 +2458,10 @@ class Analysis:
                 [
                     row.model_copy(update={"role": "exploratory"}) if row.metric in names else row
                     for row in rows
-                ]
-            )
+                ],
+                correction=correction,
+            ),
+            metadata=rows.metadata,
         )
 
     def _day_axis(self) -> DayAxisReadouts:
@@ -2677,6 +2725,11 @@ class Analysis:
             completed_windows_only=completed_windows_only,
             estimands=tuple(estimands) if estimands is not None else None,
         )
+        asof_policy = self._plan.view_policies.for_view(
+            "asof",
+            mechanism=getattr(self._design, "mechanism", None),
+            segmented=dimension is not None,
+        )
         return self._stamp_exploratory(
             self._day_axis().lift(
                 req,
@@ -2685,4 +2738,5 @@ class Analysis:
                 prior=prior,
             ),
             added,
+            correction=normalize_display_correction(asof_policy.correction),
         )

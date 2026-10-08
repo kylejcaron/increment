@@ -2,7 +2,7 @@
 
 import math
 import sys
-from typing import cast
+from typing import Literal, TypedDict, cast
 
 import pytest
 from pydantic import ValidationError
@@ -25,6 +25,16 @@ from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import AlwaysValid
 from increment.estimation.variance import se_log_mean as _se_log_mean
 from tests.sequential_cases import registration
+
+
+class _InferLiftArguments(TypedDict):
+    metric: str
+    group_id: str
+    method: str
+    method_role: Literal["decision", "sensitivity"]
+    log_rr: float
+    se_t: float
+    se_c: float
 
 
 class TestNormal:
@@ -651,15 +661,15 @@ class TestInferLift:
         expected_lb = math.exp(mu_n - z * sigma_n) - 1.0
         expected_ub = math.exp(mu_n + z * sigma_n) - 1.0
 
-        args = dict(
-            metric="rev",
-            group_id="B",
-            method="unadjusted",
-            method_role="decision",
-            log_rr=delta_hat,
-            se_t=se_t,
-            se_c=se_c,
-        )
+        args: _InferLiftArguments = {
+            "metric": "rev",
+            "group_id": "B",
+            "method": "unadjusted",
+            "method_role": "decision",
+            "log_rr": delta_hat,
+            "se_t": se_t,
+            "se_c": se_c,
+        }
         prior_result = infer_lift(**args, prior=Normal(mu=m0, sigma=tau))
         sampling_result = infer_lift(**args, prior=None)
 
@@ -675,6 +685,7 @@ class TestInferLift:
         shrunk_width = expected_ub - expected_lb
         assert abs(expected_value) < abs(flat_value)
         assert shrunk_width < flat_width
+
     def test_interval_symmetric_in_log_space(self):
         """Catches a one-sided-z botch (ppf(1-alpha) instead of
         ppf(1-alpha/2)): log1p(ub) and log1p(lb) must be equidistant from
@@ -998,9 +1009,19 @@ class TestNullAbs:
 
     def test_additive_sampling_rows_have_no_implicit_posterior(self):
         for overrides in (
-            dict(abs_diff=0.02, abs_se=0.005, null_abs=-0.01, preferred_direction="increase"),
-            dict(abs_diff=-0.005, abs_se=0.01, null_abs=0.01, preferred_direction="decrease"),
-            dict(abs_diff=0.02, null_abs=-0.01, preferred_direction="increase"),
+            {
+                "abs_diff": 0.02,
+                "abs_se": 0.005,
+                "null_abs": -0.01,
+                "preferred_direction": "increase",
+            },
+            {
+                "abs_diff": -0.005,
+                "abs_se": 0.01,
+                "null_abs": 0.01,
+                "preferred_direction": "decrease",
+            },
+            {"abs_diff": 0.02, "null_abs": -0.01, "preferred_direction": "increase"},
         ):
             est = infer_lift(**self._kwargs(**overrides))
             assert est.prob_favorable() is None
@@ -1085,7 +1106,9 @@ class TestNullAbs:
             assert est.null_abs is not None
             # stat_sig() is the row's own interval verdict (abs_lb/abs_ub vs
             # null_abs, honoring alternative); p_value() must agree with it.
-            assert (est.p_value() <= 0.05) == est.stat_sig()
+            p_value = est.p_value()
+            assert p_value is not None
+            assert (p_value <= 0.05) == est.stat_sig()
 
     def test_p_value_additive_cluster_robust_refuses(self):
         """Mirrors `prob_favorable`'s own refusal: a cluster-robust
@@ -1547,7 +1570,7 @@ class TestPersistedSamplingReference:
         assert row.require_lift().log_se is not None
         assert getattr(row, method)(*args) is None
 
-    def test_welch_reference_withholds_every_additive_decision(self):
+    def test_welch_reference_refuses_sampling_pvalue_but_withholds_posterior(self):
         row = self._welch_row(null_abs=0.0)
         assert row.dof is None
         assert row.reference_kind == "t"
@@ -1562,10 +1585,9 @@ class TestPersistedSamplingReference:
         assert p_value_exc.value.code == "estimation.results.lift.p_value_cluster_robust_null_abs"
         assert p_value_exc.value.context["reference_df"] == row.reference_df
 
-        with pytest.raises(InvalidRequestError) as favorable_exc:
-            row.prob_favorable()
-        assert favorable_exc.value.code == "estimation.results.lift.p_value_cluster_robust_null_abs"
-        assert favorable_exc.value.context["reference_df"] == row.reference_df
+        # Posterior access follows posterior_available; see
+        # docs/guides/priors-and-decisions.md:142-145.
+        assert row.prob_favorable() is None
 
         round_tripped = LiftEstimate.model_validate_json(row.model_dump_json())
         assert round_tripped == row
@@ -2003,15 +2025,15 @@ def test_infer_lift_matches_expm1_at_small_log_rr():
 def test_infer_lift_keeps_sampling_independent_of_prior():
     from increment.estimation.inference import Normal, infer_lift
 
-    args = dict(
-        metric="revenue",
-        group_id="treatment",
-        method="ttest",
-        log_rr=0.1 - 0.0,
-        se_t=0.05,
-        se_c=0.05,
-        method_role="decision",
-    )
+    args: _InferLiftArguments = {
+        "metric": "revenue",
+        "group_id": "treatment",
+        "method": "ttest",
+        "log_rr": 0.1 - 0.0,
+        "se_t": 0.05,
+        "se_c": 0.05,
+        "method_role": "decision",
+    }
     plain = infer_lift(**args, prior=None)
     prior = infer_lift(**args, prior=Normal(mu=0.0, sigma=0.01))
     assert plain.prior_shrunk is False

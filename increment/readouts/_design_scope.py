@@ -8,13 +8,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
-from increment._canonical import canonical_json_bytes
-from increment._labels import UNASSIGNED_LABEL
+from increment._canonical import canonical_digest_bytes, canonical_json_bytes
+from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
 from increment.breakout.estimates import LiftEstimates
 from increment.errors import CapabilityError
-from increment.estimation.adjust import _weight_diagnostics_projection
+from increment.estimation.adjust import weight_diagnostics_projection
 from increment.estimation.assignment_integrity import assignment_integrity
 from increment.estimation.decision_types import PValueEvidence
 from increment.estimation.readout_types import (
@@ -22,11 +22,13 @@ from increment.estimation.readout_types import (
     CellKey,
     CellRecord,
     PopulationRoster,
+    PosteriorInference,
     ReadoutMetadata,
     ReadoutScope,
     SamplingInference,
     SourceReadoutScope,
     cell_order,
+    freeze,
 )
 from increment.estimation.results import LiftEstimate
 from increment.readouts._common import _runtime_method_roles, _runtime_methods
@@ -50,35 +52,60 @@ class ExpectedCell:
 
 
 @dataclass(frozen=True, slots=True)
-class _ObservedRoster:
-    source: str
+class ResolvedRoster:
+    arms: tuple[str, ...]
+    source: Literal["declared_allocation", "experiment_counts", "observed_union", "unknown"]
+    complete: bool
+    counts: Mapping[str, int] | None
+    integrity_counts: Mapping[str, int] | None
     arms_by_metric: Mapping[str, set[str]]
     known_arms: frozenset[str]
 
 
-def _roster_evidence_arms(observed_by_metric, counts):
-    arms = {
-        arm
-        for observed in observed_by_metric.values()
-        for arm in observed
-        if arm is not None
-    }
-    if counts is not None:
-        arms.update(
-            arm for arm in counts if arm is not None and arm != UNASSIGNED_LABEL
-        )
-    return frozenset(arms)
+def _method_role(value: str) -> Literal["decision", "sensitivity"]:
+    if value in ("decision", "sensitivity"):
+        return value
+    raise ValueError(f"unsupported method role: {value!r}")
+
+
+def _alternative(value: str) -> Literal["two-sided", "greater", "less"]:
+    if value in ("two-sided", "greater", "less"):
+        return value
+    raise ValueError(f"unsupported alternative: {value!r}")
+
+
+def _value_scale(value: str) -> Literal["relative", "absolute"]:
+    if value in ("relative", "absolute"):
+        return value
+    raise ValueError(f"unsupported value scale: {value!r}")
+
+
+def _estimand(
+    value: str,
+) -> Literal["itt", "compliance", "late", "ate", "plr_slope", "overlap_subpopulation_ate"]:
+    if value in ("itt", "compliance", "late", "ate", "plr_slope", "overlap_subpopulation_ate"):
+        return value
+    raise ValueError(f"unsupported estimand: {value!r}")
+
+
+def _is_accounting_label(arm: str | None) -> bool:
+    return arm is None or arm in {MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL}
 
 
 def _collect_expected_cells(
     expected: Sequence[ExpectedCell],
     row_map: dict[tuple, list[LiftEstimate]],
     failure_map: Mapping[tuple, Any],
-    population: str,
-    roster: _ObservedRoster,
+    population: Literal["assigned", "triggered"],
+    roster: ResolvedRoster,
 ) -> tuple[dict[CellKey, LiftEstimate | None], dict[CellKey, CellFailure]]:
     cell_rows: dict[CellKey, LiftEstimate | None] = {}
     failures: dict[CellKey, CellFailure] = {}
+    methodless_counts: dict[tuple[str, str, str], int] = {}
+    for item in expected:
+        for estimand in (item.estimand, *item.estimand_alternates):
+            key = (item.metric, item.group_id, estimand)
+            methodless_counts[key] = methodless_counts.get(key, 0) + 1
     for item in expected:
         identities = (item.estimand, *item.estimand_alternates)
         matched = []
@@ -88,31 +115,26 @@ def _collect_expected_cells(
             matched = row_map.pop(key, [])
             if matched:
                 break
-            failure = failure_map.get(key) or failure_map.get(
-                (item.metric, item.group_id, None, estimand)
-            )
+            failure = failure_map.get(key)
+            if failure is None and methodless_counts[(item.metric, item.group_id, estimand)] == 1:
+                failure = failure_map.get((item.metric, item.group_id, None, estimand))
             if failure is not None:
                 break
         if matched:
             for row in matched:
                 cell_rows.setdefault(CellKey.from_row(row), row)
             continue
-        # An adjustment that explicitly does not support this metric is not
-        # part of the estimator's cell inventory. Keep other typed failures:
-        # those represent requested cells the producer attempted to estimate.
-        if failure is not None and failure.code == "estimation.adjust.unavailable":
-            continue
         cell = CellKey(
             kind="arm",
             metric=item.metric,
             group_id=item.group_id,
             method=item.method,
-            method_role=item.method_role,
+            method_role=_method_role(item.method_role),
             estimand=item.estimand,
             analysis_population=population,
-            value_scale=item.value_scale,
+            value_scale=_value_scale(item.value_scale),
             inference="fixed",
-            alternative=item.alternative,
+            alternative=_alternative(item.alternative),
         )
         if failure is not None:
             failures[cell] = CellFailure(
@@ -147,20 +169,19 @@ def _collect_expected_cells(
     return cell_rows, failures
 
 
-def resolve_roster(src, design, population, observed_by_metric, *, use_counts=True):
-    """Resolve arms, retaining counts only at the declared randomization grain."""
+def resolve_roster(
+    src,
+    design,
+    population: Literal["assigned", "triggered"],
+    observed_by_metric,
+    *,
+    use_counts=True,
+) -> ResolvedRoster:
+    """Resolve arm identity, while preserving accounting counts for integrity evidence."""
     is_clustered = getattr(src.context, "cluster", None) is not None
     counts = None
     integrity_counts = None
-    if use_counts and is_clustered and population == "assigned":
-        cluster_counts = getattr(src, "cluster_counts", None)
-        if callable(cluster_counts):
-            try:
-                counts = {arm: count for arm, count in cluster_counts().items() if arm is not None}
-                integrity_counts = counts
-            except CapabilityError:
-                pass
-    if use_counts and counts is None:
+    if use_counts:
         assignment_counts = getattr(src, "assignment_counts", None)
         if callable(assignment_counts):
             try:
@@ -171,51 +192,54 @@ def resolve_roster(src, design, population, observed_by_metric, *, use_counts=Tr
                 }
             except CapabilityError:
                 pass
-    if use_counts and counts is None:
-        count_method = getattr(src, "unit_counts", None) if not is_clustered else None
+    if use_counts and counts is None and is_clustered and population == "assigned":
+        cluster_counts = getattr(src, "cluster_counts", None)
+        if callable(cluster_counts):
+            try:
+                counts = {arm: count for arm, count in cluster_counts().items() if arm is not None}
+            except CapabilityError:
+                pass
+    if use_counts and counts is None and not is_clustered:
+        count_method = getattr(src, "unit_counts", None)
         if callable(count_method):
             try:
                 counts = {arm: count for arm, count in count_method().items() if arm is not None}
             except CapabilityError:
                 pass
-    if not is_clustered:
+    if not is_clustered or population == "assigned":
         integrity_counts = counts
+    observed_arms = {
+        arm
+        for observed in observed_by_metric.values()
+        for arm in observed
+        if not _is_accounting_label(arm)
+    }
+    known_arms = observed_arms | {arm for arm in (counts or {}) if not _is_accounting_label(arm)}
+    source: Literal["declared_allocation", "experiment_counts", "observed_union", "unknown"]
+    complete: bool
     allocation = getattr(design, "allocation", None)
     if allocation is not None:
-        return (
-            tuple(sorted(arm for arm in allocation if arm is not None)),
-            "declared_allocation",
-            True,
-            counts,
-            integrity_counts,
-        )
-    if counts is not None:
-        return (
-            tuple(
-                sorted(
-                    arm for arm in counts if arm is not None and arm != UNASSIGNED_LABEL
-                )
-            ),
-            "experiment_counts",
-            True,
-            counts,
-            integrity_counts,
-        )
-    arms = (
-        tuple(
-            sorted(
-                set().union(
-                    *(
-                        {arm for arm in observed if arm is not None}
-                        for observed in observed_by_metric.values()
-                    )
-                )
-            )
-        )
-        if observed_by_metric
-        else ()
+        arms = tuple(sorted(arm for arm in allocation if not _is_accounting_label(arm)))
+        source, complete = "declared_allocation", True
+    elif counts:
+        arms = tuple(sorted(arm for arm in counts if not _is_accounting_label(arm)))
+        source, complete = "experiment_counts", True
+    else:
+        arms = tuple(sorted(observed_arms))
+        source, complete = ("observed_union" if arms else "unknown"), False
+    per_metric = {
+        metric: {arm for arm in observed if not _is_accounting_label(arm)}
+        for metric, observed in observed_by_metric.items()
+    }
+    return ResolvedRoster(
+        arms=arms,
+        source=source,
+        complete=complete,
+        counts=counts,
+        integrity_counts=integrity_counts,
+        arms_by_metric=per_metric,
+        known_arms=frozenset(known_arms),
     )
-    return arms, ("observed_union" if arms else "unknown"), False, counts, integrity_counts
 
 
 def observational_expected(selected, configs, design, plan, *, value_scale, arms):
@@ -259,9 +283,7 @@ def observational_expected(selected, configs, design, plan, *, value_scale, arms
     return cells
 
 
-def encouragement_expected(
-    selected, configs, design, plan, *, estimands, arms, eligible_late, cluster
-):
+def encouragement_expected(selected, configs, design, plan, *, estimands, arms, cluster):
     from increment.estimation.encouragement import ESTIMANDS
 
     wanted = tuple(estimands) if estimands is not None else ESTIMANDS
@@ -275,8 +297,6 @@ def encouragement_expected(
                 continue
             for estimand in wanted:
                 if estimand in {"compliance"}:
-                    continue
-                if estimand == "late" and (metric.name, group_id) not in eligible_late:
                     continue
                 for method in methods:
                     cells.append(
@@ -309,30 +329,6 @@ def encouragement_expected(
     return cells
 
 
-def eligible_late_cells(rows_by_metric, design, cluster):
-    """Use the producer's first-stage gate to enumerate only emitted LATE cells."""
-    from increment.estimation.encouragement import _df_to_arms, _first_stage_context
-
-    arms = _df_to_arms([row for metric_rows in rows_by_metric.values() for row in metric_rows])
-    by_metric = {}
-    for arm in arms:
-        by_metric.setdefault(arm.metric, {})[str(arm.group_id)] = arm
-    eligible = set()
-    for metric, grouped in by_metric.items():
-        control = grouped.get(str(design.control_group))
-        if control is None:
-            continue
-        for group_id, treatment in grouped.items():
-            if group_id == str(design.control_group):
-                continue
-            context = _first_stage_context(
-                treatment, control, design, cluster=cluster, late_requested=True
-            )
-            if not context.weak:
-                eligible.add((metric, group_id))
-    return eligible
-
-
 def compliance_component(summary, population):
     payload = {
         "study_id": summary.study_id,
@@ -355,6 +351,42 @@ def compliance_component(summary, population):
     }
 
 
+def _request_snapshot(value: Any, *, field: str = "request") -> Any:
+    """Make request data canonical, rejecting callables without stable import identity."""
+    if callable(value):
+        from importlib import import_module
+
+        from increment.estimation.readout_types import refuse_readout
+
+        module = getattr(value, "__module__", None)
+        qualname = getattr(value, "__qualname__", None)
+        if (
+            not isinstance(module, str)
+            or not module
+            or not isinstance(qualname, str)
+            or not qualname
+            or "<lambda>" in qualname
+            or "<locals>" in qualname
+        ):
+            refuse_readout("readout.scope.request_not_canonical", fields=[field])
+        try:
+            resolved = import_module(module)
+            for name in qualname.split("."):
+                resolved = getattr(resolved, name)
+        except (ImportError, AttributeError):
+            refuse_readout("readout.scope.request_not_canonical", fields=[field])
+        if resolved is not value:
+            refuse_readout("readout.scope.request_not_canonical", fields=[field])
+        return {"kind": "callable", "module": module, "qualname": qualname}
+    if isinstance(value, dict):
+        return {key: _request_snapshot(item, field=f"{field}.{key}") for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [
+            _request_snapshot(item, field=f"{field}[{index}]") for index, item in enumerate(value)
+        ]
+    return value
+
+
 def scope_design_results(  # noqa: PLR0913
     src: Any,
     design: Any,
@@ -363,7 +395,7 @@ def scope_design_results(  # noqa: PLR0913
     computations: Sequence[Any],
     *,
     configs: Sequence[Any],
-    population: str,
+    population: Literal["assigned", "triggered"],
     expected_for: Any,
     evidence_rows: Mapping[str, Sequence[Mapping[str, Any]]],
     observed_by_metric: Mapping[str, set[str]],
@@ -373,9 +405,10 @@ def scope_design_results(  # noqa: PLR0913
     request_extra: Mapping[str, Any] | None = None,
 ) -> LiftEstimates:
     """Attach source identity and every expected cell, preserving provider failures."""
-    arms, roster_source, roster_complete, counts, integrity_counts = resolve_roster(
-        src, design, population, observed_by_metric, use_counts=use_counts
-    )
+    roster = resolve_roster(src, design, population, observed_by_metric, use_counts=use_counts)
+    arms = roster.arms
+    counts = roster.counts
+    integrity_counts = roster.integrity_counts
     expected = expected_for(arms)
     components = [
         {
@@ -394,7 +427,7 @@ def scope_design_results(  # noqa: PLR0913
                 "kind": "assignment_counts",
                 "metric": None,
                 "population": population,
-                "sha256": sha256(canonical_json_bytes(counts)).hexdigest(),
+                "sha256": sha256(canonical_digest_bytes(counts)).hexdigest(),
             }
         )
     components.sort(key=lambda item: (item["kind"], item["metric"] or "", item["population"]))
@@ -413,7 +446,8 @@ def scope_design_results(  # noqa: PLR0913
         "q": plan.q,
         "declared": plan.declared,
         "procedures": {
-            name: value.model_dump(mode="json") for name, value in plan.procedures.items()
+            name: _request_snapshot(value.model_dump(mode="python"), field=f"procedures.{name}")
+            for name, value in plan.procedures.items()
         },
         **dict(request_extra or {}),
     }
@@ -461,17 +495,13 @@ def scope_design_results(  # noqa: PLR0913
         row_map,
         failure_map,
         population,
-        _ObservedRoster(
-            roster_source,
-            observed_by_metric,
-            _roster_evidence_arms(observed_by_metric, counts),
-        ),
+        roster,
     )
 
     ordered = tuple(sorted(cell_rows, key=cell_order))
     decisions = tuple(cell for cell in ordered if cell.method_role == "decision")
     complete = (
-        bool(decisions) and roster_complete and all(cell not in failures for cell in decisions)
+        bool(decisions) and roster.complete and all(cell not in failures for cell in decisions)
     )
     reason_context = (
         None
@@ -482,6 +512,7 @@ def scope_design_results(  # noqa: PLR0913
             ]
         }
     )
+    configs_by_metric = {config.metric.name: config for config in configs}
 
     def project(row, failure):
         return row.model_copy(
@@ -490,31 +521,44 @@ def scope_design_results(  # noqa: PLR0913
                 "analysis_population": population,
                 "sampling_available": failure is None,
                 "sampling_reason_code": None if failure is None else failure.code,
-                "sampling_reason_context": None if failure is None else failure.context,
+                "sampling_reason_context": None if failure is None else freeze(failure.context),
                 "failure_code": None if failure is None else failure.code,
-                "failure_context": None if failure is None else failure.context,
+                "failure_context": None if failure is None else freeze(failure.context),
                 "decision_scope_complete": complete,
                 "decision_scope_reason_code": None
                 if complete
                 else "readout.scope.decision_incomplete",
-                "decision_scope_reason_context": reason_context,
-                **_weight_diagnostics_projection(row.method),
+                "decision_scope_reason_context": freeze(reason_context),
+                **weight_diagnostics_projection(row.method, row=row, failure=failure),
             }
         )
 
     output = [project(row, None) for row in rows]
     records = []
     for cell in ordered:
+        config = configs_by_metric.get(cell.metric)
         row = cell_rows[cell]
         failure = failures.get(cell)
         if row is None:
+            if failure is None:
+                raise ValueError(f"expected cell has neither estimate nor failure: {cell!r}")
+            if (
+                cell.group_id is None
+                or cell.method is None
+                or cell.method_role is None
+                or cell.estimand is None
+                or cell.value_scale is None
+                or cell.inference is None
+                or cell.alternative is None
+            ):
+                raise ValueError(f"cannot project incomplete arm cell: {cell!r}")
             row = project(
                 LiftEstimate(
                     metric=cell.metric,
                     group_id=cell.group_id,
                     method=cell.method,
                     method_role=cell.method_role,
-                    estimand=cell.estimand,
+                    estimand=_estimand(cell.estimand),
                     analysis_population=population,
                     value_scale=cell.value_scale,
                     alternative=cell.alternative,
@@ -525,18 +569,41 @@ def scope_design_results(  # noqa: PLR0913
                     sampling_available=False,
                     sampling_reason_code=failure.code,
                     sampling_reason_context=failure.context,
+                    posterior_available=False
+                    if config is not None and config.prior is not None
+                    else None,
+                    posterior_reason_code=failure.code
+                    if config is not None and config.prior is not None
+                    else None,
+                    posterior_reason_context=freeze(failure.context)
+                    if config is not None and config.prior is not None
+                    else None,
                 ),
                 failure,
             )
             output.append(row)
         evidence = None
-        if failure is None and row.lift is not None:
+        if failure is None and row.lift is not None and cell.method is not None:
             try:
-                evidence = PValueEvidence(
-                    cell.hypothesis(), cell.method, row.p_value(), row.reference_kind
-                )
+                p_value = row.p_value()
+                if isinstance(p_value, (int, float)):
+                    evidence = PValueEvidence(
+                        cell.hypothesis(), cell.method, p_value, row.reference_kind
+                    )
             except (AttributeError, ValueError):
                 evidence = None
+        posterior = (
+            None
+            if config is None or config.prior is None
+            else PosteriorInference(
+                available=row.posterior_available,
+                model=row.posterior_model,
+                scale=row.posterior_scale,
+                prior=config.prior,
+                reason_code=row.posterior_reason_code,
+                reason_context=row.posterior_reason_context,
+            )
+        )
         records.append(
             CellRecord(
                 cell=cell,
@@ -548,6 +615,7 @@ def scope_design_results(  # noqa: PLR0913
                     reason_code=None if failure is None else failure.code,
                     reason_context=None if failure is None else failure.context,
                 ),
+                posterior=posterior,
             )
         )
 
@@ -565,8 +633,8 @@ def scope_design_results(  # noqa: PLR0913
             PopulationRoster(
                 analysis_population=population,
                 arms=arms,
-                source=roster_source,
-                complete=roster_complete,
+                source=roster.source,
+                complete=roster.complete,
             ),
         ),
         decision_complete_by_population={population: complete},

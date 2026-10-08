@@ -2,13 +2,15 @@
 from the analysis's own data and declared design, on every constructor
 that can supply it."""
 
+from datetime import UTC, datetime
+
 import ibis
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 
-from increment import Analysis
+from increment import Analysis, SourceSnapshotEvidence
 from increment.errors import CapabilityError, CodedError
 from increment.estimation.results import LiftEstimate
 from increment.power import Baseline
@@ -622,7 +624,29 @@ def _triggered_analysis(
     )
     defs = defs.replace("    aggregation: sum", f"    aggregation: {metric_aggregation}", 1)
     path.write_text(defs)
-    return con, path, Analysis.from_definitions("exp", str(path), con)
+    evidence = datetime(2030, 1, 1, tzinfo=UTC)
+    return (
+        con,
+        path,
+        Analysis.from_definitions(
+            "exp",
+            str(path),
+            con,
+            source_snapshot_evidence=SourceSnapshotEvidence(evidence, {"events": evidence}),
+        ),
+    )
+
+
+def test_triggered_planning_baseline_refuses_when_control_has_no_trigger(tmp_path):
+    con, _path, analysis = _triggered_analysis(tmp_path)
+    con.raw_sql("DELETE FROM events WHERE event = 'exposure' AND group_id = 'control'")
+    try:
+        with pytest.raises(CodedError) as raised:
+            analysis.planning_baseline("revenue")
+        assert raised.value.code == "query.integrity.trigger_arm_missing"
+    finally:
+        analysis.close()
+        con.disconnect()
 
 
 @pytest.mark.filterwarnings("always::increment.errors.IncrementRuntimeWarning")
@@ -652,6 +676,7 @@ def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_gr
     from increment.semantics.artifact import (
         AssignmentCountsRequest,
         ClusterIdentityRequest,
+        TriggerMeasureStatsRequest,
         TriggerPopulationRequest,
     )
 
@@ -700,6 +725,7 @@ def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_gr
             [
                 TriggerPopulationRequest(trigger_name="exposure"),
                 AssignmentCountsRequest(populations=("assigned", "triggered")),
+                TriggerMeasureStatsRequest(trigger_name="exposure", metric_names=("revenue",)),
                 ClusterIdentityRequest(cluster_name="store_id"),
             ],
         )
@@ -762,6 +788,7 @@ def test_triggered_cluster_planning_names_incomplete_metric_population(
     from increment.semantics.artifact import (
         AssignmentCountsRequest,
         ClusterIdentityRequest,
+        TriggerMeasureStatsRequest,
         TriggerPopulationRequest,
     )
 
@@ -791,6 +818,7 @@ def test_triggered_cluster_planning_names_incomplete_metric_population(
             [
                 TriggerPopulationRequest(trigger_name="exposure"),
                 AssignmentCountsRequest(populations=("assigned", "triggered")),
+                TriggerMeasureStatsRequest(trigger_name="exposure", metric_names=("revenue",)),
                 ClusterIdentityRequest(cluster_name="store_id"),
             ],
         )
@@ -854,7 +882,11 @@ class TestPlanningBaselineOnWarehouseRoutes:
             con.disconnect()
 
     def test_artifact_with_trigger_evidence_matches_definitions(self, tmp_path):
-        from increment.semantics.artifact import AssignmentCountsRequest, TriggerPopulationRequest
+        from increment.semantics.artifact import (
+            AssignmentCountsRequest,
+            TriggerMeasureStatsRequest,
+            TriggerPopulationRequest,
+        )
 
         con, path, analysis = _triggered_analysis(tmp_path)
         try:
@@ -866,6 +898,7 @@ class TestPlanningBaselineOnWarehouseRoutes:
                 [
                     TriggerPopulationRequest(trigger_name="exposure"),
                     AssignmentCountsRequest(populations=("assigned", "triggered")),
+                    TriggerMeasureStatsRequest(trigger_name="exposure", metric_names=("revenue",)),
                 ],
             )
             assert _plan(reopened, "revenue").model_dump() == pytest.approx(

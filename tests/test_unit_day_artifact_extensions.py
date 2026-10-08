@@ -41,6 +41,8 @@ from increment.semantics.artifact import (
     ArtifactRelationRef,
     AssignmentCountsExtension,
     SiteVolumeExtension,
+    TriggerMeasureStatsExtension,
+    TriggerPopulationExtension,
 )
 from increment.sources import BreakoutMomentsSource
 
@@ -271,6 +273,132 @@ def _empty_site_volume_extension() -> SiteVolumeExtension:
         last_ds=date(2024, 1, 2),
         freshness={"loaded_through": date(2024, 1, 2), "declared_complete": True},
     )
+
+
+def _trigger_measure_extension(rows):
+    schema = ARTIFACT_RELATION_SCHEMAS["trigger_measure_stats"]
+    primary_key = ARTIFACT_RELATION_PRIMARY_KEYS["trigger_measure_stats"]
+    relation = ArtifactRelationRef(
+        artifact_id=AID,
+        generation_id=GID,
+        role="trigger_measure_stats",
+        relation={"name": "trigger_measure_stats_r"},
+        schema_sha256=schema_sha256("trigger_measure_stats", schema),
+        content_sha256=content_sha256(
+            "trigger_measure_stats", schema, rows, primary_key=primary_key
+        ),
+        row_count=len(rows),
+        primary_key=primary_key,
+    )
+    return TriggerMeasureStatsExtension(
+        relation=relation,
+        definition_sha256="0" * 64,
+        source_provenance_sha256="1" * 64,
+        trigger_name="checkout",
+        metric_names=("revenue",),
+        trigger_population_content_sha256="2" * 64,
+        observation_cutoff_ts=datetime(2025, 1, 20, tzinfo=UTC),
+        complete_through_ts=datetime(2025, 1, 15, tzinfo=UTC),
+    )
+
+
+@pytest.mark.parametrize(
+    ("row", "experiment_id"),
+    [
+        (
+            {
+                "experiment_id": "exp",
+                "unit_id": "u1",
+                "ds": date(2025, 1, 2),
+                "measure_key": "revenue",
+                "n_events": 1,
+                "sum_value": 4.0,
+                "min_value": 4.0,
+                "max_value": 4.0,
+            },
+            "exp",
+        ),
+        (
+            {
+                "experiment_id": "exp",
+                "unit_id": "u1",
+                "ds": date(2025, 1, 2),
+                "measure_key": "revenue",
+                "n_events": -1,
+                "sum_value": 4.0,
+                "min_value": 4.0,
+                "max_value": 4.0,
+            },
+            "exp",
+        ),
+        (
+            {
+                "experiment_id": "other",
+                "unit_id": "u1",
+                "ds": date(2025, 1, 2),
+                "measure_key": "revenue",
+                "n_events": 1,
+                "sum_value": 4.0,
+                "min_value": 4.0,
+                "max_value": 4.0,
+            },
+            "exp",
+        ),
+    ],
+    ids=["valid", "negative-event-count", "wrong-experiment"],
+)
+def test_trigger_measure_extension_rejects_invalid_counts_and_experiment_domain(row, experiment_id):
+    rows = [row]
+    extension = _trigger_measure_extension(rows)
+    request = {
+        "kind": "trigger_measure_stats",
+        "trigger_name": "checkout",
+        "metric_names": ("revenue",),
+    }
+    if row["n_events"] == 1 and row["experiment_id"] == experiment_id:
+        assert (
+            read_extension(
+                _Snapshot(extension.relation, rows),
+                extension,
+                request=request,
+                experiment_id=experiment_id,
+            )
+            == rows
+        )
+        return
+    with pytest.raises(ArtifactContractError):
+        read_extension(
+            _Snapshot(extension.relation, rows),
+            extension,
+            request=request,
+            experiment_id=experiment_id,
+        )
+
+
+def test_trigger_measure_extension_rejects_duplicate_primary_keys():
+    row = {
+        "experiment_id": "exp",
+        "unit_id": "u1",
+        "ds": date(2025, 1, 2),
+        "measure_key": "revenue",
+        "n_events": 1,
+        "sum_value": 4.0,
+        "min_value": 4.0,
+        "max_value": 4.0,
+    }
+    rows = [row, row.copy()]
+    extension = _trigger_measure_extension([row])
+    with pytest.raises(ArtifactContractError):
+        read_extension(
+            _Snapshot(extension.relation, rows),
+            extension,
+            request={
+                "kind": "trigger_measure_stats",
+                "trigger_name": "checkout",
+                "metric_names": ("revenue",),
+            },
+            experiment_id="exp",
+        )
 
 
 def test_read_rejects_mismatched_request_kind_as_coded_identity_refusal():
@@ -597,7 +725,12 @@ def _all_extension_cases():
         ),
         (
             {"kind": "trigger_population", "trigger_name": "trigger"},
-            {"kind": "trigger_population", "trigger_name": "trigger"},
+            {
+                "kind": "trigger_population",
+                "trigger_name": "trigger",
+                "observation_cutoff_ts": "2024-01-03T00:00:00Z",
+                "complete_through_ts": "2024-01-02T00:00:00Z",
+            },
             [
                 {
                     "experiment_id": "exp",
@@ -646,6 +779,42 @@ def _all_extension_cases():
             ],
         ),
     ]
+
+
+def _trigger_population_fixture(request, definition, rows):
+    recipe = _recipe({"source": "facts", "request": request["kind"]})
+    context = _context(request, definition, recipe)
+    primary_key = ARTIFACT_RELATION_PRIMARY_KEYS["trigger_population"]
+    relation = ArtifactRelationRef(
+        artifact_id=AID,
+        generation_id=GID,
+        role="trigger_population",
+        relation={"name": "trigger_population_r"},
+        schema_sha256=schema_sha256(
+            "trigger_population", ARTIFACT_RELATION_SCHEMAS["trigger_population"]
+        ),
+        content_sha256=content_sha256(
+            "trigger_population",
+            ARTIFACT_RELATION_SCHEMAS["trigger_population"],
+            rows,
+            primary_key=primary_key,
+        ),
+        row_count=len(rows),
+        primary_key=primary_key,
+    )
+    extension = TriggerPopulationExtension(
+        relation=relation,
+        definition_sha256=extension_definition_sha256(
+            "trigger_population", canonical_json(definition)
+        ),
+        source_provenance_sha256=extension_source_provenance_sha256(
+            "trigger_population", canonical_json(recipe)
+        ),
+        trigger_name=request["trigger_name"],
+        observation_cutoff_ts=definition["observation_cutoff_ts"],
+        complete_through_ts=definition["complete_through_ts"],
+    )
+    return context, extension
 
 
 @pytest.mark.parametrize(("req", "definition", "rows"), _all_extension_cases())
@@ -869,8 +1038,8 @@ def test_source_driven_producers_invoke_declared_task5_operation(req, definition
         "cluster_identity": "day_source",
         "cuped_preperiod": "day_source",
         "assignment_counts": "triggered_counts",
-        "trigger_population": "triggered_source",
         "encouragement_uptake": "day_source",
+        "trigger_population": "triggered_source",
         "site_volume": "sitewide_evidence",
     }[req["kind"]]
     recipe = _recipe({"source": "facts", "request": req["kind"]})
@@ -988,21 +1157,14 @@ def test_trigger_population_join_coverage_accepts_subset_and_rejects_superset():
             "first_trigger_ts": datetime(2024, 1, 2, tzinfo=UTC),
         },
     ]
-    recipe = _recipe({"source": "facts", "request": request["kind"]})
-    extension = encode_extension(
-        _AllSource(),
-        request,
-        _Publication(),
-        context=_context(request, definition, recipe),
-        rows=rows,
-        definition=definition,
-        source_recipe=recipe,
-        experiment_id="exp",
-    )
+    context, extension = _trigger_population_fixture(request, definition, rows)
+    assert extension.observation_cutoff_ts == datetime(2024, 1, 3, tzinfo=UTC)
+    assert extension.complete_through_ts == datetime(2024, 1, 2, tzinfo=UTC)
     _ = read_extension(
         _Snapshot(extension.relation, rows),
         extension,
         request=request,
+        context=context,
         experiment_id="exp",
         exposure_keys=[("exp", "u1"), ("exp", "u2"), ("exp", "u3")],
     )
@@ -1012,6 +1174,7 @@ def test_trigger_population_join_coverage_accepts_subset_and_rejects_superset():
             _Snapshot(extension.relation, rows),
             extension,
             request=request,
+            context=context,
             experiment_id="exp",
             exposure_keys=[("exp", "u1")],
         ),

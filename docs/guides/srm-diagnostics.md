@@ -86,8 +86,11 @@ reported as unsupported or not applicable, rather than as “no SRM.”
 
 The standalone `sample_ratio_mismatch` function still accepts explicitly
 requested fixed-look inference; this does not make a fixed-look test safe for
-repeated cumulative reads. For ordinary analysis, `Analysis.srm()` uses the
-declared allocation (when present) and the existing assignment-count evidence.
+repeated cumulative reads. `Analysis.srm()` defaults to anytime-valid inference
+and requires the design to declare `allocation_scheme="independent"`; allocation
+proportions alone are not enough. Without that declaration, the analysis reports
+the check as not applicable. Fixed-look inference remains an explicit one-look
+option.
 
 ## Assignment-protocol requirements
 

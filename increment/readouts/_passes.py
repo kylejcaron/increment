@@ -4,6 +4,7 @@ import warnings
 from typing import TYPE_CHECKING, Any, Literal
 
 from increment._literals import PreferredDirection, Role
+from increment.errors import CodedError
 from increment.estimation.engine import Method, _estimate_lift, estimate_lift
 from increment.estimation.engine import merge_decision_computations as _merge_decision_computations
 from increment.estimation.inference import LiftGuardError
@@ -14,13 +15,22 @@ from increment.readouts._common import _raise, _runtime_method_roles, _warn
 from increment.semantics.design import Encouragement
 from increment.sources import MomentSource
 
+# Only numeric refusals proven local to a method cell are softened;
+# capability, request, source, and wire refusals abort the readout.
+_CELL_ESTIMATION_GUARD_CODES = frozenset(
+    {
+        "estimation.cuped.covariate_zero_variance",
+        "estimation.variance.ratio_moments_nonpositive_denominator_mean",
+    }
+)
+
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from increment._analysis_config import ResolvedMetricConfig
     from increment.decision import DecisionComputation
     from increment.estimation.inference import Prior
-    from increment.semantics.design import Observational, Randomized
+    from increment.semantics.design import Randomized
     from increment.semantics.models import Metric
 
 
@@ -111,6 +121,49 @@ def _lift_cells_missing_control(  # noqa: PLR0913
         return fallback, [], computation
 
 
+def _append_lift_cell_failure(
+    *,
+    results: list[LiftEstimate],
+    computations: list[DecisionComputation[LiftEstimate]],
+    metric: Metric,
+    group_id: str,
+    method: Method,
+    method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None,
+    alternative: str,
+    code: str,
+    context: Mapping[str, object],
+) -> None:
+    from increment.decision import ArmHypothesisKey, DecisionComputation, DecisionFailure
+
+    method_role = (method_roles or {}).get(method.name, "decision")
+    failure_context = {**context, "method": method.name}
+    if method_role == "decision":
+        hypothesis = ArmHypothesisKey(metric.name, group_id, "itt")
+        computations.append(
+            DecisionComputation(
+                results=(),
+                evidence={},
+                failures={
+                    hypothesis: DecisionFailure(hypothesis, code, failure_context),
+                },
+            )
+        )
+    else:
+        results.append(
+            LiftEstimate(
+                metric=metric.name,
+                group_id=group_id,
+                method=method.name,
+                estimand="itt",
+                value_scale="relative",
+                alternative=alternative,
+                method_role="sensitivity",
+                failure_code=code,
+                failure_context=failure_context,
+            )
+        )
+
+
 def _estimate_lift_cells(  # noqa: PLR0913
     *,
     metric: Metric,
@@ -135,9 +188,9 @@ def _estimate_lift_cells(  # noqa: PLR0913
     ``estimate_lift`` accepts a whole metric slice and therefore aborts its
     entire result when one treatment arm hits an expected ``LiftGuardError``.
     A readout has a denser contract: a bad arm/method cell is warned and
-    excluded while its siblings remain usable.  Only ``LiftGuardError`` is
-    handled here; malformed moments and other programming/data errors still
-    propagate.
+    excluded while its siblings remain usable. Only ``LiftGuardError`` and
+    the explicitly classified numeric guard codes below are cell-local;
+    all other coded and non-coded errors propagate.
     """
     if advisory_seen is None:
         advisory_seen = set()
@@ -214,33 +267,47 @@ def _estimate_lift_cells(  # noqa: PLR0913
                 _emit_captured_lift_warnings(metric.name, captured, advisory_seen)
                 reason = str(exc)
                 refused.append((metric.name, group_id, method.name, reason))
-                if (method_roles or {}).get(method.name, "decision") == "decision":
-                    from increment.decision import (
-                        ArmHypothesisKey,
-                        DecisionComputation,
-                        DecisionFailure,
-                    )
-
-                    hypothesis = ArmHypothesisKey(metric.name, group_id, "itt")
-                    computations.append(
-                        DecisionComputation(
-                            results=(),
-                            evidence={},
-                            failures={
-                                hypothesis: DecisionFailure(
-                                    hypothesis,
-                                    "estimation.engine.lift_guard",
-                                    {
-                                        "metric": metric.name,
-                                        "group_id": group_id,
-                                        "method": method.name,
-                                        "reason": exc.reason,
-                                        "display": reason,
-                                    },
-                                )
-                            },
-                        )
-                    )
+                _append_lift_cell_failure(
+                    results=results,
+                    computations=computations,
+                    metric=metric,
+                    group_id=group_id,
+                    method=method,
+                    alternative=alternative,
+                    method_roles=method_roles,
+                    code="estimation.engine.lift_guard",
+                    context={
+                        "metric": metric.name,
+                        "group_id": group_id,
+                        "reason": exc.reason,
+                        "display": reason,
+                    },
+                )
+                _warn(
+                    "readouts.run.cell_refused",
+                    metric_name=metric.name,
+                    group_id=group_id,
+                    method_name=method.name,
+                    reason=reason,
+                    stacklevel=3,
+                )
+            except CodedError as exc:
+                _emit_captured_lift_warnings(metric.name, captured, advisory_seen)
+                if exc.code not in _CELL_ESTIMATION_GUARD_CODES:
+                    raise
+                reason = str(exc)
+                refused.append((metric.name, group_id, method.name, reason))
+                _append_lift_cell_failure(
+                    results=results,
+                    computations=computations,
+                    metric=metric,
+                    group_id=group_id,
+                    method=method,
+                    alternative=alternative,
+                    method_roles=method_roles,
+                    code=exc.code,
+                    context=exc.context,
+                )
                 _warn(
                     "readouts.run.cell_refused",
                     metric_name=metric.name,
@@ -265,6 +332,8 @@ def _raise_if_all_lift_cells_refused(
     """Refuse an all-failed run with the producer's keyed failure evidence."""
     if not refused:
         return
+    from increment.decision import ArmHypothesisKey
+
     failures = [
         {
             "metric": key.metric,
@@ -276,6 +345,7 @@ def _raise_if_all_lift_cells_refused(
         }
         for computation in computations
         for key, failure in computation.failures.items()
+        if isinstance(key, ArmHypothesisKey)
     ]
     failures.sort(
         key=lambda failure: (
@@ -294,7 +364,7 @@ def _estimate_pass(  # noqa: PLR0913
     evidence: Any,
     test: Any,
     config: ResolvedMetricConfig,
-    design: Randomized | Encouragement | Observational,
+    design: Randomized | Encouragement,
     *,
     alpha_for: float,
     role: Role | None,

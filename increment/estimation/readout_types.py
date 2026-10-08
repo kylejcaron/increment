@@ -9,11 +9,11 @@ from collections.abc import Mapping
 from datetime import date, datetime
 from enum import StrEnum
 from hashlib import sha256
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator, model_validator
 
-from increment._canonical import canonical_json_bytes
+from increment._canonical import canonical_digest_bytes, canonical_json_bytes
 from increment._immutable import _FrozenMapping
 from increment.decision import MultiplicityFamily
 from increment.errors import (
@@ -75,7 +75,8 @@ _WIRE_REFUSALS = refusals(
         "readout.serialization.duplicate_cell_key": "Duplicate serialized cell {cell_key} in {source_snapshot_id}",
         "readout.serialization.noncanonical_order": "Serialized {section} is not canonically ordered",
         "readout.serialization.identity_mismatch": "Serialized identity mismatch for {source_snapshot_id}: {reason} ({cell_key})",
-        "readout.serialization.sequential_snapshot_required": "Sequential evidence requires snapshot for checkpoints {checkpoint_ids}",
+        "readout.serialization.duplicate_object_key": "Duplicate JSON object key {key}",
+        "readout.serialization.sequential_snapshot_required": "Serialized checkpoints require sequential snapshot {checkpoint_ids}",
     },
 )
 
@@ -111,7 +112,7 @@ class _ReadoutModel(CodedModel, BaseModel):
         for name in type(self).model_fields:
             value = getattr(self, name)
             if isinstance(value, Mapping):
-                canonical_json_bytes(thaw(value))
+                canonical_digest_bytes(thaw(value))
                 object.__setattr__(self, name, freeze(value))
         return self
 
@@ -144,7 +145,7 @@ class CellKey(_ReadoutModel):
     def from_row(cls, row):
         contrast = hasattr(row, "control_group")
         segment = getattr(row, "dimension", None) is not None
-        values = {name: getattr(row, name, None) for name in cls.model_fields}
+        values: dict[str, Any] = {name: getattr(row, name, None) for name in cls.model_fields}
         values.update(
             kind="contrast" if contrast else "segment" if segment else "arm",
             analysis_population=getattr(row, "analysis_population", "assigned"),
@@ -241,11 +242,19 @@ class CellKey(_ReadoutModel):
 
     def hypothesis(self) -> HypothesisKey:
         if self.kind == "arm":
+            assert self.group_id is not None and self.estimand is not None
             return ArmHypothesisKey(self.metric, self.group_id, self.estimand)
         if self.kind == "segment":
+            assert (
+                self.group_id is not None
+                and self.estimand is not None
+                and self.dimension is not None
+                and self.dimension_value is not None
+            )
             return SegmentHypothesisKey(
                 self.metric, self.group_id, self.estimand, self.dimension, self.dimension_value
             )
+        assert self.control_group is not None and self.treatment_group is not None
         return ContrastHypothesisKey(self.metric, self.control_group, self.treatment_group)
 
 
@@ -406,6 +415,7 @@ def family_identity(source_snapshot_id, analysis_population, view, dimension, so
 
 class SourceReadoutScope(_ReadoutModel):
     source_snapshot_id: str
+    source: Any = None
     cells: tuple[CellKey, ...]
     decision_cells: tuple[CellKey, ...]
     rosters: tuple[PopulationRoster, ...]
@@ -602,7 +612,7 @@ class StreamingDigest:
 
     def update(self, row):
         self.accumulator = (
-            self.accumulator + int.from_bytes(sha256(canonical_json_bytes(row)).digest(), "big")
+            self.accumulator + int.from_bytes(sha256(_digest_json_bytes(row)).digest(), "big")
         ) % (1 << 256)
         self.count += 1
 
@@ -619,7 +629,7 @@ class StreamingDigest:
         ).hexdigest()
 
 
-def refuse_readout(code, **context):
+def refuse_readout(code: str, **context: object) -> NoReturn:
     registry = (
         _WIRE_REFUSALS
         if code in _WIRE_REFUSALS
@@ -632,10 +642,29 @@ def refuse_readout(code, **context):
     refuse(registry[code], **context)
 
 
+def refuse_legacy_sampling(row: Any) -> NoReturn:
+    """Refuse a prior-bound row whose prior-free sampling reference was not persisted."""
+    refuse_readout(
+        "readout.legacy.sampling_unreconstructible",
+        cell_key={
+            "metric": row.metric,
+            "group_id": row.group_id,
+            "method": row.method,
+            "estimand": row.estimand,
+        },
+        missing_fields=("prior_free_reference_kind", "prior_free_reference_df"),
+        remedy="recompute_from_source",
+    )
+
+
 def _restore_collection(collection_type, rows, metadata, source, sequential_snapshot):
     return collection_type(
         rows, metadata=metadata, source=source, sequential_snapshot=sequential_snapshot
     )
+
+
+def _digest_json_bytes(value):
+    return canonical_digest_bytes(value)
 
 
 def cell_order(cell):
@@ -733,6 +762,14 @@ def validate_collection(rows, metadata):
                 cell_key=cell.model_dump(mode="json"),
                 reason="family mismatch",
             )
+    required = {(record.source_snapshot_id, record.cell) for record in metadata.cells}
+    if not metadata.partial and seen != required:
+        refuse_readout(
+            "readout.serialization.identity_mismatch",
+            source_snapshot_id=metadata.scope.snapshot_id,
+            cell_key=None,
+            reason="collection rows do not cover complete scope",
+        )
 
 
 def partial_metadata(metadata, rows, reason):
@@ -753,37 +790,75 @@ def partial_metadata(metadata, rows, reason):
     return metadata.model_copy(update={"partial": partial, "partial_reason": reasons})
 
 
-def concat_collection(left, right):
-    if type(left) is not type(right):
-        refuse_readout(
-            "readout.collection.concat_type_mismatch",
-            left=type(left).__name__,
-            right=type(right).__name__,
-        )
-    if left.metadata is None or right.metadata is None:
-        return type(left)([*left, *right])
-    a, b = left.metadata, right.metadata
-    ids = sorted([a.scope.snapshot_id, b.scope.snapshot_id])
-    cross = a.scope.snapshot_id != b.scope.snapshot_id
-    if not cross:
-        left_scope = a.scope.model_dump(mode="json")
-        right_scope = b.scope.model_dump(mode="json")
-        fields = sorted(name for name in left_scope if left_scope[name] != right_scope[name])
-        if fields:
-            refuse_readout(
-                "readout.collection.concat_metadata_mismatch", snapshot_ids=ids, fields=fields
-            )
-    sources = dict(a.scope.by_source)
-    for source, scope in b.scope.by_source.items():
-        if source in sources and sources[source] != scope:
-            refuse_readout(
-                "readout.collection.concat_metadata_mismatch",
-                snapshot_ids=ids,
-                fields=("by_source",),
-            )
-        sources[source] = scope
-    records = {(record.source_snapshot_id, record.cell): record for record in a.cells}
-    for record in b.cells:
+def _merge_source_scopes(left, right, ids):
+    sources: dict[str, SourceReadoutScope] = {}
+    source_descriptors = {}
+    descriptor_keys = {}
+    for collection, metadata in ((left, left.metadata), (right, right.metadata)):
+        for source_id, scope in metadata.scope.by_source.items():
+            descriptor = scope.source
+            if (
+                descriptor is not None
+                and collection.source is not None
+                and canonical_digest_bytes(descriptor) != canonical_digest_bytes(collection.source)
+            ):
+                refuse_readout(
+                    "readout.collection.concat_metadata_mismatch",
+                    snapshot_ids=ids,
+                    fields=("source",),
+                )
+            if descriptor is None:
+                descriptor = collection.source
+            descriptor_key = canonical_digest_bytes(descriptor)
+            if source_id not in sources:
+                sources[source_id] = scope
+                source_descriptors[source_id] = descriptor
+                descriptor_keys[source_id] = descriptor_key
+                continue
+            if descriptor_keys[source_id] != descriptor_key:
+                refuse_readout(
+                    "readout.collection.concat_metadata_mismatch",
+                    snapshot_ids=ids,
+                    fields=("source",),
+                )
+            existing = sources[source_id]
+            if existing.model_copy(update={"source": None}) != scope.model_copy(
+                update={"source": None}
+            ):
+                refuse_readout(
+                    "readout.collection.concat_metadata_mismatch",
+                    snapshot_ids=ids,
+                    fields=("by_source",),
+                )
+            if existing.source is None and scope.source is not None:
+                sources[source_id] = scope
+    result_source = (
+        left.source
+        if left.source is not None
+        and right.source is not None
+        and canonical_digest_bytes(left.source) == canonical_digest_bytes(right.source)
+        else None
+    )
+    if result_source is None:
+        for source_id, descriptor in source_descriptors.items():
+            if descriptor is not None and sources[source_id].source is None:
+                sources[source_id] = sources[source_id].model_copy(
+                    update={"source": freeze(descriptor)}
+                )
+    return sources, result_source
+
+
+def _record_order(record: CellRecord) -> tuple[str, bytes]:
+    return record.source_snapshot_id, cell_order(record.cell)
+
+
+def _merge_cell_identities(
+    left, right, ids
+) -> tuple[dict[tuple[str, CellKey], CellRecord], dict[tuple[str, CellKey], Any]]:
+    records: dict[tuple[str, CellKey], CellRecord] = {
+        (record.source_snapshot_id, record.cell): record for record in left.metadata.cells
+    }
+    for record in right.metadata.cells:
         key = (record.source_snapshot_id, record.cell)
         if key in records and records[key] != record:
             refuse_readout(
@@ -802,6 +877,62 @@ def concat_collection(left, right):
                 cell_key=key[1].model_dump(mode="json"),
             )
         rows[key] = row
+    return records, rows
+
+
+def concat_collection(left, right):
+    if type(left) is not type(right):
+        refuse_readout(
+            "readout.collection.concat_type_mismatch",
+            left=type(left).__name__,
+            right=type(right).__name__,
+        )
+    if left.metadata is None and right.metadata is None:
+        if left.source != right.source or left.sequential_snapshot != right.sequential_snapshot:
+            refuse_readout(
+                "readout.collection.concat_metadata_mismatch",
+                snapshot_ids=(),
+                fields=("source", "sequential_snapshot"),
+            )
+        return type(left)(
+            [*left, *right], source=left.source, sequential_snapshot=left.sequential_snapshot
+        )
+    if left.metadata is None or right.metadata is None:
+        refuse_readout(
+            "readout.collection.concat_metadata_mismatch",
+            snapshot_ids=tuple(
+                sorted(
+                    metadata.scope.snapshot_id
+                    for metadata in (left.metadata, right.metadata)
+                    if metadata is not None
+                )
+            ),
+            fields=("metadata",),
+        )
+    if left.sequential_snapshot != right.sequential_snapshot:
+        refuse_readout(
+            "readout.collection.concat_metadata_mismatch",
+            snapshot_ids=tuple(
+                sorted((left.metadata.scope.snapshot_id, right.metadata.scope.snapshot_id))
+            ),
+            fields=("sequential_snapshot",),
+        )
+    if left.metadata.scope.snapshot_id != right.metadata.scope.snapshot_id and (
+        left.sequential_snapshot is not None or right.sequential_snapshot is not None
+    ):
+        refuse_readout(
+            "readout.collection.concat_metadata_mismatch",
+            snapshot_ids=tuple(
+                sorted((left.metadata.scope.snapshot_id, right.metadata.scope.snapshot_id))
+            ),
+            fields=("sequential_snapshot",),
+        )
+    a: ReadoutMetadata = left.metadata
+    b: ReadoutMetadata = right.metadata
+    ids = sorted([a.scope.snapshot_id, b.scope.snapshot_id])
+    cross = a.scope.snapshot_id != b.scope.snapshot_id
+    sources, result_source = _merge_source_scopes(left, right, ids)
+    records, rows = _merge_cell_identities(left, right, ids)
     families = {family.family_id: family for family in a.scope.families}
     for family in b.scope.families:
         if family.family_id in families and families[family.family_id] != family:
@@ -831,25 +962,28 @@ def concat_collection(left, right):
         families=tuple(families[key] for key in sorted(families)),
         by_source=dict(sorted(sources.items())),
     )
-    metadata = ReadoutMetadata(
-        scope=scope,
-        cells=tuple(
-            sorted(
-                records.values(),
-                key=lambda record: (record.source_snapshot_id, cell_order(record.cell)),
-            )
-        ),
-        partial=cross,
-        partial_reason=("cross_snapshot_concat",) if cross else (),
+    ordered_records = sorted(records.values(), key=_record_order)
+    metadata = ReadoutMetadata(scope=scope, cells=tuple(ordered_records))
+    metadata = partial_metadata(
+        metadata,
+        rows.values(),
+        "cross_snapshot_concat" if cross else "slice",
     )
-    if not cross:
-        metadata = partial_metadata(metadata, rows.values(), "slice")
     return type(left)(
         rows.values(),
         metadata=metadata,
-        source=getattr(left, "source", None),
+        source=result_source,
         sequential_snapshot=getattr(left, "sequential_snapshot", None),
     )
+
+
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            refuse_readout("readout.serialization.duplicate_object_key", key=key)
+        result[key] = value
+    return result
 
 
 class ReadoutResults:
@@ -868,7 +1002,7 @@ class ReadoutResults:
         from increment.estimation.contrast_results import ContrastResult, ContrastResults
         from increment.sequential_state import SequentialSnapshot
 
-        payload = json.loads(text)
+        payload = json.loads(text, object_pairs_hook=_unique_object)
         if payload.get("kind") != "increment.readout" or payload.get("schema_version") != 1:
             refuse_readout(
                 "readout.serialization.unsupported_version",
@@ -876,22 +1010,19 @@ class ReadoutResults:
                 received=payload.get("schema_version"),
                 supported=(1,),
             )
-        collections = {
-            cls.__name__: cls
-            for cls in (
-                LiftEstimates,
-                BreakoutEstimates,
-                DailyMetricValues,
-                DailyLiftEstimates,
-                ContrastResults,
-            )
+        collection_name = payload.get("collection")
+        models: dict[str, type[BaseModel]] = {
+            "LiftEstimates": LiftEstimates._model,
+            "BreakoutEstimates": BreakoutEstimates._model,
+            "DailyMetricValues": DailyMetricValues._model,
+            "DailyLiftEstimates": DailyLiftEstimates._model,
+            "ContrastResults": ContrastResult,
         }
-        cls = collections.get(payload.get("collection"))
-        model = ContrastResult if cls is ContrastResults else getattr(cls, "_model", None)
+        model = models.get(collection_name)
         if model is None or model.__name__ != payload.get("row_model"):
             refuse_readout(
                 "readout.serialization.model_mismatch",
-                collection=payload.get("collection"),
+                collection=collection_name,
                 row_model=payload.get("row_model"),
             )
         metadata = (
@@ -909,11 +1040,9 @@ class ReadoutResults:
         sequential = (
             None
             if payload.get("sequential_snapshot") is None
-            else SequentialSnapshot.model_validate_json(
-                json.dumps(payload["sequential_snapshot"])
-            )
+            else SequentialSnapshot.model_validate_json(json.dumps(payload["sequential_snapshot"]))
         )
-        rows = [model.model_validate(row) for row in payload["rows"]]
+        rows: list[Any] = [model.model_validate(row) for row in payload["rows"]]
         checkpoints = []
         for row in rows:
             result = getattr(row, "sequential_result", None)
@@ -935,8 +1064,25 @@ class ReadoutResults:
         if sequential is not None:
             for checkpoint in checkpoints:
                 checkpoint.verify_snapshot(sequential)
-        return cls(
-            rows, metadata=metadata, source=payload.get("source"), sequential_snapshot=sequential
+        kwargs = {
+            "metadata": metadata,
+            "source": payload.get("source"),
+            "sequential_snapshot": sequential,
+        }
+        if collection_name == "LiftEstimates":
+            return LiftEstimates(rows, **kwargs)
+        if collection_name == "BreakoutEstimates":
+            return BreakoutEstimates(rows, **kwargs)
+        if collection_name == "DailyMetricValues":
+            return DailyMetricValues(rows, **kwargs)
+        if collection_name == "DailyLiftEstimates":
+            return DailyLiftEstimates(rows, **kwargs)
+        if collection_name == "ContrastResults":
+            return ContrastResults(rows, **kwargs)
+        refuse_readout(
+            "readout.serialization.model_mismatch",
+            collection=collection_name,
+            row_model=payload.get("row_model"),
         )
 
 

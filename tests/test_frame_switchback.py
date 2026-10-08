@@ -90,6 +90,7 @@ def test_switchback_analysis_run_reports_unsupported_assignment_integrity():
 
     results = analysis.run()
 
+    assert results.metadata is not None
     (integrity,) = next(iter(results.metadata.scope.by_source.values())).integrity
     assert integrity.status == "unsupported_assignment"
     assert integrity.code == "integrity.switchback_assignment_law"

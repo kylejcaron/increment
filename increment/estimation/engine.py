@@ -16,7 +16,7 @@ from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from numbers import Integral
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
 
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
@@ -59,7 +59,13 @@ from increment.estimation.conversion_route import (
     route_for_counts,
 )
 from increment.estimation.cuped import AdjustedRatioMoments, fit_cuped, fit_ratio_cuped
-from increment.estimation.inference import LiftGuardError, Prior, infer_lift, posterior_fields
+from increment.estimation.inference import (
+    LiftGuardError,
+    PosteriorFields,
+    Prior,
+    infer_lift,
+    posterior_fields,
+)
 from increment.estimation.results import (
     BINOMIAL_METHOD,
     BINOMIAL_NUMERICAL_QUALIFICATION,
@@ -546,9 +552,20 @@ def _validate_mixed_winsor_identity(
     return rows
 
 
-def _winsorization_result_fields(
-    control: ArmStats, treatment: ArmStats
-) -> dict[str, int | float | None]:
+class _WinsorizationFields(TypedDict):
+    winsor_lower_percentile: float | None
+    winsor_upper_percentile: float | None
+    winsor_lower_bound: float | None
+    winsor_upper_bound: float | None
+    winsor_control_n: int | None
+    winsor_control_n_lower: int | None
+    winsor_control_n_upper: int | None
+    winsor_treatment_n: int | None
+    winsor_treatment_n_lower: int | None
+    winsor_treatment_n_upper: int | None
+
+
+def _winsorization_result_fields(control: ArmStats, treatment: ArmStats) -> _WinsorizationFields:
     """Map one arm pair's winsorization metadata onto a result row."""
     arm_fields = (
         "winsor_lower_percentile",
@@ -558,21 +575,18 @@ def _winsorization_result_fields(
     )
     configured = control.winsor_n is not None or treatment.winsor_n is not None
     if not configured:
-        return dict.fromkeys(
-            (
-                "winsor_lower_percentile",
-                "winsor_upper_percentile",
-                "winsor_lower_bound",
-                "winsor_upper_bound",
-                "winsor_control_n",
-                "winsor_control_n_lower",
-                "winsor_control_n_upper",
-                "winsor_treatment_n",
-                "winsor_treatment_n_lower",
-                "winsor_treatment_n_upper",
-            ),
-            None,
-        )
+        return {
+            "winsor_lower_percentile": None,
+            "winsor_upper_percentile": None,
+            "winsor_lower_bound": None,
+            "winsor_upper_bound": None,
+            "winsor_control_n": None,
+            "winsor_control_n_lower": None,
+            "winsor_control_n_upper": None,
+            "winsor_treatment_n": None,
+            "winsor_treatment_n_lower": None,
+            "winsor_treatment_n_upper": None,
+        }
     if control.winsor_n is None or treatment.winsor_n is None:
         _refuse("estimation.engine.winsorization_metadata_present")
     for field in arm_fields:
@@ -1155,6 +1169,16 @@ def _raw_stats_evidence(
                     "reason": result.relative_unavailable_reason or str(exc),
                 },
             )
+        if p_value is None:
+            return None, DecisionFailure(
+                hypothesis,
+                "evidence.p_value.unavailable",
+                {
+                    "metric": result.metric,
+                    "group_id": result.group_id,
+                    "reason": "missing_sampling_statistic",
+                },
+            )
         return PValueEvidence(hypothesis, result.method, p_value, "relative_confidence_set"), None
 
     if result.lift is None:
@@ -1279,7 +1303,10 @@ def _lift_decision_bundle(  # noqa: PLR0915
             continue
         if result.quantile_p_value is not None:
             evidence[hypothesis] = PValueEvidence(
-                hypothesis, result.method, result.p_value(), "quantile_inversion"
+                hypothesis,
+                result.method,
+                result.quantile_p_value,
+                "quantile_inversion",
             )
             continue
         if result.inference in ("always_valid", "asymptotic_mean"):
@@ -1366,9 +1393,21 @@ def _lift_decision_bundle(  # noqa: PLR0915
         if result.reference_kind == "binomial":
             bset = result.binomial_set
             assert bset is not None, "validated: reference_kind='binomial' rows carry a set"
-            evidence[hypothesis] = PValueEvidence(
-                hypothesis, result.method, result.p_value(), bset.method
-            )
+            p_value = result.p_value()
+            if p_value is None:
+                failures[hypothesis] = DecisionFailure(
+                    hypothesis,
+                    "evidence.p_value.unavailable",
+                    {
+                        "metric": result.metric,
+                        "group_id": result.group_id,
+                        "reason": "missing_sampling_statistic",
+                    },
+                )
+            else:
+                evidence[hypothesis] = PValueEvidence(
+                    hypothesis, result.method, p_value, bset.method
+                )
             continue
         evidence_row, failure_row = _raw_stats_evidence(result, hypothesis)
         if failure_row is not None:
@@ -1571,6 +1610,8 @@ def _infer_lift_result(
                     alternative=alternative,
                     scale="log",
                     preferred_direction=preferred_direction,
+                    null_lift=null_lift,
+                    null_abs=null_abs,
                 )
             )
     except LiftGuardError as exc:
@@ -2252,6 +2293,12 @@ def _compute_lift_arm_moments(
     return log_rr, se_t, se_c, abs_t, abs_se_t, abs_c, abs_se_c
 
 
+class _PosteriorGuardFields(TypedDict):
+    posterior_available: Literal[False]
+    posterior_reason_code: str
+    posterior_reason_context: dict[str, Any]
+
+
 def _posterior_fields_for_contrast(
     contrast: tuple[ArmStats, ArmStats],
     method_strategy: _LiftMethodStrategy,
@@ -2261,10 +2308,12 @@ def _posterior_fields_for_contrast(
     alpha: float,
     alternative: str,
     preferred_direction: PreferredDirection | None,
-) -> dict[str, object]:
+    null_lift: float,
+    null_abs: float | None,
+) -> PosteriorFields | _PosteriorGuardFields:
     """Return a supported posterior, or its existing working-likelihood guard."""
     if prior is None:
-        return {}
+        return PosteriorFields()
     treatment, control = contrast
     try:
         log_rr, se_t, se_c, *_ = _compute_lift_arm_moments(
@@ -2289,19 +2338,35 @@ def _posterior_fields_for_contrast(
             alternative=alternative,
             scale="log",
             preferred_direction=preferred_direction,
+            null_lift=null_lift,
+            null_abs=null_abs,
         )
     except LiftGuardError as exc:
-        return {
-            "posterior_available": False,
-            "posterior_reason_code": "estimation.engine.lift_guard",
-            "posterior_reason_context": {
+        return _PosteriorGuardFields(
+            posterior_available=False,
+            posterior_reason_code="estimation.engine.lift_guard",
+            posterior_reason_context={
                 "metric": treatment.metric,
                 "group_id": treatment.group_id,
                 "method": method_strategy.method.name,
                 "reason": exc.reason,
                 "display": str(exc),
             },
-        }
+        )
+    except InvalidRequestError as exc:
+        if exc.code != "estimation.armstats.arm_stats.least_compute_metric":
+            raise
+        return _PosteriorGuardFields(
+            posterior_available=False,
+            posterior_reason_code=exc.code,
+            posterior_reason_context={
+                "metric": treatment.metric,
+                "group_id": treatment.group_id,
+                "method": method_strategy.method.name,
+                "reason": exc.code,
+                "display": str(exc),
+            },
+        )
 
 
 def _nonpositive_mean_additive_row(
@@ -2758,6 +2823,8 @@ def _lift_for_method(  # noqa: PLR0913
                     alpha=alpha,
                     alternative=valid_alternative,
                     preferred_direction=preferred_direction,
+                    null_lift=null_lift,
+                    null_abs=null_abs,
                 )
             )
         return result, failure

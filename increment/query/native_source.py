@@ -45,6 +45,7 @@ from increment.query._native_refusals import (
     _NATIVE_COVARIATE_DTYPE,
     _NATIVE_COVARIATE_UNRESOLVED,
     _NATIVE_SQL_GRAIN,
+    _NATIVE_TRIGGER_EVIDENCE_REQUIRED,
     _NATIVE_WAREHOUSE_CLUSTER,
     _percentile_winsorization,
     _refuse_operation,
@@ -61,6 +62,7 @@ from increment.query.builders import (
     _observable_window_flags,
     _scope_exposure_events,
     _uptake_events_in_elapsed_window,
+    _utc_timestamp_literal,
     _windowed_fact_sum,
     breakout_property_table,
     cluster_exposure_counts,
@@ -107,7 +109,7 @@ from increment.query.native_contract import (
     DayEvidenceSource,
     SitewideEvidence,
 )
-from increment.query.session import SourceScope, WarehouseSession
+from increment.query.session import SourceScope, SourceSnapshotEvidence, WarehouseSession
 from increment.semantics.artifact import UnitDayArtifactRef
 from increment.semantics.design import Encouragement
 from increment.semantics.models import (
@@ -277,19 +279,31 @@ class DefinitionsMomentSource(SequentialSourceMixin):
         return self._exposures_cache
 
     def _get_trigger_population(self, *, operation: str) -> Table:
-        """The enrolled units that also produced the declared trigger.
-
-        Resolved through the same first-occurrence machinery as
-        enrollment, then semi-joined onto it. Cached separately from
-        ``_get_exposures``, which must keep serving the unnarrowed set.
-        """
+        """Eligible enrolled units with their true first-trigger anchors."""
         if self._trigger_cache is None:
             self._validate_trigger_capability(operation=operation)
-            experiment = self._experiment
+            evidence = self._require_source_snapshot_evidence(operation=operation)
             trigger_events = self._build_trigger_events_table()
-            triggers = first_exposures(trigger_events, experiment)
-            self._trigger_cache = triggered_population(self._get_exposures(), triggers)
+            self._trigger_cache = triggered_population(
+                self._get_exposures(),
+                trigger_events,
+                observation_cutoff=evidence.observation_cutoff_ts,
+            )
         return self._trigger_cache
+
+    def _require_source_snapshot_evidence(self, *, operation: str) -> SourceSnapshotEvidence:
+        evidence = self._session.source_snapshot_evidence
+        if evidence is None:
+            _refuse(
+                _NATIVE_TRIGGER_EVIDENCE_REQUIRED,
+                operation=operation,
+                route=(
+                    "pass source_snapshot_evidence=SourceSnapshotEvidence(...) to "
+                    "Analysis.from_definitions using the upstream source's explicit "
+                    "event-time cutoff; provide feed watermarks only when certified"
+                ),
+            )
+        return evidence
 
     def _validate_trigger_capability(self, *, operation: str) -> None:
         """Refuse a triggered population before resolving warehouse tables."""
@@ -305,6 +319,7 @@ class DefinitionsMomentSource(SequentialSourceMixin):
                 offered=("assigned",),
                 route="declare `trigger: <exposure name>` on the experiment",
             )
+        self._require_source_snapshot_evidence(operation=operation)
 
     def _invalidate_materialization(self) -> None:
         """Drop the previous operation's TEMP tables and cached panel expressions."""
@@ -773,6 +788,7 @@ class DefinitionsMomentSource(SequentialSourceMixin):
             validate_cluster_labels=self._validate_cluster_labels,
             validate_mixed_assignments=self._validate_mixed_assignments,
             data_as_of=self._data_as_of,
+            source_snapshot_evidence=self._session.source_snapshot_evidence,
         )
 
     def publish_unit_day_artifact(
@@ -1071,13 +1087,17 @@ class DefinitionsMomentSource(SequentialSourceMixin):
             horizon_argument = horizon_key
         if not use_cache:
             return self._build_panel_for_metric_impl(
-                exposures, metric, horizon_metrics=horizon_argument
+                exposures,
+                metric,
+                population=population,
+                horizon_metrics=horizon_argument,
             )
         cached = self._panel_cache.get(key)
         if cached is None:
             cached = self._build_panel_for_metric_impl(
                 exposures,
                 metric,
+                population=population,
                 horizon_metrics=horizon_argument,
             )
             self._panel_cache[key] = cached
@@ -1087,6 +1107,7 @@ class DefinitionsMomentSource(SequentialSourceMixin):
         self,
         exposures: Table,
         metric: Metric,
+        population: Literal["assigned", "triggered"] = "assigned",
         *,
         horizon_metrics: Sequence[Metric] | None = None,
     ) -> tuple[Table, Table, Table, Table, Table | None, Table, str | None, ir.Scalar]:
@@ -1120,14 +1141,13 @@ class DefinitionsMomentSource(SequentialSourceMixin):
             events = metric_events(
                 num_fact_tbl, metric, value_column=num_value_col, part="numerator"
             )
-
             den_fs, den_fact_def = _find_fact_source(self._defs, metric.denominator.fact)
             den_fact_tbl = self._get_fact_table(den_fs)
             den_value_col = _resolve_value_column(den_fs, den_fact_def)
             den_events = metric_events(
                 den_fact_tbl, metric, value_column=den_value_col, part="denominator"
             )
-            fact_tbl = num_fact_tbl  # the numerator is the pre-period covariate's source
+            fact_tbl = num_fact_tbl
             value_col = num_value_col
             data_as_of = cast(
                 ir.Scalar,
@@ -1143,16 +1163,75 @@ class DefinitionsMomentSource(SequentialSourceMixin):
             events = metric_events(fact_tbl, metric, value_column=value_col)
             data_as_of = self._data_as_of(fact_tbl, metric.fact)
 
+        outcome_exposures = exposures
+        evidence = (
+            self._require_source_snapshot_evidence(operation="triggered_outcomes")
+            if population == "triggered"
+            else self._session.source_snapshot_evidence
+        )
+
+        if population == "triggered" and evidence is not None:
+            anchors = exposures.select("unit_id", "first_trigger_ts")
+
+            def after_trigger(event_table: Table) -> Table:
+                joined = event_table.join(anchors, event_table.unit_id == anchors.unit_id).filter(
+                    (event_table.ts > anchors.first_trigger_ts)
+                    & (
+                        event_table.ts
+                        <= _utc_timestamp_literal(event_table.ts, evidence.observation_cutoff_ts)
+                    )
+                )
+                return joined.select(**{name: event_table[name] for name in event_table.columns})
+
+            events = after_trigger(events)
+            if den_events is not None:
+                den_events = after_trigger(den_events)
+            outcome_exposures = exposures.mutate(first_exposure_ts=exposures.first_trigger_ts)
+        spine_experiment = self._experiment
+        spine_end: dt.date | None = None
+        if evidence is not None:
+            measure_facts = (
+                (metric.numerator.fact, metric.denominator.fact)
+                if isinstance(metric, RatioMetric)
+                else (metric.fact,)
+            )
+            contributing_feeds = tuple(
+                _find_fact_source(self._defs, fact)[0].name for fact in measure_facts
+            )
+            certified = [evidence.complete_through_by_feed.get(feed) for feed in contributing_feeds]
+            if certified and all(value is not None for value in certified):
+                edge = min(
+                    evidence.observation_cutoff_ts,
+                    *(cast(dt.datetime, value) for value in certified),
+                )
+                offset = self._experiment.day_boundary_offset
+                certified_day = (edge + offset).date() - dt.timedelta(days=1)
+                data_as_of = ibis.literal(certified_day)
+            else:
+                certified_day = dt.date.min
+                data_as_of = ibis.literal(certified_day)
+            declared_horizon = self._experiment.observation_horizon_day
+            spine_end = (
+                min(certified_day, declared_horizon)
+                if declared_horizon is not None
+                else certified_day
+            )
+            spine_experiment = self._experiment.model_copy(
+                update={"observation_end": dt.datetime.combine(spine_end, dt.time())}
+            )
+
         horizon = self._union_event_horizon(horizon_metrics)
+        if spine_end is not None:
+            horizon = cast("ir.Scalar", ibis.least(horizon, ibis.literal(spine_end)))
         panel = unit_day_panel(
-            exposures,
+            outcome_exposures,
             events,
-            self._experiment,
+            spine_experiment,
             metric_name=metric.name,
             end_date=horizon,
         )
         spine, stats = unit_day_spine_stats(
-            exposures, events, self._experiment, metric.name, end_date=horizon
+            outcome_exposures, events, spine_experiment, metric.name, end_date=horizon
         )
         return panel, spine, stats, events, den_events, fact_tbl, value_col, data_as_of
 
@@ -1599,6 +1678,7 @@ class DefinitionsMomentSource(SequentialSourceMixin):
             den_stats=den_stats,
             uptake_events=uptake_events,
             uptake_window_days=uptake_window_days,
+            uptake_exposures=exposures,
             by=list(by) or None,
             properties_table=properties_table,
             data_as_of=data_as_of,
@@ -1921,6 +2001,8 @@ class DefinitionsMomentSource(SequentialSourceMixin):
             methods=methods,
             prior=prior,
         )
+        if population == "triggered":
+            self._validate_trigger_capability(operation="moments")
         self._note_reduction()
         # Build exposure events once (shared across all metrics)
         exposures = (
@@ -2645,6 +2727,7 @@ class DefinitionsMomentSource(SequentialSourceMixin):
                 compiled_plan_to_json(self._context.plan),
                 json.dumps(assignment_counts, sort_keys=True, separators=(",", ":")),
                 compliance_payload,
+                self.context.trigger_name,
             )
             return MomentsSource(
                 [row],
@@ -2654,6 +2737,7 @@ class DefinitionsMomentSource(SequentialSourceMixin):
                 design=self._context.design,
                 plan=self._context.plan,
                 path="warehouse",
+                _trusted_trigger_name=self.context.trigger_name,
             )
         from increment.sources import MomentsSource
 
@@ -2665,6 +2749,7 @@ class DefinitionsMomentSource(SequentialSourceMixin):
             design=self._context.design,
             plan=self._context.plan,
             path="warehouse",
+            _trusted_trigger_name=self.context.trigger_name,
         )
 
     def build_panel_for_metric(
@@ -2796,6 +2881,7 @@ class DefinitionsMomentSource(SequentialSourceMixin):
 
     def trigger_rates(self) -> dict[str, float]:
         """Observed triggered share per arm."""
+        self._validate_trigger_capability(operation="trigger_rates")
         self._validate_mixed_assignments()
         assigned = self._arm_counts(self._get_exposures())
         triggered = self._arm_counts(self._get_trigger_population(operation="trigger_rates"))
@@ -2826,12 +2912,13 @@ class DefinitionsMomentSource(SequentialSourceMixin):
             counts = {str(r["group_id"]): int(r["n_clusters"]) for r in rows}
             unit_counts = {str(r["group_id"]): int(r["n_units"]) for r in rows}
             grain = "cluster"
-        mixed = self._mixed_assignment_units or 0
-        unassigned = self._unassigned_assignment_units or 0
-        if mixed:
-            counts[MIXED_ASSIGNMENT_LABEL] = mixed
-        if unassigned:
-            counts[UNASSIGNED_LABEL] = unassigned
+        if population == "assigned":
+            mixed = self._mixed_assignment_units or 0
+            unassigned = self._unassigned_assignment_units or 0
+            if mixed:
+                counts[MIXED_ASSIGNMENT_LABEL] = mixed
+            if unassigned:
+                counts[UNASSIGNED_LABEL] = unassigned
         return grain, counts, unit_counts
 
     def triggered_counts(
@@ -3040,6 +3127,8 @@ class DefinitionsMomentSource(SequentialSourceMixin):
             from increment.winsor import winsor_refuse
 
             winsor_refuse("invalid_state", "Unknown unit outcome stage.")
+        if population == "triggered":
+            self._validate_trigger_capability(operation="unit_frame")
         cluster = self._experiment.cluster
         if "cluster_id" in covariates and cluster != "cluster_id":
             _refuse(_NATIVE_COVARIATE_RESERVED, covariate="cluster_id", cluster=cluster)

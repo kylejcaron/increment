@@ -94,13 +94,13 @@ Running out of splits is not an error: the bound stays valid and merely looser, 
 `confidence_interval` discloses a search it ended before its gap target.
 
 Every intermediate value combined into that certificate (a raw
-``scipy.stats`` PMF/CDF/SF evaluation, their dot-product summation, and the
-Clopper-Pearson endpoint inversion feeding the nuisance domain) is ordinary
-float64 arithmetic: it is NEVER trusted bit-for-bit as an exact enclosure.
-``_eps_margin``/``_round_outward`` below add a derived, regression-tested
-outward safety margin so the reported certificate is a genuine upper bound
-on the MATHEMATICAL supremum, not merely on whatever SciPy happened to
-return -- see the "Floating-point outward-rounding certification" section.
+``scipy.stats`` PMF/CDF/SF evaluation, their dot-product summation, and
+the Clopper-Pearson endpoint inversion feeding the nuisance domain) is ordinary
+float64 arithmetic. ``_eps_margin``/``_round_outward`` below add a derived,
+regression-tested outward safety margin; the reported upper bound is conditional
+on the deployed SciPy/Boost special-function error model and producing build,
+not a cross-build proof of the mathematical supremum. See the
+"Floating-point outward-rounding certification" section.
 
 Endpoint search: each crossing of the evaluated p-envelope is bracketed geometrically from the
 point estimate, then narrowed by interpolated probes (a probit-linear fit in log r, under a

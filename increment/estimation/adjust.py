@@ -48,6 +48,7 @@ if TYPE_CHECKING:
 
     from increment._readout_request import ReadoutRequest
     from increment.decision import DecisionComputation, DecisionFailure
+    from increment.estimation.engine import _WinsorizationFields
     from increment.estimation.results import LiftEstimate
     from increment.semantics.design import Observational
     from increment.semantics.models import Metric
@@ -178,7 +179,22 @@ def _refuse_compatibility(code: str, **context: object) -> None:
 _refuse = raiser(_REFUSALS)
 
 
-def _weight_diagnostics_projection(method_name: str) -> dict[str, object]:
+def weight_diagnostics_projection(
+    method_name: str,
+    *,
+    row: LiftEstimate | None = None,
+    failure: DecisionFailure | None = None,
+) -> dict[str, object]:
+    """Return unavailable diagnostic fields without overwriting producer data."""
+    if row is not None and row.weight_diagnostics_available is not None:
+        return {}
+    if failure is not None and method_name in {"iptw", "aipw"}:
+        return {
+            "weight_diagnostics_available": False,
+            "weight_diagnostics_reason_code": failure.code,
+            "weight_diagnostics_reason_context": _FrozenMapping(failure.context),
+            **_null_weight_diagnostics(),
+        }
     if method_name in {"iptw", "aipw"}:
         return {}
     return {
@@ -187,6 +203,12 @@ def _weight_diagnostics_projection(method_name: str) -> dict[str, object]:
             "readout.weight_diagnostics.not_applicable"
         ].code,
         "weight_diagnostics_reason_context": _FrozenMapping({"method": method_name}),
+        **_null_weight_diagnostics(),
+    }
+
+
+def _null_weight_diagnostics() -> dict[str, None]:
+    return {
         "weight_definition": None,
         "weight_grain": None,
         "control_weight_n": None,
@@ -604,47 +626,26 @@ def validate_readout_adjustment(request: ReadoutRequest) -> None:
         from increment.errors import refuse
         from increment.estimation._adjust.common import SUPPORTED_RATIO_METRIC
 
-        configs_by_name = {config.metric.name: config for config in configs}
         decisions = [
             (metric, methods[0])
             for metric, methods in zip(metrics, method_catalog, strict=True)
             if methods
         ]
-        # A member of a family that needs complete evidence refuses first, so
-        # its context names the family whatever else the request holds.
+        # The first configured method is the decision route; unsupported
+        # sensitivity methods are skipped independently by estimate_ate.
         for metric, method in decisions:
+            if metric.type != "ratio" or method.name.lower() not in ratio_incapable:
+                continue
             procedure = request.plan.procedures[metric.name]
             membership = procedure.family
             family = getattr(membership, "family", None)
-            correction = getattr(family, "correction", None)
-            if (
-                metric.type == "ratio"
-                and configs_by_name[metric.name].prior is None
-                and getattr(membership, "member", False)
-                and correction in ("bh", "e_bh")
-                and method.name.lower() in ratio_incapable
-            ):
-                refuse(
-                    SUPPORTED_RATIO_METRIC,
-                    method=method.name,
-                    metric=metric.name,
-                    role=procedure.role,
-                    family=getattr(family, "name", None),
-                    correction=correction,
-                )
-        if (
-            decisions
-            and all(metric.type == "ratio" for metric in metrics)
-            and all(method.name.lower() in ratio_incapable for _, method in decisions)
-        ):
-            metric, method = decisions[0]
             refuse(
                 SUPPORTED_RATIO_METRIC,
                 method=method.name,
                 metric=metric.name,
-                role=request.plan.procedures[metric.name].role,
-                family=None,
-                correction=None,
+                role=procedure.role,
+                family=getattr(family, "name", None),
+                correction=getattr(family, "correction", None),
             )
     plan = request.plan
     if mechanism == "observational" and request.by:
@@ -713,8 +714,7 @@ def observational_evidence(src: MomentSource, metrics: Sequence[Metric]) -> Obse
 def _winsorization_diagnostics(
     rows: Sequence[Mapping[str, Any]],
     control_group: str,
-) -> dict[str, dict[str, int | float | None]]:
-    """Return contrast diagnostics keyed by treatment group for one metric."""
+) -> dict[str, _WinsorizationFields]:
     arms = _df_to_arms(rows)
     control = next(
         (arm for arm in arms if arm.group_id == control_group),
@@ -916,7 +916,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                 metric for metric in selected if getattr(metric, "winsorization", None) is not None
             ]
         evidence = observational_evidence(src, moment_metrics)
-    winsor_diagnostics: dict[str, dict[str, dict[str, int | float | None]]] = {}
+    winsor_diagnostics: dict[str, dict[str, _WinsorizationFields]] = {}
     for raw_metric in selected:
         declared_metric = raw_metric
         metric_config = getattr(declared_metric, "winsorization", None)
@@ -931,7 +931,6 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
     refused_failures: dict[Any, DecisionFailure] = {}
     any_attempted = False
     for method in methods:
-        weight_diagnostics = _weight_diagnostics_projection(method.name)
         if method.name == "unadjusted":
             any_attempted = True
             for metric in selected:
@@ -969,7 +968,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                     r.model_copy(
                         update={
                             "method_role": resolved_method_roles.get(method.name, "decision"),
-                            **weight_diagnostics,
+                            **weight_diagnostics_projection(method.name, row=r),
                             **(
                                 winsor_diagnostics.get(metric.name, {}).get(r.group_id, {})
                                 if cluster is not None
@@ -1009,7 +1008,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                         result.model_copy(
                             update={
                                 "method_role": resolved_method_roles.get(method.name, "decision"),
-                                **weight_diagnostics,
+                                **weight_diagnostics_projection(method.name, row=result),
                                 **diagnostics_by_group.get(result.group_id, {}),
                             }
                         )
@@ -1040,8 +1039,8 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
                             hypothesis = ArmHypothesisKey(metric.name, str(row["group_id"]), "ate")
                             refused_failures[hypothesis] = DecisionFailure(
                                 hypothesis,
-                                "estimation.adjust.unavailable",
-                                {"metric": metric.name, "method": method.name, "reason": str(exc)},
+                                exc.code,
+                                dict(exc.context),
                             )
     if _raise_if_empty and not results and not any_attempted and selected and not refused_failures:
         _refuse("estimation.adjust.estimate_ate_every")

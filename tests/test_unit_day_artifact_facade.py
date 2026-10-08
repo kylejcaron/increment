@@ -13,10 +13,12 @@ import pytest
 import yaml
 
 from examples._seed import seed_event_log
+from increment import SourceSnapshotEvidence
 from increment._moment_plan import SLOTS
 from increment.analysis import Analysis
 from increment.errors import CapabilityError, CodedError
 from increment.estimation.armstats import ArmStats
+from increment.estimation.diagnostics import SRMResult
 from increment.query import session as session_module
 from increment.query.artifact_contract import (
     ArtifactContractError,
@@ -219,6 +221,7 @@ def _native(
     definitions: str | Path = "examples/definitions",
     with_pre_period: bool = False,
     with_late_returns: bool = False,
+    source_snapshot_evidence: SourceSnapshotEvidence | None = None,
 ):
     con = ibis.duckdb.connect()
     seed_event_log(
@@ -226,7 +229,12 @@ def _native(
         with_pre_period=with_pre_period,
         with_late_returns=with_late_returns,
     )
-    analysis = Analysis.from_definitions("new_onboarding_v2", definitions, con)
+    analysis = Analysis.from_definitions(
+        "new_onboarding_v2",
+        definitions,
+        con,
+        source_snapshot_evidence=source_snapshot_evidence,
+    )
     context = _expected_context(definitions)
     store = WarehouseArtifactStore(con, schema_name="artifacts")
     return con, analysis, context, store
@@ -488,7 +496,10 @@ def test_artifact_source_reports_closed_only_after_close() -> None:
 @pytest.mark.parametrize("closer", ["parent", "triggered"])
 def test_closing_either_view_of_a_snapshot_closes_both(tmp_path: Path, closer: str) -> None:
     definitions = _definitions(tmp_path, trigger="session_start")
-    _con, native, context, store = _native(definitions=definitions)
+    _con, native, context, store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(datetime(2030, 1, 1, tzinfo=UTC)),
+    )
     ref = native.publish_unit_day_artifact(
         store, extensions=_extensions(context, "trigger_population", "assignment_counts")
     )
@@ -559,10 +570,19 @@ def test_refresh_preserves_artifact_identity_and_rejects_cross_context() -> None
 # Guards triggered dispatch from silently returning only the assigned population.
 def test_artifact_run_returns_assigned_and_triggered(tmp_path: Path) -> None:
     definitions = _definitions(tmp_path, trigger="session_start")
-    _con, native, context, store = _native(definitions=definitions)
-    selected = _extensions(context, "trigger_population", "assignment_counts")
+    _con, native, context, store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            datetime(2030, 1, 1, tzinfo=UTC),
+            {"event_log": datetime(2030, 1, 1, tzinfo=UTC)},
+        ),
+    )
+    selected = _extensions(
+        context, "trigger_population", "trigger_measure_stats", "assignment_counts"
+    )
     assert {request.kind for request in selected} == {
         "trigger_population",
+        "trigger_measure_stats",
         "assignment_counts",
     }
     ref = native.publish_unit_day_artifact(store, extensions=selected)
@@ -880,9 +900,20 @@ def test_triggered_artifact_serves_full_population_extensions(tmp_path: Path) ->
         breakouts=[{"property": "country"}],
         cuped_metrics=("purchase_rate",),
     )
-    _con, native, context, store = _native(definitions=definitions, with_pre_period=True)
+    _con, native, context, store = _native(
+        definitions=definitions,
+        with_pre_period=True,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            datetime(2030, 1, 1, tzinfo=UTC), {"event_log": datetime(2030, 1, 1, tzinfo=UTC)}
+        ),
+    )
     selected = _extensions(
-        context, "trigger_population", "assignment_counts", "breakout_dimension", "cuped_preperiod"
+        context,
+        "trigger_population",
+        "trigger_measure_stats",
+        "assignment_counts",
+        "breakout_dimension",
+        "cuped_preperiod",
     )
     ref = native.publish_unit_day_artifact(store, extensions=selected)
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
@@ -929,19 +960,78 @@ def test_clustered_artifact_run_integrity_uses_randomization_unit_counts(tmp_pat
 
     results = adopted.run()
 
-    (integrity,) = next(iter(results.metadata.scope.by_source.values())).integrity
+    with open_artifact(store, ref, expected_context=context) as source:
+        assert source.assignment_counts() == {"C": 25, "T": 25}
+
+    metadata = results.metadata
+    assert metadata is not None
+    scope = metadata.scope
+    assert scope is not None
+    (integrity,) = next(iter(scope.by_source.values())).integrity
     assert integrity.randomization_grain == "cluster"
     assert integrity.observed == {"C": 25, "T": 25}
     assert integrity.expected == {"C": 0.5, "T": 0.5}
+    source_payload = results.source
+    assert source_payload is not None
     assert any(
-        component["kind"] == "assignment_counts"
-        and component["population"] == "assigned"
-        for component in results.source["components"]
+        component["kind"] == "assignment_counts" and component["population"] == "assigned"
+        for component in source_payload["components"]
     )
     assert integrity.status == "not_rejected"
     adopted.close()
     native.close()
-    con.disconnect()
+
+
+def test_artifact_assignment_counts_preserve_audit_counts_and_registered_refusal(
+    tmp_path: Path,
+) -> None:
+    from increment.query.artifact_reader import ArtifactMomentSource
+    from tests.test_analysis_facade import _insert_null_assignment, _mixed_assignment_connection
+
+    con = _mixed_assignment_connection()
+    _insert_null_assignment(con)
+    definitions = _definitions(tmp_path)
+    definition_payload = yaml.safe_load(definitions.read_text())
+    experiment_payload = next(
+        item for item in definition_payload["experiments"] if item["name"] == "new_onboarding_v2"
+    )
+    experiment_payload["allocation"] = {"control": 0.5, "treatment": 0.5}
+    experiment_payload["allocation_scheme"] = "independent"
+    definitions.write_text(yaml.safe_dump(definition_payload, sort_keys=False))
+    native = Analysis.from_definitions(
+        "new_onboarding_v2", definitions, con, on_mixed_assignment="exclude"
+    )
+    loaded = load(definitions)
+    experiment = loaded.experiment("new_onboarding_v2")
+    assert experiment is not None
+    context = artifact_context(loaded, experiment, "exclude")
+    store = WarehouseArtifactStore(con, schema_name="assignment_count_audit_artifact")
+    reference = native.publish_unit_day_artifact(
+        store, extensions=_extensions(context, "assignment_counts")
+    )
+    adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    expected = native._src.unit_counts()
+    try:
+        with open_artifact(store, reference, expected_context=context) as source:
+            assert source.unit_counts() == expected
+            assert source.assignment_counts() == expected
+
+        native_srm = native.srm(expected={"control": 0.5, "treatment": 0.5})
+        artifact_srm = adopted.srm(expected={"control": 0.5, "treatment": 0.5})
+        assert isinstance(native_srm, SRMResult)
+        assert isinstance(artifact_srm, SRMResult)
+        assert artifact_srm.observed == native_srm.observed
+        assert artifact_srm.mixed_assignment_units == native_srm.mixed_assignment_units
+        assert artifact_srm.unassigned_units == native_srm.unassigned_units
+
+        with ArtifactMomentSource.open(store, reference, expected_context=context) as raw_source:
+            with pytest.raises(ArtifactContractError) as raised:
+                raw_source.assignment_counts(population="triggered")
+        assert raised.value.code == "artifact.evidence.unavailable"
+    finally:
+        adopted.close()
+        native.close()
+        con.disconnect()
 
 
 @pytest.mark.filterwarnings("ignore:sitewide under a declared cluster")
@@ -1097,9 +1187,19 @@ def test_triggered_subset_dimension_and_cuped_extensions_match_native(tmp_path: 
     """A trigger that admits only a subset of enrolled units must yield the
     same moments, breakout sums, and public lift estimates on both paths."""
     definitions = _triggered_subset_definitions(tmp_path)
-    _con, native, context, store = _native(definitions=definitions, with_pre_period=True)
+    evidence = SourceSnapshotEvidence(
+        datetime(2030, 1, 1, tzinfo=UTC), {"event_log": datetime(2030, 1, 1, tzinfo=UTC)}
+    )
+    _con, native, context, store = _native(
+        definitions=definitions, with_pre_period=True, source_snapshot_evidence=evidence
+    )
     requests = _extensions(
-        context, "trigger_population", "assignment_counts", "breakout_dimension", "cuped_preperiod"
+        context,
+        "trigger_population",
+        "trigger_measure_stats",
+        "assignment_counts",
+        "breakout_dimension",
+        "cuped_preperiod",
     )
     assert any(request.kind == "cuped_preperiod" for request in requests)
     ref = native.publish_unit_day_artifact(store, extensions=requests)
@@ -1122,19 +1222,33 @@ def test_triggered_subset_dimension_and_cuped_extensions_match_native(tmp_path: 
             "list[dict[str, Any]]",
             native_triggered.moments(native_metric, grain="total", include_covariate=True),
         )
+
         with open_artifact(store, ref, expected_context=context) as source:
             triggered = source.triggered_source()
             adopted_rows = cast(
                 "list[dict[str, Any]]",
                 triggered.moments(adopted_metric, grain="total", include_covariate=True),
             )
+
             adopted_breakout_rows = cast(
                 "list[dict[str, Any]]",
                 triggered.moments(
                     adopted_metric, grain="total", by=["country"], include_covariate=True
                 ),
             )
-        assert native_rows and adopted_rows and adopted_breakout_rows
+            assert (
+                native_rows
+                and adopted_rows
+                and adopted_breakout_rows
+                and {
+                    row["unit_id"]: (row["group_id"], row["y"])
+                    for row in cast(Any, native_triggered.unit_frame(native_metric)).to_pylist()
+                }
+                == {
+                    row["unit_id"]: (row["group_id"], row["y"])
+                    for row in cast(Any, triggered.unit_frame(adopted_metric)).to_pylist()
+                }
+            )
         native_by_group = {row["group_id"]: row for row in native_rows}
         adopted_by_group = {row["group_id"]: row for row in adopted_rows}
         assert set(native_by_group) == set(adopted_by_group)
@@ -1166,7 +1280,6 @@ def test_triggered_subset_dimension_and_cuped_extensions_match_native(tmp_path: 
                     ), (group_id, slot_name)
         # A declared trigger's breakout has no public route on either path;
         # both must refuse it identically, not silently diverge.
-        from increment.errors import CapabilityError
 
         with pytest.raises(CapabilityError) as native_raised:
             native.run_breakout()
@@ -1206,9 +1319,15 @@ def test_artifact_run_breakout_refuses_a_declared_trigger(tmp_path: Path) -> Non
     con = ibis.duckdb.connect()
     seed_event_log(con)
     definitions = _triggered_definitions(tmp_path)
-    native = Analysis.from_definitions("new_onboarding_v2", definitions, con)
+    native = Analysis.from_definitions(
+        "new_onboarding_v2",
+        definitions,
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(datetime(2030, 1, 1, tzinfo=UTC)),
+    )
     context = _expected_context(definitions)
     store = WarehouseArtifactStore(con, schema_name="artifacts")
+
     extensions = [
         entry.request
         for entry in unit_day_artifact_extension_catalog(context)
@@ -1223,6 +1342,47 @@ def test_artifact_run_breakout_refuses_a_declared_trigger(tmp_path: Path) -> Non
     with pytest.raises(CapabilityError) as raised:
         adopted.run_breakout()
     assert raised.value.code == "facade.analysis.trigger_unsupported"
+
+
+def test_trigger_artifact_publication_requires_explicit_cutoff_before_pinning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from increment.errors import CapabilityError
+
+    _con, native, context, store = _native(definitions=_triggered_definitions(tmp_path))
+    try:
+
+        def fail_if_pinned(*_args: Any, **_kwargs: Any) -> Any:
+            pytest.fail("trigger evidence must be required before source pinning")
+
+        monkeypatch.setattr(native._src, "_pinned_source_execution", fail_if_pinned)
+        with pytest.raises(CapabilityError) as raised:
+            native.publish_unit_day_artifact(
+                store,
+                extensions=_extensions(context, "trigger_population"),
+            )
+        assert raised.value.code == "source.native.trigger_evidence_required"
+    finally:
+        native.close()
+
+
+def test_triggered_assignment_count_publication_requires_snapshot_evidence_before_pinning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    definitions = _triggered_definitions(tmp_path)
+    _con, native, context, store = _native(definitions=definitions)
+    request = _extensions(context, "assignment_counts")[0]
+    try:
+
+        def fail_if_pinned(*_args: Any, **_kwargs: Any) -> Any:
+            pytest.fail("trigger evidence must be required before source pinning")
+
+        monkeypatch.setattr(native._src, "_pinned_source_execution", fail_if_pinned)
+        with pytest.raises(CapabilityError) as raised:
+            native.publish_unit_day_artifact(store, extensions=[request])
+        assert raised.value.code == "source.native.trigger_evidence_required"
+    finally:
+        native.close()
 
 
 def test_site_volume_extension_counts_non_enrolled_units_in_window(tmp_path: Path) -> None:

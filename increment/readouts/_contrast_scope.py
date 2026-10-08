@@ -5,7 +5,7 @@ from __future__ import annotations
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any
 
-from increment._canonical import canonical_json_bytes
+from increment._canonical import canonical_digest_bytes, canonical_json_bytes
 from increment.estimation.assignment_integrity import assignment_integrity
 from increment.estimation.contrast_results import ContrastResults
 from increment.estimation.readout_types import (
@@ -42,7 +42,7 @@ def scope_contrast_results(
                 "kind": "unit_evidence_rows",
                 "metric": metric,
                 "population": "assigned",
-                "sha256": sha256(canonical_json_bytes(value.model_dump(mode="json"))).hexdigest(),
+                "sha256": sha256(canonical_digest_bytes(value.model_dump(mode="json"))).hexdigest(),
             }
             for metric, value in stats.items()
         ),

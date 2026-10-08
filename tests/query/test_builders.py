@@ -606,6 +606,70 @@ def test_unit_day_panel_window_days(exposures, purchase_metric_events, experimen
     assert u1_aug4["sum_value"].iloc[0] == 0.0
 
 
+def test_trigger_relative_panel_uses_strict_event_anchor_and_exclusive_local_window_edge(
+    experiment, mean_metric
+):
+    trigger_times = {
+        "u1": dt.datetime(2025, 1, 2, 5, tzinfo=dt.UTC),
+        "u2": dt.datetime(2025, 1, 8, 5, tzinfo=dt.UTC),
+    }
+    metric = mean_metric.model_copy(update={"window_days": 7})
+    exp = experiment.model_copy(update={"day_boundary": "UTC-05:00"})
+    exposures = ibis.memtable(
+        {
+            "unit_id": list(trigger_times),
+            "experiment_id": ["exp", "exp"],
+            "group_id": ["C", "T"],
+            "first_exposure_ts": list(trigger_times.values()),
+        },
+        schema={
+            "unit_id": "string",
+            "experiment_id": "string",
+            "group_id": "string",
+            "first_exposure_ts": "timestamp('UTC')",
+        },
+    )
+    events = ibis.memtable(
+        {
+            "unit_id": ["u1", "u1", "u1", "u2", "u2", "u2"],
+            "ts": [
+                trigger_times["u1"],
+                trigger_times["u1"] + dt.timedelta(seconds=1),
+                dt.datetime(2025, 1, 9, 5, tzinfo=dt.UTC),
+                trigger_times["u2"],
+                trigger_times["u2"] + dt.timedelta(seconds=1),
+                dt.datetime(2025, 1, 15, 5, tzinfo=dt.UTC),
+            ],
+            "value": [100.0, 1.0, 100.0, 100.0, 2.0, 100.0],
+            "metric": ["revenue"] * 6,
+        },
+        schema={
+            "unit_id": "string",
+            "ts": "timestamp('UTC')",
+            "value": "float64",
+            "metric": "string",
+        },
+    )
+    panel = unit_day_panel(
+        exposures, events, exp, metric_name=metric.name, end_date=ibis.literal(dt.date(2025, 1, 16))
+    )
+    bounded = window_bound_stats(panel, metric).execute()
+    assert (
+        bounded.loc[
+            (bounded.unit_id == "u1") & (bounded.ds.dt.date == dt.date(2025, 1, 2)), "sum_value"
+        ].item()
+        == 1.0
+    )
+    assert (
+        bounded.loc[
+            (bounded.unit_id == "u2") & (bounded.ds.dt.date == dt.date(2025, 1, 8)), "sum_value"
+        ].item()
+        == 2.0
+    )
+    assert not ((bounded.unit_id == "u1") & (bounded.ds.dt.date >= dt.date(2025, 1, 9))).any()
+    assert not ((bounded.unit_id == "u2") & (bounded.ds.dt.date >= dt.date(2025, 1, 15))).any()
+
+
 def test_unit_day_panel_inferred_metric(exposures, purchase_metric_events, experiment):
     """metric_name=None infers metric column from events table."""
     result = unit_day_panel(exposures, purchase_metric_events, experiment)
@@ -7305,7 +7369,14 @@ def _role_memtable(role: str, rows: list[dict]):
     return ibis.memtable(ibis.schema(schema).to_pyarrow().empty_table(), schema=schema)
 
 
-def _artifact_reader_source(exposures, stats, *, last_ds, freshness_loaded_through):
+def _artifact_reader_source(
+    exposures,
+    stats,
+    *,
+    last_ds,
+    freshness_loaded_through,
+    context=None,
+):
     """Minimal ArtifactMomentSource over hand-built exposure/measure_stats
     rows, mirroring `test_artifact_reducer_uses_one_snapshot_handle_and_caches_relations`
     in `tests/test_unit_day_artifact_adoption.py`. `last_ds` stands in for
@@ -7355,13 +7426,14 @@ def _artifact_reader_source(exposures, stats, *, last_ds, freshness_loaded_throu
         )
         for measure in manifest.measures
     )
-    manifest = manifest.model_copy(
-        update={
-            "base": manifest.base.model_copy(update=refs),
-            "last_ds": last_ds,
-            "measures": measures,
-        }
-    )
+    manifest_updates = {
+        "base": manifest.base.model_copy(update=refs),
+        "last_ds": last_ds,
+        "measures": measures,
+    }
+    if context is not None:
+        manifest_updates["context"] = context
+    manifest = manifest.model_copy(update=manifest_updates)
     manifest = manifest.model_copy(update={"manifest_sha256": manifest_sha256(manifest)})
     ref = UnitDayArtifactRef(
         artifact_id=manifest.artifact_id,
@@ -7400,6 +7472,37 @@ def _artifact_reader_source(exposures, stats, *, last_ds, freshness_loaded_throu
         expected_context=manifest.context,
         metrics=(MetricSpec(name="conversion", type="mean", value_column="orders"),),
     )
+
+
+def test_artifact_reader_refuses_missing_day_boundary_with_field_context():
+    import json
+
+    from increment._canonical import canonical_json_bytes
+    from increment.query.artifact_contract import ArtifactContractError
+    from increment.semantics.artifact import ArtifactContext, _artifact_context_digest
+    from tests.semantics.test_unit_day_artifact import _manifest
+
+    payload = json.loads(_manifest().context.canonical_json)
+    del payload["definitions"]["day_boundary"]
+    context_json = canonical_json_bytes(payload).decode("utf-8")
+    context = ArtifactContext(
+        canonical_json=context_json,
+        sha256=_artifact_context_digest(context_json),
+    )
+    source = _artifact_reader_source(
+        [],
+        [],
+        last_ds=dt.date(2025, 1, 3),
+        freshness_loaded_through=dt.date(2025, 1, 3),
+        context=context,
+    )
+    try:
+        with pytest.raises(ArtifactContractError) as exc_info:
+            _ = source.context
+        assert exc_info.value.code == "artifact.context.mismatch"
+        assert exc_info.value.context["field"] == "definitions.day_boundary"
+    finally:
+        source.close()
 
 
 def test_artifact_round_trip_never_dates_a_late_enrollee_by_its_own_enrollment():
@@ -7584,7 +7687,8 @@ def _custom_artifact_reader_source(
         experiment_payload["end"] = dt.datetime.combine(declared_end, dt.time(), dt.UTC).isoformat()
     context_payload: dict[str, object] = {
         "context_format": 2,
-        "definitions": {"metrics": typed_definitions},
+        "extension_catalog": [],
+        "definitions": {"day_boundary": "UTC", "metrics": typed_definitions},
         "experiment": experiment_payload,
         "experiment_name": "exp",
         "window_days": {

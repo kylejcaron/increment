@@ -775,9 +775,9 @@ def _admission_hazard(row: object) -> str | None:
     if getattr(row, "sampling_available", None) is not True and (
         getattr(row, "prior_shrunk", False) or getattr(row, "prior_spec", None) is not None
     ):
-        from increment.estimation.results import _refuse_legacy_sampling
+        from increment.estimation.readout_types import refuse_legacy_sampling
 
-        _refuse_legacy_sampling(row)
+        refuse_legacy_sampling(row)
     return None
 
 
@@ -903,6 +903,7 @@ def _stamped[R: BaseModel](row: R, view: LiftEstimate | None, **family: object) 
     if view is not None:
         data.update({name: getattr(view, name) for name in _INTERVAL_FIELDS})
     data.update(family)
+    data["multiplicity_status"] = "exploratory_family"
     return type(row)(**data)
 
 

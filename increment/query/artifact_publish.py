@@ -19,6 +19,7 @@ from increment.query.artifact_contract import (
 from increment.query.artifact_contract import (
     ArtifactContractError,
     _measure_recipe_key,
+    _request_key,
     compile_unit_day_artifact_context,
     open_trusted_snapshot,
     unit_day_artifact_extension_catalog,
@@ -26,6 +27,7 @@ from increment.query.artifact_contract import (
 from increment.query.artifact_digest import _DIGEST_BATCH_ROWS, canonical_json, manifest_sha256
 from increment.query.builders import (
     _local_date,
+    _utc_timestamp_literal,
     canonical_dimension_value,
     compliance_event_horizon,
     metric_events,
@@ -44,6 +46,8 @@ from increment.semantics.artifact import (
     MeasureManifest,
     RatioMetricMeasure,
     SimpleMetricMeasure,
+    TriggerMeasureStatsExtension,
+    TriggerPopulationExtension,
     UnitDayArtifactManifest,
 )
 from increment.semantics.models import Definitions, RatioMetric
@@ -239,6 +243,7 @@ class ArtifactPublisher:
         validate_cluster_labels: Callable[[ir.Table, str], None],
         validate_mixed_assignments: Callable[[], None],
         data_as_of: Callable[[ir.Table, str], Any],
+        source_snapshot_evidence: Any,
     ) -> None:
         self._experiment = experiment
         self._defs = definitions
@@ -254,6 +259,7 @@ class ArtifactPublisher:
         self._validate_cluster_labels = validate_cluster_labels
         self._validate_mixed_assignments = validate_mixed_assignments
         self._data_as_of = data_as_of
+        self._source_snapshot_evidence = source_snapshot_evidence
         # These expressions read only the source snapshot owned by publish.
         self._event_cache: dict[tuple[Any, ...], ir.Table] = {}
         self._uptake_cache: dict[str, ir.Table] = {}
@@ -313,6 +319,22 @@ class ArtifactPublisher:
                     and entry.request not in requested
                 ):
                     requested.append(entry.request)
+        selected_trigger_names = {
+            request.trigger_name for request in requested if request.kind == "trigger_measure_stats"
+        }
+        for entry in unit_day_artifact_extension_catalog(context):
+            if (
+                entry.request.kind == "trigger_population"
+                and entry.request.trigger_name in selected_trigger_names
+                and entry.request not in requested
+            ):
+                requested.append(entry.request)
+        if any(
+            request.kind in {"trigger_population", "trigger_measure_stats"}
+            or (request.kind == "assignment_counts" and "triggered" in request.populations)
+            for request in requested
+        ):
+            source._require_source_snapshot_evidence(operation="publish_unit_day_artifact")
         site_volume_metrics = frozenset(
             name
             for request in requested
@@ -644,6 +666,7 @@ class ArtifactPublisher:
                     message=f"artifact extension {kind!r} is invalid: {reason}",
                 )
             specs.append(self._extension_spec(entry, request, exposures, exposure_rows))
+        specs.sort(key=lambda spec: _request_key(spec.entry.request))
         return tuple(specs)
 
     def _extension_spec(
@@ -663,6 +686,8 @@ class ArtifactPublisher:
                 return self._assignment_extension_spec(entry, request)
             case "trigger_population":
                 return self._trigger_extension_spec(entry, request)
+            case "trigger_measure_stats":
+                return self._trigger_measure_extension_spec(entry, request)
             case "cluster_identity":
                 return self._cluster_extension_spec(entry, request, exposures)
             case "encouragement_uptake":
@@ -810,10 +835,14 @@ class ArtifactPublisher:
 
     def _trigger_extension_spec(self, entry: Any, request: Any) -> _PublicationExtensionSpec:
         rows: list[dict[str, object]] = []
-        for row in self._con.to_pyarrow(self._get_trigger_population()).to_pylist():
-            timestamp = row.get("first_exposure_ts")
-            if isinstance(timestamp, dt.datetime) and timestamp.tzinfo is None:
-                timestamp = timestamp.replace(tzinfo=dt.UTC)
+        population = self._get_trigger_population()
+        for row in self._con.to_pyarrow(population).to_pylist():
+            timestamp = row["first_trigger_ts"]
+            timestamp = (
+                timestamp.replace(tzinfo=dt.UTC)
+                if timestamp.tzinfo is None
+                else timestamp.astimezone(dt.UTC)
+            )
             rows.append(
                 {
                     "experiment_id": self._experiment.name,
@@ -821,7 +850,106 @@ class ArtifactPublisher:
                     "first_trigger_ts": timestamp,
                 }
             )
-        return _PublicationExtensionSpec(entry, request.kind, rows, {})
+        evidence = self._source_snapshot_evidence
+        trigger = next(
+            exposure for exposure in self._defs.exposures if exposure.name == request.trigger_name
+        )
+        if trigger.fact is None:
+            complete_through_ts = None
+        else:
+            trigger_feed, _ = _find_fact_source(self._defs, trigger.fact)
+            complete_through_ts = evidence.complete_through_by_feed.get(trigger_feed.name)
+        return _PublicationExtensionSpec(
+            entry,
+            request.kind,
+            rows,
+            {
+                "observation_cutoff_ts": evidence.observation_cutoff_ts,
+                "complete_through_ts": complete_through_ts,
+            },
+        )
+
+    def _trigger_measure_extension_spec(
+        self, entry: Any, request: Any
+    ) -> _PublicationExtensionSpec:
+        metric = next(metric for metric in self._metrics if metric.name == request.metric_names[0])
+        anchors = self._get_trigger_population().select("unit_id", "first_trigger_ts")
+        parts = (
+            (
+                (metric.numerator, "numerator"),
+                (metric.denominator, "denominator"),
+            )
+            if isinstance(metric, RatioMetric)
+            else ((metric, "numerator"),)
+        )
+        rows: list[dict[str, object]] = []
+        feed_names: list[str] = []
+        for measure, part in parts:
+            fact_source, fact = _find_fact_source(self._defs, measure.fact)
+            fact_table = self._get_fact_table(fact_source)
+            value_col = _resolve_value_column(fact_source, fact)
+            events = metric_events(
+                fact_table,
+                metric,
+                value_column=value_col,
+                part=part,
+            )
+            joined = events.join(anchors, events.unit_id == anchors.unit_id).filter(
+                events.ts > anchors.first_trigger_ts
+            )
+            local_day = _local_date(joined.ts, self._experiment)
+            trigger_day = _local_date(anchors.first_trigger_ts, self._experiment)
+            joined = joined.filter(local_day >= trigger_day)
+            window_days = getattr(measure, "window_days", None)
+            if window_days is not None:
+                joined = joined.filter(local_day < trigger_day + ibis.interval(days=window_days))
+            observation_horizon = self._experiment.observation_horizon_day
+            if observation_horizon is not None:
+                joined = joined.filter(local_day <= ibis.literal(observation_horizon))
+            measure_key = _measure_recipe_key(measure)
+            joined = joined.filter(
+                events.ts
+                <= _utc_timestamp_literal(
+                    events.ts, self._source_snapshot_evidence.observation_cutoff_ts
+                )
+            )
+            daily = joined.group_by(joined.unit_id, local_day.name("ds")).agg(
+                n_events=joined.value.count(),
+                sum_value=joined.value.sum(),
+                min_value=joined.value.min(),
+                max_value=joined.value.max(),
+            )
+            rows.extend(
+                {
+                    "experiment_id": self._experiment.name,
+                    "unit_id": str(row["unit_id"]),
+                    "ds": row["ds"],
+                    "measure_key": measure_key,
+                    "n_events": int(row["n_events"]),
+                    "sum_value": float(row["sum_value"]),
+                    "min_value": float(row["min_value"]),
+                    "max_value": float(row["max_value"]),
+                }
+                for row in self._con.to_pyarrow(daily).to_pylist()
+            )
+            feed_names.append(fact_source.name)
+        watermarks = [
+            self._source_snapshot_evidence.complete_through_by_feed.get(name) for name in feed_names
+        ]
+        complete_through = (
+            min(watermarks)
+            if watermarks and all(value is not None for value in watermarks)
+            else None
+        )
+        return _PublicationExtensionSpec(
+            entry,
+            request.kind,
+            rows,
+            {
+                "observation_cutoff_ts": self._source_snapshot_evidence.observation_cutoff_ts,
+                "complete_through_ts": complete_through,
+            },
+        )
 
     def _cluster_extension_spec(
         self, entry: Any, request: Any, exposures: ir.Table
@@ -940,6 +1068,65 @@ class ArtifactPublisher:
 
         extension_refs = []
         for spec in specs:
+            if spec.kind == "trigger_population":
+                relation = publication.write_relation(
+                    "trigger_population", _relation_table(spec.rows, "trigger_population")
+                )
+                extension_refs.append(
+                    TriggerPopulationExtension(
+                        extension_version=3,
+                        relation=relation,
+                        definition_sha256=spec.entry.definition_sha256,
+                        source_provenance_sha256=spec.entry.source_provenance_sha256,
+                        trigger_name=spec.entry.request.trigger_name,
+                        observation_cutoff_ts=cast(
+                            dt.datetime, spec.fields["observation_cutoff_ts"]
+                        ),
+                        complete_through_ts=cast(
+                            dt.datetime | None, spec.fields["complete_through_ts"]
+                        ),
+                    )
+                )
+                continue
+            if spec.kind == "trigger_measure_stats":
+                from increment.errors import refuse
+
+                trigger_ref = next(
+                    (
+                        extension
+                        for extension in extension_refs
+                        if isinstance(extension, TriggerPopulationExtension)
+                    ),
+                    None,
+                )
+                if trigger_ref is None:
+                    refuse(
+                        _ARTIFACT_REFUSALS["artifact.evidence.unavailable"],
+                        extension_kind="trigger_population",
+                        operation="triggered_source",
+                        route="republish with the matching trigger_population extension",
+                    )
+                relation = publication.write_relation(
+                    "trigger_measure_stats",
+                    _relation_table(spec.rows, "trigger_measure_stats"),
+                )
+                extension_refs.append(
+                    TriggerMeasureStatsExtension(
+                        relation=relation,
+                        definition_sha256=spec.entry.definition_sha256,
+                        source_provenance_sha256=spec.entry.source_provenance_sha256,
+                        trigger_name=spec.entry.request.trigger_name,
+                        metric_names=spec.entry.request.metric_names,
+                        trigger_population_content_sha256=trigger_ref.relation.content_sha256,
+                        observation_cutoff_ts=cast(
+                            dt.datetime, spec.fields["observation_cutoff_ts"]
+                        ),
+                        complete_through_ts=cast(
+                            dt.datetime | None, spec.fields["complete_through_ts"]
+                        ),
+                    )
+                )
+                continue
             if spec.kind == "encouragement_uptake":
                 from increment.semantics.artifact import EncouragementUptakeExtension
 

@@ -87,6 +87,16 @@ DEFINITION_REFUSALS: dict[str, RefusalSpec] = {
     "definition.artifact.context_sha256_does": RefusalSpec(
         "definition.artifact.context_sha256_does", DefinitionError, _render_definition_message
     ),
+    "definition.artifact.trigger_metric_scope": RefusalSpec(
+        "definition.artifact.trigger_metric_scope",
+        DefinitionError,
+        _render_definition_message,
+    ),
+    "definition.artifact.trigger_timestamp_timezone": RefusalSpec(
+        "definition.artifact.trigger_timestamp_timezone",
+        DefinitionError,
+        _render_definition_message,
+    ),
     "definition.artifact_datetimes_timezone": RefusalSpec(
         "definition.artifact_datetimes_timezone", DefinitionError, _render_definition_message
     ),
@@ -531,6 +541,21 @@ DEFINITION_REFUSALS: dict[str, RefusalSpec] = {
     ),
     "definition.unit_day.site_volume_request": RefusalSpec(
         "definition.unit_day.site_volume_request", DefinitionError, _render_definition_message
+    ),
+    "definition.unit_day.trigger_measure_anchor": RefusalSpec(
+        "definition.unit_day.trigger_measure_anchor",
+        DefinitionError,
+        _render_definition_message,
+    ),
+    "definition.unit_day.trigger_measure_keys": RefusalSpec(
+        "definition.unit_day.trigger_measure_keys",
+        DefinitionError,
+        _render_definition_message,
+    ),
+    "definition.unit_day.trigger_measure_metric": RefusalSpec(
+        "definition.unit_day.trigger_measure_metric",
+        DefinitionError,
+        _render_definition_message,
     ),
     "definition.utf": RefusalSpec("definition.utf", DefinitionError, _render_definition_message),
     "definition.winsorization.finite": RefusalSpec(
@@ -3640,6 +3665,8 @@ if TYPE_CHECKING:
         SimpleMetricMeasure,
         SiteVolumeExtension,
         SiteVolumeRequest,
+        TriggerMeasureStatsExtension,
+        TriggerMeasureStatsRequest,
         TriggerPopulationExtension,
         TriggerPopulationRequest,
         UnitCovariateExtension,
@@ -3687,6 +3714,8 @@ _ARTIFACT_REEXPORTS = frozenset(
         "UnitCovariateRequest",
         "TriggerPopulationExtension",
         "TriggerPopulationRequest",
+        "TriggerMeasureStatsExtension",
+        "TriggerMeasureStatsRequest",
         "UnitDayArtifactManifest",
         "UnitDayArtifactRef",
     }

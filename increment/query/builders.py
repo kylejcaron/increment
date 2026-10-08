@@ -168,6 +168,13 @@ def _days_literal(n: int | ir.IntegerScalar) -> ir.IntegerScalar:
     return cast("ir.IntegerScalar", ibis.literal(n))
 
 
+def _utc_timestamp_literal(ts: ir.TimestampColumn, value: dt.datetime) -> ir.Scalar:
+    normalized = value.astimezone(dt.UTC)
+    if getattr(ts.type(), "timezone", None) is None:
+        normalized = normalized.replace(tzinfo=None)
+    return ibis.literal(normalized, type=ts.type())
+
+
 def _local_date_at_offset(ts: ir.TimestampColumn, offset: dt.timedelta) -> ir.DateColumn:
     """Event timestamp -> calendar date under a fixed UTC *offset* day
     boundary.
@@ -307,15 +314,32 @@ def first_exposures(exposure_events: ir.Table, experiment: Experiment) -> ir.Tab
     return valid.select(*keep)
 
 
-def triggered_population(exposures: ir.Table, triggers: ir.Table) -> ir.Table:
-    """Narrow an enrollment population to the units that actually triggered.
+def triggered_population(
+    exposures: ir.Table,
+    triggers: ir.Table,
+    *,
+    observation_cutoff: dt.datetime,
+) -> ir.Table:
+    """Attach the first eligible trigger event to each enrolled unit.
 
-    Units that never triggered could not have been affected, so including
-    them dilutes the measured effect by the trigger rate. A semi-join keeps
-    each enrolled row once regardless of how many times a unit triggered.
+    Both assignment-relative eligibility and the pinned inclusive event-time
+    cutoff are applied before taking the minimum, so earlier or future events
+    can never become the anchor.
     """
-    # The semi-join is what single-counts; distinct only makes that obvious.
-    return exposures.semi_join(triggers.select("unit_id").distinct(), "unit_id")
+    if observation_cutoff.tzinfo is None or observation_cutoff.utcoffset() is None:
+        raise ValueError("observation_cutoff must be timezone-aware")
+    eligible = triggers.filter(
+        triggers.unit_id.notnull()
+        & triggers.ts.notnull()
+        & (triggers.ts <= _utc_timestamp_literal(triggers.ts, observation_cutoff))
+    )
+    assignment = exposures.select("unit_id", "first_exposure_ts")
+    eligible = eligible.inner_join(assignment, "unit_id")
+    eligible = eligible.filter(eligible.ts >= eligible.first_exposure_ts)
+    anchors = eligible.group_by("unit_id").agg(first_trigger_ts=eligible.ts.min())
+    return exposures.inner_join(anchors, "unit_id").select(
+        *exposures.columns, anchors.first_trigger_ts
+    )
 
 
 def mixed_assignment_units(exposure_events: ir.Table, experiment: Experiment) -> ir.Table:
@@ -1722,7 +1746,7 @@ def _project_unit_totals(
     return totals.select(*base_cols)
 
 
-def unit_totals(
+def unit_totals(  # noqa: PLR0913
     spine: ir.Table,
     stats: ir.Table,
     metric: Metric,
@@ -1736,6 +1760,7 @@ def unit_totals(
     data_as_of: ir.Scalar | dt.date | dt.datetime | None = None,
     # The public aggregate signature preserves distinct evidence inputs.
     warn_on_censoring: bool | Callable[[ir.Table], list[dict[str, Any]]] = True,  # noqa: FBT001, FBT002
+    uptake_exposures: ir.Table | None = None,
 ) -> ir.Table:
     """Aggregate spine + sparse stats to one row per unit (window aggregate).
 
@@ -1780,6 +1805,8 @@ def unit_totals(
         A callable executes bookkeeping tables and returns rows through the
         owning source. Otherwise, warn on a material drop (default True).
         Warning bookkeeping costs an extra execution round-trip.
+    uptake_exposures : ir.Table | None
+        Assignment exposure anchors for encouragement uptake; defaults to the outcome spine.
     """
     cluster = experiment.cluster
     if cluster is not None:
@@ -1814,7 +1841,8 @@ def unit_totals(
     totals = _aggregate_unit_outcome(dense, spine, metric, den_stats)
 
     totals = _attach_covariate(totals, pre_stats, experiment)
-    totals = _attach_uptake_flag(totals, spine, uptake_events, uptake_window_days)
+    uptake_anchor = spine if uptake_exposures is None else uptake_exposures
+    totals = _attach_uptake_flag(totals, uptake_anchor, uptake_events, uptake_window_days)
     return _project_unit_totals(totals, spine, metric, by, properties_table, cluster)
 
 

@@ -482,6 +482,48 @@ class DayAxisEvidence(Protocol):
     ) -> Iterator[EvidenceSlice]: ...
 
 
+def _scope_day_axis_rows(
+    rows,
+    req: DayAxisRequest,
+    *,
+    route: Literal["artifact", "moments", "native"],
+    plan: Any,
+    configs: Sequence[Any] = (),
+    design: Any = None,
+):
+    """Attach source-local scope to day-axis rows before returning them."""
+    from increment.breakout.estimates import DailyLiftEstimates, DailyMetricValues
+    from increment.readouts._multiplicity_scope import scoped_collection
+    from increment.readouts._run import _config_snapshot
+
+    collection = (
+        DailyLiftEstimates
+        if req.caller in ("run_daily_lift", "run_asof_lift")
+        else DailyMetricValues
+    )
+    scope_request = {
+        "kind": "increment.readout.day_axis",
+        "caller": req.caller,
+        "view": req.grain,
+        "dimension": req.dimension,
+        "completed_windows_only": req.completed_windows_only,
+        "estimands": req.estimands,
+        "metrics": [metric.model_dump(mode="json") for metric in req.metrics],
+        "configs": [_config_snapshot(config) for config in configs],
+    }
+    return scoped_collection(
+        rows,
+        collection,
+        plan,
+        configs,
+        scope_request,
+        route=route,
+        view=req.grain,
+        design=design,
+        dimension=req.dimension,
+    )
+
+
 class DayAxisReadouts:
     """Evidence acquisition and lift/values computation shared by the four
     day-axis entry points.
@@ -551,7 +593,13 @@ class DayAxisReadouts:
                     view=evidence_slice.view,
                 )
             )
-        return DailyMetricValues(results)
+        return _scope_day_axis_rows(
+            results,
+            req,
+            route=route,
+            plan=self._plan,
+            design=self._design,
+        )
 
     def lift(
         self,
@@ -580,6 +628,10 @@ class DayAxisReadouts:
                 )
             from increment.breakout.estimates import daily_sequential_projection
 
+            asof_policy = self._plan.view_policies.for_view(
+                "asof", mechanism=getattr(self._design, "mechanism", None), segmented=False
+            )
+            correction = normalize_display_correction(asof_policy.correction)
             rows = readouts.asof_lift(
                 self._src,
                 metrics=[m.name for m in req.metrics],
@@ -589,7 +641,14 @@ class DayAxisReadouts:
                 prior=prior,
                 completed_windows_only=req.completed_windows_only,
             )
-            return daily_sequential_projection(rows)
+            return _scope_day_axis_rows(
+                daily_sequential_projection(rows, correction=correction),
+                req,
+                route=route,
+                plan=self._plan,
+                configs=self._src.context.configs,
+                design=self._design,
+            )
         opts = LiftOptions.resolve(
             self._src,
             req.metrics,
@@ -613,6 +672,7 @@ class DayAxisReadouts:
         _, requested_estimands, encouragement_design = _resolve_lift_estimands(
             req.estimands, self._design
         )
+        correction: str | None = None
         extra: dict[str, Any] = {}
         if req.grain == "asof":
             policy = self._plan.view_policies.for_view(
@@ -728,4 +788,11 @@ class DayAxisReadouts:
             )
         from increment.estimation.multiplicity import stamp_multiplicity_status
 
-        return DailyLiftEstimates(stamp_multiplicity_status(results))
+        return _scope_day_axis_rows(
+            stamp_multiplicity_status(results, correction=correction),
+            req,
+            route=route,
+            plan=self._plan,
+            configs=opts.configs,
+            design=self._design,
+        )

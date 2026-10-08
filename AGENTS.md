@@ -58,6 +58,8 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   tolerances, invariants, and cross-path parity. They MUST NOT pin permitted
   message wording, private structure, internal wiring, or exact bits where a
   tolerance defines the contract.
+- Serialization replay tests MUST run claimed consumers on the restored
+  object, not the original.
 - Start with the exact regression:
   `make test TESTS=tests/file.py::test_name`.
 - Then run `make test-affected BASE=<task-base-sha>` (default fast, serial);
@@ -83,6 +85,9 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   allowance, remaining acceptance, and evidence location. Selection evidence
   is tied to source, worktree/environment, and dirty inputs; changed inputs
   require rerunning it.
+- Run `make install` once per clone. It installs the prek pre-commit (Ruff,
+  ty, prose audit) and pre-push hooks; prek chains an existing roborev
+  pre-push hook as `pre-push.legacy`. Do not bypass them with `--no-verify`.
 - Run `make check` before pushing. Reserve `make test-all` for final integration
   or release candidates that change estimation or a wire format.
 - Use `make fmt` for formatting. Build documentation with `nox -s docs`, not
@@ -104,8 +109,24 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   independently invented carriers based on the same design document.
 - Coordinate aggregate test workers across the host. Use focused checks
   during implementation; one coordinator owns broad integration checks.
-  Docs-only clarifications do not justify repeated broad suites. Performance
-  measurements require an uncontended window; label contended timings.
+  Docs-only clarifications do not justify repeated broad suites. Ordinary
+  focused and xdist runs may overlap. Reserve an exclusive window only for
+  CPU/RSS timing measurements; correctness oracles run under load, with any
+  elapsed time labeled contended.
+- Integrate a lane as soon as its focused checks and review pass, then run
+  the combined focused selection on the integration branch. Do not hold
+  verified work on side branches; late merges hide cross-lane failures.
+- Where roborev is configured for the checkout, run
+  `roborev fix --list --branch <branch>` before closing a tracked issue and
+  after each integration commit. Resolve or triage open findings before
+  starting the next task. Close a review only with cited code or test
+  evidence for every finding; "a later review found nothing" is not evidence.
+  Contributors without roborev are not required to install it.
+- Update the issue ledger when work state changes (commit, merge,
+  verification, blocker), not in end-of-session batches.
+- When several writers share one worktree, assign disjoint file ownership,
+  route other hunks through the owner, and keep every module importable
+  after each edit.
 - A handoff names exact commits, dirty and untracked files, verification
   evidence, unresolved decisions, and the next action. Distinguish
   implemented, verified, integrated, and issue-closed work. Preserve partial
@@ -172,6 +193,11 @@ that is unfinished. Keep the path-by-capability table in
   Prefer centered, mergeable moments and overflow-safe cross terms.
 - When a result can be unavailable, preserve a numeric null and its exact
   reason through schemas, conversions, serialization, and saved fixtures.
+- Assignment counts state their grain and population. Unassigned and
+  mixed-assignment accounting buckets are not experiment arms; keep them out
+  of arm rosters while preserving their audit counts.
+- A scoped collection represents every requested cell, either as a result or
+  as an unavailable row that keeps the cell's identity fields.
 - Portable or hashed formats define collection order, tuple encoding, alias
   behavior, duplicate handling, and treatment of runtime-only values.
 - Read-only SQL is parsed using the dialect that will execute it and is

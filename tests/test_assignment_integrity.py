@@ -29,7 +29,7 @@ def test_observational_refuses_assignment_scheme_with_stable_code():
         Observational(
             control_group="control",
             adjustment=AdjustmentSet(covariates=("x",)),
-            allocation_scheme="independent",
+            allocation_scheme="independent",  # ty: ignore[unknown-argument]
         )
     assert error.value.code == "design.allocation_scheme.incompatible"
 
@@ -220,10 +220,13 @@ def test_experiment_declaration_round_trips_and_resolves_to_randomized_design():
     definitions = Definitions.model_validate(payload)
     experiment = definitions.experiment("exp")
     assert experiment is not None
-    assert experiment.allocation_scheme == "independent"
-    assert experiment.resolved_design().allocation_scheme == "independent"
+    resolved_design = experiment.resolved_design()
+    assert isinstance(resolved_design, (Randomized, Encouragement))
+    assert resolved_design.allocation_scheme == "independent"
     restored = Definitions.model_validate_json(definitions.model_dump_json())
-    assert restored.experiment("exp").allocation_scheme == "independent"
+    restored_experiment = restored.experiment("exp")
+    assert restored_experiment is not None
+    assert restored_experiment.allocation_scheme == "independent"
     legacy_experiment = {
         key: value for key, value in payload["experiments"][0].items() if key != "allocation_scheme"
     }
@@ -293,3 +296,116 @@ def test_experiment_allocation_scheme_reaches_encouragement_design():
     design = experiment.resolved_design()
     assert isinstance(design, Encouragement)
     assert design.allocation_scheme == "independent"
+
+
+def test_clustered_run_keeps_mixed_and_unassigned_audit_counts_in_scope(tmp_path):
+    import ibis
+    import pyarrow as pa
+
+    from increment import Analysis
+
+    definitions = tmp_path / "clustered.yml"
+    definitions.write_text(
+        """
+dialect: duckdb
+fact_sources:
+  - name: events
+    sql: SELECT * FROM events
+    timestamp_column: ts
+    entities: [user_id]
+    facts:
+      - name: enrolled
+        column: null
+      - name: revenue
+        column: value
+exposures:
+  - name: assignment
+    fact: enrolled
+metrics:
+  - name: revenue
+    type: mean
+    entity: user_id
+    fact: revenue
+    aggregation: sum
+    window_days: 7
+experiments:
+  - name: exp
+    exposure: assignment
+    unit: user_id
+    cluster: store_id
+    allocation: {C: 0.5, T: 0.5}
+    allocation_scheme: independent
+    start: 2024-01-01T00:00:00
+    end: 2024-01-10T00:00:00
+    control_group: C
+    plan:
+      secondaries: [revenue]
+"""
+    )
+
+    def rows(*, include_audit_units: bool):
+        events = []
+        for arm in ("C", "T"):
+            for index in range(20):
+                unit = f"{arm}{index}"
+                store = f"{arm}-store-{index}"
+                events.extend(
+                    [
+                        {
+                            "user_id": unit,
+                            "group_id": arm,
+                            "store_id": store,
+                            "event": "enrolled",
+                            "ts": "2024-01-02",
+                            "value": None,
+                        },
+                        {
+                            "user_id": unit,
+                            "group_id": arm,
+                            "store_id": store,
+                            "event": "revenue",
+                            "ts": "2024-01-09",
+                            "value": float(index + (arm == "T")),
+                        },
+                    ]
+                )
+        if include_audit_units:
+            for arm, store in (("C", "C-mixed"), ("T", "T-mixed")):
+                events.append(
+                    {
+                        "user_id": "mixed",
+                        "group_id": arm,
+                        "store_id": store,
+                        "event": "enrolled",
+                        "ts": "2024-01-02",
+                        "value": None,
+                    }
+                )
+            events.append(
+                {
+                    "user_id": "unassigned",
+                    "group_id": None,
+                    "store_id": None,
+                    "event": "enrolled",
+                    "ts": "2024-01-02",
+                    "value": None,
+                }
+            )
+        return pa.Table.from_pylist(events)
+
+    def run(include_audit_units: bool):
+        con = ibis.duckdb.connect()
+        con.create_table("events", obj=rows(include_audit_units=include_audit_units))
+        analysis = Analysis.from_definitions("exp", definitions, con, on_mixed_assignment="exclude")
+        return analysis.run()
+
+    audited = run(True)
+    baseline = run(False)
+    scope = next(iter(audited.metadata.scope.by_source.values()))
+    (integrity,) = scope.integrity
+    assert integrity.randomization_grain == "cluster"
+    assert integrity.observed == {"C": 20, "T": 20}
+    assert integrity.context["mixed_assignment_units"] == 1
+    assert integrity.context["unassigned_units"] == 1
+    assert scope.source_snapshot_id != next(iter(baseline.metadata.scope.by_source))
+    assert [row.group_id for row in audited] == ["T"]

@@ -77,6 +77,13 @@ _REFUSALS = refusals(
 _raise = raiser(_REFUSALS)
 
 
+def validate_period_grain(grain: str) -> PeriodGrain:
+    """Validate a report period grain before constructing any source query."""
+    if grain not in ("day", "week", "month"):
+        _raise("query.calendar.period_start_unknown_grain", grain=grain)
+    return grain
+
+
 def validate_report_population(population: ir.Table | None) -> None:
     """Admit the population key before a report performs any data query."""
     if population is not None and "unit_id" not in population.columns:
@@ -97,14 +104,16 @@ def report_horizon_relation(
     client-side rows or fetching fact data.
     """
     horizons = []
+    anchor = ibis.literal(1).name("_one").as_table()
     for index, (fact_table, fact_name) in enumerate(facts):
         scoped = fact_table.filter(fact_table.event == fact_name)
-        horizon = _local_date_at_offset(scoped.ts, day_boundary_offset).max()
-        horizons.append(
-            scoped.aggregate(
-                **{f"_horizon_{index}": ibis.coalesce(horizon, ibis.literal(no_data_sentinel))}
-            )
+        horizon = _local_date_at_offset(scoped.ts.max(), day_boundary_offset)
+        aggregate_value = (
+            ibis.coalesce(horizon, ibis.literal(no_data_sentinel))
+            .as_scalar()
+            .name(f"_horizon_{index}")
         )
+        horizons.append(anchor.select(aggregate_value))
     relation = horizons[0]
     for next_horizon in horizons[1:]:
         relation = relation.cross_join(next_horizon)

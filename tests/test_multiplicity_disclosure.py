@@ -80,7 +80,7 @@ def test_readout_table_renders_multiplicity_disclosure(status, label):
     assert label in html
 
 
-def test_primary_allocation_and_family_survive_filter_and_exploratory_addition():
+def test_primary_allocation_and_family_survive_filter_and_additional_declared_metric_selection():
     names = [f"m{i}" for i in range(5)]
     analysis = _analysis(AnalysisPlan(primary=names))
     rows = analysis.run(metrics=names)
@@ -119,8 +119,7 @@ def test_primary_allocation_and_family_survive_filter_and_exploratory_addition()
         ("guardrail", None, "declared_plan"),
         ("exploratory", None, "exploratory_unadjusted"),
         ("exploratory", "none", "exploratory_unadjusted"),
-        ("exploratory", "bonferroni", "exploratory_unadjusted"),
-        ("exploratory", "bh", "exploratory_family"),
+        ("exploratory", "bonferroni", "exploratory_family"),
         ("exploratory", "e_bh", "exploratory_family"),
     ],
 )

@@ -602,7 +602,10 @@ def test_clustered_secondary_discovery_parity_with_frame_path():
     native_by_metric = {r.metric: r for r in native_results}
 
     frame_p_values = [frame_by_metric[name].p_value() for name in metric_names]
-    frame_selected_idx, _ = bh_select(frame_p_values, frame_src.context.plan.q)
+    assert all(value is not None for value in frame_p_values)
+    frame_selected_idx, _ = bh_select(
+        [value for value in frame_p_values if value is not None], frame_src.context.plan.q
+    )
     frame_selected = {metric_names[i] for i in frame_selected_idx}
     assert frame_selected  # a strict, nonempty subset was selected
     assert frame_selected != set(metric_names)
@@ -737,6 +740,9 @@ def test_quantile_secondary_family_includes_prior_bound_sampling_member():
     assert by_metric["q_prior"].require_lift().alpha == pytest.approx(expected_selected_alpha)
     assert by_metric["q_prior"].quantile_p_value is not None
     assert by_metric["q_prior"].sampling_available is True
-    assert by_metric["q_prior"].posterior_available is not True
+    assert by_metric["q_prior"].posterior_available is True
+    posterior_estimate = by_metric["q_prior"].posterior_estimate
+    assert posterior_estimate is not None
+    assert posterior_estimate != pytest.approx(by_metric["q_prior"].require_lift().value)
     for name in ("q_b", "q_c", "q_d"):
         assert by_metric[name].require_lift().alpha == pytest.approx(PLAN_ALPHA)

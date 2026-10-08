@@ -1049,30 +1049,36 @@ def test_breakout_cuped_late_fits_theta_per_segment():
 
 
 def test_srm_runs_under_encouragement_design_not_suppressed():
-    design = Encouragement(
-        control_group="control",
-        uptake=UptakeSpec(fact="clicked"),
-        exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves revenue via uptake"
-        ),
-        allocation={"control": 0.5, "treatment": 0.5},
-    )
-    src = from_unit_summary(
-        _uptake_table(),
-        unit="user_id",
-        group="variant",
-        control="control",
-        metrics={"revenue": "mean"},
-        uptake="clicked",
-        design=design,
-    )
-    result = readouts.srm(src)
-    # Balanced allocation must not itself be flagged - a real SRMResult
-    # should come back (encouragement assignment is randomized), not NotApplicable.
     from increment.estimation.diagnostics import NotApplicable, SRMResult
 
+    def design(*, allocation_scheme):
+        return Encouragement(
+            control_group="control",
+            uptake=UptakeSpec(fact="clicked"),
+            exclusion_restriction=ExclusionRestriction(
+                acknowledged=True, justification="assignment only moves revenue via uptake"
+            ),
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme=allocation_scheme,
+        )
+
+    def source_for(assignment):
+        return from_unit_summary(
+            _uptake_table(),
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics={"revenue": "mean"},
+            uptake="clicked",
+            design=assignment,
+        )
+
+    missing = readouts.srm(source_for(design(allocation_scheme=None)))
+    assert isinstance(missing, NotApplicable)
+    assert missing.reason.startswith("integrity.allocation_scheme_missing")
+
+    result = readouts.srm(source_for(design(allocation_scheme="independent")))
     assert isinstance(result, SRMResult)
-    assert not isinstance(result, NotApplicable)
 
 
 def test_breakout_rejects_estimands_on_randomized_design():
@@ -2856,11 +2862,11 @@ def test_frame_encouragement_callwide_prior_preserves_secondary_family():
     }
     assert all(r.family_q == pytest.approx(0.02) for r in visits)
     assert all(
-        r.family_threshold == prior_free[(r.metric, r.group_id)].family_threshold
-        for r in visits
+        r.family_threshold == prior_free[(r.metric, r.group_id)].family_threshold for r in visits
     )
     assert all(
-        r.require_lift().value == pytest.approx(prior_free[(r.metric, r.group_id)].require_lift().value)
+        r.require_lift().value
+        == pytest.approx(prior_free[(r.metric, r.group_id)].require_lift().value)
         for r in visits
     )
 
@@ -2873,12 +2879,12 @@ def test_frame_encouragement_callwide_prior_preserves_secondary_family():
     assert all(r.discovery is None for r in compliance)
 
 
-
 def test_frame_encouragement_compliance_ignores_outcome_config_and_order():
     """The canonical first-stage row is independent of outcome priors/methods.
 
-    Outcome configs still apply to their own ITT rows, but declaration order
-    must not decide which outcome config is borrowed for ``uptake``.
+    Outcome priors apply to each outcome's posterior fields, while the
+    displayed ``lift`` remains the prior-free sampling construction. Declaration
+    order must not decide which outcome config is borrowed for ``uptake``.
     """
 
     def run_with_specs(specs):
@@ -2940,11 +2946,21 @@ def test_frame_encouragement_compliance_ignores_outcome_config_and_order():
     )
     for name in ("revenue", "visits"):
         key = (name, "itt", "treatment")
-        assert declared_by_key[key].require_lift().value == pytest.approx(
-            reversed_by_key[key].require_lift().value
+        declared_estimate = declared_by_key[key]
+        reversed_estimate = reversed_by_key[key]
+        flat_estimate = flat_by_key[key]
+        assert declared_estimate.require_lift().value == pytest.approx(
+            reversed_estimate.require_lift().value
         )
-        assert declared_by_key[key].require_lift().value != pytest.approx(
-            flat_by_key[key].require_lift().value
+        assert declared_estimate.require_lift().value == pytest.approx(
+            flat_estimate.require_lift().value
+        )
+        assert declared_estimate.posterior_available is True
+        assert declared_estimate.posterior_estimate == pytest.approx(
+            reversed_estimate.posterior_estimate
+        )
+        assert declared_estimate.posterior_estimate != pytest.approx(
+            flat_estimate.require_lift().value
         )
 
 

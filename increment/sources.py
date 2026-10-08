@@ -295,6 +295,7 @@ ASSIGNMENT_COUNTS_FIELD = "assignment_counts"
 DECISION_PLAN_FIELD = "decision_plan"
 COMPLIANCE_SUMMARY_FIELD = "compliance_summary"
 SEQUENTIAL_SNAPSHOT_FIELD = "sequential_snapshot"
+TRIGGER_NAME_FIELD = "trigger_name"
 WINSORIZATION_MOMENT_FIELDS = (
     "winsor_lower_percentile",
     "winsor_upper_percentile",
@@ -597,6 +598,56 @@ def _validate_moment_counts(row: Mapping[str, object]) -> None:
             _refuse(_MOMENTS_COUNT_OUT_OF_RANGE, field=field, value=count, n=int(n))
 
 
+def _strip_moments_envelope_row(row, row_count):
+    stripped = dict(row)
+    if "moments_format" not in stripped:
+        _refuse(_MOMENTS_FORMAT_LEGACY, received=None, required=MOMENTS_FORMAT)
+    stamp = stripped.pop("moments_format")
+    version = _parse_moments_format(stamp, classify=False)
+    payload = stripped.pop(DECISION_PLAN_FIELD, None)
+    if payload is not None and not isinstance(payload, str):
+        _refuse(_MOMENTS_FORMAT_INVALID, received=payload, required=MOMENTS_FORMAT)
+    stripped.pop(ASSIGNMENT_COUNTS_FIELD, None)
+    stripped.pop(COMPLIANCE_SUMMARY_FIELD, None)
+    has_trigger = TRIGGER_NAME_FIELD in stripped
+    trigger_name = stripped.pop(TRIGGER_NAME_FIELD, None)
+    if (
+        has_trigger
+        and trigger_name is not None
+        and (not isinstance(trigger_name, str) or not trigger_name)
+    ):
+        _refuse(
+            _MOMENTS_FORMAT_INVALID,
+            received=trigger_name,
+            required="a non-empty declared trigger name or null",
+        )
+    envelope_identity = None
+    kind = stripped.get("record_kind")
+    if kind == "design_summary":
+        if version != MOMENTS_FORMAT:
+            _refuse(_MOMENTS_FORMAT_INVALID, received=version, required=MOMENTS_FORMAT)
+        if row_count != 1:
+            invalid_compliance_state("design_summary requires exactly one complete envelope")
+        identity = stripped.pop("experiment_id", None)
+        if not isinstance(identity, str) or not identity:
+            invalid_compliance_state("design_summary requires its exported experiment identity")
+        envelope_identity = identity
+        if set(stripped) != {"record_kind"}:
+            invalid_compliance_state("design_summary cannot contain outcome or checkpoint fields")
+        if row.get(ASSIGNMENT_COUNTS_FIELD) is None or row.get(COMPLIANCE_SUMMARY_FIELD) is None:
+            invalid_compliance_state(
+                "design_summary requires assignment counts and compliance state; "
+                "re-export the complete Encouragement source"
+            )
+        stripped.pop("record_kind")
+        output_row = None
+    elif _strip_sequential_envelope(stripped, version=version, n_rows=row_count):
+        output_row = None
+    else:
+        output_row = stripped
+    return version, payload, has_trigger, trigger_name, envelope_identity, output_row
+
+
 def _check_moments_format(
     rows: Sequence[Mapping[str, object]],
     *,
@@ -608,60 +659,36 @@ def _check_moments_format(
     dict[str, int] | None,
     dict[str, object] | None,
     str | None,
+    str | None,
 ]:
     """Validate and strip current format, plan, count and compliance envelopes."""
     out: list[dict[str, object]] = []
     versions: set[int] = set()
     plans: set[str] = set()
     envelope_identity: str | None = None
+    trigger_values: list[object] = []
+    trigger_rows = 0
     unplanned = 0
     planned_rows = 0
     for row in rows:
-        stripped = dict(row)
-        if "moments_format" not in stripped:
-            _refuse(_MOMENTS_FORMAT_LEGACY, received=None, required=MOMENTS_FORMAT)
-        stamp = stripped.pop("moments_format")
-        version = _parse_moments_format(stamp, classify=False)
+        version, payload, has_trigger, trigger_name, row_identity, output_row = (
+            _strip_moments_envelope_row(row, len(rows))
+        )
         versions.add(version)
-        payload = stripped.pop(DECISION_PLAN_FIELD, None)
-        if payload is not None:
+        if payload is None:
+            unplanned += 1
+        else:
             planned_rows += 1
             if not isinstance(payload, str):
-                _refuse(
-                    _MOMENTS_FORMAT_INVALID,
-                    received=payload,
-                    required=MOMENTS_FORMAT,
-                )
+                _refuse(_MOMENTS_FORMAT_INVALID, received=payload, required=MOMENTS_FORMAT)
             plans.add(payload)
-        else:
-            unplanned += 1
-        stripped.pop(ASSIGNMENT_COUNTS_FIELD, None)
-        stripped.pop(COMPLIANCE_SUMMARY_FIELD, None)
-        kind = stripped.get("record_kind")
-        if kind == "design_summary":
-            if version != MOMENTS_FORMAT:
-                _refuse(_MOMENTS_FORMAT_INVALID, received=version, required=MOMENTS_FORMAT)
-            if len(rows) != 1:
-                invalid_compliance_state("design_summary requires exactly one complete envelope")
-            identity = stripped.pop("experiment_id", None)
-            if not isinstance(identity, str) or not identity:
-                invalid_compliance_state("design_summary requires its exported experiment identity")
-            envelope_identity = identity
-            if set(stripped) != {"record_kind"}:
-                invalid_compliance_state(
-                    "design_summary cannot contain outcome or checkpoint fields"
-                )
-            if (
-                row.get(ASSIGNMENT_COUNTS_FIELD) is None
-                or row.get(COMPLIANCE_SUMMARY_FIELD) is None
-            ):
-                invalid_compliance_state(
-                    "design_summary requires assignment counts and compliance state; "
-                    "re-export the complete Encouragement source"
-                )
-            stripped.pop("record_kind")
-        elif not _strip_sequential_envelope(stripped, version=version, n_rows=len(rows)):
-            out.append(stripped)
+        if has_trigger:
+            trigger_rows += 1
+            trigger_values.append(trigger_name)
+        if row_identity is not None:
+            envelope_identity = row_identity
+        if output_row is not None:
+            out.append(output_row)
     if len(versions) > 1:
         _refuse(
             _MOMENTS_FORMAT_MIXED,
@@ -691,6 +718,19 @@ def _check_moments_format(
         invalid_compliance_state(
             "design_summary requires valid assignment counts; re-export the complete source"
         )
+    if trigger_rows not in {0, len(rows)}:
+        _refuse(
+            _MOMENTS_FORMAT_INVALID,
+            received="trigger name missing from some rows",
+            required="one consistent trigger declaration across the moments cube",
+        )
+    if len(set(trigger_values)) > 1:
+        _refuse(
+            _MOMENTS_FORMAT_INVALID,
+            received="conflicting trigger names",
+            required="one consistent trigger declaration across the moments cube",
+        )
+    trigger_name = cast("str | None", trigger_values[0]) if trigger_values else None
     return (
         version,
         out,
@@ -698,6 +738,7 @@ def _check_moments_format(
         assignment_counts,
         _cube_compliance_state(rows),
         envelope_identity,
+        trigger_name,
     )
 
 
@@ -948,6 +989,7 @@ class MomentsSource(SequentialSourceMixin):
         design: Randomized | Encouragement | Observational | None = None,
         plan: AnalysisPlan | CompiledDecisionPlan | None = None,
         path: Literal["warehouse", "frame"] = "frame",
+        _trusted_trigger_name: str | None = None,
     ) -> None:
         (
             _version,
@@ -956,11 +998,23 @@ class MomentsSource(SequentialSourceMixin):
             assignment_counts,
             compliance_payload,
             envelope_identity,
+            embedded_trigger_name,
         ) = _check_moments_format(rows, require_plan=plan is None)
         if envelope_identity is not None and envelope_identity != study_id:
             invalid_compliance_state(
                 "design summary experiment identity differs from requested study"
             )
+        if (
+            embedded_trigger_name is not None
+            and _trusted_trigger_name is not None
+            and embedded_trigger_name != _trusted_trigger_name
+        ):
+            _refuse(
+                _MOMENTS_FORMAT_INVALID,
+                received=embedded_trigger_name,
+                required="the trusted source trigger name",
+            )
+        trigger_name = embedded_trigger_name or _trusted_trigger_name
         self._rows = stripped
         self._assignment_counts = assignment_counts
         self._compliance = _validated_compliance_payload(
@@ -1048,6 +1102,7 @@ class MomentsSource(SequentialSourceMixin):
             metrics=metric_catalog,
             configs=base_configs,
             cluster=self._compliance.cluster if self._compliance is not None else None,
+            trigger_name=trigger_name,
         )
 
         from increment.sequential_state import sequential_refuse, snapshot_from_json
@@ -1172,14 +1227,18 @@ class MomentsSource(SequentialSourceMixin):
 
 
 def _design_summary_row(
-    study_id: str, plan: str, counts: str, compliance: str | None
+    study_id: str,
+    plan: str,
+    counts: str,
+    compliance: str | None,
+    trigger_name: str | None,
 ) -> dict[str, object]:
     """Encode a complete fixed-horizon, outcome-free Encouragement source."""
     if compliance is None:
         invalid_compliance_state(
             "a metric-free export requires the declared Encouragement uptake state"
         )
-    return {
+    row = {
         "record_kind": "design_summary",
         "experiment_id": study_id,
         "moments_format": MOMENTS_FORMAT,
@@ -1187,6 +1246,9 @@ def _design_summary_row(
         ASSIGNMENT_COUNTS_FIELD: counts,
         COMPLIANCE_SUMMARY_FIELD: compliance,
     }
+    if trigger_name is not None:
+        row[TRIGGER_NAME_FIELD] = trigger_name
+    return row
 
 
 def export_source_moments(
@@ -1229,6 +1291,8 @@ def export_source_moments(
                 ),
             }
         ]
+        if context.trigger_name is not None:
+            rows[0][TRIGGER_NAME_FIELD] = context.trigger_name
         table = pa.Table.from_pylist(rows).replace_schema_metadata(
             {b"increment.moments_format": str(SEQUENTIAL_MOMENTS_FORMAT).encode()}
         )
@@ -1274,9 +1338,11 @@ def export_source_moments(
             )
             if payload is not None:
                 row[COMPLIANCE_SUMMARY_FIELD] = payload
+            if context.trigger_name is not None:
+                row[TRIGGER_NAME_FIELD] = context.trigger_name
             rows.append(row)
     if not rows and not context.metrics:
-        rows = [_design_summary_row(context.study_id, plan, counts, payload)]
+        rows = [_design_summary_row(context.study_id, plan, counts, payload, context.trigger_name)]
     table = pa.Table.from_pylist(rows).replace_schema_metadata(
         {b"increment.moments_format": str(MOMENTS_FORMAT).encode()}
     )

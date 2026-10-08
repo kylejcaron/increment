@@ -412,24 +412,26 @@ def test_mixture_prior_refuses_for_a_valid_encouragement_design():
     assert raised.value.code == "estimation.adjust.prior.type"
 
 
-def test_prior_shrunk_reports_true_on_compliance_and_late_rows_under_a_prior():
-    """A Normal prior forwarded to estimate_encouragement must mark
-    prior_shrunk on every row it reaches, not just itt: the zero-control
-    compliance row and both LATE rows build their lift via _nn_estimate
-    directly, not through infer_lift."""
-    res = estimate_encouragement(
+def test_prior_keeps_compliance_and_late_sampling_rows_and_stores_posteriors():
+    plain = estimate_encouragement([METRIC], _rows(one_sided=True), _design(one_sided=True)).results
+    informative = estimate_encouragement(
         [METRIC],
         _rows(one_sided=True),
         _design(one_sided=True),
-        prior=Normal(mu=0.0, sigma=1.0),
+        prior=Normal(mu=0.0, sigma=0.05),
     ).results
-    assert res
-    assert all(r.prior_shrunk for r in res)
+
+    assert len(informative) == len(plain)
+    for prior_row, plain_row in zip(informative, plain, strict=True):
+        assert prior_row.require_lift() == plain_row.require_lift()
+        assert prior_row.prior_shrunk is False
+    supported = [row for row in informative if row.estimand in {"compliance", "late"}]
+    assert supported
+    assert all(row.posterior_available is True for row in supported)
+    assert all(row.posterior_estimate is not None for row in supported)
 
 
-def test_relative_compliance_fallback_reports_prior_shrunk():
-    """The two-sided compliance row's absolute-scale fallback (relative
-    form withheld) also builds its lift via _nn_estimate directly."""
+def test_relative_compliance_fallback_keeps_prior_free_sampling_fields():
     rows = []
     for gid, sum_d in (("control", 1.0), ("treat", 3.0)):
         rows.append(
@@ -447,17 +449,23 @@ def test_relative_compliance_fallback_reports_prior_shrunk():
                 }
             )
         )
-    res = estimate_encouragement(
+    plain = estimate_encouragement(
+        [METRIC], rows, _design(one_sided=False), estimands=("compliance",)
+    ).results
+    informative = estimate_encouragement(
         [METRIC],
         rows,
         _design(one_sided=False),
         estimands=("compliance",),
-        prior=Normal(mu=0.0, sigma=1.0),
+        prior=Normal(mu=0.0, sigma=0.05),
     ).results
-    comp = [r for r in res if r.estimand == "compliance"]
-    assert len(comp) == 1
-    assert comp[0].note is not None and "relative uptake lift withheld" in comp[0].note
-    assert comp[0].prior_shrunk is True
+
+    assert len(informative) == len(plain) == 1
+    assert informative[0].note is not None
+    assert "relative uptake lift withheld" in informative[0].note
+    assert informative[0].require_lift() == plain[0].require_lift()
+    assert informative[0].posterior_available is True
+    assert informative[0].posterior_estimate is not None
 
 
 def test_unknown_estimand_rejected():
@@ -502,7 +510,11 @@ def test_precise_extreme_complier_ratio_emits_relative_form():
         )
 
     res = estimate_encouragement([METRIC], rows, _design(one_sided=True)).results
+    prior_res = estimate_encouragement(
+        [METRIC], rows, _design(one_sided=True), prior=Normal(mu=0.0, sigma=0.1)
+    ).results
     got = _by_estimand(res)
+    prior_got = _by_estimand(prior_res)
 
     assert ("itt", "relative") in got
     additive = got[("late", "absolute")]
@@ -512,6 +524,11 @@ def test_precise_extreme_complier_ratio_emits_relative_form():
     # value = exp(theta) - 1 with theta ~ log(51/1) ~ 3.9
     assert rel[0].require_lift().value == pytest.approx(np.expm1(3.915), rel=0.05)
     assert rel[0].require_lift().lb < rel[0].require_lift().value < rel[0].require_lift().ub
+    prior_rel = prior_got[("late", "relative")][0]
+    assert prior_rel.require_lift() == rel[0].require_lift()
+    assert prior_rel.posterior_available is True
+    assert prior_rel.posterior_scale == "log"
+    assert prior_rel.posterior_estimate != pytest.approx(rel[0].require_lift().value)
 
 
 def _analytic_encouragement_rows(n, p, m_complier, sd_complier, m_never, sd_never):
