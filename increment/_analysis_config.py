@@ -24,8 +24,8 @@ from increment.semantics.design import Encouragement, Observational, Randomized
 from increment.semantics.models import ExperimentMetric, MethodSpec, Metric, NormalPriorSpec
 
 if TYPE_CHECKING:
+    from increment._literals import MultiplicityCorrection
     from increment._readout_request import Correction
-    from increment.decision import _MultiplicityCorrection
     from increment.frame import MetricSpec
 
 
@@ -87,7 +87,7 @@ def effective_methods(
     return methods
 
 
-def normalize_display_correction(correction: _MultiplicityCorrection) -> Correction:
+def normalize_display_correction(correction: MultiplicityCorrection) -> Correction:
     """Downcast a plan-registered `e_bh` (sequential-selection policy) to the
     `bh` a readout-request object accepts -- request objects only ever admit
     none/bh/bonferroni; e_bh is a runtime detail of AlwaysValid multiplicity,

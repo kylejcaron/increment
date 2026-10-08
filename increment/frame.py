@@ -1092,10 +1092,14 @@ class FramePanelSource(SequentialSourceMixin):
         return self._identity
 
     def _bounded_day_panel(self) -> tuple[nw.DataFrame[Any], bool]:
-        """Use the full day spine only when its conservative scratch estimate fits."""
+        """Select the dense kernel using cell and variable-width identity estimates."""
         identity = self._day_identity()
-        cells = identity.shape[0] * self._sparse_panel.get_column("ds").n_unique()
-        estimated_bytes = cells * (192 + 16 * len(self._value_columns))
+        days = self._sparse_panel.get_column("ds").n_unique()
+        cells = identity.shape[0] * days
+        identity_bytes = identity.estimated_size()
+        estimated_bytes = cells * (192 + 16 * len(self._value_columns)) + identity_bytes * (
+            2 * days + 1
+        )
         if estimated_bytes <= _DAY_PANEL_SCRATCH_BUDGET_BYTES:
             return (
                 _densify_panel(

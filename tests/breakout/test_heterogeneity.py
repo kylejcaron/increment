@@ -333,7 +333,8 @@ class TestSegmentContrast:
 def _run_breakout_two_segment_fixture(
     prior: Normal | None = None, window_days: int | None = None, **breakout_kwargs
 ) -> BreakoutEstimates:
-    """Real ArmStats -> run_breakout output for two segments (US, GB), used to exercise segment_contrast/segment_heterogeneity against infer_lift's actual closed-form interval."""
+    """Real ArmStats -> run_breakout output used to exercise the actual
+    infer_lift interval and, when configured, its separate stored posterior."""
     rng = np.random.default_rng(7)
 
     def arm(group_id: str, n: int, y_mean: float) -> ArmStats:
@@ -384,7 +385,8 @@ def _run_breakout_two_segment_fixture(
 
 
 class TestSegmentContrastRealBreakoutOutput:
-    """segment_contrast run on real run_breakout output, not the exact log-normal-interval fixtures the rest of this file uses - exercises infer_lift's actual closed-form posterior."""
+    """Real run_breakout sampling intervals exercise their source/reference
+    provenance rather than exact log-normal interval fixtures."""
 
     def test_recovers_se_close_to_analytic_delta_method_se(self):
         """These rows carry a Welch t reference, so their endpoints are t
@@ -600,7 +602,8 @@ def test_segment_contrast_refuses_nonpositive_recovered_se(
 
 
 def _coverage_rep(rng: np.random.Generator, n: int) -> tuple[Estimate, float, float]:
-    """One rep: draw two segments with known true log-scale lifts (0.20, 0.10), run the real run_breakout pipeline, and contrast - the interval fed to segment_contrast is infer_lift's real posterior, not a fixture."""
+    """Contrast real per-rep output; segment_contrast consumes infer_lift's
+    prior-free sampling interval, not a fixture."""
     true_log_a, true_log_b = 0.20, 0.10
     c_mean = 10.0
 
@@ -672,7 +675,8 @@ class TestSegmentContrastRealBreakoutCoverage:
 
     def test_real_run_breakout_coverage_fast(self):
         """Fast-suite variant: fewer reps, wide band, still exercising the real
-        run_breakout -> segment_contrast path - fast because infer_lift's posterior CI is closed-form, not because reps are few."""
+        run_breakout -> segment_contrast path; the sampling interval is
+        closed-form, not a reason to reduce the rep count."""
         rng = np.random.default_rng(0)
         reps = 20
 
@@ -1579,12 +1583,14 @@ class TestSegmentHeterogeneity:
 
 
 class TestSegmentHeterogeneityRawShrunkenPriorContract:
-    """The relative-scale `raw` row reuses `BreakoutEstimate.lift` verbatim (the
-    prior-updated posterior median), while Q/tau^2/pooled/shrunken machinery is built from the raw pre-update
-    `lift.log_mean`/`lift.log_se` - under an informative prior those diverge. Verbatim reuse holds only when
-    `lift.level == 1 - alpha`; any other upstream level (Bonferroni, one-sided) rebuilds the raw row at the requested alpha, so the package's own FWER correction composes with pooling."""
+    """The relative-scale `raw` row reuses `BreakoutEstimate.lift` verbatim as
+    prior-free sampling evidence (`docs/guides/priors-and-decisions.md:7-9`).
+    Its posterior is stored separately; Q/tau^2/pooled/shrunken machinery is
+    also built from raw log-scale moments.
+    Verbatim sampling reuse holds when `lift.level == 1 - alpha`; other
+    upstream levels rebuild the raw row at the requested alpha."""
 
-    def test_raw_row_diverges_from_log_mean_basis_under_informative_prior(self):
+    def test_raw_row_preserves_sampling_value_and_separates_posterior(self):
         informative = Normal(mu=0.0, sigma=0.01)
         estimates = _run_breakout_two_segment_fixture(prior=informative)
         _, segments = segment_heterogeneity(estimates, alpha=0.05)
@@ -1598,11 +1604,14 @@ class TestSegmentHeterogeneityRawShrunkenPriorContract:
         assert us_lift is not None
         assert us_lift.log_mean is not None
         naive = math.expm1(us_lift.log_mean)
-        # raw row is the prior-updated posterior median, pulled toward the tight
-        # prior's mean of 0 - far from the raw log_mean basis the Q/tau^2/shrunken block uses.
+        # The raw heterogeneity row consumes prior-free sampling state.
         us_raw_lift = us_raw.lift
         assert us_raw_lift is not None
-        assert abs(us_raw_lift.value - naive) / abs(naive) > 0.5
+        assert us_raw_lift.value == pytest.approx(naive, rel=1e-12)
+        posterior = us_row.posterior_estimate
+        assert us_row.posterior_available is True
+        assert posterior is not None
+        assert abs(posterior - naive) / abs(naive) > 0.5
 
     def test_bonferroni_output_composes_with_nominal_alpha(self):
         """run_breakout(correction='bonferroni') stamps lift.level=1-alpha/K
@@ -1961,12 +1970,12 @@ class TestHeterogeneitySummaryToFrame:
         assert len(segments_frame) == 6
 
     def test_summary_columns_are_field_order_with_estimand_value_scale_ahead_of_scale(self):
-        """Pins to_frame's column order: `estimand`/`value_scale` sit between
-        `source` and `scale`, matching HeterogeneitySummary's field order."""
+        """Columns follow field order and end with the collection's `view_partial` flag."""
         frame = HeterogeneitySummaries([]).to_frame()
         assert list(frame.columns) == [
             "metric",
             "method",
+            "analysis_population",
             "group_id",
             "dimension",
             "source",
@@ -1987,16 +1996,17 @@ class TestHeterogeneitySummaryToFrame:
             "lb",
             "ub",
             "open_side",
+            "view_partial",
         ]
 
     def test_segment_columns_are_field_order_with_estimand_value_scale_ahead_of_scale(self):
-        """Pins to_frame's column order: `estimand`/`value_scale` sit between
-        `source` and `scale`, matching SegmentEstimate's field order."""
+        """Columns follow field order and end with the collection's `view_partial` flag."""
         frame = SegmentEstimates([]).to_frame()
         assert list(frame.columns) == [
             "metric",
             "method",
             "method_role",
+            "analysis_population",
             "group_id",
             "dimension",
             "dimension_value",
@@ -2017,6 +2027,7 @@ class TestHeterogeneitySummaryToFrame:
             "family_axes",
             "family_q",
             "family_threshold",
+            "view_partial",
         ]
 
 

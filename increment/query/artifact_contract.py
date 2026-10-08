@@ -138,10 +138,11 @@ _EXTENSION_KIND_RANK: Mapping[str, int] = MappingProxyType(
         "cuped_preperiod": 3,
         "assignment_counts": 4,
         "trigger_population": 5,
-        "encouragement_uptake": 6,
-        "site_volume": 7,
-        "unit_covariate": 8,
-        "unit_covariate_level": 9,
+        "trigger_measure_stats": 6,
+        "encouragement_uptake": 7,
+        "site_volume": 8,
+        "unit_covariate": 9,
+        "unit_covariate_level": 10,
     }
 )
 
@@ -328,6 +329,20 @@ def _model(name: str) -> type[Any]:
         return getattr(models, name)
     except AttributeError as exc:  # pragma: no cover
         raise ImportError(f"increment.semantics.models does not export {name}") from exc
+
+
+def _dump_context_plan(plan: Any) -> dict[str, Any]:
+    """Preserve the pre-explicitness q spelling in hashed artifact recipes."""
+    result = cast("dict[str, Any]", _dump(plan))
+    result.setdefault("q", plan.q)
+    return result
+
+
+def _dump_context_experiment(experiment: Any) -> dict[str, Any]:
+    result = cast("dict[str, Any]", _dump(experiment))
+    if isinstance(result.get("plan"), dict):
+        result["plan"] = _dump_context_plan(experiment.plan)
+    return result
 
 
 def _canonical_json(value: Any) -> str:
@@ -843,7 +858,9 @@ def _covariate_catalog_entries(definitions: Any, experiment: Any) -> list[Any]:
     return entries
 
 
-def _identity_catalog_entries(definitions: Any, experiment: Any) -> list[Any]:
+def _identity_catalog_entries(
+    definitions: Any, experiment: Any, metric_names: tuple[str, ...]
+) -> list[Any]:
     entries: list[Any] = []
     if experiment.cluster is not None:
         request = _model("ClusterIdentityRequest").model_validate(
@@ -854,7 +871,7 @@ def _identity_catalog_entries(definitions: Any, experiment: Any) -> list[Any]:
             request,
             {"kind": "cluster_identity", "cluster_name": experiment.cluster},
             {
-                "experiment": _dump(experiment),
+                "experiment": _dump_context_experiment(experiment),
                 "exposure": _exposure_recipe(definitions, experiment),
                 "definitions_fact_sources": _dump(definitions.fact_sources),
                 "cluster": experiment.cluster,
@@ -869,12 +886,37 @@ def _identity_catalog_entries(definitions: Any, experiment: Any) -> list[Any]:
             request,
             {"kind": "trigger_population", "trigger_name": experiment.trigger},
             {
-                "experiment": _dump(experiment),
+                "experiment": _dump_context_experiment(experiment),
                 "exposure": _exposure_recipe(definitions, experiment, experiment.trigger),
                 "definitions_fact_sources": _dump(definitions.fact_sources),
                 "trigger": experiment.trigger,
             },
         )
+        for metric_name in metric_names:
+            request = _model("TriggerMeasureStatsRequest").model_validate(
+                {
+                    "kind": "trigger_measure_stats",
+                    "trigger_name": experiment.trigger,
+                    "metric_names": (metric_name,),
+                }
+            )
+            metric = next(metric for metric in definitions.metrics if metric.name == metric_name)
+            _catalog_add(
+                entries,
+                request,
+                {
+                    "kind": "trigger_measure_stats",
+                    "trigger_name": experiment.trigger,
+                    "metric_names": (metric_name,),
+                    "metric": _dump(metric),
+                },
+                {
+                    "experiment": _dump_context_experiment(experiment),
+                    "trigger": _exposure_recipe(definitions, experiment, experiment.trigger),
+                    "metric": _dump(metric),
+                    "definitions_fact_sources": _dump(definitions.fact_sources),
+                },
+            )
     return entries
 
 
@@ -938,11 +980,11 @@ def _assignment_catalog_entry(definitions: Any, experiment: Any, on_mixed_assign
         request,
         {"kind": "assignment_counts", "populations": list(populations)},
         {
-            "experiment": _dump(experiment),
+            "experiment": _dump_context_experiment(experiment),
             "exposure": _exposure_recipe(definitions, experiment),
-            "plan": _dump(experiment.plan),
+            "plan": _dump_context_plan(experiment.plan),
             "on_mixed_assignment": on_mixed_assignment,
-            "assignment": _dump(experiment),
+            "assignment": _dump_context_experiment(experiment),
         },
     )
     return entries[0]
@@ -1110,7 +1152,7 @@ def _compile_extension_catalog(
 ) -> list[Any]:
     experiment = resolution.experiment
     entries = _dimension_catalog_entries(definitions, experiment)
-    entries.extend(_identity_catalog_entries(definitions, experiment))
+    entries.extend(_identity_catalog_entries(definitions, experiment, resolution.metric_names))
     entries.extend(_cuped_catalog_entries(definitions, experiment, resolution.metric_names))
     entries.append(_assignment_catalog_entry(definitions, experiment, on_mixed_assignment))
     entries.extend(
@@ -1194,7 +1236,7 @@ def _compile_context(
 ) -> Any:
     """Compile a context; the source mapping and window days come from the caller's original
     *definitions*, everything else from their boundary-normalized copy."""
-    from increment.semantics.models import window_days
+    from increment.semantics.models import AnalysisPlan, window_days
     from increment.sequential_source import native_observation_mapping
 
     resolution = _resolve_context_inputs(experiment_name, definitions, on_mixed_assignment)
@@ -1249,7 +1291,7 @@ def _compile_context(
     entries.sort(key=lambda entry: _request_key(entry.request))
     # Experiment.design holds only a YAML-shaped declaration, so the effective design
     # (control arm, allocation, tuning) is projected into the dump, never into the model.
-    experiment_payload = cast("dict[str, Any]", _dump(resolution.experiment))
+    experiment_payload = _dump_context_experiment(resolution.experiment)
     if encouragement_uptake is not None:
         experiment_payload["design"] = _dump(encouragement_uptake)
     payload = {
@@ -1269,6 +1311,11 @@ def _compile_context(
         "on_mixed_assignment": on_mixed_assignment,
         "extension_catalog": [_dump(entry) for entry in entries],
     }
+    if (
+        "q" in identity_experiment.plan.model_fields_set
+        and identity_experiment.plan.q == AnalysisPlan().q
+    ):
+        payload["plan_q_explicit"] = True
     canonical = _canonical_json(payload)
     return _model("ArtifactContext").model_validate(
         {

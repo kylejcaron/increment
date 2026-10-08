@@ -75,8 +75,10 @@ from increment.estimation.inference import (
     ONE_SIDED_ALPHA_DOUBLES,
     LiftGuardError,
     Normal,
+    PosteriorFields,
     Prior,
     normal_posterior,
+    posterior_fields,
 )
 from increment.estimation.priors import MixturePrior, StudentTPrior
 from increment.estimation.results import Estimate, LiftEstimate, _reference_fields
@@ -355,7 +357,7 @@ def estimate_compliance(
                 cluster=cluster,
             )
         )
-    bundle = _lift_decision_bundle(results, inference=inference, allow_linear=True)
+    bundle = _lift_decision_bundle(results, inference=inference)
     return DecisionComputation(
         results=tuple(results), evidence=bundle.evidence, failures=bundle.failures
     )
@@ -570,27 +572,19 @@ def _nn_estimate(
     n_comparison: int | None = None,
     dof: float | None = None,
 ) -> Estimate:
-    """Conjugate Normal-Normal update -> closed-form interval (shared tail).
+    """Build a prior-free interval for an encouragement estimate.
 
-    ``alternative`` follows the same alpha-doubling identity ``infer_lift``/
-    ``infer_ate`` use: a one-sided test at level ``alpha`` displays the
-    two-sided interval at ``alpha_eff = 2 * alpha``, with ``level`` set to
-    that interval's honest coverage. Stamping ``LiftEstimate.alternative``
-    is the caller's job - this helper only builds the ``Estimate``.
+    ``alternative`` follows the same alpha-doubling identity as ``infer_lift``
+    and ``infer_ate``. Supported Normal posterior state is persisted separately
+    on the enclosing ``LiftEstimate`` via ``posterior_fields``.
 
     With ``inference`` set, the interval is the sequential boundary applied
-    to the raw delta-method SE around the raw point; the conjugate
-    posterior is bypassed entirely (a prior-shifted center would void the
-    frequentist time-uniform guarantee). ``n_comparison`` is the combined
-    two-arm count the spec's ``radius`` contract requires.
+    to the raw delta-method SE around the raw point; ``n_comparison`` is the
+    combined two-arm count the spec's ``radius`` contract requires.
 
     ``dof`` mirrors ``infer_lift``'s cluster-robust reference: when set,
-    the interval uses a t_{dof} critical value in place of the Normal z,
-    and the conjugate tail is bypassed entirely (``mu = point, sigma =
-    se``), since a Normal prior has no coherent update against a t
-    sampling distribution. Mutually exclusive with ``prior`` and
-    ``inference``; callers enforce that exclusion up front, this only
-    re-checks it.
+    the interval uses a t_{dof} critical value. It is mutually exclusive
+    with ``prior`` and ``inference``; callers enforce that exclusion up front.
     """
     if alternative not in ALTERNATIVE_VALUES:
         refuse(UNKNOWN_ALTERNATIVE, alternative=alternative)
@@ -628,7 +622,7 @@ def _nn_estimate(
             "route.unsupported",
             "additive SE-only sequential inference has no matching raw likelihood",
         )
-    posterior = normal_posterior(point, se, prior=prior)
+    posterior = normal_posterior(point, se, prior=None)
     z = _norm.isf(alpha_eff / 2.0)
     mu, sig = posterior.mu, posterior.sigma
     return Estimate(
@@ -805,11 +799,7 @@ def _encouragement_decision_bundle(
         if not (result.estimand == "late" and result.value_scale == "relative")
     ]
     non_itt = [result for result in evidence_results if result.estimand != "itt"]
-    bundle = _lift_decision_bundle(
-        non_itt,
-        inference=inference,
-        allow_linear=True,
-    )
+    bundle = _lift_decision_bundle(non_itt, inference=inference)
     evidence = dict(itt_bundle.evidence) if itt_bundle is not None else {}
     failures = dict(itt_bundle.failures) if itt_bundle is not None else {}
     evidence.update(bundle.evidence)
@@ -1165,7 +1155,15 @@ def _cluster_compliance_row(
         note="; ".join(notes),
         n_clusters=context.n_clusters,
         **_reference_fields(context.dof),
-        prior_shrunk=prior is not None,
+        **posterior_fields(
+            context.b,
+            math.sqrt(context.var_b),
+            prior,
+            alpha=alpha,
+            alternative="two-sided",
+            scale="linear",
+            preferred_direction=None,
+        ),
     )
 
 
@@ -1217,7 +1215,19 @@ def _zero_control_compliance_row(
         value_scale="absolute",
         scale="linear",
         note="; ".join(notes),
-        prior_shrunk=prior is not None,
+        **(
+            posterior_fields(
+                rate,
+                se_rate,
+                prior,
+                alpha=alpha,
+                alternative="two-sided",
+                scale="linear",
+                preferred_direction=None,
+            )
+            if se_rate > 0
+            else PosteriorFields()
+        ),
     )
 
 
@@ -1298,7 +1308,19 @@ def _relative_compliance_row(
         value_scale="absolute",
         scale="linear",
         note="; ".join(notes),
-        prior_shrunk=prior is not None,
+        **(
+            posterior_fields(
+                context.b,
+                math.sqrt(context.var_b),
+                prior,
+                alpha=alpha,
+                alternative="two-sided",
+                scale="linear",
+                preferred_direction=None,
+            )
+            if context.var_b > 0
+            else {}
+        ),
     )
 
 
@@ -1344,7 +1366,7 @@ def _estimate_unadjusted_late_rows(
         tau, se = _late_additive(t, c)
         late_dof = None
     row = LiftEstimate(
-        **cast(dict[str, Any], _winsorization_result_fields(c, t)),
+        **_winsorization_result_fields(c, t),
         metric=t.metric,
         group_id=t.group_id,
         method=method_strategy.method.name,
@@ -1369,9 +1391,21 @@ def _estimate_unadjusted_late_rows(
         **(
             _reference_fields(late_dof)
             if inference is None
-            else {"reference_kind": "sequential", "reference_df": None}
+            else _reference_fields(None, kind="sequential")
         ),
-        prior_shrunk=prior is not None,
+        **(
+            posterior_fields(
+                tau,
+                se,
+                prior,
+                alpha=alpha,
+                alternative=alternative,
+                scale="linear",
+                preferred_direction=None,
+            )
+            if se > 0
+            else PosteriorFields()
+        ),
     )
     if cluster is not None:
         rel: tuple[float, float] | str = (
@@ -1414,7 +1448,7 @@ def _estimate_unadjusted_late_rows(
     return [
         row,
         LiftEstimate(
-            **cast(dict[str, Any], _winsorization_result_fields(c, t)),
+            **_winsorization_result_fields(c, t),
             metric=t.metric,
             group_id=t.group_id,
             method=method_strategy.method.name,
@@ -1426,7 +1460,19 @@ def _estimate_unadjusted_late_rows(
             lift=rel_lift,
             note=f"relative to {context.pop} control mean; "
             f"{context.iv_assumes}{context.late_caveat}",
-            prior_shrunk=prior is not None,
+            **(
+                posterior_fields(
+                    theta,
+                    se_theta,
+                    prior,
+                    alpha=alpha,
+                    alternative=alternative,
+                    scale="log",
+                    preferred_direction=None,
+                )
+                if se_theta > 0.0
+                else PosteriorFields()
+            ),
         ),
     ]
 
@@ -1461,7 +1507,7 @@ def _estimate_cuped_late_row(
             f"'{t.metric}' to recover the tighter interval"
         )
     return LiftEstimate(
-        **cast(dict[str, Any], _winsorization_result_fields(c, t)),
+        **_winsorization_result_fields(c, t),
         metric=t.metric,
         group_id=t.group_id,
         method=method_strategy.method.name,
@@ -1481,7 +1527,19 @@ def _estimate_cuped_late_row(
             n_comparison=t.n + c.n,
         ),
         note="; ".join(notes) + context.late_caveat,
-        prior_shrunk=prior is not None,
+        **(
+            posterior_fields(
+                tau,
+                se,
+                prior,
+                alpha=alpha,
+                alternative=alternative,
+                scale="linear",
+                preferred_direction=None,
+            )
+            if se > 0.0
+            else PosteriorFields()
+        ),
     )
 
 

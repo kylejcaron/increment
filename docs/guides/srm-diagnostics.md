@@ -51,6 +51,47 @@ quota, exact-balance, without-replacement, and ramped or reset
 assignment streams are unsupported (independently assigned clusters
 satisfy the contract at cluster grain).
 
+
+## Declare the assignment law
+
+Allocation proportions do not identify the randomization procedure. A
+`Randomized` or `Encouragement` design can declare
+`allocation_scheme="independent"` only when each assignment is an independent
+draw with the same arm probabilities throughout the experiment. The
+`allocation_scheme` is omitted by older definitions and remains unknown in
+that case; declaring `allocation` alone does not imply independence or justify
+an SRM check.
+
+```python
+from increment import Randomized
+
+design = Randomized(
+    control_group="control",
+    allocation={"control": 4, "treatment": 1},
+    allocation_scheme="independent",
+)
+```
+
+For a cluster-randomized design, the assignment and count grain is clusters:
+count distinct assigned clusters by arm, not units or metric observations.
+For an encouragement design, count randomized assignment, not uptake. The
+expected shares may be unequal and come from the declared allocation.
+
+Blocked, adaptive, quota, and fixed-count allocation laws do not satisfy the
+independent-draw e-process contract; do not substitute a fixed-look Pearson
+test on repeated cumulative reads. Switchback schedules have their own
+randomization law and are not parallel-arm SRM cases. Observational
+comparisons have no randomized allocation to check. These cases must be
+reported as unsupported or not applicable, rather than as “no SRM.”
+
+The standalone `sample_ratio_mismatch` function still accepts explicitly
+requested fixed-look inference; this does not make a fixed-look test safe for
+repeated cumulative reads. `Analysis.srm()` defaults to anytime-valid inference
+and requires the design to declare `allocation_scheme="independent"`; allocation
+proportions alone are not enough. Without that declaration, the analysis reports
+the check as not applicable. Fixed-look inference remains an explicit one-look
+option.
+
 ## Assignment-protocol requirements
 
 `inference="always_valid"` REQUIRES a predeclared `expected` allocation
@@ -70,6 +111,15 @@ assignment -- is selection or telemetry evidence, not evidence that
 randomization itself failed; running SRM on that subset can move
 `is_srm` for reasons that have nothing to do with the assignment
 mechanism.
+
+Ordinary `Analysis.run()` attaches its automatic integrity result to the assigned
+population's source scope. If a run also displays triggered rows, those selected
+counts are explicitly not checked as assignment integrity; the assigned result
+remains assigned and says nothing about trigger-selection validity. Clustered
+artifact readouts use distinct assigned clusters for this check, not member-unit
+counts.
+Registered sequential reads likewise use source-owned assigned counts when available;
+they never substitute checkpoint sample sizes.
 
 ## `allocation_posterior_bands`: a descriptive complement
 

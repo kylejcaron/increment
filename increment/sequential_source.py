@@ -998,6 +998,12 @@ def validate_sequential_request(request):
         sequential_refuse(
             "source.invalid", "registered source identity differs from requested source"
         )
+    if (
+        request.view == "run"
+        and request.plan.q_explicit
+        and (float(registration.q) != request.plan.q)
+    ):
+        sequential_refuse("source.invalid", "whole-window family level differs from registration")
     if request.cluster is not None or getattr(request.design, "mechanism", None) == "observational":
         sequential_refuse(
             "route.unsupported",
@@ -1210,6 +1216,7 @@ def link_snapshot(snapshot, previous):
         n_records=len(previous.records),
         states=previous.states,
         frozen=previous.frozen,
+        assignment_counts=previous.assignment_counts,
     )
     chain = [a.prefix_id for a in snapshot.ancestors]
     if previous.prefix_id in chain:
@@ -1242,7 +1249,26 @@ def link_snapshot(snapshot, previous):
             "prove continuation from a parent captured at or after that look",
         )
     if len(snapshot.records) == len(previous.records):
-        linked = _with_cursor(previous, snapshot.reveal_cursor)
+        if snapshot.assignment_counts == previous.assignment_counts:
+            linked = _with_cursor(previous, snapshot.reveal_cursor)
+        else:
+            content = _PrefixContent(snapshot.version, snapshot.registration_id, snapshot.records)
+            linked = SequentialSnapshot.model_validate(
+                {
+                    **snapshot.model_dump(),
+                    "parent_id": previous.prefix_id,
+                    "ancestors": (*previous.ancestors, parent),
+                    "states": previous.states,
+                    "frozen": previous.frozen,
+                    "prefix_id": content.digest(
+                        len(snapshot.records),
+                        previous.states,
+                        previous.frozen,
+                        snapshot.assignment_counts,
+                    ),
+                }
+            )
+            linked.verify_parent(previous)
     else:
         content = _PrefixContent(
             snapshot.version,
@@ -1257,7 +1283,10 @@ def link_snapshot(snapshot, previous):
                 "ancestors": (*previous.ancestors, parent),
                 "frozen": previous.frozen,
                 "prefix_id": content.digest(
-                    len(snapshot.records), snapshot.states, previous.frozen
+                    len(snapshot.records),
+                    snapshot.states,
+                    previous.frozen,
+                    snapshot.assignment_counts,
                 ),
             }
         )

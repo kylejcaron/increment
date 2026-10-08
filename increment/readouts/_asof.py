@@ -94,6 +94,8 @@ def _estimate_asof_metric_date(
     """Estimate one fixed-horizon metric/date under the compiled role policy."""
     src, config, test = context.source, context.config, context.procedure
     design, plan, estimands = context.design, context.plan, context.estimands
+    if design.mechanism == "observational":
+        _raise_readout_request("readout.view.observational", view="asof")
     inference = _sequential_inference(plan)
     role_for_row = test.role if plan.declared else None
     if design.mechanism == "encouragement":

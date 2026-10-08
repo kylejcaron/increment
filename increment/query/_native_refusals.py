@@ -71,6 +71,17 @@ _NATIVE_OPERATION = RefusalSpec(
         "available capability is {offered!r}. {route}"
     ),
 )
+_NATIVE_TRIGGER_EVIDENCE_REQUIRED = RefusalSpec(
+    "source.native.trigger_evidence_required",
+    CapabilityError,
+    template=(
+        "{operation} requires explicit SourceSnapshotEvidence from the upstream "
+        "source; provide its event-time observation_cutoff_ts. Missing per-feed "
+        "completeness certification remains unknown. {route}"
+    ),
+)
+
+
 _NATIVE_COMPLIANCE_DESIGN_MISMATCH = RefusalSpec(
     "source.native.compliance_design_mismatch",
     InvalidRequestError,

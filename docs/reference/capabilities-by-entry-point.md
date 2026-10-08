@@ -59,6 +59,8 @@ Reproduce this table with `uv run --extra demo --extra tables --extra dashboard 
 | Encouragement continuous ITT + Bernoulli uptake compliance, jointly monitored (composed sequential family, e-BH selected) | yes | yes | not expressible as `design=` (no such parameter; `TypeError`, no `.code`); passed as `identification=`, refused (SOURCE, `source.frame.switchback.identification`); a sequential plan is also refused, `source.frame.switchback.plan` | yes | yes | checkpoint replay |
 | Uptake-only sequential compliance with an empty outcome catalog (`always_valid` and a compliance policy) | yes, `metrics=[]` | yes, `metrics=[]` | not expressible as `design=` (no such parameter; `TypeError`, no `.code`); passed as `identification=`, refused (SOURCE, `source.frame.switchback.identification`); a sequential plan is also refused, `source.frame.switchback.plan` | yes | yes | checkpoint replay with `metrics=[]` |
 | Uptake-only sequential compliance that retains an unbounded retention metric in the outcome catalog (explicit uptake-only registration over that catalog; compliance-only `run_asof_lift`/`run` succeeds; an ITT request refuses with `breakout.retention.encouragement` on `run_asof_lift`, or `sequential.source.invalid` on `run` because the outcome has no registered sampling law) | refused (SOURCE -- a one-row-per-unit summary has no per-unit dates to resolve a retention band against, `source.frame.constructor`) | refused (COMBINATION -- a unit panel refuses a retention metric under an Encouragement design at construction, `readout.encouragement.retention`) | not expressible as `design=` (no such parameter; `TypeError`, no `.code`); passed as `identification=`, refused (SOURCE, `source.frame.switchback.identification`); a sequential plan is also refused, `source.frame.switchback.plan` | yes, catalog retained | yes, the retention metric declared on the experiment and its catalog retained | checkpoint replay with the retention catalog retained |
+| Observational weight diagnostics (IPTW/AIPW; unit-level mean and conversion parity across four supported ingresses; cluster grain measured on unit summary) | yes; mean/conversion parity | yes; mean/conversion parity | not expressible (`from_switchback_panel` has no `design=` parameter; observational identification refused) | yes; mean/conversion parity; cluster grain | yes; mean/conversion parity | refused (SOURCE, `source.moments.covariate_unavailable` -- no per-unit covariates) |
+| Assignment-integrity scope (status, observed counts, randomization grain and retained metadata; triggered populations are not assignment-law evidence) | yes; unit counts or declared cluster counts; unassigned totals are separate | yes at unit grain; no cluster key in the panel constructor | not comparable (a switchback contrast does not have a parallel-arm assignment law) | yes; unit or cluster-grain counts with mixed/unassigned audit totals | yes; cluster grain requires cluster identity, and mixed/unassigned totals require assignment-count evidence | yes at unit grain; clustered counts require the complete cluster/compliance payload used by portable moments |
 | Observational IPTW covariate adjustment | yes | yes | not expressible as `design=` (no such parameter; `TypeError`, no `.code`); passed as `identification=`, refused (SOURCE, `source.frame.switchback.identification`) | yes | yes | refused (SOURCE -- a moments cube carries no per-unit rows to attach a covariate to) |
 | Observational AIPW/DML covariate adjustment | yes | yes | not expressible as `design=` (no such parameter; `TypeError`, no `.code`); passed as `identification=`, refused (SOURCE, `source.frame.switchback.identification`) | yes | yes | refused (SOURCE -- same as above) |
 | Categorical observational adjustment (string covariates) | yes | yes | not expressible as `design=` (no such parameter; `TypeError`, no `.code`); passed as `identification=`, refused (SOURCE, `source.frame.switchback.identification`) | yes | yes | refused (SOURCE, `source.moments.covariate_unavailable` -- no per-unit covariates) |
@@ -72,9 +74,38 @@ Reproduce this table with `uv run --extra demo --extra tables --extra dashboard 
 | `Analysis.planning_baseline`, mean metric | yes | yes | yes (the pilot-fitted `SwitchbackBaseline` for the `switchback_*` solvers) | yes | yes | yes |
 | `Analysis.planning_baseline`, quantile metric | yes | yes (same unwindowed-only reach as the row above) | refused (SOURCE -- a quantile metric is refused at the switchback metric-type gate before any frame is read) | yes | yes | refused (SOURCE, `analysis.planning_baseline.quantile_source_unavailable` -- no per-unit control-arm values for a pilot; genuine quantile export separately refuses with `source.frame.quantile_no_moments`) |
 | `Analysis.planning_baseline` with a declared cluster (per-unit mean/var; ICC on the metric's per-unit score) | yes | refused (SOURCE -- `from_unit_panel` takes no cluster) | not expressible (`from_switchback_panel` has no `cluster=` parameter: `TypeError`, no `.code`; a switchback contrast has no arm cluster) | yes | yes | refused (SOURCE, `source.moments.cluster_grain` -- clustered moments are not exported) |
-| `Analysis.planning_baseline` under a declared trigger (triggered-population moments and `trigger_rate`) | refused (SOURCE -- `from_unit_summary` accepts no `Experiment` declaration, so `planning_baseline`'s `trigger` always resolves `None`; the assigned population is analyzed instead) | refused (SOURCE -- same as `from_unit_summary`) | refused (SOURCE -- same as `from_unit_summary`) | yes | yes with the `trigger_population` and `assignment_counts` extensions; otherwise refused (SOURCE, `analysis.planning_baseline.trigger_evidence_unavailable`) | refused (SOURCE -- same as `from_unit_summary`) |
+| `Analysis.planning_baseline` under a declared trigger (triggered-population moments and `trigger_rate`) | refused (SOURCE -- `from_unit_summary` accepts no `Experiment` declaration, so `planning_baseline`'s `trigger` always resolves `None`; the assigned population is analyzed instead) | refused (SOURCE -- same as `from_unit_summary`) | refused (SOURCE -- same as `from_unit_summary`) | yes | yes with `trigger_population`, triggered `assignment_counts`, and metric-scoped `trigger_measure_stats` extensions, plus explicit `SourceSnapshotEvidence`; otherwise refused (SOURCE, `analysis.planning_baseline.trigger_evidence_unavailable`) | refused (SOURCE -- same as `from_unit_summary`) |
+| Triggered daily/as-of value and lift history (`run_daily`, `run_daily_lift`, `run_asof`, `run_asof_lift`; membership is limited to units whose first eligible trigger is observed by each day, and outcome windows anchor at that unit's trigger) | refused (SOURCE -- no experiment trigger declaration or per-unit trigger-evidence operation) | refused (SOURCE -- no experiment trigger declaration or per-unit trigger-evidence operation) | refused (SOURCE -- switchback contrasts do not carry trigger-anchored arm day evidence) | yes; requires explicit `SourceSnapshotEvidence`; outcome events are strictly after each unit's first eligible trigger and are cutoff by source evidence | yes; requires `trigger_population` and metric-compatible `trigger_measure_stats` evidence extensions | refused (SOURCE -- portable moments do not carry unit-level trigger anchors) |
+| Triggered clustered daily/as-of readouts | refused (SOURCE -- no trigger declaration) | refused (SOURCE -- no trigger declaration) | not comparable | refused for declared clusters (`facade.analysis.clustered_day_axis`); triggered day-level cluster-robust inference is unavailable | refused for declared clusters (`facade.analysis.clustered_day_axis`); use a whole-window clustered triggered readout | refused (SOURCE -- no trigger membership evidence) |
 | Logged-policy contrast (`estimate_policy_contrast`) | not expressible (no `Analysis` constructor or method carries a decision trace -- the per-decision chosen action, exact logged propensity, logging policy version and reward boundary -- so there is no call to write and no `.code`; the family's own ingress is `LoggedTrace.from_records` / `from_frame`) | not expressible (same) | not expressible (same) | not expressible (same) | not expressible (same) | not expressible (same) |
 | TabularPolicy persistence (`model_dump_json` / `model_validate_json`) | not comparable (SOURCE -- no `Analysis` constructor carries a policy table; the policy is a `LoggedTrace` input) | not comparable (SOURCE -- same) | not comparable (SOURCE -- same) | not comparable (SOURCE -- same) | not comparable (SOURCE -- same) | not comparable (SOURCE -- same). Within the family: JSON roundtrips string-keyed tables only; any other key type refuses (CONSTRUCTION -- JSON object keys are strings, `logged_policy.policy.json_context_key`); typed keys persist through `model_dump(mode="python")` or trusted pickle |
+
+## Triggered auxiliary readouts
+
+Triggered segmented readouts are separate populations, not a filter silently
+applied to the assigned view. `run_breakout()` and `breakout_summaries()` emit
+assigned and triggered results with population-qualified family/table identity.
+Definitions are supported; a unit-day artifact is supported for breakouts only
+when it contains the declared breakout-dimension extension and current trigger
+evidence. Segment properties declared `as_of: pre_exposure` are resolved at
+assignment, before either population's outcome anchor. The consumer parity
+regression in `tests/test_analysis_trigger.py` compares population-qualified
+breakout/factor summaries and public breakout rows across definitions and
+unit-day artifact ingresses.
+
+| Read | Definitions | Unit-day artifact | Other entry points |
+|---|---|---|---|
+| `run_breakout()` / `breakout_summaries()` with a declared trigger | supported with explicit `SourceSnapshotEvidence` | supported with breakout-dimension and trigger evidence; otherwise `artifact.extension.missing` or `artifact.evidence.unavailable` | no constructor carries a declared trigger membership for this read |
+| `factor_summaries()` with a declared trigger | supported on native definitions evidence with explicit `SourceSnapshotEvidence` | supported with the declared `factor_dimension` extension and trigger evidence; otherwise `artifact.extension.missing` or `artifact.evidence.unavailable` | no trigger declaration or per-unit factor evidence |
+| `dashboard_group_data(population=...)` | supports assigned and triggered populations; pre-exposure group properties remain assignment-anchored | refused (`facade.analysis.operation`; no source-owned dashboard aggregation operation) | no trigger declaration |
+| `allocation_history(population=...)` | supports assigned enrollment dates and first-trigger cohort dates; rows carry `analysis_population` and sort by population, date, then arm | refused (`facade.analysis.operation`; artifact retains no raw enrollment timeline) | no trigger declaration |
+| `sitewide()` with a declared trigger | refused (`analysis.sitewide.triggered_population_unsupported`; whole-site evidence cannot isolate trigger-eligible units) | same source-specific refusal | no trigger declaration |
+| `estimate_cate()`, `validate_cate()`, `targeting_rule()`, `select_targeting_rule()` with a declared trigger | supported when the source can supply triggered unit outcomes and pre-assignment covariates | supported with triggered-population and unit-covariate evidence; source-specific missing-evidence refusals remain | no trigger declaration |
+
+Triggered sequential breakout inference remains explicitly unsupported
+(`sequential.route.unsupported`): the registered construction has no
+triggered-population breakout roster. It does not fall back to assigned
+segments.
 
 For `from_definitions`, pinning preserves dimensions joined by freshness-bearing
 fact sources. Qualifying non-enrolled events can establish that later data has
@@ -101,6 +132,16 @@ full follow-up, such as `avg_event` for a unit with no events. Complete
 unfinished windows; for structurally undefined outcomes, choose a metric
 defined for every eligible unit. The adapter does not silently substitute a
 complete-case population for the declared trigger population.
+
+For trigger-aware planning through `from_definitions` and an adopted unit-day
+artifact, the consumer regression covers mean and ratio CUPED moments,
+an unadjusted median baseline, and the observed trigger rate. Each uses the
+first eligible trigger as the outcome-window anchor; mean and ratio CUPED
+retain covariates measured before each unit's own assignment, even with
+staggered assignment dates. Enrollment counts remain assignment-based, while
+the analyzed-trigger count remains distinct in baseline-derived sample-size
+results. These claims apply to those two warehouse ingresses, not to the
+summary, panel, switchback, or portable-moment routes marked refused above.
 
 Mean/Ratio CUPED on the unit panel resolves the declared covariate the same
 way observational adjustment already does: through the per-unit value

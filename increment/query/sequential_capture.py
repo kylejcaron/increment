@@ -149,6 +149,7 @@ def capture_relations(
     as_of,
     previous=None,
     covariate=False,
+    assignment_counts=None,
 ):
     """Reveal a common finalized cohort and accumulate one bounded Arrow batch.
 
@@ -224,6 +225,7 @@ def capture_relations(
         finalized=finalized,
         previous=previous,
         reveal_cursor=as_of,
+        assignment_counts=assignment_counts,
     )
     source._sequential_snapshot = snapshot
     return snapshot

@@ -945,40 +945,7 @@ def test_p_value_alpha_independent_at_the_default_and_a_multiplicity_alpha():
     assert lift_tight.ub >= lift_default.ub
 
 
-def test_quantile_p_value_unset_with_an_informative_prior():
-    """An informative prior shrinks the reported posterior interval;
-    the inversion never reads a prior, so it must not be stamped there
-    -- p_value() falls back to the generic posterior branch instead,
-    which stays consistent with the actual (shrunk) reported interval."""
-    rng = np.random.default_rng(21)
-    n = 1200
-    control = rng.lognormal(1.0, 0.5, n)
-    treatment = rng.lognormal(1.05, 0.5, n)
-    df = pd.DataFrame(
-        {
-            "unit_id": range(2 * n),
-            "group_id": ["control"] * n + ["treatment"] * n,
-            "y": np.concatenate([control, treatment]),
-        }
-    )
-    metric = QuantileMetric(name="lat", entity="u", fact="f", quantile=0.5)
-    prior = Normal(mu=0.0, sigma=0.02)  # tight enough to visibly shrink the MLE
-    (est,) = estimate_quantile_lift(_UnitSource(df, metric), metric, "control", prior=prior)
-    assert est.quantile_p_value is None
-    lift = est.require_lift()
-    assert lift.lb is not None and lift.ub is not None and lift.alpha is not None
-    # Duality still holds, but now against the ACTUAL (prior-shrunk)
-    # reported interval, read through the generic posterior branch --
-    # not against the flat inversion, which would disagree once the
-    # prior has moved the interval off the unshrunk MLE.
-    excludes = lift.lb > 0.0 or lift.ub < 0.0
-    assert excludes == est.stat_sig()
-    assert excludes == (est.p_value() <= lift.alpha)
-
-
-def test_quantile_p_value_matches_flat_construction_without_a_prior():
-    """Without a prior (the default), stamping stays on: same estimator,
-    same arms, prior=None must reproduce the earlier no-prior behavior."""
+def test_quantile_sampling_inversion_is_prior_independent_at_multiple_levels():
     rng = np.random.default_rng(22)
     n = 800
     control = rng.lognormal(1.0, 0.5, n)
@@ -991,10 +958,22 @@ def test_quantile_p_value_matches_flat_construction_without_a_prior():
         }
     )
     metric = QuantileMetric(name="lat", entity="u", fact="f", quantile=0.5)
-    (est,) = estimate_quantile_lift(_UnitSource(df, metric), metric, "control", prior=None)
-    assert est.quantile_p_value is not None
-    want = _quantile_p_value(control, treatment, q=0.5, null=0.0)
-    assert est.quantile_p_value == want
+    prior = Normal(mu=0.0, sigma=0.02)
+    key = ArmHypothesisKey("lat", "treatment", "itt")
+
+    for alpha in (0.05, 0.01):
+        baseline = estimate_quantile_lift_computation(
+            _UnitSource(df, metric), metric, "control", alpha=alpha
+        )
+        informed = estimate_quantile_lift_computation(
+            _UnitSource(df, metric), metric, "control", prior=prior, alpha=alpha
+        )
+        (base_row,) = baseline.results
+        (prior_row,) = informed.results
+        assert prior_row.lift == base_row.lift
+        assert prior_row.quantile_p_value == base_row.quantile_p_value
+        assert prior_row.p_value() == base_row.p_value()
+        assert informed.evidence[key] == baseline.evidence[key]
 
 
 def test_excludes_never_flips_back_false_as_alpha_grows():
@@ -1078,6 +1057,7 @@ def test_p_value_is_dual_to_the_reported_interval_on_tied_data():
     metric = QuantileMetric(name="lat", entity="u", fact="f", quantile=0.5)
     (est0,) = estimate_quantile_lift(_UnitSource(df, metric), metric, "control", alpha=0.05)
     p = est0.p_value()
+    assert p is not None
     for alpha in (0.9, 0.5, 0.2, 0.10, 0.05, 0.01, 1e-4, p * 1.001, p / 1.001):
         (est,) = estimate_quantile_lift(_UnitSource(df, metric), metric, "control", alpha=alpha)
         assert est.p_value() == p
@@ -1103,6 +1083,7 @@ def test_p_value_is_dual_to_the_reported_interval_on_resolved_tied_arms():
     metric = QuantileMetric(name="lat", entity="u", fact="f", quantile=0.5)
     (est0,) = estimate_quantile_lift(_UnitSource(df, metric), metric, "control", alpha=0.05)
     p = est0.p_value()
+    assert p is not None
     assert p <= 0.05
     for alpha in (0.5, 0.2, 0.05, 0.01, 1e-3, 1e-4, p * 1.001, p / 1.001):
         (est,) = estimate_quantile_lift(_UnitSource(df, metric), metric, "control", alpha=alpha)

@@ -26,7 +26,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 
-from increment import SequentialCell
+from increment import SequentialCell, SourceSnapshotEvidence
 from increment._analysis_config import UNSET, _Unset
 from increment.analysis import Analysis
 from increment.errors import CodedError, IncrementWarning
@@ -75,12 +75,13 @@ CONSTRUCTORS = (
     "from_moments",
 )
 
-# Cluster identity is required by clustered cases and a no-op elsewhere.
 _ARTIFACT_EXTENSION_KINDS = (
     "cuped_preperiod",
     "breakout_dimension",
     "cluster_identity",
     "site_volume",
+    "trigger_population",
+    "trigger_measure_stats",
 )
 
 # Every case waives from_switchback_panel, which needs a switchback-shaped
@@ -139,6 +140,8 @@ class ParityCase:
     signature or schema cannot express the request (an unsupported keyword is a
     ``TypeError``, an unsupported schema field a validation error), so no refusal code
     exists to record.
+    ``unscoped_outputs`` is limited to explicitly explained synthetic or legacy rows with no
+    source descriptor; all other emitted rows are validated against retained scope metadata.
     """
 
     id: str
@@ -163,8 +166,11 @@ class ParityCase:
     source_probe: Callable[[str, Analysis], None] | None = None
     expected_warning_codes: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     view: Literal["daily", "daily_lift", "asof", "asof_lift"] | None = None
+    population: Literal["assigned", "triggered"] = "assigned"
     refusal_only: bool = False
     expected_absence: Mapping[str, Absence] = field(default_factory=dict)
+    # Explicitly classified synthetic or legacy outputs that intentionally have no source scope.
+    unscoped_outputs: Mapping[str, str] = field(default_factory=dict)
 
 
 class _Warehouse(NamedTuple):
@@ -266,6 +272,95 @@ def _export_and_replay(
         return Analysis.from_moments(rows, control="control", metrics=metrics, plan=plan)
     finally:
         _close_parity_analysis(analysis)
+
+
+def _triggered_day_axis_cases() -> tuple[ParityCase, ...]:
+    """Definition/artifact parity for all four triggered day-axis readouts."""
+    base_rows = ds.event_rows(n_per_arm=12)
+    rows = [dict(row) for row in base_rows]
+    for arm, prefix in (("control", "c"), ("treatment", "t")):
+        for index in range(12):
+            unit = f"{prefix}{index}"
+            assignment = next(
+                row for row in base_rows if row["user_id"] == unit and row["event"] == "exposure"
+            )
+            trigger_day = 10 if index % 2 == 0 else 11
+            rows.append(
+                {
+                    **assignment,
+                    "event_at": dt.datetime(2025, 1, trigger_day, 10),
+                    "event": "saw_surface",
+                    "revenue": None,
+                    "sess": None,
+                    "latency": None,
+                }
+            )
+            if index % 2 == 1:
+                rows.append(
+                    {
+                        **assignment,
+                        "event_at": dt.datetime(2025, 1, 11, 15),
+                        "event": "purchase",
+                        "revenue": float(8 + (arm == "treatment") + index % 4),
+                        "sess": 1,
+                        "latency": None,
+                    }
+                )
+    payload = ds.definitions_dict(plan=AnalysisPlan(primary="revenue"))
+    payload["fact_sources"][0]["facts"].append({"name": "saw_surface", "column": None})
+    payload["exposures"].append({"name": "saw_surface", "fact": "saw_surface"})
+    payload["experiments"][0]["trigger"] = "saw_surface"
+    definitions = Definitions.model_validate(payload)
+    cutoff = dt.datetime(2025, 1, 19, 23, 59, tzinfo=dt.UTC)
+    evidence = SourceSnapshotEvidence(
+        observation_cutoff_ts=cutoff,
+        complete_through_by_feed={"events": cutoff},
+    )
+
+    def build_artifact() -> Analysis:
+        con = ds.duckdb_connection(rows)
+        native = make_analysis(
+            con,
+            definitions,
+            experiment="exp",
+            source_snapshot_evidence=evidence,
+        )
+        return _publish_and_adopt(
+            con,
+            native,
+            kinds=(*_ARTIFACT_EXTENSION_KINDS, "assignment_counts"),
+        )
+
+    def build_definitions() -> Analysis:
+        con = ds.duckdb_connection(rows)
+        native = make_analysis(
+            con,
+            definitions,
+            experiment="exp",
+            source_snapshot_evidence=evidence,
+        )
+        return _track_connection(native, con)
+
+    unsupported = {
+        "from_unit_summary": "SOURCE: unit summaries carry no trigger declaration or per-unit trigger anchors.",
+        "from_unit_panel": "SOURCE: unit panels carry no trigger declaration or per-unit trigger anchors.",
+        "from_switchback_panel": "SOURCE: switchback contrasts carry no triggered arm day-axis evidence.",
+        "from_moments": "SOURCE: portable moments carry no per-unit trigger anchors.",
+    }
+    return tuple(
+        ParityCase(
+            id=f"triggered_{view}",
+            build={
+                "from_definitions": build_definitions,
+                "from_unit_day_artifact": build_artifact,
+            },
+            waive=unsupported,
+            view=view,
+            population="triggered",
+            metrics=("revenue",),
+        )
+        for view in ("daily", "daily_lift", "asof", "asof_lift")
+    )
 
 
 # Definitions/artifact put the CUPED override on the plan's ExperimentMetric;
@@ -4451,9 +4546,16 @@ def _observational_covariate_rows() -> tuple[list[dict[str, Any]], dict[str, dic
             "revenue": 20.0 + 0.05 * tenure + 2.0 * treated + float(rng.normal(0, 1)),
             "errors": 1.0 + 0.01 * tenure + 0.1 * treated + float(rng.normal(0, 0.5)),
             "signups": 0.5 + 0.002 * tenure + 0.3 * treated + float(rng.normal(0, 0.4)),
+            "converted": int((i + int(treated)) % 3 == 0),
         }
         units[uid] = unit
-        blank = {"revenue": None, "errors": None, "signups": None, "tenure": None}
+        blank = {
+            "revenue": None,
+            "errors": None,
+            "signups": None,
+            "tenure": None,
+            "converted": None,
+        }
         rows.append(
             {
                 "user_id": uid,
@@ -4496,6 +4598,17 @@ def _observational_covariate_rows() -> tuple[list[dict[str, Any]], dict[str, dic
             }
             for name in ("revenue", "errors", "signups")
         )
+        if unit["converted"]:
+            rows.append(
+                {
+                    "user_id": uid,
+                    "event_at": exposure_at + dt.timedelta(days=1),
+                    "event": "purchase_converted",
+                    "experiment_id": None,
+                    "group_id": None,
+                    **{**blank, "converted": 1},
+                }
+            )
         # After the declared end, so every unit's window is observed.
         rows.append(
             {
@@ -4510,7 +4623,11 @@ def _observational_covariate_rows() -> tuple[list[dict[str, Any]], dict[str, dic
     return rows, units
 
 
-def _observational_covariate_case() -> ParityCase:
+def _observational_covariate_case(
+    *,
+    metric_type: Literal["mean", "conversion"] = "mean",
+    method_name: Literal["iptw", "aipw"] = "iptw",
+) -> ParityCase:
     """IPTW adjustment on a declared numeric pre-exposure covariate with a
     two-treatment-arm primary and two secondaries: from_definitions,
     from_unit_day_artifact and from_unit_panel must all reproduce the
@@ -4520,7 +4637,39 @@ def _observational_covariate_case() -> ParityCase:
     refuses by its own code -- a moments cube has no per-unit rows to
     attach a covariate to."""
     rows, units = _observational_covariate_rows()
-    metric_def = {"type": "mean", "entity": "user_id", "aggregation": "sum"}
+    is_conversion = metric_type == "conversion"
+    metric_names = ("converted",) if is_conversion else ("revenue", "errors", "signups")
+    metric_def = (
+        {"type": "conversion", "entity": "user_id", "fact": "purchase_converted"}
+        if is_conversion
+        else {"type": "mean", "entity": "user_id", "aggregation": "sum"}
+    )
+    decision_method = {"name": method_name}
+    specs = (
+        [
+            MetricSpec.model_validate(
+                {
+                    "name": "converted",
+                    "type": "conversion",
+                    "value_column": "converted",
+                    "decision_method": decision_method,
+                }
+            )
+        ]
+        if is_conversion
+        else [MetricSpec(name=name, type="mean") for name in metric_names]
+    )
+    plan = AnalysisPlan(primary="converted") if is_conversion else _OBSERVATIONAL_PLAN
+    experiment_plan = (
+        {
+            "primary": {
+                "metric": "converted",
+                "decision_method": decision_method,
+            }
+        }
+        if is_conversion
+        else {"primary": "revenue", "secondaries": ["errors", "signups"]}
+    )
     defs_dict: dict[str, Any] = {
         "dialect": "duckdb",
         "fact_sources": [
@@ -4534,6 +4683,7 @@ def _observational_covariate_case() -> ParityCase:
                     {"name": "purchase_revenue", "column": "revenue"},
                     {"name": "purchase_errors", "column": "errors"},
                     {"name": "purchase_signups", "column": "signups"},
+                    {"name": "purchase_converted", "column": None},
                 ],
                 "properties": [
                     {
@@ -4546,10 +4696,11 @@ def _observational_covariate_case() -> ParityCase:
             }
         ],
         "exposures": [{"name": "enrolled", "fact": "exposure"}],
-        "metrics": [
-            {"name": name, "fact": f"purchase_{name}", **metric_def}
-            for name in ("revenue", "errors", "signups")
-        ],
+        "metrics": (
+            [{"name": name, "fact": f"purchase_{name}", **metric_def} for name in metric_names]
+            if not is_conversion
+            else [{"name": "converted", **metric_def}]
+        ),
         "experiments": [
             {
                 "name": "obs_exp",
@@ -4558,7 +4709,7 @@ def _observational_covariate_case() -> ParityCase:
                 "control_group": "control",
                 "start": "2025-01-01",
                 "end": "2025-01-12",
-                "plan": {"primary": "revenue", "secondaries": ["errors", "signups"]},
+                "plan": experiment_plan,
                 "design": {
                     "mechanism": "observational",
                     "covariates": [{"property": "tenure", "source": "events"}],
@@ -4566,7 +4717,6 @@ def _observational_covariate_case() -> ParityCase:
             }
         ],
     }
-    specs = [MetricSpec(name=name, type="mean") for name in ("revenue", "errors", "signups")]
 
     def design() -> Observational:
         return Observational(
@@ -4595,7 +4745,7 @@ def _observational_covariate_case() -> ParityCase:
             group="variant",
             metrics=specs,
             design=design(),
-            plan=_OBSERVATIONAL_PLAN,
+            plan=plan,
         )
 
     def build_unit_panel() -> Analysis:
@@ -4608,7 +4758,7 @@ def _observational_covariate_case() -> ParityCase:
             date="date",
             metrics=specs,
             design=design(),
-            plan=_OBSERVATIONAL_PLAN,
+            plan=plan,
         )
 
     def build_moments() -> Analysis:
@@ -4620,12 +4770,14 @@ def _observational_covariate_case() -> ParityCase:
             summary.export(path)
             replay_rows = pq.read_table(path).to_pylist()
         summary.close()
-        return Analysis.from_moments(
-            replay_rows, metrics=specs, design=design(), plan=_OBSERVATIONAL_PLAN
-        )
+        return Analysis.from_moments(replay_rows, metrics=specs, design=design(), plan=plan)
 
     return ParityCase(
-        id="observational_iptw_covariate_adjusted_ate",
+        id=(
+            f"observational_{method_name}_conversion_diagnostics"
+            if is_conversion
+            else "observational_iptw_covariate_adjusted_ate"
+        ),
         build={
             "from_definitions": build_definitions,
             "from_unit_day_artifact": build_artifact,
@@ -4648,6 +4800,14 @@ def _observational_covariate_case() -> ParityCase:
         # Publishes/adopts a unit-day artifact on every run.
         slow=True,
     )
+
+
+def _observational_conversion_case() -> ParityCase:
+    return _observational_covariate_case(metric_type="conversion")
+
+
+def _observational_aipw_conversion_case() -> ParityCase:
+    return _observational_covariate_case(metric_type="conversion", method_name="aipw")
 
 
 _OBSERVATIONAL_QUANTILE_PLAN = AnalysisPlan(primary="revenue")
@@ -5636,6 +5796,104 @@ def _clustered_negative_mean_case(*, zero_treatment: bool = False) -> ParityCase
         # Publishes/adopts a unit-day artifact and exports/replays moments
         # on every run -- see _fixed_horizon_case's slow=True for why.
         slow=True,
+    )
+
+
+def _clustered_assignment_integrity_case() -> ParityCase:
+    rows = ds.clustered_negative_mean_event_rows()
+    plan = AnalysisPlan(primary="net_revenue")
+    definitions = ds.clustered_negative_mean_definitions_dict(plan=plan)
+    summary_metrics = [
+        MetricSpec(
+            name="net_revenue",
+            type="ratio",
+            numerator="revenue",
+            denominator="sessions",
+            preferred_direction="increase",
+        ),
+    ]
+
+    def build_definitions() -> Analysis:
+        con = ds.duckdb_connection(rows)
+        return _track_connection(
+            make_analysis(con, Definitions.model_validate(definitions), experiment="exp"), con
+        )
+
+    def build_artifact() -> Analysis:
+        con = ds.duckdb_connection(rows)
+        native = make_analysis(con, Definitions.model_validate(definitions), experiment="exp")
+        return _publish_and_adopt(con, native)
+
+    def build_summary() -> Analysis:
+        con = ds.duckdb_connection(rows)
+        frame = ds.clustered_negative_mean_summary_frame(con)
+        con.disconnect()
+        return Analysis.from_unit_summary(
+            frame,
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics=summary_metrics,
+            cluster="cluster_id",
+            plan=plan,
+        )
+
+    expected: list[tuple[Any, ...]] = []
+
+    def probe(results: Any) -> None:
+        metadata = getattr(results, "metadata", None)
+        scope = getattr(metadata, "scope", None)
+        by_source = getattr(scope, "by_source", None)
+        assert by_source, "clustered readout must retain source-scope metadata"
+        source_scope = next(iter(by_source.values()))
+        assert source_scope.integrity
+        assert source_scope.integrity[0].randomization_grain == "cluster"
+        signature = (
+            tuple(
+                (
+                    item.status,
+                    item.analysis_population,
+                    item.construction,
+                    item.alpha,
+                    None if item.observed is None else tuple(sorted(item.observed.items())),
+                    None if item.expected is None else tuple(sorted(item.expected.items())),
+                    item.randomization_grain,
+                    item.code,
+                    tuple(sorted(item.context.items())),
+                )
+                for item in source_scope.integrity
+            ),
+            tuple(
+                (item.analysis_population, item.arms, item.source, item.complete)
+                for item in source_scope.rosters
+            ),
+            tuple(sorted(source_scope.decision_complete_by_population.items())),
+        )
+        if expected:
+            assert signature == expected[0]
+        else:
+            expected.append(signature)
+
+    return ParityCase(
+        id="clustered_assignment_integrity_scope",
+        build={
+            "from_definitions": build_definitions,
+            "from_unit_day_artifact": build_artifact,
+            "from_unit_summary": build_summary,
+        },
+        waive={
+            "from_switchback_panel": (
+                "SOURCE: a switchback contrast does not expose parallel-arm assignment counts."
+            ),
+            "from_unit_panel": (
+                "SOURCE: the panel constructor has no cluster key, so it cannot preserve the "
+                "declared randomization grain."
+            ),
+            "from_moments": (
+                "SOURCE: this clustered case has no portable cluster-identity payload."
+            ),
+        },
+        readout_probe=probe,
     )
 
 
@@ -8224,6 +8482,7 @@ def _exact_retention_case(
 
 
 PARITY_CASES: tuple[ParityCase, ...] = (
+    *_triggered_day_axis_cases(),
     _exact_conversion_case(export_from="from_definitions"),
     _exact_conversion_case(export_from="from_unit_panel"),
     _exact_retention_case(export_from="from_definitions"),
@@ -8301,6 +8560,7 @@ PARITY_CASES: tuple[ParityCase, ...] = (
     _multiplicity_roles_case(),
     _nonpositive_mean_case(),
     _clustered_negative_mean_case(),
+    _clustered_assignment_integrity_case(),
     _clustered_negative_mean_case(zero_treatment=True),
     _cluster_export_refusal_case(),
     _encouragement_itt_case(),

@@ -568,10 +568,8 @@ def test_synthesise_metric_explicit_none_preferred_direction_does_not_crash(
 def test_frame_metric_without_declared_direction_preferred_direction_is_none(
     arrow_frame: pa.Table,
 ) -> None:
-    """The actual bug: a frame-path metric that never declares a direction
-    must not silently inherit MetricIdentity's "increase" default --
-    LiftEstimate.preferred_direction stays None and prob_favorable()
-    refuses instead of assuming a direction."""
+    """An undeclared direction stays unset, and unavailable posterior
+    access returns None rather than inventing a sampling-derived probability."""
     analysis = from_unit_summary(
         arrow_frame,
         unit="user_id",
@@ -582,9 +580,7 @@ def test_frame_metric_without_declared_direction_preferred_direction_is_none(
     )
     (est,) = readouts.run(analysis)
     assert est.preferred_direction is None
-    with pytest.raises(InvalidRequestError) as raised:
-        est.prob_favorable()
-    assert raised.value.code == "estimation.results.lift.liftestimate_prob_favorable"
+    assert est.prob_favorable() is None
 
 
 def test_frame_metric_with_declared_decrease_direction_flips_prob_favorable(
@@ -603,8 +599,7 @@ def test_frame_metric_with_declared_decrease_direction_flips_prob_favorable(
     )
     (est,) = readouts.run(analysis)
     assert est.preferred_direction == "decrease"
-    assert est.prob_favorable() == pytest.approx(1.0 - est.prob_beyond(est.null_lift))
-    assert est.prob_favorable() != pytest.approx(est.prob_beyond(est.null_lift))
+    assert est.prob_favorable() is None
 
 
 def test_metric_spec_accepts_method_roles_and_prior() -> None:

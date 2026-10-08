@@ -1,19 +1,19 @@
 """Immutable containers shared by query-free package layers."""
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 
-class _FrozenMapping(Mapping[str, Any]):
+class _FrozenMapping[Key, Value](Mapping[Key, Value]):
     """Small immutable mapping that remains deepcopy- and pickle-compatible."""
 
-    def __init__(self, value: Mapping[str, Any]) -> None:
-        self._value = dict(value)
+    def __init__(self, value: Mapping[Key, Value]) -> None:
+        self._value: dict[Key, Value] = dict(value)
 
-    def __getitem__(self, key: str) -> Any:
+    def __getitem__(self, key: Key) -> Value:
         return self._value[key]
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Key]:
         return iter(self._value)
 
     def __len__(self) -> int:

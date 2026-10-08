@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Sequence
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
@@ -188,10 +189,18 @@ class _DaySource:
         ],
         build_asof_panel: Callable[
             [ir.Table, Metric, tuple[Metric, ...], bool, bool],
-            tuple[ir.Table, ir.Table | None, ir.Table | None, int | None, ir.Scalar | None],
+            tuple[
+                ir.Table,
+                ir.Table | None,
+                ir.Table | None,
+                int | None,
+                ir.Scalar | None,
+                dt.date | None,
+            ],
         ],
         breakouts: tuple[str, ...] = (),
         *,
+        triggered_observation_edges: Callable[[Metric], tuple[dt.date, dt.date | None]],
         build_breakout_properties: Callable[[FactSource, str, ir.Table], ir.Table],
         defs: Definitions,
         preflight_breakout: Callable[..., FactSource],
@@ -220,12 +229,24 @@ class _DaySource:
         self._compliance_provider = compliance_provider
         self._compliance_dates_provider = compliance_dates_provider
         self._validated_assignments_scope = validated_assignments
+        self._triggered_observation_edges = triggered_observation_edges
         self._ready = False
         self._asof_panel_cache: dict[
             tuple[Metric, tuple[Metric, ...], bool, bool],
-            tuple[ir.Table, ir.Table | None, ir.Table | None, int | None, ir.Scalar | None],
+            tuple[
+                ir.Table,
+                ir.Table | None,
+                ir.Table | None,
+                int | None,
+                ir.Scalar | None,
+                dt.date | None,
+            ],
         ] = {}
         self._breakout_properties_cache: dict[tuple[str, str], ir.Table] = {}
+
+    def triggered_observation_edges(self, metric: Metric) -> tuple[dt.date, dt.date | None]:
+        """Return the effective observed edge and optional conservative certification edge."""
+        return self._triggered_observation_edges(metric)
 
     def compliance_dates(self) -> Sequence[object]:
         if self._compliance_dates_provider is None:
@@ -299,7 +320,14 @@ class _DaySource:
         *,
         include_uptake_horizon: bool = False,
         completed_windows_only: bool = False,
-    ) -> tuple[ir.Table, ir.Table | None, ir.Table | None, int | None, ir.Scalar | None]:
+    ) -> tuple[
+        ir.Table,
+        ir.Table | None,
+        ir.Table | None,
+        int | None,
+        ir.Scalar | None,
+        dt.date | None,
+    ]:
         horizon = self._effective_horizon(metric)
         key = (metric, horizon, include_covariate, include_uptake_horizon)
         cached = self._asof_panel_cache.get(key)
@@ -313,12 +341,12 @@ class _DaySource:
             and (isinstance(metric, RatioMetric) or isinstance(self._context.design, Encouragement))
             and _final_maturity_day(metric) is not None
         ):
-            panel, den_panel, uptake_panel, uptake_window_days, outcome_edge = cached
+            panel, den_panel, uptake_panel, uptake_window_days, outcome_edge, uptake_edge = cached
             data_as_of = self._build_panel(exposures, metric, horizon)[-1]
             panel = _censor_to_observable_window(
                 panel, metric, self._experiment, data_as_of, warn_on_censoring=False
             )
-            return panel, den_panel, uptake_panel, uptake_window_days, outcome_edge
+            return panel, den_panel, uptake_panel, uptake_window_days, outcome_edge, uptake_edge
         return cached
 
     def _breakout_properties(
@@ -408,14 +436,19 @@ class _DaySource:
         )
 
         if grain == "asof":
-            panel, den_panel, uptake_panel, uptake_window_days, outcome_edge = (
-                self._cached_asof_panel(
-                    exposures,
-                    metric,
-                    include_covariate,
-                    include_uptake_horizon=True,
-                    completed_windows_only=completed_windows_only,
-                )
+            (
+                panel,
+                den_panel,
+                uptake_panel,
+                uptake_window_days,
+                outcome_edge,
+                uptake_certified_edge,
+            ) = self._cached_asof_panel(
+                exposures,
+                metric,
+                include_covariate,
+                include_uptake_horizon=True,
+                completed_windows_only=completed_windows_only,
             )
             asof = asof_group_summary(
                 panel,
@@ -424,6 +457,8 @@ class _DaySource:
                 uptake_panel=uptake_panel,
                 uptake_window_days=uptake_window_days,
                 _uptake_elapsed_windowed=uptake_panel is not None,
+                _uptake_certified_edge=uptake_certified_edge,
+                _uptake_day_boundary_offset=self._experiment.day_boundary_offset,
                 completed_windows_only=completed_windows_only,
                 _outcome_observation_end=outcome_edge,
             )
@@ -450,8 +485,8 @@ class _DaySource:
             )
             return cast("list[dict[str, Any]]", cohorts.to_pyarrow().to_pylist())
 
-        panel, den_panel, _uptake_panel, _uptake_window_days, _edge = self._cached_asof_panel(
-            exposures, metric, include_covariate
+        panel, den_panel, _uptake_panel, _uptake_window_days, _edge, _uptake_edge = (
+            self._cached_asof_panel(exposures, metric, include_covariate)
         )
         panel = window_bound_stats(panel, metric)
         if den_panel is not None:
@@ -491,14 +526,19 @@ class _DaySource:
         properties_table = self._breakout_properties(fs, breakout.property, exposures)
         by = [breakout.property]
         if grain == "asof":
-            panel, den_panel, uptake_panel, uptake_window_days, outcome_edge = (
-                self._cached_asof_panel(
-                    exposures,
-                    metric,
-                    include_covariate,
-                    include_uptake_horizon=True,
-                    completed_windows_only=completed_windows_only,
-                )
+            (
+                panel,
+                den_panel,
+                uptake_panel,
+                uptake_window_days,
+                outcome_edge,
+                uptake_certified_edge,
+            ) = self._cached_asof_panel(
+                exposures,
+                metric,
+                include_covariate,
+                include_uptake_horizon=True,
+                completed_windows_only=completed_windows_only,
             )
             dim_panel = join_breakout_dimension(panel, properties_table, by)
             asof = asof_group_summary(
@@ -509,6 +549,8 @@ class _DaySource:
                 uptake_panel=uptake_panel,
                 uptake_window_days=uptake_window_days,
                 _uptake_elapsed_windowed=uptake_panel is not None,
+                _uptake_certified_edge=uptake_certified_edge,
+                _uptake_day_boundary_offset=self._experiment.day_boundary_offset,
                 completed_windows_only=completed_windows_only,
                 _outcome_observation_end=outcome_edge,
             )
@@ -543,8 +585,8 @@ class _DaySource:
                 rows=cast("list[dict[str, Any]]", cohorts.to_pyarrow().to_pylist()),
             )
 
-        panel, den_panel, _uptake_panel, _uptake_window_days, _edge = self._cached_asof_panel(
-            exposures, metric, include_covariate
+        panel, den_panel, _uptake_panel, _uptake_window_days, _edge, _uptake_edge = (
+            self._cached_asof_panel(exposures, metric, include_covariate)
         )
         panel = window_bound_stats(panel, metric)
         if den_panel is not None:

@@ -58,6 +58,8 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   tolerances, invariants, and cross-path parity. They MUST NOT pin permitted
   message wording, private structure, internal wiring, or exact bits where a
   tolerance defines the contract.
+- Serialization replay tests MUST run claimed consumers on the restored
+  object, not the original.
 - Start with the exact regression:
   `make test TESTS=tests/file.py::test_name`.
 - Then run `make test-affected BASE=<task-base-sha>` (default fast, serial);
@@ -83,6 +85,9 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   allowance, remaining acceptance, and evidence location. Selection evidence
   is tied to source, worktree/environment, and dirty inputs; changed inputs
   require rerunning it.
+- Run `make install` once per clone. It installs the prek pre-commit (Ruff,
+  ty, prose audit) and pre-push hooks; prek chains an existing roborev
+  pre-push hook as `pre-push.legacy`. Do not bypass them with `--no-verify`.
 - Run `make check` before pushing. Reserve `make test-all` for final integration
   or release candidates that change estimation or a wire format.
 - Use `make fmt` for formatting. Build documentation with `nox -s docs`, not
@@ -104,8 +109,26 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   independently invented carriers based on the same design document.
 - Coordinate aggregate test workers across the host. Use focused checks
   during implementation; one coordinator owns broad integration checks.
-  Docs-only clarifications do not justify repeated broad suites. Performance
-  measurements require an uncontended window; label contended timings.
+  Docs-only clarifications do not justify repeated broad suites. Ordinary
+  focused and xdist runs may overlap. Reserve an exclusive window only for
+  CPU/RSS timing measurements; correctness oracles run under load, with any
+  elapsed time labeled contended.
+- Integrate a lane as soon as its focused checks and review pass, then run
+  the combined focused selection on the integration branch. Do not hold
+  verified work on side branches; late merges hide cross-lane failures.
+  The integration gate before each commit includes the `slow`-marked tests
+  of every changed test file, not only the default selection.
+- Where roborev is configured for the checkout, run
+  `roborev fix --list --branch <branch>` before closing a tracked issue and
+  after each integration commit. Resolve or triage open findings before
+  starting the next task. Close a review only with cited code or test
+  evidence for every finding; "a later review found nothing" is not evidence.
+  Contributors without roborev are not required to install it.
+- Update the issue ledger when work state changes (commit, merge,
+  verification, blocker), not in end-of-session batches.
+- When several writers share one worktree, assign disjoint file ownership,
+  route other hunks through the owner, and keep every module importable
+  after each edit.
 - A handoff names exact commits, dirty and untracked files, verification
   evidence, unresolved decisions, and the next action. Distinguish
   implemented, verified, integrated, and issue-closed work. Preserve partial
@@ -131,6 +154,49 @@ Where a path cannot support a capability, refuse explicitly and distinguish a
 source that cannot supply required input from an estimator or construction
 that is unfinished. Keep the path-by-capability table in
 `docs/reference/capabilities-by-entry-point.md` aligned with measured behavior.
+## Review outcomes, not structure
+
+- Review analysis changes by asking whether an ordinary analyst can reach and
+  correctly interpret the result for the affected user journey. Use the
+  eleven journey contracts and evidence inventory in `docs/validation.md`;
+  structural proxies such as constructor presence, row counts, or a passing
+  primitive test do not establish an outcome contract.
+- For scoped results, check decision completeness: every required cell is
+  present as a result or an identity-preserving unavailable row with its
+  reason. A partial collection MUST NOT look like a complete answer.
+- Keep sampling evidence and posterior summaries distinct. A prior MUST NOT
+  change sampling inference; posterior-dependent decisions require an actually
+  available posterior and its recorded reason when unavailable.
+- Check automatic assignment integrity in `Analysis.run()` at the assigned
+  population and declared assignment grain. `NotApplicable` is not a pass;
+  it means the integrity question could not be evaluated under the source or
+  assignment contract. Triggered counts are not assignment-law evidence.
+- Check multiplicity status and family scope on the result, not only the
+  displayed estimate. In particular, `exploratory_unadjusted` explicitly
+  means no family adjustment, and filtering must not shrink the retained
+  family.
+- Treat `assigned` and `triggered` as distinct populations and family scopes.
+  A triggered estimate is anchored at each unit's first eligible trigger; it
+  does not validate random assignment or establish that conditioning on
+  triggering is causally valid.
+- Reuse `tests/readout_journeys.py` assertions where applicable and verify the
+  public result a user consumes. Do not replace semantic checks with wording,
+  private-wiring, or type/name-count assertions.
+
+## Import organization and user-facing language
+
+- Keep authoring and analysis configuration distinct from receive-only result
+  consumption in documentation and examples. Show the intended import path for
+  each role; do not move root exports, add compatibility aliases, or create
+  parallel namespaces without an approved API cutover.
+- Use one term for each public concept across README, guides, API reference, and
+  release notes. Keep statistical status labels and population names exact
+  (`exploratory_unadjusted`, `assigned`, `triggered`); explain them in ordinary
+  analyst language rather than inventing synonyms.
+- Update the existing release-note mechanism when one exists. Do not introduce
+  a new changelog or claim an API/release change for documentation-only
+  clarification.
+
 
 ## Method compatibility and limitations
 
@@ -172,6 +238,11 @@ that is unfinished. Keep the path-by-capability table in
   Prefer centered, mergeable moments and overflow-safe cross terms.
 - When a result can be unavailable, preserve a numeric null and its exact
   reason through schemas, conversions, serialization, and saved fixtures.
+- Assignment counts state their grain and population. Unassigned and
+  mixed-assignment accounting buckets are not experiment arms; keep them out
+  of arm rosters while preserving their audit counts.
+- A scoped collection represents every requested cell, either as a result or
+  as an unavailable row that keeps the cell's identity fields.
 - Portable or hashed formats define collection order, tuple encoding, alias
   behavior, duplicate handling, and treatment of runtime-only values.
 - Read-only SQL is parsed using the dialect that will execute it and is

@@ -1467,19 +1467,23 @@ def _infer_adjusted_contrast(
     point: float | None,
     scores: ScoreStats,
     population: str | None,
-    abs_diff: float | None,
-    abs_se: float | None,
+    absolute: tuple[float | None, float | None],
     estimand: Literal["ate", "plr_slope", "overlap_subpopulation_ate"],
     note: str | None,
     n_clusters: int | None,
     dof: float | None,
     abs_dof: float | None = None,
+    posterior: tuple[float | None, ScoreStats | None] = (None, None),
     joint_result: tuple[JointContrastReference | None, RelativeUnavailableReason | None] = (
         None,
         None,
     ),
 ) -> LiftEstimate:
     """Attach inference metadata and value-scale notes to a contrast."""
+    has_joint_result = joint_result[0] is not None or joint_result[1] is not None
+    abs_diff, abs_se = absolute
+    posterior_point, posterior_scores = posterior
+    sampling_prior = None if has_joint_result and request.prior is not None else request.prior
     estimate = infer_ate(
         metric=request.metric.name,
         group_id=request.treatment_group,
@@ -1487,7 +1491,7 @@ def _infer_adjusted_contrast(
         method_role="decision",
         point=point,
         scores=scores,
-        prior=request.prior,
+        prior=sampling_prior,
         alpha=request.alpha,
         alternative=request.alternative,
         population=population,
@@ -1504,6 +1508,26 @@ def _infer_adjusted_contrast(
         relative_unavailable_reason=joint_result[1],
         estimand=estimand,
     )
+    posterior_point = point if posterior_point is None else posterior_point
+    if has_joint_result and request.prior is not None and posterior_point is not None:
+        from increment.estimation.inference import posterior_fields
+
+        estimate = estimate.model_copy(
+            update={
+                "sampling_available": True,
+                **posterior_fields(
+                    posterior_point,
+                    (posterior_scores or scores).se(),
+                    request.prior,
+                    alpha=request.alpha,
+                    null_lift=request.null_lift,
+                    alternative=request.alternative,
+                    scale="linear",
+                    null_abs=request.null_abs,
+                    preferred_direction=request.preferred_direction,
+                ),
+            }
+        )
     if n_clusters is not None:
         covariance_note = (
             "Independent-cluster superpopulation score sandwich; asymptotic Normal "

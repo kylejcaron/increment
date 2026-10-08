@@ -43,7 +43,14 @@ def test_call_time_prior_is_applied_to_the_estimate():
     (default,) = _panel_analysis().run_daily_lift()
     (shrunk,) = _panel_analysis().run_daily_lift(prior=StudentTPrior(nu=4.0, scale=0.05))
     assert default.lift is not None and shrunk.lift is not None
-    assert 0.0 < abs(shrunk.lift.value) < abs(default.lift.value)
+    assert default.lift.value == shrunk.lift.value
+    # Call-time priors update the separate posterior, not prior-free `lift`
+    # (docs/guides/priors-and-decisions.md:7-9).
+    assert default.posterior_available is None
+    assert shrunk.posterior_available is True
+    posterior_estimate = shrunk.posterior_estimate
+    assert posterior_estimate is not None
+    assert 0.0 < abs(posterior_estimate) < abs(default.lift.value)
 
 
 def test_explicit_methods_stamp_decision_and_sensitivity_roles():

@@ -60,13 +60,23 @@ def test_slice_preserves_contrast_results():
     assert hasattr(sliced, "to_frame")
 
 
-def test_concatenation_preserves_contrast_results():
-    result = _result()
+def test_concatenation_rejects_plain_lists():
+    from increment.errors import InvalidRequestError
 
-    combined = ContrastResults([result]) + [result]
+    with pytest.raises(InvalidRequestError) as raised:
+        ContrastResults([_result()]) + [_result()]
+
+    assert raised.value.code == "readout.collection.concat_type_mismatch"
+
+
+def test_concatenation_preserves_contrast_results():
+    left = ContrastResults([_result()])
+    right = ContrastResults([_result()])
+
+    combined = left + right
 
     assert isinstance(combined, ContrastResults)
-    assert combined == [result, result]
+    assert combined == [_result(), _result()]
     assert hasattr(combined, "to_frame")
 
 
@@ -122,6 +132,12 @@ def test_to_frame_supports_declared_backends(backend):
         "reference_spec",
         "provenance",
         "response_meaning",
+        "analysis_population",
+        "source_snapshot_id",
+        "decision_scope_complete",
+        "decision_scope_reason_code",
+        "decision_scope_reason_context",
+        "view_partial",
     ]
     if backend == "pyarrow":
         row = frame.to_pylist()[0]
@@ -136,7 +152,14 @@ def test_empty_to_frame_retains_typed_schema(backend):
     frame = cast(Any, ContrastResults().to_frame(backend=backend))
     columns = list(frame.columns) if backend != "pyarrow" else frame.column_names
     assert columns[0] == "metric"
-    assert columns[-1] == "response_meaning"
+    assert columns[-6:] == [
+        "analysis_population",
+        "source_snapshot_id",
+        "decision_scope_complete",
+        "decision_scope_reason_code",
+        "decision_scope_reason_context",
+        "view_partial",
+    ]
     assert len(frame) == 0
 
 

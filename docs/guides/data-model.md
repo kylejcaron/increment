@@ -60,9 +60,12 @@ input directly. An absent eligible unit/date observation is a **logical zero**,
 not an excluded unit or missing outcome: aggregation includes it in the
 population's means and variances.
 
-For small inputs, zero filling uses a bounded temporary date spine. For larger
-sparse panels the aggregation avoids retaining the full unit-by-date product;
-the logical population is preserved without materializing one row per zero.
+For small inputs, zero filling may use a temporary date spine when a scratch
+estimate based on the number of cells, value columns and identity-buffer size
+falls below the 64 MiB selection threshold. This is a route-selection
+heuristic, not a guarantee on peak memory: dataframe backend overhead and
+temporary operations are not fully captured. Larger estimates select a sparse
+day-at-a-time reduction that avoids retaining the full unit-by-date product.
 `densified_cells` counts observed or implicit cells that require zero filling,
 not physical rows written or retained.
 
@@ -545,6 +548,14 @@ so the backend must support temporary-table materialization. Raw relations are
 not collected into client memory, and later reductions never fall back to a
 live source. Relation writes persist the same captured rows used for their
 digest.
+
+Definitions-backed callers may supply `SourceSnapshotEvidence` with an explicit
+aware event-time cutoff and per-feed certified `complete_through` instants.
+Missing certifications remain unknown: observed timestamps, `data_as_of`,
+publication time, and experiment end are not completeness proofs. Trigger
+membership uses only the trigger feed's certification; each metric's trigger
+outcomes use the certifications for that metric's contributing fact-source
+feeds, all bound to the same pinned cutoff.
 A percentile-winsorized metric's own snapshot, every artifact publish's
 snapshot, and `dashboard_snapshot`/sequential capture's own pinned read all
 scope each captured fact/dimension source to the experiment's enrolled units
@@ -653,7 +664,8 @@ published evidence:
 | `breakout_dimension` | `breakout_source`, `breakout_sources`, `breakout_summaries` |
 | `factor_dimension` | `factor_summaries` |
 | `site_volume` | `sitewide_evidence` |
-| `trigger_population` plus `assignment_counts` | `triggered_source`, `triggered_counts` |
+| `trigger_population` plus `assignment_counts` | `triggered_counts` |
+| `trigger_population` plus `assignment_counts` and the metric's `trigger_measure_stats` | metric-specific `triggered_source` outcomes |
 
 `cluster_identity`, `cuped_preperiod`, and `encouragement_uptake` provide
 relation evidence consumed by the corresponding total/day reductions; they do
@@ -662,7 +674,24 @@ the request must match exactly one catalog entry, including its canonical
 definition and source-provenance hashes. Supported requests are
 `breakout_dimension`, `factor_dimension`, `cluster_identity`,
 `cuped_preperiod`, `assignment_counts`, `trigger_population`,
-`encouragement_uptake`, and `site_volume`.
+`trigger_measure_stats`, `encouragement_uptake`, and `site_volume`.
+
+Triggered outcome summaries are raw-event-filtered from the unit's first
+eligible trigger, then aggregated by that trigger-relative local day. The
+exclusive window edge is the first local day after the declared number of
+days. Trigger-population evidence before version 3 and outcome artifacts
+without the selected metric's summary cannot serve a triggered outcome; use
+definitions-backed input or rebuild and republish with version-3 trigger
+membership and the metric's `trigger_measure_stats` request.
+
+The publisher filters trigger-relative raw events at the explicit pinned
+event-time cutoff before making daily aggregates. The reader rejects aggregate
+dates later than the cutoff's local day, while permitting a partial cutoff-day
+aggregate. Daily rows contain no raw timestamps, so the reader cannot
+independently prove which within-day events were admitted; exact cutoff
+filtering on that day is trusted publisher behavior bound to the artifact's
+source provenance and cutoff metadata.
+
 
 Logical metrics may share one physical site-volume recipe. Publication writes
 that recipe once; each metric retains its binding to the shared evidence when

@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import math
 from contextlib import contextmanager
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 import ibis
 import pytest
 
+from increment import SourceSnapshotEvidence
 from increment.analysis import Analysis
-from increment.errors import CapabilityError
+from increment.errors import CapabilityError, IncrementWarning
 from increment.query.artifact_contract import (
     ArtifactContractError,
     ArtifactStore,
@@ -68,6 +69,16 @@ _EXPECTED_ARTIFACT_SCHEMAS = {
         ("unit_id", "STRING", False),
         ("first_trigger_ts", "TIMESTAMP_UTC_US", False),
     ),
+    "trigger_measure_stats": (
+        ("experiment_id", "STRING", False),
+        ("unit_id", "STRING", False),
+        ("ds", "DATE", False),
+        ("measure_key", "STRING", False),
+        ("n_events", "INT64", False),
+        ("sum_value", "FLOAT64", False),
+        ("min_value", "FLOAT64", False),
+        ("max_value", "FLOAT64", False),
+    ),
     "encouragement_uptake": (
         ("experiment_id", "STRING", False),
         ("unit_id", "STRING", False),
@@ -92,6 +103,7 @@ _EXPECTED_ARTIFACT_PRIMARY_KEYS = {
     "cuped_preperiod": ("experiment_id", "unit_id"),
     "assignment_counts": ("experiment_id", "population", "group_id"),
     "trigger_population": ("experiment_id", "unit_id"),
+    "trigger_measure_stats": ("experiment_id", "unit_id", "ds", "measure_key"),
     "encouragement_uptake": ("experiment_id", "unit_id"),
     "site_volume": ("experiment_id", "ds", "measure_key"),
 }
@@ -130,6 +142,22 @@ def _assert_rows_equal(
                 assert actual_value == expected_value, (key, field)
 
 
+def _flatten_readout_row(row: Any) -> dict[str, Any]:
+    """Flatten row models for identity-aware, tolerance-based comparisons."""
+    flattened: dict[str, Any] = {}
+
+    def add(path: str, value: Any) -> None:
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                add(f"{path}.{key}" if path else key, nested)
+        else:
+            flattened[path] = value
+
+    for key, value in row.model_dump(exclude={"source_snapshot_id", "family_id"}).items():
+        add(key, value)
+    return flattened
+
+
 def _metric(source: Any, name: str = "purchase_rate") -> Any:
     return next(metric for metric in source.context.metrics if metric.name == name)
 
@@ -137,6 +165,45 @@ def _metric(source: Any, name: str = "purchase_rate") -> Any:
 def _artifact_source(store: Any, reference: Any, context: Any) -> Any:
     """Open the public artifact source an adopted facade reads through."""
     return open_artifact(store, reference, expected_context=context)
+
+
+def _triggered_definitions(
+    tmp_path: Path, *, window_days: int | None, observation_end: str | None = None
+) -> Path:
+    import yaml
+
+    definitions = _definitions(tmp_path, trigger="session_start", observation_end=observation_end)
+    payload = yaml.safe_load(definitions.read_text())
+    metric = next(item for item in payload["metrics"] if item["name"] == "purchase_rate")
+    metric["window_days"] = window_days
+    definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
+    return definitions
+
+
+def _insert_purchase_for_first_trigger_user(connection: Any, event_at: datetime) -> str:
+    event_log = connection.table("event_log", database="analytics")
+    first = connection.to_pyarrow(
+        event_log.filter(
+            (event_log.experiment_id == "new_onboarding_v2") & (event_log.event == "page_view")
+        )
+        .order_by(event_log.event_at)
+        .limit(1)
+    ).to_pylist()[0]
+    user_id = str(first["user_id"])
+    timestamp = event_at.astimezone(UTC).replace(tzinfo=None).isoformat(sep=" ")
+    connection.raw_sql(
+        f"""
+        INSERT INTO analytics.event_log
+        SELECT TIMESTAMP '{timestamp}', user_id, session_id || '_trigger_regression',
+               'purchase', 100.0, NULL, country_code, device_type, plan, NULL, NULL
+        FROM analytics.event_log
+        WHERE user_id = '{user_id}' AND experiment_id = 'new_onboarding_v2'
+          AND event = 'page_view'
+        ORDER BY event_at
+        LIMIT 1
+        """
+    )
+    return user_id
 
 
 def _artifact_relation_table(role: str, rows: list[dict[str, Any]]) -> Any:
@@ -881,8 +948,15 @@ def test_adopted_daily_breakout_summaries_match_the_native_day_axis(
 
 def test_triggered_operations_match_and_preserve_zero_arm_counts(tmp_path: Path) -> None:
     definitions = _definitions(tmp_path, trigger="session_start")
-    _connection, native, context, store = _native(definitions=definitions)
-    requests = _extensions(context, "assignment_counts", "trigger_population")
+    evidence = SourceSnapshotEvidence(
+        datetime(2030, 1, 1, tzinfo=UTC), {"event_log": datetime(2030, 1, 1, tzinfo=UTC)}
+    )
+    _connection, native, context, store = _native(
+        definitions=definitions, source_snapshot_evidence=evidence
+    )
+    requests = _extensions(
+        context, "assignment_counts", "trigger_population", "trigger_measure_stats"
+    )
     reference = native.publish_unit_day_artifact(store, extensions=requests)
     adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
     adopted_source = _artifact_source(store, reference, context)
@@ -891,6 +965,9 @@ def test_triggered_operations_match_and_preserve_zero_arm_counts(tmp_path: Path)
         assert "triggered_counts" in adopted_source.operations
         assert "triggered_source" in adopted_source.operations
         assert adopted_source.triggered_counts() == native_source.triggered_counts()
+        assert adopted_source.assignment_counts(population="triggered") == (
+            native_source.assignment_counts(population="triggered")
+        )
         assert adopted_source.trigger_rates() == pytest.approx(native_source.trigger_rates())
         native_metric = _metric(native_source)
         adopted_metric = _metric(adopted_source)
@@ -904,6 +981,776 @@ def test_triggered_operations_match_and_preserve_zero_arm_counts(tmp_path: Path)
     finally:
         adopted_source.close()
         adopted.close()
+        native.close()
+
+
+@pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+def test_triggered_window_past_observation_end_matches_after_publish_reopen(
+    tmp_path: Path,
+) -> None:
+    definitions = _triggered_definitions(tmp_path, window_days=30, observation_end="2025-02-20")
+    cutoff = datetime(2030, 1, 1, tzinfo=UTC)
+    connection, native, context, store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": cutoff}),
+    )
+    reference = native.publish_unit_day_artifact(
+        store, extensions=_extensions(context, "trigger_population", "trigger_measure_stats")
+    )
+    adopted_source = _artifact_source(store, reference, context)
+    try:
+        native_source = _native_source(native)
+        native_triggered = native_source.triggered_source()
+        adopted_triggered = adopted_source.triggered_source()
+        metric = _metric(native_source)
+        with pytest.warns(IncrementWarning):
+            native_rows = cast(Any, native_triggered.moments(metric))
+        adopted_rows = adopted_triggered.moments(_metric(adopted_source))
+        triggered_count = sum(native_triggered.unit_counts().values())
+        eligible_count = sum(int(row["n"]) for row in native_rows)
+        assert 0 < eligible_count < triggered_count
+        _assert_rows_equal(
+            native_rows,
+            adopted_rows,
+            ignored_fields=frozenset({"ref_x", "cx1", "cx2", "cxy", "cxd", "x_role"}),
+        )
+    finally:
+        adopted_source.close()
+        native.close()
+
+
+@pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+def test_triggered_unwindowed_outcome_after_watermark_matches_native(tmp_path: Path) -> None:
+    definitions = _triggered_definitions(tmp_path, window_days=None)
+    cutoff = datetime(2030, 1, 1, tzinfo=UTC)
+    watermark = datetime(2025, 1, 16, tzinfo=UTC)
+    with pytest.warns(IncrementWarning):
+        connection, native, context, store = _native(
+            definitions=definitions,
+            source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": watermark}),
+        )
+    user_id = _insert_purchase_for_first_trigger_user(
+        connection, datetime(2025, 1, 16, 12, tzinfo=UTC)
+    )
+    reference = native.publish_unit_day_artifact(
+        store, extensions=_extensions(context, "trigger_population", "trigger_measure_stats")
+    )
+    adopted_source = _artifact_source(store, reference, context)
+    try:
+        native_source = _native_source(native)
+        native_metric = _metric(native_source)
+        adopted_metric = _metric(adopted_source)
+        native_day = native_source.day_source(metrics=(native_metric,), population="triggered")
+        adopted_day = adopted_source.day_source(metrics=(adopted_metric,), population="triggered")
+        assert native_day.triggered_observation_edges(native_metric) == (
+            date(2025, 1, 15),
+            date(2025, 1, 15),
+        )
+        assert adopted_day.triggered_observation_edges(adopted_metric) == (
+            date(2025, 1, 15),
+            date(2025, 1, 15),
+        )
+        extension = next(
+            item
+            for item in adopted_source.manifest.extensions
+            if item.kind == "trigger_measure_stats" and item.metric_names == (adopted_metric.name,)
+        )
+        stats_rows = connection.to_pyarrow(
+            connection.table(
+                extension.relation.relation.name,
+                database=extension.relation.relation.schema_name,
+            )
+        ).to_pylist()
+        assert any(
+            row["unit_id"] == user_id and row["ds"] == date(2025, 1, 16) for row in stats_rows
+        )
+        with pytest.warns(IncrementWarning):
+            native_rows = cast(Any, native_source.triggered_source().moments(native_metric))
+        adopted_rows = adopted_source.triggered_source().moments(adopted_metric)
+        _assert_rows_equal(
+            native_rows,
+            adopted_rows,
+            ignored_fields=frozenset({"ref_x", "cx1", "cx2", "cxy", "cxd", "x_role"}),
+        )
+    finally:
+        adopted_source.close()
+        native.close()
+
+
+def test_v3_trigger_population_count_mismatch_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    definitions = _definitions(tmp_path, trigger="session_start")
+    _connection, native, context, store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(datetime(2030, 1, 1, tzinfo=UTC)),
+    )
+    reference = native.publish_unit_day_artifact(
+        store, extensions=_extensions(context, "assignment_counts", "trigger_population")
+    )
+    source = _artifact_source(store, reference, context)
+    try:
+        original_read = source._read_extension
+
+        def corrupted_read(extension: Any, *, request: Any) -> list[dict[str, Any]]:
+            rows = original_read(extension, request=request)
+            if extension.kind == "assignment_counts":
+                for row in rows:
+                    if row["population"] == "triggered":
+                        row["n_units"] += 1
+            return rows
+
+        monkeypatch.setattr(source, "_read_extension", corrupted_read)
+        with pytest.raises(ArtifactContractError) as raised:
+            source.triggered_counts()
+        assert raised.value.code == "artifact.extension.invalid"
+    finally:
+        source.close()
+        native.close()
+
+
+@pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+def test_trigger_measure_cutoff_day_publishes_and_reopens(tmp_path: Path) -> None:
+    cutoff = datetime(2025, 1, 20, 12, tzinfo=UTC)
+    definitions = _triggered_definitions(tmp_path, window_days=None)
+    with pytest.warns(IncrementWarning):
+        connection, native, context, store = _native(
+            definitions=definitions,
+            source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": cutoff}),
+        )
+    user_id = _insert_purchase_for_first_trigger_user(
+        connection, datetime(2025, 1, 20, 10, tzinfo=UTC)
+    )
+    assert (
+        _insert_purchase_for_first_trigger_user(connection, datetime(2025, 1, 20, 13, tzinfo=UTC))
+        == user_id
+    )
+    reference = native.publish_unit_day_artifact(
+        store,
+        extensions=_extensions(context, "trigger_population", "trigger_measure_stats"),
+    )
+    source = _artifact_source(store, reference, context)
+    try:
+        triggered = source.triggered_source()
+        metric = _metric(triggered)
+        extension = next(
+            item
+            for item in source.manifest.extensions
+            if item.kind == "trigger_measure_stats" and item.metric_names == (metric.name,)
+        )
+        rows = connection.to_pyarrow(
+            connection.table(
+                extension.relation.relation.name,
+                database=extension.relation.relation.schema_name,
+            )
+        ).to_pylist()
+        cutoff_day_rows = [
+            row for row in rows if row["unit_id"] == user_id and row["ds"] == date(2025, 1, 20)
+        ]
+        assert len(cutoff_day_rows) == 1
+        assert cutoff_day_rows[0]["n_events"] == 1
+        native_source = _native_source(native)
+        with pytest.warns(IncrementWarning):
+            native_rows = cast(
+                Any,
+                native_source.triggered_source().moments(_metric(native_source)),
+            )
+        adopted_rows = triggered.moments(metric)
+        _assert_rows_equal(
+            native_rows,
+            adopted_rows,
+            ignored_fields=frozenset({"ref_x", "cx1", "cx2", "cxy", "cxd", "x_role"}),
+        )
+    finally:
+        source.close()
+        native.close()
+
+
+@pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+def test_native_snapshot_asof_spine_excludes_partial_and_post_cutoff_days(
+    tmp_path: Path,
+) -> None:
+    cutoff = datetime(2025, 1, 19, 23, 59, tzinfo=UTC)
+    definitions = _triggered_definitions(tmp_path, window_days=5)
+    connection, native, _context, _store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": cutoff}),
+    )
+    user_id = _insert_purchase_for_first_trigger_user(
+        connection, datetime(2025, 1, 19, 12, tzinfo=UTC)
+    )
+    assert (
+        _insert_purchase_for_first_trigger_user(connection, datetime(2025, 1, 20, 12, tzinfo=UTC))
+        == user_id
+    )
+    try:
+        source = _native_source(native)
+        metric = _metric(source)
+
+        def latest_spine_day(population: Literal["assigned", "triggered"]) -> date | None:
+            exposures = (
+                source._get_exposures()
+                if population == "assigned"
+                else source._get_trigger_population(operation="triggered_outcomes")
+            )
+            _, spine, *_ = source._build_panel_for_metric(
+                exposures,
+                metric,
+                population=population,
+                use_cache=False,
+            )
+            result = connection.to_pyarrow(spine.aggregate(edge=spine.ds.max())).to_pylist()[0]
+            return result["edge"]
+
+        assert latest_spine_day("assigned") == date(2025, 1, 18)
+        assert latest_spine_day("triggered") == date(2025, 1, 18)
+    finally:
+        native.close()
+
+
+@pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+def test_assigned_snapshot_spine_matches_artifact_with_lagging_watermark(
+    tmp_path: Path,
+) -> None:
+    cutoff = datetime(2030, 1, 1, tzinfo=UTC)
+    watermark = datetime(2025, 2, 15, 23, 59, tzinfo=UTC)
+    definitions = _triggered_definitions(tmp_path, window_days=5, observation_end="2031-01-01")
+    connection, native, context, store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": watermark}),
+    )
+    user_id = _insert_purchase_for_first_trigger_user(
+        connection, datetime(2025, 2, 15, 12, tzinfo=UTC)
+    )
+    assert (
+        _insert_purchase_for_first_trigger_user(connection, datetime(2025, 2, 16, 12, tzinfo=UTC))
+        == user_id
+    )
+    reference = native.publish_unit_day_artifact(store)
+    artifact_source = _artifact_source(store, reference, context)
+    try:
+        from increment.query.builders import (
+            asof_group_summary,
+            daily_group_summary,
+            unit_day_panel,
+            window_bound_stats,
+        )
+
+        native_source = _native_source(native)
+        native_metric = _metric(native_source)
+        artifact_metric = _metric(artifact_source)
+        assert artifact_source._declared_observation_end() == date(2031, 1, 1)
+        artifact_measure = artifact_source._manifest.measures[0]
+        assert artifact_measure.certified_edge == date(2025, 2, 14)
+        assert artifact_measure.event_horizon <= artifact_measure.certified_edge
+        _assert_rows_equal(
+            native_source.moments(native_metric, grain="total"),
+            artifact_source.moments(artifact_metric, grain="total"),
+            ignored_fields=frozenset({"ref_x", "cx1", "cx2", "cxy", "cxd", "x_role"}),
+        )
+        exposures = native_source._get_exposures()
+        native_panel, native_spine, _, _, den_events, _, _, _ = (
+            native_source._build_panel_for_metric(
+                exposures, native_metric, population="assigned", use_cache=False
+            )
+        )
+        den_panel = (
+            unit_day_panel(
+                exposures,
+                den_events,
+                native.experiment,
+                metric_name=native_metric.name,
+                end_date=native_spine.ds.max(),
+            )
+            if den_events is not None
+            else None
+        )
+        for grain, native_query in (
+            (
+                "daily",
+                daily_group_summary(
+                    window_bound_stats(native_panel, native_metric),
+                    metric=native_metric,
+                    den_panel=(
+                        window_bound_stats(den_panel, native_metric)
+                        if den_panel is not None
+                        else None
+                    ),
+                ),
+            ),
+            ("asof", asof_group_summary(native_panel, native_metric, den_panel=den_panel)),
+        ):
+            native_rows = connection.to_pyarrow(native_query).to_pylist()
+            artifact_rows = artifact_source.moments(artifact_metric, grain=grain)
+            _assert_rows_equal(
+                native_rows,
+                artifact_rows,
+                ignored_fields=frozenset({"ref_x", "cx1", "cx2", "cxy", "cxd", "x_role"}),
+            )
+    finally:
+        artifact_source.close()
+        native.close()
+
+
+@pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+def test_assigned_snapshot_unknown_completeness_uses_observed_capped_edge(
+    tmp_path: Path,
+) -> None:
+    cutoff = datetime(2025, 2, 15, 12, tzinfo=UTC)
+    definitions = _triggered_definitions(tmp_path, window_days=5, observation_end="2031-01-01")
+    connection, native, context, store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(cutoff),
+    )
+    _insert_purchase_for_first_trigger_user(connection, datetime(2025, 2, 10, 10, tzinfo=UTC))
+    _insert_purchase_for_first_trigger_user(connection, datetime(2025, 2, 20, 10, tzinfo=UTC))
+    reference = native.publish_unit_day_artifact(
+        store, extensions=_extensions(context, "trigger_population", "trigger_measure_stats")
+    )
+    artifact_source = _artifact_source(store, reference, context)
+    try:
+        native_source = _native_source(native)
+        native_metric = _metric(native_source)
+        artifact_metric = _metric(artifact_source)
+        native_day = native_source.day_source(metrics=(native_metric,), population="triggered")
+        artifact_day = artifact_source.day_source(
+            metrics=(artifact_metric,), population="triggered"
+        )
+        expected_edges = (date(2025, 2, 15), None)
+        assert native_day.triggered_observation_edges(native_metric) == expected_edges
+        assert artifact_day.triggered_observation_edges(artifact_metric) == expected_edges
+        exposures = native_source._get_exposures()
+        _, native_spine, _, _, _, _, _, _ = native_source._build_panel_for_metric(
+            exposures, native_metric, population="assigned", use_cache=False
+        )
+        native_edge = connection.to_pyarrow(
+            native_spine.aggregate(edge=native_spine.ds.max())
+        ).to_pylist()[0]["edge"]
+        assert native_edge == date(2025, 2, 15)
+        assert "certified_edge" not in artifact_source._manifest.measures[0].model_fields_set
+        assert artifact_source._manifest.measures[0].observed_edge == date(2025, 2, 15)
+        from increment.query.builders import unit_totals
+
+        _, _, stats, _, _, _, _, data_as_of = native_source._build_panel_for_metric(
+            exposures, native_metric, population="assigned", use_cache=False
+        )
+        native_totals = unit_totals(
+            native_spine,
+            stats,
+            native_metric,
+            native.experiment,
+            den_stats=None,
+            data_as_of=data_as_of,
+            warn_on_censoring=False,
+        )
+        exposed = connection.to_pyarrow(
+            exposures.select("unit_id", "first_exposure_ts")
+        ).to_pylist()
+        expected_mature = {
+            row["unit_id"]
+            for row in exposed
+            if row["first_exposure_ts"].date() + timedelta(days=5) <= cutoff.date()
+        }
+        actual_mature = {
+            row["unit_id"]
+            for row in connection.to_pyarrow(native_totals.select("unit_id")).to_pylist()
+        }
+        assert actual_mature == expected_mature
+        _assert_rows_equal(
+            native_source.moments(native_metric, grain="total"),
+            artifact_source.moments(artifact_metric, grain="total"),
+            ignored_fields=frozenset({"ref_x", "cx1", "cx2", "cxy", "cxd", "x_role"}),
+        )
+        from increment.query.builders import (
+            asof_group_summary,
+            daily_group_summary,
+            unit_day_panel,
+            window_bound_stats,
+        )
+
+        native_panel, _, _, _, den_events, _, _, _ = native_source._build_panel_for_metric(
+            exposures, native_metric, population="assigned", use_cache=False
+        )
+        den_panel = (
+            unit_day_panel(
+                exposures,
+                den_events,
+                native.experiment,
+                metric_name=native_metric.name,
+                end_date=native_edge,
+            )
+            if den_events is not None
+            else None
+        )
+        native_queries = (
+            daily_group_summary(
+                window_bound_stats(native_panel, native_metric),
+                metric=native_metric,
+                den_panel=(
+                    window_bound_stats(den_panel, native_metric) if den_panel is not None else None
+                ),
+            ),
+            asof_group_summary(native_panel, native_metric, den_panel=den_panel),
+        )
+        for grain, native_query in zip(("daily", "asof"), native_queries, strict=True):
+            native_rows = connection.to_pyarrow(native_query).to_pylist()
+            artifact_rows = artifact_source.moments(artifact_metric, grain=grain)
+            _assert_rows_equal(
+                native_rows,
+                artifact_rows,
+                ignored_fields=frozenset({"ref_x", "cx1", "cx2", "cxy", "cxd", "x_role"}),
+            )
+    finally:
+        artifact_source.close()
+        native.close()
+
+
+@pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+def test_ratio_snapshot_spine_uses_only_its_minimum_measure_edge(tmp_path: Path) -> None:
+    cutoff = datetime(2030, 1, 1, tzinfo=UTC)
+    watermark = datetime(2025, 2, 15, 23, 59, tzinfo=UTC)
+    definitions = _triggered_definitions(tmp_path, window_days=5)
+    import yaml
+
+    payload = yaml.safe_load(definitions.read_text())
+    experiment_def = next(
+        item for item in payload["experiments"] if item["name"] == "new_onboarding_v2"
+    )
+    experiment_def["plan"]["secondaries"].append("revenue_per_session")
+    definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
+    connection, native, context, store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": watermark}),
+    )
+    reference = native.publish_unit_day_artifact(store)
+    source = _artifact_source(store, reference, context)
+    try:
+        from increment.semantics.models import AnalysisPlan, Experiment
+
+        ratio = _metric(source, "revenue_per_session")
+        ratio_binding = next(
+            binding
+            for binding in source._manifest.metric_measures
+            if binding.metric_name == ratio.name
+        )
+        unrelated_binding = next(
+            binding
+            for binding in source._manifest.metric_measures
+            if binding.metric_name == "d7_retention"
+        )
+        edges = {
+            ratio_binding.numerator_measure_key: date(2025, 1, 3),
+            ratio_binding.denominator_measure_key: date(2025, 1, 5),
+            unrelated_binding.measure_key: date(2025, 1, 20),
+        }
+        source._manifest = source._manifest.model_copy(
+            update={
+                "measures": tuple(
+                    measure.model_copy(
+                        update={"certified_edge": edges.get(measure.measure_key, date(2025, 1, 20))}
+                    )
+                    for measure in source._manifest.measures
+                )
+            }
+        )
+        experiment = Experiment(
+            name=source.context.study_id,
+            exposure="adopted",
+            unit="unit_id",
+            start=datetime.combine(source._manifest.first_ds, datetime.min.time()),
+            control_group="control",
+            day_boundary=source._manifest.day_boundary,
+            plan=AnalysisPlan(),
+        )
+        edge, maturity_edge = source._observation_spine_edge(
+            frozenset(
+                {
+                    ratio_binding.numerator_measure_key,
+                    ratio_binding.denominator_measure_key,
+                }
+            ),
+            source._ensure("measure_stats"),
+            exposures=source._ensure("exposures"),
+            experiment=experiment,
+        )
+        assert edge == date(2025, 1, 3)
+        assert maturity_edge == date(2025, 1, 3)
+    finally:
+        source.close()
+        native.close()
+
+
+@pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+def test_partial_watermark_ratio_native_matches_artifact_spine(tmp_path: Path) -> None:
+    cutoff = datetime(2030, 1, 1, tzinfo=UTC)
+    watermark = datetime(2025, 1, 16, 0, 0, tzinfo=UTC)
+    definitions = _triggered_definitions(tmp_path, window_days=5)
+    import yaml
+
+    payload = yaml.safe_load(definitions.read_text())
+    experiment_def = next(
+        item for item in payload["experiments"] if item["name"] == "new_onboarding_v2"
+    )
+    experiment_def["plan"]["secondaries"].append("revenue_per_session")
+    experiment_def["breakouts"][0]["source"] = "event_log"
+    experiment_def["factors"][0]["source"] = "event_log"
+    ratio_def = next(item for item in payload["metrics"] if item["name"] == "revenue_per_session")
+    ratio_def["denominator"]["fact"] = "session_end_unwatermarked"
+    event_log_source = next(item for item in payload["fact_sources"] if item["name"] == "event_log")
+    payload["fact_sources"].append(
+        {
+            "name": "unwatermarked_sessions",
+            "sql": event_log_source["sql"],
+            "timestamp_column": "event_at",
+            "entities": ["user_id", "session_id"],
+            "properties": event_log_source["properties"],
+            "facts": [
+                {
+                    "name": "session_end_unwatermarked",
+                    "column": "duration_s",
+                    "description": "Session ended with duration in seconds",
+                }
+            ],
+        }
+    )
+    definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
+    _, native, context, store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": watermark}),
+    )
+    reference = native.publish_unit_day_artifact(
+        store,
+        extensions=_extensions(
+            context, "trigger_population", "trigger_measure_stats", "breakout_dimension"
+        ),
+    )
+    source = _artifact_source(store, reference, context)
+    try:
+        ratio = _metric(source, "revenue_per_session")
+        native_root = _native_source(native)
+        native_day = native_root.day_source(metrics=(ratio,), population="triggered")
+        artifact_day = source.day_source(metrics=(ratio,), population="triggered")
+        assert native_day.triggered_observation_edges(ratio) == (date(2025, 1, 15), None)
+        assert artifact_day.triggered_observation_edges(ratio) == (date(2025, 1, 15), None)
+        native_day_summary = native_root.day_source(metrics=(ratio,))
+        _assert_rows_equal(
+            native_day_summary.moments(ratio, grain="daily"),
+            source.moments(ratio, grain="daily"),
+            ignored_fields=frozenset({"ref_x", "cx1", "cx2", "cxy", "cxd", "x_role"}),
+        )
+        with pytest.warns(IncrementWarning):
+            native_views = native_root.breakout_summaries(metrics=(ratio,), population="triggered")
+        artifact_views = source.breakout_summaries(metrics=(ratio,), population="triggered")
+        assert len(native_views) == len(artifact_views) == 1
+        native_view = next(iter(native_views.values()))
+        artifact_view = next(iter(artifact_views.values()))
+        for family in ("group_summary", "daily_group_summary"):
+            _assert_rows_equal(
+                native_view[family].to_pylist(),
+                artifact_view[family].to_pylist(),
+                extra_keys=("country",),
+                ignored_fields=frozenset({"ref_x", "cx1", "cx2", "cxy", "cxd", "x_role"}),
+            )
+    finally:
+        source.close()
+        native.close()
+
+
+@pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+def test_unknown_completeness_caps_maturity_at_cutoff(tmp_path: Path) -> None:
+    cutoff = datetime(2025, 2, 15, 12, tzinfo=UTC)
+    definitions = _triggered_definitions(tmp_path, window_days=5, observation_end="2031-01-01")
+    from examples._seed import seed_event_log
+
+    connection = ibis.duckdb.connect()
+    seed_event_log(connection)
+    event_log = connection.table("event_log", database="analytics")
+    latest = connection.to_pyarrow(
+        event_log.filter(
+            (event_log.experiment_id == "new_onboarding_v2") & (event_log.event == "page_view")
+        )
+        .order_by(event_log.event_at.desc())
+        .limit(1)
+    ).to_pylist()[0]
+    connection.raw_sql(
+        "UPDATE analytics.event_log "
+        "SET event_at = TIMESTAMP '2025-02-12 10:00:00' "
+        f"WHERE user_id = '{latest['user_id']}' AND event = 'page_view'"
+    )
+    _insert_purchase_for_first_trigger_user(connection, datetime(2025, 2, 20, 10, tzinfo=UTC))
+    native = Analysis.from_definitions(
+        "new_onboarding_v2",
+        definitions,
+        connection,
+        source_snapshot_evidence=SourceSnapshotEvidence(cutoff),
+    )
+    try:
+        from increment.query.builders import unit_totals
+
+        source = _native_source(native)
+        metric = _metric(source)
+        exposures = source._get_exposures()
+        _, spine, stats, _, _, _, _, data_as_of = source._build_panel_for_metric(
+            exposures, metric, population="assigned", use_cache=False
+        )
+        totals = unit_totals(
+            spine,
+            stats,
+            metric,
+            native.experiment,
+            data_as_of=data_as_of,
+            warn_on_censoring=False,
+        )
+        loaded_through = connection.to_pyarrow(
+            ibis.memtable({"_": [0]}).mutate(_as_of=data_as_of)
+        ).to_pylist()[0]["_as_of"]
+        assert loaded_through <= cutoff.date()
+        exposed = connection.to_pyarrow(
+            exposures.select("unit_id", "first_exposure_ts")
+        ).to_pylist()
+        assert any(row["first_exposure_ts"].date() == date(2025, 2, 12) for row in exposed)
+        expected_mature = {
+            row["unit_id"]
+            for row in exposed
+            if row["first_exposure_ts"].date() + timedelta(days=5) <= cutoff.date()
+        }
+        actual_mature = {
+            row["unit_id"] for row in connection.to_pyarrow(totals.select("unit_id")).to_pylist()
+        }
+        assert actual_mature == expected_mature
+    finally:
+        native.close()
+
+
+@pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+def test_cutoff_only_publication_bounds_eventless_measure(tmp_path: Path) -> None:
+    from increment._window import NO_DATA_SIGNAL
+
+    cutoff = datetime(2025, 2, 15, 12, tzinfo=UTC)
+    definitions = _triggered_definitions(tmp_path, window_days=5, observation_end="2031-01-01")
+    connection, native, context, store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(cutoff),
+    )
+    connection.raw_sql("DELETE FROM analytics.event_log WHERE event = 'purchase'")
+    reference = native.publish_unit_day_artifact(store)
+    source = _artifact_source(store, reference, context)
+    try:
+        binding = next(
+            item for item in source._manifest.metric_measures if item.metric_name == "purchase_rate"
+        )
+        measure = next(
+            item for item in source._manifest.measures if item.measure_key == binding.measure_key
+        )
+        assert measure.event_horizon == NO_DATA_SIGNAL
+        assert measure.observed_edge == date(2025, 2, 15)
+    finally:
+        source.close()
+        native.close()
+
+
+@pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+def test_cutoff_only_avg_calendar_day_parity_keeps_zero_days_to_cutoff(
+    tmp_path: Path,
+) -> None:
+    import yaml
+
+    cutoff = datetime(2025, 2, 15, 12, tzinfo=UTC)
+    definitions = _triggered_definitions(tmp_path, window_days=None, observation_end="2031-01-01")
+    payload = yaml.safe_load(definitions.read_text())
+    metric_def = next(item for item in payload["metrics"] if item["name"] == "purchase_rate")
+    metric_def["type"] = "mean"
+    metric_def["aggregation"] = "avg_calendar_day"
+    definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
+    with pytest.warns(IncrementWarning) as raised:
+        connection, native, context, store = _native(
+            definitions=definitions,
+            source_snapshot_evidence=SourceSnapshotEvidence(cutoff),
+        )
+    assert any(
+        isinstance(warning.message, IncrementWarning)
+        and warning.message.code == "definition.metric.variable_window_days_none"
+        for warning in raised
+    )
+    _insert_purchase_for_first_trigger_user(connection, datetime(2025, 2, 10, 10, tzinfo=UTC))
+    _insert_purchase_for_first_trigger_user(connection, datetime(2025, 2, 20, 10, tzinfo=UTC))
+    reference = native.publish_unit_day_artifact(store)
+    artifact_source = _artifact_source(store, reference, context)
+    try:
+        native_source = _native_source(native)
+        native_metric = _metric(native_source)
+        artifact_metric = _metric(artifact_source)
+        assert native_metric.aggregation == "avg_calendar_day"
+        _, spine, *_ = native_source._build_panel_for_metric(
+            native_source._get_exposures(),
+            native_metric,
+            population="assigned",
+            use_cache=False,
+        )
+        native_edge = connection.to_pyarrow(spine.aggregate(edge=spine.ds.max())).to_pylist()[0][
+            "edge"
+        ]
+        assert native_edge == date(2025, 2, 15)
+        assert artifact_source._manifest.measures[0].observed_edge == date(2025, 2, 15)
+        for grain in ("total", "daily", "asof"):
+            _assert_rows_equal(
+                native_source.moments(native_metric, grain=grain),
+                artifact_source.moments(artifact_metric, grain=grain),
+                ignored_fields=frozenset({"ref_x", "cx1", "cx2", "cxy", "cxd", "x_role"}),
+            )
+    finally:
+        artifact_source.close()
+        native.close()
+
+
+@pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+def test_unpinned_avg_calendar_day_asof_uses_declared_horizon(tmp_path: Path) -> None:
+    import yaml
+
+    horizon = date(2025, 3, 1)
+    definitions = _triggered_definitions(
+        tmp_path, window_days=None, observation_end=horizon.isoformat()
+    )
+    payload = yaml.safe_load(definitions.read_text())
+    metric_def = next(item for item in payload["metrics"] if item["name"] == "purchase_rate")
+    metric_def["type"] = "mean"
+    metric_def["aggregation"] = "avg_calendar_day"
+    definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
+    with pytest.warns(IncrementWarning):
+        connection, native, context, store = _native(definitions=definitions)
+    reference = native.publish_unit_day_artifact(store)
+    artifact_source = _artifact_source(store, reference, context)
+    try:
+        native_source = _native_source(native)
+        native_metric = _metric(native_source)
+        artifact_metric = _metric(artifact_source)
+        native_rows = native_source.moments(native_metric, grain="asof")
+        artifact_rows = artifact_source.moments(artifact_metric, grain="asof")
+        _assert_rows_equal(
+            native_rows,
+            artifact_rows,
+            ignored_fields=frozenset({"ref_x", "cx1", "cx2", "cxy", "cxd", "x_role"}),
+        )
+        panel, *_ = native_source._build_asof_panels(
+            native_source._get_exposures(), native_metric, horizon_metrics=(native_metric,)
+        )
+        unit_values: dict[tuple[str, str], list[float]] = {}
+        for row in connection.to_pyarrow(panel.filter(panel.ds <= horizon)).to_pylist():
+            key = (row["group_id"], row["unit_id"])
+            state = unit_values.setdefault(key, [0.0, 0.0])
+            state[0] += row["sum_value"]
+            state[1] += 1.0
+        expected_by_group: dict[str, list[float]] = {}
+        for (group_id, _unit_id), (sum_value, day_count) in unit_values.items():
+            expected_by_group.setdefault(group_id, []).append(sum_value / day_count)
+        horizon_rows = [row for row in native_rows if row["ds"] == horizon]
+        assert horizon_rows
+        for row in horizon_rows:
+            group_values = expected_by_group[row["group_id"]]
+            expected_ref_y = sum(group_values) / len(group_values)
+            assert row["ref_y"] == pytest.approx(expected_ref_y)
+    finally:
+        artifact_source.close()
         native.close()
 
 
@@ -1625,11 +2472,14 @@ def test_publication_keeps_validated_stats_when_source_changes(
         assert manifest.last_ds == baseline_manifest.last_ds
         assert manifest.measures == baseline_manifest.measures
         adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-        for metric in adopted._src.context.metrics:
-            for grain in ("total", "daily", "asof"):
-                expected = baseline._src.moments(metric, grain=grain)
-                assert expected
-                _assert_rows_equal(expected, adopted._src.moments(metric, grain=grain))
+        for metric in adopted.metrics:
+            for method in ("run", "run_daily", "run_asof"):
+                expected = getattr(baseline, method)(metrics=[metric.name])
+                actual = getattr(adopted, method)(metrics=[metric.name])
+                _assert_rows_equal(
+                    [_flatten_readout_row(row) for row in expected],
+                    [_flatten_readout_row(row) for row in actual],
+                )
     finally:
         if adopted is not None:
             adopted.close()
@@ -1739,7 +2589,6 @@ def test_adoption_known_total_horizon_preserves_unit_population(tmp_path, open_e
     import warnings
 
     from examples._seed import seed_event_log
-    from increment.query.builders import declared_binary_metrics, group_summary
 
     con, native, context, store = _native(definitions=_definitions(tmp_path, open_ended=open_ended))
     seed_event_log(con, n_units=200)
@@ -1747,18 +2596,20 @@ def test_adoption_known_total_horizon_preserves_unit_population(tmp_path, open_e
     try:
         ref = native.publish_unit_day_artifact(store)
         adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-        source = adopted._src
+
         with warnings.catch_warnings(record=True) as recorded:
             warnings.simplefilter("always", UserWarning)
-            for metric in source.context.metrics:
-                # Unit-grain still discovers the endpoint from the dense relation.
-                totals = source._reduction_query(metric, "unit")
-                expected = con.to_pyarrow(
-                    group_summary(totals, binary_metrics=declared_binary_metrics([metric]))
-                ).to_pylist()
-                assert expected
-                _assert_rows_equal(expected, source._reduce(metric, "total"))
-                assert source._reduce(metric, "total", population_units=frozenset()) == []
+            for metric in adopted.metrics:
+                for method in ("run", "run_daily", "run_asof"):
+                    expected = getattr(native, method)(metrics=[metric.name])
+                    actual = getattr(adopted, method)(metrics=[metric.name])
+                    _assert_rows_equal(
+                        [_flatten_readout_row(row) for row in expected],
+                        [_flatten_readout_row(row) for row in actual],
+                    )
+            source: Any = _native_source(adopted)
+            for source_metric in source.context.metrics:
+                assert source._reduce(source_metric, "total", population_units=frozenset()) == []
         assert any(issubclass(item.category, UserWarning) for item in recorded)
     finally:
         if adopted is not None:

@@ -75,7 +75,8 @@ _REFUSALS = refusals(
         "readout.estimate_lift_every": RefusalSpec(
             "readout.estimate_lift_every",
             UnsupportedRequestError,
-            template="estimate_lift: every requested randomized metric/arm/method cell was refused by an inference guard -- no estimates remain. See the accompanying UserWarnings for metric/arm/method refusal reasons.",
+            template="estimate_lift: every requested randomized metric/arm/method cell was refused by an inference guard -- no estimates remain. Failures: {failures!r}",
+            keys=frozenset({"failures"}),
         ),
         "readout.value_scale_names": "value_scale= names metrics this source does not report on this call: {unknown_value_scale!r} (selected: {metric_names!r}) -- refusing rather than silently dropping the request",
         "readout.sequential_inference_supported": RefusalSpec(
@@ -93,8 +94,33 @@ _REFUSALS = refusals(
             UnsupportedRequestError,
             template="metric(s) {combined} declare a non-inferiority margin (Metric.margin/margin_abs, or a plan-bound ExperimentMetric.margin), but a per-metric shifted null is not built for the as-of encouragement view -- run() applies the margin to the whole-window ITT row, or declare a one-sided plan alternative for a test against null_lift=0.0",
         ),
-        "readout.breakout_correction_bh": "breakout: correction='bh' cannot use an informative prior; BH/e-BH family selection requires frequentist p-values/e-values",
         "readout.srm_source_declared": "srm() requires a source with a declared design -- this source was constructed without one (design=None). Pass design= at construction (or control=/control_group= to derive Randomized).",
+        "readout.roster.undeclared_observed_arms": RefusalSpec(
+            "readout.roster.undeclared_observed_arms",
+            InvalidRequestError,
+            template=(
+                "allocation declares arms {declared_arms!r} but source assignment evidence "
+                "contains undeclared arms {undeclared_arms!r} for population "
+                "{analysis_population!r}; declare every assigned arm in allocation, or omit "
+                "allocation to use source-observed arms"
+            ),
+            keys=frozenset({"declared_arms", "undeclared_arms", "analysis_population"}),
+        ),
+        "readout.scope.invalid_axis": RefusalSpec(
+            "readout.scope.invalid_axis",
+            InvalidRequestError,
+            template="readout scope received unsupported {axis}={value!r}",
+        ),
+        "readout.scope.cell_unresolved": RefusalSpec(
+            "readout.scope.cell_unresolved",
+            InvalidRequestError,
+            template="expected readout cell has neither an estimate nor a failure: {cell!r}",
+        ),
+        "readout.scope.cell_incomplete": RefusalSpec(
+            "readout.scope.cell_incomplete",
+            InvalidRequestError,
+            template="cannot project incomplete readout cell: {cell!r}",
+        ),
     },
 )
 

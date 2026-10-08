@@ -11,7 +11,9 @@ if TYPE_CHECKING:
     from increment.estimation.results import LiftEstimate
 
 
-def sequential_readout(source, *, metrics=None, estimands=None, previous=None):
+def sequential_readout(
+    source, *, metrics=None, estimands=None, previous=None, _include_unrequested=False
+):
     """Run the registered decision and selection path on a source checkpoint."""
     from increment.estimation.sequential_runtime import selected_snapshot_results
 
@@ -32,8 +34,9 @@ def sequential_readout(source, *, metrics=None, estimands=None, previous=None):
         cell = row.require_sequential_result().checkpoint.cell
         procedure = source.context.plan.procedures.get(cell.metric)
         row = row.model_copy(update={"role": procedure.role if procedure is not None else None})
-        if (names is None or cell.metric in names or cell.estimand == "compliance") and (
-            estimands is None or cell.estimand in estimands
+        if _include_unrequested or (
+            (names is None or cell.metric in names or cell.estimand == "compliance")
+            and (estimands is None or cell.estimand in estimands)
         ):
             result.append(row)
     return result

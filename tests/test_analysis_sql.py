@@ -148,6 +148,7 @@ def _union_horizon_defs():
                     "start": "2025-08-01",
                     # end/observation_end both omitted - still running
                     "control_group": "control",
+                    "allocation_scheme": "independent",
                     "plan": {"secondaries": ["early_avg", "late_conv"]},
                 },
             ],
@@ -213,7 +214,9 @@ def test_constructor_with_new_experiment_refreshes_the_declared_design_control_g
     # A hand-pinned Randomized design with a non-default allocation is a
     # deliberate customization and must survive a new experiment build.
     custom_randomized = Randomized(
-        control_group="control", allocation={"control": 0.3, "treatment": 0.7}
+        control_group="control",
+        allocation={"control": 0.3, "treatment": 0.7},
+        allocation_scheme="independent",
     )
     a = make_analysis_like(a, design=custom_randomized)
     a = make_analysis_like(
@@ -706,6 +709,7 @@ def test_exposure_events_not_dropped_when_fact_source_lacks_experiment_id():
         unit="unit_id",
         start=datetime(2025, 1, 1),
         control_group="control",
+        allocation_scheme="independent",
         plan=AnalysisPlan(),
     )
     defs = Definitions(fact_sources=[fs], exposures=[exposure], experiments=[experiment])
@@ -767,6 +771,7 @@ def test_enrollment_not_empty_when_fact_source_lacks_experiment_id():
         unit="unit_id",
         start=datetime(2025, 1, 1),
         control_group="control",
+        allocation_scheme="independent",
         plan=AnalysisPlan(),
     )
     defs = Definitions(fact_sources=[fs], exposures=[exposure], experiments=[experiment])
@@ -1090,6 +1095,7 @@ def test_public_facade_uses_experiment_unit_when_entities_are_reordered():
         unit="user_id",
         start=datetime(2025, 1, 1),
         control_group="control",
+        allocation_scheme="independent",
         plan=AnalysisPlan(),
     )
     defs = Definitions(fact_sources=[fs], exposures=[exposure], experiments=[experiment])

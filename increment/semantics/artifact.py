@@ -18,6 +18,7 @@ from uuid import UUID
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from increment._canonical import canonical_json_bytes
+from increment.errors import InvalidRequestError, raiser, refusals
 from increment.semantics.models import (
     _Base,
     _definition_refusal,
@@ -33,6 +34,16 @@ _ARTIFACT_DIGEST_ROOT = b"increment.unit-day-artifact\x00v1\x00"
 _ARTIFACT_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 _ARTIFACT_CATALOG_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$-]*$")
 _ARTIFACT_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_REQUEST_REFUSALS = refusals(
+    InvalidRequestError,
+    {
+        "artifact.request.trigger_metric_scope": (
+            "trigger_measure_stats must name exactly one metric"
+        ),
+    },
+)
+_raise_request = raiser(_REQUEST_REFUSALS)
+
 
 RelationRole = Literal[
     "exposures",
@@ -43,6 +54,7 @@ RelationRole = Literal[
     "cuped_preperiod",
     "assignment_counts",
     "trigger_population",
+    "trigger_measure_stats",
     "encouragement_uptake",
     "site_volume",
     "unit_covariate",
@@ -56,10 +68,11 @@ _EXTENSION_KIND_RANK = {
     "cuped_preperiod": 3,
     "assignment_counts": 4,
     "trigger_population": 5,
-    "encouragement_uptake": 6,
-    "site_volume": 7,
-    "unit_covariate": 8,
-    "unit_covariate_level": 9,
+    "trigger_measure_stats": 6,
+    "encouragement_uptake": 7,
+    "site_volume": 8,
+    "unit_covariate": 9,
+    "unit_covariate_level": 10,
 }
 
 
@@ -304,6 +317,7 @@ _ARTIFACT_PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "cuped_preperiod": ("experiment_id", "unit_id"),
     "assignment_counts": ("experiment_id", "population", "group_id"),
     "trigger_population": ("experiment_id", "unit_id"),
+    "trigger_measure_stats": ("experiment_id", "unit_id", "ds", "measure_key"),
     "encouragement_uptake": ("experiment_id", "unit_id"),
     "site_volume": ("experiment_id", "ds", "measure_key"),
     "unit_covariate": ("experiment_id", "unit_id"),
@@ -397,7 +411,9 @@ class Freshness(_ArtifactBase):
 
 
 class MeasureManifest(_ExplicitOnlyFields, _ArtifactBase):
-    _explicit_only_fields: ClassVar[frozenset[str]] = frozenset({"event_horizon"})
+    _explicit_only_fields: ClassVar[frozenset[str]] = frozenset(
+        {"event_horizon", "certified_edge", "observed_edge"}
+    )
 
     measure_key: str = Field(min_length=1)
     source_provenance_sha256: str
@@ -407,6 +423,12 @@ class MeasureManifest(_ExplicitOnlyFields, _ArtifactBase):
     #: `NO_DATA_SIGNAL` or an explicit None marks a confirmed eventless measure.
     #: An omitted key uses freshness and stays unserialized, so older digests verify.
     event_horizon: date | None = None
+    #: Last fully certified local day under pinned cutoff and feed watermark. An
+    #: omitted key means no certification claim (including older artifacts).
+    certified_edge: date | None = None
+    #: Cutoff-derived local-day bound, capped by the declared observation horizon.
+    #: Replay uses it to bound the spine; it makes no completeness or maturity claim.
+    observed_edge: date | None = None
 
     @field_validator("measure_key")
     @classmethod
@@ -493,17 +515,23 @@ class ArtifactContext(_ArtifactBase):
 
 
 class ExtensionRefBase(_ArtifactBase):
-    extension_version: Literal[1, 2] = 1
+    extension_version: Literal[1, 2, 3] = 1
     relation: ArtifactRelationRef
     definition_sha256: str
     source_provenance_sha256: str
 
     @model_validator(mode="after")
     def _supported_extension_version(self):
-        if self.extension_version == 2 and getattr(self, "kind", None) != "encouragement_uptake":
+        kind = getattr(self, "kind", None)
+        if self.extension_version == 2 and kind != "encouragement_uptake":
             _definition_refusal(
                 "definition.artifact_extension.unsupported_version",
                 "extension version 2 is reserved for timestamp-bearing encouragement uptake",
+            )
+        if self.extension_version == 3 and kind != "trigger_population":
+            _definition_refusal(
+                "definition.artifact_extension.unsupported_version",
+                "extension version 3 is reserved for trigger population anchors",
             )
         return self
 
@@ -619,17 +647,75 @@ class AssignmentCountsExtension(ExtensionRefBase):
 
 
 class TriggerPopulationExtension(ExtensionRefBase):
+    extension_version: Literal[3] = 3
     kind: Literal["trigger_population"] = "trigger_population"
     trigger_name: str
+    observation_cutoff_ts: datetime
+    complete_through_ts: datetime | None
 
     @field_validator("trigger_name")
     @classmethod
     def _identity_scalar(cls, value: str) -> str:
         return _artifact_scalar(value, "trigger_name")
 
+    @field_validator("observation_cutoff_ts", "complete_through_ts")
+    @classmethod
+    def _utc_instant(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            _definition_refusal(
+                "definition.artifact.trigger_timestamp_timezone",
+                "trigger evidence timestamps must be timezone-aware",
+            )
+        return value.astimezone(UTC).replace(tzinfo=UTC)
+
+
+class TriggerMeasureStatsExtension(ExtensionRefBase):
+    kind: Literal["trigger_measure_stats"] = "trigger_measure_stats"
+    trigger_name: str
+    metric_names: tuple[str, ...]
+    trigger_extension_version: Literal[3] = 3
+    trigger_population_content_sha256: str
+    observation_cutoff_ts: datetime
+    complete_through_ts: datetime | None
+
+    @field_validator("trigger_name")
+    @classmethod
+    def _identity_scalar(cls, value: str) -> str:
+        return _artifact_scalar(value, "trigger_name")
+
+    @field_validator("metric_names")
+    @classmethod
+    def _singleton_metric_names(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != 1 or value[0] != _artifact_scalar(value[0], "metric_name"):
+            _definition_refusal(
+                "definition.artifact.trigger_metric_scope",
+                "trigger_measure_stats must name exactly one metric",
+            )
+        return value
+
+    _validate_trigger_population_sha = field_validator("trigger_population_content_sha256")(
+        lambda value: _artifact_sha256(value, "trigger_population_content_sha256")
+    )
+
+    @field_validator("observation_cutoff_ts", "complete_through_ts")
+    @classmethod
+    def _utc_instant(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            _definition_refusal(
+                "definition.artifact.trigger_timestamp_timezone",
+                "trigger evidence timestamps must be timezone-aware",
+            )
+        return value.astimezone(UTC).replace(tzinfo=UTC)
+
 
 class EncouragementUptakeExtension(_ExplicitOnlyFields, ExtensionRefBase):
-    _explicit_only_fields: ClassVar[frozenset[str]] = frozenset({"observation_edge"})
+    _explicit_only_fields: ClassVar[frozenset[str]] = frozenset(
+        {"observation_edge", "certified_edge"}
+    )
 
     kind: Literal["encouragement_uptake"] = "encouragement_uptake"
     uptake_name: str
@@ -638,6 +724,9 @@ class EncouragementUptakeExtension(_ExplicitOnlyFields, ExtensionRefBase):
     #: Enrollment/uptake coverage before uptake-window filtering; independent of outcomes.
     #: Omitted on older artifacts to preserve their serialized manifest digests.
     observation_edge: date | None = None
+    #: Certified local day through which uptake windows may be finalized.
+    #: Omitted when feed completeness is unknown and on older artifacts.
+    certified_edge: date | None = None
 
     @field_validator("uptake_name")
     @classmethod
@@ -729,6 +818,7 @@ ArtifactExtensionRef = Annotated[
     | CupedPreperiodExtension
     | AssignmentCountsExtension
     | TriggerPopulationExtension
+    | TriggerMeasureStatsExtension
     | EncouragementUptakeExtension
     | SiteVolumeExtension
     | UnitCovariateExtension
@@ -805,6 +895,24 @@ class TriggerPopulationRequest(ExtensionRequestBase):
         return _artifact_scalar(value, "trigger_name")
 
 
+class TriggerMeasureStatsRequest(ExtensionRequestBase):
+    kind: Literal["trigger_measure_stats"] = "trigger_measure_stats"
+    trigger_name: str
+    metric_names: tuple[str, ...]
+
+    @field_validator("trigger_name")
+    @classmethod
+    def _identity_scalar(cls, value: str) -> str:
+        return _artifact_scalar(value, "trigger_name")
+
+    @field_validator("metric_names")
+    @classmethod
+    def _singleton_metric_names(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != 1:
+            _raise_request("artifact.request.trigger_metric_scope")
+        return (_artifact_scalar(value[0], "metric_name"),)
+
+
 class EncouragementUptakeRequest(ExtensionRequestBase):
     kind: Literal["encouragement_uptake"] = "encouragement_uptake"
     uptake_name: str
@@ -865,6 +973,7 @@ ArtifactExtensionRequest = Annotated[
     | CupedPreperiodRequest
     | AssignmentCountsRequest
     | TriggerPopulationRequest
+    | TriggerMeasureStatsRequest
     | EncouragementUptakeRequest
     | SiteVolumeRequest
     | UnitCovariateRequest
@@ -972,142 +1081,220 @@ class UnitDayArtifactManifest(_ArtifactBase):
 
     @model_validator(mode="after")
     def _validate_manifest(self) -> UnitDayArtifactManifest:
-        if self.first_ds > self.last_ds:
-            _definition_refusal(
-                "definition.unit_day.manifest_first_ds",
-                "manifest first_ds must be <= last_ds",
-            )
-        for relation, role in (
-            (self.base.exposures, "exposures"),
-            (self.base.measure_stats, "measure_stats"),
-        ):
-            _check_relation_binding(
-                relation,
-                artifact_id=self.artifact_id,
-                generation_id=self.generation_id,
-                role=role,
-            )
-        measure_keys = tuple(measure.measure_key for measure in self.measures)
-        if len(set(measure_keys)) != len(measure_keys):
-            _definition_refusal(
-                "definition.unit_day.manifest_measure_keys",
-                "manifest measure keys must be unique",
-            )
-        if measure_keys != tuple(sorted(measure_keys, key=lambda value: value.encode("utf-8"))):
-            _definition_refusal(
-                "definition.unit_day.manifest_measures_use",
-                "manifest measures must use canonical UTF-8 key order",
-            )
-        declared_measures = set(measure_keys)
-        binding_keys: set[tuple[str, str]] = set()
-        metric_names: set[str] = set()
-        binding_order: list[tuple[str, str]] = []
-        for binding in self.metric_measures:
-            key = (binding.metric_name, binding.kind)
-            binding_order.append(key)
-            if key in binding_keys:
-                _definition_refusal(
-                    "definition.unit_day.manifest_metric_bindings",
-                    "manifest metric bindings must be unique",
-                )
-            binding_keys.add(key)
-            if binding.metric_name in metric_names:
-                _definition_refusal(
-                    "definition.unit_day.manifest_metric_names",
-                    "manifest metric names must be unique",
-                )
-            metric_names.add(binding.metric_name)
-            if isinstance(binding, SimpleMetricMeasure):
-                if binding.measure_key not in declared_measures:
-                    _definition_refusal(
-                        "definition.unit_day.metric_references_undeclared",
-                        f"metric {binding.metric_name!r} references undeclared measure "
-                        f"{binding.measure_key!r}",
-                        metric_name=binding.metric_name,
-                        measure_key=binding.measure_key,
-                    )
-            elif (
-                binding.numerator_measure_key not in declared_measures
-                or binding.denominator_measure_key not in declared_measures
-            ):
-                _definition_refusal(
-                    "definition.unit_day.ratio_metric_references",
-                    f"ratio metric {binding.metric_name!r} references undeclared measure",
-                    metric_name=binding.metric_name,
-                )
-        if binding_order != sorted(
-            binding_order, key=lambda value: (value[0].encode("utf-8"), value[1].encode("utf-8"))
-        ):
-            _definition_refusal(
-                "definition.unit_day.manifest_metric_bindings_canonical_order",
-                "manifest metric bindings must use canonical UTF-8 order",
-            )
-        extension_keys: set[tuple[str, str]] = set()
-        extension_order: list[tuple[bytes, int, bytes, bytes]] = []
-        for extension in self.extensions:
-            _extension_relation(
-                extension,
-                artifact_id=self.artifact_id,
-                generation_id=self.generation_id,
-            )
-            extension_key = (
-                extension.kind,
-                _extension_identity(extension),
-            )
-            if extension_key in extension_keys:
-                _definition_refusal(
-                    "definition.unit_day.manifest_extensions_contain",
-                    "manifest extensions must not contain duplicates",
-                )
-            extension_keys.add(extension_key)
-            extension_order.append(_extension_sort_key(extension))
-            matched_request = _extension_matches_catalog(extension, self.context)
-            if matched_request is None:
-                _definition_refusal(
-                    "definition.unit_day.manifest_extension_absent",
-                    "manifest extension is absent from the caller-trusted catalog",
-                )
-            if isinstance(extension, SiteVolumeExtension):
-                declared_keys = {measure.measure_key for measure in self.measures}
-                bindings_by_metric: dict[str, tuple[str, ...]] = {}
-                for binding in self.metric_measures:
-                    if isinstance(binding, SimpleMetricMeasure):
-                        bindings_by_metric[binding.metric_name] = (binding.measure_key,)
-                    else:
-                        bindings_by_metric[binding.metric_name] = (
-                            binding.numerator_measure_key,
-                            binding.denominator_measure_key,
-                        )
-                requested = tuple(matched_request.get("metric_names", ()))
-                missing = [name for name in requested if name not in bindings_by_metric]
-                if missing:
-                    _definition_refusal(
-                        "definition.unit_day.site_volume_request",
-                        "site volume request names metrics without manifest measure bindings",
-                    )
-                required = {key for name in requested for key in bindings_by_metric[name]}
-                if set(extension.measure_keys) != required:
-                    _definition_refusal(
-                        "definition.unit_day.site_volume_keys",
-                        "site volume keys must equal the requested metrics' measure bindings",
-                    )
-                if not required <= declared_keys:
-                    _definition_refusal(
-                        "definition.unit_day.site_volume_keys_absent_from_manifest",
-                        "site volume keys are absent from manifest measures",
-                    )
-        if extension_order != sorted(extension_order):
-            _definition_refusal(
-                "definition.unit_day.manifest_extensions_use",
-                "manifest extensions must use canonical role/version/locator order",
-            )
-        expected = _artifact_manifest_digest(self)
-        if self.manifest_sha256 != expected:
-            _definition_refusal(
-                "definition.unit_day.manifest_sha256_does",
-                "manifest_sha256 does not match canonical manifest body",
-            )
+        _validate_manifest_base(self)
+        declared_measures = _validate_manifest_measures(self)
+        _validate_manifest_extension_catalog(self)
+        _validate_manifest_trigger_measure_stats(self, declared_measures)
+        _validate_manifest_extension_order(self)
+        _validate_manifest_digest(self)
         return self
+
+
+def _validate_manifest_base(manifest: UnitDayArtifactManifest) -> None:
+    if manifest.first_ds > manifest.last_ds:
+        _definition_refusal(
+            "definition.unit_day.manifest_first_ds",
+            "manifest first_ds must be <= last_ds",
+        )
+    for relation, role in (
+        (manifest.base.exposures, "exposures"),
+        (manifest.base.measure_stats, "measure_stats"),
+    ):
+        _check_relation_binding(
+            relation,
+            artifact_id=manifest.artifact_id,
+            generation_id=manifest.generation_id,
+            role=role,
+        )
+
+
+def _validate_manifest_measures(manifest: UnitDayArtifactManifest) -> set[str]:
+    measure_keys = tuple(measure.measure_key for measure in manifest.measures)
+    if len(set(measure_keys)) != len(measure_keys):
+        _definition_refusal(
+            "definition.unit_day.manifest_measure_keys",
+            "manifest measure keys must be unique",
+        )
+    if measure_keys != tuple(sorted(measure_keys, key=lambda value: value.encode("utf-8"))):
+        _definition_refusal(
+            "definition.unit_day.manifest_measures_use",
+            "manifest measures must use canonical UTF-8 key order",
+        )
+    declared_measures = set(measure_keys)
+    _validate_manifest_metric_bindings(manifest, declared_measures)
+    return declared_measures
+
+
+def _validate_manifest_metric_bindings(
+    manifest: UnitDayArtifactManifest, declared_measures: set[str]
+) -> None:
+    binding_keys: set[tuple[str, str]] = set()
+    metric_names: set[str] = set()
+    binding_order: list[tuple[str, str]] = []
+    for binding in manifest.metric_measures:
+        key = (binding.metric_name, binding.kind)
+        binding_order.append(key)
+        if key in binding_keys:
+            _definition_refusal(
+                "definition.unit_day.manifest_metric_bindings",
+                "manifest metric bindings must be unique",
+            )
+        binding_keys.add(key)
+        if binding.metric_name in metric_names:
+            _definition_refusal(
+                "definition.unit_day.manifest_metric_names",
+                "manifest metric names must be unique",
+            )
+        metric_names.add(binding.metric_name)
+        if isinstance(binding, SimpleMetricMeasure):
+            if binding.measure_key not in declared_measures:
+                _definition_refusal(
+                    "definition.unit_day.metric_references_undeclared",
+                    f"metric {binding.metric_name!r} references undeclared measure "
+                    f"{binding.measure_key!r}",
+                    metric_name=binding.metric_name,
+                    measure_key=binding.measure_key,
+                )
+        elif (
+            binding.numerator_measure_key not in declared_measures
+            or binding.denominator_measure_key not in declared_measures
+        ):
+            _definition_refusal(
+                "definition.unit_day.ratio_metric_references",
+                f"ratio metric {binding.metric_name!r} references undeclared measure",
+                metric_name=binding.metric_name,
+            )
+    if binding_order != sorted(
+        binding_order, key=lambda value: (value[0].encode("utf-8"), value[1].encode("utf-8"))
+    ):
+        _definition_refusal(
+            "definition.unit_day.manifest_metric_bindings_canonical_order",
+            "manifest metric bindings must use canonical UTF-8 order",
+        )
+
+
+def _validate_manifest_extension_catalog(manifest: UnitDayArtifactManifest) -> None:
+    extension_keys: set[tuple[str, str]] = set()
+    for extension in manifest.extensions:
+        _extension_relation(
+            extension,
+            artifact_id=manifest.artifact_id,
+            generation_id=manifest.generation_id,
+        )
+        extension_key = (extension.kind, _extension_identity(extension))
+        if extension_key in extension_keys:
+            _definition_refusal(
+                "definition.unit_day.manifest_extensions_contain",
+                "manifest extensions must not contain duplicates",
+            )
+        extension_keys.add(extension_key)
+        matched_request = _extension_matches_catalog(extension, manifest.context)
+        if matched_request is None:
+            _definition_refusal(
+                "definition.unit_day.manifest_extension_absent",
+                "manifest extension is absent from the caller-trusted catalog",
+            )
+        if isinstance(extension, SiteVolumeExtension):
+            _validate_manifest_site_volume(extension, matched_request, manifest)
+
+
+def _validate_manifest_site_volume(
+    extension: SiteVolumeExtension,
+    matched_request: Mapping[str, Any],
+    manifest: UnitDayArtifactManifest,
+) -> None:
+    declared_keys = {measure.measure_key for measure in manifest.measures}
+    bindings_by_metric: dict[str, tuple[str, ...]] = {}
+    for binding in manifest.metric_measures:
+        if isinstance(binding, SimpleMetricMeasure):
+            bindings_by_metric[binding.metric_name] = (binding.measure_key,)
+        else:
+            bindings_by_metric[binding.metric_name] = (
+                binding.numerator_measure_key,
+                binding.denominator_measure_key,
+            )
+    requested = tuple(matched_request.get("metric_names", ()))
+    missing = [name for name in requested if name not in bindings_by_metric]
+    if missing:
+        _definition_refusal(
+            "definition.unit_day.site_volume_request",
+            "site volume request names metrics without manifest measure bindings",
+        )
+    required = {key for name in requested for key in bindings_by_metric[name]}
+    if set(extension.measure_keys) != required:
+        _definition_refusal(
+            "definition.unit_day.site_volume_keys",
+            "site volume keys must equal the requested metrics' measure bindings",
+        )
+    if not required <= declared_keys:
+        _definition_refusal(
+            "definition.unit_day.site_volume_keys_absent_from_manifest",
+            "site volume keys are absent from manifest measures",
+        )
+
+
+def _validate_manifest_trigger_measure_stats(
+    manifest: UnitDayArtifactManifest, declared_measures: set[str]
+) -> None:
+    trigger_populations = {
+        extension.trigger_name: extension
+        for extension in manifest.extensions
+        if isinstance(extension, TriggerPopulationExtension)
+    }
+    for extension in manifest.extensions:
+        if not isinstance(extension, TriggerMeasureStatsExtension):
+            continue
+        trigger = trigger_populations.get(extension.trigger_name)
+        if (
+            trigger is None
+            or extension.trigger_population_content_sha256 != trigger.relation.content_sha256
+            or extension.observation_cutoff_ts != trigger.observation_cutoff_ts
+        ):
+            _definition_refusal(
+                "definition.unit_day.trigger_measure_anchor",
+                "trigger-measure evidence must bind the matching v3 trigger population",
+            )
+        binding = next(
+            (
+                item
+                for item in manifest.metric_measures
+                if item.metric_name == extension.metric_names[0]
+            ),
+            None,
+        )
+        if binding is None:
+            _definition_refusal(
+                "definition.unit_day.trigger_measure_metric",
+                "trigger-measure request names an unbound metric",
+            )
+        measure_keys = (
+            {binding.measure_key}
+            if isinstance(binding, SimpleMetricMeasure)
+            else {binding.numerator_measure_key, binding.denominator_measure_key}
+        )
+        if not measure_keys <= declared_measures:
+            _definition_refusal(
+                "definition.unit_day.trigger_measure_keys",
+                "trigger-measure keys must be declared in the manifest",
+            )
+
+
+def _validate_manifest_extension_order(manifest: UnitDayArtifactManifest) -> None:
+    extension_order = [_extension_sort_key(extension) for extension in manifest.extensions]
+    if extension_order != sorted(extension_order):
+        _definition_refusal(
+            "definition.unit_day.manifest_extensions_use",
+            "manifest extensions must use canonical role/version/locator order",
+        )
+
+
+def _validate_manifest_digest(manifest: UnitDayArtifactManifest) -> None:
+    expected = _artifact_manifest_digest(manifest)
+    if manifest.manifest_sha256 != expected:
+        _definition_refusal(
+            "definition.unit_day.manifest_sha256_does",
+            "manifest_sha256 does not match canonical manifest body",
+        )
 
 
 def _extension_identity(extension: ArtifactExtensionRef) -> str:
@@ -1126,6 +1313,8 @@ def _extension_identity(extension: ArtifactExtensionRef) -> str:
         return ",".join(extension.populations)
     if isinstance(extension, TriggerPopulationExtension):
         return extension.trigger_name
+    if isinstance(extension, TriggerMeasureStatsExtension):
+        return extension.trigger_name + "\x00" + "\x00".join(extension.metric_names)
     if isinstance(extension, EncouragementUptakeExtension):
         return f"{extension.uptake_name}\x00{extension.window_days}"
     if isinstance(extension, UnitCovariateExtension | UnitCovariateLevelExtension):
@@ -1155,6 +1344,10 @@ def _catalog_request_identity(request: Mapping[str, Any]) -> str:
     if kind in {"cluster_identity", "trigger_population", "encouragement_uptake"}:
         return str(
             request.get("cluster_name") or request.get("trigger_name") or request.get("uptake_name")
+        )
+    if kind == "trigger_measure_stats":
+        return (
+            str(request.get("trigger_name")) + "\x00" + "\x00".join(request.get("metric_names", ()))
         )
     if kind == "cuped_preperiod":
         return str(request.get("metric_name"))

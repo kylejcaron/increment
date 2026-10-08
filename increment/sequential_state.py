@@ -24,6 +24,7 @@ from pydantic import (
     model_validator,
 )
 
+from increment._immutable import _FrozenMapping
 from increment.errors import CapabilityError, CodedError, CodedModel, RefusalSpec, refuse
 from increment.semantics.rational import PortableRational
 from increment.semantics.sequential import (
@@ -349,6 +350,37 @@ class SequentialAncestor(_State):
     n_records: int = Field(ge=0)
     states: tuple[SequentialArmState, ...]
     frozen: tuple[SequentialCheckpoint, ...] = ()
+    assignment_counts: Mapping[str, int] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+    @field_validator("assignment_counts", mode="before")
+    @classmethod
+    def _validate_assignment_counts(cls, value):
+        if value is not None and (
+            not isinstance(value, Mapping)
+            or any(
+                not isinstance(key, str)
+                or not key
+                or not isinstance(count, int)
+                or isinstance(count, bool)
+                or count < 0
+                for key, count in value.items()
+            )
+        ):
+            sequential_refuse(
+                "source.invalid", "assignment counts must map labels to non-negative integers"
+            )
+        return value
+
+    @field_validator("assignment_counts", mode="after")
+    @classmethod
+    def _freeze_assignment_counts(cls, value):
+        return None if value is None else _FrozenMapping(value)
+
+    @field_serializer("assignment_counts")
+    def _serialize_assignment_counts(self, value):
+        return None if value is None else dict(value)
 
 
 class _PrefixContent:
@@ -419,15 +451,32 @@ class _PrefixContent:
         n_records: int,
         states: tuple[SequentialArmState, ...],
         frozen: Iterable[SequentialCheckpoint] = (),
+        assignment_counts: Mapping[str, int] | None = None,
     ) -> str:
-        """Content digest of the first ``n_records`` records, closed over states and frozen.
-
-        ``frozen`` is folded in only when non-empty, so an unfrozen snapshot's
-        digest matches the released value from before freezing existed.
-        """
+        """Content digest of a record prefix, states, counts, and optional freeze."""
         hasher = self._digests[n_records].copy()
         hasher.update(self._before_states)
         hasher.update(_canonical_bytes([s.model_dump(mode="json") for s in states])[1:-1])
+        frozen = tuple(frozen)
+        if assignment_counts is not None:
+            hasher.update(b'],"version":2,"zzz_assignment_counts":')
+            hasher.update(_canonical_bytes(dict(assignment_counts)))
+            if not frozen:
+                hasher.update(b"}")
+            else:
+                hasher.update(b',"zzz_frozen":[')
+                ordered = sorted(
+                    frozen,
+                    key=lambda c: (
+                        c.cell.metric,
+                        c.cell.group_id,
+                        c.cell.estimand,
+                        c.cell.segment,
+                    ),
+                )
+                hasher.update(_canonical_bytes([c.checkpoint_id for c in ordered])[1:-1])
+                hasher.update(b"]}")
+            return hasher.hexdigest()
         ordered = sorted(
             frozen, key=lambda c: (c.cell.metric, c.cell.group_id, c.cell.estimand, c.cell.segment)
         )
@@ -469,6 +518,37 @@ class SequentialSnapshot(_State):
     finalized: Literal[True]
     reveal_cursor: date | datetime | str | int | float | None = None
     frozen: tuple[SequentialCheckpoint, ...] = ()
+    assignment_counts: Mapping[str, int] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+    @field_validator("assignment_counts", mode="before")
+    @classmethod
+    def _validate_assignment_counts(cls, value):
+        if value is not None and (
+            not isinstance(value, Mapping)
+            or any(
+                not isinstance(key, str)
+                or not key
+                or not isinstance(count, int)
+                or isinstance(count, bool)
+                or count < 0
+                for key, count in value.items()
+            )
+        ):
+            sequential_refuse(
+                "source.invalid", "assignment counts must map labels to non-negative integers"
+            )
+        return value
+
+    @field_validator("assignment_counts", mode="after")
+    @classmethod
+    def _freeze_assignment_counts(cls, value):
+        return None if value is None else _FrozenMapping(value)
+
+    @field_serializer("assignment_counts")
+    def _serialize_assignment_counts(self, value):
+        return None if value is None else dict(value)
 
     @field_serializer("reveal_cursor", when_used="json")
     def _serialize_cursor(self, value):
@@ -507,11 +587,16 @@ class SequentialSnapshot(_State):
             self.records,
             (ancestor.n_records for ancestor in self.ancestors),
         )
-        if self.prefix_id != content.digest(len(self.records), self.states, self.frozen):
+        if self.prefix_id != content.digest(
+            len(self.records), self.states, self.frozen, self.assignment_counts
+        ):
             sequential_refuse("source.invalid", "snapshot content digest mismatch")
         chain_n = [a.n_records for a in self.ancestors] + [len(self.records)]
         chain_frozen = [a.frozen for a in self.ancestors] + [self.frozen]
         chain_states = [a.states for a in self.ancestors] + [self.states]
+        chain_assignment_counts = [a.assignment_counts for a in self.ancestors] + [
+            self.assignment_counts
+        ]
         chain_prefix = [a.prefix_id for a in self.ancestors] + [self.prefix_id]
         if chain_frozen[0]:
             sequential_refuse(
@@ -543,10 +628,11 @@ class SequentialSnapshot(_State):
                     for cell, checkpoint in cur_by_cell.items()
                     if cell not in prev_by_cell
                 ]
-                if not introduced:
+                counts_changed = chain_assignment_counts[i - 1] != chain_assignment_counts[i]
+                if not introduced and not counts_changed:
                     sequential_refuse(
                         "source.invalid",
-                        "a same-count chain entry must strictly extend the prior freeze",
+                        "a same-count chain entry must extend its freeze or enrollment counts",
                     )
                 if any(
                     c.prefix_id != chain_prefix[i - 1] or c.revealed_units != cur_n
@@ -567,7 +653,12 @@ class SequentialSnapshot(_State):
             if i <= len(self.ancestors):
                 ancestor = self.ancestors[i - 1]
                 if (
-                    content.digest(ancestor.n_records, ancestor.states, ancestor.frozen)
+                    content.digest(
+                        ancestor.n_records,
+                        ancestor.states,
+                        ancestor.frozen,
+                        ancestor.assignment_counts,
+                    )
                     != ancestor.prefix_id
                 ):
                     sequential_refuse(
@@ -587,7 +678,7 @@ class SequentialSnapshot(_State):
 
     def content_id(self) -> str:
         return _PrefixContent(self.version, self.registration_id, self.records).digest(
-            len(self.records), self.states
+            len(self.records), self.states, assignment_counts=self.assignment_counts
         )
 
     def arm(self, metric: str, group_id: str, segment=()) -> SequentialArmState:
@@ -619,6 +710,7 @@ class SequentialSnapshot(_State):
                 n_records=len(previous.records),
                 states=previous.states,
                 frozen=previous.frozen,
+                assignment_counts=previous.assignment_counts,
             ),
         )
         if self.ancestors[: len(link)] != link:
@@ -633,10 +725,14 @@ class SequentialSnapshot(_State):
                 "a previously frozen cell must stay frozen at every later look",
             )
         if len(self.records) == len(previous.records) and (
-            self.states != previous.states or len(cur_by_cell) == len(prev_by_cell)
+            self.states != previous.states
+            or (
+                len(cur_by_cell) == len(prev_by_cell)
+                and self.assignment_counts == previous.assignment_counts
+            )
         ):
             sequential_refuse(
-                "continuation.rewrite", "changed prefix contains no new units or freeze"
+                "continuation.rewrite", "changed prefix contains no new units, counts or freeze"
             )
 
 
@@ -716,6 +812,7 @@ def _capture_sequential_diagnostic_snapshot(  # noqa: PLR0915
     finalized: bool,
     previous: SequentialSnapshot | None = None,
     reveal_cursor: date | datetime | str | int | float | None = None,
+    assignment_counts: Mapping[str, int] | None = None,
     append: bool = False,
 ) -> SequentialSnapshot:
     """Capture a full prefix in committed reveal order, checking unchanged records.
@@ -851,6 +948,8 @@ def _capture_sequential_diagnostic_snapshot(  # noqa: PLR0915
         "records": [p.model_dump(mode="json") for p in proofs],
         "states": [s.model_dump(mode="json") for s in portable],
     }
+    if assignment_counts is not None:
+        content["zzz_assignment_counts"] = dict(assignment_counts)
     if frozen:
         content["zzz_frozen"] = [
             c.checkpoint_id
@@ -876,6 +975,7 @@ def _capture_sequential_diagnostic_snapshot(  # noqa: PLR0915
                 n_records=len(previous.records),
                 states=previous.states,
                 frozen=previous.frozen,
+                assignment_counts=previous.assignment_counts,
             ),
         )
         if previous is not None
@@ -885,6 +985,7 @@ def _capture_sequential_diagnostic_snapshot(  # noqa: PLR0915
         finalized=True,
         reveal_cursor=reveal_cursor,
         frozen=frozen,
+        assignment_counts=assignment_counts,
     )
     if previous is not None:
         snapshot.verify_parent(previous)
@@ -900,6 +1001,7 @@ def capture_sequential_snapshot(
     finalized: bool,
     previous: SequentialSnapshot | None = None,
     reveal_cursor: date | datetime | str | int | float | None = None,
+    assignment_counts: Mapping[str, int] | None = None,
     append: bool = False,
 ) -> SequentialSnapshot:
     if isinstance(registration, SequentialRegistration):
@@ -913,6 +1015,7 @@ def capture_sequential_snapshot(
         finalized=finalized,
         previous=previous,
         reveal_cursor=reveal_cursor,
+        assignment_counts=assignment_counts,
         append=append,
     )
 
@@ -990,9 +1093,12 @@ def declare_sequential_freeze_cells(
                     n_records=len(snapshot.records),
                     states=snapshot.states,
                     frozen=snapshot.frozen,
+                    assignment_counts=snapshot.assignment_counts,
                 ),
             ),
-            "prefix_id": content.digest(len(snapshot.records), snapshot.states, frozen),
+            "prefix_id": content.digest(
+                len(snapshot.records), snapshot.states, frozen, snapshot.assignment_counts
+            ),
         }
     )
 

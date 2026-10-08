@@ -54,8 +54,11 @@ def test_public_unequal_arm_counts_shifted_contrast_and_mean_variance():
     assert result.checkpoint.control.n == 3
     assert result.checkpoint.treatment.n == 4
     assert LiftEstimate.model_validate_json(row.model_dump_json()) == row
-    with pytest.raises(CapabilityError):
+    from increment.errors import CapabilityError
+
+    with pytest.raises(CapabilityError) as raised:
         row.p_value()
+    assert raised.value.code == "sequential.route.unsupported"
 
 
 @pytest.mark.parametrize("alternative", ["two-sided", "greater", "less"])

@@ -129,7 +129,7 @@ def test_analysis_wire_export_replay_and_truthful_numeric_columns(tmp_path):
     displayed = estimates_to_readout([row])[0]
     assert displayed["sequential_log_e"] is None
     assert displayed["sequential_validity_regime"] == "asymptotic_sequential"
-    assert displayed["prob_favorable"] is None
+    assert displayed["posterior_prob_favorable"] is None
 
 
 @pytest.mark.slow
@@ -399,8 +399,19 @@ def test_raw_records_and_analysis_freeze_every_cell_of_a_segmented_metric_alike(
         definitions_id=registration.definitions_id,
         finalized=True,
     )
-    assert declare_sequential_freeze(raw, ["outcome"]) == declared
-    assert {c.cell.segment for c in declared.frozen} == {(("segment", "a"),), (("segment", "b"),)}
+    frozen_raw = declare_sequential_freeze(raw, ["outcome"])
+    # The source capture's counts are part of the prefix identity, so compare
+    # the frozen evidence apart from the counts and their derived hash links.
+    assert frozen_raw.model_dump(
+        exclude={"assignment_counts", "prefix_id", "parent_id", "ancestors", "frozen"}
+    ) == declared.model_dump(
+        exclude={"assignment_counts", "prefix_id", "parent_id", "ancestors", "frozen"}
+    )
+    assert [item.model_dump(exclude={"prefix_id"}) for item in frozen_raw.frozen] == [
+        item.model_dump(exclude={"prefix_id"}) for item in declared.frozen
+    ]
+    assert raw.assignment_counts is None
+    assert declared.assignment_counts == {"control": 60, "treatment": 60}
 
 
 @pytest.mark.parametrize("metric", ["unregistered", "outcome"])

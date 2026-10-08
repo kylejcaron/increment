@@ -14,7 +14,7 @@ import json
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from importlib import resources
 from typing import TYPE_CHECKING, Any
 
@@ -27,6 +27,7 @@ from increment.dashboard._data import (
     ExploreView,
     _require_same_experiment,
     all_metrics,
+    enriched_rows,
     group_data_csv,
     load_explore,
     metric_names,
@@ -188,7 +189,49 @@ def document(payload: Mapping[str, Any]) -> str:
 
 
 def build_payload(analysis: Analysis, *, snapshot: DashboardSnapshot) -> dict[str, Any]:
-    """Everything the shell shows, from the snapshot and the caller's analysis."""
+    """Build a coherent dashboard payload for each captured population."""
+    default = "triggered" if "triggered" in snapshot.population_estimates else "assigned"
+    populations = tuple(snapshot.population_estimates) or ("assigned",)
+    views: dict[str, dict[str, Any]] = {}
+    for population in populations:
+        estimates = (
+            snapshot.estimates
+            if population == default
+            else snapshot.population_estimates.get(population, snapshot.estimates)
+        )
+        rows = snapshot.readout_rows if population == default else enriched_rows(estimates)
+        scoped = replace(
+            snapshot,
+            estimates=tuple(estimates),
+            population_estimates={population: tuple(estimates)},
+            readout_rows=rows,
+            group_data=tuple(
+                row for row in snapshot.group_data if row.analysis_population == population
+            ),
+            explore={
+                key: capture for key, capture in snapshot.explore.items() if key[0] == population
+            },
+            overview=snapshot.overviews.get(population, snapshot.overview),
+        )
+        payload = _build_payload_for_population(analysis, snapshot=scoped)
+        payload["population"] = population
+        payload["populationLabel"] = "Triggered" if population == "triggered" else "Assigned"
+        payload["populationDisclaimer"] = (
+            "Triggered-cohort inference is appropriate only when triggering is unaffected by treatment."
+            if population == "triggered"
+            else ""
+        )
+        views[population] = payload
+    result = dict(views[default])
+    result["defaultPopulation"] = default
+    result["populationOptions"] = list(populations)
+    result["populationViews"] = views
+    return result
+
+
+def _build_payload_for_population(
+    analysis: Analysis, *, snapshot: DashboardSnapshot
+) -> dict[str, Any]:
     # A mismatched pair is a caller error, not an engine refusal to display per state.
     _require_same_experiment(analysis, snapshot, metric=None, view="dashboard")
     correction = _segment_correction(analysis)
@@ -283,9 +326,11 @@ def _primary(snapshot: DashboardSnapshot) -> dict[str, Any]:
 
 def _meta(snapshot: DashboardSnapshot) -> str:
     parts = [f"{date_label(snapshot.start)} → {date_label(snapshot.end)}"]
-    if snapshot.allocation is not None:
-        units = sum(snapshot.allocation.observed.values())
-        parts.append(f"{count_text(units)} assigned {allocation_grain_label(snapshot.allocation)}")
+    population = "triggered" if "triggered" in snapshot.population_estimates else "assigned"
+    allocation = snapshot.triggered_allocation if population == "triggered" else snapshot.allocation
+    if allocation is not None:
+        units = sum(allocation.observed.values())
+        parts.append(f"{count_text(units)} {population} {allocation_grain_label(allocation)}")
     kinds = sorted({str(row.get("inference", "fixed")) for row in snapshot.readout_rows})
     parts.append(", ".join(inference_word(kind) for kind in kinds) or "fixed-horizon")
     if snapshot.config.source_label:
@@ -296,60 +341,105 @@ def _meta(snapshot: DashboardSnapshot) -> str:
 def health_status(snapshot: DashboardSnapshot) -> dict[str, str]:
     """A qualified allocation status, never a recommendation to ship.
 
-    ``healthy`` only when the assigned-population check ran, found no mismatch, and nothing else
-    in Health needs a caveat; the statement is about assignment balance alone.
+    ``healthy`` means the currently selected population's balance check ran, found no mismatch,
+    and nothing else in Health needs a caveat. It is never a recommendation to ship.
     """
-    allocation = snapshot.allocation
+    population = "triggered" if "triggered" in snapshot.population_estimates else "assigned"
+    allocation = snapshot.triggered_allocation if population == "triggered" else snapshot.allocation
+    refusal = (
+        snapshot.triggered_allocation_refusal
+        if population == "triggered"
+        else snapshot.allocation_refusal
+    )
     if allocation is None:
-        code, reason = snapshot.allocation_refusal or ("", "")
+        code, reason = refusal or ("", "")
+        not_applicable = code == "dashboard.allocation_not_applicable"
         return {
-            "kind": "unavailable",
-            "label": "Allocation check unavailable",
+            "kind": "not_checked" if not_applicable else "unavailable",
+            "population": population,
+            "label": "Allocation check not checked"
+            if not_applicable
+            else "Allocation check unavailable",
             "detail": f"{reason} ({code}). This is not a passing check.",
         }
+    population_label = "Triggered cohort" if population == "triggered" else "Assigned"
     weights = snapshot.config.expected_allocation
     total = sum(weights.values())
     observed = " / ".join(
         f"{arm} {count_text(units)}" for arm, units in allocation.observed.items()
     )
     target = " / ".join(f"{arm} {weight / total:.0%}" for arm, weight in weights.items())
-    summary = f"Assigned {observed} (target {target}). {allocation_evidence(allocation)}"
-    warnings = _allocation_warnings(snapshot, allocation)
+    summary = f"{population_label} {observed} (target {target}). {allocation_evidence(allocation)}"
+    warnings = _allocation_warnings(snapshot, allocation, population=population)
     if allocation.is_srm:
-        label = "Sample ratio mismatch"
+        label = (
+            "Triggered-cohort imbalance" if population == "triggered" else "Sample ratio mismatch"
+        )
     elif warnings:
-        label = "Allocation needs review"
+        label = (
+            "Triggered balance needs review"
+            if population == "triggered"
+            else "Allocation needs review"
+        )
     else:
+        qualifier = (
+            "This is a triggered-cohort balance diagnostic, not assignment integrity."
+            if population == "triggered"
+            else "This checks assignment balance only; it does not validate any other experiment assumption."
+        )
         return {
             "kind": "healthy",
-            "label": "Allocation check passed",
+            "population": population,
+            "label": "Triggered balance check passed"
+            if population == "triggered"
+            else "Allocation check passed",
             "detail": (
-                f"No allocation issue detected among {count_text(sum(allocation.observed.values()))} "
-                f"assigned units. {summary} This checks assignment balance only; it does not "
-                "validate any other experiment assumption."
+                f"No population balance issue detected among {count_text(sum(allocation.observed.values()))} "
+                f"{population_label.lower()} units. {summary} {qualifier}"
             ),
         }
-    return {"kind": "warning", "label": label, "detail": " ".join(warnings) + " " + summary}
+    return {
+        "kind": "warning",
+        "population": population,
+        "label": label,
+        "detail": " ".join(warnings) + " " + summary,
+    }
 
 
-def _allocation_warnings(snapshot: DashboardSnapshot, allocation: SRMResult) -> list[str]:
+def _allocation_warnings(
+    snapshot: DashboardSnapshot,
+    allocation: SRMResult,
+    *,
+    population: str,
+) -> list[str]:
     warnings = []
+    population_label = "triggered cohort" if population == "triggered" else "assigned units"
     if allocation.is_srm:
-        warnings.append("Sample ratio mismatch detected in assigned units.")
+        warnings.append(f"Population imbalance detected in {population_label}.")
     if allocation.unassigned_units:
         warnings.append(
-            f"{count_text(allocation.unassigned_units)} units are not assigned to any arm."
+            f"{count_text(allocation.unassigned_units)} units are outside a declared arm."
         )
     if allocation.mixed_assignment_units:
         warnings.append(
             f"{count_text(allocation.mixed_assignment_units)} units appear in more than one arm."
         )
     if allocation.low_expected_count:
-        warnings.append("A small expected arm count limits the allocation check.")
-    if snapshot.allocation_history_refusal is not None:
-        warnings.append("Allocation history is unavailable.")
-    elif not snapshot.allocation_history:
-        warnings.append("No enrollment history was captured.")
+        warnings.append("A small expected arm count limits the population balance check.")
+    history_refusal = (
+        snapshot.triggered_allocation_history_refusal
+        if population == "triggered"
+        else snapshot.allocation_history_refusal
+    )
+    history = (
+        snapshot.triggered_allocation_history
+        if population == "triggered"
+        else snapshot.allocation_history
+    )
+    if history_refusal is not None:
+        warnings.append(f"{population_label.capitalize()} history is unavailable.")
+    elif not history:
+        warnings.append(f"No {population_label} history was captured.")
     caveats = len(result_caveats(snapshot.readout_rows))
     if caveats:
         warnings.append(f"{caveats} result caveat{'s' if caveats != 1 else ''} listed in Health.")
@@ -608,11 +698,22 @@ def _explore_entry(
             correction=correction,
         )
     except CodedError as exc:
-        return _refusal_entry(view_key, scope, exc, segmented=breakout is not None)
+        return _refusal_entry(
+            view_key,
+            scope,
+            exc,
+            segmented=breakout is not None,
+            population="triggered" if "triggered" in snapshot.population_estimates else "assigned",
+        )
 
 
 def _refusal_entry(
-    view_key: str, scope: str, exc: CodedError, *, segmented: bool
+    view_key: str,
+    scope: str,
+    exc: CodedError,
+    *,
+    segmented: bool,
+    population: str,
 ) -> dict[str, Any]:
     title = _VIEW_TITLES[_VIEWS[view_key][0]]
     reason = f"{title} for {scope} is unavailable: {exc} ({exc.code})."
@@ -621,13 +722,20 @@ def _refusal_entry(
         if segmented
         else "No other series is substituted."
     )
+    route = (
+        "Select Assigned for assignment-level daily estimates; the triggered series remains unavailable."
+        if population == "triggered"
+        else ""
+    )
     return {
         "html": _styled(
             f'<p class="inc-dashboard-note">{missing_html(reason)}</p>'
             f'<p class="inc-dashboard-note">{esc(substitute)}</p>'
+            + (f'<p class="inc-dashboard-note">{esc(route)}</p>' if route else "")
         ),
         "caption": reason,
-        "notes": [reason, substitute],
+        "notes": [reason, substitute] + ([route] if route else []),
+        "routeForward": route or None,
         "pointCount": 0,
     }
 

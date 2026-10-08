@@ -31,6 +31,7 @@ from pydantic import (
 
 from increment.errors import (
     CapabilityError,
+    CodedValidationMixin,
     InvalidRequestError,
     RefusalSpec,
     raiser,
@@ -44,6 +45,14 @@ _ALLOCATION_INVALID = RefusalSpec(
     InvalidRequestError,
     template="allocation {allocation!r} is not a valid assignment split for control group {control_group!r}: it must be non-empty, contain {control_group!r} as a key, and every weight must be finite and strictly positive",
 )
+
+ALLOCATION_SCHEME_INCOMPATIBLE = RefusalSpec(
+    "design.allocation_scheme.incompatible",
+    InvalidRequestError,
+    template="allocation_scheme {allocation_scheme!r} is incompatible with {design!r}",
+)
+
+AllocationScheme = Literal["independent", "blocked", "adaptive", "quota", "fixed_counts"]
 
 
 # Shared by the readout layer and the frame constructors, which refuse it earlier.
@@ -64,6 +73,7 @@ _REFUSALS = refusals(
                 f"{', '.join(sorted(dups))} -- each covariate may be declared once"
             ),
         ),
+        "design.allocation_scheme.incompatible": ALLOCATION_SCHEME_INCOMPATIBLE,
     },
 )
 _raise = raiser(_REFUSALS)
@@ -118,6 +128,10 @@ class Randomized(BaseModel):
     #: Target allocation weights; SRM checks against them. Required unless
     #: the caller passes ``expected``; fixed inference falls back to equal split.
     allocation: Mapping[str, float] | None = None
+    #: Assignment law; proportions alone never declare independence.
+    allocation_scheme: AllocationScheme | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @field_validator("allocation")
     @classmethod
@@ -139,7 +153,7 @@ class Randomized(BaseModel):
 
     def __hash__(self) -> int:
         items = tuple(sorted(self.allocation.items())) if self.allocation is not None else None
-        return hash((self.mechanism, self.control_group, items))
+        return hash((self.mechanism, self.control_group, items, self.allocation_scheme))
 
 
 class UptakeSpec(BaseModel):
@@ -192,6 +206,9 @@ class Encouragement(BaseModel):
     #: Target allocation weights - same conditional-assignment SRM contract
     #: as ``Randomized.allocation`` (encouragement assignment is randomized).
     allocation: Mapping[str, float] | None = None
+    allocation_scheme: AllocationScheme | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     min_first_stage_z: float = Field(default=4.0, gt=0.0, allow_inf_nan=False)
 
     @field_validator("allocation")
@@ -222,6 +239,7 @@ class Encouragement(BaseModel):
                 self.exclusion_restriction,
                 self.one_sided,
                 items,
+                self.allocation_scheme,
                 self.min_first_stage_z,
             )
         )
@@ -276,7 +294,7 @@ class IdentificationGate(BaseModel):
     max_smd: float | None = Field(default=None, ge=0.0, allow_inf_nan=False)
 
 
-class Observational(BaseModel):
+class Observational(CodedValidationMixin, BaseModel):
     """A non-randomized comparison identified via an explicit adjustment set."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -285,6 +303,19 @@ class Observational(BaseModel):
     control_group: str
     adjustment: AdjustmentSet
     gate: IdentificationGate = IdentificationGate()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_allocation_scheme(cls, value: object) -> object:
+        if isinstance(value, Mapping):
+            allocation_scheme = value.get("allocation_scheme")
+            if allocation_scheme is not None:
+                refuse(
+                    ALLOCATION_SCHEME_INCOMPATIBLE,
+                    design="observational",
+                    allocation_scheme=allocation_scheme,
+                )
+        return value
 
 
 Design = Annotated[Randomized | Encouragement | Observational, Field(discriminator="mechanism")]

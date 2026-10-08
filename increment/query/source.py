@@ -14,6 +14,7 @@ backend-agnostic pydantic, not narwhals-specific.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
@@ -46,6 +47,7 @@ from increment.query.artifact_extensions import read_extension, read_unit_covari
 from increment.query.artifact_reader import (
     _ARTIFACT_GRAIN,
     LAZY_DIGEST_VERIFICATION,
+    _TriggeredReductionInputs,
     restrict_to_units,
 )
 from increment.query.artifact_reader import (
@@ -55,8 +57,10 @@ from increment.query.artifact_reader import (
     _rows as _artifact_rows,
 )
 from increment.query.builders import (
+    _local_date,
     declared_binary_metrics,
     group_summary,
+    join_breakout_dimension,
     winsorize_unit_totals,
 )
 from increment.query.native_contract import (
@@ -67,6 +71,7 @@ from increment.query.native_contract import (
 from increment.semantics.artifact import (
     ArtifactContext,
     RatioMetricMeasure,
+    SimpleMetricMeasure,
     UnitDayArtifactManifest,
     UnitDayArtifactRef,
 )
@@ -490,12 +495,51 @@ def _artifact_source_context(
     validate_artifact_context(expected_context)
     try:
         payload = json.loads(expected_context.canonical_json)
-        definitions_payload = payload["definitions"]
+    except json.JSONDecodeError as exc:
+        raise ArtifactContractError(
+            "artifact.context.mismatch",
+            "artifact context canonical JSON is invalid",
+            context={"field": "canonical_json"},
+        ) from exc
+
+    for field in ("experiment_name", "experiment"):
+        if field not in payload:
+            refuse(
+                _ARTIFACT_REFUSALS["artifact.context.mismatch"],
+                message="artifact context omits a required field",
+                field=field,
+            )
+    definitions_payload = payload.get("definitions")
+    if not isinstance(definitions_payload, Mapping):
+        refuse(
+            _ARTIFACT_REFUSALS["artifact.context.mismatch"],
+            message="artifact context omits a required field",
+            field="definitions",
+        )
+    for field in ("metrics", "day_boundary"):
+        if field not in definitions_payload:
+            refuse(
+                _ARTIFACT_REFUSALS["artifact.context.mismatch"],
+                message="artifact context omits a required field",
+                field=f"definitions.{field}",
+            )
+
+    try:
         metric_adapter: TypeAdapter[Metric] = TypeAdapter(Metric)
         metric_pool = [
             metric_adapter.validate_python(item) for item in definitions_payload["metrics"]
         ]
         experiment_payload = dict(payload["experiment"])
+        legacy_plan = experiment_payload.get("plan")
+        if (
+            "plan_q_explicit" not in payload
+            and isinstance(legacy_plan, dict)
+            and legacy_plan.get("q") == AnalysisPlan().q
+        ):
+            # Older contexts serialized plan defaults without preserving explicitness.
+            legacy_plan = dict(legacy_plan)
+            legacy_plan.pop("q")
+            experiment_payload["plan"] = legacy_plan
         effective_design = None
         if (experiment_payload.get("design") or {}).get("mechanism") == "encouragement":
             # The context carries the full effective design; Experiment.design keeps only
@@ -509,7 +553,7 @@ def _artifact_source_context(
         experiment = Experiment.model_validate(experiment_payload)
         experiment = _with_inherited_day_boundary(experiment, definitions_payload["day_boundary"])
         experiment_name = str(payload["experiment_name"])
-    except (KeyError, TypeError, ValueError, AttributeError, json.JSONDecodeError) as exc:
+    except (TypeError, ValueError, AttributeError) as exc:
         raise ArtifactContractError(
             "artifact.context.mismatch",
             "artifact context does not contain a valid typed experiment",
@@ -560,6 +604,7 @@ def _artifact_source_context(
         ),
         cluster=experiment.cluster,
         intervention_grain=experiment.intervention_grain,
+        trigger_name=experiment.trigger,
     )
     return experiment, context
 
@@ -586,6 +631,12 @@ def _artifact_request(extension: Any) -> dict[str, Any]:
         return {"kind": kind, "populations": extension.populations}
     if kind == "trigger_population":
         return {"kind": kind, "trigger_name": extension.trigger_name}
+    if kind == "trigger_measure_stats":
+        return {
+            "kind": kind,
+            "trigger_name": extension.trigger_name,
+            "metric_names": extension.metric_names,
+        }
     if kind == "encouragement_uptake":
         return {"kind": kind, "uptake_name": extension.uptake_name}
     if kind == "site_volume":
@@ -612,6 +663,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         expected_context: ArtifactContext,
         metrics: Sequence[MetricSpec] | Mapping[str, str] | None = None,
         population_units: frozenset[str] | None = None,
+        trigger_anchors: Mapping[str, dt.datetime] | None = None,
     ) -> None:
         super().__init__(
             store,
@@ -634,6 +686,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
 
         validate_source_mapping(source_context, self._sequential_observation_mapping())
         self._population_units = population_units
+        self._trigger_anchors = dict(trigger_anchors or {})
         self._population: Literal["assigned", "triggered"] = (
             "assigned" if population_units is None else "triggered"
         )
@@ -761,12 +814,205 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             == wanted
         ]
         if len(matches) != 1:
+            if request.get("kind") == "trigger_measure_stats" and not matches:
+                raise ArtifactContractError(
+                    "artifact.evidence.unavailable",
+                    "triggered outcomes require raw-event-filtered trigger-measure statistics",
+                    context={
+                        "extension_kind": "trigger_measure_stats",
+                        "operation": "triggered_source",
+                        "metric_name": (request.get("metric_names") or (None,))[0],
+                        "trigger_name": request.get("trigger_name"),
+                        "route": "use definitions input or republish with this metric in trigger_measure_stats",
+                    },
+                )
             code = "artifact.extension.missing" if not matches else "artifact.extension.invalid"
             raise ArtifactContractError(
                 code,
                 "requested artifact extension is not selected exactly once",
             )
         return matches[0]
+
+    def _trigger_measure_table(self, metric: Metric) -> tuple[Any, dt.date, dt.date | None]:
+        trigger_name = self._artifact_experiment.trigger
+        if trigger_name is None:
+            raise ArtifactContractError(
+                "artifact.evidence.unavailable", "experiment has no trigger"
+            )
+        extension = self._extension(
+            {
+                "kind": "trigger_measure_stats",
+                "trigger_name": trigger_name,
+                "metric_names": (metric.name,),
+            }
+        )
+        trigger = self._extension({"kind": "trigger_population", "trigger_name": trigger_name})
+        if (
+            extension.trigger_extension_version != 3
+            or extension.trigger_population_content_sha256 != trigger.relation.content_sha256
+            or extension.observation_cutoff_ts != trigger.observation_cutoff_ts
+        ):
+            raise ArtifactContractError(
+                "artifact.extension.invalid",
+                "trigger-measure evidence is not bound to the pinned trigger population",
+                context={
+                    "extension_kind": "trigger_measure_stats",
+                    "operation": "triggered_source",
+                },
+            )
+        rows = self._read_extension(extension, request=_artifact_request(extension))
+        binding = next(
+            item for item in self._manifest.metric_measures if item.metric_name == metric.name
+        )
+        if isinstance(metric, RatioMetric):
+            if not isinstance(binding, RatioMetricMeasure):
+                raise ArtifactContractError(
+                    "artifact.extension.invalid",
+                    "trigger-measure metric binding does not match its declared metric",
+                    context={
+                        "extension_kind": "trigger_measure_stats",
+                        "operation": "triggered_source",
+                        "metric_name": metric.name,
+                    },
+                )
+            window_days_by_key = {
+                binding.numerator_measure_key: metric.numerator.window_days,
+                binding.denominator_measure_key: metric.denominator.window_days,
+            }
+        else:
+            if not isinstance(binding, SimpleMetricMeasure):
+                raise ArtifactContractError(
+                    "artifact.extension.invalid",
+                    "trigger-measure metric binding does not match its declared metric",
+                    context={
+                        "extension_kind": "trigger_measure_stats",
+                        "operation": "triggered_source",
+                        "metric_name": metric.name,
+                    },
+                )
+            window_days_by_key = {binding.measure_key: metric.window_days}
+        expected = set(window_days_by_key)
+        offset = self._artifact_experiment.day_boundary_offset
+        cutoff_day = (extension.observation_cutoff_ts + offset).date()
+        for row in rows:
+            unit_id = str(row["unit_id"])
+            anchor = self._trigger_anchors.get(unit_id)
+            if anchor is None or row["measure_key"] not in expected:
+                raise ArtifactContractError(
+                    "artifact.extension.invalid",
+                    "trigger-measure row is outside its membership or measure domain",
+                    context={
+                        "extension_kind": "trigger_measure_stats",
+                        "operation": "triggered_source",
+                    },
+                )
+            trigger_day = (anchor + offset).date()
+            window_days = window_days_by_key[row["measure_key"]]
+            observation_horizon = self._artifact_experiment.observation_horizon_day
+            if (
+                row["ds"] < trigger_day
+                or (
+                    window_days is not None
+                    and row["ds"] >= trigger_day + dt.timedelta(days=window_days)
+                )
+                or (observation_horizon is not None and row["ds"] > observation_horizon)
+                or row["ds"] > cutoff_day
+            ):
+                raise ArtifactContractError(
+                    "artifact.extension.invalid",
+                    "trigger-measure date is outside its trigger-relative window or pinned cutoff",
+                    context={
+                        "extension_kind": "trigger_measure_stats",
+                        "operation": "triggered_source",
+                    },
+                )
+        relation = self._snapshot.verify_relation(
+            extension.relation, expected_role="trigger_measure_stats"
+        )
+        observed_edge, certified_edge = self.triggered_observation_edges(metric)
+        return relation, observed_edge, certified_edge
+
+    def _triggered_reduction_inputs(self, metric: Metric) -> _TriggeredReductionInputs:
+        relation, observed_edge, certified_edge = self._trigger_measure_table(metric)
+        trigger_extension = self._extension(
+            {
+                "kind": "trigger_population",
+                "trigger_name": self._artifact_experiment.trigger,
+            }
+        )
+        anchors = self._snapshot.verify_relation(
+            trigger_extension.relation, expected_role="trigger_population"
+        )
+        assignments = self._ensure("exposures")
+        joined = assignments.join(
+            anchors,
+            [
+                assignments.experiment_id == anchors.experiment_id,
+                assignments.unit_id == anchors.unit_id,
+            ],
+        )
+        triggered_exposures = joined.select(
+            **{
+                name: (
+                    anchors.first_trigger_ts if name == "first_exposure_ts" else assignments[name]
+                )
+                for name in assignments.columns
+            },
+            __uptake_first_exposure_date=_local_date(
+                assignments.first_exposure_ts, self._artifact_experiment
+            ),
+            __uptake_first_exposure_ts=assignments.first_exposure_ts,
+        )
+        spine_edge = ibis.literal(observed_edge, type="date")
+        return _TriggeredReductionInputs(
+            exposures=triggered_exposures.mutate(
+                first_exposure_date=_local_date(
+                    triggered_exposures.first_exposure_ts, self._artifact_experiment
+                )
+            ),
+            measure_stats=relation,
+            observed_edge=observed_edge,
+            finalized_as_of=certified_edge,
+            spine_edge=spine_edge,
+        )
+
+    def _reduce(
+        self,
+        metric: Metric,
+        grain: Grain,
+        *,
+        by: str | None = None,
+        properties_table: ir.Table | None = None,
+        cluster: str | None = None,
+        cluster_table: ir.Table | None = None,
+        pre_stats: ir.Table | None = None,
+        population_units: frozenset[str] | None = None,
+        completed_windows_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        if self._population_units is None:
+            return super()._reduce(
+                metric,
+                grain,
+                by=by,
+                properties_table=properties_table,
+                cluster=cluster,
+                cluster_table=cluster_table,
+                pre_stats=pre_stats,
+                population_units=population_units,
+                completed_windows_only=completed_windows_only,
+            )
+        return self.reduce_triggered(
+            metric,
+            grain,
+            inputs=self._triggered_reduction_inputs(metric),
+            by=by,
+            properties_table=properties_table,
+            cluster=cluster,
+            cluster_table=cluster_table,
+            pre_stats=pre_stats,
+            population_units=population_units,
+            completed_windows_only=completed_windows_only,
+        )
 
     def _exposure_rows(self) -> list[dict[str, Any]]:
         exposures = self._ensure("exposures")
@@ -777,7 +1023,8 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
     def _read_extension(
         self, extension: Any, *, request: Mapping[str, Any] | None = None
     ) -> list[Mapping[str, Any]]:
-        exposures = _artifact_rows(self._snapshot.execute(self._ensure("exposures")))
+        exposures = self._ensure("exposures")
+        exposure_rows = _artifact_rows(self._snapshot.execute(exposures))
         result = list(
             read_extension(
                 self._snapshot,
@@ -785,15 +1032,78 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 request=request,
                 context=self._manifest.context,
                 experiment_id=self._manifest.experiment_id,
-                exposure_keys={(row["experiment_id"], row["unit_id"]) for row in exposures},
+                exposure_keys={(row["experiment_id"], row["unit_id"]) for row in exposure_rows},
             )
         )
+        if extension.kind == "trigger_measure_stats" and self._population_units is not None:
+            if any(str(row["unit_id"]) not in self._population_units for row in result):
+                raise ArtifactContractError(
+                    "artifact.extension.invalid",
+                    "trigger-measure rows are not a subset of trigger membership",
+                    context={"extension_kind": extension.kind, "operation": "triggered_source"},
+                )
         if self._population_units is not None and extension.kind not in {
             "site_volume",
             "assignment_counts",
         }:
             result = [row for row in result if str(row.get("unit_id")) in self._population_units]
         return result
+
+    def _trigger_population_rows(
+        self, *, operation: str = "triggered_counts"
+    ) -> list[Mapping[str, Any]]:
+        extension = self._extension(
+            {"kind": "trigger_population", "trigger_name": self._artifact_experiment.trigger}
+        )
+        rows = self._read_extension(extension, request=_artifact_request(extension))
+        if any(row["first_trigger_ts"] > extension.observation_cutoff_ts for row in rows):
+            raise ArtifactContractError(
+                "artifact.extension.invalid",
+                "trigger membership contains an event after the pinned observation cutoff",
+                context={
+                    "extension_kind": "trigger_population",
+                    "operation": operation,
+                    "route": "republish from trusted definitions with matching trigger evidence",
+                },
+            )
+        return rows
+
+    def _validate_trigger_population_counts(
+        self, count_rows: Sequence[Mapping[str, Any]], trigger_rows: Sequence[Mapping[str, Any]]
+    ) -> None:
+        exposures_by_unit = {
+            str(row["unit_id"]): str(row["group_id"]) for row in self._exposure_rows()
+        }
+        observed: dict[str, int] = {}
+        for row in trigger_rows:
+            group_id = exposures_by_unit.get(str(row["unit_id"]))
+            if group_id is None:
+                raise ArtifactContractError(
+                    "artifact.extension.invalid",
+                    "trigger membership is not contained in the assigned population",
+                    context={
+                        "extension_kind": "trigger_population",
+                        "operation": "triggered_counts",
+                        "route": "republish from trusted definitions with matching trigger evidence",
+                    },
+                )
+            observed[group_id] = observed.get(group_id, 0) + 1
+        declared = {
+            str(row["group_id"]): int(row["n_units"])
+            for row in count_rows
+            if row["population"] == "triggered"
+        }
+        groups = declared.keys() | observed.keys()
+        if any(declared.get(group, 0) != observed.get(group, 0) for group in groups):
+            raise ArtifactContractError(
+                "artifact.extension.invalid",
+                "trigger membership and triggered assignment counts disagree",
+                context={
+                    "extension_kind": "assignment_counts",
+                    "operation": "triggered_counts",
+                    "route": "republish with consistent trigger_population and assignment_counts evidence",
+                },
+            )
 
     def _dimension_table(self, extension: Any, request: Mapping[str, Any]) -> Any:
         rows = self._read_extension(extension, request=request)
@@ -949,13 +1259,23 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         requested = [name for name in dict.fromkeys(covariates) if name != "cluster_id"]
         extensions = {name: self._covariate_extension(name) for name in requested}
         metric = self.validated_metric(metric)
-        base = self._unit_frame(
-            metric,
-            cluster=cluster,
-            resolve_cluster=self._cluster_table,
-            population_units=self._population_units,
-            outcome_stage=outcome_stage,
-        )
+        if self._population_units is None:
+            base = self._unit_frame(
+                metric,
+                cluster=cluster,
+                resolve_cluster=self._cluster_table,
+                population_units=self._population_units,
+                outcome_stage=outcome_stage,
+            )
+        else:
+            base = self._unit_frame(
+                metric,
+                cluster=cluster,
+                resolve_cluster=self._cluster_table,
+                population_units=self._population_units,
+                outcome_stage=outcome_stage,
+                trigger_inputs=self._triggered_reduction_inputs(metric),
+            )
         if not extensions:
             return base
         import narwhals as nw
@@ -1134,9 +1454,40 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                     f"artifact is missing trusted {kind} evidence",
                 )
 
+    def assigned_breakout_values(
+        self, breakout: Breakout, *, source_name: str | None = None
+    ) -> Sequence[str]:
+        """Return dimension values among assigned units without reducing outcomes."""
+        extension = self._extension(
+            {
+                "kind": "breakout_dimension",
+                "property_name": breakout.property,
+                "source_name": breakout.source,
+            }
+        )
+        if source_name is not None and extension.source_name != source_name:
+            return []
+        request = _artifact_request(extension)
+        properties = self._dimension_table(extension, request)
+        exposures = self._ensure("exposures")
+        joined = join_breakout_dimension(exposures, properties, [breakout.property])
+        rows = _artifact_rows(self._snapshot.execute(joined.select(breakout.property).distinct()))
+        return sorted(
+            {str(row[breakout.property]) for row in rows if row.get(breakout.property) is not None}
+        )
+
     def breakout_source(
-        self, breakout: Breakout, *, metrics: Sequence[Metric]
+        self,
+        breakout: Breakout,
+        *,
+        metrics: Sequence[Metric],
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> BreakoutMomentsSource:
+        if population == "triggered" and self._population_units is None:
+            return cast(
+                "_ArtifactFacadeSource",
+                self.triggered_source(),
+            ).breakout_source(breakout, metrics=metrics)
         extension = self._extension(
             {
                 "kind": "breakout_dimension",
@@ -1176,10 +1527,17 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         )
 
     def breakout_sources(
-        self, breakouts: Sequence[Breakout], *, metrics: Sequence[Metric]
+        self,
+        breakouts: Sequence[Breakout],
+        *,
+        metrics: Sequence[Metric],
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> tuple[BreakoutMomentsSource, ...]:
         self._require_extension_coverage("breakout_dimension")
-        return tuple(self.breakout_source(breakout, metrics=metrics) for breakout in breakouts)
+        return tuple(
+            self.breakout_source(breakout, metrics=metrics, population=population)
+            for breakout in breakouts
+        )
 
     def moments_source(
         self,
@@ -1194,7 +1552,27 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             return cast("_ArtifactFacadeSource", self.triggered_source())
         return self
 
-    def breakout_summaries(self, *, metrics: Sequence[Metric]) -> dict[str, dict[str, Any]]:
+    def validate_populations(
+        self,
+        populations: Sequence[Literal["assigned", "triggered"]],
+        *,
+        operation: str,
+    ) -> None:
+        """Validate requested populations against the pinned artifact evidence."""
+        if "triggered" in populations and self._population_units is None:
+            self._trigger_population_rows(operation=operation)
+
+    def breakout_summaries(
+        self,
+        *,
+        metrics: Sequence[Metric],
+        population: Literal["assigned", "triggered"] = "assigned",
+    ) -> dict[str, dict[str, Any]]:
+        if population == "triggered" and self._population_units is None:
+            return cast(
+                "_ArtifactFacadeSource",
+                self.triggered_source(),
+            ).breakout_summaries(metrics=metrics)
         self._require_extension_coverage("breakout_dimension")
         import pyarrow as pa
 
@@ -1232,7 +1610,17 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 }
         return result
 
-    def factor_summaries(self, *, metrics: Sequence[Metric]) -> dict[str, Any]:
+    def factor_summaries(
+        self,
+        *,
+        metrics: Sequence[Metric],
+        population: Literal["assigned", "triggered"] = "assigned",
+    ) -> dict[str, Any]:
+        if population == "triggered" and self._population_units is None:
+            return cast(
+                "_ArtifactFacadeSource",
+                self.triggered_source(),
+            ).factor_summaries(metrics=metrics)
         self._require_extension_coverage("factor_dimension")
         import pyarrow as pa
 
@@ -1263,22 +1651,77 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 )
         return result
 
-    def unit_counts(self) -> dict[str, int]:
-        if self._population_units is not None:
-            grain, counts, unit_counts = self.triggered_counts()
-            return unit_counts if grain == "cluster" else counts
+    def _assignment_counts_extension(
+        self,
+    ) -> tuple[Any, list[Mapping[str, Any]]] | None:
         populations = (
             ("assigned", "triggered")
             if self._artifact_experiment.trigger is not None
             else ("assigned",)
         )
-        extension = self._extension({"kind": "assignment_counts", "populations": populations})
-        rows = self._read_extension(extension, request=_artifact_request(extension))
-        return {
+        try:
+            extension = self._extension({"kind": "assignment_counts", "populations": populations})
+        except ArtifactContractError as exc:
+            if exc.code != "artifact.extension.missing":
+                raise
+            return None
+        return extension, self._read_extension(extension, request=_artifact_request(extension))
+
+    def assignment_counts(
+        self, *, population: Literal["assigned", "triggered"] = "assigned"
+    ) -> dict[str, int]:
+        if population == "triggered":
+            return self.triggered_counts()[1]
+        selected = self._assignment_counts_extension()
+        if selected is None:
+            if self.context.cluster is not None:
+                try:
+                    return self.cluster_counts()
+                except ArtifactContractError as exc:
+                    if exc.code != "artifact.extension.missing":
+                        raise
+                refuse(
+                    _ARTIFACT_REFUSALS["artifact.evidence.unavailable"],
+                    message="artifact lacks randomization-grain assignment counts",
+                    population="assigned",
+                    operation="assignment_counts",
+                )
+            return super().unit_counts()
+        extension, rows = selected
+        counts = {
+            str(row["group_id"]): int(row["n_randomization_units"])
+            for row in rows
+            if row["population"] == "assigned" and row["group_id"] is not None
+        }
+        from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
+
+        if extension.mixed_unit_count:
+            counts[MIXED_ASSIGNMENT_LABEL] = extension.mixed_unit_count
+        if extension.unassigned_unit_count:
+            counts[UNASSIGNED_LABEL] = extension.unassigned_unit_count
+        return counts
+
+    def unit_counts(self) -> dict[str, int]:
+        if self._population_units is not None:
+            grain, counts, unit_counts = self.triggered_counts()
+            return unit_counts if grain == "cluster" else counts
+        selected = self._assignment_counts_extension()
+        if selected is None:
+            # The pinned exposure relation is sufficient for assigned unit counts.
+            return super().unit_counts()
+        extension, rows = selected
+        counts = {
             str(row["group_id"]): int(row["n_units"])
             for row in rows
-            if row["population"] == "assigned"
+            if row["population"] == "assigned" and row["group_id"] is not None
         }
+        from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
+
+        if extension.mixed_unit_count:
+            counts[MIXED_ASSIGNMENT_LABEL] = extension.mixed_unit_count
+        if extension.unassigned_unit_count:
+            counts[UNASSIGNED_LABEL] = extension.unassigned_unit_count
+        return counts
 
     def cluster_counts(self) -> dict[str, int]:
         extension = self._extension(
@@ -1287,12 +1730,14 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         rows = self._read_extension(extension, request=_artifact_request(extension))
         groups: dict[str, set[str]] = {}
         exposure_by_unit = {
-            str(row["unit_id"]): str(row["group_id"]) for row in self._exposure_rows()
+            str(row["unit_id"]): str(row["group_id"])
+            for row in self._exposure_rows()
+            if row["group_id"] is not None
         }
         for row in rows:
-            groups.setdefault(exposure_by_unit[str(row["unit_id"])], set()).add(
-                str(row["cluster_id"])
-            )
+            unit_id = str(row["unit_id"])
+            if unit_id in exposure_by_unit:
+                groups.setdefault(exposure_by_unit[unit_id], set()).add(str(row["cluster_id"]))
         return {group: len(clusters) for group, clusters in groups.items()}
 
     def triggered_counts(self) -> tuple[Literal["unit", "cluster"], dict[str, int], dict[str, int]]:
@@ -1300,15 +1745,17 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             {"kind": "assignment_counts", "populations": ("assigned", "triggered")}
         )
         rows = self._read_extension(extension, request=_artifact_request(extension))
+        trigger_rows = self._trigger_population_rows()
+        self._validate_trigger_population_counts(rows, trigger_rows)
         counts = {
             str(row["group_id"]): int(row["n_randomization_units"])
             for row in rows
-            if row["population"] == "triggered"
+            if row["population"] == "triggered" and row["group_id"] is not None
         }
         unit_counts = {
             str(row["group_id"]): int(row["n_units"])
             for row in rows
-            if row["population"] == "triggered"
+            if row["population"] == "triggered" and row["group_id"] is not None
         }
         grain: Literal["unit", "cluster"] = (
             "cluster" if self.context.cluster is not None else "unit"
@@ -1319,15 +1766,17 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         grain, counts, unit_counts = self.triggered_counts()
         triggered = counts if grain == "unit" else unit_counts
         assigned = self.unit_counts()
+        from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
+
+        audit_labels = {MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL}
         return {
-            group: triggered.get(group, 0) / count for group, count in assigned.items() if count
+            group: triggered.get(group, 0) / count
+            for group, count in assigned.items()
+            if count and group not in audit_labels
         }
 
     def triggered_source(self) -> MomentSource:
-        trigger = self._extension(
-            {"kind": "trigger_population", "trigger_name": self._artifact_experiment.trigger}
-        )
-        rows = self._read_extension(trigger, request=_artifact_request(trigger))
+        rows = self._trigger_population_rows()
         return _ArtifactFacadeSource(
             self._store,
             self._lifecycle,
@@ -1336,6 +1785,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             expected_context=self._expected_context,
             metrics=self._metrics_arg,
             population_units=frozenset(str(row["unit_id"]) for row in rows),
+            trigger_anchors={str(row["unit_id"]): row["first_trigger_ts"] for row in rows},
         )
 
     def sitewide_evidence(self, metric: Metric, *, include_ratio: bool = False) -> Any:

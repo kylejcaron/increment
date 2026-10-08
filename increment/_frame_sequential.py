@@ -205,6 +205,7 @@ def capture_frame_totals(source):
         source_id=source.context.study_id,
         definitions_id=definitions,
         finalized=True,
+        assignment_counts=source.unit_counts(),
     )
 
 
@@ -377,6 +378,7 @@ def capture_frame_panel(source, *, as_of, finalized, previous=None):
         finalized=finalized,
         previous=previous,
         reveal_cursor=as_of,
+        assignment_counts=source.unit_counts(),
     )
     source._sequential_snapshot = snapshot
     return snapshot

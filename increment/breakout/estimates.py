@@ -77,14 +77,12 @@ from increment.estimation.engine import (
 from increment.estimation.engine import (
     merge_decision_computations as _merge_decision_computations,
 )
-from increment.estimation.family import (
-    BH_EXCLUDES_PRIOR,
-    decision_cells,
-    family_discovery,
-    select_family,
-)
+from increment.estimation.family import decision_cells, family_discovery, select_family
 from increment.estimation.inference import LiftGuardError, Prior
 from increment.estimation.meta import ESTIMATION_META_ALPHA_TOO_SMALL
+from increment.estimation.multiplicity import stamp_multiplicity_status
+from increment.estimation.priors import MixturePrior, StudentTPrior
+from increment.estimation.readout_types import register_collection_types
 from increment.estimation.results import (
     BinomialConfidenceSet,
     Estimate,
@@ -114,6 +112,7 @@ from increment.sequential_state import SequentialSnapshot, require_public_laws, 
 
 if TYPE_CHECKING:
     from increment.decision import CompiledDecisionPlan, DecisionComputation
+    from increment.estimation.readout_types import ReadoutMetadata
 
 Renderer = Callable[..., str]
 
@@ -179,7 +178,6 @@ _REFUSALS["breakout.retention.unbounded"] = READOUT_REFUSALS["breakout.retention
 _REFUSALS["breakout.retention.completion"] = READOUT_REFUSALS["breakout.retention.completion"]
 _REFUSALS["estimation.meta.alpha_too_small"] = ESTIMATION_META_ALPHA_TOO_SMALL
 _REFUSALS["estimation.diagnostics.alpha"] = ESTIMATION_DIAGNOSTICS_ALPHA
-_REFUSALS["breakout.run_breakout_bh_excludes_prior"] = BH_EXCLUDES_PRIOR
 _refuse = raiser(_REFUSALS)
 
 
@@ -547,6 +545,43 @@ _FAMILY_VIEW_FIELDS = (
     "abs_reference_df",
     "abs_alpha",
     "prior_shrunk",
+    "sampling_available",
+    "sampling_reason_code",
+    "sampling_reason_context",
+    "posterior_available",
+    "posterior_reason_code",
+    "posterior_reason_context",
+    "posterior_model",
+    "posterior_scale",
+    "posterior_estimate",
+    "posterior_lb",
+    "posterior_ub",
+    "posterior_level",
+    "posterior_alpha",
+    "posterior_latent_mean",
+    "posterior_latent_sd",
+    "posterior_prob_favorable",
+    "posterior_components",
+    "prior_spec",
+    "failure_code",
+    "failure_context",
+    "source_snapshot_id",
+    "decision_scope_complete",
+    "decision_scope_reason_code",
+    "decision_scope_reason_context",
+    "family_id",
+    "multiplicity_status",
+    "weight_diagnostics_available",
+    "weight_diagnostics_reason_code",
+    "weight_diagnostics_reason_context",
+    "weight_definition",
+    "weight_grain",
+    "control_weight_ess",
+    "treatment_weight_ess",
+    "control_weight_max_share",
+    "treatment_weight_max_share",
+    "control_weight_n",
+    "treatment_weight_n",
 )
 
 
@@ -574,6 +609,8 @@ class BreakoutEstimate(_RowIdentity):
     Call ``.to_frame()`` on the :class:`BreakoutEstimates` this returns
     rather than constructing a plain ``list[BreakoutEstimate]``.
     """
+
+    analysis_population: Literal["assigned", "triggered"] = "assigned"
 
     null_lift: float = Field(default=0.0, allow_inf_nan=False)
     dof: float | None = None
@@ -616,9 +653,11 @@ class BreakoutEstimate(_RowIdentity):
     abs_alpha: float | None = Field(default=None, gt=0.0, lt=1.0, allow_inf_nan=False)
     # Mirrors LiftEstimate.abs_alpha: the central-equivalent alpha of abs_lb/abs_ub.
     excluded: ExclusionReason | None = None
+    # Declared mixture prior, separate from posterior_components.
+    prior_spec: StudentTPrior | MixturePrior | None = None
+    # Historical prior-present marker; modern sampling/posterior availability fields
+    # determine which inference products are available.
     prior_shrunk: bool = False
-    # True when the cell was estimated under an informative prior: lift.log_mean/log_se are
-    # then the raw pre-prior statistics while value/lb/ub are the posterior (mirrors LiftEstimate).
 
     @model_validator(mode="after")
     def _lift_or_excluded(self):
@@ -915,7 +954,13 @@ def _append_frame_value(
     estimate_field: str | None,
     binomial_set_field: str | None,
 ) -> None:
-    if name == estimate_field:
+    if name == "posterior_components":
+        from increment._canonical import canonical_json_bytes
+
+        data[name].append(
+            None if value is None else canonical_json_bytes(value.model_dump(mode="json")).decode()
+        )
+    elif name == estimate_field:
         data[name].append(None if value is None else value.value)
         data["lb"].append(None if value is None else value.lb)
         data["ub"].append(None if value is None else value.ub)
@@ -955,6 +1000,11 @@ def _append_frame_value(
         data[name].append(None)
     elif isinstance(value, date) and not isinstance(value, datetime):
         data[name].append(datetime.combine(value, datetime.min.time()))
+    elif isinstance(value, Mapping):
+        from increment._canonical import canonical_json_bytes
+        from increment.estimation.readout_types import thaw
+
+        data[name].append(canonical_json_bytes(thaw(value)).decode())
     elif isinstance(value, BaseModel):
         data[name].append(repr(value))
     elif isinstance(value, Sequence) and not isinstance(value, str):
@@ -993,6 +1043,8 @@ def _copy_common_fields(source: LiftEstimate, /, **overrides: Any) -> dict[str, 
         "relative_unavailable_reason": source.relative_unavailable_reason,
         "sequential_result": source.sequential_result,
         "binomial_set": source.binomial_set,
+        "prior_spec": source.prior_spec,
+        "posterior_components": source.posterior_components,
         "estimand": source.estimand,
         "value_scale": source.value_scale,
         "note": source.note,
@@ -1004,6 +1056,8 @@ def _copy_common_fields(source: LiftEstimate, /, **overrides: Any) -> dict[str, 
         "abs_reference_df": source.abs_reference_df,
         "abs_alpha": source.abs_alpha,
     }
+    copied.update({name: getattr(source, name) for name in _RowIdentity.model_fields})
+    copied["analysis_population"] = source.analysis_population
     copied.update(overrides)
     return copied
 
@@ -1115,6 +1169,7 @@ def to_frame[M: BaseModel](
                 "sequential_validity_regime",
                 "sequential_alpha",
                 "sequential_components",
+                "posterior_components",
                 "set_numerical_qualification",
             )
             else _scalar_dtype(model.model_fields[name].annotation)
@@ -1211,13 +1266,78 @@ class EstimateList[M: BaseModel](list[M]):
     preserve the subclass; a list comprehension over the results does
     not - use :func:`to_frame` directly with an explicit ``model=`` for
     that case.
+
+    Scope metadata is bound at construction and cannot be replaced or removed.
     """
 
     _model: ClassVar[type[BaseModel]]
 
+    def __init__(
+        self,
+        rows=(),
+        *,
+        metadata: ReadoutMetadata | None = None,
+        source=None,
+        sequential_snapshot=None,
+    ):
+        from increment.estimation.readout_types import validate_collection
+
+        super().__init__(rows)
+        self._metadata = metadata
+        self.source = source
+        self.sequential_snapshot = sequential_snapshot
+        validate_collection(self, metadata)
+
+    @property
+    def metadata(self) -> ReadoutMetadata | None:
+        return self._metadata
+
+    @metadata.setter
+    def metadata(self, value) -> None:
+        self._mutation("metadata_set")
+
+    @metadata.deleter
+    def metadata(self) -> None:
+        self._mutation("metadata_delete")
+
+    def __reduce_ex__(self, protocol):
+        from increment.estimation.readout_types import _restore_collection
+
+        return _restore_collection, (
+            type(self),
+            tuple(self),
+            self.metadata,
+            self.source,
+            self.sequential_snapshot,
+        )
+
+    def model_dump_json(self):
+        from increment.estimation.readout_types import dump_collection
+
+        return dump_collection(self)
+
+    def filter(self, predicate):
+        from increment.estimation.readout_types import partial_metadata
+
+        rows = [row for row in self if predicate(row)]
+        return type(self)(
+            rows,
+            metadata=partial_metadata(self.metadata, rows, "filter"),
+            source=self.source,
+            sequential_snapshot=self.sequential_snapshot,
+        )
+
+    def concat(self, other):
+        from increment.estimation.readout_types import concat_collection
+
+        return concat_collection(self, other)
+
     def to_frame(self, backend: Backend = "pandas") -> IntoDataFrame:
         """Convert this list to a native ``backend`` frame - see :func:`to_frame`."""
-        return to_frame(self, model=self._model, backend=backend)
+        frame = nw.from_native(to_frame(self, model=self._model, backend=backend), eager_only=True)
+        return frame.with_columns(
+            nw.lit(None if self.metadata is None else self.metadata.partial).alias("view_partial")
+        ).to_native()
 
     @overload
     def __getitem__(self, key: SupportsIndex) -> M: ...
@@ -1226,11 +1346,63 @@ class EstimateList[M: BaseModel](list[M]):
     def __getitem__(self, key: SupportsIndex | slice) -> M | EstimateList[M]:
         result = super().__getitem__(key)
         if isinstance(key, slice):
-            return cast("EstimateList[M]", type(self)(cast("list[M]", result)))
+            from increment.estimation.readout_types import partial_metadata
+
+            return type(self)(
+                result,
+                metadata=partial_metadata(self.metadata, result, "slice"),
+                source=self.source,
+                sequential_snapshot=self.sequential_snapshot,
+            )
         return cast("M", result)
 
-    def __add__(self, other: list[M]) -> EstimateList[M]:
-        return cast("EstimateList[M]", type(self)([*self, *other]))
+    def __add__(self, other):
+        return self.concat(other)
+
+    def _mutation(self, operation):
+        from increment.estimation.readout_types import refuse_readout
+
+        refuse_readout(
+            "readout.collection.mutation_unsupported",
+            operation=operation,
+            model=type(self).__name__,
+        )
+
+    def append(self, value):
+        self._mutation("append")
+
+    def extend(self, values):
+        self._mutation("extend")
+
+    def insert(self, index, value):
+        self._mutation("insert")
+
+    def pop(self, index=-1):
+        self._mutation("pop")
+
+    def remove(self, value):
+        self._mutation("remove")
+
+    def clear(self):
+        self._mutation("clear")
+
+    def reverse(self):
+        self._mutation("reverse")
+
+    def sort(self, *args, **kwargs):
+        self._mutation("sort")
+
+    def __setitem__(self, key, value):
+        self._mutation("item_set")
+
+    def __delitem__(self, key):
+        self._mutation("item_delete")
+
+    def __iadd__(self, value):
+        self._mutation("iadd")
+
+    def __imul__(self, value):
+        self._mutation("imul")
 
 
 class DailyMetricValue(CodedModel, BaseModel):
@@ -1255,6 +1427,11 @@ class DailyMetricValue(CodedModel, BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    analysis_population: Literal["assigned", "triggered"] = "assigned"
+    source_snapshot_id: str | None = None
+    decision_scope_complete: bool | None = None
+    decision_scope_reason_code: str | None = None
+    decision_scope_reason_context: Mapping[str, object] | None = None
     ds: date
     metric: str
     group_id: str
@@ -1270,6 +1447,22 @@ class DailyMetricValue(CodedModel, BaseModel):
     def _value_or_unavailable(self):
         if (self.value is None) == (self.unavailable is None):
             _refuse("breakout.daily_metric.exactly_one_value")
+        if self.decision_scope_reason_context is not None:
+            from increment._canonical import canonical_json_bytes
+            from increment._immutable import _FrozenMapping
+
+            def freeze(value):
+                if isinstance(value, Mapping):
+                    frozen = _FrozenMapping({key: freeze(item) for key, item in value.items()})
+                    canonical_json_bytes(dict(frozen))
+                    return frozen
+                if isinstance(value, (tuple, list)):
+                    return tuple(freeze(item) for item in value)
+                return value
+
+            object.__setattr__(
+                self, "decision_scope_reason_context", freeze(self.decision_scope_reason_context)
+            )
         return self
 
 
@@ -1293,6 +1486,8 @@ class DailyLiftEstimate(_RowIdentity):
     otherwise. ``ds_basis`` - see :class:`DailyMetricValue`.
     """
 
+    analysis_population: Literal["assigned", "triggered"] = "assigned"
+    prior_spec: StudentTPrior | MixturePrior | None = None
     dof: float | None = None
     reference_kind: Literal["normal", "t", "sequential", "binomial"] = "normal"
     reference_df: float | None = None
@@ -1383,6 +1578,17 @@ class DailyLiftEstimate(_RowIdentity):
             sequential_refuse("source.invalid", "fixed view cannot carry sequential evidence")
         if self.reference_kind == "sequential":
             from increment.sequential_state import sequential_refuse
+
+            if (
+                self.sequential_result is None
+                and self.analysis_population == "triggered"
+                and self.failure_code == "readout.cell.unsupported_request"
+                and (self.failure_context or {}).get("reason") == "triggered_sequential"
+                and self.sampling_available is False
+                and self.lift is None
+                and self.decision_scope_complete is False
+            ):
+                return self
 
             if self.sequential_result is None:
                 sequential_refuse(
@@ -1490,7 +1696,9 @@ class DailyLiftEstimates(EstimateList[DailyLiftEstimate]):
     _model = DailyLiftEstimate
 
 
-def daily_sequential_projection(rows: Sequence[LiftEstimate]) -> DailyLiftEstimates:
+def daily_sequential_projection(
+    rows: Sequence[LiftEstimate], *, correction: Correction
+) -> DailyLiftEstimates:
     output = []
     for row in rows:
         result = row.require_sequential_result()
@@ -1523,7 +1731,7 @@ def daily_sequential_projection(rows: Sequence[LiftEstimate]) -> DailyLiftEstima
                 family_nominal_alpha=row.family_nominal_alpha,
             )
         )
-    return DailyLiftEstimates(output)
+    return DailyLiftEstimates(stamp_multiplicity_status(output, correction=correction))
 
 
 def _relative_meta_moments(row: BreakoutEstimate) -> tuple[float | None, float | None]:
@@ -1618,9 +1826,11 @@ def _binomial_gate_exempt_metrics(
     prior_by_metric: Mapping[str, Prior | None] | None = None,
 ) -> frozenset[str]:
     """Conversion/retention metrics exempt from the ddof/positive-mean gate
-    below because the finite-sample binomial risk-ratio method admits them at
-    ``n=1`` and with zero treatment/control means. The log-Normal delta method
-    still needs a ddof=1 variance and ``math.log`` of a positive mean.
+    when an unadjusted method can use the finite-sample binomial route, which
+    admits ``n=1`` and zero treatment/control means. An informative prior
+    retains this exemption only for ``conversion_inference="auto"``; the
+    explicit finite-sample route still refuses a prior. The log-Normal delta
+    method needs a ddof=1 variance and a positive mean.
 
     This mirrors ``estimation.engine._binomial_eligible`` at this
     row-partitioning layer, which decides only whether the count rule may route a
@@ -1632,14 +1842,16 @@ def _binomial_gate_exempt_metrics(
     """
     exempt: set[str] = set()
     for metric in metrics:
-        if metric.type not in ("conversion", "retention"):
+        if metric.type not in ("conversion", "retention") or inference is not None:
             continue
         metric_prior = (prior_by_metric or {}).get(metric.name, prior)
-        if inference is not None or metric_prior is not None:
-            continue
         configured = (methods_by_metric or {}).get(metric.name, methods)
         configured = configured or [Method(name="unadjusted")]
-        if any(method.variance_reduction != "cuped" for method in configured):
+        if any(
+            method.variance_reduction != "cuped"
+            and (metric_prior is None or method.conversion_inference == "auto")
+            for method in configured
+        ):
             exempt.add(metric.name)
     return frozenset(exempt)
 
@@ -2240,6 +2452,7 @@ class _BreakoutContext(NamedTuple):
     methods: list[Method] | None
     methods_by_metric: Mapping[str, list[Method]] | None
     prior: Prior | None
+    prior_by_metric: Mapping[str, Prior | None] | None
     alpha: float
     alternative: str
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None
@@ -2578,11 +2791,12 @@ def _estimate_breakout_slice_metrics(  # noqa: PLR0915
                 metric.name, context.method_roles
             )
             resolved_roles = _derive_method_roles(configured, requested_roles)
+            metric_prior = (context.prior_by_metric or {}).get(metric.name, context.prior)
             mixed_groups = _mixed_binomial_method_groups(
                 metric,
                 configured,
                 inference=context.inference,
-                prior=context.prior,
+                prior=metric_prior,
             )
             groups = list(mixed_groups) if mixed_groups is not None else [configured]
             for group_index, method_group in enumerate(groups):
@@ -2610,7 +2824,7 @@ def _estimate_breakout_slice_metrics(  # noqa: PLR0915
                     metric=metric,
                     summary=method_rows,
                     control_group=context.control_group,
-                    prior=context.prior,
+                    prior=metric_prior,
                     alpha=context.alpha,
                     alternative=context.alternative,
                     methods=method_group,
@@ -2739,6 +2953,7 @@ class _BreakoutFamilyContext(NamedTuple):
     methods: list[Method] | None
     methods_by_metric: Mapping[str, list[Method]] | None
     prior: Prior | None
+    prior_by_metric: Mapping[str, Prior | None] | None
     alternative: str
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None
     method_roles_by_metric: Mapping[str, Mapping[str, Literal["decision", "sensitivity"]]] | None
@@ -2777,6 +2992,7 @@ def _apply_breakout_family_correction(
     methods = context.methods
     methods_by_metric = context.methods_by_metric
     prior = context.prior
+    prior_by_metric = context.prior_by_metric
     method_roles = context.method_roles
     alternative = context.alternative
     method_roles_by_metric = context.method_roles_by_metric
@@ -2854,7 +3070,7 @@ def _apply_breakout_family_correction(
             metrics=[metrics_by_name[metric_name]],
             summary=metric_rows,
             control_group=control_group,
-            prior=prior,
+            prior=(prior_by_metric or {}).get(metric_name, prior),
             alpha=_fcr_alpha_for(alternative, outcome.fcr_alpha),
             methods=[decision_method],
             alternative=alternative,
@@ -2986,7 +3202,7 @@ def _snapshot_breakout(
                 family_threshold=row.family_threshold,
             )
         )
-    return BreakoutEstimates(output)
+    return BreakoutEstimates(stamp_multiplicity_status(output, correction=request.correction))
 
 
 def run_breakout(  # noqa: PLR0913
@@ -3008,6 +3224,7 @@ def run_breakout(  # noqa: PLR0913
     method_roles_by_metric: Mapping[str, Mapping[str, Literal["decision", "sensitivity"]]]
     | None = None,
     methods_by_metric: Mapping[str, list[Method]] | None = None,
+    _prior_by_metric: Mapping[str, Prior | None] | None = None,
     policy_name: Literal["compiled_plan", "default_exploratory"] = "default_exploratory",
 ) -> BreakoutEstimates:
     """Estimate lift for every distinct value of a dimension. Partitions
@@ -3036,7 +3253,7 @@ def run_breakout(  # noqa: PLR0913
         roster and current/frozen likelihood, including missing cells with
         log evidence -infinity. Fixed-horizon inputs retain the present-row
         family and require complete p-value evidence. Every row is exploratory.
-        Posterior effect priors are excluded from family testing.
+        Informative priors remain separate from the sampling evidence used for selection.
     q : float
         FDR level for ``correction="bh"``'s family selection. Unused
         otherwise.
@@ -3044,6 +3261,8 @@ def run_breakout(  # noqa: PLR0913
         Registered sequential evidence for the full predeclared roster.
     reliability_floor : int
         Per-arm floor flagging ``low_reliability=True`` (default 50).
+    _prior_by_metric : Mapping[str, Prior | None] | None
+        Internal per-metric prior override used by compiled-plan callers.
 
     Raises
     ------
@@ -3064,8 +3283,6 @@ def run_breakout(  # noqa: PLR0913
     """
     if correction not in ("none", "bonferroni", "bh"):
         _refuse("breakout.run_breakout_correction", correction=correction)
-    if correction == "bh" and prior is not None:
-        _refuse("breakout.run_breakout_bh_excludes_prior")
     if methods is not None and not methods:
         _refuse("breakout.run_breakout_methods")
     if inference is not None:
@@ -3110,6 +3327,7 @@ def run_breakout(  # noqa: PLR0913
         methods_by_metric=methods_by_metric,
         inference=inference,
         prior=prior,
+        prior_by_metric=_prior_by_metric,
     )
     frame = nw.from_native(summary, eager_only=True, pass_through=True)
     if isinstance(frame, nw.DataFrame):
@@ -3152,6 +3370,7 @@ def run_breakout(  # noqa: PLR0913
             methods,
             methods_by_metric,
             prior,
+            _prior_by_metric,
             alpha_seg,
             alternative,
             inference,
@@ -3193,6 +3412,7 @@ def run_breakout(  # noqa: PLR0913
         methods,
         methods_by_metric,
         prior,
+        _prior_by_metric,
         alternative,
         method_roles,
         method_roles_by_metric,
@@ -3201,7 +3421,7 @@ def run_breakout(  # noqa: PLR0913
     if policy_name != "default_exploratory":
         results = [row.model_copy(update={"policy_name": policy_name}) for row in results]
 
-    output = BreakoutEstimates(results)
+    output = BreakoutEstimates(stamp_multiplicity_status(results, correction=correction))
     return output
 
 
@@ -3434,6 +3654,7 @@ def _nan_lift_rows(  # noqa: PLR0913
                     .get(method.name, "decision"),
                     inference=inference,
                     reference_kind="sequential" if inference != "fixed" else "normal",
+                    sampling_available=False,
                     alternative=policy.alternative,
                     null_lift=policy.null_lift,
                     null_abs=policy.null_abs,
@@ -3824,6 +4045,43 @@ def _validate_daily_lift_request(
     )
 
 
+def resolve_daily_cell_policy(
+    metric: Metric,
+    metric_rows: Sequence[Mapping[str, Any]],
+    *,
+    control_group: str,
+    alpha: float,
+    alternative: Alternative,
+    design: Randomized | Encouragement | Observational | None,
+    view: DayAxisView,
+    plan: CompiledDecisionPlan | None,
+    segment_count_by_metric: Mapping[str, int] | None,
+) -> _DailyCellPolicy:
+    """Resolve a metric's compiled policy for one date/segment slice."""
+    if plan is None:
+        return _DailyCellPolicy(alpha, alternative, 0.0, None, None, "default_exploratory")
+    procedure = plan.procedures[metric.name]
+    n_arms = len({str(row["group_id"]) for row in metric_rows} - {str(control_group)})
+    n_segments = (segment_count_by_metric or {}).get(metric.name, 1)
+    resolver_view: Literal["asof"] | None = "asof" if view == "asof" else None
+    cell_alpha = resolve_cell_alpha(
+        plan,
+        procedure,
+        n_arms=n_arms,
+        n_segments=n_segments,
+        view=resolver_view,
+        mechanism=getattr(design, "mechanism", None),
+    )
+    return _DailyCellPolicy(
+        alpha=cell_alpha,
+        alternative=procedure.alternative,
+        null_lift=float(getattr(procedure, "null_lift", 0.0)),
+        null_abs=getattr(procedure, "null_abs", None),
+        role=procedure.role if plan.declared else None,
+        policy_name="compiled_plan",
+    )
+
+
 def _resolve_daily_cell_policy(
     context: _DailyLiftContext,
     metric: Metric,
@@ -3835,34 +4093,21 @@ def _resolve_daily_cell_policy(
     alpha. Segment cardinality stays readout-wide, because every segment belongs
     to the same predeclared view family even when one date has sparse rows.
     """
-    if context.plan is None:
-        return _DailyCellPolicy(
-            context.alpha, context.alternative, 0.0, None, None, "default_exploratory"
-        )
-    procedure = context.plan.procedures[metric.name]
-    n_arms = len({str(row["group_id"]) for row in metric_rows} - {str(context.control_group)})
-    n_segments = (context.segment_count_by_metric or {}).get(metric.name, 1)
-    resolver_view: Literal["asof"] | None = "asof" if context.view == "asof" else None
-    alpha = resolve_cell_alpha(
-        context.plan,
-        procedure,
-        n_arms=n_arms,
-        n_segments=n_segments,
-        view=resolver_view,
-        mechanism=getattr(context.design, "mechanism", None),
-    )
-    return _DailyCellPolicy(
-        alpha=alpha,
-        alternative=procedure.alternative,
-        null_lift=float(getattr(procedure, "null_lift", 0.0)),
-        null_abs=getattr(procedure, "null_abs", None),
-        role=procedure.role if context.plan.declared else None,
-        policy_name="compiled_plan",
+    return resolve_daily_cell_policy(
+        metric,
+        metric_rows,
+        control_group=context.control_group,
+        alpha=context.alpha,
+        alternative=context.alternative,
+        design=context.design,
+        view=context.view,
+        plan=context.plan,
+        segment_count_by_metric=context.segment_count_by_metric,
     )
 
 
 def _snapshot_daily_lift(
-    summary, metrics, requested_estimands, context: _DailyLiftContext
+    summary, metrics, requested_estimands, context: _DailyLiftContext, *, correction: Correction
 ) -> DailyLiftEstimates:
     assert isinstance(context.inference, SEQUENTIAL_POLICIES)
     from increment.estimation.sequential_runtime import (
@@ -3926,7 +4171,8 @@ def _snapshot_daily_lift(
         nominal_alpha=context.alpha if context.plan is None else context.plan.alpha,
     )
     return daily_sequential_projection(
-        [row.model_copy(update={"ds": summary.reveal_cursor}) for row in results]
+        [row.model_copy(update={"ds": summary.reveal_cursor}) for row in results],
+        correction=correction,
     )
 
 
@@ -3952,6 +4198,7 @@ def run_daily_lift(  # noqa: PLR0913
     prior_by_metric: Mapping[str, Prior | None] | None = None,
     method_roles_by_metric: Mapping[str, Mapping[str, Literal["decision", "sensitivity"]]]
     | None = None,
+    segment_roster_by_metric: Mapping[str, Sequence[str]] | None = None,
     plan: CompiledDecisionPlan | None = None,
 ) -> DailyLiftEstimates:
     """Estimate relative lift separately per day slice -
@@ -3992,6 +4239,9 @@ def run_daily_lift(  # noqa: PLR0913
         encouragement, else ``("itt",)``.
     reliability_floor : int
         Per-arm floor flagging ``low_reliability=True`` (default 50).
+    segment_roster_by_metric : Mapping[str, Sequence[str]] | None
+        Optional full dimension-value roster per metric, used when empty cells have
+        been removed from ``summary`` before fitting.
     Raises
     ------
     ValueError
@@ -4014,6 +4264,16 @@ def run_daily_lift(  # noqa: PLR0913
         requested ``late`` row, leaving only the explanatory
         ``compliance`` row.
     """
+    effective_correction = correction if plan is None else "none"
+    if plan is not None and view == "asof":
+        from increment._analysis_config import normalize_display_correction
+
+        asof_policy = plan.view_policies.for_view(
+            "asof",
+            mechanism=getattr(design, "mechanism", None),
+            segmented=dimension is not None,
+        )
+        effective_correction = normalize_display_correction(asof_policy.correction)
     inference_label, encouragement_asof, requested_estimands = _validate_daily_lift_request(
         metrics,
         correction=correction,
@@ -4043,7 +4303,9 @@ def run_daily_lift(  # noqa: PLR0913
             method_roles_by_metric,
             plan,
         )
-        return _snapshot_daily_lift(summary, metrics, requested_estimands, context)
+        return _snapshot_daily_lift(
+            summary, metrics, requested_estimands, context, correction=effective_correction
+        )
     if isinstance(summary, SequentialSnapshot):
         sequential_refuse("source.invalid", "as-of exact snapshot requires its registered policy")
     _validate_methods(methods if methods is not None else [Method(name="unadjusted")])
@@ -4088,7 +4350,9 @@ def run_daily_lift(  # noqa: PLR0913
             )
     segment_count_by_metric: dict[str, int] = {}
     if dimension is not None:
-        segments_by_metric: dict[str, set[str]] = {}
+        segments_by_metric: dict[str, set[str]] = {
+            name: set(values) for name, values in (segment_roster_by_metric or {}).items()
+        }
         for row in raw_rows:
             segments_by_metric.setdefault(str(row["metric"]), set()).add(str(row[dimension]))
         segment_count_by_metric = {
@@ -4188,5 +4452,16 @@ def run_daily_lift(  # noqa: PLR0913
             )
         )
     return DailyLiftEstimates(
-        _stamp_asof_monitoring_notes(results, view=view, inference=inference, design=design)
+        stamp_multiplicity_status(
+            _stamp_asof_monitoring_notes(results, view=view, inference=inference, design=design),
+            correction=effective_correction,
+        )
     )
+
+
+register_collection_types(
+    BreakoutEstimates,
+    DailyLiftEstimates,
+    DailyMetricValues,
+    LiftEstimates,
+)

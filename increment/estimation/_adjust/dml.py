@@ -206,7 +206,7 @@ def _dml_contrast(
     )
     point, scores = resolved.point, resolved.scores
     abs_diff, abs_se = resolved.abs_diff, resolved.abs_se
-    if control is not None and request.prior is None:
+    if control is not None:
         joint_result = _joint_reference_from_influences(
             slope_influence(),
             control[1],
@@ -224,13 +224,13 @@ def _dml_contrast(
         point=point,
         scores=scores,
         population=data.population,
-        abs_diff=abs_diff,
-        abs_se=abs_se,
+        absolute=(abs_diff, abs_se),
         estimand="plr_slope",
         note=_compose_plr_note(data.note),
         # A relative row's control mean draws on every cohort cluster.
         n_clusters=support.k if control is None else control[2].k,
         dof=None,
+        posterior=(resolved.posterior_point, resolved.posterior_scores),
         joint_result=joint_result,
     )
 

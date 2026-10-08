@@ -348,6 +348,7 @@ class TestATailLevelTheSolverRefuses:
             minimum_detectable_effect(100_000, baseline, procedure)
         assert effect.value.code == "power.binomial_tail_level_unrepresentable"
 
+    @pytest.mark.slow
     def test_the_first_alpha_the_solver_admits_is_sized_and_decided(self):
         alpha = 4e-8
         binomial_rr.confidence_interval(

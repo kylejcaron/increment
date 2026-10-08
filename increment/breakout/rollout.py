@@ -53,9 +53,9 @@ _raise = raiser(_REFUSALS)
 
 
 class RolloutRecommendation(BaseModel):
-    """One row per ``(metric, method, group_id, dimension, source, estimand,
-    value_scale)`` grouping key: which of that key's segments to roll out, and
-    an honest price on doing so.
+    """One row per ``(analysis_population, metric, method, group_id,
+    dimension, source, estimand, value_scale)`` grouping key: which of that
+    key's segments to roll out, and an honest price on doing so.
 
     UNWEIGHTED, and deliberately so: every value field treats each
     usable segment as an equal contributor regardless of exposure, so
@@ -80,6 +80,7 @@ class RolloutRecommendation(BaseModel):
     metric: str
     method: str
     group_id: str
+    analysis_population: Literal["assigned", "triggered"] = "assigned"
     dimension: str
     source: str | None
     estimand: str = "itt"  # "itt" | "compliance" | "late" (mirrors BreakoutEstimate)
@@ -122,6 +123,7 @@ class RolloutSegment(BaseModel):
     metric: str
     method: str
     group_id: str
+    analysis_population: Literal["assigned", "triggered"] = "assigned"
     dimension: str
     dimension_value: str
     source: str | None
@@ -155,12 +157,18 @@ class SegmentRolloutResult(NamedTuple):
 
 def _rollout_group_key(
     e: BreakoutEstimate,
-) -> tuple[str, str, str, str, str | None, str, ValueScale]:
-    """Rollout's grouping key - the same seven fields
-    :func:`increment.breakout.heterogeneity._group_key` uses, kept as a local
-    copy so neither module's grouping can be changed from the other.
-    """
-    return (e.metric, e.method, e.group_id, e.dimension, e.source, e.estimand, e.value_scale)
+) -> tuple[Literal["assigned", "triggered"], str, str, str, str, str | None, str, ValueScale]:
+    """Group by the complete identity of one breakout population."""
+    return (
+        e.analysis_population,
+        e.metric,
+        e.method,
+        e.group_id,
+        e.dimension,
+        e.source,
+        e.estimand,
+        e.value_scale,
+    )
 
 
 def _resolve_rollout_costs(
@@ -220,8 +228,8 @@ def segment_rollout_recommendation(
     tau_prior_scale: float = _TAU_PRIOR_SCALE_DEFAULT,
 ) -> SegmentRolloutResult:
     """Recommend which segments to roll out, and price the rollout, for
-    each ``(metric, method, group_id, dimension, source, estimand,
-    value_scale)`` grouping key found in *estimates*.
+    each ``(analysis_population, metric, method, group_id, dimension, source,
+    estimand, value_scale)`` grouping key found in *estimates*.
 
     *estimates* must come from a SINGLE ``run_breakout`` call - a
     standalone call stamps ``source=None``, so independent calls on one
@@ -269,7 +277,7 @@ def segment_rollout_recommendation(
     costs = _resolve_rollout_costs(estimates, metrics, rollout_cost)
 
     groups: dict[
-        tuple[str, str, str, str, str | None, str, ValueScale],
+        tuple[Literal["assigned", "triggered"], str, str, str, str, str | None, str, ValueScale],
         list[BreakoutEstimate],
     ] = {}
     for e in estimates:
@@ -279,6 +287,7 @@ def segment_rollout_recommendation(
     segment_rows: list[RolloutSegment] = []
 
     for (
+        analysis_population,
         metric,
         method,
         group_id,
@@ -328,6 +337,7 @@ def segment_rollout_recommendation(
                 metric=metric,
                 method=method,
                 group_id=group_id,
+                analysis_population=analysis_population,
                 dimension=dimension,
                 source=source,
                 estimand=estimand,
@@ -352,6 +362,7 @@ def segment_rollout_recommendation(
                     metric=metric,
                     method=method,
                     group_id=group_id,
+                    analysis_population=analysis_population,
                     dimension=dimension,
                     dimension_value=row.dimension_value,
                     source=source,
@@ -367,6 +378,7 @@ def segment_rollout_recommendation(
                     metric=metric,
                     method=method,
                     group_id=group_id,
+                    analysis_population=analysis_population,
                     dimension=dimension,
                     dimension_value=row.dimension_value,
                     source=source,
@@ -382,6 +394,7 @@ def segment_rollout_recommendation(
                     metric=metric,
                     method=method,
                     group_id=group_id,
+                    analysis_population=analysis_population,
                     dimension=dimension,
                     dimension_value=row.dimension_value,
                     source=source,

@@ -323,7 +323,13 @@ def test_conversion_readout_uses_retained_window_estimand(shared, carryover_orde
     assert result.estimate.value == pytest.approx(0.5)
     assert result.aggregation == "any"
     assert ContrastResult.model_validate_json(result.model_dump_json()) == result
-    row = estimates_to_readout(results)[0]
+    from increment.estimation.readout_types import ReadoutResults
+
+    restored_collection = ReadoutResults.model_validate_json(results.model_dump_json())
+    assert restored_collection.metadata == results.metadata
+    assert restored_collection.source == results.source
+    assert restored_collection[0].aggregation == "any"
+    row = estimates_to_readout(restored_collection)[0]
     assert row["estimand"] == "retained_window_conversion_difference"
     assert row["observation_steps"] == 3
     assert row["retained_steps"] == 3 - carryover_order
@@ -532,6 +538,191 @@ def _switchback_analysis(reference=None):
     )
 
 
+def test_sum_contrast_saved_collection_replay_preserves_identity_and_consumers():
+    from increment.estimation.readout_types import ReadoutResults
+    from increment.tables import estimates_to_readout
+
+    results = _switchback_analysis().run()
+    restored = ReadoutResults.model_validate_json(results.model_dump_json())
+
+    assert restored.metadata == results.metadata
+    assert restored.source == results.source
+    assert restored[0].aggregation == "sum"
+    assert restored.to_frame()["aggregation"].iloc[0] == "sum"
+    assert estimates_to_readout(restored)[0]["aggregation"] == "sum"
+
+
+def test_non_partial_contrast_collection_requires_every_scoped_row():
+    import json
+
+    from increment.errors import WireFormatError
+    from increment.estimation.readout_types import ReadoutResults
+
+    results = _switchback_analysis().run()
+    payload = json.loads(results.model_dump_json())
+    payload["rows"] = []
+    with pytest.raises(WireFormatError) as raised:
+        ReadoutResults.model_validate_json(json.dumps(payload))
+
+    assert raised.value.code == "readout.serialization.identity_mismatch"
+
+
+def test_contrast_concat_refuses_unknown_or_conflicting_provenance():
+    from increment.estimation.contrast_results import ContrastResults
+
+    results = _switchback_analysis().run()
+    with pytest.raises(InvalidRequestError) as raised:
+        results.concat(ContrastResults())
+    assert raised.value.code == "readout.collection.concat_metadata_mismatch"
+
+    changed_source = type(results)(
+        results,
+        metadata=results.metadata,
+        source="another-source",
+        sequential_snapshot=results.sequential_snapshot,
+    )
+    with pytest.raises(InvalidRequestError) as raised:
+        results.concat(changed_source)
+    assert raised.value.code == "readout.collection.concat_metadata_mismatch"
+
+
+def test_cross_snapshot_contrast_concat_preserves_coverage_and_refuses_sequential_state():
+    from increment.estimation.contrast_results import ContrastResults
+    from increment.estimation.readout_types import (
+        CellKey,
+        CellRecord,
+        ReadoutMetadata,
+        ReadoutResults,
+        ReadoutScope,
+        SourceReadoutScope,
+    )
+    from increment.tables import estimates_to_readout
+
+    row = _switchback_analysis().run()[0]
+
+    def scoped(source_id, snapshot_id, sequential_snapshot=None, source="switchback"):
+        source_row = row.model_copy(update={"source_snapshot_id": source_id})
+        cell = CellKey.from_row(source_row)
+        source_scope = SourceReadoutScope(
+            source_snapshot_id=source_id,
+            cells=(cell,),
+            decision_cells=(cell,),
+            rosters=(),
+            decision_complete_by_population={"assigned": source_row.decision_scope_complete},
+        )
+        scope = ReadoutScope(
+            snapshot_id=snapshot_id,
+            cells=(cell,),
+            decision_cells=(cell,),
+            populations=("assigned",),
+            by_source={source_id: source_scope},
+        )
+        metadata = ReadoutMetadata(
+            scope=scope,
+            cells=(CellRecord(cell=cell, source_snapshot_id=source_id),),
+        )
+        return ContrastResults(
+            [source_row],
+            metadata=metadata,
+            source=source,
+            sequential_snapshot=sequential_snapshot,
+        )
+
+    declared_source = {"kind": "declared", "sha256": "a" * 64}
+    exploratory_source = {"kind": "exploratory", "sha256": "b" * 64}
+    combined = scoped("snapshot-a", "scope-a", source=declared_source).concat(
+        scoped("snapshot-b", "scope-b", source=exploratory_source)
+    )
+    assert combined.metadata.partial is False
+    assert set(combined.metadata.scope.by_source) == {"snapshot-a", "snapshot-b"}
+    assert combined.metadata.scope.by_source["snapshot-a"].source == declared_source
+    assert combined.metadata.scope.by_source["snapshot-b"].source == exploratory_source
+    assert not combined.to_frame()["view_partial"].any()
+    restored = ReadoutResults.model_validate_json(combined.model_dump_json())
+    assert restored.metadata == combined.metadata
+    assert restored.source is None
+    assert set(restored.metadata.scope.by_source) == {"snapshot-a", "snapshot-b"}
+    assert restored.metadata.scope.by_source["snapshot-a"].source == declared_source
+    assert restored.metadata.scope.by_source["snapshot-b"].source == exploratory_source
+    partial = combined.filter(lambda item: item.source_snapshot_id == "snapshot-a")
+    assert partial.metadata.partial is True
+    assert partial.to_frame()["view_partial"].all()
+    assert estimates_to_readout(partial)[0]["view_partial"] is True
+
+    checkpoint = object()
+    with pytest.raises(InvalidRequestError) as raised:
+        scoped("snapshot-a", "scope-a", checkpoint, source="declared").concat(
+            scoped("snapshot-b", "scope-b", checkpoint, source="exploratory")
+        )
+    assert raised.value.code == "readout.collection.concat_metadata_mismatch"
+
+
+def test_streaming_digest_preserves_full_width_integer_identity():
+    from increment._canonical import canonical_digest_bytes
+    from increment.estimation.readout_types import StreamingDigest
+
+    assert canonical_digest_bytes({"sample_size": 2**54}) != canonical_digest_bytes(
+        {"sample_size": 2**54 + 1}
+    )
+    values = (2**53, 2**53 + 1, 2**54, 2**54 + 1)
+    digests = []
+    for value in values:
+        digest = StreamingDigest()
+        digest.update({"sample_size": value})
+        digests.append(digest.hexdigest())
+
+    assert len(set(digests)) == len(values)
+
+
+def test_readout_wire_rejects_duplicate_object_keys_with_portable_refusal():
+    import pickle
+    from copy import deepcopy
+
+    from increment.errors import WireFormatError
+    from increment.estimation.readout_types import ReadoutResults
+
+    results = _switchback_analysis().run()
+    payload = results.model_dump_json().replace(
+        '"kind": "increment.readout"',
+        '"kind": "increment.readout", "kind": "increment.readout"',
+    )
+    with pytest.raises(WireFormatError) as raised:
+        ReadoutResults.model_validate_json(payload)
+
+    assert raised.value.code == "readout.serialization.duplicate_object_key"
+    assert deepcopy(raised.value).code == raised.value.code
+    assert pickle.loads(pickle.dumps(raised.value)).code == raised.value.code
+
+
+def test_readout_wire_requires_snapshot_for_checkpoint_bearing_results():
+    import json
+    import pickle
+    from copy import deepcopy
+    from datetime import date
+
+    from increment.errors import WireFormatError
+    from increment.estimation.readout_types import ReadoutResults
+    from tests.test_sequential_public_sources import _native_fixture
+
+    _connection, _definitions, analysis = _native_fixture("bernoulli")
+    try:
+        analysis.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
+        results = analysis.run()
+        assert results.sequential_snapshot is not None
+        assert any(row.sequential_result is not None for row in results)
+        payload = json.loads(results.model_dump_json())
+        payload["sequential_snapshot"] = None
+
+        with pytest.raises(WireFormatError) as raised:
+            ReadoutResults.model_validate_json(json.dumps(payload))
+
+        assert raised.value.code == "readout.serialization.sequential_snapshot_required"
+        assert deepcopy(raised.value).code == raised.value.code
+        assert pickle.loads(pickle.dumps(raised.value)).code == raised.value.code
+    finally:
+        analysis.close()
+
+
 @pytest.mark.parametrize(
     "method", ["run_daily", "run_asof", "breakout_summaries", "factor_summaries"]
 )
@@ -611,14 +802,15 @@ def test_public_envelope_plan_result_frame_and_readout_roundtrip(backend):
     import narwhals as nw
 
     from increment.decision_wire import compiled_plan_from_json, compiled_plan_to_json
-    from increment.estimation.contrast_results import ContrastResult, ContrastResults
+    from increment.estimation.contrast_results import ContrastResult
     from increment.tables import estimates_to_readout
     from tests.estimation.test_unit_cycle_envelope import envelope
 
     reference = envelope(p=0.5, cycles=2).model_copy(update={"assignment": _assignment()})
     analysis = _switchback_analysis(reference)
     source = _source(reference)
-    result = analysis.run()[0]
+    results = analysis.run()
+    result = results[0]
     context = source.context
     restored_context = type(context).model_validate_json(context.model_dump_json())
     assert restored_context == context
@@ -651,12 +843,45 @@ def test_public_envelope_plan_result_frame_and_readout_roundtrip(backend):
     assert isinstance(restored_procedure, ContrastDecisionProcedure)
     assert restored_procedure.reference == reference
     replay = estimate_contrast(source.contrast_stats(source.metrics[0]), restored_procedure)
-    assert replay.results[0] == result
-    frame = nw.from_native(ContrastResults([restored]).to_frame(backend=backend), eager_only=True)
+    replay_row = replay.results[0]
+    scope_fields = {
+        "source_snapshot_id",
+        "decision_scope_complete",
+        "decision_scope_reason_code",
+        "decision_scope_reason_context",
+    }
+    assert {
+        name: getattr(replay_row, name)
+        for name in ContrastResult.model_fields
+        if name not in scope_fields
+    } == {
+        name: getattr(result, name)
+        for name in ContrastResult.model_fields
+        if name not in scope_fields
+    }
+    assert result.analysis_population == "assigned"
+    assert result.source_snapshot_id is not None
+    assert result.decision_scope_complete is True
+    assert result.decision_scope_reason_code is None
+    from increment.estimation.readout_types import ReadoutResults
+
+    restored_collection = ReadoutResults.model_validate_json(results.model_dump_json())
+    assert restored_collection.metadata == results.metadata
+    assert restored_collection.source == results.source
+    frame = nw.from_native(results.to_frame(backend=backend), eager_only=True)
+    restored = results[0]
     row = next(frame.iter_rows(named=True))
-    readout = estimates_to_readout([restored])[0]
+    readout = estimates_to_readout(results)[0]
     for name in ("method", "reference", "mean_slope", "effective_alpha", "residual_p_value"):
         assert row[name] == readout[name] == getattr(result, name)
+    assert row["source_snapshot_id"] == result.source_snapshot_id
+    assert row["analysis_population"] == "assigned"
+    assert row["decision_scope_complete"] is True
+    assert row["view_partial"] is False
+    assert readout["source_snapshot_id"] == result.source_snapshot_id
+    assert readout["analysis_population"] == "assigned"
+    assert readout["decision_scope_complete"] is True
+    assert readout["view_partial"] is False
     import json
 
     assert (

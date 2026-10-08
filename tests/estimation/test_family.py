@@ -50,6 +50,8 @@ def _lift_estimate(
         alternative=alternative,
         null_lift=null_lift,
         lift=Estimate(
+            log_mean=mu,
+            log_se=sigma,
             value=math.expm1(mu),
             lb=math.expm1(mu - z * sigma),
             ub=math.expm1(mu + z * sigma),
@@ -67,7 +69,9 @@ def _typed_family_cells(
         key = ArmHypothesisKey(row.metric, row.group_id, row.estimand)
         typed.append((key, row))
         if key not in evidence or row.method == "unadjusted":
-            evidence[key] = PValueEvidence(key, row.method, row.p_value(), "normal")
+            p_value = row.p_value()
+            assert p_value is not None
+            evidence[key] = PValueEvidence(key, row.method, p_value, "normal")
     return typed, DecisionComputation(results=(), evidence=evidence, failures={})
 
 
@@ -844,5 +848,7 @@ def test_zero_relative_variance_keeps_the_family_roster_and_usable_discoveries()
     assert rows["zero"].relative_unavailable_reason == "zero_relative_variance"
     assert rows["zero"].discovery is False
     assert rows["strong"].discovery is True
-    assert 0.05 * 2 / 3 < rows["borderline"].p_value() < 0.05
+    p_value = rows["borderline"].p_value()
+    assert p_value is not None
+    assert 0.05 * 2 / 3 < p_value < 0.05
     assert rows["borderline"].discovery is False

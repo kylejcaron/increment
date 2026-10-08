@@ -263,13 +263,13 @@ def late_study(cell: Cell, reps: int, seed: int) -> dict[str, float]:
                     cluster="store_id",
                 ).run(estimands=("late",))
             )
-            lates = [r for r in results if r.estimand == "late" and r.value_scale == "absolute"]
             z_fs = first_stage_z(arm_c, arm_t)
-            if not lates:
-                # The first-stage gate withheld the LATE row: the inline z is
-                # below the gate and the surviving compliance row carries the
-                # suppression diagnostic. Any other missing row fails here.
+            lates = [r for r in results if r.estimand == "late" and r.value_scale == "absolute"]
+            if lates and lates[0].lift is None:
+                # 983b315 retains weak-first-stage LATE cells as typed failures.
                 assert z_fs < design.min_first_stage_z + GATE_TOLERANCE, (cell, z_fs)
+                (late,) = lates
+                assert late.failure_code == "estimation.encouragement.late.weak_first_stage"
                 (comp,) = [
                     r for r in results if r.estimand == "compliance" and r.value_scale == "absolute"
                 ]
@@ -279,6 +279,7 @@ def late_study(cell: Cell, reps: int, seed: int) -> dict[str, float]:
                 )
                 suppressed += 1
                 continue
+            assert lates, f"missing planned LATE cell at first-stage z={z_fs} for {cell}"
             assert z_fs >= design.min_first_stage_z - GATE_TOLERANCE, (cell, z_fs)
             (late,) = lates
             assert late.reference_kind == "t" and late.reference_df is not None, (

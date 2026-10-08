@@ -15,10 +15,12 @@ depends_on = []
 [[modules]]
 path = "increment"
 depends_on = []
-
 [[modules]]
 path = "increment.errors"
 depends_on = []
+[[modules]]
+path = "increment._multiplicity"
+depends_on = ["increment._literals", "increment.errors", "increment.sequential_state"]
 
 [[modules]]
 path = "increment._finite_sample_refusals"
@@ -143,6 +145,7 @@ depends_on = ["increment.errors", "increment.semantics"]
 path = "increment.sequential_state"
 depends_on = [
   "increment.errors", "increment.estimation._sequential_likelihood", "increment.semantics",
+  "increment._immutable",
 ]
 
 [[modules]]
@@ -163,7 +166,7 @@ depends_on = ["increment._finite_sample_refusals", "increment._literals", "incre
 [[modules]]
 path = "increment.decision"
 depends_on = [
-  "increment._literals",
+  "increment._literals", "increment._multiplicity",
   "increment._plan_compatibility", "increment._source_types", "increment._study",
   "increment.compatibility", "increment.errors", "increment.estimation",
   "increment.estimation.decision_types", "increment.estimation.sequential", "increment.semantics",
@@ -173,16 +176,15 @@ depends_on = [
 [[modules]]
 path = "increment.plan"
 depends_on = [
-  "increment._literals",
+  "increment._literals", "increment._multiplicity",
   "increment._analysis_config", "increment._plan_compatibility",
   "increment.decision", "increment.errors", "increment.estimation", "increment.semantics",
   "increment.estimation.sequential", "increment.sequential_source", "increment.sequential_state",
 ]
-
 [[modules]]
 path = "increment.decision_wire"
 depends_on = [
-  "increment._literals",
+  "increment._literals", "increment._multiplicity",
   "increment._immutable",
   "increment.compatibility", "increment.decision", "increment.errors", "increment.estimation",
   "increment.estimation.sequential", "increment.semantics",
@@ -221,16 +223,17 @@ depends_on = []
 path = "increment.estimation"
 depends_on = [
   "increment._finite_sample_refusals",
-  "increment._literals",
+  "increment._literals", "increment._multiplicity",
   "increment._identity",
+  "increment._canonical", "increment._immutable",
   "increment._moment_plan",
   "increment._source_types", "increment._winsor_rank", "increment.winsor", "increment._labels", "increment._window", "increment.compatibility",
   "increment.errors", "increment.estimation._certified", "increment.estimation.decision_types",
+  "increment.estimation._sequential_likelihood",
   "increment.estimation.sequential", "increment.estimation.sequential_result",
   "increment.semantics", "increment.sequential_state",
   "increment._unit_cycle",
 ]
-
 [[modules]]
 path = "increment._lift_options"
 depends_on = ["increment._analysis_config", "increment.estimation"]
@@ -238,6 +241,7 @@ depends_on = ["increment._analysis_config", "increment.estimation"]
 [[modules]]
 path = "increment._frame_moments"
 depends_on = ["increment._frame_panel", "increment._frame_validation", "increment._moment_plan", "increment._window", "increment.errors", "increment.semantics", "increment.sources"]
+
 
 [[modules]]
 path = "increment._frame_panel"
@@ -347,7 +351,8 @@ depends_on = ["increment._literals", "increment.estimation"]
 [[modules]]
 path = "increment.breakout.estimates"
 depends_on = [
-  "increment._literals", "increment._moment_plan",
+  "increment._literals", "increment._moment_plan", "increment._canonical", "increment._immutable",
+  "increment._analysis_config",
   "increment.winsor", "increment._policy_alpha", "increment.compatibility", "increment.decision", "increment.errors",
   "increment.estimation", "increment.estimation.sequential", "increment.estimation.sequential_result",
   "increment.semantics", "increment.sequential_source", "increment.sequential_state",
@@ -366,7 +371,7 @@ path = "increment._whole_window"
 depends_on = [
   "increment._literals",
   "increment._analysis_config", "increment._day_axis", "increment._readout_request",
-  "increment._source_types",
+  "increment.breakout.estimates",
   "increment.errors", "increment.readouts", "increment.sources",
 ]
 
@@ -419,21 +424,22 @@ path = "increment.readouts"
 depends_on = [
   "increment._literals",
   "increment._frame_panel",
-  "increment._source_types",
+  "increment._source_types", "increment._labels", "increment._canonical",
   "increment._source_operations",
   "increment.winsor",
   "increment._analysis_config", "increment._policy_alpha", "increment._readout_request",
   "increment._window", "increment.breakout.estimates", "increment.compatibility", "increment.decision", "increment.errors",
   "increment.estimation", "increment.estimation.decision_types", "increment.semantics", "increment.sources",
   "increment._sequential_readouts", "increment.estimation.sequential",
-  "increment.sequential_state",
+  "increment.sequential_state", "increment.sequential_source", "increment.estimation.sequential_result",
 ]
 
 [[modules]]
 path = "increment._day_axis"
 depends_on = [
-  "increment._frame_panel",
+  "increment._frame_panel", "increment._immutable",
   "increment._analysis_config", "increment._lift_options", "increment._readout_request", "increment._source_types",
+  "increment._source_operations", "increment.plan",
   "increment.breakout.estimates", "increment.errors", "increment.estimation", "increment.query",
   "increment.readouts", "increment.semantics", "increment.sources",
   "increment.sequential_state",
@@ -459,6 +465,7 @@ depends_on = ["increment.estimation", "increment.errors"]
 [[modules]]
 path = "increment.tables"
 depends_on = [
+  "increment._canonical",
   "increment.breakout.estimates", "increment.estimation", "increment.errors",
   "increment.estimation.sequential_result",
 ]
@@ -538,6 +545,7 @@ expose = [
   "raiser",
   "refusals",
   "refuse",
+  "MODEL_FIELD_REFUSALS",
   "unwrap_coded",
   "warn",
 ]
@@ -584,3 +592,11 @@ depends_on = ["increment.errors"]
 [[modules]]
 path = "increment._winsor_rank"
 depends_on = ["increment._winsor_errors"]
+
+[[interfaces]]
+from = ["increment._immutable"]
+expose = ["_FrozenMapping"]
+[[interfaces]]
+from = ["increment._multiplicity"]
+expose = ["MultiplicityFamily", "guarantee_for_correction"]
+

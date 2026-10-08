@@ -23,9 +23,22 @@ Change quality:
   assertions on coded errors, silent fallbacks, and private cross-module
   reach-ins.
 - Multiplicity: check that new inference routes join the error-rate family
-  across primary, secondary, guardrail, and breakout roles.
+  across primary, secondary, guardrail, and breakout roles. Family metadata
+  must come from the effective runtime selector and correction, not a separate
+  display predicate; an adjusted result must not be labeled unadjusted.
 - Path coverage: check every applicable Analysis constructor and require a
-  parity-harness row; unsupported paths must refuse explicitly by source.
+  parity-harness row; unsupported paths must refuse explicitly by source. A row
+  suffices only when its exercised variants and compared outputs (estimates,
+  decision statistics, availability reasons, scope metadata, retained
+  sequential state) cover the capability claim.
+- Identity: derived sources and request snapshots must preserve every
+  result-changing coordinate, such as trigger identity and estimand selection,
+  through ingress and replay rather than relying on field defaults.
+- Replay tests must run claimed consumers on the restored object, not the
+  original.
+- Do not block on unshipped design artifacts under docs/superpowers/ already
+  accepted by explicit user adjudication. Review the shipped implementation
+  against their obligations instead.
 - Every finding cites a concrete caller, signature, equation, or regression
   test.
 """

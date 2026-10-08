@@ -20,7 +20,7 @@ import pytest
 
 from increment import readouts
 from increment.errors import InvalidRequestError
-from increment.estimation.diagnostics import SRMResult
+from increment.estimation.diagnostics import NotApplicable, SRMResult
 from increment.estimation.engine import Method
 from increment.frame import (
     FramePanelSource,
@@ -60,7 +60,6 @@ _DESIGN = Randomized(
     control_group="control",
     allocation={"control": 0.5, "treatment": 0.5},
 )
-
 
 _CANCELLING_REFS = {"cy1": "ref_y", "cx1": "ref_x", "cden1": "ref_den"}
 
@@ -421,13 +420,55 @@ def test_multi_arm_produces_one_estimate_per_non_control_arm() -> None:
             group="variant",
             control="control",
             metrics={"revenue": "mean"},
-            design=_DESIGN,
+            design=Randomized(
+                control_group="control",
+                allocation={"control": 1 / 3, "treatment_a": 1 / 3, "treatment_b": 1 / 3},
+            ),
         )
     )
 
     groups = {r.group_id for r in results}
     assert groups == {"treatment_a", "treatment_b"}
     assert len(results) == 2
+
+
+@pytest.mark.parametrize(
+    ("undeclared_arm", "expected_undeclared"),
+    [("treatment_a", ("treatment_a",)), ("None", ("None",))],
+)
+def test_declared_allocation_refuses_observed_undeclared_arms(
+    undeclared_arm: str, expected_undeclared: tuple[str, ...]
+) -> None:
+    rows: list[tuple[str, str | None, float]] = [
+        ("u1", "control", 10.0),
+        ("u2", "treatment", 12.0),
+        ("u3", undeclared_arm, 8.0),
+        ("u4", None, 9.0),
+    ]
+    cols = list(zip(*rows, strict=True))
+    frame = pa.table(dict(zip(["user_id", "variant", "revenue"], cols, strict=True)))
+    source = from_unit_summary(
+        frame,
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"revenue": "mean"},
+        on_unassigned="exclude",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+        ),
+    )
+
+    with pytest.raises(InvalidRequestError) as raised:
+        readouts.run(source)
+
+    assert raised.value.code == "readout.roster.undeclared_observed_arms"
+    assert raised.value.context == {
+        "declared_arms": ("control", "treatment"),
+        "undeclared_arms": expected_undeclared,
+        "analysis_population": "assigned",
+    }
 
 
 def test_empty_metrics_mapping_raises() -> None:
@@ -903,6 +944,11 @@ def test_summary_srm_coerces_non_string_group_keys() -> None:
             group="variant",
             control="0",
             metrics={"revenue": "mean"},
+            design=Randomized(
+                control_group="0",
+                allocation={"0": 0.5, "1": 0.5},
+                allocation_scheme="independent",
+            ),
         ),
         expected={"0": 0.5, "1": 0.5},
     )
@@ -932,10 +978,10 @@ def test_srm_zero_fills_declared_missing_arm_for_always_valid_prefix() -> None:
             design=Randomized(
                 control_group="control",
                 allocation={"control": 0.5, "treatment": 0.5},
+                allocation_scheme="independent",
             ),
         ),
     )
-
     assert isinstance(result, SRMResult)
     assert result.inference == "always_valid"
     assert result.observed == {"control": 14, "treatment": 0}
@@ -950,7 +996,10 @@ def test_srm_always_valid_missing_support_refuses_before_reading_source_counts()
     class NeverReadSource:
         def __init__(self):
             self.context = SimpleNamespace(
-                design=Randomized(control_group="control"),
+                design=Randomized(
+                    control_group="control",
+                    allocation_scheme="independent",
+                ),
                 cluster=None,
             )
 
@@ -962,6 +1011,22 @@ def test_srm_always_valid_missing_support_refuses_before_reading_source_counts()
     assert exc.value.code == "estimation.diagnostics.always_srm_predeclared"
 
 
+def test_srm_without_assignment_scheme_is_not_applicable() -> None:
+    result = readouts.srm(
+        from_unit_summary(
+            _arrow_table(),
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics={"revenue": "mean"},
+        ),
+        expected={"control": 0.5, "treatment": 0.5},
+    )
+    assert isinstance(result, NotApplicable)
+    assert result.check == "srm"
+    assert result.reason.startswith("integrity.allocation_scheme_missing")
+
+
 def test_srm_rejects_accounting_label_support_before_reading_source_counts() -> None:
     from types import SimpleNamespace
 
@@ -970,7 +1035,12 @@ def test_srm_rejects_accounting_label_support_before_reading_source_counts() -> 
             self.context = SimpleNamespace(
                 design=Randomized(
                     control_group="control",
-                    allocation={"control": 0.5, "treatment": 0.5, "(unassigned)": 0.1},
+                    allocation={
+                        "control": 0.5,
+                        "treatment": 0.5,
+                        "(unassigned)": 0.1,
+                    },
+                    allocation_scheme="independent",
                 ),
                 cluster=None,
             )
@@ -1002,6 +1072,7 @@ def test_srm_zero_fill_preserves_unexpected_observed_unit_arm_for_strict_mismatc
         design=Randomized(
             control_group="control",
             allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
         ),
     )
 
@@ -1019,7 +1090,10 @@ def test_srm_always_valid_requires_declared_allocation_but_fixed_keeps_equal_spl
         group="variant",
         control="control",
         metrics={"revenue": "mean"},
-        design=Randomized(control_group="control"),
+        design=Randomized(
+            control_group="control",
+            allocation_scheme="independent",
+        ),
     )
 
     with pytest.raises(InvalidRequestError) as exc:

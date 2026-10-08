@@ -527,7 +527,11 @@ def _srm(
 
     kwargs.setdefault(
         "design",
-        Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5}),
+        Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
     )
     return readouts.srm(
         _source(rows=rows, **kwargs),

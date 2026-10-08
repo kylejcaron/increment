@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import os
 import re
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
 import narwhals as nw
@@ -60,6 +60,26 @@ def _prepare_panel(
     )
 
 
+def _partition_panel_days(panel: nw.DataFrame[Any]) -> dict[Any, nw.DataFrame[Any]]:
+    """Partition rows once by first-seen day label for reuse by reductions."""
+    labels = panel.get_column("ds").unique().to_list()
+    index_name = _scratch_name(panel, "__day_partition__")
+    ordered = panel.with_columns(
+        nw.col("ds").replace_strict(labels, list(range(len(labels)))).alias(index_name)
+    ).sort(index_name)
+    indices = ordered.get_column(index_name).to_numpy()
+    day_slices: dict[Any, nw.DataFrame[Any]] = {}
+    start = 0
+    while start < len(indices):
+        day_index = int(indices[start])
+        stop = start + 1
+        while stop < len(indices) and indices[stop] == day_index:
+            stop += 1
+        day_slices[labels[day_index]] = ordered[start:stop].drop(index_name)
+        start = stop
+    return day_slices
+
+
 def _day_population(
     panel: nw.DataFrame[Any],
     *,
@@ -67,9 +87,11 @@ def _day_population(
     ds: Any,
     value_columns: Sequence[str],
     ordinal: str,
+    day_slices: Mapping[Any, nw.DataFrame[Any]] | None = None,
 ) -> nw.DataFrame[Any]:
     """Construct one logical zero-filled day without retaining the date spine."""
-    observed = panel.filter(nw.col("ds") == ds).select("unit_id", *value_columns)
+    observed_day = day_slices[ds] if day_slices is not None else panel.filter(nw.col("ds") == ds)
+    observed = observed_day.select("unit_id", *value_columns)
     population = identity.with_columns(nw.lit(ds).alias("ds")).join(
         observed, on="unit_id", how="left"
     )

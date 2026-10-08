@@ -291,7 +291,7 @@ def _(Analysis, encouragement_design, np, simulate_encouragement):
 
 @app.cell
 def _(mo, weak_results):
-    _estimands = sorted({r.estimand for r in weak_results})
+    _estimands = sorted({r.estimand for r in weak_results if r.lift is not None})
     _compliance = next(r for r in weak_results if r.estimand == "compliance")
 
     mo.md(f"""

@@ -22,7 +22,7 @@ from typing import (
 
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
-from pydantic import BaseModel, ConfigDict, computed_field, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from increment.decision import FixedInference
 from increment.errors import (
@@ -76,7 +76,9 @@ class PowerCurvePoint(CodedModel, BaseModel):
     no minimum detectable effect exists at that row's size and target
     (see ``PowerResult``); frames keep the column numeric with a null.
     ``power_basis`` names the planning model behind ``power`` and
-    ``mde_relative``, as on ``PowerResult``.
+    ``mde_relative``, as on ``PowerResult``. ``numerical_qualification`` is
+    copied from that result and records the arithmetic scope of the reported
+    model, not its statistical guarantee.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -89,6 +91,12 @@ class PowerCurvePoint(CodedModel, BaseModel):
     alpha: float
     power: float
     power_basis: PowerBasis
+    numerical_qualification: Literal[
+        "closed_form_model_only_v1",
+        "sequential_crossing_quadrature_v1",
+        "scipy_special_function_error_model_conditional_v1",
+        "unclaimed_approximation_diagnostic_v1",
+    ]
     mde_relative: float | None
     mde_unavailable_reason: MdeUnavailableReason | None = None
     effective_var: float
@@ -101,22 +109,6 @@ class PowerCurvePoint(CodedModel, BaseModel):
     # PowerResult.expected_n_total for the early-stopping accounting.
     expected_n_total: int | None = None
     expected_duration_days: int | None = None
-
-    @computed_field
-    @property
-    def numerical_qualification(
-        self,
-    ) -> Literal[
-        "closed_form_model_only_v1",
-        "scipy_special_function_error_model_conditional_v1",
-        "unclaimed_approximation_diagnostic_v1",
-    ]:
-        """Arithmetic scope of the reported model, not its statistical guarantee."""
-        if self.power_basis == "asymptotic":
-            return "closed_form_model_only_v1"
-        if self.power_basis == "approximate":
-            return "unclaimed_approximation_diagnostic_v1"
-        return "scipy_special_function_error_model_conditional_v1"
 
     @model_validator(mode="after")
     def _check(self) -> PowerCurvePoint:
@@ -265,6 +257,7 @@ def _point_from_result(
         alpha=job.procedure.compiled_alpha,
         power=result.power,
         power_basis=result.power_basis,
+        numerical_qualification=result.numerical_qualification,
         mde_relative=result.mde_relative,
         mde_unavailable_reason=result.mde_unavailable_reason,
         effective_var=result.effective_var,

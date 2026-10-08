@@ -75,6 +75,27 @@ def test_ordinary_panel_uses_independent_units_for_uncertainty():
     assert result.estimate.ub == pytest.approx(-30 + critical * 72)
 
 
+def test_switchback_analysis_run_reports_unsupported_assignment_integrity():
+    analysis = Analysis.from_switchback_panel(
+        pl.DataFrame(_rows()),
+        unit="unit",
+        cycle="cycle",
+        period="period",
+        step="step",
+        group="group",
+        metrics={"mean": "mean"},
+        identification=_identification(),
+        assignment=_assignment(),
+    )
+
+    results = analysis.run()
+
+    assert results.metadata is not None
+    (integrity,) = next(iter(results.metadata.scope.by_source.values())).integrity
+    assert integrity.status == "unsupported_assignment"
+    assert integrity.code == "integrity.switchback_assignment_law"
+
+
 @pytest.mark.parametrize("mismatch", ["assignment", "groups", "conversion", "unknown"])
 def test_invalid_envelope_identity_refuses_before_frame_access(monkeypatch, mismatch):
     from tests.estimation.test_unit_cycle_envelope import envelope

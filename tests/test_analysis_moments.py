@@ -115,7 +115,14 @@ def test_current_fixed_horizon_moments_round_trip(tmp_path):
     payload = pq.read_table(path).to_pylist()
     assert {row["moments_format"] for row in payload} == {10}
     replay = Analysis.from_moments(payload, metrics={"revenue": "mean"}, control="control")
-    assert list(replay.run()) == list(original.run())
+    (original_row,) = original.run()
+    (replay_row,) = replay.run()
+    assert replay_row.model_dump(exclude={"source_snapshot_id"}) == original_row.model_dump(
+        exclude={"source_snapshot_id"}
+    )
+    # Format-10 moments retain the exact evidence and request semantics, so
+    # content identity is shared across the live and replayed source.
+    assert replay_row.source_snapshot_id == original_row.source_snapshot_id
 
 
 @pytest.mark.parametrize("version", [7, 8])
@@ -199,7 +206,11 @@ def test_export_round_trips_through_from_moments(seeded_con, seeded_defs, tmp_pa
 
     Scoped to purchase_rate (conversion) and avg_session_duration (mean).
     """
-    a = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
+    definitions = load(seeded_defs)
+    experiment = definitions.experiment("new_onboarding_v2")
+    assert experiment is not None
+    design = experiment.resolved_design().model_copy(update={"allocation_scheme": "independent"})
+    a = make_analysis(seeded_con, definitions, experiment=experiment, _design=design, store="auto")
     baseline = {(e.metric, e.group_id): e.require_lift().value for e in _lift_rows(a.run())}
     assert {"purchase_rate", "avg_session_duration"} <= {m for m, _ in baseline}
 
@@ -216,7 +227,7 @@ def test_export_round_trips_through_from_moments(seeded_con, seeded_defs, tmp_pa
     b = Analysis.from_moments(
         rows,
         metrics={"purchase_rate": "conversion", "avg_session_duration": "mean"},
-        control="control",
+        design=design,
     )
     from increment.sources import ASSIGNMENT_COUNTS_FIELD
 

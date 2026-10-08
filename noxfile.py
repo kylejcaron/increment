@@ -400,6 +400,7 @@ EXAMPLE_NOTEBOOKS = (
     "analysis_from_a_dataframe",
     "analysis_from_a_warehouse",
     "ab_testing_dashboard",
+    "triggered_population_dashboard",
     "observational",
     "cuped",
     "breakout",

@@ -88,6 +88,30 @@ def _priced_key(metric: str = "rev") -> list[BreakoutEstimate]:
     ]
 
 
+def test_rollout_keeps_assigned_and_triggered_populations_separate():
+    assigned = _priced_key()
+    triggered = [row.model_copy(update={"analysis_population": "triggered"}) for row in assigned]
+    estimates = BreakoutEstimates(assigned + triggered)
+
+    recommendations, segments = segment_rollout_recommendation(estimates)
+
+    assert len(recommendations) == 2
+    assert len(segments) == 6
+    assert {row.analysis_population for row in recommendations} == {"assigned", "triggered"}
+    assert {row.analysis_population for row in segments} == {"assigned", "triggered"}
+    for population in ("assigned", "triggered"):
+        single_population, _ = segment_rollout_recommendation(
+            BreakoutEstimates([row for row in estimates if row.analysis_population == population])
+        )
+        combined = next(row for row in recommendations if row.analysis_population == population)
+        assert combined.policy_value == pytest.approx(single_population[0].policy_value)
+
+    recommendation_frame = cast(pd.DataFrame, recommendations.to_frame())
+    segment_frame = cast(pd.DataFrame, segments.to_frame())
+    assert "analysis_population" in recommendation_frame
+    assert "analysis_population" in segment_frame
+
+
 def _late_estimate(
     dimension_value: str,
     value: float,

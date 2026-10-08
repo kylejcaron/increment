@@ -236,7 +236,8 @@ def _(analysis, mo):
 
 @app.cell(hide_code=True)
 def _(analysis, mo):
-    srm_result = analysis.srm(expected={"control": 0.5, "treatment": 0.5})
+    # The realistic generator uses independent 50/50 assignment; declare the anytime-valid check.
+    srm_result = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="always_valid")
     srm_status = "SRM detected" if srm_result.is_srm else "No SRM detected"
     mo.md(
         f"""

@@ -20,6 +20,8 @@ from scipy.stats import norm
 
 from increment.dashboard._data import (
     DashboardSnapshot,
+    _default_population,
+    _population_snapshot,
     added_row,
     all_metrics,
     decision_rows,
@@ -175,8 +177,11 @@ def _table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
 # Header
 
 
-def render_header(snapshot: DashboardSnapshot) -> mo.Html:
-    """Experiment identity, analysis policy, and the headline summary."""
+def render_header(
+    snapshot: DashboardSnapshot, *, population: Literal["assigned", "triggered"] | None = None
+) -> mo.Html:
+    """Experiment identity, analysis policy, and the selected population's headline summary."""
+    snapshot = _population_snapshot(snapshot, population or _default_population(snapshot))
     lede = (
         f'<p class="inc-dashboard-lede">{esc(snapshot.description)}</p>'
         if snapshot.description
@@ -210,26 +215,29 @@ def _header_chips(snapshot: DashboardSnapshot) -> str:
 
 
 def _header_cards(snapshot: DashboardSnapshot) -> str:
+    population = _default_population(snapshot)
     allocation = snapshot.allocation
+    check_label = "Triggered balance check" if population == "triggered" else "Allocation check"
     if allocation is None:
-        reason = (snapshot.allocation_refusal or ("", ""))[1]
+        code, reason = snapshot.allocation_refusal or ("", "")
+        not_checked = code == "dashboard.allocation_not_applicable"
         enrolled_card = _card(
-            "Enrolled units",
-            missing_html("allocation check unavailable"),
+            "Triggered units" if population == "triggered" else "Enrolled units",
+            missing_html("not checked" if not_checked else "allocation check unavailable"),
             worded=True,
         )
         check_card = _card(
-            "Allocation check",
+            check_label,
             missing_html(reason or "refused by the source"),
-            "Not a passing check.",
+            "Not checked. Not a passing check." if not_checked else "Not a passing check.",
             worded=True,
         )
     else:
         enrolled = sum(allocation.observed.values())
         enrolled_card = _card(
-            allocation_count_label(allocation),
+            allocation_count_label(allocation, population=_default_population(snapshot)),
             count_text(enrolled),
-            allocation_population_detail(allocation),
+            allocation_population_detail(allocation, population=_default_population(snapshot)),
         )
         check_card = _card(
             "Observed arm split",
@@ -305,46 +313,92 @@ def render_health(snapshot: DashboardSnapshot) -> mo.Html:
     return _section(
         "health",
         "Experiment health",
-        _allocation_block(snapshot) + _flags_block(snapshot) + _caveats_block(snapshot),
+        _allocation_block(snapshot, population="assigned")
+        + (
+            _allocation_block(snapshot, population="triggered")
+            if snapshot.triggered_allocation is not None
+            or snapshot.triggered_allocation_refusal is not None
+            else ""
+        )
+        + _flags_block(snapshot)
+        + _caveats_block(snapshot),
         subtitle="",
     )
 
 
-def _allocation_block(snapshot: DashboardSnapshot) -> str:
-    allocation = snapshot.allocation
+def _allocation_block(
+    snapshot: DashboardSnapshot, *, population: Literal["assigned", "triggered"]
+) -> str:
+    if population == "triggered":
+        allocation = snapshot.triggered_allocation
+        refusal = snapshot.triggered_allocation_refusal
+        title = "Triggered-cohort balance diagnostic (not assignment integrity)"
+    else:
+        allocation = snapshot.allocation
+        refusal = snapshot.allocation_refusal
+        title = "Assigned-population assignment integrity"
+    heading = f"<h3>{esc(title)}</h3>"
     if allocation is None:
-        code, reason = snapshot.allocation_refusal or ("", "")
+        code, reason = refusal or ("", "")
+        not_checked = code == "dashboard.allocation_not_applicable"
+        label = (
+            (
+                "Triggered balance not checked; not applicable and not a passing check."
+                if not_checked
+                else "Triggered balance unavailable; this is not a passing check."
+            )
+            if population == "triggered"
+            else (
+                "Assignment integrity not checked; not applicable and not a passing check."
+                if not_checked
+                else "Assignment integrity unavailable; this is not a passing check."
+            )
+        )
         return (
-            _status("warn", "Allocation check unavailable; this is not a passing check.")
+            heading
+            + _status("warn", label)
             + f'<p class="inc-dashboard-code">{esc(code)}</p>'
             + f'<p class="inc-dashboard-reason">{esc(reason)}</p>'
         )
     enrolled = sum(allocation.observed.values())
-    verdict = allocation_verdict(allocation)
+    verdict = allocation_verdict(allocation, population=population)
     return (
-        _status("bad" if allocation.is_srm else "ok", verdict)
-        + _allocation_table(snapshot, allocation, enrolled)
+        heading
+        + _status("bad" if allocation.is_srm else "ok", verdict)
+        + _allocation_table(snapshot, allocation, enrolled, population=population)
         + _disclosure(
-            "Allocation over time and evidence",
-            _allocation_history_table(snapshot)
+            "Population allocation over time and evidence",
+            _allocation_history_table(snapshot, population=population)
             + f'<p class="inc-dashboard-note">{allocation_evidence(allocation)}</p>',
         )
     )
 
 
-def _allocation_history_table(snapshot: DashboardSnapshot) -> str:
-    if snapshot.allocation_history_refusal is not None:
-        code, reason = snapshot.allocation_history_refusal
-        return _status("warn", "Allocation history unavailable.") + _kv(
+def _allocation_history_table(
+    snapshot: DashboardSnapshot, *, population: Literal["assigned", "triggered"]
+) -> str:
+    history_refusal = (
+        snapshot.triggered_allocation_history_refusal
+        if population == "triggered"
+        else snapshot.allocation_history_refusal
+    )
+    history = (
+        snapshot.triggered_allocation_history
+        if population == "triggered"
+        else snapshot.allocation_history
+    )
+    if history_refusal is not None:
+        code, reason = history_refusal
+        return _status("warn", "Population allocation history unavailable.") + _kv(
             [("Code", esc(code)), ("Reason", esc(reason))]
         )
-    if not snapshot.allocation_history:
-        return f'<p class="inc-dashboard-note">{missing_html("no enrollment history")}</p>'
-    allocation = snapshot.allocation
+    if not history:
+        label = "trigger history" if population == "triggered" else "enrollment history"
+        return f'<p class="inc-dashboard-note">{missing_html(f"no {label}")}</p>'
+    allocation = snapshot.triggered_allocation if population == "triggered" else snapshot.allocation
     assert allocation is not None
-    frame = pd.DataFrame([dict(row) for row in snapshot.allocation_history]).rename(
-        columns={"group_id": "Variant"}
-    )
+    frame = pd.DataFrame([dict(row) for row in history]).rename(columns={"group_id": "Variant"})
+
     totals = frame.groupby("ds")["n_cumulative"].transform("sum").astype(float)
     n = totals.where(totals > 0)
     share = frame["n_cumulative"] / n
@@ -369,9 +423,18 @@ def _allocation_history_table(snapshot: DashboardSnapshot) -> str:
     native_theme = coeftable_theme(theme)
     table = (
         ct.CoefTable(latest, rows="Variant")
-        .estimate(allocation_count_label(allocation), "n_cumulative", fmt=count_text)
-        .estimate("Share", "share", ci=("share_lower", "share_upper"), fmt=share_text)
+        .estimate(
+            allocation_count_label(allocation, population=population),
+            "n_cumulative",
+            fmt=count_text,
+        )
         .estimate("Target", "target", fmt=share_text)
+        .estimate(
+            "Share",
+            "share",
+            ci=("share_lower", "share_upper"),
+            fmt=share_text,
+        )
         .sparkline(
             "Cumulative allocation",
             value="share",
@@ -390,21 +453,32 @@ def _allocation_history_table(snapshot: DashboardSnapshot) -> str:
     )
     return (
         f'<div class="inc-dashboard-table-wrap">{table.as_raw_html()}</div>'
-        '<p class="inc-dashboard-note">Cumulative enrolled share by enrollment date. '
+        f'<p class="inc-dashboard-note">Cumulative {population} share by '
+        f"{'first trigger' if population == 'triggered' else 'first exposure'} date. "
         "Dashed lines show each variant's target; shaded bands show pointwise 95% Wilson "
         "intervals. These bands are not corrected for repeated looks and are not sequential "
         "SRM thresholds.</p>"
     )
 
 
-def _allocation_table(snapshot: DashboardSnapshot, allocation: SRMResult, enrolled: int) -> str:
+def _allocation_table(
+    snapshot: DashboardSnapshot,
+    allocation: SRMResult,
+    enrolled: int,
+    *,
+    population: Literal["assigned", "triggered"],
+) -> str:
     target = snapshot.config.expected_allocation
     total_weight = sum(target.values())
     rows = []
     for arm in (snapshot.control_group, snapshot.treatment_group):
         units = allocation.observed.get(arm, 0)
         observed_share = (
-            share_text(units / enrolled) if enrolled else missing_html("no enrolled units")
+            share_text(units / enrolled)
+            if enrolled
+            else missing_html(
+                "no triggered units" if population == "triggered" else "no enrolled units"
+            )
         )
         weight = target.get(arm)
         expected_share = (
@@ -431,7 +505,13 @@ def _allocation_table(snapshot: DashboardSnapshot, allocation: SRMResult, enroll
             ]
         )
     return _table(
-        ["Arm", allocation_count_label(allocation), "Observed share", "Target share"], rows
+        [
+            "Arm",
+            allocation_count_label(allocation, population=population),
+            "Observed share",
+            "Target share",
+        ],
+        rows,
     )
 
 
@@ -507,7 +587,9 @@ def _group_data_table(snapshot: DashboardSnapshot, metric: str) -> str:
         return missing_html("no group aggregates available")
     unit = str(rows[0].get("unit", "value"))
     model = require_metric(snapshot, metric)
-    measures = ["Eligible units", f"Observed value ({unit})"]
+    population = str(rows[0].get("analysis_population", "assigned"))
+    eligible_label = "Triggered eligible units" if population == "triggered" else "Eligible units"
+    measures = [eligible_label, f"Observed value ({unit})"]
     keys: list[tuple[str, str, bool]] = [("Assigned units", "assigned_units", True)]
     if model.type in ("conversion", "retention"):
         keys.append(("Retained / converted units", "retained_units", True))
@@ -1099,8 +1181,14 @@ def render_details(snapshot: DashboardSnapshot) -> mo.Html:
 # Metric details
 
 
-def render_metric_details(snapshot: DashboardSnapshot, *, metric: str) -> mo.Html:
-    """Definition, tested tail, policy, and observed group evidence for one metric."""
+def render_metric_details(
+    snapshot: DashboardSnapshot,
+    *,
+    metric: str,
+    population: Literal["assigned", "triggered"] | None = None,
+) -> mo.Html:
+    """Definition, tested tail, policy, and one population's observed group evidence."""
+    snapshot = _population_snapshot(snapshot, population or _default_population(snapshot))
     model = require_metric(snapshot, metric)
     if metric not in {declared.name for declared in snapshot.metrics}:
         return _added_metric_details(snapshot, model)
@@ -1123,6 +1211,7 @@ def render_metric_details(snapshot: DashboardSnapshot, *, metric: str) -> mo.Htm
                 ("Favorable", esc(row.get("preferred_direction") or "not declared")),
             ]
         )
+        + _sequential_population_route(row)
         + _disclosure(
             "Definition and analysis policy", _kv(_metric_detail_entries(snapshot, model, row))
         )
@@ -1130,6 +1219,27 @@ def render_metric_details(snapshot: DashboardSnapshot, *, metric: str) -> mo.Htm
         + group_body
         + _list(result_caveats([row]), css_class="inc-dashboard-caveats"),
         subtitle=str(getattr(model, "description", "") or ""),
+    )
+
+
+def _sequential_population_route(row: Mapping[str, Any]) -> str:
+    context = row.get("failure_context")
+    if (
+        row.get("analysis_population") != "triggered"
+        or row.get("failure_code") != "readout.cell.unsupported_request"
+        or not isinstance(context, Mapping)
+        or context.get("reason") != "triggered_sequential"
+    ):
+        return ""
+    return _status(
+        "warn",
+        "Triggered sequential inference is unavailable; use the assigned population for "
+        "sequential inference.",
+    ) + _kv(
+        [
+            ("Code", esc(row["failure_code"])),
+            ("Route forward", "Run the sequential readout with population='assigned'."),
+        ]
     )
 
 

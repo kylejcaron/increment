@@ -34,6 +34,7 @@ from increment._literals import (
     Role,
     ValueScale,
 )
+from increment._multiplicity import guarantee_for_correction
 from increment.decision import (
     AbsoluteArmDecisionProcedure,
     CompiledDecisionPlan,
@@ -45,7 +46,6 @@ from increment.decision import (
     MultiplicityFamily,
     NoFamily,
     RelativeArmDecisionProcedure,
-    _guarantee_for_correction,
 )
 from increment.errors import CodedError, CodedModel, WireFormatError
 from increment.estimation.engine import Method
@@ -149,7 +149,7 @@ class WireMultiplicityFamily(_WireBase):
                 f"q is only valid for BH multiplicity, got {self.correction!r}",
                 correction=self.correction,
             )
-        expected_guarantee = _guarantee_for_correction(self.correction)
+        expected_guarantee = guarantee_for_correction(self.correction)
         if self.guarantee != expected_guarantee:
             _raise(
                 "wire.multiplicity.guarantee_mismatch",
@@ -248,6 +248,7 @@ class WireCompiledDecisionPlan(_WireBase):
     declared: bool
     alpha: float = Field(gt=0, lt=1, allow_inf_nan=False)
     q: float = Field(gt=0, lt=1, allow_inf_nan=False)
+    q_explicit: bool = False
     path: Literal["warehouse", "frame", "frame/contrast"]
     inference: WireInference
     compliance: SequentialCompliancePolicy | None = None
@@ -470,9 +471,7 @@ def _family_to_wire(family: FamilyMembership) -> WireFamilyMembership:
     )
 
 
-def _family_from_wire(
-    family: WireFamilyMembership, *, prior_bound_secondary: bool
-) -> FamilyMembership:
+def _family_from_wire(family: WireFamilyMembership) -> FamilyMembership:
     if isinstance(family.family, WireNoFamily):
         return FamilyMembership(family=NoFamily(), member=family.member)
     return FamilyMembership(
@@ -484,8 +483,7 @@ def _family_from_wire(
             guarantee=family.family.guarantee,
             validity_regime=family.family.validity_regime,
         ),
-        # A bound prior excludes the readout, not its declared named family.
-        member=family.member or prior_bound_secondary,
+        member=family.member,
     )
 
 
@@ -573,14 +571,7 @@ def _procedure_from_wire(procedure: WireProcedure) -> DecisionProcedure:
         "prior": _prior_from_wire(procedure.prior) if procedure.prior is not None else None,
         "prior_is_global": procedure.prior_is_global,
         "alpha": procedure.alpha,
-        "family": _family_from_wire(
-            procedure.family,
-            prior_bound_secondary=(
-                procedure.role == "secondary"
-                and procedure.prior is not None
-                and isinstance(procedure.inference, WireFixedInference)
-            ),
-        ),
+        "family": _family_from_wire(procedure.family),
         "inference": _inference_from_wire(procedure.inference),
     }
     if isinstance(procedure, WireRelativeArmProcedure):
@@ -594,6 +585,7 @@ def compiled_plan_to_dto(plan: CompiledDecisionPlan) -> WireCompiledDecisionPlan
         declared=plan.declared,
         alpha=plan.alpha,
         q=plan.q,
+        q_explicit=plan.q_explicit,
         path=plan.path,
         inference=_inference_to_wire(plan.inference),
         compliance=plan.compliance,
@@ -630,6 +622,7 @@ def compiled_plan_from_dto(dto: WireCompiledDecisionPlan) -> CompiledDecisionPla
             declared=dto.declared,
             alpha=dto.alpha,
             q=dto.q,
+            q_explicit=dto.q_explicit,
             path=dto.path,
             inference=_inference_from_wire(dto.inference),
             compliance=dto.compliance,
@@ -653,7 +646,11 @@ def compiled_plan_from_dto(dto: WireCompiledDecisionPlan) -> CompiledDecisionPla
 
 
 def compiled_plan_to_dict(plan: CompiledDecisionPlan) -> dict[str, object]:
-    return compiled_plan_to_dto(plan).model_dump(mode="json")
+    dto = compiled_plan_to_dto(plan)
+    payload = dto.model_dump(mode="json")
+    if not dto.q_explicit:
+        payload.pop("q_explicit")
+    return payload
 
 
 def _refuse_legacy_plan(payload: Mapping[str, object]) -> None:
@@ -785,8 +782,27 @@ def compiled_plan_from_dict(
     return _decode_plan(payload, metric_types=metric_types)
 
 
-def compiled_plan_to_json(plan: CompiledDecisionPlan) -> str:
-    return json.dumps(compiled_plan_to_dict(plan), sort_keys=True, separators=(",", ":"))
+def compiled_plan_to_json(
+    plan: CompiledDecisionPlan, *, legacy_prior_exclusions: frozenset[str] = frozenset()
+) -> str:
+    """Encode a compiled plan, retaining recognized legacy membership omissions."""
+    payload = compiled_plan_to_dict(plan)
+    procedures = payload.get("procedures")
+    if isinstance(procedures, dict):
+        for name in legacy_prior_exclusions:
+            procedure = procedures.get(name)
+            if not isinstance(procedure, dict):
+                continue
+            family = procedure.get("family")
+            if not isinstance(family, dict) or family.get("member") is not False:
+                continue
+            family_definition = family.get("family")
+            if (
+                isinstance(family_definition, dict)
+                and family_definition.get("kind") == "multiplicity"
+            ):
+                family.pop("member", None)
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
 def _reject_duplicate_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -819,6 +835,33 @@ def compiled_plan_from_json(
     if not isinstance(raw, Mapping):
         _raise("wire.payload.invalid", "compiled decision plan JSON must be an object")
     return _decode_plan(raw, json_input=True, metric_types=metric_types)
+
+
+def _legacy_prior_exclusion_metrics(payload: str) -> frozenset[str]:
+    """Return secondaries whose absent wire membership used the legacy prior exclusion."""
+    try:
+        raw = json.loads(payload, object_pairs_hook=_reject_duplicate_pairs)
+    except WireFormatError:
+        raise
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        _raise("wire.payload.invalid", f"invalid compiled decision plan JSON: {exc}")
+    if not isinstance(raw, Mapping):
+        _raise("wire.payload.invalid", "compiled decision plan JSON must be an object")
+    procedures = raw.get("procedures")
+    if not isinstance(procedures, Mapping):
+        return frozenset()
+    return frozenset(
+        name
+        for name, procedure in procedures.items()
+        if isinstance(name, str)
+        and isinstance(procedure, Mapping)
+        and procedure.get("role") == "secondary"
+        and procedure.get("prior") is not None
+        and isinstance(procedure.get("family"), Mapping)
+        and "member" not in procedure["family"]
+        and isinstance(procedure["family"].get("family"), Mapping)
+        and procedure["family"]["family"].get("kind") == "multiplicity"
+    )
 
 
 __all__ = [

@@ -4,14 +4,14 @@ import json
 import math
 from contextlib import nullcontext
 from dataclasses import FrozenInstanceError, replace
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, cast
 
 import narwhals as nw
 import pyarrow as pa
 import pytest
 
-from increment import Analysis, readouts
+from increment import Analysis, SourceSnapshotEvidence, readouts
 from increment.errors import CapabilityError, CodedError, IncrementRuntimeWarning, IncrementWarning
 from increment.estimation.encouragement import (
     _arm_stats_from_compliance,
@@ -184,7 +184,9 @@ def _warehouse_compliance_analysis(
         definitions["metrics"] = []
     if unusable_outcome:
         definitions["fact_sources"][0]["sql"] = (
-            "SELECT * EXCLUDE (revenue), CAST(user_id AS DOUBLE) AS revenue FROM events"
+            "SELECT * EXCLUDE (revenue), "
+            "CASE WHEN event = 'purchase' THEN error('unexpected outcome reduction') "
+            "ELSE NULL END AS revenue FROM events"
         )
     definitions["fact_sources"][0]["properties"] = [
         {"name": "cohort", "column": "cohort", "dtype": "string", "as_of": "static"}
@@ -216,7 +218,17 @@ def _warehouse_compliance_analysis(
     elif outcome == "percentile":
         definitions["metrics"][0]["winsorization"] = {"upper_percentile": 0.9}
     con = duckdb_connection(rows)
-    return make_analysis(con, Definitions.model_validate(definitions), experiment="exp"), con
+    cutoff = datetime(2030, 1, 1, tzinfo=UTC)
+    evidence = SourceSnapshotEvidence(cutoff, {"events": cutoff}) if triggered else None
+    return (
+        make_analysis(
+            con,
+            Definitions.model_validate(definitions),
+            experiment="exp",
+            source_snapshot_evidence=evidence,
+        ),
+        con,
+    )
 
 
 @pytest.mark.slow
@@ -895,9 +907,19 @@ def test_late_suppression_uses_outcome_cohort(strong_design, estimands, order):
     assert "frame.validation.metric_missing_drop" in warning_codes(rec)
     results = readouts.run(source, estimands=estimands)
     late = [row for row in results if row.estimand == "late"]
+    estimates = [row for row in late if row.failure_code is None]
+    failed = [row for row in late if row.failure_code is not None]
+    expected_estimate = "full" if strong_design else "y"
+    expected_weak = "y" if strong_design else "full"
+    assert {row.metric for row in estimates} == {expected_estimate}
+    assert {row.metric for row in failed} == {expected_weak}
+    (weak_late,) = failed
+    assert weak_late.failure_code == "estimation.encouragement.late.weak_first_stage"
+    assert weak_late.failure_context is not None
+    assert weak_late.failure_context["group_id"] == "treatment"
+    assert weak_late.lift is None
     diagnostics = [row for row in results if "late suppressed" in (row.note or "")]
-    assert {row.metric for row in late} == {"full" if strong_design else "y"}
-    assert {row.metric for row in diagnostics} == {"y" if strong_design else "full"}
+    assert {row.metric for row in diagnostics} == {expected_weak}
     design_rows = [row for row in results if row.metric == "uptake"]
     assert len(design_rows) == int("compliance" in estimands)
     assert all("late suppressed" not in (row.note or "") for row in design_rows)

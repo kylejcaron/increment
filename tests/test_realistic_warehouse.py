@@ -164,7 +164,7 @@ def test_srm_reports_no_mismatch_on_triggered_population(analysis):
     """Guards the generator's counterfactual (arm-independent) triggering:
     an arm-dependent trigger rate would surface here as a sample-ratio
     mismatch."""
-    result = analysis.srm(expected={"control": 0.5, "treatment": 0.5})
+    result = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="always_valid")
     assert isinstance(result, SRMResult)
     assert not isinstance(result, NotApplicable)
     assert result.is_srm is False

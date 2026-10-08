@@ -168,36 +168,24 @@ def restrict_to_units(table: ir.Table, units: frozenset[str]) -> ir.Table:
 
 
 def _measure_edge(measure: MeasureManifest, *, prefer_persisted_horizon: bool) -> dt.date | None:
-    """One measure's own day-axis edge.
-
-    `prefer_persisted_horizon=True` (the spine-sizing callers) prefers the
-    persisted `event_horizon` -- native's own filtered `metric_events()`
-    watermark (filters applied, NULL-valued events dropped, ratio
-    denominators included) -- whenever the field was explicitly set on
-    this instance (checked via `model_fields_set`, not merely `is not
-    None`): an explicitly persisted `null` means the publisher confirmed
-    the filtered stream is eventless, same as the `NO_DATA_SIGNAL`
-    sentinel -- both mean this measure contributes no edge at all
-    (excluded, same as an excluded sentinel freshness below), never a
-    fall-through to the unfiltered freshness watermark. Only when the key
-    is ABSENT from `model_fields_set` (the manifest predates the field
-    entirely -- legacy omission) do both modes fall back to
-    `freshness.loaded_through`, the fact's UNFILTERED watermark
-    (`prefer_persisted_horizon=False` for the metric's own `data_as_of`
-    censoring cap always uses this fallback, staying on the freshness
-    watermark as before). A measure with literally zero matching rows
-    reports that watermark as `NO_DATA_SIGNAL` instead (native's own
-    sentinel, imported rather than hardcoded here); such an entry
-    contributes no edge, mirroring native's `ibis.least(...)` never letting
-    a zero-row fact win a minimum.
-    """
+    """Resolve a measure's observed or maturity edge from its manifest."""
     if prefer_persisted_horizon and "event_horizon" in measure.model_fields_set:
-        if measure.event_horizon is None or measure.event_horizon == NO_DATA_SIGNAL:
-            return None
-        return measure.event_horizon
-    if measure.freshness.loaded_through == NO_DATA_SIGNAL:
-        return None
-    return measure.freshness.loaded_through
+        edge = (
+            None
+            if measure.event_horizon is None or measure.event_horizon == NO_DATA_SIGNAL
+            else measure.event_horizon
+        )
+    else:
+        edge = (
+            None
+            if measure.freshness.loaded_through == NO_DATA_SIGNAL
+            else measure.freshness.loaded_through
+        )
+    if "certified_edge" in measure.model_fields_set and measure.certified_edge is not None:
+        return measure.certified_edge
+    if "observed_edge" in measure.model_fields_set and measure.observed_edge is not None:
+        return measure.observed_edge
+    return edge
 
 
 def _scalar_date(value: object) -> dt.date | None:
@@ -207,6 +195,15 @@ def _scalar_date(value: object) -> dt.date | None:
     if isinstance(value, dt.datetime):
         return value.date()
     return cast("dt.date", value)
+
+
+def _day_edge_scalar(value: dt.date | ir.Scalar | None) -> ir.Scalar:
+    """Convert a Python or expression day edge to a date scalar."""
+    if value is None:
+        return cast("ir.Scalar", ibis.null().cast("date"))
+    if isinstance(value, dt.date):
+        return ibis.literal(value, type="date")
+    return cast("ir.Scalar", value.cast("date"))
 
 
 def _outcome_edge(
@@ -224,10 +221,10 @@ def _outcome_edge(
     falls back to the latest observed `measure_stats` row only when every
     relevant measure_key has no usable edge at all -- a single bounded
     warehouse aggregate (`ds.max()`), not a Python `max()` over materialised
-    rows. `data_as_of` (censoring) callers use the default
-    `prefer_persisted_horizon=False`, honouring `loaded_through` as-is,
-    never clamped down, matching native's own unclamped `data_as_of`.
-    Spine-sizing callers pass `prefer_persisted_horizon=True` instead.
+    rows. For maturity, explicit certified or cutoff bounds take precedence;
+    legacy manifests without those fields continue to use `loaded_through`.
+    Spine-sizing callers pass `prefer_persisted_horizon=True` to prefer
+    `event_horizon` when no explicit snapshot bound exists.
     """
     edges = [
         edge
@@ -571,6 +568,17 @@ class _MetricResolution:
     definition: Mapping[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class _TriggeredReductionInputs:
+    """Trigger-local relations, event spine edge, and certified data edge."""
+
+    exposures: ir.Table
+    measure_stats: ir.Table
+    observed_edge: dt.date
+    finalized_as_of: dt.date | None
+    spine_edge: ir.Scalar
+
+
 def _validate_metric_identity(resolution: _MetricResolution) -> None:
     spec = resolution.spec
     binding = resolution.binding
@@ -833,6 +841,9 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 self._source_context = _artifact_source_context(self._manifest.context)[1]
                 return self._source_context
             specs = self._metric_specs()
+            from increment.query.source import _artifact_source_context
+
+            experiment, _ = _artifact_source_context(self._manifest.context)
             metrics = tuple(self._trusted_metric(spec) for spec in specs)
             from increment._analysis_config import resolve_configs
             from increment.plan import compile_decision_plan
@@ -851,6 +862,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
                     prior=None,
                 ),
                 cluster=None,
+                trigger_name=experiment.trigger,
             )
         assert self._source_context is not None
         return self._source_context
@@ -1039,6 +1051,35 @@ class ArtifactMomentSource(SequentialSourceMixin):
         )
         return _rows(self._snapshot.execute(query))
 
+    def reduce_triggered(
+        self,
+        metric: Metric,
+        grain: Grain,
+        *,
+        inputs: _TriggeredReductionInputs,
+        by: str | None = None,
+        properties_table: ir.Table | None = None,
+        cluster: str | None = None,
+        cluster_table: ir.Table | None = None,
+        pre_stats: ir.Table | None = None,
+        population_units: frozenset[str] | None = None,
+        completed_windows_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Reduce one metric with trigger-local relations without changing reader state."""
+        query = self._reduction_query(
+            metric,
+            grain,
+            by=by,
+            properties_table=properties_table,
+            cluster=cluster,
+            cluster_table=cluster_table,
+            pre_stats=pre_stats,
+            population_units=population_units,
+            completed_windows_only=completed_windows_only,
+            trigger_inputs=inputs,
+        )
+        return _rows(self._snapshot.execute(query))
+
     def _unit_frame(
         self,
         metric: Metric,
@@ -1047,6 +1088,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
         resolve_cluster: Callable[[], ir.Table | None],
         population_units: frozenset[str] | None = None,
         outcome_stage: Literal["transformed", "raw"] = "transformed",
+        trigger_inputs: _TriggeredReductionInputs | None = None,
     ) -> IntoDataFrame:
         """Resolve, project, and execute a unit frame on the pinned snapshot."""
         if outcome_stage not in ("raw", "transformed"):
@@ -1059,6 +1101,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
             cluster=cluster,
             cluster_table=resolve_cluster(),
             population_units=population_units,
+            trigger_inputs=trigger_inputs,
         )
         columns = {name: totals[name] for name in ("unit_id", "group_id", "y")}
         if (
@@ -1104,9 +1147,24 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 prefer_persisted_horizon=True,
             )
         )
-        if declared_end is not None or uptake_events is None:
-            edge = declared_end if declared_end is not None else fallback_edge
+        snapshot_edges = [
+            measure.certified_edge
+            if "certified_edge" in measure.model_fields_set
+            else measure.observed_edge
+            if "observed_edge" in measure.model_fields_set
+            else None
+            for measure in self._manifest.measures
+            if measure.measure_key in measure_keys
+        ]
+        snapshot_edges = [edge for edge in snapshot_edges if edge is not None]
+        metric_edge = min(snapshot_edges) if len(snapshot_edges) == len(measure_keys) else None
+        if metric_edge is not None:
+            edge = min(declared_end, metric_edge) if declared_end is not None else metric_edge
             return edge, edge
+        if declared_end is not None:
+            return declared_end, declared_end
+        if uptake_events is None:
+            return fallback_edge, fallback_edge
 
         extension = next(
             ext for ext in self._manifest.extensions if ext.kind == "encouragement_uptake"
@@ -1121,12 +1179,24 @@ class ArtifactMomentSource(SequentialSourceMixin):
             edge = _rows(self._snapshot.execute(coverage))[0]
             compliance_edge = _scalar_date(edge["edge"])
         if fallback_edge is None:
-            return None, compliance_edge
+            # Compliance coverage cannot establish outcome observation coverage.
+            return None, None
         if compliance_edge is None:
             return fallback_edge, fallback_edge
         return fallback_edge, max(fallback_edge, compliance_edge)
 
-    def _reduction_query(
+    def _uptake_inputs(self) -> tuple[ir.Table | None, int | None, bool, dt.date | None]:
+        design = self.context.design
+        if not isinstance(design, Encouragement):
+            return None, None, False, None
+        relation = self._uptake_relation(design)
+        events = relation.filter(relation.uptake).select("unit_id", ts=relation.first_uptake_ts)
+        extension = next(
+            ext for ext in self._manifest.extensions if ext.kind == "encouragement_uptake"
+        )
+        return events, design.uptake.window_days, True, extension.certified_edge
+
+    def _reduction_query(  # noqa: PLR0915
         self,
         metric: Metric,
         grain: Grain | Literal["unit"],
@@ -1138,6 +1208,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
         pre_stats: ir.Table | None = None,
         population_units: frozenset[str] | None = None,
         completed_windows_only: bool = False,
+        trigger_inputs: _TriggeredReductionInputs | None = None,
         finalized_as_of: dt.date | None = None,
     ) -> ir.Table:
         """Reduce every artifact source through the same observation spine."""
@@ -1150,19 +1221,17 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 route="request total- or unit-grain moments",
             )
         metric = self._normalize_metric(metric)
-        design = self.context.design
-        uptake_relation = (
-            self._uptake_relation(design) if isinstance(design, Encouragement) else None
+        uptake_events, uptake_window_days, has_uptake, uptake_certified_edge = self._uptake_inputs()
+        exposures = (
+            self._ensure("exposures") if trigger_inputs is None else trigger_inputs.exposures
         )
-        uptake_events = (
-            uptake_relation.filter(uptake_relation.uptake).select(
-                "unit_id", ts=uptake_relation.first_uptake_ts
-            )
-            if uptake_relation is not None
-            else None
+        stats = (
+            self._ensure("measure_stats")
+            if trigger_inputs is None
+            else trigger_inputs.measure_stats
         )
-        exposures = self._ensure("exposures")
-        stats = self._ensure("measure_stats")
+        if trigger_inputs is not None:
+            finalized_as_of = trigger_inputs.finalized_as_of
         if population_units is not None:
             exposures = restrict_to_units(exposures, population_units)
             stats = restrict_to_units(stats, population_units)
@@ -1195,28 +1264,37 @@ class ArtifactMomentSource(SequentialSourceMixin):
             n_pre_periods=1 if pre_stats is not None else 0,
             plan=AnalysisPlan(),
         )
+        declared_end = self._declared_observation_end()
+        if trigger_inputs is not None:
+            observed_end = trigger_inputs.observed_edge
+            if declared_end is not None:
+                observed_end = min(observed_end, declared_end)
+            experiment = experiment.model_copy(
+                update={"observation_end": dt.datetime.combine(observed_end, dt.time())}
+            )
         # Use the declared end or union source horizon for the shared day axis.
         # Keep each metric's maturity watermark separate from that spine boundary.
         metric_edge = (
-            finalized_as_of
+            trigger_inputs.finalized_as_of
+            if trigger_inputs is not None
+            else finalized_as_of
             if finalized_as_of is not None
             else _outcome_edge(self._manifest.measures, stats, measure_keys, self._snapshot.execute)
         )
-        outcome_spine_edge, spine_edge = (
-            (finalized_as_of, finalized_as_of)
-            if finalized_as_of is not None
-            else self._observation_spine_edge(
+        if trigger_inputs is not None:
+            outcome_spine_edge = trigger_inputs.spine_edge
+            spine_edge = trigger_inputs.spine_edge
+        elif finalized_as_of is not None:
+            outcome_spine_edge, spine_edge = finalized_as_of, finalized_as_of
+        else:
+            outcome_spine_edge, spine_edge = self._observation_spine_edge(
                 measure_keys,
                 stats,
                 exposures=exposures,
                 experiment=experiment,
                 uptake_events=uptake_events if grain == "asof" else None,
             )
-        )
-        end_date_expr = cast(
-            "ir.Scalar",
-            ibis.literal(spine_edge) if spine_edge is not None else ibis.null().cast("date"),
-        )
+        end_date_expr = _day_edge_scalar(spine_edge)
         spine = panel_spine(exposures, experiment, end_date=end_date_expr)
 
         def panel_for(measure_key: str) -> Any:
@@ -1236,6 +1314,11 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 day_spine.first_exposure_ts,
                 day_spine.first_exposure_date,
                 day_spine.ds,
+                **{
+                    column: day_spine[column]
+                    for column in ("__uptake_first_exposure_date", "__uptake_first_exposure_ts")
+                    if column in day_spine.columns
+                },
                 n_events=ibis.coalesce(measure_stats.n_events, 0),
                 sum_value=ibis.coalesce(measure_stats.sum_value, 0.0),
                 min_value=ibis.coalesce(measure_stats.min_value, 0.0),
@@ -1253,16 +1336,33 @@ class ArtifactMomentSource(SequentialSourceMixin):
             den_stats = None
             panel, den_panel = panel_for(binding.measure_key), None
 
-        uptake_panel = self._uptake_panel(spine, uptake_events)
+        uptake_spine = spine
+        if trigger_inputs is not None and uptake_events is not None:
+            assignment_exposures = self._ensure("exposures")
+            if cluster is not None and cluster_table is not None:
+                assignment_exposures = assignment_exposures.left_join(
+                    cluster_table, "unit_id"
+                ).select(
+                    *[assignment_exposures[column] for column in assignment_exposures.columns],
+                    **{cluster: cluster_table[cluster]},
+                )
+            assignment_exposures = assignment_exposures.semi_join(
+                exposures.select("experiment_id", "unit_id").distinct(),
+                ["experiment_id", "unit_id"],
+            )
+            uptake_spine = panel_spine(assignment_exposures, experiment, end_date=end_date_expr)
+        uptake_panel = self._uptake_panel(uptake_spine, uptake_events)
 
         by_list = [by] if by else None
         if grain in ("total", "unit"):
             total_experiment = experiment
-            if grain == "total" and spine_edge is not None:
+            if grain == "total" and spine_edge is not None and trigger_inputs is None:
                 # Every observed spine ends at this edge; null-day units stay censored.
                 # Reuse the bound instead of re-aggregating the dense relation.
                 total_experiment = experiment.model_copy(
-                    update={"observation_end": dt.datetime.combine(spine_edge, dt.time())}
+                    update={
+                        "observation_end": dt.datetime.combine(cast(dt.date, spine_edge), dt.time())
+                    }
                 )
             totals = unit_totals(
                 spine,
@@ -1272,9 +1372,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 pre_stats=pre_stats,
                 den_stats=den_stats,
                 uptake_events=uptake_events,
-                uptake_window_days=design.uptake.window_days
-                if isinstance(design, Encouragement)
-                else None,
+                uptake_window_days=uptake_window_days,
                 by=by_list,
                 properties_table=properties_table,
                 data_as_of=metric_edge,
@@ -1292,7 +1390,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 by=by_list,
                 cluster=cluster,
                 ratio_metrics=[metric.name] if isinstance(metric, RatioMetric) else None,
-                uptake=uptake_relation is not None,
+                uptake=has_uptake,
                 binary_metrics=declared_binary_metrics([metric]),
             )
         if properties_table is not None:
@@ -1338,13 +1436,13 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 den_panel=den_panel,
                 completed_windows_only=completed_windows_only,
                 uptake_panel=uptake_panel,
-                uptake_window_days=design.uptake.window_days
-                if isinstance(design, Encouragement)
-                else None,
+                uptake_window_days=uptake_window_days,
                 _uptake_elapsed_windowed=uptake_panel is not None,
+                _uptake_certified_edge=uptake_certified_edge,
+                _uptake_day_boundary_offset=experiment.day_boundary_offset,
                 _outcome_observation_end=(
-                    ibis.literal(outcome_spine_edge, type="date")
-                    if uptake_panel is not None
+                    _day_edge_scalar(outcome_spine_edge)
+                    if uptake_panel is not None and outcome_spine_edge is not None
                     else None
                 ),
             )
@@ -1556,6 +1654,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
             as_of=as_of,
             previous=previous,
             covariate=covariate,
+            assignment_counts=self.assignment_counts(population="assigned"),
         )
 
     def unit_frame(
@@ -1612,7 +1711,9 @@ class ArtifactMomentSource(SequentialSourceMixin):
         exposures = self._ensure("exposures")
         counts = exposures.group_by("group_id").agg(n=exposures.count())
         return {
-            str(row["group_id"]): int(row["n"]) for row in _rows(self._snapshot.execute(counts))
+            str(row["group_id"]): int(row["n"])
+            for row in _rows(self._snapshot.execute(counts))
+            if row["group_id"] is not None
         }
 
     def cluster_counts(self) -> dict[str, int]:
@@ -1647,8 +1748,94 @@ class ArtifactMomentSource(SequentialSourceMixin):
         rows = [row for metric in selected for row in self.moments(metric)]
         return pa.Table.from_pylist(rows) if rows else pa.table({})
 
-    def day_source(self, *, metrics: Sequence[Metric]) -> ArtifactMomentSource:
+    def day_source(
+        self,
+        *,
+        metrics: Sequence[Metric],
+        population: Literal["assigned", "triggered"] = "assigned",
+    ) -> ArtifactMomentSource:
+        if population == "triggered" and getattr(self, "_population", "assigned") != "triggered":
+            factory = getattr(self, "triggered_source", None)
+            if factory is None:
+                _relation_refuse(
+                    "artifact.extension.missing", "artifact has no triggered population evidence"
+                )
+            return cast(
+                "ArtifactMomentSource",
+                factory().day_source(metrics=metrics, population="triggered"),
+            )
         return self
+
+    def triggered_observation_edges(self, metric: Metric) -> tuple[dt.date, dt.date | None]:
+        """Return cutoff-derived trigger spine edge and optional certified edge."""
+        experiment = getattr(self, "_artifact_experiment", None)
+        if experiment is None or self.context.trigger_name is None:
+            _relation_refuse(
+                "artifact.extension.missing", "artifact has no triggered observation evidence"
+            )
+        extension = next(
+            (
+                item
+                for item in self._manifest.extensions
+                if item.kind == "trigger_measure_stats"
+                and item.trigger_name == self.context.trigger_name
+                and metric.name in item.metric_names
+            ),
+            None,
+        )
+        if extension is None:
+            _relation_refuse(
+                "artifact.extension.missing",
+                f"artifact has no triggered observation evidence for {metric.name!r}",
+            )
+        binding = next(
+            (item for item in self._manifest.metric_measures if item.metric_name == metric.name),
+            None,
+        )
+        if binding is not None:
+            measure_keys = (
+                (binding.numerator_measure_key, binding.denominator_measure_key)
+                if isinstance(binding, RatioMetricMeasure)
+                else (binding.measure_key,)
+            )
+            by_key = {item.measure_key: item for item in self._manifest.measures}
+            measures = [by_key[key] for key in measure_keys if key in by_key]
+            if len(measures) == len(measure_keys) and all(
+                {"certified_edge", "observed_edge"} & item.model_fields_set for item in measures
+            ):
+                edges = [_measure_edge(item, prefer_persisted_horizon=False) for item in measures]
+                if all(edge is not None for edge in edges):
+                    observed_edge = min(cast(dt.date, edge) for edge in edges)
+                    certified_edge = (
+                        observed_edge
+                        if all(
+                            "certified_edge" in item.model_fields_set
+                            and item.certified_edge is not None
+                            for item in measures
+                        )
+                        else None
+                    )
+                    horizon = experiment.observation_horizon_day
+                    if horizon is not None:
+                        observed_edge = min(observed_edge, horizon)
+                        if certified_edge is not None:
+                            certified_edge = min(certified_edge, horizon)
+                    return observed_edge, certified_edge
+        offset = day_boundary_offset(experiment.day_boundary)
+        cutoff = extension.observation_cutoff_ts
+        complete_through = extension.complete_through_ts
+        if complete_through is None:
+            observed_edge = (cutoff + offset).date()
+            certified_edge = None
+        else:
+            certified_edge = (min(cutoff, complete_through) + offset).date() - dt.timedelta(days=1)
+            observed_edge = certified_edge
+        horizon = experiment.observation_horizon_day
+        if horizon is not None:
+            observed_edge = min(observed_edge, horizon)
+            if certified_edge is not None:
+                certified_edge = min(certified_edge, horizon)
+        return observed_edge, certified_edge
 
     def breakout_moments(
         self,
@@ -1970,7 +2157,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
 
         counts = None
         if any(ext.kind == "assignment_counts" for ext in self._manifest.extensions):
-            counts = self.assignment_counts()
+            counts = self.unit_counts()
         elif compliance is not None:
             counts = {arm.group_id: arm.n_units for arm in compliance.arms}
         if counts is not None:

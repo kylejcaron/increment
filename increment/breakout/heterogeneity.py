@@ -322,9 +322,9 @@ def segment_contrast(
 ) -> Estimate:
     """Contrast segment ``dimension_value_a``'s lift against ``dimension_value_b``'s.
 
-    ``estimates`` must already be scoped to ONE (metric, method,
-    group_id, dimension, source, estimand, value_scale) combination -
-    exactly two rows, one per label - or this raises rather than
+    ``estimates`` must already be scoped to ONE (analysis_population,
+    metric, method, group_id, dimension, source, estimand, value_scale)
+    combination - exactly two rows, one per label - or this raises rather than
     guessing which pair to contrast.
 
     Relative rows (``value_scale="relative"``) return a value on the
@@ -439,10 +439,10 @@ def segment_contrast(
 
 
 class HeterogeneitySummary(BaseModel):
-    """One row per ``(metric, method, group_id, dimension, source,
-    estimand, value_scale)`` grouping key: Cochran's Q, DerSimonian-Laird
-    tau^2, Higgins-Thompson I^2, and an HKSJ pooled effect, over the
-    segments declared for that key.
+    """One row per ``(analysis_population, metric, method, group_id,
+    dimension, source, estimand, value_scale)`` grouping key: Cochran's Q,
+    DerSimonian-Laird tau^2, Higgins-Thompson I^2, and an HKSJ pooled effect,
+    over the segments declared for that key.
 
     ``scale`` is ``"relative"`` (log-RR) or ``"absolute"`` (risk
     difference) - the two frequently disagree, so both ship.
@@ -458,6 +458,7 @@ class HeterogeneitySummary(BaseModel):
 
     metric: str
     method: str
+    analysis_population: Literal["assigned", "triggered"] = "assigned"
     group_id: str
     dimension: str
     source: str | None
@@ -478,8 +479,9 @@ class HeterogeneitySummary(BaseModel):
 
 
 class SegmentEstimate(CodedModel, BaseModel):
-    """One row per (segment, scale, estimator) for a ``HeterogeneitySummary``
-    key: two rows per estimable (segment, scale) (``estimator="raw"``
+    """One row per segment, scale, and estimator for a
+    ``HeterogeneitySummary`` key, which includes ``analysis_population``:
+    two rows per estimable (segment, scale) (``estimator="raw"``
     and ``"shrunken"``), plus an unavailable pair per excluded segment.
 
     ``excluded`` is set from an upstream ``BreakoutEstimate.excluded``, a
@@ -510,6 +512,7 @@ class SegmentEstimate(CodedModel, BaseModel):
     metric: str
     method: str
     method_role: Literal["decision", "sensitivity"]
+    analysis_population: Literal["assigned", "triggered"] = "assigned"
     group_id: str
     dimension: str
     dimension_value: str
@@ -570,8 +573,17 @@ class SegmentHeterogeneityResult(NamedTuple):
 
 def _group_key(
     e: BreakoutEstimate,
-) -> tuple[str, str, str, str, str | None, str, ValueScale]:
-    return (e.metric, e.method, e.group_id, e.dimension, e.source, e.estimand, e.value_scale)
+) -> tuple[Literal["assigned", "triggered"], str, str, str, str, str | None, str, ValueScale]:
+    return (
+        e.analysis_population,
+        e.metric,
+        e.method,
+        e.group_id,
+        e.dimension,
+        e.source,
+        e.estimand,
+        e.value_scale,
+    )
 
 
 def _baseline_mean(row: BreakoutEstimate) -> float | None:
@@ -795,9 +807,9 @@ def segment_heterogeneity(  # noqa: PLR0915
     tau_prior_scale: float = _TAU_PRIOR_SCALE_DEFAULT,
 ) -> SegmentHeterogeneityResult:
     """Cochran's Q, tau^2, I^2, an HKSJ pooled effect, and tau-marginalised
-    per-segment shrinkage, over every declared segment for each ``(metric,
-    method, group_id, dimension, source, estimand, value_scale)`` grouping
-    key in *estimates*.
+    per-segment shrinkage, over every declared segment for each
+    ``(analysis_population, metric, method, group_id, dimension, source,
+    estimand, value_scale)`` grouping key in *estimates*.
 
     *estimates* must come from a SINGLE ``run_breakout`` call - a
     standalone call stamps ``source=None``, so two independent calls on
@@ -878,7 +890,7 @@ def segment_heterogeneity(  # noqa: PLR0915
     if not tau_prior_scale > 0:
         _raise("breakout.tau_prior_scale", tau_prior_scale=tau_prior_scale)
     groups: dict[
-        tuple[str, str, str, str, str | None, str, ValueScale],
+        tuple[Literal["assigned", "triggered"], str, str, str, str, str | None, str, ValueScale],
         list[BreakoutEstimate],
     ] = {}
     for e in estimates:
@@ -888,6 +900,7 @@ def segment_heterogeneity(  # noqa: PLR0915
     segment_rows: list[SegmentEstimate] = []
 
     for (
+        analysis_population,
         metric,
         method,
         group_id,
@@ -1011,6 +1024,7 @@ def segment_heterogeneity(  # noqa: PLR0915
                     metric=metric,
                     method=method,
                     method_role=rows[0].method_role,
+                    analysis_population=analysis_population,
                     group_id=group_id,
                     dimension=dimension,
                     source=source,
@@ -1074,6 +1088,7 @@ def segment_heterogeneity(  # noqa: PLR0915
                         metric=metric,
                         method=method,
                         method_role=row.method_role,
+                        analysis_population=analysis_population,
                         group_id=group_id,
                         dimension=dimension,
                         dimension_value=row.dimension_value,
@@ -1098,8 +1113,9 @@ def segment_heterogeneity(  # noqa: PLR0915
                         metric=metric,
                         method=method,
                         group_id=group_id,
-                        dimension=dimension,
                         method_role=row.method_role,
+                        analysis_population=analysis_population,
+                        dimension=dimension,
                         dimension_value=row.dimension_value,
                         source=source,
                         estimand=estimand,
@@ -1129,6 +1145,7 @@ def segment_heterogeneity(  # noqa: PLR0915
                             group_id=group_id,
                             dimension=dimension,
                             method_role=row.method_role,
+                            analysis_population=analysis_population,
                             dimension_value=row.dimension_value,
                             source=source,
                             estimand=estimand,
@@ -1158,6 +1175,7 @@ def segment_heterogeneity(  # noqa: PLR0915
                             method=method,
                             group_id=group_id,
                             dimension=dimension,
+                            analysis_population=analysis_population,
                             dimension_value=row.dimension_value,
                             source=source,
                             method_role=row.method_role,

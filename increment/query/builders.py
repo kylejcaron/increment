@@ -117,6 +117,12 @@ _REFUSALS = refusals(
             "'{cluster}' -- cluster-robust inference is total-grain only. Read the "
             "total-grain result instead.",
         ),
+        "query.builders.trigger_population.cutoff_not_aware": RefusalSpec(
+            "query.builders.trigger_population.cutoff_not_aware",
+            InvalidRequestError,
+            template="{field} must be timezone-aware; received {value!r}",
+            keys=frozenset({"field", "value"}),
+        ),
         "query.builders.invalid_day_boundary": "invalid day_boundary {day_boundary!r}",
         "query.builders.check_cluster.experiment_arm_no": "experiment '{experiment_name}': arm '{group}' has no clusters in the exposure counts -- cannot check cross-arm cluster-size balance.",
         "query.builders.unknown_part_ratiometric": "Unknown part '{part}' for RatioMetric",
@@ -166,6 +172,13 @@ def _days_literal(n: int | ir.IntegerScalar) -> ir.IntegerScalar:
     """Cast n to IntegerScalar for .as_interval() - ibis's own type stub
     for literal() returns the generic Scalar base, missing that subtype."""
     return cast("ir.IntegerScalar", ibis.literal(n))
+
+
+def _utc_timestamp_literal(ts: ir.TimestampColumn, value: dt.datetime) -> ir.Scalar:
+    normalized = value.astimezone(dt.UTC)
+    if getattr(ts.type(), "timezone", None) is None:
+        normalized = normalized.replace(tzinfo=None)
+    return ibis.literal(normalized, type=ts.type())
 
 
 def _local_date_at_offset(ts: ir.TimestampColumn, offset: dt.timedelta) -> ir.DateColumn:
@@ -307,15 +320,36 @@ def first_exposures(exposure_events: ir.Table, experiment: Experiment) -> ir.Tab
     return valid.select(*keep)
 
 
-def triggered_population(exposures: ir.Table, triggers: ir.Table) -> ir.Table:
-    """Narrow an enrollment population to the units that actually triggered.
+def triggered_population(
+    exposures: ir.Table,
+    triggers: ir.Table,
+    *,
+    observation_cutoff: dt.datetime,
+) -> ir.Table:
+    """Attach the first eligible trigger event to each enrolled unit.
 
-    Units that never triggered could not have been affected, so including
-    them dilutes the measured effect by the trigger rate. A semi-join keeps
-    each enrolled row once regardless of how many times a unit triggered.
+    Both assignment-relative eligibility and the pinned inclusive event-time
+    cutoff are applied before taking the minimum, so earlier or future events
+    can never become the anchor.
     """
-    # The semi-join is what single-counts; distinct only makes that obvious.
-    return exposures.semi_join(triggers.select("unit_id").distinct(), "unit_id")
+    if observation_cutoff.tzinfo is None or observation_cutoff.utcoffset() is None:
+        _raise(
+            "query.builders.trigger_population.cutoff_not_aware",
+            field="observation_cutoff",
+            value=observation_cutoff,
+        )
+    eligible = triggers.filter(
+        triggers.unit_id.notnull()
+        & triggers.ts.notnull()
+        & (triggers.ts <= _utc_timestamp_literal(triggers.ts, observation_cutoff))
+    )
+    assignment = exposures.select("unit_id", "first_exposure_ts")
+    eligible = eligible.inner_join(assignment, "unit_id")
+    eligible = eligible.filter(eligible.ts >= eligible.first_exposure_ts)
+    anchors = eligible.group_by("unit_id").agg(first_trigger_ts=eligible.ts.min())
+    return exposures.inner_join(anchors, "unit_id").select(
+        *exposures.columns, anchors.first_trigger_ts
+    )
 
 
 def mixed_assignment_units(exposure_events: ir.Table, experiment: Experiment) -> ir.Table:
@@ -1059,6 +1093,9 @@ def panel_spine(
         "first_exposure_ts",
         "first_exposure_date",
     ]
+    for column in ("__uptake_first_exposure_date", "__uptake_first_exposure_ts"):
+        if column in firsts.columns:
+            spine_cols.append(column)
     if experiment.cluster is not None:
         if experiment.cluster not in exposures.columns:
             _raise(
@@ -1467,6 +1504,11 @@ def _dense_unit_days(spine_tbl: ir.Table, stats_tbl: ir.Table) -> ir.Table:
         spine_tbl.first_exposure_ts,
         spine_tbl.first_exposure_date,
         spine_tbl.ds,
+        **{
+            column: spine_tbl[column]
+            for column in ("__uptake_first_exposure_date", "__uptake_first_exposure_ts")
+            if column in spine_tbl.columns
+        },
         n_events=ibis.coalesce(stats_tbl.n_events, 0),
         sum_value=ibis.coalesce(stats_tbl.sum_value, 0.0),
         min_value=ibis.coalesce(stats_tbl.min_value, 0.0),
@@ -1722,7 +1764,7 @@ def _project_unit_totals(
     return totals.select(*base_cols)
 
 
-def unit_totals(
+def unit_totals(  # noqa: PLR0913
     spine: ir.Table,
     stats: ir.Table,
     metric: Metric,
@@ -1736,6 +1778,7 @@ def unit_totals(
     data_as_of: ir.Scalar | dt.date | dt.datetime | None = None,
     # The public aggregate signature preserves distinct evidence inputs.
     warn_on_censoring: bool | Callable[[ir.Table], list[dict[str, Any]]] = True,  # noqa: FBT001, FBT002
+    uptake_exposures: ir.Table | None = None,
 ) -> ir.Table:
     """Aggregate spine + sparse stats to one row per unit (window aggregate).
 
@@ -1780,6 +1823,8 @@ def unit_totals(
         A callable executes bookkeeping tables and returns rows through the
         owning source. Otherwise, warn on a material drop (default True).
         Warning bookkeeping costs an extra execution round-trip.
+    uptake_exposures : ir.Table | None
+        Assignment exposure anchors for encouragement uptake; defaults to the outcome spine.
     """
     cluster = experiment.cluster
     if cluster is not None:
@@ -1814,7 +1859,8 @@ def unit_totals(
     totals = _aggregate_unit_outcome(dense, spine, metric, den_stats)
 
     totals = _attach_covariate(totals, pre_stats, experiment)
-    totals = _attach_uptake_flag(totals, spine, uptake_events, uptake_window_days)
+    uptake_anchor = spine if uptake_exposures is None else uptake_exposures
+    totals = _attach_uptake_flag(totals, uptake_anchor, uptake_events, uptake_window_days)
     return _project_unit_totals(totals, spine, metric, by, properties_table, cluster)
 
 
@@ -2140,6 +2186,8 @@ def asof_group_summary(
     *,
     completed_windows_only: bool = False,
     _uptake_elapsed_windowed: bool = False,
+    _uptake_certified_edge: dt.date | None = None,
+    _uptake_day_boundary_offset: dt.timedelta = dt.timedelta(0),
     _outcome_observation_end: ir.Scalar | None = None,
 ) -> ir.Table:
     """Per-group **"as of day N"** centered moments.
@@ -2212,6 +2260,11 @@ def asof_group_summary(
     _uptake_elapsed_windowed : bool
         Uptake events already satisfy the elapsed-timestamp window; do not
         apply another calendar-day mask.
+    _uptake_certified_edge : dt.date | None
+        Certified last day of uptake coverage, used to freeze uptake values
+        beyond the observed edge.
+    _uptake_day_boundary_offset : dt.timedelta
+        Day-boundary offset applied to uptake calendar windows.
     _outcome_observation_end : ir.Scalar | None
         Outcome coverage edge when uptake extends the snapshot axis. Freeze
         outcome state there and exclude still-unobserved cohorts.
@@ -2318,6 +2371,18 @@ def asof_group_summary(
             outcome_window_days=_resolve_window_days(metric),
             uptake_window_days=uptake_window_days,
             has_uptake=uptake_panel is not None,
+            uptake_anchor_column=(
+                "__uptake_first_exposure_date"
+                if "__uptake_first_exposure_date" in agg_source.columns
+                else None
+            ),
+            uptake_anchor_timestamp_column=(
+                "__uptake_first_exposure_ts"
+                if "__uptake_first_exposure_ts" in agg_source.columns
+                else None
+            ),
+            uptake_certified_edge=_uptake_certified_edge,
+            uptake_day_boundary_offset=_uptake_day_boundary_offset,
         )
 
     if isinstance(metric, ConversionMetric | RetentionMetric):
@@ -2531,15 +2596,12 @@ def _completed_asof_rows(
     outcome_window_days: int | None,
     uptake_window_days: int | None,
     has_uptake: bool,
+    uptake_anchor_column: str | None = None,
+    uptake_anchor_timestamp_column: str | None = None,
+    uptake_certified_edge: dt.date | None = None,
+    uptake_day_boundary_offset: dt.timedelta = dt.timedelta(0),
 ) -> ir.Table:
-    """Keep snapshots where every window this row depends on has closed.
-
-    Without an uptake design, a bounded outcome window admits a unit once
-    its own window has closed; an unbounded outcome has no fixed offset to
-    wait out, so the table passes through unchanged. With uptake, both the
-    outcome and uptake windows must be bounded, and the later of the two
-    decides completion.
-    """
+    """Keep snapshots where every window this row depends on has closed."""
     if has_uptake and (outcome_window_days is None or uptake_window_days is None):
         _raise("query.builders.asof_group_summary_completed_requires_uptake_window")
     if outcome_window_days is None and not has_uptake:
@@ -2549,9 +2611,40 @@ def _completed_asof_rows(
         first_exposure_date = table.first_exposure_date
     else:
         first_exposure_date = table.first_exposure_ts.cast(dt.date)
-    completion_date = first_exposure_date + _days_literal(
-        max(outcome_window_days, uptake_window_days or 0)
-    ).as_interval("D")
+    outcome_completion = first_exposure_date + _days_literal(outcome_window_days).as_interval("D")
+    if has_uptake:
+        uptake_anchor = (
+            table[uptake_anchor_column] if uptake_anchor_column is not None else first_exposure_date
+        )
+        if uptake_anchor_timestamp_column is not None:
+            uptake_anchor_ts = table[uptake_anchor_timestamp_column]
+        elif uptake_anchor_column is not None or "first_exposure_ts" not in table.columns:
+            offset_minutes = int(uptake_day_boundary_offset.total_seconds() // 60)
+            uptake_anchor_ts = uptake_anchor.cast("timestamp") - ibis.interval(
+                minutes=offset_minutes
+            )
+        else:
+            uptake_anchor_ts = table.first_exposure_ts
+        uptake_completion = uptake_anchor + _days_literal(
+            cast(int, uptake_window_days)
+        ).as_interval("D")
+        uptake_completion_ts = uptake_anchor_ts + _days_literal(
+            cast(int, uptake_window_days)
+        ).as_interval("D")
+        completion_date = ibis.greatest(outcome_completion, uptake_completion)
+        if uptake_certified_edge is not None:
+            # The certified local day is inclusive; its upper bound is midnight
+            # at the start of the following local day, represented in UTC.
+            certified_edge_exclusive = (
+                dt.datetime.combine(uptake_certified_edge + dt.timedelta(days=1), dt.time())
+                - uptake_day_boundary_offset
+            ).replace(tzinfo=dt.UTC)
+            table = table.filter(
+                uptake_completion_ts
+                <= _utc_timestamp_literal(uptake_anchor_ts, certified_edge_exclusive)
+            )
+    else:
+        completion_date = outcome_completion
     return table.filter(table.ds >= completion_date)
 
 

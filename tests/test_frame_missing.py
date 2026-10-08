@@ -310,7 +310,11 @@ def test_null_group_label_excluded_with_accounting() -> None:
         control="control",
         metrics={"revenue": "mean"},
         on_unassigned="exclude",
-        design=_DESIGN,
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
     )
     assert src.unit_counts() == {"control": 198, "treatment": 182, "(unassigned)": 20}
 
@@ -1544,10 +1548,13 @@ def test_densified_cells_counts_declared_zero_null_fills() -> None:
 
 
 def test_single_unit_arm_error_names_metric_and_arm() -> None:
-    """A stray 1-unit arm still refuses at estimation time (a moment-grain
-    read is legitimate), but the error must name the metric and the arm
-    instead of a bare ddof=1 complaint."""
-    rows = [*_ROWS, ("u13", "stray", 5.0, 1.0, 1.0, 1.0, 1.0)]
+    """A one-unit treatment arm within the declared roster refuses at estimation time.
+    The moment-grain read is legitimate, and the error must name the metric
+    and arm instead of surfacing a bare ddof=1 complaint."""
+    rows = [
+        *(row for row in _ROWS if row[1] == "control"),
+        next(row for row in _ROWS if row[1] == "treatment"),
+    ]
     cols = list(zip(*rows, strict=True))
     table = pa.table(dict(zip(_COLUMNS, cols, strict=True)))
     src = from_unit_summary(

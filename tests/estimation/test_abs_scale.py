@@ -98,8 +98,8 @@ def _oracle_src(**kwargs):
     return _src(_oracle_table(**kwargs))
 
 
-def _posterior_sd(est: LiftEstimate) -> float:
-    """The posterior sd the row's interval was cut from."""
+def _sampling_sd(est: LiftEstimate) -> float:
+    """The prior-free sampling standard error recovered from the interval."""
     lift = est.require_lift()
     assert lift.lb is not None and lift.ub is not None
     return (lift.ub - lift.lb) / (2 * _Z)
@@ -170,7 +170,7 @@ def test_cross_scale_identity_relative_pair_equals_absolute_row(method):
     rel = _one(src, method)
     absolute = _absolute(src, method)
     assert rel.abs_diff == pytest.approx(absolute.require_lift().value, rel=1e-12)
-    assert rel.abs_se == pytest.approx(_posterior_sd(absolute), rel=1e-12)
+    assert rel.abs_se == pytest.approx(_sampling_sd(absolute), rel=1e-12)
 
 
 @pytest.mark.parametrize("method", _METHODS)
@@ -183,9 +183,9 @@ def test_flat_prior_is_exact_at_large_additive_units(method):
     reported effect by exactly 1e6."""
     base = _absolute(_oracle_src(n=1000), method)
     big = _absolute(_oracle_src(n=1000, scale=1e6), method)
-    assert _posterior_sd(big) > 1e4  # the regime where the default prior bites
+    assert _sampling_sd(big) > 1e4  # the regime where the default prior bites
     assert big.require_lift().value == pytest.approx(base.require_lift().value * 1e6, rel=1e-12)
-    assert _posterior_sd(big) == pytest.approx(_posterior_sd(base) * 1e6, rel=1e-12)
+    assert _sampling_sd(big) == pytest.approx(_sampling_sd(base) * 1e6, rel=1e-12)
 
 
 @pytest.mark.parametrize("method", _METHODS)
@@ -198,7 +198,7 @@ def test_location_equivariance_of_the_additive_effect(method):
     at_zero = _absolute(_oracle_src(n=1000), method)
     at_ten = _absolute(_oracle_src(n=1000, shift=10.0), method)
     assert at_ten.require_lift().value == pytest.approx(at_zero.require_lift().value, rel=1e-12)
-    assert _posterior_sd(at_ten) == pytest.approx(_posterior_sd(at_zero), rel=1e-12)
+    assert _sampling_sd(at_ten) == pytest.approx(_sampling_sd(at_zero), rel=1e-12)
 
     rel_ten = _one(_oracle_src(n=1000, shift=10.0), method)
     rel_twenty = _one(_oracle_src(n=1000, shift=20.0), method)
@@ -385,22 +385,22 @@ def test_prior_refused_on_a_mixed_scale_call():
 
 
 def test_uniform_absolute_call_honors_an_explicit_prior_in_additive_units():
-    """A single-metric absolute call is scale-unambiguous, so an explicit
-    prior is honored - and it must be the exact conjugate update in the
-    metric's own units, not the skipped-update flat path."""
+    """A single-metric absolute call stores its exact conjugate posterior in metric units."""
     src = _oracle_src(n=1000)
     flat = _absolute(src, "iptw")
     prior = Normal(mu=0.0, sigma=0.05)
-    shrunk = _absolute(src, "iptw", prior=prior)
+    informed = _absolute(src, "iptw", prior=prior)
 
-    se = _posterior_sd(flat)
+    se = _sampling_sd(flat)
     variance = 1.0 / (1.0 / prior.sigma**2 + 1.0 / se**2)
     expected_mu = variance * (prior.mu / prior.sigma**2 + flat.require_lift().value / se**2)
-    assert shrunk.require_lift().value == pytest.approx(expected_mu, rel=1e-12)
-    assert _posterior_sd(shrunk) == pytest.approx(np.sqrt(variance), rel=1e-12)
-    assert abs(shrunk.require_lift().value) < abs(
-        flat.require_lift().value
-    )  # the prior actually bit
+    assert informed.require_lift().value == flat.require_lift().value
+    assert informed.posterior_available is True
+    posterior_estimate = informed.posterior_estimate
+    assert posterior_estimate is not None
+    assert posterior_estimate == pytest.approx(expected_mu, rel=1e-12)
+    assert informed.posterior_latent_sd == pytest.approx(np.sqrt(variance), rel=1e-12)
+    assert abs(posterior_estimate) < abs(flat.require_lift().value)
 
 
 def test_uniform_absolute_multi_metric_prior_warns_about_incommensurable_units():
@@ -572,6 +572,29 @@ class TestRefusalMatrix:
         assert result.relative_confidence_set.geometry == "empty"
         assert result.abs_diff == pytest.approx(4)
         assert result.abs_lb is not None and result.abs_lb > 0
+
+    def test_set_only_relative_readout_keeps_confidence_evidence_without_posterior_stats(self):
+        from increment.tables import estimates_to_readout
+
+        table = pa.table(
+            {
+                "user_id": [f"u{i}" for i in range(6)],
+                "variant": ["T", "T", "T", "C", "C", "C"],
+                "revenue": [3.0, 5.0, 4.0, 0.0, 0.0, 0.0],
+                "x": [1.0] * 6,
+            }
+        )
+        (result,) = estimate_ate(_src(table), _DESIGN, methods=[Method(name="iptw")]).results
+
+        (readout,) = estimates_to_readout([result])
+
+        assert result.lift is None
+        assert result.relative_confidence_set is not None
+        assert readout["relative_confidence_set"] == result.relative_confidence_set
+        assert readout["stat_sig"] is True
+        assert readout["posterior_chance_to_beat"] is None
+        assert readout["posterior_risk_if_shipped"] is None
+        assert not {"chance_to_beat (advisory)", "risk_if_shipped (advisory)"} & readout.keys()
 
     @pytest.mark.parametrize(
         "mapping",
@@ -1048,7 +1071,7 @@ def _replicate(flank: str, methods: tuple[str, ...], *, n: int, reps: int) -> di
             lift = est.require_lift()
             assert lift.lb is not None and lift.ub is not None
             points[method].append(lift.value)
-            ses[method].append(_posterior_sd(est))
+            ses[method].append(_sampling_sd(est))
             covered[method] += lift.lb < _TRUE_TAU < lift.ub
     out = {}
     for method in methods:

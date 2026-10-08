@@ -21,13 +21,13 @@ from increment._analysis_config import UNSET, _Unset
 from increment._day_axis import _day_axis_source_route
 from increment._literals import ValueScale
 from increment._readout_request import _raise as _raise_readout
-from increment._source_types import classify_source
 from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec
 from increment.errors import refuse as _refuse
 from increment.readouts._requests import _design_compliance_only, _validate_run_request
 from increment.sources import SourceContext, require_operation
 
 if TYPE_CHECKING:
+    from increment.breakout.estimates import LiftEstimates
     from increment.decision import CompiledDecisionPlan
     from increment.estimation.engine import Method
     from increment.estimation.inference import Prior
@@ -37,6 +37,23 @@ if TYPE_CHECKING:
     from increment.sources import MomentSource, SourceOperation
 
 RouteName = Literal["artifact", "moments", "native"]
+
+
+def _as_lift_estimates(rows: Sequence[LiftEstimate]) -> LiftEstimates:
+    from increment.breakout.estimates import LiftEstimates
+
+    if isinstance(rows, LiftEstimates):
+        return rows
+    return LiftEstimates(rows)
+
+
+def _select_population(
+    rows: LiftEstimates, population: Literal["assigned", "triggered"] | None
+) -> LiftEstimates:
+    if population is None:
+        return rows
+    return rows.filter(lambda row: row.analysis_population == population)
+
 
 # The source cannot serve `operation`; context names it for callers.
 _ANALYSIS_OPERATION = RefusalSpec(
@@ -93,7 +110,7 @@ class WholeWindowRequest:
     metrics: tuple[Metric, ...]
     estimands: tuple[str, ...] | None
     value_scale: Mapping[str, ValueScale] | None
-    population: Literal["assigned", "triggered"]
+    population: Literal["assigned", "triggered"] | None
     decision_method: Method | _Unset
     sensitivity_methods: Sequence[Method] | _Unset
     prior: Prior | None | _Unset
@@ -147,7 +164,7 @@ class WholeWindowReadouts:
         self._validate_trigger = validate_trigger
         self._arm_moments = arm_moments
 
-    def run(self, req: WholeWindowRequest) -> list[LiftEstimate]:
+    def run(self, req: WholeWindowRequest) -> LiftEstimates:
         route = _day_axis_source_route(self._src)
         validate_whole_window(
             req,
@@ -158,73 +175,74 @@ class WholeWindowReadouts:
             route=route,
         )
         if getattr(self._plan.inference, "registration", None) is not None:
-            return readouts.run(
-                self._src,
-                metrics=[m.name for m in req.metrics],
-                estimands=req.estimands,
-                decision_method=req.decision_method,
-                sensitivity_methods=req.sensitivity_methods,
-                prior=req.prior,
-                value_scale=req.value_scale,
+            result = _as_lift_estimates(
+                readouts.run(
+                    self._src,
+                    metrics=[m.name for m in req.metrics],
+                    estimands=req.estimands,
+                    decision_method=req.decision_method,
+                    sensitivity_methods=req.sensitivity_methods,
+                    prior=req.prior,
+                    value_scale=req.value_scale,
+                    _population="assigned",
+                )
             )
+            return _select_population(result, req.population)
         design_summary_only = _design_compliance_only(self._src, req.estimands)
         if not req.metrics and not design_summary_only:
-            return []
+            from increment.breakout.estimates import LiftEstimates
+
+            return LiftEstimates()
         if route != "native":
             return self._run_seam_family(req)
         return self._run_native_family(req, design_summary_only=design_summary_only)
 
-    def _run_seam_family(self, req: WholeWindowRequest) -> list[LiftEstimate]:
+    def _run_seam_family(self, req: WholeWindowRequest) -> LiftEstimates:
         metric_names = [m.name for m in req.metrics]
-        results = list(
-            self._arm_moments(
-                self._src,
-                decision_method=req.decision_method,
-                sensitivity_methods=req.sensitivity_methods,
-                prior=req.prior,
-                metrics=metric_names,
-                estimands=req.estimands,
-                value_scale=req.value_scale,
+
+        def _read(population: Literal["assigned", "triggered"]) -> LiftEstimates:
+            source = self._src
+            if population == "triggered":
+                assert self._experiment is not None
+                self._validate_trigger()
+                source = self._readout_source(
+                    population="triggered",
+                    selected=req.metrics,
+                    decision_method=req.decision_method,
+                    sensitivity_methods=req.sensitivity_methods,
+                )
+            return _as_lift_estimates(
+                self._arm_moments(
+                    source,
+                    decision_method=req.decision_method,
+                    sensitivity_methods=req.sensitivity_methods,
+                    prior=req.prior,
+                    metrics=metric_names,
+                    estimands=req.estimands,
+                    value_scale=req.value_scale,
+                    population=population,
+                )
             )
-        )
-        if classify_source(self._src) == "artifact":
-            assert self._experiment is not None
-            if self._experiment.trigger is None:
-                return results
-            self._validate_trigger()
-            triggered_src = self._readout_source(
-                population="triggered",
-                selected=req.metrics,
-                decision_method=req.decision_method,
-                sensitivity_methods=req.sensitivity_methods,
-            )
-            triggered_rows = self._arm_moments(
-                triggered_src,
-                decision_method=req.decision_method,
-                sensitivity_methods=req.sensitivity_methods,
-                prior=req.prior,
-                metrics=metric_names,
-                estimands=req.estimands,
-                value_scale=req.value_scale,
-            )
-            results.extend(
-                row.model_copy(update={"analysis_population": "triggered"})
-                for row in triggered_rows
-            )
-        return results
+
+        if req.population == "triggered":
+            return _read("triggered")
+        assigned = _read("assigned")
+        if req.population == "assigned" or self._experiment is None:
+            return assigned
+        if self._experiment.trigger is None:
+            return assigned
+        return assigned.concat(_read("triggered"))
 
     def _run_native_family(
         self, req: WholeWindowRequest, *, design_summary_only: bool
-    ) -> list[LiftEstimate]:
+    ) -> LiftEstimates:
         assert self._experiment is not None
         metric_names = [m.name for m in req.metrics]
 
         def _run_arm(
-            source: MomentSource,
-            *,
-            population: Literal["assigned", "triggered"] = "assigned",
-        ) -> list[LiftEstimate]:
-            return list(
+            source: MomentSource, population: Literal["assigned", "triggered"]
+        ) -> LiftEstimates:
+            return _as_lift_estimates(
                 self._arm_moments(
                     source,
                     decision_method=req.decision_method,
@@ -236,31 +254,34 @@ class WholeWindowReadouts:
                 )
             )
 
-        results = _run_arm(
-            self._readout_source(
+        if req.population == "triggered":
+            self._validate_trigger()
+            source = self._readout_source(
+                population="triggered",
                 selected=req.metrics,
                 design_summary_only=design_summary_only,
                 decision_method=req.decision_method,
                 sensitivity_methods=req.sensitivity_methods,
             )
+            return _run_arm(source, "triggered")
+        source = self._readout_source(
+            selected=req.metrics,
+            design_summary_only=design_summary_only,
+            decision_method=req.decision_method,
+            sensitivity_methods=req.sensitivity_methods,
         )
-        if self._experiment.trigger is not None:
-            self._validate_trigger()
-            triggered = _run_arm(
-                self._readout_source(
-                    population="triggered",
-                    selected=req.metrics,
-                    decision_method=req.decision_method,
-                    design_summary_only=design_summary_only,
-                    sensitivity_methods=req.sensitivity_methods,
-                ),
-                population="triggered",
-            )
-            results = [
-                *results,
-                *(row.model_copy(update={"analysis_population": "triggered"}) for row in triggered),
-            ]
-        return results
+        assigned = _run_arm(source, "assigned")
+        if req.population == "assigned" or self._experiment.trigger is None:
+            return assigned
+        self._validate_trigger()
+        triggered = self._readout_source(
+            population="triggered",
+            selected=req.metrics,
+            design_summary_only=design_summary_only,
+            decision_method=req.decision_method,
+            sensitivity_methods=req.sensitivity_methods,
+        )
+        return assigned.concat(_run_arm(triggered, "triggered"))
 
 
 __all__ = [

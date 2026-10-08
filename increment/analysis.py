@@ -36,7 +36,6 @@ from increment._analysis_config import (
 from increment._breakout_readouts import BreakoutReadouts, BreakoutRequest
 from increment._day_axis import (
     _CLUSTERED_DAY_AXIS,
-    _TRIGGER_UNSUPPORTED,
     DayAxisReadouts,
     DayAxisRequest,
     _day_axis_source_route,
@@ -74,6 +73,7 @@ from increment.breakout.estimates import (
     DailyMetricValues,
     LiftEstimates,
     reject_quantile_metrics,
+    reject_retention_metrics,
 )
 from increment.breakout.estimates import run_daily_lift as _run_daily_lift_estimates
 from increment.decision import (
@@ -111,7 +111,7 @@ from increment.query.fact_resolution import _require_design
 from increment.query.integrity import validate_trigger_fires_in_every_arm
 from increment.query.native_contract import NativeCoreSource, NativeViewSource
 from increment.query.native_source import DefinitionsMomentSource
-from increment.query.session import WarehouseSession
+from increment.query.session import SourceSnapshotEvidence, WarehouseSession
 from increment.query.source import open_artifact
 from increment.semantics.artifact import (
     ArtifactContext,
@@ -178,6 +178,15 @@ _UNCORRECTED_SEQUENTIAL = RefusalSpec(
     UnsupportedRequestError,
     template="uncorrected segment rows have no fixed-horizon p-values under {inference}; read the registered breakout with run_breakout() instead.",
 )
+_TRIGGERED_SITEWIDE_UNSUPPORTED = RefusalSpec(
+    "analysis.sitewide.triggered_population_unsupported",
+    CapabilityError,
+    template=(
+        "sitewide() is an all-units deployment estimand and cannot isolate trigger-eligible "
+        "units from the whole-site evidence for {experiment!r}; use run() for the triggered "
+        "cohort effect."
+    ),
+)
 
 
 def fit_predeclared_adjustment(
@@ -236,6 +245,7 @@ def fit_predeclared_adjustment(
 _REFUSALS = refusals(
     InvalidRequestError,
     {
+        "analysis.sitewide.triggered_population_unsupported": _TRIGGERED_SITEWIDE_UNSUPPORTED,
         "facade.analysis.definitions_state_requires_identification": "definitions state requires a declared parallel identification",
         "facade.analysis.unknown_experiment": RefusalSpec(
             "facade.analysis.unknown_experiment",
@@ -314,6 +324,105 @@ class _ArtifactOpenSpec:
 # Public facade
 
 
+def _stamp_exploratory_rows(rows):
+    from increment.estimation.multiplicity import multiplicity_status
+    from increment.estimation.readout_types import (
+        CellKey,
+        FamilyScope,
+        ReadoutMetadata,
+        ReadoutScope,
+        cell_order,
+        family_identity,
+    )
+
+    metadata = rows.metadata
+    source_rows = list(rows)
+    updated = [
+        row.model_copy(
+            update={
+                "role": "exploratory",
+                "multiplicity_status": multiplicity_status("exploratory", None),
+            }
+        )
+        for row in source_rows
+    ]
+    if metadata is None:
+        return LiftEstimates(updated, source=rows.source)
+
+    moved = {(row.source_snapshot_id, CellKey.from_row(row)) for row in source_rows}
+    families: list[FamilyScope] = []
+    for declared_family in metadata.scope.families:
+        family = FamilyScope.model_validate(declared_family)
+        assert isinstance(family, FamilyScope)
+        retained = tuple(
+            cell for cell in family.members if (family.source_snapshot_id, cell) not in moved
+        )
+        if retained:
+            retained_family = family.model_copy(update={"members": retained})
+            assert isinstance(retained_family, FamilyScope)
+            families.append(retained_family)
+
+    family_ids = {}
+    by_family = {}
+    for row in source_rows:
+        source_id = row.source_snapshot_id
+        population = row.analysis_population
+        key = (source_id, population)
+        by_family.setdefault(key, []).append(CellKey.from_row(row))
+    for (source_id, population), members in by_family.items():
+        family_id = family_identity(source_id, population, "run", None, None, "exploratory")
+        families.append(
+            FamilyScope(
+                family_id=family_id,
+                analysis_population=population,
+                source_snapshot_id=source_id,
+                view="run",
+                dimension=None,
+                source=None,
+                name="exploratory",
+                family=None,
+                members=tuple(sorted(set(members), key=cell_order)),
+                complete=True,
+            )
+        )
+        family_ids[(source_id, population)] = family_id
+    updated = [
+        row.model_copy(
+            update={"family_id": family_ids[(row.source_snapshot_id, row.analysis_population)]}
+        )
+        for row in updated
+    ]
+    scope = ReadoutScope(
+        snapshot_id=metadata.scope.snapshot_id,
+        cells=metadata.scope.cells,
+        decision_cells=metadata.scope.decision_cells,
+        populations=metadata.scope.populations,
+        families=tuple(
+            sorted(
+                families,
+                key=lambda family: (
+                    family.family_id
+                    if isinstance(family, FamilyScope)
+                    else str(family["family_id"])
+                ),
+            )
+        ),
+        by_source=metadata.scope.by_source,
+    )
+    metadata = ReadoutMetadata(
+        scope=scope,
+        cells=metadata.cells,
+        partial=metadata.partial,
+        partial_reason=metadata.partial_reason,
+    )
+    return LiftEstimates(
+        updated,
+        metadata=metadata,
+        source=rows.source,
+        sequential_snapshot=rows.sequential_snapshot,
+    )
+
+
 class Analysis:
     """Analyse one A/B experiment from declarative definitions.
 
@@ -339,6 +448,9 @@ class Analysis:
         than one arm or with no assignment label. ``"error"`` (default)
         refuses; ``"warn"``/``"exclude"`` drop them, warning once or not at
         all.
+    source_snapshot_evidence : SourceSnapshotEvidence | None
+        Caller-supplied event-time cutoff and optional certified per-feed
+        completeness watermarks; absent certification remains unknown.
     """
 
     def __init__(
@@ -350,6 +462,7 @@ class Analysis:
         backend: str | None = None,
         store: Literal["auto", "always", "none"] = "auto",
         on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
+        source_snapshot_evidence: SourceSnapshotEvidence | None = None,
     ) -> None:
         if on_mixed_assignment not in ("error", "warn", "exclude"):
             _refuse(_INVALID_MIXED_ASSIGNMENT_POLICY, on_mixed_assignment=on_mixed_assignment)
@@ -396,7 +509,7 @@ class Analysis:
             path="warehouse",
             design=design,
         )
-        session = WarehouseSession(con, defs)
+        session = WarehouseSession(con, defs, source_snapshot_evidence=source_snapshot_evidence)
         verify_sql_admission_matches_execution(defs, con)
         session.drop_materialized()
         src = DefinitionsMomentSource(
@@ -688,9 +801,15 @@ class Analysis:
         backend: str | None = None,
         store: Literal["auto", "always", "none"] = "auto",
         on_mixed_assignment: Literal["error", "warn", "exclude"] = "error",
+        source_snapshot_evidence: SourceSnapshotEvidence | None = None,
     ) -> Analysis:
         """Build an :class:`Analysis` from a definitions YAML path/directory.
 
+        Supply ``source_snapshot_evidence`` when the upstream source provides an
+        explicit event-time cutoff; optional per-feed watermarks record only
+        certified completeness, and absent certification stays unknown.
+        Triggered membership, outcomes, and trigger-evidence publication refuse
+        without this evidence; assigned-only operations do not require it.
         Unknown experiment names raise ``InvalidRequestError`` before warehouse access.
         """
         return cls(
@@ -700,6 +819,7 @@ class Analysis:
             backend=backend,
             store=store,
             on_mixed_assignment=on_mixed_assignment,
+            source_snapshot_evidence=source_snapshot_evidence,
         )
 
     @classmethod
@@ -963,6 +1083,16 @@ class Analysis:
 
         design = design or Randomized(control_group=cast("str", control))
         specs = _coerce_source_metrics(metrics, design=design)
+        metric_catalog = [synthesise_metric(spec) for spec in specs]
+        from increment._analysis_config import resolve_configs
+
+        configs = resolve_configs(
+            metric_catalog,
+            bindings=None,
+            specs={spec.name: spec for spec in specs},
+            methods=None,
+            prior=None,
+        )
         if experiment_id is None:
             experiment_id = (
                 str(rows[0].get("experiment_id", "moments"))
@@ -975,10 +1105,11 @@ class Analysis:
             )
         src = MomentsSource(
             rows,
-            metrics=[synthesise_metric(s) for s in specs],
+            metrics=metric_catalog,
             study_id=experiment_id,
             design=design,
             plan=plan,
+            configs=configs,
         )
         return cls._from_source(src, design)
 
@@ -1140,8 +1271,9 @@ class Analysis:
         *,
         metrics: Sequence[Metric],
         checkpoints: Mapping[str, SequentialCheckpoint] | None = None,
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> tuple[DashboardGroupData, ...]:
-        """Return one source-owned dashboard group-data operation."""
+        """Return group data for the requested assigned or triggered population."""
         self._require_arm_state("dashboard_group_data")
         selected = select_metrics(
             self._metrics,
@@ -1158,15 +1290,22 @@ class Analysis:
                 "instance with a warehouse-backed source."
             ),
         )
-        return tuple(src.dashboard_group_data(metrics=selected, checkpoints=checkpoints))
+        return tuple(
+            src.dashboard_group_data(
+                metrics=selected, checkpoints=checkpoints, population=population
+            )
+        )
 
-    def allocation_history(self) -> pa.Table:
-        """Daily and cumulative assigned-unit enrollment per arm.
+    def allocation_history(
+        self, *, population: Literal["assigned", "triggered"] = "assigned"
+    ) -> pa.Table:
+        """Daily and cumulative enrollment history for one named population.
 
         Columns are ``experiment_id``, ``ds`` (the declared day boundary),
-        ``group_id``, ``n_daily`` and ``n_cumulative``, sorted by date and arm.
-        Counts follow first-exposure assignment, independent of metric maturity,
-        and reconcile with the assigned-population SRM counts.
+        ``group_id``, ``n_daily``, ``n_cumulative`` and ``analysis_population``.
+        Assigned histories use first-exposure dates; triggered histories use
+        first eligible trigger dates and count only trigger-eligible units.
+        Counts are independent of metric maturity.
 
         Sources without raw enrollment events and clustered experiments refuse
         this unit-grain timeline with a coded capability error.
@@ -1181,7 +1320,7 @@ class Analysis:
                 "to build a daily enrollment timeline from."
             ),
         )
-        return src.allocation_history()
+        return src.allocation_history(population=population)
 
     def srm(
         self,
@@ -1296,17 +1435,23 @@ class Analysis:
     def _validate_trigger_fires_in_every_arm(self) -> None:
         validate_trigger_fires_in_every_arm(self.trigger_rates(), self._experiment.trigger)
 
-    def _refuse_trigger(self, method: str) -> None:
-        """Refuse when a declared trigger cannot be honored by this readout."""
+    def _cate_source(self, method: str) -> MomentSource:
         self._require_arm_state(method)
         experiment = getattr(self, "_experiment", None)
-        if experiment is not None and experiment.trigger is not None:
-            _refuse(
-                _TRIGGER_UNSUPPORTED,
-                method=method,
-                experiment=experiment.name,
-                trigger=experiment.trigger,
-            )
+        if experiment is None or experiment.trigger is None:
+            return cast("MomentSource", self._src)
+        if classify_source(self._src) == "artifact":
+            return self._readout_source(population="triggered")
+        triggered = _require_analysis_operation(
+            self._src,
+            "triggered_source",
+            TriggeredPopulationOperation,
+            message=(
+                f"{method}() needs a source-owned triggered unit view; this source "
+                "cannot reconstruct trigger membership."
+            ),
+        )
+        return triggered.triggered_source()
 
     def sitewide(
         self, metric_name: str, *, arm: str | None = None, alpha: float = 0.05
@@ -1352,7 +1497,12 @@ class Analysis:
             ``arm`` names an arm that isn't enrolled; ``alpha`` is not
             strictly between 0 and 1.
         """
-        self._refuse_trigger("sitewide")
+        experiment = getattr(self, "_experiment", None)
+        if experiment is not None and experiment.trigger is not None:
+            _raise(
+                "analysis.sitewide.triggered_population_unsupported",
+                experiment=experiment.name,
+            )
         return SitewideReadouts(src=self._src, experiment=getattr(self, "_experiment", None)).run(
             SitewideRequest(metric_name=metric_name, arm=arm, alpha=alpha)
         )
@@ -1728,6 +1878,7 @@ class Analysis:
         estimands: Sequence[str] | None = None,
         value_scale: Mapping[str, ValueScale] | None = None,
         exploratory_metrics: Sequence[str] | None = None,
+        population: Literal["assigned", "triggered"] | None = None,
     ) -> LiftEstimates | ContrastResults:
         """Run the full A/B test analysis pipeline.
 
@@ -1760,6 +1911,10 @@ class Analysis:
             under the default unassigned procedure (two-sided, at the plan's full
             ``alpha``), join no plan family, and leave every declared row unchanged.
             ``metrics=[]`` with ``exploratory_metrics`` returns only the added rows.
+        population : Literal["assigned", "triggered"] | None
+            Source population for the arm readout. When omitted, return each captured population
+            as separate result rows; an explicit value selects only that population. Triggered
+            reads require a declared trigger and sufficient source evidence.
 
         Returns
         -------
@@ -1768,6 +1923,9 @@ class Analysis:
             non-control arm). Switchback evidence returns one contrast per
             selected metric. Switchback calls accept only UNSET role/prior overrides;
             ``estimands`` and ``value_scale`` remain arm-only.
+            Each arm estimate carries an explicit ``analysis_population`` axis
+            (``assigned`` or ``triggered``); the two populations are distinct
+            result identities.
         """
         added = self._exploratory_metrics(exploratory_metrics, caller="run")
         if isinstance(self._state, ContrastAnalysisState):
@@ -1781,26 +1939,32 @@ class Analysis:
                 metrics=tuple(chosen),
                 estimands=tuple(estimands) if estimands is not None else None,
                 value_scale=value_scale,
-                population="assigned",
+                population=population,
                 decision_method=decision_method,
                 sensitivity_methods=sensitivity_methods,
                 prior=prior,
             )
 
-        rows = self._whole_window().run(request(selected)) if selected or not added else []
+        rows = (
+            self._whole_window().run(request(selected))
+            if selected or not added
+            else LiftEstimates()
+        )
+        if not isinstance(rows, LiftEstimates):
+            rows = LiftEstimates(rows)
         if added:
-            # The design-level compliance rows already ride with the declared read.
-            rows = [
-                *rows,
-                *(
-                    row.model_copy(update={"role": "exploratory"})
-                    for row in self._exploratory_analysis(added, caller="run")
-                    ._whole_window()
-                    .run(request(added))
-                    if row.estimand != "compliance"
-                ),
-            ]
-        return LiftEstimates(rows)
+            extra = (
+                self._exploratory_analysis(added, caller="run")._whole_window().run(request(added))
+            )
+            extra = LiftEstimates(
+                [row for row in extra if row.estimand != "compliance"],
+                metadata=extra.metadata,
+                source=extra.source,
+                sequential_snapshot=extra.sequential_snapshot,
+            )
+            extra = _stamp_exploratory_rows(extra)
+            rows = extra if rows.metadata is None else rows.concat(extra)
+        return rows
 
     def _run_contrast(
         self,
@@ -1852,9 +2016,8 @@ class Analysis:
         """Fit CATE using this analysis's unit source and declared intervention."""
         from increment.cate import estimate_cate
 
-        self._require_arm_state("estimate_cate")
         return estimate_cate(
-            cast("MomentSource", self._src),
+            self._cate_source("estimate_cate"),
             metric,
             control=control,
             interact=interact,
@@ -1884,9 +2047,8 @@ class Analysis:
         """
         from increment.cate import validate_cate
 
-        self._require_arm_state("validate_cate")
         return validate_cate(
-            cast("MomentSource", self._src),
+            self._cate_source("validate_cate"),
             metric,
             control=control,
             interact=interact,
@@ -1915,9 +2077,8 @@ class Analysis:
         """Evaluate a precommitted deployment fraction on an honest holdout."""
         from increment.cate import targeting_rule
 
-        self._require_arm_state("targeting_rule")
         return targeting_rule(
-            cast("MomentSource", self._src),
+            self._cate_source("targeting_rule"),
             metric,
             control=control,
             interact=interact,
@@ -1950,9 +2111,8 @@ class Analysis:
         """Select a deployment budget on inner folds, then report the untouched holdout."""
         from increment.cate import select_targeting_rule
 
-        self._require_arm_state("select_targeting_rule")
         return select_targeting_rule(
-            cast("MomentSource", self._src),
+            self._cate_source("select_targeting_rule"),
             metric,
             control=control,
             interact=interact,
@@ -1996,21 +2156,19 @@ class Analysis:
         Returns
         -------
         dict[str, dict[str, pa.Table]]
-            ``{f"{metric.name}:{breakout.property}:{source_name}":
-            {"group_summary": pa.Table, "daily_group_summary": pa.Table}}``.
-            Empty when the experiment declares no breakouts.
+            ``{f"{metric.name}:{breakout.property}:{source_name}" :
+            {"group_summary": pa.Table, "daily_group_summary": pa.Table}}`` when
+            no trigger is declared. Triggered experiments add ``:assigned`` /
+            ``:triggered`` key suffixes and an ``analysis_population`` column.
         """
-        from increment.breakout.estimates import reject_retention_metrics
-
-        self._refuse_trigger("breakout_summaries")
+        self._require_arm_state("breakout_summaries")
         native = _require_analysis_operation(
             self._src,
             "breakout_summaries",
             NativeViewSource,
             message=(
-                "breakout_summaries() needs a native Analysis.from_definitions "
-                "instance -- a frame/warehouse/moments-backed analysis has no "
-                "breakouts to summarise."
+                "breakout_summaries() needs a native Analysis.from_definitions or "
+                "Analysis.from_unit_day_artifact instance with breakout evidence."
             ),
         )
         effective = select_metrics(
@@ -2028,7 +2186,25 @@ class Analysis:
             reason="quantiles do not decompose over segment moments",
         )
         reject_retention_metrics(effective, "breakout_summaries", view="cohort")
-        return native.breakout_summaries(metrics=effective)
+        triggered = self._experiment.trigger is not None
+        populations = ("assigned", "triggered") if triggered else ("assigned",)
+        native.validate_populations(populations, operation="breakout_summaries")
+        if triggered:
+            import pyarrow as pa
+        results: dict[str, dict[str, pa.Table]] = {}
+        for population in populations:
+            summaries = native.breakout_summaries(metrics=effective, population=population)
+            for key, tables in summaries.items():
+                if not triggered:
+                    results[key] = tables
+                    continue
+                results[f"{key}:{population}"] = {
+                    name: table.append_column(
+                        "analysis_population", pa.array([population] * table.num_rows)
+                    )
+                    for name, table in tables.items()
+                }
+        return results
 
     def factor_summaries(self) -> dict[str, pa.Table]:
         """Per-(factor level x arm) moment tables for every declared factor.
@@ -2043,18 +2219,18 @@ class Analysis:
         Returns
         -------
         dict[str, pa.Table]
-            ``{f"{metric.name}:{factor.property}:{source_name}": pa.Table}``.
-            Empty when the experiment declares no factors.
+            ``{f"{metric.name}:{factor.property}:{source_name}[:population]": pa.Table}``.
+            Triggered experiments include both populations and an
+            ``analysis_population`` column; empty when no factors are declared.
         """
-        self._refuse_trigger("factor_summaries")
+        self._require_arm_state("factor_summaries")
         native = _require_analysis_operation(
             self._src,
             "factor_summaries",
             NativeViewSource,
             message=(
-                "factor_summaries() needs a native Analysis.from_definitions "
-                "instance -- a frame/warehouse/moments-backed analysis has no "
-                "factors to summarise."
+                "factor_summaries() needs a native Analysis.from_definitions or "
+                "Analysis.from_unit_day_artifact instance with factor evidence."
             ),
         )
         if not self._experiment.factors or not self._metrics:
@@ -2064,7 +2240,24 @@ class Analysis:
             "factor_summaries()",
             reason="quantiles do not decompose over factor moments",
         )
-        return native.factor_summaries(metrics=self._metrics)
+        triggered = self._experiment.trigger is not None
+        populations = ("assigned", "triggered") if triggered else ("assigned",)
+        native.validate_populations(populations, operation="factor_summaries")
+        if triggered:
+            import pyarrow as pa
+        results: dict[str, pa.Table] = {}
+        for population in populations:
+            summaries = native.factor_summaries(metrics=self._metrics, population=population)
+            for key, table in summaries.items():
+                result_key = f"{key}:{population}" if triggered else key
+                results[result_key] = (
+                    table.append_column(
+                        "analysis_population", pa.array([population] * table.num_rows)
+                    )
+                    if triggered
+                    else table
+                )
+        return results
 
     def run_breakout(
         self,
@@ -2074,6 +2267,7 @@ class Analysis:
         prior: Prior | None | _Unset = UNSET,
         metrics: Sequence[str | Metric] | None = None,
         exploratory_metrics: Sequence[str] | None = None,
+        population: Literal["assigned", "triggered"] | None = None,
     ) -> BreakoutEstimates:
         """Per-segment lift estimates for every declared breakout.
 
@@ -2097,7 +2291,10 @@ class Analysis:
             declared in a plan of its own: the plan's breakout multiplicity applies to
             the added metrics' cells as one family of their own, so no declared row
             changes. ``metrics=[]`` with ``exploratory_metrics`` returns only the added rows.
-
+        population : Literal["assigned", "triggered"] | None
+            Select one source population; ``None`` returns captured populations
+            as separate result rows. Triggered reads require declared trigger
+            evidence.
         Notes
         -----
         Alpha, inference, and breakout multiplicity are read from the
@@ -2120,6 +2317,7 @@ class Analysis:
             prior=prior,
             metrics=metrics,
             exploratory_metrics=exploratory_metrics,
+            population=population,
         )
 
     def _run_breakout(
@@ -2131,6 +2329,49 @@ class Analysis:
         metrics: Sequence[str | Metric] | None = None,
         exploratory_metrics: Sequence[str] | None = None,
         correction: Correction | None = None,
+        population: Literal["assigned", "triggered"] | None = None,
+    ) -> BreakoutEstimates:
+        state = self._state
+        experiment = (
+            state.experiment
+            if isinstance(state, DefinitionsArmAnalysisState)
+            else getattr(state.source, "artifact_experiment", None)
+            if state.family == "arm_moments"
+            else None
+        )
+        populations = (
+            (population,)
+            if population is not None
+            else (
+                ("assigned", "triggered")
+                if experiment is not None and experiment.trigger is not None
+                else ("assigned",)
+            )
+        )
+        combined: BreakoutEstimates | None = None
+        for population in populations:
+            rows = self._run_breakout_population(
+                decision_method=decision_method,
+                sensitivity_methods=sensitivity_methods,
+                prior=prior,
+                metrics=metrics,
+                exploratory_metrics=exploratory_metrics,
+                correction=correction,
+                population=population,
+            )
+            combined = rows if combined is None else combined.concat(rows)
+        return BreakoutEstimates([]) if combined is None else combined
+
+    def _run_breakout_population(
+        self,
+        *,
+        decision_method: Method | _Unset = UNSET,
+        sensitivity_methods: Sequence[Method] | _Unset = UNSET,
+        prior: Prior | None | _Unset = UNSET,
+        metrics: Sequence[str | Metric] | None = None,
+        exploratory_metrics: Sequence[str] | None = None,
+        correction: Correction | None = None,
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> BreakoutEstimates:
         """:meth:`run_breakout`, optionally under an explicit *correction* in place of the
         plan's breakout multiplicity (``"none"`` leaves every cell standing alone)."""
@@ -2142,10 +2383,17 @@ class Analysis:
                 prior=prior,
             )
         self._require_arm_state("run_breakout")
-        self._refuse_trigger("run_breakout")
         inference = self._plan.inference
         if correction is not None and getattr(inference, "registration", None) is not None:
             _refuse(_UNCORRECTED_SEQUENTIAL, inference=type(inference).__name__)
+        breakout_policy = self._plan.view_policies.for_view(
+            "breakout",
+            mechanism=getattr(getattr(self, "_design", None), "mechanism", None),
+            segmented=True,
+        )
+        effective_correction = correction or normalize_display_correction(
+            breakout_policy.correction
+        )
         selected = select_metrics(
             cast("Sequence[Metric]", self._src.context.metrics), metrics, caller="run_breakout"
         )
@@ -2156,25 +2404,38 @@ class Analysis:
                 sensitivity_methods=sensitivity_methods,
                 prior=prior,
                 correction=correction,
+                population=population,
             )
             if selected or not added
             else BreakoutEstimates([])
         )
         if added:
             exploratory = self._exploratory_analysis(added, caller="run_breakout")
-            rows = BreakoutEstimates(
-                [
-                    *rows,
-                    *exploratory._breakout_rows(
-                        added,
-                        decision_method=decision_method,
-                        sensitivity_methods=sensitivity_methods,
-                        prior=prior,
-                        correction=correction,
-                    ),
-                ]
+            exploratory_rows = exploratory._breakout_rows(
+                added,
+                decision_method=decision_method,
+                sensitivity_methods=sensitivity_methods,
+                prior=prior,
+                correction=correction,
+                population=population,
             )
-        return rows
+            rows = exploratory_rows if not rows else rows.concat(exploratory_rows)
+        from increment.estimation.multiplicity import row_multiplicity_status
+
+        return BreakoutEstimates(
+            [
+                row.model_copy(
+                    update={
+                        "multiplicity_status": row_multiplicity_status(
+                            row,
+                            correction=effective_correction if row.family_id is not None else None,
+                        )
+                    }
+                )
+                for row in rows
+            ],
+            metadata=rows.metadata,
+        )
 
     def _breakout_rows(
         self,
@@ -2184,6 +2445,7 @@ class Analysis:
         sensitivity_methods: Sequence[Method] | _Unset,
         prior: Prior | None | _Unset,
         correction: Correction | None,
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> BreakoutEstimates:
         policy = self._plan.view_policies.for_view(
             "breakout",
@@ -2197,6 +2459,7 @@ class Analysis:
             prior=prior,
             correction=correction or normalize_display_correction(policy.correction),
             q=policy.q if policy.q is not None else self._plan.q,
+            population=population,
         )
         return BreakoutReadouts(src=self._src, experiment=getattr(self, "_experiment", None)).run(
             request
@@ -2218,6 +2481,7 @@ class Analysis:
         metrics: Sequence[str | Metric] | None = None,
         dimension: str | None = None,
         exploratory_metrics: Sequence[str] | None = None,
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> DailyMetricValues:
         """Per-day absolute metric values, optionally broken out by segment.
 
@@ -2247,6 +2511,11 @@ class Analysis:
             Names from :attr:`available_metrics` to read in addition to the declared
             metrics (``from_definitions`` only); ``metrics=[]`` reads only these. A
             dimensioned read keeps its refusal of metrics the experiment does not declare.
+        population : Literal["assigned", "triggered"]
+            ``"assigned"`` (default) retains the enrolled population.
+            ``"triggered"`` admits each unit on its first eligible trigger day;
+            outcomes are strictly after that unit's trigger and require explicit
+            source evidence. Supported on definitions and unit-day artifacts only.
 
         Returns
         -------
@@ -2270,7 +2539,11 @@ class Analysis:
         self._require_arm_state("run_daily")
         selected = self._select_day_axis_metrics(metrics, caller="run_daily", added=added)
         req = DayAxisRequest(
-            caller="run_daily", grain="daily", metrics=tuple(selected), dimension=dimension
+            caller="run_daily",
+            grain="daily",
+            metrics=tuple(selected),
+            dimension=dimension,
+            population=population,
         )
         return self._day_axis().values(req)
 
@@ -2306,16 +2579,27 @@ class Analysis:
         return select_metrics((), [*selected, *added], caller=caller, allow_undeclared_objects=True)
 
     @staticmethod
-    def _stamp_exploratory(rows: DailyLiftEstimates, added: Sequence[Metric]) -> DailyLiftEstimates:
-        """*rows* with the added metrics' rows marked ``role="exploratory"``."""
+    def _stamp_exploratory(
+        rows: DailyLiftEstimates,
+        added: Sequence[Metric],
+        *,
+        correction: Correction | None = None,
+    ) -> DailyLiftEstimates:
+        """Mark added metrics exploratory under the effective view correction."""
         names = {metric.name for metric in added}
         if not names:
             return rows
+        from increment.estimation.multiplicity import stamp_multiplicity_status
+
         return DailyLiftEstimates(
-            [
-                row.model_copy(update={"role": "exploratory"}) if row.metric in names else row
-                for row in rows
-            ]
+            stamp_multiplicity_status(
+                [
+                    row.model_copy(update={"role": "exploratory"}) if row.metric in names else row
+                    for row in rows
+                ],
+                correction=correction,
+            ),
+            metadata=rows.metadata,
         )
 
     def _day_axis(self) -> DayAxisReadouts:
@@ -2335,6 +2619,7 @@ class Analysis:
         prior: Prior | None | _Unset = UNSET,
         metrics: Sequence[str | Metric] | None = None,
         dimension: str | None = None,
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> DailyLiftEstimates:
         """Per-day relative lift estimates, optionally broken out by segment.
 
@@ -2362,6 +2647,11 @@ class Analysis:
         dimension : str | None
             Break each day's lift out by one declared breakout's
             dimension. Must match a declared breakout ``property``.
+        population : Literal["assigned", "triggered"]
+            ``"assigned"`` (default) retains the enrolled population.
+            ``"triggered"`` admits each unit on its first eligible trigger day;
+            outcomes are strictly after that unit's trigger and require explicit
+            source evidence. Supported on definitions and unit-day artifacts only.
 
         Returns
         -------
@@ -2386,7 +2676,11 @@ class Analysis:
         self._require_arm_state("run_daily_lift")
         selected = self._select_day_axis_metrics(metrics, caller="run_daily_lift")
         req = DayAxisRequest(
-            caller="run_daily_lift", grain="daily", metrics=tuple(selected), dimension=dimension
+            caller="run_daily_lift",
+            grain="daily",
+            metrics=tuple(selected),
+            dimension=dimension,
+            population=population,
         )
         return self._day_axis().lift(
             req,
@@ -2402,8 +2696,10 @@ class Analysis:
         dimension: str | None = None,
         completed_windows_only: bool = False,
         exploratory_metrics: Sequence[str] | None = None,
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> DailyMetricValues:
         """Per-day absolute metric values "as of day N".
+
 
         The running-total counterpart to :meth:`run_daily`: reduces the
         same panel with ``asof_group_summary`` instead of
@@ -2441,6 +2737,11 @@ class Analysis:
             Names from :attr:`available_metrics` to read in addition to the declared
             metrics (``from_definitions`` only); ``metrics=[]`` reads only these. A
             dimensioned read keeps its refusal of metrics the experiment does not declare.
+        population : Literal["assigned", "triggered"]
+            ``"assigned"`` (default) retains the enrolled population.
+            ``"triggered"`` admits each unit on its first eligible trigger day;
+            outcomes are strictly after that unit's trigger and require explicit
+            source evidence. Supported on definitions and unit-day artifacts only.
 
         Returns
         -------
@@ -2468,6 +2769,7 @@ class Analysis:
             metrics=tuple(selected),
             dimension=dimension,
             completed_windows_only=completed_windows_only,
+            population=population,
         )
         return self._day_axis().values(req)
 
@@ -2482,6 +2784,7 @@ class Analysis:
         estimands: Sequence[str] | None = None,
         completed_windows_only: bool = False,
         exploratory_metrics: Sequence[str] | None = None,
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> DailyLiftEstimates:
         """As-of relative lift history, or a registered sequential checkpoint.
 
@@ -2539,6 +2842,11 @@ class Analysis:
             instead. Registered inference uses finalized outcomes; ``True``
             remains required under :class:`Encouragement` with
             ``AlwaysValid(registration=...)``.
+        population : Literal["assigned", "triggered"]
+            ``"assigned"`` (default) retains the enrolled population.
+            ``"triggered"`` admits each unit on its first eligible trigger day;
+            outcomes are strictly after that unit's trigger and require explicit
+            source evidence. Supported on definitions and unit-day artifacts only.
         Notes
         -----
         Alpha, inference, and segmented as-of multiplicity come from
@@ -2578,6 +2886,12 @@ class Analysis:
             dimension=dimension,
             completed_windows_only=completed_windows_only,
             estimands=tuple(estimands) if estimands is not None else None,
+            population=population,
+        )
+        asof_policy = self._plan.view_policies.for_view(
+            "asof",
+            mechanism=getattr(self._design, "mechanism", None),
+            segmented=dimension is not None,
         )
         return self._stamp_exploratory(
             self._day_axis().lift(
@@ -2587,4 +2901,5 @@ class Analysis:
                 prior=prior,
             ),
             added,
+            correction=normalize_display_correction(asof_policy.correction),
         )

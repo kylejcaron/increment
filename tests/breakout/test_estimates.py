@@ -729,22 +729,51 @@ def _p_value_from_estimate(lift: Estimate) -> float:
 
 
 class TestRunBreakoutBHCorrection:
-    """`correction="bh"`: one flat BH family across every (metric, arm,
-    segment) cell this call produces, with FCR-adjusted intervals on the
-    selected cells (fixed-horizon) or e-BH discovery with untouched
-    confidence-sequence intervals (AlwaysValid)."""
+    """``correction="bh"`` consumes prior-free sampling evidence and keeps
+    declared members in the same family when a posterior is also requested."""
 
-    def test_bh_refuses_informative_prior(self):
-        with pytest.raises(InvalidRequestError) as exc_info:
-            run_breakout(
-                _bh_family_summary(),
-                [_mean_metric("m_a")],
-                control_group="control",
-                dimension="country",
-                prior=Normal(mu=0.0, sigma=0.1),
-                correction="bh",
+    def test_bh_keeps_prior_bound_members_in_sampling_family(self):
+        summary = _bh_family_summary()
+        metrics = [_mean_metric(name) for name in ("m_a", "m_b", "m_c")]
+        baseline = run_breakout(
+            summary,
+            metrics,
+            control_group="control",
+            dimension="country",
+            correction="bh",
+        )
+        posterior = run_breakout(
+            summary,
+            metrics,
+            control_group="control",
+            dimension="country",
+            prior=Normal(mu=0.0, sigma=0.1),
+            correction="bh",
+        )
+        plain_rows = [row for row in baseline if row.excluded is None]
+        prior_rows = [row for row in posterior if row.excluded is None]
+        assert len(prior_rows) == len(plain_rows) == 6
+        for plain, prior_row in zip(plain_rows, prior_rows, strict=True):
+            assert prior_row.lift == plain.lift
+            assert (prior_row.reference_kind, prior_row.reference_df) == (
+                plain.reference_kind,
+                plain.reference_df,
             )
-        assert exc_info.value.code == "breakout.run_breakout_bh_excludes_prior"
+            assert (prior_row.family_size, prior_row.discovery) == (
+                plain.family_size,
+                plain.discovery,
+            )
+            assert prior_row.lift is not None
+            assert plain.lift is not None
+            assert _p_value_from_estimate(prior_row.lift) == pytest.approx(
+                _p_value_from_estimate(plain.lift)
+            )
+            assert prior_row.posterior_available is True
+            family_view = prior_row._family_view()
+            assert family_view is not None
+            assert family_view.sampling_available is True
+            assert family_view.posterior_available is True
+            assert family_view.posterior_estimate == prior_row.posterior_estimate
 
     def test_bh_discovery_matches_hand_bh_across_metrics_and_segments(self):
         summary = _bh_family_summary()
@@ -2557,6 +2586,55 @@ class TestRunBreakoutBinomialGateExemption:
         assert row.excluded is None
         assert row.reference_kind == "binomial"
         assert row.lift is not None
+
+    def test_auto_conversion_prior_keeps_sparse_binomial_rows_eligible(self):
+        from increment.estimation.inference import Normal
+
+        rows = [
+            _conversion_arm_row(1, 1, country="US", group_id="control"),
+            _conversion_arm_row(1, 1, country="US", group_id="treatment"),
+        ]
+        methods = [Method(name="unadjusted", conversion_inference="auto")]
+        baseline = run_breakout(
+            rows,
+            [_conversion_metric()],
+            control_group="control",
+            dimension="country",
+            methods=methods,
+        )[0]
+        informed = run_breakout(
+            rows,
+            [_conversion_metric()],
+            control_group="control",
+            dimension="country",
+            methods=methods,
+            prior=Normal(mu=0.0, sigma=0.1),
+        )[0]
+
+        assert informed.excluded is None
+        assert informed.reference_kind == baseline.reference_kind == "binomial"
+        assert informed.sampling_available is baseline.sampling_available is True
+        assert informed.lift == baseline.lift
+        assert informed.posterior_available is False
+
+    def test_explicit_finite_sample_route_still_refuses_an_informative_prior(self):
+        from increment.errors import InvalidRequestError
+        from increment.estimation.inference import Normal
+
+        rows = [
+            _conversion_arm_row(2, 1, country="US", group_id="control"),
+            _conversion_arm_row(2, 1, country="US", group_id="treatment"),
+        ]
+        with pytest.raises(InvalidRequestError) as raised:
+            run_breakout(
+                rows,
+                [_conversion_metric()],
+                control_group="control",
+                dimension="country",
+                methods=[Method(name="unadjusted", conversion_inference="finite_sample")],
+                prior=Normal(mu=0.0, sigma=0.1),
+            )
+        assert raised.value.code == "estimation.binomial.finite_sample_unavailable"
 
     def test_finite_sample_failure_is_not_labelled_a_lift_guard_exclusion(self):
         """An arm above the finite-sample method's size ceiling fails with a binomial

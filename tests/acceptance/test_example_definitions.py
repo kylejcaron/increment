@@ -209,7 +209,7 @@ def test_session_unit_experiment_runs_end_to_end(seeded):
 
     # The enrolled population is SESSIONS: 30 per arm, even though only
     # 15 distinct users exist and each appears in both arms.
-    srm = analysis.srm(expected={"control": 0.5, "treatment": 0.5})
+    srm = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
     assert isinstance(srm, SRMResult)
     assert srm.observed == expected["n_sessions"]
     assert not srm.is_srm

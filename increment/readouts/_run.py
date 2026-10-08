@@ -5,9 +5,12 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from increment._analysis_config import UNSET, _Unset
 from increment._literals import ValueScale
 from increment._readout_request import _raise as _raise_readout_request
-from increment.breakout.estimates import reject_quantile_metrics
+from increment.breakout.estimates import LiftEstimates, reject_quantile_metrics
+from increment.errors import CodedError
 from increment.estimation.adjust import observational_evidence
+from increment.estimation.assignment_integrity import assignment_integrity
 from increment.estimation.engine import Method
+from increment.estimation.readout_types import CellKey, ReadoutScope, cell_order, freeze
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import (
     SEQUENTIAL_POLICIES,
@@ -24,6 +27,7 @@ from increment.readouts._common import (
 )
 from increment.readouts._encouragement import encouragement_rows
 from increment.readouts._metric_rows import _load_metric_rows
+from increment.readouts._multiplicity_scope import attach_multiplicity_scope
 from increment.readouts._observational import _estimate_observational
 from increment.readouts._passes import _raise_if_all_lift_cells_refused
 from increment.readouts._randomized import (
@@ -74,8 +78,8 @@ def run(
     AlwaysValid plan, registered raw likelihood evidence drives `e_bh_select`.
     Selected intervals are reinverted at the capped FCR allocation from the
     same stopped checkpoint; unselected cells retain their nominal intervals.
-    A non-family secondary (prior-bound, or a quantile metric under an
-    AlwaysValid plan) estimates once at nominal, with no discovery verdict.
+    A non-family secondary (explicitly outside the declared family, or a
+    quantile metric under an AlwaysValid plan) estimates once at nominal, with no discovery verdict.
 
     Under Encouragement, dispatches to encouragement_rows, which delegates
     per metric group to estimate_encouragement instead of estimate_lift;
@@ -107,6 +111,10 @@ def run(
     read through one: the arm gate, family size and routing level, estimates
     and FCR re-estimates all come from that one execution.
 
+    Every arm row carries an explicit ``analysis_population`` axis (``assigned`` or
+    ``triggered``); rows from distinct populations are separate identities.
+    Registered triggered cells that a source cannot estimate are retained as typed
+    unavailable rows and make the triggered decision scope incomplete.
     decision_method, sensitivity_methods, and prior are call-wide overrides; without one, each metric
     falls back to its own declared value, then the design default.
     """
@@ -122,6 +130,10 @@ def run(
         value_scale=value_scale,
         population=_population,
     )
+    # Snapshot validation is pure and must refuse non-portable learner factories
+    # before any source snapshot or evidence read begins.
+    for config in configs:
+        _config_snapshot(config, design)
     # Percentile readouts need the raw source snapshot, and an observational readout reads
     # unit frames and moments that must be one execution. An empty selection reads nothing, so
     # it never opens a snapshot (a definitions-backed capture writes TEMP tables). Metadata/
@@ -142,24 +154,516 @@ def run(
             with src.readout_snapshot(
                 metrics=selected, population=_population, uptake_facts=uptake_facts
             ) as pinned:
-                return _run_prepared(
-                    pinned,
-                    selected,
-                    configs,
-                    prior=prior,
-                    by=by,
-                    estimands=estimands,
-                    value_scale=value_scale,
+                return _as_collection(
+                    _run_prepared(
+                        pinned,
+                        selected,
+                        configs,
+                        prior=prior,
+                        by=by,
+                        estimands=estimands,
+                        value_scale=value_scale,
+                        population=_population,
+                    )
                 )
-    return _run_prepared(
-        src,
-        selected,
-        configs,
-        prior=prior,
-        by=by,
-        estimands=estimands,
-        value_scale=value_scale,
+    return _as_collection(
+        _run_prepared(
+            src,
+            selected,
+            configs,
+            prior=prior,
+            by=by,
+            estimands=estimands,
+            value_scale=value_scale,
+            population=_population,
+        )
     )
+
+
+def _as_collection(rows: list[LiftEstimate]) -> LiftEstimates:
+    return rows if isinstance(rows, LiftEstimates) else LiftEstimates(rows)
+
+
+def _config_snapshot(config, design):
+    from increment._analysis_config import effective_methods
+    from increment.estimation.readout_types import refuse_readout
+    from increment.readouts._design_scope import _request_snapshot
+
+    try:
+        return {
+            "metric": config.metric.model_dump(mode="json"),
+            "methods": [
+                _request_snapshot(
+                    method.model_dump(mode="python"),
+                    field=(
+                        "configs.decision_method"
+                        if index == 0
+                        else f"configs.sensitivity_methods[{index - 1}]"
+                    ),
+                )
+                for index, method in enumerate(effective_methods(config, design=design))
+            ],
+            "prior": None if config.prior is None else config.prior.model_dump(mode="json"),
+            "prior_is_global": config.prior_is_global,
+        }
+    except CodedError:
+        raise
+    except (TypeError, ValueError):
+        refuse_readout("readout.scope.request_not_canonical", fields=["configs"])
+
+
+def _randomized_source(
+    selected,
+    evidence_components,
+    assignment_counts,
+    population,
+    *,
+    source=None,
+    dimension=None,
+):
+    from hashlib import sha256
+
+    from increment._canonical import canonical_digest_bytes
+    from increment.readouts._source_digest import component, composite_source
+
+    components = [
+        component(
+            kind=kind,
+            metric=metric.name,
+            population=population,
+            sha256=digest,
+            source=source,
+            dimension=dimension,
+        )
+        for metric in selected
+        for kind, digest, _count in (evidence_components[metric.name],)
+    ]
+    if assignment_counts is not None:
+        components.append(
+            component(
+                kind="assignment_counts",
+                metric=None,
+                population=population,
+                sha256=sha256(canonical_digest_bytes(assignment_counts)).hexdigest(),
+                source=source,
+                dimension=dimension,
+            )
+        )
+    return composite_source(components)
+
+
+def _randomized_snapshot_id(source, request):
+    from hashlib import sha256
+
+    from increment._canonical import canonical_json_bytes
+
+    preimage = {
+        "kind": "increment.readout.snapshot",
+        "version": 2,
+        "collection": "LiftEstimates",
+        "source": source,
+        "request": request,
+    }
+    return "sha256:" + sha256(canonical_json_bytes(preimage)).hexdigest()
+
+
+def _randomized_cell_record(cell, row, failure, config, snapshot_id):
+    from increment.estimation.decision_types import PValueEvidence
+    from increment.estimation.readout_types import (
+        CellRecord,
+        PosteriorInference,
+        SamplingInference,
+    )
+
+    evidence = None
+    if row is not None and failure is None and row.lift is not None:
+        try:
+            evidence = PValueEvidence(
+                cell.hypothesis(), cell.method, row.p_value(), row.reference_kind
+            )
+        except (AttributeError, ValueError):
+            evidence = None
+    sampling = SamplingInference(
+        available=failure is None and row is not None,
+        evidence=evidence,
+        reason_code=None if failure is None else failure.code,
+        reason_context=None if failure is None else failure.context,
+    )
+    posterior = (
+        None
+        if config.prior is None
+        else PosteriorInference(
+            available=None if row is None else row.posterior_available,
+            model=None if row is None else row.posterior_model,
+            scale=None if row is None else row.posterior_scale,
+            prior=config.prior,
+            reason_code=None if row is None else row.posterior_reason_code,
+            reason_context=None if row is None else row.posterior_reason_context,
+        )
+    )
+    return CellRecord(
+        cell=cell,
+        source_snapshot_id=snapshot_id,
+        failure=failure,
+        sampling=sampling,
+        posterior=posterior,
+    )
+
+
+def _randomized_cell_registry(
+    selected, configs, design, plan, computations, roster_arms, population
+):
+    from increment.readouts._common import _runtime_method_roles
+
+    failure_by_cell = {}
+    methodless_failures = []
+    for computation in computations:
+        for key, failure in computation.failures.items():
+            method = failure.context.get("method")
+            if method is None:
+                methodless_failures.append((key, failure))
+            else:
+                failure_by_cell[(key.metric, key.group_id, method)] = failure
+    method_info = {}
+    cells = []
+    decision_cells = []
+    for metric, config in zip(selected, configs, strict=True):
+        methods = (
+            ()
+            if config.methods_explicitly_empty
+            else (config.decision_method, *config.sensitivity_methods)
+        )
+        roles = _runtime_method_roles(methods)
+        for group_id in roster_arms:
+            if group_id == design.control_group:
+                continue
+            for method in methods:
+                method_role = roles[method.name]
+                test = plan.procedures[metric.name]
+                cell = CellKey(
+                    kind="arm",
+                    metric=metric.name,
+                    group_id=group_id,
+                    method=method.name,
+                    method_role=method_role,
+                    estimand="itt",
+                    analysis_population=population,
+                    value_scale="relative",
+                    inference="always_valid"
+                    if isinstance(plan.inference, AlwaysValid)
+                    else "asymptotic_mean"
+                    if isinstance(plan.inference, AsymptoticMean)
+                    else "fixed",
+                    alternative=getattr(test, "alternative", "two-sided"),
+                )
+                cells.append(cell)
+                if method_role == "decision":
+                    decision_cells.append(cell)
+                method_info[(metric.name, group_id, method.name, method_role)] = (
+                    cell,
+                    config,
+                    test,
+                )
+    for hypothesis, failure in methodless_failures:
+        candidates = {
+            method_name
+            for metric_name, group_id, method_name, _role in method_info
+            if metric_name == hypothesis.metric and group_id == hypothesis.group_id
+        }
+        if len(candidates) == 1:
+            method = next(iter(candidates))
+            failure_by_cell[(hypothesis.metric, hypothesis.group_id, method)] = failure
+    return failure_by_cell, method_info, cells, decision_cells
+
+
+def _randomized_cell_failures(
+    method_info,
+    failure_by_cell,
+    rows,
+    observed_by_metric,
+    known_roster_arms,
+    roster_source,
+    population,
+    decision_cells,
+    roster_complete,
+):
+    from increment.estimation.readout_types import CellFailure
+
+    row_by_cell = {(row.metric, row.group_id, row.method, row.method_role): row for row in rows}
+    returned_cells = set(row_by_cell)
+    cell_failures = {}
+    for key, (cell, _config, _test) in method_info.items():
+        metric_name, group_id, method_name, _method_role = key
+        failure = failure_by_cell.get((metric_name, group_id, method_name))
+        row = row_by_cell.get(key)
+        if failure is not None:
+            cell_failures[cell] = CellFailure(
+                hypothesis=cell.hypothesis(), code=failure.code, context=failure.context
+            )
+        elif row is not None and row.failure_code is not None:
+            cell_failures[cell] = CellFailure(
+                hypothesis=cell.hypothesis(),
+                code=row.failure_code,
+                context=row.failure_context or {},
+            )
+        elif group_id not in observed_by_metric.get(metric_name, set()):
+            observed = sorted(observed_by_metric.get(metric_name, set()))
+            code = (
+                "readout.cell.missing_metric_observations"
+                if group_id in known_roster_arms
+                else "readout.cell.missing_arm"
+            )
+            cell_failures[cell] = CellFailure(
+                hypothesis=cell.hypothesis(),
+                code=code,
+                context={
+                    "metric": metric_name,
+                    "group_id": group_id,
+                    "observed_arms": observed,
+                    "roster_source": roster_source,
+                },
+            )
+        elif key not in returned_cells:
+            cell_failures[cell] = CellFailure(
+                hypothesis=cell.hypothesis(),
+                code="readout.cell.unsupported_request",
+                context={"reason": "no_estimate_returned", "analysis_population": population},
+            )
+    complete = (
+        bool(decision_cells)
+        and roster_complete
+        and all(cell not in cell_failures for cell in decision_cells)
+    )
+    missing_cells = [
+        cell.model_dump(mode="json") for cell in decision_cells if cell in cell_failures
+    ]
+    scope_reason_context = None if complete else freeze({"missing_cells": missing_cells})
+    return cell_failures, complete, scope_reason_context
+
+
+def _scoped_randomized_results(
+    src,
+    selected,
+    configs,
+    design,
+    plan,
+    rows,
+    computations,
+    observed_by_metric,
+    evidence_components,
+    population,
+    base_roster=None,
+):
+    """Attach the complete randomized arm roster and captured cell outcomes."""
+    from increment.estimation.readout_types import (
+        PopulationRoster,
+        ReadoutMetadata,
+        SourceReadoutScope,
+    )
+    from increment.readouts._design_scope import resolve_roster
+
+    roster = resolve_roster(src, design, population, observed_by_metric, base_roster=base_roster)
+    roster_arms = roster.arms
+    assignment_counts = roster.counts
+    integrity_counts = roster.integrity_counts
+    known_roster_arms = roster.known_arms
+    roster_source = roster.source
+    source = _randomized_source(selected, evidence_components, assignment_counts, population)
+    request = {
+        "view": "run",
+        "population": population,
+        "metrics": [
+            metric.model_dump(mode="json") for metric in sorted(selected, key=lambda m: m.name)
+        ],
+        "configs": [
+            _config_snapshot(config, design)
+            for config in sorted(configs, key=lambda c: c.metric.name)
+        ],
+        "design": design.model_dump(mode="json"),
+        "alpha": plan.alpha,
+        "q": plan.q,
+        "declared": plan.declared,
+        "procedures": {
+            name: value.model_dump(mode="json") for name, value in plan.procedures.items()
+        },
+    }
+    trigger_name = src.context.trigger_name
+    if trigger_name is not None:
+        request["trigger_declared"] = True
+        request["trigger_name"] = trigger_name
+    snapshot_id = _randomized_snapshot_id(source, request)
+
+    failure_by_cell, method_info, cells, decision_cells = _randomized_cell_registry(
+        selected, configs, design, plan, computations, roster_arms, population
+    )
+    cell_failures, complete, scope_reason_context = _randomized_cell_failures(
+        method_info,
+        failure_by_cell,
+        rows,
+        observed_by_metric,
+        known_roster_arms,
+        roster_source,
+        population,
+        decision_cells,
+        roster.complete,
+    )
+
+    result_by_cell = {}
+    for row in rows:
+        result_by_cell[(row.metric, row.group_id, row.method, row.method_role)] = row
+    output = []
+    records = []
+    # Keep returned rows in request/registry order; only persisted scope keys are canonical-sorted.
+    for cell in cells:
+        if (
+            cell.kind != "arm"
+            or cell.group_id is None
+            or cell.method is None
+            or cell.method_role is None
+            or cell.estimand is None
+            or cell.value_scale is None
+            or cell.inference is None
+            or cell.alternative is None
+        ):
+            _raise("readout.scope.cell_incomplete", cell=cell.model_dump(mode="json"))
+        assert cell.estimand in (
+            "itt",
+            "compliance",
+            "late",
+            "ate",
+            "plr_slope",
+            "overlap_subpopulation_ate",
+        )
+        failure = cell_failures.get(cell)
+        row = result_by_cell.get((cell.metric, cell.group_id, cell.method, cell.method_role))
+        if row is None and failure is not None:
+            row = LiftEstimate(
+                metric=cell.metric,
+                group_id=cell.group_id,
+                method=cell.method,
+                method_role=cell.method_role,
+                estimand=cell.estimand,
+                analysis_population=population,
+                value_scale=cell.value_scale,
+                alternative=cell.alternative,
+                inference=cell.inference,
+                role=plan.procedures[cell.metric].role if plan.declared else None,
+                lift=None,
+                failure_code=failure.code,
+                failure_context=failure.context,
+                sampling_available=False,
+                sampling_reason_code=failure.code,
+                sampling_reason_context=failure.context,
+                posterior_available=False
+                if method_info[(cell.metric, cell.group_id, cell.method, cell.method_role)][1].prior
+                is not None
+                else None,
+            )
+        if row is not None:
+            row = row.model_copy(
+                update={
+                    "source_snapshot_id": snapshot_id,
+                    "analysis_population": population,
+                    "sampling_available": failure is None,
+                    "sampling_reason_code": None if failure is None else failure.code,
+                    "sampling_reason_context": None if failure is None else freeze(failure.context),
+                    "failure_code": None if failure is None else failure.code,
+                    "failure_context": None if failure is None else freeze(failure.context),
+                    "decision_scope_complete": complete,
+                    "decision_scope_reason_code": None
+                    if complete
+                    else "readout.scope.decision_incomplete",
+                    "decision_scope_reason_context": scope_reason_context,
+                }
+            )
+            output.append(row)
+        config = method_info[(cell.metric, cell.group_id, cell.method, cell.method_role)][1]
+        records.append(_randomized_cell_record(cell, row, failure, config, snapshot_id))
+
+    ordered_cells = tuple(sorted(set(cells), key=cell_order))
+    ordered_decisions = tuple(sorted(set(decision_cells), key=cell_order))
+    integrity = assignment_integrity(
+        design,
+        integrity_counts,
+        population=population,
+        randomization_grain="cluster" if getattr(src.context, "cluster", None) else "unit",
+    )
+    source_scope = SourceReadoutScope(
+        source_snapshot_id=snapshot_id,
+        cells=ordered_cells,
+        decision_cells=ordered_decisions,
+        rosters=(
+            PopulationRoster(
+                analysis_population=population,
+                arms=roster_arms,
+                source=roster_source,
+                complete=roster.complete,
+            ),
+        ),
+        decision_complete_by_population={population: complete},
+        integrity=(integrity,),
+    )
+    output, families = attach_multiplicity_scope(output, ordered_cells, plan, configs, snapshot_id)
+    scope = ReadoutScope(
+        snapshot_id=snapshot_id,
+        cells=ordered_cells,
+        decision_cells=ordered_decisions,
+        populations=(population,),
+        families=families,
+        by_source={snapshot_id: source_scope},
+    )
+    records.sort(key=lambda record: cell_order(record.cell))
+    metadata = ReadoutMetadata(scope=scope, cells=tuple(records))
+    return LiftEstimates(output, metadata=metadata, source=source)
+
+
+def _preflight_roster(src, design, population, observed_by_metric=None, base_roster=None):
+    if design.mechanism == "observational":
+        return None
+    from increment.readouts._design_scope import resolve_roster
+
+    return resolve_roster(
+        src,
+        design,
+        population,
+        {} if observed_by_metric is None else observed_by_metric,
+        base_roster=base_roster,
+    )
+
+
+def _restore_legacy_prior_exclusion(src, configs, plan):
+    """Reapply an old wire exclusion only while its bound prior remains active."""
+    from increment.decision import MultiplicityFamily
+
+    base_configs = {config.metric.name: config for config in src.context.configs}
+    procedures = dict(plan.procedures)
+    changed = False
+    for config in configs:
+        procedure = procedures.get(config.metric.name)
+        base = base_configs.get(config.metric.name)
+        if (
+            config.metric.name not in getattr(src, "_legacy_prior_exclusions", ())
+            or procedure is None
+            or base is None
+            or base.prior is None
+            or config.prior is not None
+            or not config.prior_is_global
+            or procedure.role != "secondary"
+            or procedure.family.member
+            or not isinstance(procedure.family.family, MultiplicityFamily)
+        ):
+            continue
+        family = procedure.family.model_copy(update={"member": True})
+        procedures[config.metric.name] = procedure.model_copy(update={"family": family})
+        changed = True
+    return plan.model_copy(update={"procedures": procedures}) if changed else plan
+
+
+def _run_plan_and_roster(src, design, configs, population):
+    plan = _restore_legacy_prior_exclusion(src, configs, src.context.plan)
+    if isinstance(plan.inference, SEQUENTIAL_POLICIES):
+        return plan, None
+    return plan, _preflight_roster(src, design, population)
 
 
 def _run_prepared(
@@ -171,16 +675,29 @@ def _run_prepared(
     by: Sequence[str],
     estimands: Sequence[str] | None,
     value_scale: Mapping[str, ValueScale] | None,
+    population: Literal["assigned", "triggered"],
 ) -> list[LiftEstimate]:
     """Estimate a validated request inside its source-owned snapshot lifetime."""
     design = _require_design(src, "run")
-    plan = src.context.plan
+    plan, preflight_roster = _run_plan_and_roster(src, design, configs, population)
 
     if isinstance(plan.inference, SEQUENTIAL_POLICIES):
         from increment._sequential_readouts import sequential_readout
+        from increment.readouts._sequential_scope import scope_sequential_results
+        from increment.sequential_source import source_snapshot
 
         _refuse_segmented_registration(plan.inference)
-        return sequential_readout(src, metrics=selected, estimands=estimands)
+        rows = sequential_readout(
+            src, metrics=selected, estimands=estimands, _include_unrequested=True
+        )
+        return scope_sequential_results(
+            src,
+            rows,
+            source_snapshot(src),
+            base_roster=preflight_roster,
+            metrics=[metric.name for metric in selected],
+            estimands=estimands,
+        )
     call_prior = cast("Prior | None", None if prior is UNSET else prior)
     cluster = src.context.cluster
     if design.mechanism == "encouragement":
@@ -208,10 +725,35 @@ def _run_prepared(
             }
             if selected:
                 _refuse_if_no_treatment_arm(
-                    {str(row["group_id"]) for rows in rows_by_metric.values() for row in rows},
+                    {
+                        str(row["group_id"])
+                        for rows in rows_by_metric.values()
+                        for row in rows
+                        if row.get("group_id") is not None
+                    },
                     design.control_group,
                 )
-        return encouragement_rows(
+                preflight_roster = _preflight_roster(
+                    src,
+                    design,
+                    population,
+                    {
+                        metric: {
+                            str(row["group_id"])
+                            for row in metric_rows
+                            if row.get("group_id") is not None
+                        }
+                        for metric, metric_rows in rows_by_metric.items()
+                    },
+                    preflight_roster,
+                )
+        from increment.readouts._design_scope import (
+            encouragement_expected,
+            scope_design_results,
+        )
+
+        capture: dict[str, Any] = {}
+        rows = encouragement_rows(
             src=src,
             metrics=selected,
             rows_by_metric=rows_by_metric,
@@ -221,8 +763,53 @@ def _run_prepared(
             estimands=estimands,
             cluster=cluster,
             caller="run() under an encouragement design",
+            capture=capture,
+        )
+        observed = {
+            name: {str(row["group_id"]) for row in metric_rows if row.get("group_id") is not None}
+            for name, metric_rows in rows_by_metric.items()
+        }
+        summary = capture.get("compliance_summary")
+        if summary is not None:
+            observed["uptake"] = {arm.group_id for arm in summary.arms}
+        return scope_design_results(
+            src,
+            design,
+            plan,
+            rows,
+            capture.get("computations", []),
+            configs=configs,
+            population=population,
+            estimands=estimands,
+            expected_for=lambda arms: encouragement_expected(
+                selected,
+                configs,
+                design,
+                plan,
+                estimands=estimands,
+                arms=arms,
+                cluster=cluster,
+            ),
+            evidence_rows=rows_by_metric,
+            observed_by_metric=observed,
+            compliance_summary=summary,
+            base_roster=preflight_roster,
+            request_extra={
+                "metrics": [
+                    m.model_dump(mode="json") for m in sorted(selected, key=lambda m: m.name)
+                ],
+                "configs": [
+                    _config_snapshot(config, design)
+                    for config in sorted(configs, key=lambda c: c.metric.name)
+                ],
+            },
         )
     if design.mechanism == "observational":
+        from increment.readouts._design_scope import (
+            observational_expected,
+            scope_design_results,
+        )
+
         # The one moments reduction per metric: it gates on a treatment arm, and sizes every
         # family and routing level, and every estimate and FCR re-estimate reads it.
         evidence = observational_evidence(src, selected)
@@ -231,7 +818,8 @@ def _run_prepared(
                 set().union(*(evidence.arms(metric) for metric in selected)),
                 design.control_group,
             )
-        return _estimate_observational(
+        obs_computations: list[Any] = []
+        rows = _estimate_observational(
             src,
             selected,
             configs,
@@ -240,6 +828,32 @@ def _run_prepared(
             value_scale=value_scale,
             call_prior=call_prior,
             evidence=evidence,
+            computations=obs_computations,
+        )
+        return scope_design_results(
+            src,
+            design,
+            plan,
+            rows,
+            obs_computations,
+            configs=configs,
+            population=population,
+            expected_for=lambda arms: observational_expected(
+                selected, configs, design, plan, value_scale=value_scale, arms=arms
+            ),
+            evidence_rows=evidence.rows,
+            observed_by_metric={m.name: set(evidence.arms(m)) for m in selected},
+            use_counts=False,
+            request_extra={
+                "metrics": [
+                    m.model_dump(mode="json") for m in sorted(selected, key=lambda m: m.name)
+                ],
+                "configs": [
+                    _config_snapshot(config, design)
+                    for config in sorted(configs, key=lambda c: c.metric.name)
+                ],
+                "value_scale": dict(value_scale or {}),
+            },
         )
     if value_scale:
         _raise("readout.value_scale_randomized_absolute")
@@ -248,7 +862,10 @@ def _run_prepared(
     )
     advisory_seen: set[tuple[str, str]] = set()
     observed_arms: set[str] = set()
-    out, refused_cells, secondary_entries = _estimate_randomized_non_secondary(
+    observed_by_metric: dict[str, set[str]] = {}
+    evidence_components: dict[str, tuple[str, str, int]] = {}
+    computations: list[Any] = []
+    out, refused_cells, secondary_entries, computations = _estimate_randomized_non_secondary(
         src,
         selected,
         configs,
@@ -258,6 +875,9 @@ def _run_prepared(
         effective_inference=effective_inference,
         advisory_seen=advisory_seen,
         observed_arms=observed_arms,
+        computations=computations,
+        observed_by_metric=observed_by_metric,
+        evidence_components=evidence_components,
     )
     secondary_out, secondary_refused = _estimate_randomized_secondary_family(
         src,
@@ -268,16 +888,31 @@ def _run_prepared(
         effective_inference=effective_inference,
         advisory_seen=advisory_seen,
         observed_arms=observed_arms,
+        computations=computations,
+        observed_by_metric=observed_by_metric,
+        evidence_components=evidence_components,
     )
     out.extend(secondary_out)
     refused_cells.extend(secondary_refused)
     if selected:
         _refuse_if_no_treatment_arm(observed_arms, design.control_group)
-    if not out and refused_cells:
-        _raise_if_all_lift_cells_refused(refused_cells)
+    if refused_cells and not any(row.failure_code is None for row in out):
+        _raise_if_all_lift_cells_refused(refused_cells, computations)
     order = {metric.name: i for i, metric in enumerate(selected)}
     out.sort(key=lambda row: order[row.metric])
-    return out
+    return _scoped_randomized_results(
+        src,
+        selected,
+        configs,
+        design,
+        plan,
+        out,
+        computations,
+        observed_by_metric,
+        evidence_components,
+        population,
+        preflight_roster,
+    )
 
 
 def arm_moments(

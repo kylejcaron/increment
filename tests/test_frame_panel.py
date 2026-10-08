@@ -20,7 +20,7 @@ import pytest
 from increment import readouts
 from increment._frame_panel import _day_axis_label_order
 from increment.errors import CapabilityError, IncrementWarning, InvalidRequestError
-from increment.estimation.diagnostics import SRMResult
+from increment.estimation.diagnostics import NotApplicable, SRMResult
 from increment.frame import (
     FramePanelSource,
     FrameTotalsSource,
@@ -678,6 +678,44 @@ def test_asof_cumulative_moments_refuses_colliding_prefixed_integer_labels() -> 
     )
     with pytest.raises(CapabilityError) as raised:
         src.moments(_metric(src, "revenue"), grain="asof")
+    assert raised.value.code == "frame.asof.day_axis_unorderable"
+
+
+@pytest.mark.parametrize(
+    "scratch_budget",
+    [0, 64 * 1024 * 1024],
+    ids=["streamed", "dense"],
+)
+def test_daily_reduction_refuses_colliding_prefixed_labels_across_days(
+    monkeypatch: pytest.MonkeyPatch,
+    scratch_budget: int,
+) -> None:
+    """Both daily routes validate the complete day axis."""
+    monkeypatch.setattr("increment.frame._DAY_PANEL_SCRATCH_BUDGET_BYTES", scratch_budget)
+    rows = [
+        ("c1", "control", "d1", "d0", 1.0),
+        ("t1", "treatment", "d01", "d0", 2.0),
+    ]
+    frame = pa.table(
+        dict(
+            zip(
+                ["user_id", "variant", "day", "exposed_on", "revenue"],
+                zip(*rows, strict=True),
+                strict=True,
+            )
+        )
+    )
+    src = from_unit_panel(
+        frame,
+        unit="user_id",
+        group="variant",
+        date="day",
+        control="control",
+        metrics={"revenue": "mean"},
+        exposure_date="exposed_on",
+    )
+    with pytest.raises(CapabilityError) as raised:
+        src.moments(_metric(src, "revenue"), grain="daily")
     assert raised.value.code == "frame.asof.day_axis_unorderable"
 
 
@@ -1776,6 +1814,7 @@ def test_whole_panel_run_equals_summary_run_on_hand_collapsed_data(panel_frame: 
 
 
 def test_srm_on_panel_flags_imbalance_and_clears_balance(panel_frame: pa.Table) -> None:
+    independent_design = _DESIGN.model_copy(update={"allocation_scheme": "independent"})
     balanced = readouts.srm(
         from_unit_panel(
             panel_frame,
@@ -1784,7 +1823,7 @@ def test_srm_on_panel_flags_imbalance_and_clears_balance(panel_frame: pa.Table) 
             date="day",
             control="control",
             metrics={"revenue": "mean"},
-            design=_DESIGN,
+            design=independent_design,
         ),
     )
     assert isinstance(balanced, SRMResult)
@@ -1801,7 +1840,7 @@ def test_srm_on_panel_flags_imbalance_and_clears_balance(panel_frame: pa.Table) 
             date="day",
             control="control",
             metrics={"revenue": "mean"},
-            design=_DESIGN,
+            design=independent_design,
         ),
         expected={"control": 0.9, "treatment": 0.1},
         inference="fixed",
@@ -1819,7 +1858,9 @@ def test_srm_uses_design_declared_allocation_as_default_expected(
     against a declared 90/10 design is flagged, and an explicit
     expected= override still wins."""
     design_with_allocation = Randomized(
-        control_group="control", allocation={"control": 0.9, "treatment": 0.1}
+        control_group="control",
+        allocation={"control": 0.9, "treatment": 0.1},
+        allocation_scheme="independent",
     )
     src = from_unit_panel(
         panel_frame,
@@ -1841,6 +1882,25 @@ def test_srm_uses_design_declared_allocation_as_default_expected(
     assert isinstance(overridden, SRMResult)
     assert overridden.expected == {"control": 0.5, "treatment": 0.5}
     assert overridden.is_srm is False
+
+
+def test_panel_srm_without_independent_scheme_is_not_applicable(panel_frame: pa.Table) -> None:
+    src = from_unit_panel(
+        panel_frame,
+        unit="user_id",
+        group="variant",
+        date="day",
+        control="control",
+        metrics={"revenue": "mean"},
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.9, "treatment": 0.1},
+        ),
+    )
+    result = readouts.srm(src)
+    assert isinstance(result, NotApplicable)
+    assert result.check == "srm"
+    assert "integrity.allocation_scheme_missing" in result.reason
 
 
 def test_panel_duplicate_unit_day_raises() -> None:
@@ -1906,6 +1966,69 @@ def test_daily_accepts_free_form_day_labels_for_every_kernel(
     )
     rows = source.moments(_metric(source, "value"), grain="daily")
     assert {row["ds"] for row in rows} == {"2025-9", "2025-10"}
+
+
+def test_streamed_day_reductions_preserve_multiple_metrics_and_breakout_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import increment.frame as frame_module
+
+    table = pa.table(
+        {
+            "unit": ["c1", "c1", "t1", "t1", "c2", "t2"],
+            "arm": ["control", "control", "treatment", "treatment", "control", "treatment"],
+            "day": ["d1", "d2", "d1", "d2", "d1", "d2"],
+            "revenue": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            "orders": [1.0, 1.0, 2.0, 3.0, 2.0, 2.0],
+            "country": [
+                "U" * 1_000,
+                "U" * 1_000,
+                "U" * 1_000,
+                "U" * 1_000,
+                "C" * 1_000,
+                "C" * 1_000,
+            ],
+        }
+    )
+
+    def run(budget: int) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
+        monkeypatch.setattr(frame_module, "_DAY_PANEL_SCRATCH_BUDGET_BYTES", budget)
+        source = from_unit_panel(
+            table,
+            unit="unit",
+            group="arm",
+            date="day",
+            control="control",
+            metrics={"revenue": "mean", "orders": "mean"},
+            breakouts=["country"],
+        )
+        daily = {
+            metric: source.moments(_metric(source, metric), grain="daily", by=["country"])
+            for metric in ("revenue", "orders")
+        }
+        asof = {
+            metric: source.moments(_metric(source, metric), grain="asof", by=["country"])
+            for metric in ("revenue", "orders")
+        }
+        return daily, asof
+
+    def summary(rows: list[dict[str, Any]]) -> dict[tuple[Any, ...], tuple[int, float]]:
+        return {
+            (row["ds"], row["country"], row["group_id"]): (row["n"], _sum_y(row)) for row in rows
+        }
+
+    streamed_daily, streamed_asof = run(0)
+    dense_daily, dense_asof = run(64 * 1024 * 1024)
+    identity_width_daily, identity_width_asof = run(1_500)
+    for metric in ("revenue", "orders"):
+        assert summary(streamed_daily[metric]) == summary(dense_daily[metric])
+        assert summary(streamed_asof[metric]) == summary(dense_asof[metric])
+        assert summary(identity_width_daily[metric]) == summary(dense_daily[metric])
+        assert summary(identity_width_asof[metric]) == summary(dense_asof[metric])
+        assert {key[1] for key in summary(streamed_daily[metric])} == {
+            "U" * 1_000,
+            "C" * 1_000,
+        }
 
 
 @pytest.mark.parametrize("budget", [0, 64 * 1024 * 1024])

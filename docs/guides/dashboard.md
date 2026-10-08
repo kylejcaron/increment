@@ -73,7 +73,32 @@ each displayed metric's checkpoint, including earlier frozen secondaries.
 These results form an immutable `DashboardSnapshot`. Preparation computes the
 temporal and breakout views as well as the headline.
 
+## Population selection
+
+When an experiment declares a trigger, preparation captures assigned and triggered
+whole-window estimates, group evidence, allocation diagnostics, and supported
+Explore views together. The dashboard defaults to **Triggered** and its
+**Population** control switches every readout, breakout, group-data panel,
+allocation history, daily/as-of series, inspector, report, and CSV to the same
+population; populations are never pooled. Without a declared trigger, the
+dashboard remains assigned-only.
+
+Switching populations retains the selected Readout metric and Explore scope,
+metric, and series controls when those selections exist in both views.
+
+Assigned allocation checks describe assignment integrity. Triggered allocation
+checks describe balance in the triggered cohort and are not assignment-integrity
+checks. Triggered-cohort inference is appropriate only if triggering is
+unaffected by treatment; filtering to the triggered population does not establish
+that condition. A triggered view that the source cannot provide stays unavailable
+with its refusal code and reason. For a triggered daily/as-of refusal, choose
+**Assigned** to view the assignment-level trajectory; this does not replace or
+reinterpret the unavailable triggered series. Registered sequential checkpoints
+remain assignment-scoped, so triggered group evidence is reported as unavailable
+rather than borrowing an assigned checkpoint.
+
 `render_dashboard` embeds the captured evidence without querying the warehouse.
+
 Its browser controls select prepared evidence; they never alter the analysis
 plan or recompute confirmatory results. That includes **Added metrics** in
 Explore: every offered metric is read with the headline, so changing which
@@ -83,6 +108,11 @@ intentionally creates a new snapshot that reflects subsequent source changes.
 You retain ownership of `analysis` and its connection; the package does not
 close or replace them. When deliberately rebinding to a different experiment,
 the caller must close the old connection.
+
+The standalone `render_header` and `render_metric_details` sections use the same
+selected-population default and accept `population="assigned"` or
+`population="triggered"` for an explicit view. Metric group evidence is scoped to
+that population; assignment counts remain separately labeled.
 
 Explore requests must match the snapshot's experiment and metric
 configuration, including arms, windows, breakouts, and policy. Matching only
@@ -327,10 +357,13 @@ They are descriptive, not corrected for repeated looks, and are not
 sequential SRM thresholds; the separate allocation check supplies that verdict.
 
 `snapshot.allocation_history` stores immutable rows from
-`Analysis.allocation_history()`. A capability refusal is retained in
-`snapshot.allocation_history_refusal` and displayed without disabling the
-headline results. A refused allocation check does not query history.
-Cluster-randomized and non-native sources do not supply this unit timeline.
+`Analysis.allocation_history()`. Each row carries its `analysis_population`
+(`assigned` or `triggered`) so enrollment and first-trigger cohorts remain
+distinct; rows are ordered by date and arm within population. A capability
+refusal is retained in `snapshot.allocation_history_refusal` and displayed
+without disabling the headline results. A refused allocation check does not
+query history. Cluster-randomized and non-native sources do not supply this
+unit timeline.
 
 ## Truthful inference, not a verdict
 

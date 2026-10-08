@@ -308,16 +308,14 @@ def test_adopted_public_run_preserves_inherited_prior(definitions_and_adopted_an
     replacement = Normal(mu=0.3, sigma=0.001)
     intervals = []
     for analysis in (native, adopted):
-        inherited = analysis.run(metrics=["d7_retention"])[0].require_lift()
-        cleared = analysis.run(metrics=["d7_retention"], prior=None)[0].require_lift()
-        replaced = analysis.run(metrics=["d7_retention"], prior=replacement)[0].require_lift()
-        unchanged = analysis.run(metrics=["d7_retention"])[0].require_lift()
-        values = [
-            (lift.value, lift.lb, lift.ub) for lift in (inherited, cleared, replaced, unchanged)
-        ]
+        inherited = analysis.run(metrics=["d7_retention"])[0]
+        cleared = analysis.run(metrics=["d7_retention"], prior=None)[0]
+        replaced = analysis.run(metrics=["d7_retention"], prior=replacement)[0]
+        unchanged = analysis.run(metrics=["d7_retention"])[0]
+        values = [row.posterior_estimate for row in (inherited, cleared, replaced, unchanged)]
         assert values[0] == pytest.approx(values[3])
-        assert inherited.value != cleared.value
-        assert replaced.value != inherited.value
+        assert values[0] != values[1]
+        assert values[2] != values[0]
         intervals.append(values)
     for expected, actual in zip(*intervals, strict=True):
         assert actual == pytest.approx(expected)

@@ -153,14 +153,16 @@ def test_allocation_history_schema_and_sort_order(tmp_path):
     history = analysis.allocation_history()
     assert set(history.column_names) == {
         "experiment_id",
+        "analysis_population",
         "ds",
         "group_id",
         "n_daily",
         "n_cumulative",
     }
     rows = history.to_pylist()
-    keys = [(r["ds"], r["group_id"]) for r in rows]
+    keys = [(r["analysis_population"], r["ds"], r["group_id"]) for r in rows]
     assert keys == sorted(keys)
+    assert {r["analysis_population"] for r in rows} == {"assigned"}
     assert {r["experiment_id"] for r in rows} == {"ah_test"}
 
 

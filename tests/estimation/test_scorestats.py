@@ -127,9 +127,12 @@ def test_infer_ate_with_informative_prior_shrinks_toward_it():
         scores=s,
         prior=Normal(mu=0.0, sigma=0.01),
     )
-    assert informative.require_lift().value != pytest.approx(flat.require_lift().value)
+    assert informative.require_lift() == flat.require_lift()
+    posterior_estimate = informative.posterior_estimate
+    assert posterior_estimate is not None
+    assert posterior_estimate != pytest.approx(flat.require_lift().value)
     # Strongly informative prior at 0 pulls the posterior mean toward 0.
-    assert abs(informative.require_lift().value) < abs(flat.require_lift().value)
+    assert abs(posterior_estimate) < abs(flat.require_lift().value)
 
 
 def test_lift_estimate_population_default_none():
@@ -189,7 +192,7 @@ def test_infer_ate_prob_favorable_via_prob_beyond():
         null_lift=-0.01,
         preferred_direction="increase",
     )
-    assert est.prob_favorable() == pytest.approx(est.prob_beyond(-0.01))
+    assert est.prob_favorable() is None
 
 
 @pytest.mark.parametrize(

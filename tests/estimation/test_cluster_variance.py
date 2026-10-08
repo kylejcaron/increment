@@ -234,23 +234,25 @@ def test_clustered_interval_uses_separate_relative_and_additive_references():
     )
 
 
-def test_decision_stats_refuse_on_a_cluster_robust_estimate():
+def test_cluster_robust_rows_without_posterior_return_none_for_probability_accessors():
     _, cluster_rows = _identity_pair()
     (clustered,) = estimate_lift([METRIC], cluster_rows, control_group="C", cluster="store").results
-    with pytest.raises(InvalidRequestError) as exc_info:
-        clustered.chance_to_beat()
-    assert exc_info.value.code == "estimation.results.lift.posterior_decision_stats_cluster_robust"
-    assert exc_info.value.context["reference_df"] == clustered.reference_df == pytest.approx(49.0)
+    assert clustered.chance_to_beat() is None
+    assert clustered.prob_beyond(0.0) is None
+    assert clustered.prob_within(0.1) is None
+    assert clustered.risk_if_shipped() is None
 
 
-def test_prob_favorable_absolute_margin_refuses_on_a_cluster_robust_estimate():
-    """The additive refusal reports its independent Welch reference."""
+def test_prob_favorable_withholds_missing_posterior_on_cluster_robust_estimate():
+    """Posterior access follows posterior_available; additive p-values retain their refusal."""
     _, cluster_rows = _identity_pair()
     (clustered,) = estimate_lift([METRIC], cluster_rows, control_group="C", cluster="store").results
     favorable = clustered.model_copy(update={"preferred_direction": "increase", "null_abs": -0.5})
     assert favorable.abs_diff is not None and favorable.abs_se is not None
+    # See docs/guides/priors-and-decisions.md:142-145.
+    assert favorable.prob_favorable() is None
     with pytest.raises(InvalidRequestError) as exc_info:
-        favorable.prob_favorable()
+        favorable.p_value()
     assert exc_info.value.code == "estimation.results.lift.p_value_cluster_robust_null_abs"
     assert (
         exc_info.value.context["reference_df"] == favorable.abs_reference_df == pytest.approx(98.0)

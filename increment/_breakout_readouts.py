@@ -40,6 +40,7 @@ class BreakoutRequest:
     prior: Prior | None | _Unset
     correction: Correction | None
     q: float | None
+    population: Literal["assigned", "triggered"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +65,9 @@ class BreakoutReadouts:
             assert self._experiment is not None
             breakouts = self._experiment.breakouts
             artifact = cast("BreakoutSourcesOperation", self._src)
-            scoped_sources = artifact.breakout_sources(breakouts, metrics=list(req.metrics))
+            scoped_sources = artifact.breakout_sources(
+                breakouts, metrics=list(req.metrics), population=req.population
+            )
             for breakout, scoped in zip(breakouts, scoped_sources, strict=True):
                 yield _BreakoutSlice(
                     dimension=breakout.property,
@@ -94,7 +97,9 @@ class BreakoutReadouts:
                 "breakouts to summarise."
             ),
         )
-        scoped_sources = native_src.breakout_sources(breakouts, metrics=list(req.metrics))
+        scoped_sources = native_src.breakout_sources(
+            breakouts, metrics=list(req.metrics), population=req.population
+        )
         for breakout, scoped in zip(breakouts, scoped_sources, strict=True):
             multi = sum(item.property == breakout.property for item in breakouts) > 1
             yield _BreakoutSlice(
@@ -106,6 +111,13 @@ class BreakoutReadouts:
 
     def run(self, req: BreakoutRequest) -> BreakoutEstimates:
         registration = getattr(self._src.context.plan.inference, "registration", None)
+        if req.population == "triggered" and registration is not None:
+            from increment.sequential_state import sequential_refuse
+
+            sequential_refuse(
+                "route.unsupported",
+                "registered sequential inference has no triggered breakout construction",
+            )
         if registration is not None:
             dimensions = sorted({key for cell in registration.roster for key, _ in cell.segment})
             if len(dimensions) != 1:
@@ -124,6 +136,7 @@ class BreakoutReadouts:
                 prior=req.prior,
                 correction=req.correction,
                 q=req.q,
+                analysis_population=req.population,
             )
         route = _breakout_route(self._src)
         if route == "unsupported":
@@ -159,29 +172,28 @@ class BreakoutReadouts:
                 prior=req.prior,
                 correction=req.correction,
                 q=req.q,
+                population=req.population,
             )
-        results = []
+        results: BreakoutEstimates | None = None
         for breakout_slice in self._slices(req, route):
             segment_results = readouts.breakout(
                 breakout_slice.source,
                 breakout_slice.dimension,
-                source_name=breakout_slice.source_name,
+                source_name=(
+                    breakout_slice.stamp_source
+                    if breakout_slice.stamp_source is not None
+                    else breakout_slice.source_name
+                ),
                 decision_method=req.decision_method,
                 sensitivity_methods=req.sensitivity_methods,
                 prior=req.prior,
                 metrics=([metric.name for metric in req.metrics] if route == "panel" else None),
                 correction=req.correction,
                 q=req.q,
+                analysis_population=req.population,
             )
-            if breakout_slice.stamp_source is not None:
-                segment_results = BreakoutEstimates(
-                    [
-                        row.model_copy(update={"source": breakout_slice.stamp_source})
-                        for row in segment_results
-                    ]
-                )
-            results.extend(segment_results)
-        return BreakoutEstimates(results)
+            results = segment_results if results is None else results.concat(segment_results)
+        return BreakoutEstimates([]) if results is None else results
 
 
 __all__ = ["BreakoutReadouts", "BreakoutRequest"]

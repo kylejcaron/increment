@@ -12,7 +12,13 @@ import pytest
 import increment.readouts as readouts
 from increment.breakout.estimates import run_breakout, run_daily_lift
 from increment.compatibility import _conservative_ratio
-from increment.decision import ArmHypothesisKey, DecisionComputation, FixedInference, PValueEvidence
+from increment.decision import (
+    ArmHypothesisKey,
+    DecisionComputation,
+    FixedInference,
+    HypothesisKey,
+    PValueEvidence,
+)
 from increment.errors import CodedError
 from increment.estimation.arm_contract import (
     ArmCompatibilityRequest,
@@ -212,13 +218,12 @@ def test_fcr_subnormal_ratio_refuses_stably():
         )
         for i in range(2)
     ]
-    computation = DecisionComputation(
-        results=(),
-        evidence={
-            key: PValueEvidence(key, "unadjusted", row.p_value(), "normal") for key, row in cells
-        },
-        failures={},
-    )
+    evidence: dict[HypothesisKey, PValueEvidence] = {}
+    for key, row in cells:
+        p_value = row.p_value()
+        assert p_value is not None
+        evidence[key] = PValueEvidence(key, "unadjusted", p_value, "normal")
+    computation = DecisionComputation(results=(), evidence=evidence, failures={})
     with pytest.raises(CodedError) as raised:
         select_family(
             cells, q=MIN_SUBNORMAL, inference=None, nominal_alpha=0.9, computation=computation
@@ -265,14 +270,12 @@ def test_selected_alpha_is_an_exact_endpoint():
     typed_cells = [
         (ArmHypothesisKey(row.metric, row.group_id, row.estimand), row) for _key, row in cells
     ]
-    computation = DecisionComputation(
-        results=(),
-        evidence={
-            key: PValueEvidence(key, "unadjusted", row.p_value(), "normal")
-            for key, row in typed_cells
-        },
-        failures={},
-    )
+    evidence: dict[HypothesisKey, PValueEvidence] = {}
+    for key, row in typed_cells:
+        p_value = row.p_value()
+        assert p_value is not None
+        evidence[key] = PValueEvidence(key, "unadjusted", p_value, "normal")
+    computation = DecisionComputation(results=(), evidence=evidence, failures={})
     outcome = select_family(
         typed_cells,
         q=q,

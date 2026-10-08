@@ -9,10 +9,15 @@ browser controls and CSV downloads also work in the static export.
 The masthead toggle switches between **Midnight · Daylight** and **Midnight**,
 remembers your choice, and leaves the captured evidence unchanged. PDFs use
 the light palette regardless of the selected screen mode.
+
 Small reports fit one A4 page; larger families paginate with repeated
 headers rather than shrinking their textual evidence below the configured
 font floor. Presets expose independently adjustable palettes, typography,
 layout, native-chart dimensions, and print readability in `DashboardConfig.theme`.
+
+This particular example has no trigger, so its readouts are assigned-only.
+For a reproducible triggered experiment with an assigned/triggered population
+selector, see the [triggered dashboard notebook](triggered_population_dashboard.md).
 
 [Open the notebook in a full browser tab](ab_testing_dashboard.html)
 

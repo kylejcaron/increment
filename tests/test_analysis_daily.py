@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 import warnings
 from datetime import date, datetime
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -2037,7 +2038,9 @@ def test_artifact_dimensioned_daily_lift_preserves_estimator_warning_contract(mo
         extensions=_extensions(context, "breakout_dimension"),
     )
     analysis = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-    source_type = type(analysis._src)
+    from tests.analysis_factory import _native_source
+
+    source_type = cast(Any, type(_native_source(analysis)))
     original = source_type._dimensioned_moments
 
     def add_guarded_arm(self, *args, **kwargs):

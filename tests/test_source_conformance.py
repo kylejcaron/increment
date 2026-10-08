@@ -285,6 +285,79 @@ def test_every_arm_evidence_result_round_trips_and_has_a_frame(tmp_path: Path, n
     assert columns
 
 
+_DIGEST_ADAPTER_NAMES = tuple(name for name in _ADAPTER_NAMES if name != "breakout_moments")
+
+
+@pytest.mark.parametrize("adapter_name", _DIGEST_ADAPTER_NAMES)
+def test_readout_snapshot_replays_and_tracks_changed_ingress_arms(
+    tmp_path: Path, adapter_name: str, monkeypatch
+) -> None:
+    from increment import readouts
+    from increment.breakout.estimates import LiftEstimates
+    from increment.estimation.readout_types import ReadoutResults
+    from increment.estimation.results import LiftEstimate
+
+    source, _metric = next(
+        adapter for adapter in _adapter_cases(tmp_path) if adapter.name == adapter_name
+    ).build()
+    first = readouts.run(source)
+    replay = readouts.run(source)
+    assert isinstance(first, LiftEstimates)
+    assert isinstance(replay, LiftEstimates)
+    first_row = first[0]
+    assert isinstance(first_row, LiftEstimate)
+    first_id = first_row.source_snapshot_id
+    assert first_id is not None
+    replay_ids = set()
+    for row in replay:
+        assert isinstance(row, LiftEstimate)
+        replay_ids.add(row.source_snapshot_id)
+    assert replay_ids == {first_id}
+
+    def rename_treatment(counts):
+        renamed = dict(counts)
+        if "treatment" in renamed:
+            renamed["treatment_digest_change"] = renamed.pop("treatment")
+        return renamed
+
+    original_moments = source.moments
+
+    def changed_moments(*args, **kwargs):
+        rows = original_moments(*args, **kwargs)
+        changed = False
+        output = []
+        for row in rows:
+            copy = dict(row)
+            if copy.get("group_id") == "treatment":
+                copy["group_id"] = "treatment_digest_change"
+                changed = True
+            output.append(copy)
+        assert changed, "adapter did not expose the fixture's treatment evidence"
+        return output
+
+    monkeypatch.setattr(source, "moments", changed_moments)
+    for name in ("assignment_counts", "unit_counts", "cluster_counts"):
+        original = getattr(source, name, None)
+        if callable(original):
+
+            def changed_counts(*args, _original=original, **kwargs):
+                return rename_treatment(_original(*args, **kwargs))
+
+            monkeypatch.setattr(source, name, changed_counts, raising=False)
+
+    mutated = readouts.run(source)
+    assert isinstance(mutated, LiftEstimates)
+    mutated_row = mutated[0]
+    assert isinstance(mutated_row, LiftEstimate)
+    mutated_id = mutated_row.source_snapshot_id
+    assert mutated_id is not None and mutated_id != first_id
+    assert first.source is not None and first.metadata is not None
+    restored = ReadoutResults.model_validate_json(first.model_dump_json())
+    assert restored.source == first.source
+    assert restored.metadata == first.metadata
+    assert list(restored) == list(first)
+
+
 def test_sql_totals_advertised_summary_sql_succeeds() -> None:
     from tests.source_conformance import sql_totals_source
 
