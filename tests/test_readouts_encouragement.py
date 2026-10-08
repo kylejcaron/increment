@@ -783,7 +783,7 @@ def test_asof_lift_randomized_design_forwards_preferred_direction():
     (result,) = readouts.asof_lift(src)
 
     assert result.preferred_direction == "increase"
-    assert result.prob_favorable() is not None
+    assert result.prob_favorable() is None
 
 
 def test_asof_lift_rejects_estimands_on_randomized_design():
@@ -2831,10 +2831,8 @@ def test_frame_encouragement_in_family_secondary_gets_a_discovery_verdict():
     assert all(r.family_axes == ("metric", "arm") for r in itt)
 
 
-def test_frame_encouragement_callwide_prior_excludes_secondary_family():
-    """A call-wide informative prior keeps encouragement secondaries out of
-    BH/FCR while preserving the primary outcome and canonical compliance
-    passes."""
+def test_frame_encouragement_callwide_prior_preserves_secondary_family():
+    """A call-wide prior preserves the sampling-only ITT secondary family."""
     src = from_unit_summary(
         _two_metric_uptake_table(),
         unit="user_id",
@@ -2849,10 +2847,22 @@ def test_frame_encouragement_callwide_prior_excludes_secondary_family():
     results = readouts.run(src, prior=Normal(mu=0.0, sigma=0.1))
     visits = [r for r in results if r.metric == "visits" and r.estimand == "itt"]
     assert visits
-    assert all(r.role == "secondary" for r in visits)
-    assert all(r.discovery is None for r in visits)
-    assert all(r.family_axes is None for r in visits)
-    assert all(r.require_lift().level == pytest.approx(0.95) for r in visits)
+    assert all(r.discovery is not None for r in visits)
+    assert all(r.family_axes == ("metric", "arm") for r in visits)
+    prior_free = {
+        (r.metric, r.group_id): r
+        for r in readouts.run(src, prior=None)
+        if r.metric == "visits" and r.estimand == "itt"
+    }
+    assert all(r.family_q == pytest.approx(0.02) for r in visits)
+    assert all(
+        r.family_threshold == prior_free[(r.metric, r.group_id)].family_threshold
+        for r in visits
+    )
+    assert all(
+        r.require_lift().value == pytest.approx(prior_free[(r.metric, r.group_id)].require_lift().value)
+        for r in visits
+    )
 
     revenue = [r for r in results if r.metric == "revenue" and r.estimand == "itt"]
     assert revenue
@@ -2861,6 +2871,7 @@ def test_frame_encouragement_callwide_prior_excludes_secondary_family():
     assert compliance
     assert all(r.metric == "uptake" for r in compliance)
     assert all(r.discovery is None for r in compliance)
+
 
 
 def test_frame_encouragement_compliance_ignores_outcome_config_and_order():

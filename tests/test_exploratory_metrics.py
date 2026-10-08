@@ -44,7 +44,11 @@ def _width(row: Any) -> float:
     return lift.ub - lift.lb
 
 
-def _rows(rows: Any, *, drop: tuple[str, ...] = ("role",)) -> list[dict[str, Any]]:
+def _rows(
+    rows: Any,
+    *,
+    drop: tuple[str, ...] = ("role", "source_snapshot_id", "family_id", "multiplicity_status"),
+) -> list[dict[str, Any]]:
     return [{k: v for k, v in row.model_dump().items() if k not in drop} for row in rows]
 
 
@@ -80,7 +84,22 @@ def test_added_whole_window_rows_equal_the_metric_declared_in_its_own_plan(
     )
     assert declared and {row.role for row in declared} == {"primary"}
     assert {row.role for row in added} == {"exploratory"}
-    assert _rows(added) == _rows(declared)
+    assert {row.multiplicity_status for row in added} == {"exploratory_unadjusted"}
+    assert all(row.family_id is not None for row in added)
+    assert {family.name for family in added.metadata.scope.families} == {"exploratory"}
+    assert {cell.metric for family in added.metadata.scope.families for cell in family.members} == {
+        name
+    }
+    assert set(added.to_frame()["multiplicity_status"]) == {"exploratory_unadjusted"}
+    from increment.estimation.readout_types import ReadoutResults
+    from increment.tables import estimates_to_readout
+
+    assert {row["multiplicity_status"] for row in estimates_to_readout(added)} == {
+        "exploratory_unadjusted"
+    }
+    restored = ReadoutResults.model_validate_json(added.model_dump_json())
+    assert restored.metadata == added.metadata
+    assert [row.family_id for row in restored] == [row.family_id for row in added]
 
 
 def test_declared_whole_window_rows_are_identical_with_added_metrics(warehouse):
@@ -95,12 +114,17 @@ def test_declared_whole_window_rows_are_identical_with_added_metrics(warehouse):
     added = combined[len(without) :]
     assert {row.metric for row in added} == {"rps", "revenue_cuped"}
     assert {row.role for row in added} == {"exploratory"}
+    assert {row.multiplicity_status for row in added} == {"exploratory_unadjusted"}
     assert all(row.discovery is None and row.family_axes is None for row in added)
     narrowed = analysis.run(metrics=["revenue"], exploratory_metrics=["rps"])
     assert {row.metric for row in narrowed} == {"revenue", "rps"}
-    assert [row.model_dump() for row in narrowed if row.metric == "revenue"] == [
-        row.model_dump() for row in without if row.metric == "revenue"
-    ]
+    assert _rows([row for row in narrowed if row.metric == "revenue"]) == _rows(
+        [row for row in without if row.metric == "revenue"]
+    )
+    assert (
+        next(row for row in narrowed if row.metric == "rps").multiplicity_status
+        == "exploratory_unadjusted"
+    )
 
 
 @pytest.mark.parametrize("alpha", PLAN_ALPHAS)
@@ -117,6 +141,8 @@ def test_added_breakout_rows_equal_the_metric_declared_in_its_own_plan(
         metrics=[], exploratory_metrics=[name]
     )
     assert declared and {row.role for row in added} == {"exploratory"}
+    expected_status = "exploratory_family" if correction == "bh" else "exploratory_unadjusted"
+    assert {row.multiplicity_status for row in added} == {expected_status}
     assert _rows(added) == _rows(declared)
 
 
@@ -145,6 +171,7 @@ def test_added_day_axis_rows_equal_the_metric_declared_in_its_own_plan(warehouse
     added = _analysis(warehouse, AnalysisPlan(alpha=alpha, primary="revenue"))
     lift = added.run_asof_lift(metrics=[], exploratory_metrics=[name])
     assert lift and {row.role for row in lift} == {"exploratory"}
+    assert {row.multiplicity_status for row in lift} == {"exploratory_unadjusted"}
     assert _rows(lift) == _rows(declared.run_asof_lift())
     for read in ("run_asof", "run_daily"):
         values = getattr(added, read)(metrics=[], exploratory_metrics=[name])

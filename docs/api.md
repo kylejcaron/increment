@@ -715,7 +715,7 @@ offending row in its `rows` context:
 | Rows with no relative interval (non-positive arm mean) selected by an absolute margin | Supported: the additive interval is reissued from the persisted `abs_diff`, `abs_se`, reference and `abs_alpha`, never narrower than the nominal interval. A row serialized before `abs_alpha` existed has no recorded level to cap at, so it is refused, `estimation.family.exploratory_construction`. |
 | Breakout segments, and whole-window rows beside them | Supported: one family over metric, arm and segment. |
 | Cells excluded by design (too few units, no control arm) | Not hypotheses: returned unchanged, outside the family. Outcome-based exclusions stay in `m` as non-rejections. |
-| Informative prior | Mathematically unsound for BH (a posterior tail is not a frequentist p-value): refused, `breakout.run_breakout_bh_excludes_prior`. |
+| Informative prior | A supported prior changes posterior fields only; family selection uses the persisted sampling evidence. A prior-bound row without a proven sampling-availability marker is refused for recomputation, `readout.legacy.sampling_unreconstructible`. |
 | Sequential inference | Unfinished: refused, `estimation.family.exploratory_sequential`. |
 | Quantile, percentile-winsorized and additive-scale rows | Unfinished: their interval cannot be reissued from persisted state without approximation, so they are refused, `estimation.family.exploratory_construction`. |
 | Rows already corrected, sensitivity rows, day-axis rows | Refused: `estimation.family.exploratory_pre_corrected`, `estimation.family.exploratory_non_decision`, `estimation.family.exploratory_row`. |

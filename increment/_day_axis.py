@@ -726,4 +726,6 @@ class DayAxisReadouts:
                     row.group_id,
                 )
             )
-        return DailyLiftEstimates(results)
+        from increment.estimation.multiplicity import stamp_multiplicity_status
+
+        return DailyLiftEstimates(stamp_multiplicity_status(results))

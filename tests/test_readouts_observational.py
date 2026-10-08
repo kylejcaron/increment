@@ -779,13 +779,13 @@ def test_run_margins_abs_also_reaches_an_unadjusted_observational_row():
 
 
 @pytest.mark.filterwarnings("ignore:(IPTW|DML|AIPW) covariate balance advisory:UserWarning")
-def test_absolute_margin_on_a_degenerate_row_refuses_rather_than_falling_back():
-    """No silent substitution of the relative decision when the additive
-    one is unavailable."""
+def test_absolute_margin_without_posterior_probability_stays_unavailable():
+    """A sampling-only absolute guardrail has no posterior probability."""
     from increment import readouts as ro
 
     src = _obs_src(preferred_direction="decrease", margin_abs=0.10)
     (est,) = ro.run(src)
+    degenerate = est.model_copy(update={"abs_se": None})
     assert degenerate.prob_favorable() is None
 
 
@@ -1086,8 +1086,8 @@ def test_global_prior_method_scales_refuse_across_metric_groups_including_defaul
     assert exc.value.code == "estimation.adjust.prior.method_scale"
 
 
-def test_global_prior_ignores_unsupported_default_adjustment_metric():
-    """A skipped default-IPTW ratio cannot change the prior parameterization."""
+def test_default_adjustment_ratio_refuses_during_prior_preflight():
+    """A call-wide prior does not bypass a structurally unsupported ratio method."""
     from increment import readouts as ro
     from increment.estimation.inference import Normal
     from increment.frame import MetricSpec, from_unit_summary
@@ -1113,12 +1113,11 @@ def test_global_prior_ignores_unsupported_default_adjustment_metric():
         design=_OBS_TRIM,
     )
 
-    with pytest.warns(IncrementWarning) as rec:
-        results = ro.run(source, prior=Normal(mu=0.0, sigma=0.1))
-    assert "estimation.adjust.skip_unsupported_metric" in warning_codes(rec)
-    skipped = warning_context(rec, "estimation.adjust.skip_unsupported_metric")
-    assert skipped["metric_name"] == "rev_per_session"
-    assert [result.metric for result in results] == ["revenue"]
+    with pytest.raises(UnsupportedRequestError) as exc:
+        ro.run(source, prior=Normal(mu=0.0, sigma=0.1))
+    assert exc.value.code == "estimation.adjust_common.supported_ratio_metric"
+    assert exc.value.context["metric"] == "rev_per_session"
+    assert exc.value.context["method"] == "iptw"
 
 
 def test_all_ratio_metrics_refuse_at_validation_with_capability_code():
@@ -1511,8 +1510,22 @@ def test_clearing_bound_ratio_prior_revalidates_observational_family(method, rev
     decision = Method(name=method)
     inherited_values = {}
     try:
+        if method == "iptw":
+            for kwargs in ({}, {"prior": None}):
+                with pytest.raises(UnsupportedRequestError) as raised:
+                    bound.run(decision_method=decision, **kwargs)
+                assert raised.value.code == "estimation.adjust_common.supported_ratio_metric"
+                assert raised.value.context["metric"] == "spend_per_click"
+                assert raised.value.context["method"] == "iptw"
+                assert raised.value.context["family"] == "secondary"
+                assert raised.value.context["correction"] == "bh"
+            return
         expected = (
-            {row.metric: row for row in lift_rows(prior_free.run(decision_method=decision))}
+            {
+                row.metric: row
+                for row in lift_rows(prior_free.run(decision_method=decision))
+                if row.method_role == "decision" and row.sampling_available is True
+            }
             if prior_free is not None
             else {}
         )
@@ -1521,23 +1534,14 @@ def test_clearing_bound_ratio_prior_revalidates_observational_family(method, rev
             assert expected["spend_per_click"].family_axes == ("metric", "arm")
             assert expected["spend_per_click"].require_lift().value == pytest.approx(0.6)
         for clear in (False, True, True, False):
-            if clear and method == "iptw":
-                with pytest.raises(UnsupportedRequestError) as raised:
-                    bound.run(decision_method=decision, prior=None)
-                assert raised.value.code == "estimation.adjust_common.supported_ratio_metric"
-                assert raised.value.context["metric"] == "spend_per_click"
-                assert raised.value.context["method"] == "iptw"
-                assert raised.value.context["family"] == "secondary"
-                assert raised.value.context["correction"] == "bh"
-                continue
             kwargs = {"prior": None} if clear else {}
-            if method == "iptw":
-                with pytest.warns(IncrementWarning):
-                    rows = lift_rows(bound.run(decision_method=decision, **kwargs))
-                assert [row.metric for row in rows] == ["revenue"]
-            else:
-                rows = lift_rows(bound.run(decision_method=decision, **kwargs))
-                assert {row.metric for row in rows} == {"revenue", "spend_per_click"}
+            rows = lift_rows(bound.run(decision_method=decision, **kwargs))
+            rows = [
+                row
+                for row in rows
+                if row.method_role == "decision" and row.sampling_available is True
+            ]
+            assert {row.metric for row in rows} == {"revenue", "spend_per_click"}
             for row in rows:
                 interval = row.require_lift()
                 values = (interval.value, interval.lb, interval.ub)
@@ -1552,9 +1556,13 @@ def test_clearing_bound_ratio_prior_revalidates_observational_family(method, rev
                         assert values == pytest.approx(inherited_values[row.metric])
                     else:
                         inherited_values[row.metric] = values
-                    if row.metric == "spend_per_click":
-                        assert row.discovery is None
-                        assert row.family_axes is None
+                    if expected:
+                        oracle = expected[row.metric]
+                        assert row.discovery == oracle.discovery
+                        assert row.family_axes == oracle.family_axes
+                        assert row.family_size == oracle.family_size
+                        if row.metric == "spend_per_click":
+                            assert row.posterior_estimate is not None
     finally:
         bound.close()
         if prior_free is not None:

@@ -57,6 +57,10 @@ def _analysis(frame, *, drop_missing_guard=False):
     [
         ("independent", "failed", "always_valid", 0.001),
         (None, "not_checked_missing_declaration", "none", None),
+        ("blocked", "unsupported_assignment", "none", None),
+        ("adaptive", "unsupported_assignment", "none", None),
+        ("quota", "unsupported_assignment", "none", None),
+        ("fixed_counts", "unsupported_assignment", "none", None),
     ],
 )
 def test_analysis_run_surfaces_assignment_integrity_without_changing_rows(
@@ -98,6 +102,37 @@ def test_analysis_run_surfaces_assignment_integrity_without_changing_rows(
     ]
     assert len(results) == 1 and results[0].lift is not None
 
+
+
+def test_observational_run_marks_assignment_integrity_not_applicable():
+    from increment.semantics.design import AdjustmentSet, Observational
+
+    frame = pd.DataFrame(
+        [
+            {
+                "unit": f"{group}{i}",
+                "arm": group,
+                "x": float(i % 11),
+                "rev": float(i % 7 + 1),
+            }
+            for group in ("control", "treatment")
+            for i in range(40)
+        ]
+    )
+    results = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        design=Observational(
+            control_group="control", adjustment=AdjustmentSet(covariates=("x",))
+        ),
+        metrics=[MetricSpec(name="rev", type="mean")],
+    ).run()
+
+    (integrity,) = next(iter(results.metadata.scope.by_source.values())).integrity
+    assert integrity.status == "not_applicable"
+    assert integrity.construction == "none"
+    assert integrity.observed is None
 
 
 def _imbalanced_assignment_frame():
@@ -193,6 +228,44 @@ def test_encouragement_run_checks_assignment_not_uptake_counts():
     ).run(estimands=["itt", "compliance"])
 
     _assert_failed_assigned_integrity(results)
+
+def test_unit_summary_preserves_literal_none_arm_but_excludes_unassigned_roster():
+    from increment.sources import UNASSIGNED_LABEL
+
+    rows = [
+        {"unit": f"{arm}-{index}", "arm": arm, "rev": float(index + 1)}
+        for arm in ("control", "treatment", "None")
+        for index in range(4)
+    ]
+    rows.extend(
+        {"unit": f"unassigned-{index}", "arm": None, "rev": float(index + 1)}
+        for index in range(2)
+    )
+    results = Analysis.from_unit_summary(
+        pd.DataFrame(rows),
+        unit="unit",
+        group="arm",
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.3, "treatment": 0.3, "None": 0.4},
+            allocation_scheme="blocked",
+        ),
+        on_unassigned="exclude",
+        metrics=[MetricSpec(name="rev", type="mean")],
+    ).run()
+
+    assert {row.group_id for row in results} == {"treatment", "None"}
+    (integrity,) = next(iter(results.metadata.scope.by_source.values())).integrity
+    assert integrity.status == "unsupported_assignment"
+    assert integrity.observed == {
+        "control": 4,
+        "treatment": 4,
+        "None": 4,
+        UNASSIGNED_LABEL: 2,
+    }
+    assert any(
+        component["kind"] == "assignment_counts" for component in results.source["components"]
+    )
 
 def _registered_integrity_analysis(*, n_control=900, n_treatment=100):
     from tests.binary_sequential_cases import ROUTES, unit_rows
@@ -312,6 +385,12 @@ def test_constant_guardrail_failure_survives_collection_views_and_saved_results(
         ("guard", "zero_variance")
     ]
     assert failed[0].lift is None
+    assert failed[0].role == "guardrail"
+    assert failed[0].multiplicity_status == "declared_plan"
+    guardrail_family = next(
+        family for family in results.metadata.scope.families if family.family_id == failed[0].family_id
+    )
+    assert any(cell.metric == "guard" and cell.method_role == "decision" for cell in guardrail_family.members)
     assert all(row.decision_scope_complete is False for row in results)
     assert results.metadata.scope.decision_complete("assigned") is False
 
@@ -338,12 +417,15 @@ def test_missing_arm_for_one_metric_is_a_typed_cell_failure_while_another_observ
     results = analysis.run()
     (failed,) = [row for row in results if row.failure_code is not None]
     assert failed.metric == "guard"
-    assert failed.failure_code == "readout.cell.missing_arm"
+    assert failed.failure_code == "readout.cell.missing_metric_observations"
     assert failed.failure_context["group_id"] == "treatment"
     assert failed.lift is None
     (surviving,) = [row for row in results if row.failure_code is None]
     assert surviving.metric == "rev" and surviving.lift is not None
-    assert results.metadata.scope.decision_complete("assigned") is False
+    failed_family = next(
+        family for family in results.metadata.scope.families if family.family_id == failed.family_id
+    )
+    assert any(cell.metric == "guard" and cell.group_id == failed.group_id for cell in failed_family.members)
 
 
 def test_complete_readout_reports_complete_scope():
@@ -433,12 +515,112 @@ def test_constant_primary_is_a_failed_decision_cell_beside_a_surviving_guardrail
     assert warning_codes(captured) == ["readouts.run.cell_refused"]
     (failed,) = [row for row in results if row.failure_code is not None]
     assert (failed.metric, failed.failure_context["reason"]) == ("rev", "zero_variance")
-    assert failed.lift is None
+    assert failed.role == "primary"
+    assert failed.multiplicity_status == "declared_plan"
+    assert failed.family_id is not None
+    primary_family = next(
+        family for family in results.metadata.scope.families if family.family_id == failed.family_id
+    )
+    assert any(cell.metric == "rev" and cell.group_id == failed.group_id for cell in primary_family.members)
     (surviving,) = [row for row in results if row.failure_code is None]
     assert surviving.metric == "guard" and surviving.lift is not None
     assert results.metadata.scope.decision_complete("assigned") is False
     assert all(row.decision_scope_complete is False for row in results)
 
+
+def test_failed_multiarm_secondary_keeps_full_family_and_sensitivity_provenance():
+    from increment import Method
+    from increment.tables import estimates_to_readout
+
+    rng = np.random.default_rng(23)
+    frame_rows = []
+    for arm, shift in (("control", 0.0), ("treatment_a", 0.25), ("treatment_b", 0.5)):
+        for index in range(100):
+            x = float(rng.normal())
+            frame_rows.append(
+                {
+                    "unit": f"{arm}-{index}",
+                    "arm": arm,
+                    "primary": 2.0 + shift + x,
+                    "secondary": None
+                    if arm == "treatment_b"
+                    else 3.0 + shift + x + float(rng.normal(scale=0.2)),
+                    "x": x,
+                }
+            )
+    with pytest.warns(IncrementWarning) as captured:
+        analysis = Analysis.from_unit_summary(
+            pd.DataFrame(frame_rows),
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[
+                MetricSpec(name="primary", type="mean"),
+                MetricSpec(
+                    name="secondary",
+                    type="mean",
+                    missing="drop",
+                    covariate="x",
+                    decision_method=Method(name="unadjusted"),
+                    sensitivity_methods=(Method(name="cuped", variance_reduction="cuped"),),
+                ),
+            ],
+            plan=AnalysisPlan(primary="primary", secondaries=["secondary"], q=0.2),
+        )
+    assert warning_codes(captured) == ["frame.validation.metric_missing_drop"]
+    results = analysis.run()
+    secondary_rows = [row for row in results if row.metric == "secondary"]
+    decision_rows = [row for row in secondary_rows if row.method_role == "decision"]
+    sensitivity_rows = [row for row in secondary_rows if row.method_role == "sensitivity"]
+    assert {row.group_id for row in decision_rows} == {"treatment_a", "treatment_b"}
+    failed = next(row for row in decision_rows if row.group_id == "treatment_b")
+    successful = next(row for row in decision_rows if row.group_id == "treatment_a")
+    assert failed.failure_code == "readout.cell.missing_arm"
+    assert failed.role == successful.role == "secondary"
+    assert failed.multiplicity_status == successful.multiplicity_status == "declared_plan"
+    assert failed.family_id == successful.family_id
+    assert successful.discovery is not None
+    assert failed.discovery is None
+    (family,) = [family for family in results.metadata.scope.families if family.family_id == failed.family_id]
+    assert {cell.group_id for cell in family.members if cell.metric == "secondary"} == {
+        "treatment_a",
+        "treatment_b",
+    }
+    assert sensitivity_rows
+    assert all(row.multiplicity_status == "declared_plan" for row in sensitivity_rows)
+    assert all(row.family_id is None and row.discovery is None for row in sensitivity_rows)
+
+    frame = results.to_frame()
+    assert set(frame.loc[frame["metric"] == "secondary", "multiplicity_status"]) == {
+        "declared_plan"
+    }
+    readout = estimates_to_readout(results)
+    assert all(
+        row["multiplicity_status"] == "declared_plan"
+        for row in readout
+        if row["metric"] == "secondary"
+    )
+    failed_readout = next(
+        row for row in readout if row["metric"] == "secondary" and row["group_id"] == "treatment_b"
+    )
+    assert failed_readout["chance_to_beat (advisory)"] is None
+    assert failed_readout["risk_if_shipped (advisory)"] is None
+    unavailable_row = successful.model_copy(update={"sampling_available": False})
+    (unavailable_readout,) = estimates_to_readout([unavailable_row])
+    assert unavailable_readout["chance_to_beat (advisory)"] is None
+    assert unavailable_readout["risk_if_shipped (advisory)"] is None
+    from increment.tables import readout_table
+
+    html = readout_table(readout).gt().as_raw_html()
+    assert "Declared plan" in html
+    restored = ReadoutResults.model_validate_json(results.model_dump_json())
+    assert restored.metadata == results.metadata
+    assert [row.family_id for row in restored] == [row.family_id for row in results]
+    filtered = results.filter(lambda row: row.metric == "secondary")
+    assert filtered.metadata.scope.families == results.metadata.scope.families
+    assert {row.family_id for row in filtered if row.method_role == "decision"} == {
+        failed.family_id
+    }
 
 def test_sensitivity_survives_when_every_decision_method_fails():
     from increment import Method

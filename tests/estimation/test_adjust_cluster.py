@@ -956,14 +956,11 @@ def test_decision_stats_refuse_on_clustered_adjusted_rows():
         null_abs={"y": 0.01},
     ).results
 
-    for method, code in (
-        (est.chance_to_beat, "estimation.results.lift.posterior_decision_stats_cluster_robust"),
-        (est.prob_favorable, "estimation.results.lift.p_value_cluster_robust_null_abs"),
-    ):
-        with pytest.raises(InvalidRequestError) as exc_info:
-            method()
-        assert exc_info.value.code == code
-        assert est.reference_df is None
+    assert est.chance_to_beat() is None
+    with pytest.raises(InvalidRequestError) as exc_info:
+        est.prob_favorable()
+    assert exc_info.value.code == "estimation.results.lift.p_value_cluster_robust_null_abs"
+    assert est.reference_df is None
 
 
 # Orchestration: estimate_ate / readouts.run thread the declaration.

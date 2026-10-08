@@ -240,28 +240,19 @@ def test_native_breakout_uses_callwide_methods_not_declared_methods(con, correct
 
     analysis = _configured_country_breakout_analysis(con, correction)
 
-    if correction == "bh":
-        with pytest.raises(InvalidRequestError) as raised:
-            analysis.run_breakout()
-        assert raised.value.code == "readout.breakout_correction_bh"
-    else:
-        results = analysis.run_breakout()
-        assert results
-        assert {row.method for row in results} == {"declared"}
+    results = analysis.run_breakout()
+    assert results
+    assert {row.method for row in results} == {"declared"}
 
-    if correction == "bh":
-        with pytest.raises(InvalidRequestError) as raised:
-            analysis.run_breakout(decision_method=Method(name="call-wide"))
-        assert raised.value.code == "readout.breakout_correction_bh"
-    else:
-        explicit = analysis.run_breakout(decision_method=Method(name="call-wide"))
-        assert explicit
-        assert {row.method for row in explicit} == {"call-wide"}
+    explicit = analysis.run_breakout(decision_method=Method(name="call-wide"))
+    assert explicit
+    assert {row.method for row in explicit} == {"call-wide"}
 
 
-@pytest.mark.parametrize("correction", ["none", "bonferroni"])
-def test_native_breakout_ignores_declared_prior(con, correction):
+@pytest.mark.parametrize("correction", ["none", "bonferroni", "bh"])
+def test_native_breakout_keeps_declared_prior_separate_from_sampling(con, correction):
     from increment.estimation import Normal
+    from increment.estimation.priors import MixturePrior
 
     configured = _configured_country_breakout_analysis(con, correction)
     baseline = make_analysis_like(
@@ -281,23 +272,69 @@ def test_native_breakout_ignores_declared_prior(con, correction):
 
     def keyed_lifts(results):
         return {
-            (row.metric, row.group_id, row.dimension_value, row.method): row.require_lift().value
+            (row.metric, row.group_id, row.dimension_value): row
             for row in results
             if row.lift is not None
         }
 
+    def assert_same_sampling(actual, expected):
+        assert actual.keys() == expected.keys()
+        for key, row in actual.items():
+            baseline_row = expected[key]
+            assert row.require_lift().value == pytest.approx(baseline_row.require_lift().value)
+            assert row.require_lift().lb == pytest.approx(baseline_row.require_lift().lb)
+            assert row.require_lift().ub == pytest.approx(baseline_row.require_lift().ub)
+            assert row.sampling_available is True
+            assert baseline_row.sampling_available is True
+            assert row.discovery == baseline_row.discovery
+            assert row.family_size == baseline_row.family_size
+            assert row.family_threshold == baseline_row.family_threshold
+
     declared_lifts = keyed_lifts(declared_results)
     baseline_lifts = keyed_lifts(baseline_results)
-    assert {(key[0], key[1], key[2]) for key in declared_lifts} == {
-        (key[0], key[1], key[2]) for key in baseline_lifts
-    }
-    assert list(declared_lifts.values()) != pytest.approx(list(baseline_lifts.values()))
+    assert_same_sampling(declared_lifts, baseline_lifts)
 
     prior_results = baseline.run_breakout(prior=Normal(mu=0.0, sigma=0.01))
     prior_lifts = keyed_lifts(prior_results)
-    assert prior_lifts.keys() == baseline_lifts.keys()
-    assert any(prior_lifts[key] != pytest.approx(baseline_lifts[key]) for key in baseline_lifts)
+    assert_same_sampling(prior_lifts, baseline_lifts)
+    assert any(row.posterior_estimate is not None for row in prior_lifts.values())
 
+
+    mixture_prior = MixturePrior(
+        weights=(0.4, 0.6), means=(0.0, 0.1), sigmas=(0.02, 0.15)
+    )
+    mixture_results = baseline.run_breakout(prior=mixture_prior)
+    mixture_lifts = keyed_lifts(mixture_results)
+    assert_same_sampling(mixture_lifts, baseline_lifts)
+    mixture_row = next(row for row in mixture_lifts.values() if row.posterior_components is not None)
+    assert mixture_row.prior_spec == mixture_prior
+    family_view = mixture_row._family_view()
+    assert family_view is not None
+    assert family_view.posterior_components == mixture_row.posterior_components
+    chance_to_beat = family_view.chance_to_beat()
+    assert chance_to_beat is not None
+    assert 0.0 <= chance_to_beat <= 1.0
+    saved_row = type(mixture_row).model_validate_json(mixture_row.model_dump_json())
+    assert saved_row.posterior_components == mixture_row.posterior_components
+    saved_family_view = saved_row._family_view()
+    assert saved_family_view is not None
+    assert saved_family_view.chance_to_beat() == pytest.approx(chance_to_beat)
+    mixture_frame = mixture_results.to_frame()
+    frame_record = next(
+        record
+        for record in mixture_frame.to_dict(orient="records")
+        if record["metric"] == mixture_row.metric
+        and record["group_id"] == mixture_row.group_id
+        and record["dimension_value"] == mixture_row.dimension_value
+    )
+    frame_record.pop("view_partial", None)
+    frame_data = mixture_row.model_dump(mode="python")
+    frame_data["posterior_components"] = frame_record["posterior_components"]
+    frame_row = type(mixture_row).model_validate(frame_data)
+    frame_family_view = frame_row._family_view()
+    assert frame_family_view is not None
+    assert frame_family_view.posterior_components == mixture_row.posterior_components
+    assert frame_family_view.chance_to_beat() == pytest.approx(chance_to_beat)
 
 def test_run_breakout_plan_declared_multiplicity_controls_level(con):
     """Breakout correction and alpha are read from the resolved plan."""
@@ -480,6 +517,27 @@ def test_run_breakout_bh_family_survives_a_degenerate_segment_cell():
         if r.metric == "revenue" and r.dimension_value == "US" and r.excluded is None
     ]
     assert healthy_rows  # the family completed instead of aborting for GB/refunds
+
+    from increment.breakout.estimates import BreakoutEstimate
+    from increment.tables import estimates_to_readout
+
+    for row in degenerate_rows:
+        assert BreakoutEstimate.model_validate_json(row.model_dump_json()) == row
+    frame = results.to_frame()
+    failed_frame = frame[(frame["metric"] == "refunds") & (frame["dimension_value"] == "GB")]
+    assert len(failed_frame) == len(degenerate_rows)
+    assert pd.isna(failed_frame["lift"]).all()
+    rendered = estimates_to_readout(results)
+    failed_readout = [
+        row
+        for row in rendered
+        if row["metric"] == "refunds" and row["segment"] == "GB"
+    ]
+    assert len(failed_readout) == len(degenerate_rows)
+    assert all(
+        row["excluded"] == "nonpositive_mean" and row["lift"] is None
+        for row in failed_readout
+    )
 
 
 def test_run_breakout_bh_family_survives_a_tiny_segment_extreme_ratio_cell():

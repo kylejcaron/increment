@@ -355,7 +355,7 @@ def estimate_compliance(
                 cluster=cluster,
             )
         )
-    bundle = _lift_decision_bundle(results, inference=inference, allow_linear=True)
+    bundle = _lift_decision_bundle(results, inference=inference)
     return DecisionComputation(
         results=tuple(results), evidence=bundle.evidence, failures=bundle.failures
     )
@@ -805,11 +805,7 @@ def _encouragement_decision_bundle(
         if not (result.estimand == "late" and result.value_scale == "relative")
     ]
     non_itt = [result for result in evidence_results if result.estimand != "itt"]
-    bundle = _lift_decision_bundle(
-        non_itt,
-        inference=inference,
-        allow_linear=True,
-    )
+    bundle = _lift_decision_bundle(non_itt, inference=inference)
     evidence = dict(itt_bundle.evidence) if itt_bundle is not None else {}
     failures = dict(itt_bundle.failures) if itt_bundle is not None else {}
     evidence.update(bundle.evidence)

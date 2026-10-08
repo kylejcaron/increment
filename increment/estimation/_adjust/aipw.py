@@ -106,7 +106,7 @@ def _aipw_contrast(
     )
     point, scores = resolved.point, resolved.scores
     abs_diff, abs_se = resolved.abs_diff, resolved.abs_se
-    if request.value_scale != "absolute" and request.prior is None:
+    if request.value_scale != "absolute":
         joint_result = _joint_reference_from_influences(
             if_tau_centered,
             psi0 - mu0,
@@ -124,12 +124,12 @@ def _aipw_contrast(
         point=point,
         scores=scores,
         population=data.population,
-        abs_diff=abs_diff,
-        abs_se=abs_se,
+        absolute=(abs_diff, abs_se),
         estimand="overlap_subpopulation_ate" if data.overlap_trimmed else "ate",
         note=data.note,
         n_clusters=clusters.k,
         dof=None,
+        posterior=(resolved.posterior_point, resolved.posterior_scores),
         joint_result=joint_result,
     )
 

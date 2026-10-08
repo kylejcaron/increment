@@ -2,15 +2,10 @@
 alpha splitting, and the secondary family's BH / e-BH / FCR machinery.
 
 Every scenario is deterministic (seeded numpy data) and frame-backed via
-`FrameTotalsSource`, except `test_prior_secondary_outside_family` and
-`test_declared_plan_leaves_an_unnamed_metric_unassigned`: a prior-bound
-plan entry is refused on the frame path (methods=/prior= overrides are
-frame-path-only refusals - see the decision compiler), and an unnamed metric
-defaults to `role="secondary"` there rather than `"unassigned"` - both
-cases are built over `increment.sources.MomentsSource` with an explicit
-`path="warehouse"` instead (`MomentsSource`'s own default is
-`path="frame"`, matching `Analysis.from_moments`'s contract), the only
-path that can express either.
+`FrameTotalsSource`, except tests that need a `MomentsSource` with
+`path="warehouse"` to exercise warehouse-only plan bindings/overrides or
+unnamed-metric role resolution. `MomentsSource` otherwise defaults to the
+frame path, matching `Analysis.from_moments`'s contract.
 """
 
 from __future__ import annotations
@@ -960,8 +955,8 @@ def _moments_with_plan(
     return [{**row, "decision_plan": wire} for row in rows]
 
 
-def test_prior_secondary_outside_family():
-    """Effective priors stay outside the family until explicitly cleared."""
+def test_prior_bound_secondary_remains_in_sampling_family():
+    """An effective prior changes posterior state, not declared family membership."""
     n = 2000
     rows = [
         _moments_row("family_metric_1", "control", n, 10.0, 4.0),
@@ -969,7 +964,7 @@ def test_prior_secondary_outside_family():
         _moments_row("family_metric_2", "control", n, 10.0, 4.0),
         _moments_row("family_metric_2", "treatment", n, 10.02, 4.0),  # null -- not selected
         _moments_row("prior_bound_metric", "control", n, 10.0, 4.0),
-        _moments_row("prior_bound_metric", "treatment", n, 12.0, 4.0),  # extreme, but out of family
+        _moments_row("prior_bound_metric", "treatment", n, 12.0, 4.0),  # large sampling-family member
     ]
     metrics = [
         MeanMetric(name=name, entity="user_id", fact=name, aggregation="avg_event")
@@ -998,19 +993,20 @@ def test_prior_secondary_outside_family():
 
     results = readouts.run(src)
     by_metric = {r.metric: r for r in results}
-    assert by_metric["prior_bound_metric"].role == "secondary"
-    assert by_metric["prior_bound_metric"].discovery is None
-    assert by_metric["prior_bound_metric"].require_lift().level == pytest.approx(1.0 - plan.alpha)
+    assert by_metric["prior_bound_metric"].discovery is True
+    assert by_metric["prior_bound_metric"].family_axes == ("metric", "arm")
+    assert by_metric["prior_bound_metric"].family_q == pytest.approx(plan.q)
+    assert (
+        by_metric["prior_bound_metric"].family_threshold
+        == by_metric["family_metric_1"].family_threshold
+    )
 
     assert by_metric["family_metric_1"].discovery is True
     assert by_metric["family_metric_2"].discovery is False
-    # m=2 (prior_bound_metric excluded), R=1 and q=0.5 give BH cutoff R*q/m = 0.25,
-    # five times nominal 0.05. Uncapped, the selected interval would use level
-    # 0.75, narrower than an uncorrected 0.95; the cap holds the nominal level.
+    # All three declared secondaries enter the family; sampling family metadata is
+    # identical to a prior-free replay, while the posterior remains separate.
     assert by_metric["family_metric_1"].require_lift().level == pytest.approx(1.0 - plan.alpha)
     assert by_metric["family_metric_2"].require_lift().level == pytest.approx(1.0 - plan.alpha)
-    # The uncapped cutoff is still recorded, so the disclosure survives.
-    assert by_metric["family_metric_1"].family_threshold == pytest.approx(0.25)
     assert by_metric["family_metric_1"].family_axes == ("metric", "arm")
     assert by_metric["family_metric_1"].family_q == pytest.approx(plan.q)
 
@@ -1026,6 +1022,9 @@ def test_prior_secondary_outside_family():
     expected = {row.metric: row for row in readouts.run(prior_free_source)}
     assert expected["prior_bound_metric"].discovery is True
     assert expected["prior_bound_metric"].require_lift().value == pytest.approx(0.2)
+    assert by_metric["family_metric_1"].family_threshold == pytest.approx(
+        expected["family_metric_1"].family_threshold
+    )
     for _ in range(2):
         cleared = {row.metric: row for row in readouts.run(src, prior=None)}
         assert cleared.keys() == expected.keys()
@@ -1038,13 +1037,46 @@ def test_prior_secondary_outside_family():
                 (expected_interval.value, expected_interval.lb, expected_interval.ub)
             )
     inherited = {row.metric: row for row in readouts.run(src)}
-    assert inherited["prior_bound_metric"].discovery is None
-    assert inherited["prior_bound_metric"].family_axes is None
-    assert inherited["family_metric_1"].family_threshold == pytest.approx(0.25)
+    for name, row in inherited.items():
+        oracle = expected[name]
+        assert row.discovery == oracle.discovery
+        assert row.family_size == oracle.family_size
+        assert row.family_threshold == oracle.family_threshold
+        assert (row.require_lift().value, row.require_lift().lb, row.require_lift().ub) == pytest.approx(
+            (oracle.require_lift().value, oracle.require_lift().lb, oracle.require_lift().ub)
+        )
+    assert inherited["prior_bound_metric"].posterior_estimate != pytest.approx(
+        inherited["prior_bound_metric"].require_lift().value
+    )
 
 
-def test_callwide_prior_is_outside_secondary_family():
-    """A call-wide prior overlay excludes every secondary from BH."""
+
+    from increment.estimation.priors import MixturePrior
+
+    directional_plan = AnalysisPlan(
+        q=0.5, alternative="greater", secondaries=["prior_bound_metric"]
+    )
+    directional_src = MomentsSource(
+        _moments_with_plan(rows, metrics, directional_plan),
+        metrics=metrics,
+        study_id="e",
+        design=Randomized(control_group="control"),
+        plan=directional_plan,
+        path="warehouse",
+    )
+    directional_rows = readouts.run(
+        directional_src,
+        prior=MixturePrior(weights=(0.4, 0.6), means=(0.0, 0.1), sigmas=(0.02, 0.15)),
+    )
+    directional_row = next(row for row in directional_rows if row.metric == "prior_bound_metric")
+    assert directional_row.discovery is True
+    assert directional_row.posterior_available is True
+    assert directional_row.posterior_components is not None
+    assert directional_row.p_value() is not None
+
+
+def test_callwide_prior_preserves_secondary_sampling_family():
+    """A call-wide prior does not remove declared secondary sampling evidence."""
     n = 2000
     rows = [
         _moments_row("family_metric", "control", n, 10.0, 4.0),
@@ -1068,13 +1100,18 @@ def test_callwide_prior_is_outside_secondary_family():
 
     results = readouts.run(src, prior=Normal(mu=0.0, sigma=0.1))
 
+    baseline = {r.metric: r for r in readouts.run(src, prior=None)}
     assert results
     assert all(r.role == "secondary" for r in results)
-    assert all(r.discovery is None for r in results)
-    assert all(r.family_axes is None for r in results)
+    assert all(r.discovery is not None for r in results)
+    assert all(r.family_axes == ("metric", "arm") for r in results)
+    assert all(r.family_q == pytest.approx(plan.q) for r in results)
+    assert all(r.family_threshold == baseline[r.metric].family_threshold for r in results)
     assert all(
-        r.require_lift().level == pytest.approx(1.0 - src.context.plan.alpha) for r in results
+        r.require_lift().value == pytest.approx(baseline[r.metric].require_lift().value)
+        for r in results
     )
+    assert all(r.posterior_estimate != pytest.approx(r.require_lift().value) for r in results)
 
 
 def test_no_plan_matches_legacy_run():

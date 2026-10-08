@@ -909,7 +909,9 @@ class ReadoutResults:
         sequential = (
             None
             if payload.get("sequential_snapshot") is None
-            else SequentialSnapshot.model_validate(payload["sequential_snapshot"])
+            else SequentialSnapshot.model_validate_json(
+                json.dumps(payload["sequential_snapshot"])
+            )
         )
         rows = [model.model_validate(row) for row in payload["rows"]]
         checkpoints = []

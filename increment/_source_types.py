@@ -460,6 +460,9 @@ class SourceContext:
     #: (a randomization/dependence grain) nor covariance clustering implies it.
     #: Unit-frame-serving sources pass the declared value; others keep "unit".
     intervention_grain: Literal["unit", "cluster"] = "unit"
+    #: Trusted experiment declaration for the triggered population, when present.
+    #: It identifies scope only; it does not certify or load triggered evidence.
+    trigger_name: str | None = None
 
     # SourceContext is construction state shared by every population view.
     # Triggered population selection belongs to the source-owned adapter.

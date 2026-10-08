@@ -127,13 +127,11 @@ def _row_identity(row: Any) -> tuple:
 
 
 def _p_value(row: Any) -> float | None:
-    """The row's presentation p-value where the row defines one (a fixed-horizon relative row
-    without a prior), else ``None``; a path that refuses it disagrees with one that does not."""
+    """The row's presentation sampling p-value where its reference permits one."""
     p_value = getattr(row, "p_value", None)
     if (
         p_value is None
         or row.inference != "fixed"
-        or getattr(row, "prior_shrunk", False)
         or row.null_abs is not None
         or row.lift is None
         and row.reference_kind != "binomial"

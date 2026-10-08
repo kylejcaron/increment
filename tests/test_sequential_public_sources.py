@@ -131,6 +131,7 @@ def _analysis(frame, specs, plan):
 def _row(analysis):
     rows = analysis.run()
     assert isinstance(rows, LiftEstimates)
+    assert {row.multiplicity_status for row in rows} == {"declared_plan"}
     return rows[0]
 
 
@@ -611,7 +612,7 @@ def test_exported_checkpoint_replays_exact_rationals_and_refuses_mutated_ones(
     assert "1e50000" not in str(wrapped.value)
 
 
-def _native_fixture(law, *, uptake_only=False, unbounded_retention=False):
+def _native_fixture(law, *, uptake_only=False, unbounded_retention=False, triggered=False):
     from datetime import UTC, datetime
 
     # All declarations precede construction or reading of either source table.
@@ -675,6 +676,17 @@ def _native_fixture(law, *, uptake_only=False, unbounded_retention=False):
                 "preferred_direction": "increase",
             }
         )
+    if triggered:
+        definition["exposures"].append(
+            {
+                "name": "triggered",
+                "sql": (
+                    "SELECT unit_id, ts, group_id FROM enrolled "
+                    "WHERE CAST(SUBSTR(unit_id, 1, 8) AS INTEGER) < 12"
+                ),
+            }
+        )
+        definition["experiments"][0]["trigger"] = "triggered"
     from increment import SequentialCell, SequentialModel
     from increment.semantics.design import Encouragement
 
@@ -1389,6 +1401,7 @@ def test_always_valid_plan_reports_every_role_at_its_declared_budget():
     for row in analysis.run():
         # run() is typed as a union; these are arm rows, not contrasts.
         assert isinstance(row, LiftEstimate)
+        assert row.multiplicity_status == "declared_plan"
         observed[row.metric] = (
             row.role,
             row.inference,

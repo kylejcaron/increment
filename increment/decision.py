@@ -289,10 +289,8 @@ class MultiplicityFamily(CodedModel, BaseModel):
 
 
 class FamilyMembership(CodedModel, BaseModel):
-    """Declaration-level eligibility for a named multiplicity family.
-
-    An effective prior excludes the procedure when resolving a readout.
-    """
+    """Eligibility is explicit: a prior does not remove sampling evidence from a declared
+    family member, and an explicit non-member remains outside it."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 

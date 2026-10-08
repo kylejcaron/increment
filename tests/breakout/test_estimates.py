@@ -729,22 +729,44 @@ def _p_value_from_estimate(lift: Estimate) -> float:
 
 
 class TestRunBreakoutBHCorrection:
-    """`correction="bh"`: one flat BH family across every (metric, arm,
-    segment) cell this call produces, with FCR-adjusted intervals on the
-    selected cells (fixed-horizon) or e-BH discovery with untouched
-    confidence-sequence intervals (AlwaysValid)."""
+    """``correction="bh"`` consumes prior-free sampling evidence and keeps
+    declared members in the same family when a posterior is also requested."""
 
-    def test_bh_refuses_informative_prior(self):
-        with pytest.raises(InvalidRequestError) as exc_info:
-            run_breakout(
-                _bh_family_summary(),
-                [_mean_metric("m_a")],
-                control_group="control",
-                dimension="country",
-                prior=Normal(mu=0.0, sigma=0.1),
-                correction="bh",
+    def test_bh_keeps_prior_bound_members_in_sampling_family(self):
+        summary = _bh_family_summary()
+        metrics = [_mean_metric(name) for name in ("m_a", "m_b", "m_c")]
+        baseline = run_breakout(
+            summary,
+            metrics,
+            control_group="control",
+            dimension="country",
+            correction="bh",
+        )
+        posterior = run_breakout(
+            summary,
+            metrics,
+            control_group="control",
+            dimension="country",
+            prior=Normal(mu=0.0, sigma=0.1),
+            correction="bh",
+        )
+        plain_rows = [row for row in baseline if row.excluded is None]
+        prior_rows = [row for row in posterior if row.excluded is None]
+        assert len(prior_rows) == len(plain_rows) == 6
+        for plain, prior_row in zip(plain_rows, prior_rows, strict=True):
+            assert prior_row.lift == plain.lift
+            assert (prior_row.reference_kind, prior_row.reference_df) == (
+                plain.reference_kind,
+                plain.reference_df,
             )
-        assert exc_info.value.code == "breakout.run_breakout_bh_excludes_prior"
+            assert (prior_row.family_size, prior_row.discovery) == (
+                plain.family_size,
+                plain.discovery,
+            )
+            assert _p_value_from_estimate(prior_row.lift) == pytest.approx(
+                _p_value_from_estimate(plain.lift)
+            )
+            assert prior_row.posterior_available is True
 
     def test_bh_discovery_matches_hand_bh_across_metrics_and_segments(self):
         summary = _bh_family_summary()

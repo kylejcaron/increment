@@ -635,12 +635,9 @@ class TestInferLift:
         assert abs(lift.value - 0.10971259) < 4 * 0.001226
         assert abs(lift.lb - (-0.12729880)) < 4 * 0.001970
 
-    def test_informative_prior_shrinks_toward_prior_mean(self):
-        """With an informative prior, the point estimate and interval match
-        the analytic conjugate result exp(v*(m0/tau^2 + delta_hat/se^2)) - 1,
-        v = 1/(1/tau^2 + 1/se^2) - the criterion that catches using the raw
-        log_rr/se_log_rr instead of the posterior's mu_n/sigma_n, invisible
-        under the default near-flat prior."""
+    def test_informative_prior_changes_posterior_not_sampling_interval(self):
+        """The sampling interval remains the prior-free estimate while the
+        stored posterior records the declared conjugate update."""
         log_t, se_t, log_c, se_c = 0.5, 0.12, 0.1, 0.09
         delta_hat = log_t - log_c
         se = math.sqrt(se_t**2 + se_c**2)
@@ -654,29 +651,30 @@ class TestInferLift:
         expected_lb = math.exp(mu_n - z * sigma_n) - 1.0
         expected_ub = math.exp(mu_n + z * sigma_n) - 1.0
 
-        result = infer_lift(
+        args = dict(
             metric="rev",
             group_id="B",
             method="unadjusted",
             method_role="decision",
-            log_rr=log_t - log_c,
+            log_rr=delta_hat,
             se_t=se_t,
             se_c=se_c,
-            prior=Normal(mu=m0, sigma=tau),
         )
+        prior_result = infer_lift(**args, prior=Normal(mu=m0, sigma=tau))
+        sampling_result = infer_lift(**args, prior=None)
 
-        assert result.require_lift().value == pytest.approx(expected_value, rel=1e-12)
-        assert result.require_lift().lb == pytest.approx(expected_lb, rel=1e-12)
-        assert result.require_lift().ub == pytest.approx(expected_ub, rel=1e-12)
+        assert prior_result.require_lift() == sampling_result.require_lift()
+        assert prior_result.posterior_estimate == pytest.approx(expected_value, rel=1e-12)
+        assert prior_result.posterior_lb == pytest.approx(expected_lb, rel=1e-12)
+        assert prior_result.posterior_ub == pytest.approx(expected_ub, rel=1e-12)
 
-        # Shrinks toward the prior mean (0.0) and narrows relative to the
-        # flat-prior (raw log_rr/se_log_rr) interval.
+        # The posterior shrinks toward its prior mean and is narrower than the
+        # prior-free sampling interval.
         flat_value = math.exp(delta_hat) - 1.0
         flat_width = math.exp(delta_hat + z * se) - math.exp(delta_hat - z * se)
         shrunk_width = expected_ub - expected_lb
         assert abs(expected_value) < abs(flat_value)
         assert shrunk_width < flat_width
-
     def test_interval_symmetric_in_log_space(self):
         """Catches a one-sided-z botch (ppf(1-alpha) instead of
         ppf(1-alpha/2)): log1p(ub) and log1p(lb) must be equidistant from
@@ -875,7 +873,7 @@ class TestInferLift:
             null_lift=-0.01,
             preferred_direction="increase",
         )
-        assert result.prob_favorable() == pytest.approx(result.prob_beyond(-0.01))
+        assert result.prob_favorable() is None
 
     def test_prob_favorable_flips_for_decrease(self):
         """A decrease-preferred (e.g. latency) guardrail's favorable side is
@@ -891,7 +889,7 @@ class TestInferLift:
             null_lift=0.02,
             preferred_direction="decrease",
         )
-        assert result.prob_favorable() == pytest.approx(1.0 - result.prob_beyond(0.02))
+        assert result.prob_favorable() is None
 
     def test_prob_favorable_neutral_matches_prob_beyond(self):
         """``preferred_direction="neutral"`` behaves as increase: favorable
@@ -907,9 +905,9 @@ class TestInferLift:
             null_lift=-0.01,
             preferred_direction="neutral",
         )
-        assert result.prob_favorable() == pytest.approx(result.prob_beyond(-0.01))
+        assert result.prob_favorable() is None
 
-    def test_prob_favorable_without_preferred_direction_raises(self):
+    def test_prob_favorable_without_preferred_direction_is_unavailable(self):
         result = infer_lift(
             metric="rev",
             group_id="B",
@@ -919,9 +917,7 @@ class TestInferLift:
             se_t=0.1,
             se_c=0.1,
         )
-        with pytest.raises(InvalidRequestError) as exc_info:
-            result.prob_favorable()
-        assert exc_info.value.code == "estimation.results.lift.liftestimate_prob_favorable"
+        assert result.prob_favorable() is None
 
 
 class TestNullAbs:
@@ -1000,47 +996,14 @@ class TestNullAbs:
             )
         assert raised.value.code == "sequential.route.unsupported"
 
-    def test_prob_favorable_additive_branch(self):
-        """Increase-preferred with null_abs=-0.01: P(true abs diff > -0.01)
-        from Normal(abs_diff, abs_se), hand-computed via norm.cdf."""
-        est = infer_lift(
-            **self._kwargs(
-                abs_diff=0.02,
-                abs_se=0.005,
-                null_abs=-0.01,
-                preferred_direction="increase",
-            )
-        )
-        expected = 1.0 - _norm_dist.cdf((-0.01 - 0.02) / 0.005)
-        assert est.prob_favorable() == pytest.approx(expected)
-
-    def test_prob_favorable_additive_flips_for_decrease(self):
-        """Decrease-preferred (e.g. a cost guardrail): favorable is BELOW
-        the additive null, exactly as the relative branch flips."""
-        est = infer_lift(
-            **self._kwargs(
-                abs_diff=-0.005,
-                abs_se=0.01,
-                null_abs=0.01,
-                preferred_direction="decrease",
-            )
-        )
-        p_greater = 1.0 - _norm_dist.cdf((0.01 - (-0.005)) / 0.01)
-        assert est.prob_favorable() == pytest.approx(1.0 - p_greater)
-
-    def test_prob_favorable_additive_with_missing_abs_se_raises(self):
-        """The additive decision is unavailable, loudly - no silent
-        fallback to the relative interval."""
-        est = infer_lift(
-            **self._kwargs(
-                abs_diff=0.02,
-                null_abs=-0.01,
-                preferred_direction="increase",
-            )
-        )
-        with pytest.raises(InvalidRequestError) as exc_info:
-            est.prob_favorable()
-        assert exc_info.value.code == "estimation.results.lift.p_value_null_abs_missing_abs_se"
+    def test_additive_sampling_rows_have_no_implicit_posterior(self):
+        for overrides in (
+            dict(abs_diff=0.02, abs_se=0.005, null_abs=-0.01, preferred_direction="increase"),
+            dict(abs_diff=-0.005, abs_se=0.01, null_abs=0.01, preferred_direction="decrease"),
+            dict(abs_diff=0.02, null_abs=-0.01, preferred_direction="increase"),
+        ):
+            est = infer_lift(**self._kwargs(**overrides))
+            assert est.prob_favorable() is None
 
     def test_null_abs_default_none_reproduces_today(self):
         """Bit-identical backcompat: omitting null_abs= stamps None and
@@ -1547,27 +1510,17 @@ class TestPersistedSamplingReference:
         assert row.reference_kind == "t"
         assert row.p_value() == pytest.approx(expected)
 
-    def test_welch_reference_posterior_is_the_row_s_own_log_moments(self):
-        """A Welch reference corrects the SAMPLING distribution for a variance
-        estimated from the arms; it does not widen the posterior. Recovering
-        (mu, sigma) by inverting the stored t endpoints with a Normal z would
-        report sigma inflated by the t/z ratio, so the decision statistics are
-        the Normal tails at lift.log_mean/lift.log_se."""
-        from increment.estimation.inference import normal_posterior
-
+    def test_welch_sampling_reference_has_no_implicit_posterior(self):
+        """Welch sampling moments do not imply an undeclared posterior."""
         row = self._welch_row()
         lift = row.require_lift()
         assert row.dof is None and row.reference_kind == "t"
         assert lift.log_mean is not None and lift.log_se is not None
+        assert row.prob_beyond(0.25) is None
+        assert row.prob_within(0.10) is None
+        assert row.risk_if_shipped() is None
 
-        expected = normal_posterior(lift.log_mean, lift.log_se)
-        assert row.prob_beyond(0.25) == pytest.approx(expected.survival(math.log1p(0.25)))
-        assert row.prob_within(0.10) == pytest.approx(
-            expected.probability_between(math.log1p(-0.10), math.log1p(0.10))
-        )
-        assert row.risk_if_shipped() == pytest.approx(expected.expected_negative_part(scale="log"))
-
-        # The endpoint inversion this replaces would have landed t/z away.
+        # The sampling interval uses its t reference rather than a Normal z.
         assert lift.alpha is not None and row.reference_df is not None
         z = float(_norm_dist.isf(lift.alpha / 2.0))
         inverted = (math.log1p(lift.value) - math.log1p(lift.lb)) / z
@@ -1588,25 +1541,11 @@ class TestPersistedSamplingReference:
             ("risk_if_shipped_favorable", ()),
         ],
     )
-    def test_welch_reference_decision_stats_read_that_posterior(self, method, args):
-        from increment.estimation.inference import normal_posterior
-
+    def test_welch_reference_withholds_probabilities_without_stored_posterior(self, method, args):
         row = self._welch_row(null_lift=0.02)
-        lift = row.require_lift()
-        assert lift.log_mean is not None and lift.log_se is not None
-        posterior = normal_posterior(lift.log_mean, lift.log_se)
-        expected = {
-            "chance_to_beat": lambda: posterior.survival(0.0),
-            "prob_beyond": lambda: posterior.survival(math.log1p(0.01)),
-            "prob_favorable": lambda: posterior.survival(math.log1p(row.null_lift)),
-            "prob_within": lambda: posterior.probability_between(
-                math.log1p(-0.10), math.log1p(0.10)
-            ),
-            "chance_to_beat_favorable": lambda: posterior.survival(0.0),
-            "risk_if_shipped": lambda: posterior.expected_negative_part(scale="log"),
-            "risk_if_shipped_favorable": lambda: posterior.expected_negative_part(scale="log"),
-        }[method]()
-        assert getattr(row, method)(*args) == pytest.approx(expected)
+        assert row.require_lift().log_mean is not None
+        assert row.require_lift().log_se is not None
+        assert getattr(row, method)(*args) is None
 
     def test_welch_reference_withholds_every_additive_decision(self):
         row = self._welch_row(null_abs=0.0)
@@ -2061,27 +2000,22 @@ def test_infer_lift_matches_expm1_at_small_log_rr():
     assert result.require_lift().value == pytest.approx(math.expm1(1e-13), rel=1e-12, abs=0.0)
 
 
-def test_infer_lift_sets_prior_shrunk_only_when_prior_given():
+def test_infer_lift_keeps_sampling_independent_of_prior():
     from increment.estimation.inference import Normal, infer_lift
 
-    plain = infer_lift(
-        "revenue",
-        "treatment",
-        "ttest",
+    args = dict(
+        metric="revenue",
+        group_id="treatment",
+        method="ttest",
         log_rr=0.1 - 0.0,
         se_t=0.05,
         se_c=0.05,
         method_role="decision",
     )
+    plain = infer_lift(**args, prior=None)
+    prior = infer_lift(**args, prior=Normal(mu=0.0, sigma=0.01))
     assert plain.prior_shrunk is False
-    shrunk = infer_lift(
-        "revenue",
-        "treatment",
-        "ttest",
-        log_rr=0.1 - 0.0,
-        se_t=0.05,
-        se_c=0.05,
-        prior=Normal(mu=0.0, sigma=0.01),
-        method_role="decision",
-    )
-    assert shrunk.prior_shrunk is True
+    assert prior.prior_shrunk is False  # modern rows do not use the legacy marker
+    assert prior.require_lift() == plain.require_lift()
+    assert prior.posterior_available is True
+    assert prior.posterior_estimate != plain.require_lift().value

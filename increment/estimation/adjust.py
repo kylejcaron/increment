@@ -1048,11 +1048,7 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
     from increment.estimation.decision_types import DecisionComputation
     from increment.estimation.engine import _lift_decision_bundle
 
-    bundle = _lift_decision_bundle(
-        results,
-        inference=None,
-        allow_linear=prior is None,
-    )
+    bundle = _lift_decision_bundle(results, inference=None)
     if not refused_failures:
         return bundle
     failures = dict(bundle.failures)

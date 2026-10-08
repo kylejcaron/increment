@@ -31,6 +31,7 @@ from increment.estimation.readout_types import (
 from increment.estimation.results import LiftEstimate
 from increment.readouts._common import _runtime_method_roles, _runtime_methods
 from increment.readouts._metric_rows import _rows_digest
+from increment.readouts._multiplicity_scope import attach_multiplicity_scope
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -52,6 +53,21 @@ class ExpectedCell:
 class _ObservedRoster:
     source: str
     arms_by_metric: Mapping[str, set[str]]
+    known_arms: frozenset[str]
+
+
+def _roster_evidence_arms(observed_by_metric, counts):
+    arms = {
+        arm
+        for observed in observed_by_metric.values()
+        for arm in observed
+        if arm is not None
+    }
+    if counts is not None:
+        arms.update(
+            arm for arm in counts if arm is not None and arm != UNASSIGNED_LABEL
+        )
+    return frozenset(arms)
 
 
 def _collect_expected_cells(
@@ -103,9 +119,14 @@ def _collect_expected_cells(
                 hypothesis=cell.hypothesis(), code=failure.code, context=failure.context
             )
         elif item.group_id not in roster.arms_by_metric.get(item.metric, set()):
+            code = (
+                "readout.cell.missing_metric_observations"
+                if item.group_id in roster.known_arms
+                else "readout.cell.missing_arm"
+            )
             failures[cell] = CellFailure(
                 hypothesis=cell.hypothesis(),
-                code="readout.cell.missing_arm",
+                code=code,
                 context={
                     "metric": item.metric,
                     "group_id": item.group_id,
@@ -334,13 +355,14 @@ def compliance_component(summary, population):
     }
 
 
-def scope_design_results(
+def scope_design_results(  # noqa: PLR0913
     src: Any,
     design: Any,
     plan: Any,
     rows: Sequence[LiftEstimate],
     computations: Sequence[Any],
     *,
+    configs: Sequence[Any],
     population: str,
     expected_for: Any,
     evidence_rows: Mapping[str, Sequence[Mapping[str, Any]]],
@@ -395,6 +417,10 @@ def scope_design_results(
         },
         **dict(request_extra or {}),
     }
+    trigger_name = src.context.trigger_name
+    if trigger_name is not None:
+        request["trigger_declared"] = True
+        request["trigger_name"] = trigger_name
     snapshot_id = (
         "sha256:"
         + sha256(
@@ -435,7 +461,11 @@ def scope_design_results(
         row_map,
         failure_map,
         population,
-        _ObservedRoster(roster_source, observed_by_metric),
+        _ObservedRoster(
+            roster_source,
+            observed_by_metric,
+            _roster_evidence_arms(observed_by_metric, counts),
+        ),
     )
 
     ordered = tuple(sorted(cell_rows, key=cell_order))
@@ -542,12 +572,13 @@ def scope_design_results(
         decision_complete_by_population={population: complete},
         integrity=(integrity,),
     )
+    output, families = attach_multiplicity_scope(output, ordered, plan, configs, snapshot_id)
     scope = ReadoutScope(
         snapshot_id=snapshot_id,
         cells=ordered,
         decision_cells=decisions,
         populations=(population,),
-        families=(),
+        families=families,
         by_source={snapshot_id: source_scope},
     )
     return LiftEstimates(

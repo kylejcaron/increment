@@ -479,7 +479,7 @@ def test_run_unions_observed_arms_across_selected_metrics_before_refusing():
         ("b", "treatment"),
     }
     (missing,) = [row for row in results if row.metric == "a"]
-    assert missing.failure_code == "readout.cell.missing_arm"
+    assert missing.failure_code == "readout.cell.missing_metric_observations"
     assert missing.failure_context["group_id"] == "treatment"
     assert missing.lift is None
     (surviving,) = [row for row in results if row.metric == "b"]
@@ -487,6 +487,196 @@ def test_run_unions_observed_arms_across_selected_metrics_before_refusing():
     assert results.metadata is not None
     assert results.metadata.scope.decision_complete("assigned") is False
     assert all(row.decision_scope_complete is False for row in results)
+
+
+def test_readout_distinguishes_declared_missing_arm_from_metric_missing_observations():
+    from increment import readouts
+    from increment.sources import MomentsSource
+
+    design = Randomized(
+        control_group="control",
+        allocation={"control": 0.5, "treatment": 0.4, "planned_only": 0.1},
+    )
+    rows, metric_a, metric_b = _two_metric_rows(second_metric_has_treatment=True)
+    source = MomentsSource(rows, metrics=[metric_a, metric_b], study_id="e", design=design)
+
+    results = readouts.run(source)
+
+    cells = {(row.metric, row.group_id): row for row in results}
+    assert set(cells) == {
+        ("a", "treatment"),
+        ("a", "planned_only"),
+        ("b", "treatment"),
+        ("b", "planned_only"),
+    }
+    assert cells[("a", "treatment")].failure_code == "readout.cell.missing_metric_observations"
+    assert cells[("a", "planned_only")].failure_code == "readout.cell.missing_arm"
+    assert cells[("b", "treatment")].failure_code is None
+    assert cells[("b", "planned_only")].failure_code == "readout.cell.missing_arm"
+    assert cells[("a", "treatment")].lift is None
+
+
+def test_count_roster_marks_known_but_unobserved_metric_arm_as_missing_observations():
+    from increment import readouts
+    from increment.sources import MomentsSource
+
+    rows, metric_a, metric_b = _two_metric_rows(second_metric_has_treatment=True)
+    base = MomentsSource(
+        rows,
+        metrics=[metric_a, metric_b],
+        study_id="e",
+        design=Randomized(control_group="control"),
+    )
+
+    class CountedSource:
+        def __init__(self, delegate):
+            self._delegate = delegate
+
+        def __getattr__(self, name):
+            return getattr(self._delegate, name)
+
+        def unit_counts(self):
+            return {"control": 10, "treatment": 10, "enrolled_only": 4}
+
+    results = readouts.run(CountedSource(base))
+    missing = {(row.metric, row.group_id): row for row in results}
+    assert missing[("a", "treatment")].failure_code == (
+        "readout.cell.missing_metric_observations"
+    )
+    assert missing[("a", "enrolled_only")].failure_code == (
+        "readout.cell.missing_metric_observations"
+    )
+    assert missing[("b", "enrolled_only")].failure_code == (
+        "readout.cell.missing_metric_observations"
+    )
+
+
+def test_trigger_declared_sequential_readout_preserves_assigned_and_reports_triggered():
+    from datetime import date
+
+    from tests.test_sequential_public_sources import _native_fixture
+
+    connection, _, analysis = _native_fixture("bernoulli", triggered=True)
+    try:
+        snapshot = analysis.capture_sequential(finalized=True, as_of=date(2025, 1, 20))
+        results = analysis.run()
+    finally:
+        analysis.close()
+        connection.disconnect()
+
+    assert len(results) == 2
+    rows = {(row.analysis_population, row.group_id): row for row in results}
+    assigned = rows[("assigned", "treatment")]
+    triggered = rows[("triggered", "treatment")]
+    assert assigned.failure_code is None and assigned.lift is not None
+    assert assigned.sequential_result is not None and assigned.sampling_available is True
+    assert triggered.failure_code == "readout.cell.unsupported_request"
+    assert triggered.failure_context["reason"] == "triggered_sequential"
+    assert triggered.lift is None and triggered.sequential_result is None
+    assert triggered.sampling_available is False
+    assert results.metadata.scope.decision_complete("assigned") is True
+    assert results.metadata.scope.decision_complete("triggered") is False
+
+    from increment.estimation.readout_types import ReadoutResults
+
+    restored = ReadoutResults.model_validate_json(results.model_dump_json())
+    assert restored.metadata == results.metadata
+    assert restored.source == results.source
+    assert restored.sequential_snapshot == snapshot
+    assert [(row.analysis_population, row.failure_code) for row in restored] == [
+        ("assigned", None),
+        ("triggered", "readout.cell.unsupported_request"),
+    ]
+    frame = results.to_frame()
+    triggered_frame = frame.loc[frame["analysis_population"] == "triggered"]
+    assert len(triggered_frame) == 1
+    assert triggered_frame["failure_code"].iloc[0] == "readout.cell.unsupported_request"
+    assert triggered_frame["lift"].isna().all()
+    assert results.sequential_snapshot == snapshot
+
+
+def test_readouts_run_direct_source_reports_declared_trigger_without_trigger_counts():
+    from datetime import date
+
+    from increment import readouts
+    from tests.analysis_factory import _native_source
+    from tests.test_sequential_public_sources import _native_fixture
+
+    connection, _, analysis = _native_fixture("bernoulli", triggered=True)
+    try:
+        analysis.capture_sequential(finalized=True, as_of=date(2025, 1, 20))
+        source = _native_source(analysis)
+        assert source.context.trigger_name == "triggered"
+
+        def unexpected_trigger_read(*args, **kwargs):
+            raise AssertionError("unsupported triggered scope must not read triggered evidence")
+
+        source.triggered_counts = unexpected_trigger_read
+        source.triggered_source = unexpected_trigger_read
+        results = readouts.run(source)
+    finally:
+        analysis.close()
+        connection.disconnect()
+
+    assert len(results) == 2
+    by_population = {row.analysis_population: row for row in results}
+    assert by_population["assigned"].sequential_result is not None
+    assert by_population["triggered"].failure_code == "readout.cell.unsupported_request"
+    assert by_population["triggered"].failure_context["reason"] == "triggered_sequential"
+
+
+@pytest.mark.slow
+def test_artifact_and_analysis_readouts_preserve_triggered_sequential_scope(monkeypatch):
+    from datetime import date
+
+    from increment import Analysis, readouts
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+    from tests.test_sequential_public_sources import _native_fixture
+
+    connection, definitions, native = _native_fixture("bernoulli", triggered=True)
+    try:
+        native.capture_sequential(finalized=True, as_of=date(2025, 1, 20))
+        store = WarehouseArtifactStore(connection, schema_name="triggered_readout_artifacts")
+        reference = native.publish_unit_day_artifact(store)
+        expected_context = artifact_context(definitions, definitions.experiments[0], "error")
+        from increment.query.artifact_reader import ArtifactMomentSource
+
+        reader = ArtifactMomentSource.open(
+            store, reference, expected_context=expected_context
+        )
+        try:
+            assert reader.context.trigger_name == "triggered"
+        finally:
+            reader.close()
+        with Analysis.from_unit_day_artifact(
+            store, reference, expected_context=expected_context
+        ) as adopted:
+            adopted.capture_sequential(finalized=True, as_of=date(2025, 1, 20))
+            source = adopted._readout_source()
+            assert source.context.trigger_name == "triggered"
+
+            def unexpected_trigger_read(*args, **kwargs):
+                raise AssertionError("unsupported triggered scope must not read triggered evidence")
+
+            monkeypatch.setattr(source, "triggered_counts", unexpected_trigger_read)
+            monkeypatch.setattr(source, "triggered_source", unexpected_trigger_read)
+            direct = readouts.run(source)
+            through_analysis = adopted.run()
+            for result in (direct, through_analysis):
+                assert len(result) == 2
+                by_population = {row.analysis_population: row for row in result}
+                assert by_population["assigned"].sequential_result is not None
+                assert by_population["triggered"].failure_code == (
+                    "readout.cell.unsupported_request"
+                )
+                assert by_population["triggered"].failure_context["reason"] == (
+                    "triggered_sequential"
+                )
+    finally:
+        native.close()
+        connection.disconnect()
+
 
 def test_run_refuses_when_no_selected_metric_has_a_treatment_arm():
     """The converse: neither metric carries a non-control arm, so the
@@ -1157,10 +1347,7 @@ def _rows_for(metric_name: str) -> list[dict]:
 
 
 def test_run_stamps_none_preferred_direction_when_metric_never_declared_one():
-    """The bug: a warehouse metric that never sets preferred_direction must
-    not silently inherit MetricIdentity's "increase" default onto the
-    readout - preferred_direction stays None so prob_favorable() correctly
-    refuses instead of assuming an "increase" direction."""
+    """An undeclared preferred direction remains unset on the readout."""
     from increment import readouts
     from increment.semantics.models import MeanMetric
     from increment.sources import MomentsSource
@@ -1173,9 +1360,7 @@ def test_run_stamps_none_preferred_direction_when_metric_never_declared_one():
         MomentsSource(_rows_for("revenue"), metrics=[metric], study_id="e", design=design)
     )
     assert est.preferred_direction is None
-    with pytest.raises(InvalidRequestError) as raised:
-        est.prob_favorable()
-    assert raised.value.code == "estimation.results.lift.liftestimate_prob_favorable"
+    assert est.prob_favorable() is None
 
 
 def test_run_declared_margin_flips_stat_sig():
@@ -1519,9 +1704,7 @@ def test_asof_lift_stamps_none_preferred_direction_when_metric_never_declared_on
 
     (est,) = readouts.asof_lift(src)
     assert est.preferred_direction is None
-    with pytest.raises(InvalidRequestError) as raised:
-        est.prob_favorable()
-    assert raised.value.code == "estimation.results.lift.liftestimate_prob_favorable"
+    assert est.prob_favorable() is None
 
 
 def test_asof_lift_refuses_segmentation_with_a_stable_code():

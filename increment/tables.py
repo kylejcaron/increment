@@ -23,7 +23,11 @@ from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate, to
 from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.estimation.contrast import contrast_evidence_available
 from increment.estimation.contrast_results import ContrastResult
-from increment.estimation.results import BinomialConfidenceSet, LiftEstimate
+from increment.estimation.results import (
+    BinomialConfidenceSet,
+    LiftEstimate,
+    _refuse_legacy_sampling,
+)
 
 if TYPE_CHECKING:
     from coeftable import CoefTable, Theme
@@ -100,6 +104,13 @@ def _stat_sig(est: LiftEstimate | BreakoutEstimate | DailyLiftEstimate) -> bool 
         return None
     if est.sequential_result is not None:
         return est.sequential_result.rejects()
+    sampling_available = getattr(est, "sampling_available", None)
+    if sampling_available is False:
+        return None
+    if sampling_available is None and (
+        isinstance(est, DailyLiftEstimate) or getattr(est, "prior_shrunk", False)
+    ):
+        _refuse_legacy_sampling(est)
     if getattr(est, "low_reliability", False):
         return False
     if isinstance(est, LiftEstimate):
@@ -185,6 +196,13 @@ def _base_liftestimate_to_row(
         "family_size": getattr(est, "family_size", None),
         "group_id": est.group_id,
     }
+    components = getattr(est, "posterior_components", None)
+    if components is None:
+        components_json = None
+    else:
+        from increment._canonical import canonical_json_bytes
+
+        components_json = canonical_json_bytes(components.model_dump(mode="json")).decode()
     row.update(
         sampling_available=getattr(est, "sampling_available", None),
         sampling_reason_code=getattr(est, "sampling_reason_code", None),
@@ -202,6 +220,7 @@ def _base_liftestimate_to_row(
         posterior_latent_mean=getattr(est, "posterior_latent_mean", None),
         posterior_latent_sd=getattr(est, "posterior_latent_sd", None),
         posterior_prob_favorable=getattr(est, "posterior_prob_favorable", None),
+        posterior_components=components_json,
         failure_code=getattr(est, "failure_code", None),
         failure_context=getattr(est, "failure_context", None),
         source_snapshot_id=getattr(est, "source_snapshot_id", None),
@@ -272,49 +291,33 @@ def _liftestimate_to_row(
 def _decision_stat_columns(
     est: LiftEstimate | BreakoutEstimate | DailyLiftEstimate,
 ) -> dict[str, Any]:
-    """Best-effort ``chance_to_beat``/``risk_if_shipped`` for one row, or
-    ``None`` for either when undefined.
-
-    A ``"decrease"``-preferred metric or an ``alternative="less"`` test
-    reads the direction-aware ``_favorable()`` variants instead of the
-    raw ones, keyed off the metric's own declared polarity. Undefined -
-    caught here so one bad row can't break the whole readout - for
-    ``BreakoutEstimate`` (no such methods), sequential inference, an
-    interval-less estimate, or a ``LiftEstimate`` missing
-    ``preferred_direction`` on the direction-aware branch.
-    """
-    if est.sequential_result is not None:
-        return {"chance_to_beat": None, "risk_if_shipped": None}
+    """Best-effort posterior-derived values, explicitly model-qualified."""
+    if est.sequential_result is not None or getattr(est, "n_clusters", None) is not None:
+        return {"posterior_chance_to_beat": None, "posterior_risk_if_shipped": None}
+    if (
+        getattr(est, "failure_code", None) is not None
+        or getattr(est, "sampling_available", None) is False
+        or getattr(est, "excluded", None) is not None
+        or getattr(est, "unavailable", None) is not None
+        or getattr(est, "confidence_set", None) is not None
+        or getattr(est, "binomial_set", None) is not None
+        or getattr(est, "relative_confidence_set", None) is not None
+        or getattr(est, "relative_unavailable_reason", None) is not None
+    ):
+        return {"posterior_chance_to_beat": None, "posterior_risk_if_shipped": None}
     try:
-        # Polarity is a property of the metric's declaration, not the test's
-        # tail, so a decrease-preferred metric monitored two-sided reads here too.
         if est.alternative == "less" or getattr(est, "preferred_direction", None) == "decrease":
             return {
-                "chance_to_beat": est.chance_to_beat_favorable(),  # ty: ignore[unresolved-attribute]
-                "risk_if_shipped": est.risk_if_shipped_favorable(),  # ty: ignore[unresolved-attribute]
+                "posterior_chance_to_beat": est.chance_to_beat_favorable(),  # ty: ignore[unresolved-attribute]
+                "posterior_risk_if_shipped": est.risk_if_shipped_favorable(),  # ty: ignore[unresolved-attribute]
             }
         return {
-            "chance_to_beat": est.chance_to_beat(),  # ty: ignore[unresolved-attribute]
-            "risk_if_shipped": est.risk_if_shipped(),  # ty: ignore[unresolved-attribute]
+            "posterior_chance_to_beat": est.chance_to_beat(),  # ty: ignore[unresolved-attribute]
+            "posterior_risk_if_shipped": est.risk_if_shipped(),  # ty: ignore[unresolved-attribute]
         }
     except (AttributeError, ValueError):
-        return {"chance_to_beat": None, "risk_if_shipped": None}
+        return {"posterior_chance_to_beat": None, "posterior_risk_if_shipped": None}
 
-
-def _prob_favorable(est: LiftEstimate | BreakoutEstimate | DailyLiftEstimate) -> float | None:
-    """``LiftEstimate.prob_favorable()`` for one row, or ``None`` when
-    undefined (``BreakoutEstimate``, sequential inference, no interval, or
-    a ``LiftEstimate`` built without any ``preferred_direction``). An
-    undeclared metric's ``preferred_direction`` is ``None``, not a silent
-    ``"increase"`` default -- ``prob_favorable()`` raises ``ValueError`` in
-    that case, which this function catches and blanks the column for.
-    """
-    if est.sequential_result is not None:
-        return None
-    try:
-        return est.prob_favorable()  # ty: ignore[unresolved-attribute]
-    except (AttributeError, ValueError):
-        return None
 
 
 def contrast_results_to_readout(
@@ -421,53 +424,22 @@ def contrast_results_to_readout(
 
 def estimates_to_readout(
     estimates: Sequence[LiftEstimate | BreakoutEstimate | DailyLiftEstimate | ContrastResult],
-    *,
-    informative_prior: bool = False,
 ) -> list[dict[str, Any]]:
-    """Convert a list of estimates (any mix of ``LiftEstimate``,
-    ``BreakoutEstimate``, ``DailyLiftEstimate``) into readout rows for
-    ``readout_table``.
+    """Convert estimates into readout rows with explicitly posterior-qualified values.
 
-    A ``BreakoutEstimate``/``DailyLiftEstimate`` row (detected by carrying
-    both ``dimension_value`` and ``dimension``) adds ``segment``,
-    ``dimension``, ``source`` (when set), ``low_reliability``, and its
-    ``excluded``/``unavailable`` reason (``None`` for a live row). Any
-    estimate carrying a non-``None`` ``ds`` (its own day) gets a ``ds``
-    column, independent of the dimension branch - this covers both
-    ``DailyLiftEstimate`` and an as-of ``LiftEstimate`` series
-    (``readouts.asof_lift``). A plain, non-dated ``LiftEstimate`` row
-    has none of these keys.
-    Every row also carries ``analysis_population`` (``"assigned"`` by
-    default, or ``"triggered"`` for the narrowed analysis pass) and
-    ``role`` (the declared-plan role it was estimated under:
-    "primary"/"secondary"/"guardrail"/"unassigned"/"exploratory", or
-    ``None`` when no plan was ever declared) and ``discovery`` (its
-    family's BH/e-BH verdict, or ``None`` outside any discovery family) -
-    see ``_liftestimate_to_row``.
-    When ``estimates`` is a scoped result collection, every row also carries
-    ``view_partial`` from its original metadata; a filtered or sliced view
-    remains explicitly partial without shrinking its source scope. Unscoped
-    plain lists leave this status unknown.
-
-    Every row also gets ``chance_to_beat``/``risk_if_shipped`` (``None``
-    when undefined) and ``prob_favorable``. ``informative_prior=False``
-    (default) suffixes the first two columns ``" (advisory)"``, since
-    under a flat prior ``chance_to_beat`` reduces to
-    ``1 - one-sided p-value`` and is not a calibrated probability unless
-    the caller confirms a real prior was used.
+    Rows from a scoped collection also carry ``view_partial`` from their
+    source metadata; filtered views remain explicitly partial. Plain lists
+    leave that scope status unknown.
     """
-    beat_col = "chance_to_beat" if informative_prior else "chance_to_beat (advisory)"
-    risk_col = "risk_if_shipped" if informative_prior else "risk_if_shipped (advisory)"
     metadata = getattr(estimates, "metadata", None)
     view_partial = None if metadata is None else metadata.partial
     rows = []
     for est in estimates:
         if isinstance(est, ContrastResult):
             row = contrast_results_to_readout([est])[0]
-            row[beat_col] = None
-            row[risk_col] = None
-            row["prob_favorable"] = None
-            row["view_partial"] = view_partial
+            row["posterior_chance_to_beat"] = None
+            row["posterior_risk_if_shipped"] = None
+            row["posterior_prob_favorable"] = None
             rows.append(row)
             continue
         row = _liftestimate_to_row(est)
@@ -478,8 +450,6 @@ def estimates_to_readout(
             source = getattr(est, "source", None)
             if source is not None:
                 row["source"] = source
-            # `excluded` (BreakoutEstimate only) is None for a live estimate
-            # or an exclusion reason for a run_breakout placeholder row.
             if hasattr(est, "excluded"):
                 row["excluded"] = est.excluded
             if hasattr(est, "unavailable"):
@@ -488,10 +458,7 @@ def estimates_to_readout(
         ds = getattr(est, "ds", None)
         if ds is not None:
             row["ds"] = ds
-        stats = _decision_stat_columns(est)
-        row[beat_col] = stats["chance_to_beat"]
-        row[risk_col] = stats["risk_if_shipped"]
-        row["prob_favorable"] = _prob_favorable(est)
+        row.update(_decision_stat_columns(est))
         rows.append(row)
     return rows
 
@@ -712,19 +679,14 @@ def _rendered_metadata_columns(
     Returns ``{column label: per-row strings}``; a column is included only
     when its source column exists and has at least one real value, so a
     minimal hand-built frame renders unchanged.
-    ``Chance to beat`` is a percentage; ``Risk if shipped`` follows the row's
-    value scale. Their advisory variants render only when ``advisory`` is set.
-    ``P(favorable)`` renders only when some row's null is shifted.
-    ``Discovery`` renders a row's family verdict ("Yes"/"No"/blank) as
-    its own column - a family-level BH/e-BH selection outcome, never
-    conflated with ``stat_sig`` (a single row's own interval-excludes-null
-    check). ``Interval`` renders per-row confidence levels only when they
-    DIFFER across rows; one level shared by every row is a header note
-    instead (see ``_interval_level_note``), since a Bonferroni-corrected
-    breakout would otherwise repeat "98.33% CI" down the table. No
-    column renders a ship/no-ship verdict, and none renders row caveats
-    (``note``, ``excluded``, ``low_reliability``) - those stay on the
-    estimates and in the readout frame for the reader to handle.
+    ``Posterior chance to beat``, ``Posterior risk if shipped``, and
+    ``Posterior P(favorable)`` are explicit model-qualified values and render
+    only when ``advisory`` is set. ``Discovery`` renders a row's family verdict
+    ("Yes"/"No"/blank) as its own column - a family-level BH/e-BH selection
+    outcome, never conflated with ``stat_sig`` (a single row's own
+    interval-excludes-null check). ``Interval`` renders per-row confidence
+    levels only when they differ across rows; one shared level is a header
+    note instead. No column renders a ship/no-ship verdict.
     """
     n = len(frame)
     columns: dict[str, list[str]] = {}
@@ -749,37 +711,51 @@ def _rendered_metadata_columns(
             "" if _is_missing(value) else "Partial view" if bool(value) else "Full view"
             for value in partial_view
         ]
-
     null_lift = _column_values(frame, "null_lift") or [None] * n
     null_abs = _column_values(frame, "null_abs") or [None] * n
-
     row_scales = _column_values(frame, "value_scale") or ["relative"] * n
-    for base, label in (
-        ("chance_to_beat", "Chance to beat"),
-        ("risk_if_shipped", "Risk if shipped"),
-    ):
-        for suffix in ("", " (advisory)") if advisory else ("",):
-            values = _column_values(frame, base + suffix)
+
+    if advisory:
+        for base, label in (
+            ("posterior_chance_to_beat", "Posterior chance to beat"),
+            ("posterior_risk_if_shipped", "Posterior risk if shipped"),
+        ):
+            values = _column_values(frame, base)
             if values is not None and any(not _is_missing(v) for v in values):
-                columns[label + suffix] = [
+                columns[label] = [
                     _format_metadata_stat(
                         value,
-                        percentage=base == "chance_to_beat" or scale != "absolute",
+                        percentage=base == "posterior_chance_to_beat" or scale != "absolute",
                     )
                     for value, scale in zip(values, row_scales, strict=True)
                 ]
+        prob = _column_values(frame, "posterior_prob_favorable")
+        any_shifted_null = any(not _is_missing(v) and v != 0.0 for v in null_lift) or any(
+            not _is_missing(v) for v in null_abs
+        )
+        if prob is not None and any_shifted_null and any(not _is_missing(v) for v in prob):
+            columns["Posterior P(favorable)"] = [
+                "" if _is_missing(v) else f"{v * 100:.1f}%" for v in prob
+            ]
 
-    prob = _column_values(frame, "prob_favorable")
-    any_shifted_null = any(not _is_missing(v) and v != 0.0 for v in null_lift) or any(
-        not _is_missing(v) for v in null_abs
-    )
-    if prob is not None and any_shifted_null and any(not _is_missing(v) for v in prob):
-        columns["P(favorable)"] = ["" if _is_missing(v) else f"{v * 100:.1f}%" for v in prob]
+    multiplicity_status = _column_values(frame, "multiplicity_status")
+    if multiplicity_status is not None:
+        labels = {
+            "undeclared_plan": "Unadjusted (no declared plan)",
+            "unassigned_in_plan": "Unadjusted (unassigned in plan)",
+            "declared_plan": "Declared plan",
+            "exploratory_unadjusted": "Exploratory (unadjusted)",
+            "exploratory_family": "Exploratory family",
+        }
+        if any(not _is_missing(value) for value in multiplicity_status):
+            columns["Multiplicity"] = [
+                "" if _is_missing(value) else labels.get(value, str(value))
+                for value in multiplicity_status
+            ]
 
     discovery = _column_values(frame, "discovery")
     if discovery is not None and any(not _is_missing(v) for v in discovery):
         columns["Discovery"] = ["" if _is_missing(v) else ("Yes" if v else "No") for v in discovery]
-
     levels = _column_values(frame, "level")
     if show_interval_level and levels is not None:
         distinct = {v for v in levels if not _is_missing(v)}
@@ -1010,16 +986,12 @@ def readout_table(  # noqa: C901, PLR0915
     estimand/metric pairs stay distinct; ``value_scale="absolute"`` rows
     render under "Lift (absolute)" instead of "Lift %" with a blank
     forest cell; ``preferred_direction`` colors a row by the metric's
-    declared favorability; and the decision columns
-    ``estimates_to_readout`` emits (``null_lift``, ``null_abs``,
-    ``level``, ``chance_to_beat``, ``risk_if_shipped``,
-    ``prob_favorable``, ``discovery``) render as the ``Chance to beat``/
-    ``Risk if shipped``/``P(favorable)``/``Interval``/``Discovery``
-    columns; a shifted ``null_lift`` also draws a dashed forest reference
-    line. ``Failure`` shows the actual coded failure and reason (or its
-    available context), ``Decision scope`` shows known complete/incomplete
-    status, and ``Readout view`` identifies metadata-backed partial views.
-    Unknown row/scope values are left blank rather than inferred.
+    declared favorability. ``estimates_to_readout`` emits explicitly
+    posterior-qualified values which are rendered only when
+    ``advisory=True``; a shifted ``null_lift`` also draws a dashed forest
+    reference line. Row caveats (``note``, ``excluded``,
+    ``low_reliability``, ``inference``) ride along in the frame and
+    render nowhere.
 
     For ``binomial_set`` rows, the table adds a ``Numerical qualification``
     column. Its values identify ``scipy_special_function_error_model_conditional_v1``
@@ -1036,9 +1008,9 @@ def readout_table(  # noqa: C901, PLR0915
     splits into side-by-side columns: ``"arm"`` (default) stacks
     arms/splits by method, ``"method"`` stacks methods/splits by arm,
     ``"segment"`` stacks segments/splits by arm (``data`` must already
-    be filtered to one method, or this raises). ``advisory`` renders the
-    ``" (advisory)"`` decision-stat columns; ``show_interval_level``
-    governs interval-level disclosure - an ``Interval`` column when
+    be filtered to one method, or this raises). ``advisory`` explicitly
+    renders stored-posterior values with posterior-qualified labels;
+    ``show_interval_level`` governs interval-level disclosure - an ``Interval`` column when
     levels differ across rows, or a note appended to ``subtitle`` when
     every row shares one non-95% level (a Bonferroni-corrected breakout
     reads "all intervals 98.33%" once instead of per row).

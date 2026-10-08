@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from datetime import date, datetime
 from decimal import Decimal, localcontext
 from fractions import Fraction
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NoReturn, cast
 
 from pydantic import (
     BaseModel,
@@ -66,7 +66,7 @@ RelativeUnavailableReason = Literal[
 
 if TYPE_CHECKING:
     from increment.estimation.binomial_rr import BinomialInterval
-    from increment.estimation.inference import LiftPosterior, Normal
+    from increment.estimation.inference import LiftPosterior
 
 
 class Estimate(CodedModel, BaseModel):
@@ -447,14 +447,14 @@ _REFUSALS = refusals(
         ),
         "estimation.results.lift.p_value_null_abs_missing_abs_se": "LiftEstimate for {metric!r}/{group_id!r}: null_abs is set but abs_se is unavailable (degenerate arm) -- the additive decision is undefined and there is no silent fallback to the relative interval",
         "estimation.results.lift.liftestimate_dof_set": "LiftEstimate for {metric!r}/{group_id!r}: reference_kind='t' but this row carries no log-scale sufficient statistics (log_mean/log_se) -- p_value() via the t-reference formula is undefined for linear/absolute-scale estimates (e.g. infer_ate or clustered encouragement rows)",
+        "estimation.results.lift.p_value_missing_log_mean_or_se": "LiftEstimate for {metric!r}/{group_id!r}: the sampling reference is unavailable because log_mean or log_se is missing; recompute the analysis from sufficient source data.",
         "estimation.results.lift.liftestimate_log_se": "LiftEstimate for {metric!r}/{group_id!r}: log_se must be positive to compute a t-reference p-value, got log_se={e_log_se}",
         "estimation.results.lift.p_value_null_lift_not_representable_dof": "LiftEstimate for {metric!r}/{group_id!r}: null_lift <= -1 is not representable on the log scale, got {null_lift}",
         "estimation.results.lift.reference_df_required_for_t": "estimate row for {metric!r}/{group_id!r}: reference_kind='t' requires a finite reference_df > 0, got {reference_df!r}",
         "estimation.results.lift.reference_df_set_for_normal": "estimate row for {metric!r}/{group_id!r}: reference_kind={reference_kind!r} requires reference_df=None, got {reference_df!r}",
         "estimation.results.lift.dof_reference_df_mismatch": "estimate row for {metric!r}/{group_id!r}: dof={dof!r} does not match reference_df={reference_df!r} -- a t-reference row's legacy dof column must agree with the reference it was actually cut from",
         "estimation.results.lift.inference_reference_kind_mismatch": "estimate row for {metric!r}/{group_id!r}: inference={inference!r} and reference_kind={reference_kind!r} disagree; a sequential interval has a sequential reference and a fixed-horizon interval a normal or t one",
-        "estimation.results.lift.fcr_prior_unsupported": "directional FCR conversion requires a prior-free fixed reference",
-        "estimation.results.lift.open_interval_unrecoverable": "open fixed intervals require stored alpha and, near alpha=0.5, raw sufficient statistics to recover uncertainty",
+        "estimation.results.lift.posterior_components_invalid": "LiftEstimate for {metric!r}/{group_id!r}: stored posterior components are invalid: {reason}",
         "estimation.results.joint.invalid_reference": "Invalid joint relative reference: {reason}",
         "estimation.results.joint.invalid_set": "Invalid relative confidence set: {reason}",
         "estimation.results.joint.unavailable": "Joint relative inference is unavailable: {reason}",
@@ -470,6 +470,22 @@ _REFUSALS = refusals(
     },
 )
 _raise = raiser(_REFUSALS)
+
+
+def _refuse_legacy_sampling(row: Any) -> NoReturn:
+    from increment.estimation.readout_types import refuse_readout
+
+    refuse_readout(
+        "readout.legacy.sampling_unreconstructible",
+        cell_key={
+            "metric": row.metric,
+            "group_id": row.group_id,
+            "method": row.method,
+            "estimand": row.estimand,
+        },
+        missing_fields=("prior_free_reference_kind", "prior_free_reference_df"),
+        remedy="recompute_from_source",
+    )
 
 
 def _validate_absolute_reference_fields(row: Any) -> Any:
@@ -534,6 +550,64 @@ def _validate_reference_fields(row: Any) -> Any:
     return row
 
 
+class PosteriorComponents(CodedModel, BaseModel):
+    """Exact stored normal-mixture posterior components, in original order."""
+
+    model_config = ConfigDict(frozen=True, revalidate_instances="always", extra="forbid")
+
+    weights: tuple[float, ...]
+    means: tuple[float, ...]
+    sigmas: tuple[float, ...]
+
+    @model_validator(mode="after")
+    def _validate_components(self):
+        lengths = (len(self.weights), len(self.means), len(self.sigmas))
+        if not lengths[0] or len(set(lengths)) != 1:
+            _raise(
+                "estimation.results.lift.posterior_components_invalid",
+                metric="<posterior>",
+                group_id="<posterior>",
+                reason=f"component lengths must be equal and nonempty; got {lengths}",
+            )
+        if not (
+            all(math.isfinite(weight) for weight in self.weights)
+            and all(math.isfinite(mean) for mean in self.means)
+            and all(math.isfinite(sigma) for sigma in self.sigmas)
+        ):
+            _raise(
+                "estimation.results.lift.posterior_components_invalid",
+                metric="<posterior>",
+                group_id="<posterior>",
+                reason="weights, means, and sigmas must be finite",
+            )
+        if any(weight < 0.0 for weight in self.weights):
+            _raise(
+                "estimation.results.lift.posterior_components_invalid",
+                metric="<posterior>",
+                group_id="<posterior>",
+                reason="weights must be nonnegative",
+            )
+        if any(sigma <= 0.0 for sigma in self.sigmas):
+            _raise(
+                "estimation.results.lift.posterior_components_invalid",
+                metric="<posterior>",
+                group_id="<posterior>",
+                reason="sigmas must be positive",
+            )
+        try:
+            total = math.fsum(self.weights)
+        except (OverflowError, ValueError):
+            total = math.inf
+        if not math.isfinite(total) or abs(total - 1.0) > 1e-9:
+            _raise(
+                "estimation.results.lift.posterior_components_invalid",
+                metric="<posterior>",
+                group_id="<posterior>",
+                reason=f"weights must sum to one within 1e-9; got {total}",
+            )
+        return self
+
+
 class _RowIdentity(CodedModel, BaseModel):
     """Leading identity fields shared, in the same declared order, by
     LiftEstimate, BreakoutEstimate and DailyLiftEstimate. Only a field
@@ -555,6 +629,7 @@ class _RowIdentity(CodedModel, BaseModel):
     sampling_reason_code: str | None = None
     sampling_reason_context: Mapping[str, object] | None = None
     posterior_available: bool | None = None
+    posterior_components: PosteriorComponents | None = None
     posterior_reason_code: str | None = None
     posterior_reason_context: Mapping[str, object] | None = None
     posterior_model: Literal["normal", "mixture"] | None = None
@@ -621,6 +696,70 @@ class _RowIdentity(CodedModel, BaseModel):
             if value is not None:
                 object.__setattr__(self, name, freeze(value))
         return self
+    @model_validator(mode="after")
+    def _validate_posterior_payload(self):
+        payload = (
+            self.posterior_estimate,
+            self.posterior_lb,
+            self.posterior_ub,
+            self.posterior_level,
+            self.posterior_alpha,
+            self.posterior_latent_mean,
+            self.posterior_latent_sd,
+            self.posterior_prob_favorable,
+        )
+
+        def invalid(reason: str) -> NoReturn:
+            _raise(
+                "estimation.results.lift.posterior_components_invalid",
+                metric=self.metric,
+                group_id=self.group_id,
+                reason=reason,
+            )
+
+        if self.posterior_available is not True:
+            if (
+                self.posterior_model is not None
+                or self.posterior_scale is not None
+                or self.posterior_components is not None
+                or any(value is not None for value in payload)
+            ):
+                invalid("posterior state is present while posterior_available is not true")
+            return self
+        required = (
+            self.posterior_estimate,
+            self.posterior_lb,
+            self.posterior_ub,
+            self.posterior_level,
+            self.posterior_alpha,
+        )
+        if self.posterior_model is None or self.posterior_scale is None:
+            invalid("available posterior is missing its model or scale")
+        if any(value is None or not math.isfinite(value) for value in required):
+            invalid("available posterior is missing finite interval payload")
+        if self.posterior_model == "normal":
+            if (
+                self.posterior_components is not None
+                or self.posterior_latent_mean is None
+                or self.posterior_latent_sd is None
+                or not math.isfinite(self.posterior_latent_mean)
+                or not math.isfinite(self.posterior_latent_sd)
+                or self.posterior_latent_sd <= 0.0
+                or getattr(self, "prior_spec", None) is not None
+            ):
+                invalid("Normal posterior requires finite latent parameters and no mixture state")
+        elif self.posterior_model == "mixture":
+            if (
+                self.posterior_components is None
+                or self.posterior_latent_mean is not None
+                or self.posterior_latent_sd is not None
+                or getattr(self, "prior_spec", None) is None
+            ):
+                invalid("mixture posterior requires stored components and a separate declared prior")
+        else:
+            invalid("available posterior model is unsupported")
+        return self
+
 
     @field_serializer(
         "sampling_reason_context",
@@ -647,6 +786,37 @@ class _RowIdentity(CodedModel, BaseModel):
 
         return validate_alternative(value) if isinstance(value, str) else value
 
+    @field_validator("posterior_components", mode="before")
+    @classmethod
+    def _decode_posterior_components(cls, value: object, info: ValidationInfo) -> object:
+        if value is None or isinstance(value, PosteriorComponents):
+            return value
+        if isinstance(value, str):
+            from increment._canonical import canonical_json_bytes, canonical_json_loads
+
+            metric = str(info.data.get("metric", "<frame>"))
+            group_id = str(info.data.get("group_id", "<frame>"))
+            try:
+                parsed = canonical_json_loads(value)
+            except (TypeError, ValueError):
+                _raise(
+                    "estimation.results.lift.posterior_components_invalid",
+                    metric=metric,
+                    group_id=group_id,
+                    reason="frame payload is not valid canonical JSON",
+                )
+            if not isinstance(parsed, Mapping) or canonical_json_bytes(parsed).decode() != value:
+                _raise(
+                    "estimation.results.lift.posterior_components_invalid",
+                    metric=metric,
+                    group_id=group_id,
+                    reason="frame payload must be a canonical JSON object",
+                )
+            value = parsed
+        if isinstance(value, Mapping):
+            return PosteriorComponents.model_validate(value)
+        return value
+
 
 class LiftEstimate(_RowIdentity):
     """A lift estimate, carrying the metadata to identify which (metric,
@@ -658,14 +828,14 @@ class LiftEstimate(_RowIdentity):
     the posterior on the relative scale. The CI is the same posterior's
     quantile, back-transformed to this scale.
 
-    The Normal posterior is never persisted: with a stored ``alpha`` the
-    ``mu``/``sigma`` recovery from ``value``/``lb``/``alpha``/``scale`` is
-    accurate up to rounding away from a zero critical value; open fixed rows use raw
-    statistics to recover uncertainty at alpha=0.5. A closed
-    ``alpha``-less interval falls back to the ``level`` tail, which
-    is exact at ordinary alphas but loses precision as ``alpha`` approaches
-    the representable floor. A mixture posterior (``prior_spec`` set) is not
-    recoverable, so it persists the prior instead.
+    Normal posterior latent parameters are stored separately from the sampling
+    interval. A mixture posterior is stored exactly in
+    ``posterior_components`` as equal-length ``weights``, ``means`` and
+    ``sigmas`` tuples, in component order. Zero-weight components are retained
+    with their original means and sigmas so persisted positions are stable;
+    weights are validated but never normalized. ``prior_spec`` remains the
+    declared Student-t/mixture prior and is not used to reconstruct the
+    already-updated posterior.
 
     ``reference_kind`` persists the reference: "normal", "t", "sequential",
     "binomial", or "confidence_set". Winsor confidence sets persist raw
@@ -762,14 +932,13 @@ class LiftEstimate(_RowIdentity):
     binomial_set: BinomialConfidenceSet | None = None
     ds: date | datetime | str | int | float | None = None  # None for total-grain estimates
     scale: Literal["log", "linear"] = "log"
-    # Scale the underlying Normal posterior lives on: "log" (posterior on
-    # log-RR) or "linear" (posterior directly on the relative lift).
+    # Scale on which the underlying posterior law is parameterized.
+    # Declared Student-t/MixturePrior input; exact updated posterior state is
+    # separately persisted in posterior_components.
     prior_spec: StudentTPrior | MixturePrior | None = None
-    # Set only for mixture-prior estimates, persisted as declared: the
-    # posterior is recomputed from lift.log_mean/lift.log_se + this spec.
+    # Historical persisted marker that an informative prior was supplied.
+    # Modern sampling availability and posterior availability are authoritative.
     prior_shrunk: bool = False
-    # True when `prior is not None`: lift.log_mean/log_se are raw pre-prior
-    # statistics while value/lb/ub are the prior-informed posterior.
     role: RowRole | None = None
     # The declared-plan role this row was estimated under, or "exploratory" for a metric
     # added after the plan; None only when `src.plan.declared` is False.
@@ -1312,283 +1481,68 @@ class LiftEstimate(_RowIdentity):
             return None
         return self.winsor_treatment_n_upper / self.winsor_treatment_n
 
-    def _t_posterior(self, e: Estimate, tail_alpha: float) -> Normal:
-        """Posterior behind a t-reference interval.
+    def _posterior(self) -> LiftPosterior | None:
+        """Read only the posterior state persisted on this row."""
+        if getattr(self, "posterior_available", None) is not True:
+            return None
+        if self.inference != "fixed" or self.n_clusters is not None:
+            return None
+        if self.posterior_model == "normal":
+            if self.posterior_latent_mean is None or self.posterior_latent_sd is None:
+                return None
+            from increment.estimation.inference import Normal
 
-        A t reference corrects for a variance estimated from the data in the
-        SAMPLING distribution; it does not widen the posterior. The stored
-        endpoints are ``t_{reference_df}`` quantiles, so inverting them with a
-        Normal z would report sigma inflated by the t/z ratio. The
-        working-scale moments the interval was cut from are persisted on the
-        row: read those, and use the endpoints only to confirm they are the
-        pair those moments imply.
-        """
-        from increment.estimation.inference import Normal
+            return Normal(mu=self.posterior_latent_mean, sigma=self.posterior_latent_sd)
+        if self.posterior_model == "mixture" and self.posterior_components is not None:
+            import numpy as np
 
-        assert self.reference_df is not None, "validated: a t row carries reference_df"
-        assert e.lb is not None and e.ub is not None, "checked by the caller"
-        parameters = _fixed_fcr_parameters(self)
-        assert parameters is not None, "refused above: a t row carries log_mean/log_se"
-        mu, sigma = parameters
-        crit = tail_isf(
-            student_t_isf,
-            tail_alpha / 2.0,
-            self.reference_df,
-            what="fixed t posterior reconstruction",
-        )
-        if self.scale == "log":
-            lb_implied = math.expm1(mu - crit * sigma)
-            ub_implied = math.expm1(mu + crit * sigma)
-        else:
-            lb_implied = mu - crit * sigma
-            ub_implied = mu + crit * sigma
-        if (
-            sigma <= 0
-            or not math.isclose(lb_implied, e.lb, rel_tol=1e-6, abs_tol=1e-9)
-            or not math.isclose(ub_implied, e.ub, rel_tol=1e-6, abs_tol=1e-9)
-        ):
-            _raise(
-                "estimation.results.lift.liftestimate_interval_symmetric",
-                group_id=self.group_id,
-                metric=self.metric,
-                scale=self.scale,
-            )
-        return Normal(mu=mu, sigma=sigma)
+            from increment.estimation.priors import MixturePosterior
 
-    def _posterior(self) -> LiftPosterior:
-        """Recover the posterior (Normal or mixture) this estimate was cut from.
+            return MixturePosterior(
+                weights=np.asarray(self.posterior_components.weights, dtype=float),
+                means=np.asarray(self.posterior_components.means, dtype=float),
+                sigmas=np.asarray(self.posterior_components.sigmas, dtype=float),
+            )
+        return None
 
-        A ``reference_kind="normal"`` row inverts its endpoints: with stored
-        ``alpha``, closed (value, lb, alpha) intervals give back (mu, sigma) up
-        to rounding, and that inversion is the only route for a Normal-prior row
-        whose prior is not persisted. An ``alpha``-less closed interval (e.g. a
-        hand-built or legacy Estimate) recovers the tail from ``level`` instead
-        -- backward-compatible, exact at ordinary alphas.
-
-        A ``reference_kind="t"`` row must NOT be inverted that way: its
-        endpoints are t quantiles, so a Normal z would divide by too small a
-        critical value and report sigma inflated by the t/z ratio. It reads the
-        persisted working-scale moments instead, the same ones open fixed
-        intervals prefer, and checks the endpoints against them.
-        """
-        from increment.estimation.inference import Normal
-
-        if self.reference_kind == "confidence_set":
-            winsor_refuse(
-                "posterior_unavailable",
-                "Rank confidence sets do not define posterior probabilities.",
-            )
-        if self.sequential_result is not None:
-            from increment.sequential_state import sequential_refuse
-
-            sequential_refuse(
-                "route.unsupported",
-                "likelihood evidence is not an effect posterior; use sequential_result and stat_sig()",
-            )
-        e = self.lift
-        if self.reference_kind == "binomial":
-            _raise(
-                "estimation.results.binomial.posterior_unavailable",
-                group_id=self.group_id,
-                metric=self.metric,
-            )
-        if self.inference != "fixed":
-            _raise(
-                "estimation.results.lift.posterior_decision_stats_sequential",
-                group_id=self.group_id,
-                inference=self.inference,
-                metric=self.metric,
-            )
-        if self.n_clusters is not None:
-            _raise(
-                "estimation.results.lift.posterior_decision_stats_cluster_robust",
-                reference_df=self.reference_df,
-                group_id=self.group_id,
-                metric=self.metric,
-            )
-        if self.reference_kind == "t" and (e is None or e.log_mean is None or e.log_se is None):
-            missing = " and ".join(
-                name
-                for name, present in (
-                    ("lift.log_mean", e is not None and e.log_mean is not None),
-                    ("lift.log_se", e is not None and e.log_se is not None),
-                )
-                if not present
-            )
-            _raise(
-                "estimation.results.lift.t_posterior_sufficient_statistics",
-                missing=missing,
-                reference_df=self.reference_df,
-                group_id=self.group_id,
-                metric=self.metric,
-            )
-        if self.relative_confidence_set is not None or self.relative_unavailable_reason is not None:
-            _raise(
-                "estimation.results.joint.unavailable",
-                reason="a joint frequentist reference does not define a scalar posterior",
-            )
-        assert e is not None, "validated: fixed scalar inference carries a point"
-        if e.alpha is not None and e.level is not None:
-            expected_level = math.fsum((1.0, -e.alpha))
-            if not math.isclose(e.level, expected_level, rel_tol=1e-12, abs_tol=1e-15):
-                _raise(
-                    "estimation.results.lift.liftestimate_level_contradicts",
-                    e_alpha=e.alpha,
-                    e_level=e.level,
-                    expected_level=expected_level,
-                    group_id=self.group_id,
-                    metric=self.metric,
-                )
-        if e.open_side is not None and self.prior_spec is not None:
-            _raise("estimation.results.lift.fcr_prior_unsupported")
-        if self.prior_spec is not None:
-            if e.log_mean is None or e.log_se is None:
-                _raise(
-                    "estimation.results.lift.liftestimate_prior_spec",
-                    group_id=self.group_id,
-                    metric=self.metric,
-                )
-            from increment.estimation.priors import mixture_posterior
-
-            return mixture_posterior(e.log_mean, e.log_se, self.prior_spec.components())
-        if e.open_side is not None:
-            if self.prior_shrunk:
-                _raise("estimation.results.lift.fcr_prior_unsupported")
-            calibrated = e.ub if e.open_side == "lower" else e.lb
-            assert calibrated is not None, "validated open intervals have a finite endpoint"
-            mu, sigma = _recover_fixed_open_interval_parameters(
-                e,
-                center=_working_value(self, e.value),
-                calibrated=_working_value(self, calibrated),
-                persisted=_fixed_fcr_parameters(self),
-            )
-            if not math.isfinite(sigma) or sigma <= 0:
-                _raise(
-                    "estimation.results.lift.liftestimate_interval_symmetric",
-                    group_id=self.group_id,
-                    metric=self.metric,
-                    scale=self.scale,
-                )
-            return Normal(mu=mu, sigma=sigma)
-        if e.lb is None or e.ub is None or e.level is None:
-            _raise(
-                "estimation.results.lift.liftestimate_carries_no",
-                group_id=self.group_id,
-                metric=self.metric,
-            )
-        # A level-only interval (no stored alpha) recovers the two-sided tail
-        # from the confidence level; exact enough at decision-stat alphas.
-        tail_alpha = e.alpha if e.alpha is not None else math.fsum((1.0, -e.level))
-        if self.reference_kind == "t":
-            return self._t_posterior(e, tail_alpha)
-        z = tail_isf(_norm.isf, tail_alpha / 2.0, what="fixed Normal posterior reconstruction")
-        if self.scale == "log":
-            if e.value <= -1.0 or e.lb <= -1.0:
-                _raise(
-                    "estimation.results.lift.liftestimate_value_lb",
-                    e_lb=e.lb,
-                    e_value=e.value,
-                    group_id=self.group_id,
-                    metric=self.metric,
-                )
-            mu = math.log1p(e.value)
-            sigma = (mu - math.log1p(e.lb)) / z
-            ub_implied = math.expm1(mu + z * sigma)
-        else:
-            mu = e.value
-            sigma = (mu - e.lb) / z
-            ub_implied = mu + z * sigma
-        if sigma <= 0 or not math.isclose(ub_implied, e.ub, rel_tol=1e-6, abs_tol=1e-9):
-            _raise(
-                "estimation.results.lift.liftestimate_interval_symmetric",
-                group_id=self.group_id,
-                metric=self.metric,
-                scale=self.scale,
-            )
-        return Normal(mu=mu, sigma=sigma)
-
-    def chance_to_beat(self) -> float:
-        """P(lift > 0). Under the default flat prior this equals
-        1 - one-sided p-value exactly - decision-grade only with a real
-        prior."""
+    def chance_to_beat(self) -> float | None:
+        """Stored posterior probability that lift is positive, if available."""
         return self.prob_beyond(0.0)
 
-    def prob_beyond(self, threshold: float) -> float:
-        """P(lift > threshold). prob_beyond(mde) is the chance of a
-        meaningful win; prob_beyond(-tolerance) is the non-inferiority
-        probability a guardrail wants."""
-        p = self._posterior()
-        if self.scale == "log" and threshold <= -1.0:
-            _raise("estimation.results.lift.threshold_representable_log", threshold=threshold)
-        t = math.log1p(threshold) if self.scale == "log" else threshold
-        return p.survival(t)
+    def prob_beyond(self, threshold: float) -> float | None:
+        """Stored-posterior probability that lift exceeds ``threshold``."""
+        posterior = self._posterior()
+        if posterior is None:
+            return None
+        if self.posterior_scale == "log":
+            if threshold <= -1.0:
+                _raise("estimation.results.lift.threshold_representable_log", threshold=threshold)
+            threshold = math.log1p(threshold)
+        return posterior.survival(threshold)
 
-    def prob_favorable(self) -> float:
-        """P(lift is on the metric's declared good side of ``null_lift``).
-
-        Not derived from ``alternative``, which can point the opposite way
-        on a harm/futility test. When ``null_abs`` is set, the decision
-        moves to the additive scale instead.
-        """
-        if self.reference_kind == "confidence_set":
-            winsor_refuse(
-                "posterior_unavailable",
-                "Rank confidence sets do not define posterior probabilities.",
-            )
-        if self.preferred_direction is None:
+    def prob_favorable(self) -> float | None:
+        """Stored posterior probability on the metric's declared good side."""
+        if self.null_abs is not None and (
+            self.reference_kind == "t" or self.n_clusters is not None
+        ):
             _raise(
-                "estimation.results.lift.liftestimate_prob_favorable",
+                "estimation.results.lift.p_value_cluster_robust_null_abs",
+                reference_df=self.abs_reference_df
+                if self.abs_reference_kind == "t"
+                else self.reference_df,
                 group_id=self.group_id,
                 metric=self.metric,
             )
-        if self.null_abs is not None:
-            # Absolute tails retain their unsupported-reference refusal.
-            if (
-                self.reference_kind == "t"
-                or self.abs_reference_kind == "t"
-                or self.n_clusters is not None
-            ):
-                _raise(
-                    "estimation.results.lift.p_value_cluster_robust_null_abs",
-                    reference_df=self.abs_reference_df
-                    if self.abs_reference_kind == "t"
-                    else self.reference_df,
-                    group_id=self.group_id,
-                    metric=self.metric,
-                )
-            if self.abs_se is None or self.abs_diff is None:
-                _raise(
-                    "estimation.results.lift.p_value_null_abs_missing_abs_se",
-                    group_id=self.group_id,
-                    metric=self.metric,
-                )
-            p_beyond = float(_norm.sf((self.null_abs - self.abs_diff) / self.abs_se))
-            return (
-                p_beyond
-                if self.preferred_direction != "decrease"
-                else float(_norm.cdf((self.null_abs - self.abs_diff) / self.abs_se))
-            )
-        p_beyond = self.prob_beyond(self.null_lift)
-        return (
-            p_beyond
-            if self.preferred_direction != "decrease"
-            else float(
-                self._posterior().cdf(
-                    math.log1p(self.null_lift) if self.scale == "log" else self.null_lift
-                )
-            )
-        )
+        posterior = self._posterior()
+        if posterior is None or self.preferred_direction is None or self.null_abs is not None:
+            return None
+        threshold = math.log1p(self.null_lift) if self.posterior_scale == "log" else self.null_lift
+        if self.preferred_direction == "decrease":
+            return posterior.cdf(threshold)
+        return posterior.survival(threshold)
 
-    def prob_within(self, threshold: float) -> float:
-        """ROPE: P(|lift| < threshold), the 'confidently flat' verdict.
-
-        ``threshold`` is a relative-lift fraction in (0, 1) on a
-        ``value_scale="relative"`` row (both ``scale`` variants). On a
-        ``value_scale="absolute"`` row -- an encouragement LATE or an
-        additively-reported observational metric -- the window is read
-        in the row's own additive units instead, so any positive
-        threshold is accepted (e.g. a $5 ROPE on revenue-per-user).
-        """
+    def prob_within(self, threshold: float) -> float | None:
+        """Stored-posterior probability that lift lies inside a symmetric band."""
         if self.value_scale == "absolute":
             if not threshold > 0.0:
                 _raise(
@@ -1598,46 +1552,37 @@ class LiftEstimate(_RowIdentity):
             _raise(
                 "estimation.results.lift.prob_within_threshold_unit_interval", threshold=threshold
             )
-        p = self._posterior()
-        if self.scale == "log":
-            hi, lo = math.log1p(threshold), math.log1p(-threshold)
+        posterior = self._posterior()
+        if posterior is None:
+            return None
+        if self.posterior_scale == "log":
+            lower, upper = math.log1p(-threshold), math.log1p(threshold)
         else:
-            hi, lo = threshold, -threshold
-        return p.probability_between(lo, hi)
+            lower, upper = -threshold, threshold
+        return posterior.probability_between(lower, upper)
 
-    def chance_to_beat_favorable(self) -> float:
-        """Direction-aware companion to ``chance_to_beat()``: P(lift is on
-        the favorable side of 0). Always compares against 0, not
-        ``null_lift``, unlike ``prob_favorable()``."""
-        if self.preferred_direction is None:
-            _raise(
-                "estimation.results.lift.liftestimate_chance_to",
-                group_id=self.group_id,
-                metric=self.metric,
-            )
-        if self.preferred_direction != "decrease":
-            return self.chance_to_beat()
-        return 1.0 - self.chance_to_beat()
+    def chance_to_beat_favorable(self) -> float | None:
+        """Stored posterior probability on the favorable side of zero."""
+        chance = self.chance_to_beat()
+        if chance is None or self.preferred_direction is None:
+            return None
+        return 1.0 - chance if self.preferred_direction == "decrease" else chance
 
-    def risk_if_shipped(self) -> float:
-        """Expected loss if shipped and the true lift is negative:
-        E[max(0, -lift)]. Closed form under the lognormal (scale='log') or
-        Normal (scale='linear') posterior - no sampling."""
-        return self._posterior().expected_negative_part(scale=self.scale)
+    def risk_if_shipped(self) -> float | None:
+        """Stored-posterior expected negative lift, when a posterior is available."""
+        posterior = self._posterior()
+        if posterior is None or self.posterior_scale is None:
+            return None
+        return posterior.expected_negative_part(scale=self.posterior_scale)
 
-    def risk_if_shipped_favorable(self) -> float:
-        """Direction-aware companion to ``risk_if_shipped()``: expected
-        magnitude of the move to the unfavorable side of 0. Always
-        compares against 0, not ``null_lift``."""
-        if self.preferred_direction is None:
-            _raise(
-                "estimation.results.lift.liftestimate_risk_if",
-                group_id=self.group_id,
-                metric=self.metric,
-            )
-        if self.preferred_direction != "decrease":
-            return self.risk_if_shipped()
-        return self._posterior().expected_positive_part(scale=self.scale)
+    def risk_if_shipped_favorable(self) -> float | None:
+        """Stored-posterior expected loss on the declared unfavorable side."""
+        posterior = self._posterior()
+        if posterior is None or self.posterior_scale is None or self.preferred_direction is None:
+            return None
+        if self.preferred_direction == "decrease":
+            return posterior.expected_positive_part(scale=self.posterior_scale)
+        return posterior.expected_negative_part(scale=self.posterior_scale)
 
     def require_sequential_result(self) -> SequentialResult:
         """Return the authoritative stopped likelihood state or refuse a fixed row."""
@@ -1667,6 +1612,12 @@ class LiftEstimate(_RowIdentity):
             sequential_refuse("route.unsupported", "result is not a scalar mean AsympCS")
         return result
 
+    def _sampling_availability(self) -> bool | None:
+        available = getattr(self, "sampling_available", None)
+        if available is None and self.prior_shrunk:
+            _refuse_legacy_sampling(self)
+        return available
+
     def stat_sig(self) -> bool:
         """Whether this row's own interval excludes its own null, honoring
         ``alternative`` -- the LiftEstimate-specific twin of
@@ -1689,6 +1640,8 @@ class LiftEstimate(_RowIdentity):
         exact even when ``null_lift`` differs from the null the row's own
         ``lift``/``binomial_set`` bounds were built against.
         """
+        if self._sampling_availability() is False:
+            return False
         if self.confidence_set is not None:
             if self.null_abs is not None:
                 return self.confidence_set.additive.excludes(self.null_abs)
@@ -1753,50 +1706,22 @@ class LiftEstimate(_RowIdentity):
             return float(_norm.sf(z_abs))
         return float(2.0 * min(_norm.cdf(z_abs), _norm.sf(z_abs)))
 
-    def p_value(self) -> float:
-        """Return a presentation-only p-value for this displayed result.
-        Typed decision evidence is emitted by the estimator computation bundle;
-        this convenience method remains for result-table presentation and
-        compatibility with the existing family layer.
-        ``alternative`` ("two-sided" default; "greater"/"less" read one
-        tail, matching scipy's own alternative= convention) and
-        ``null_lift`` (0.0 default: the plain zero-null case) -- the exact
-        same declared tail and shifted null as the interval. Family selection
-        remains distinct from interval significance: nominal caps and additive
-        sidecars can impose different cutoffs.
+    def p_value(self) -> float | None:
+        """Return a presentation-only sampling p-value for this displayed result.
 
-        A ``null_abs`` row (an absolute-margin secondary) instead reads
-        the additive tail from ``Normal(abs_diff, abs_se)`` against
-        ``null_abs`` -- the same construction `prob_favorable` uses for
-        its own additive branch -- so this p-value and ``stat_sig``
-        (``abs_lb``/``abs_ub`` vs ``null_abs``) test the same null on the
-        same scale; a ``reference_kind="t"`` ``null_abs`` row refuses,
-        same as `prob_favorable`, since a Normal tail would understate
-        the t-reference uncertainty.
-
-        A quantile row (``quantile_p_value`` set) instead returns that
-        stored value directly: it was computed once, independent of
-        ``null_lift``/``alpha``, by inverting the quantile estimator's own
-        interval construction, so it cannot change with the alpha a
-        multiplicity allocation assigns this row.
-
-        Otherwise, a ``reference_kind="t"`` row reads
-        ``lift.log_mean``/``lift.log_se`` against its ``reference_df`` t
-        reference directly, tested against this row's own ``null_lift`` (transformed
-        to this row's own ``scale``, exactly as the Normal branch
-        below transforms its threshold) -- ``_posterior()`` refuses those
-        rows, since the interval is a t quantile pair, not a Normal
-        posterior. A sequential reference refuses through ``_posterior()``.
-        Otherwise (``reference_kind == "normal"``) this reads the recovered
-        Normal posterior's cdf/survival at ``null_lift`` (transformed to this
-        row's own ``scale``, exactly as ``prob_beyond`` transforms its
-        threshold): under the default flat prior the posterior is
-        Normal(MLE, SE), so this is the exact frequentist p-value; under
-        an informative prior it remains the unshrunk frequentist report
-        only if the estimate was produced with a flat prior."""
+        Sampling evidence is computed from the persisted prior-free reference,
+        independently of any separately stored posterior.
+        """
+        if self.inference != "fixed":
+            _raise(
+                "estimation.results.lift.posterior_decision_stats_sequential",
+                inference=self.inference,
+                metric=self.metric,
+                group_id=self.group_id,
+            )
+        if self._sampling_availability() is False:
+            return None
         if self.confidence_set is not None:
-            # Invert the declared single-level test: P(p <= u) <= u
-            # for every u. No normal tail is inferred from endpoints.
             if isinstance(self.confidence_set.reference, BootstrapReference):
                 from increment.estimation._winsor_bootstrap import bootstrap_p_value
 
@@ -1827,7 +1752,7 @@ class LiftEstimate(_RowIdentity):
             return bset.null_p_value(self.null_lift, self.alternative)
         if self.reference_kind == "t" or self.n_clusters is not None:
             if self.inference != "fixed":
-                self._posterior()  # raises the sequential-inference refusal
+                self._posterior()
             e = self.lift
             assert e is not None, "validated: lift is None only for reference_kind='binomial'"
             if e.log_mean is None or e.log_se is None:
@@ -1860,7 +1785,14 @@ class LiftEstimate(_RowIdentity):
             if self.alternative == "less":
                 return float(distribution.cdf(z, *shapes))
             return float(2.0 * distribution.sf(abs(z), *shapes))
-        p = self._posterior()
+        e = self.lift
+        assert e is not None, "validated: lift is None only for reference_kind='binomial'"
+        if e.log_mean is None or e.log_se is None:
+            _raise(
+                "estimation.results.lift.p_value_missing_log_mean_or_se",
+                group_id=self.group_id,
+                metric=self.metric,
+            )
         if self.scale == "log" and self.null_lift <= -1.0:
             _raise(
                 "estimation.results.lift.p_value_null_lift_not_representable_dof",
@@ -1869,11 +1801,12 @@ class LiftEstimate(_RowIdentity):
                 null_lift=self.null_lift,
             )
         null = math.log1p(self.null_lift) if self.scale == "log" else self.null_lift
+        z = (e.log_mean - null) / e.log_se
         if self.alternative == "greater":
-            return p.cdf(null)
+            return float(_norm.sf(z))
         if self.alternative == "less":
-            return p.survival(null)
-        return 2.0 * min(p.cdf(null), p.survival(null))
+            return float(_norm.cdf(z))
+        return float(2.0 * _norm.sf(abs(z)))
 
 
 def _nonpositive_arm_mean_p_value(reason: RelativeUnavailableReason) -> float:
@@ -1936,16 +1869,7 @@ def _fixed_fcr_parameters(estimate: LiftEstimate) -> tuple[float, float] | None:
             metric=estimate.metric,
             scale=estimate.scale,
         )
-    # Cluster t and additive infer_ate bypass the near-flat Normal update.
-    # Welch and encouragement's additive rows still perform that update.
-    if estimate.dof is not None or (
-        estimate.scale == "linear"
-        and estimate.value_scale == "absolute"
-        and estimate.estimand not in ("itt", "compliance", "late")
-    ):
-        return e.log_mean, e.log_se
-    posterior = normal_posterior(e.log_mean, e.log_se)
-    return posterior.mu, posterior.sigma
+    return e.log_mean, e.log_se
 
 
 def _recover_fixed_open_interval_parameters(
@@ -2097,7 +2021,10 @@ def open_bound_from_two_sided_at_target(estimate: LiftEstimate) -> LiftEstimate:
     lower = estimate.alternative == "greater"
     bound = e.lb if lower else e.ub
     if estimate.inference == "fixed":
-        if estimate.prior_shrunk or estimate.prior_spec is not None:
+        if (
+            estimate.sampling_available is not True
+            and (estimate.prior_shrunk or estimate.prior_spec is not None)
+        ):
             _raise("estimation.results.lift.fcr_prior_unsupported")
         if e.alpha is None:
             _raise("estimation.results.lift.open_interval_unrecoverable")

@@ -232,6 +232,7 @@ class DefinitionsMomentSource(SequentialSourceMixin):
             ),
             cluster=self._experiment.cluster,
             intervention_grain=self._experiment.intervention_grain,
+            trigger_name=self._experiment.trigger,
         )
         self._exposures_cache: Table | None = None
         from increment.sequential_source import validate_source_mapping

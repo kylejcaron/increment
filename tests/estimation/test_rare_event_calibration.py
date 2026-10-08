@@ -461,11 +461,17 @@ class TestRefusals:
         assert result.require_sequential_result().checkpoint.control.successes == 150
         assert result.require_sequential_result().checkpoint.treatment.successes == 165
 
-    def test_informative_prior_uses_the_established_fallback(self):
-        result = _estimate(150, 1000, 165, 1000, prior=Normal(mu=0.1, sigma=0.5))
-        assert result.binomial_set is None
-        assert result.reference_kind == "normal"
-        assert result.prior_shrunk is True
+    def test_informative_prior_preserves_exact_sampling_and_separate_posterior(self):
+        prior = Normal(mu=0.1, sigma=0.5)
+        result = _estimate(150, 1000, 165, 1000, prior=prior)
+        baseline = _estimate(150, 1000, 165, 1000)
+        assert result.binomial_set == baseline.binomial_set
+        assert result.reference_kind == baseline.reference_kind == "binomial"
+        assert result.p_value() == pytest.approx(baseline.p_value())
+        assert result.sampling_available is True
+        assert result.posterior_available is True
+        assert result.posterior_estimate is not None
+        assert baseline.posterior_available is None
 
     def test_binary_provenance_required_for_non_conversion_metric_type(self):
         arm = ArmStats.from_raw_sums(

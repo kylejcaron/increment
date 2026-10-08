@@ -560,6 +560,7 @@ def _artifact_source_context(
         ),
         cluster=experiment.cluster,
         intervention_grain=experiment.intervention_grain,
+        trigger_name=experiment.trigger,
     )
     return experiment, context
 

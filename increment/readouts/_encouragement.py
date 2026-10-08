@@ -54,7 +54,6 @@ def _encouragement_family_config(
         if (
             plan.procedures[metric.name].role == "secondary"
             and getattr(plan.procedures[metric.name].family, "member", False)
-            and config_by_metric[metric.name].prior is None
         )
     }
     return config_by_metric, family_metric_names
@@ -419,7 +418,6 @@ def _select_encouragement_family(
         if (
             plan.procedures[m.name].role == "secondary"
             and getattr(plan.procedures[m.name].family, "member", False)
-            and config_by_name[m.name].prior is None
         )
     }
     if not in_family:

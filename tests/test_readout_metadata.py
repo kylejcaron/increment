@@ -87,7 +87,11 @@ def test_triggered_sequential_scope_uses_explicit_unsupported_placeholder():
         inference=policy,
     )
     source = SimpleNamespace(
-        context=SimpleNamespace(plan=plan, design=SimpleNamespace(control_group="control"))
+        context=SimpleNamespace(
+            plan=plan,
+            design=SimpleNamespace(control_group="control"),
+            trigger_name="registered_trigger",
+        )
     )
     from increment.sequential_state import registration_id
 
@@ -99,7 +103,6 @@ def test_triggered_sequential_scope_uses_explicit_unsupported_placeholder():
         snapshot,
         metrics=("outcome",),
         estimands=("itt",),
-        triggered_declared=True,
     )
 
     placeholder = next(
@@ -113,3 +116,19 @@ def test_triggered_sequential_scope_uses_explicit_unsupported_placeholder():
     assert placeholder.reference_kind == "sequential"
     assert placeholder.sequential_result is None
     assert placeholder.sampling_available is False
+
+    other_source = SimpleNamespace(
+        context=SimpleNamespace(
+            plan=plan,
+            design=SimpleNamespace(control_group="control"),
+            trigger_name="another_trigger",
+        )
+    )
+    other = scope_sequential_results(
+        other_source,
+        bundle.results,
+        snapshot,
+        metrics=("outcome",),
+        estimands=("itt",),
+    )
+    assert other.metadata.scope.snapshot_id != scoped.metadata.scope.snapshot_id

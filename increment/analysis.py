@@ -314,6 +314,92 @@ class _ArtifactOpenSpec:
 # Public facade
 
 
+def _stamp_exploratory_rows(rows):
+    from increment.estimation.multiplicity import multiplicity_status
+    from increment.estimation.readout_types import (
+        CellKey,
+        FamilyScope,
+        ReadoutMetadata,
+        ReadoutScope,
+        cell_order,
+        family_identity,
+    )
+
+    metadata = rows.metadata
+    source_rows = list(rows)
+    updated = [
+        row.model_copy(
+            update={
+                "role": "exploratory",
+                "multiplicity_status": multiplicity_status("exploratory", None),
+            }
+        )
+        for row in source_rows
+    ]
+    if metadata is None:
+        return LiftEstimates(updated, source=rows.source)
+
+    moved = {(row.source_snapshot_id, CellKey.from_row(row)) for row in source_rows}
+    families = []
+    for family in metadata.scope.families:
+        retained = tuple(
+            cell for cell in family.members if (family.source_snapshot_id, cell) not in moved
+        )
+        if retained:
+            families.append(family.model_copy(update={"members": retained}))
+
+    family_ids = {}
+    by_family = {}
+    for row in source_rows:
+        source_id = row.source_snapshot_id
+        population = row.analysis_population
+        key = (source_id, population)
+        by_family.setdefault(key, []).append(CellKey.from_row(row))
+    for (source_id, population), members in by_family.items():
+        family_id = family_identity(source_id, population, "run", None, None, "exploratory")
+        families.append(
+            FamilyScope(
+                family_id=family_id,
+                analysis_population=population,
+                source_snapshot_id=source_id,
+                view="run",
+                dimension=None,
+                source=None,
+                name="exploratory",
+                family=None,
+                members=tuple(sorted(set(members), key=cell_order)),
+                complete=True,
+            )
+        )
+        family_ids[(source_id, population)] = family_id
+    updated = [
+        row.model_copy(
+            update={"family_id": family_ids[(row.source_snapshot_id, row.analysis_population)]}
+        )
+        for row in updated
+    ]
+    scope = ReadoutScope(
+        snapshot_id=metadata.scope.snapshot_id,
+        cells=metadata.scope.cells,
+        decision_cells=metadata.scope.decision_cells,
+        populations=metadata.scope.populations,
+        families=tuple(sorted(families, key=lambda family: family.family_id)),
+        by_source=metadata.scope.by_source,
+    )
+    metadata = ReadoutMetadata(
+        scope=scope,
+        cells=metadata.cells,
+        partial=metadata.partial,
+        partial_reason=metadata.partial_reason,
+    )
+    return LiftEstimates(
+        updated,
+        metadata=metadata,
+        source=rows.source,
+        sequential_snapshot=rows.sequential_snapshot,
+    )
+
+
 class Analysis:
     """Analyse one A/B experiment from declarative definitions.
 
@@ -1799,15 +1885,12 @@ class Analysis:
                 self._exploratory_analysis(added, caller="run")._whole_window().run(request(added))
             )
             extra = LiftEstimates(
-                (
-                    row.model_copy(update={"role": "exploratory"})
-                    for row in extra
-                    if row.estimand != "compliance"
-                ),
+                [row for row in extra if row.estimand != "compliance"],
                 metadata=extra.metadata,
                 source=extra.source,
                 sequential_snapshot=extra.sequential_snapshot,
             )
+            extra = _stamp_exploratory_rows(extra)
             rows = extra if rows.metadata is None else rows.concat(extra)
         return rows
 
@@ -2183,7 +2266,9 @@ class Analysis:
                     ),
                 ]
             )
-        return rows
+        from increment.estimation.multiplicity import stamp_multiplicity_status
+
+        return BreakoutEstimates(stamp_multiplicity_status(rows))
 
     def _breakout_rows(
         self,
@@ -2320,11 +2405,15 @@ class Analysis:
         names = {metric.name for metric in added}
         if not names:
             return rows
+        from increment.estimation.multiplicity import stamp_multiplicity_status
+
         return DailyLiftEstimates(
-            [
-                row.model_copy(update={"role": "exploratory"}) if row.metric in names else row
-                for row in rows
-            ]
+            stamp_multiplicity_status(
+                [
+                    row.model_copy(update={"role": "exploratory"}) if row.metric in names else row
+                    for row in rows
+                ]
+            )
         )
 
     def _day_axis(self) -> DayAxisReadouts:

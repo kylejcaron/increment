@@ -76,14 +76,13 @@ def _validate_typed_arm_compatibility(request: ReadoutRequest) -> None:  # noqa:
     )
     for metric, config in zip(request.metrics, request.configs, strict=True):
         procedure = request.plan.procedures[metric.name]
-        in_family = getattr(procedure.family, "member", False) and config.prior is None
+        in_family = getattr(procedure.family, "member", False)
         if request.view == "breakout":
-            in_family = config.prior is None
+            in_family = True
         elif request.view == "asof":
             in_family = (
                 getattr(procedure.family, "member", False)
                 and procedure.role == "secondary"
-                and config.prior is None
                 and mechanism != "encouragement"
             )
         if request.view == "run":

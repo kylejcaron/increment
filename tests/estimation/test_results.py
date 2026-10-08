@@ -21,6 +21,7 @@ from typing import Any, cast
 
 import pandas as pd
 import pytest
+from scipy.stats import norm as _norm
 from scipy.stats import t as _t
 
 from increment.breakout.estimates import to_frame
@@ -75,11 +76,14 @@ def test_open_bound_conversion_greater_direction_opens_the_upper_side():
 
     converted = open_bound_from_two_sided_at_target(row)
 
-    # The converted bound is the target_alpha quantile of the row's own
-    # posterior: exactly 1 - target_alpha of its mass sits above it.
-    bound = converted.require_lift().lb
-    assert bound is not None
-    assert row.prob_beyond(bound) == pytest.approx(1.0 - target_alpha, abs=1e-12)
+    # The converted bound is the target_alpha quantile of the sampling
+    # Normal reference: 1 - target_alpha sits above it.
+    lift = row.require_lift()
+    converted_lift = converted.require_lift()
+    assert lift.log_mean is not None and lift.log_se is not None
+    assert converted_lift.lb == pytest.approx(
+        math.expm1(lift.log_mean + _norm.ppf(target_alpha) * lift.log_se), abs=1e-12
+    )
     assert converted.require_lift().ub is None
     assert converted.require_lift().open_side == "upper"
     assert converted.require_lift().alpha == pytest.approx(target_alpha)
@@ -100,13 +104,13 @@ def test_open_bound_conversion_less_direction_opens_the_lower_side():
         alpha=0.025,
         alternative="less",
     )
-
     converted = open_bound_from_two_sided_at_target(row)
-
+    lift = row.require_lift()
+    assert lift.log_mean is not None and lift.log_se is not None
     assert converted.require_lift().lb is None
     assert converted.require_lift().open_side == "lower"
     assert converted.require_lift().ub == pytest.approx(
-        math.expm1(row._posterior().isf(0.05)), rel=1e-14
+        math.expm1(lift.log_mean + _norm.ppf(0.95) * lift.log_se), rel=1e-14
     )
 
 
@@ -127,6 +131,33 @@ def test_open_bound_conversion_is_noop_for_two_sided():
     )
 
     assert open_bound_from_two_sided_at_target(row) == row
+
+
+def test_directional_fcr_reissues_sampling_with_stored_mixture_posterior():
+    from increment.estimation.inference import infer_lift
+    from increment.estimation.priors import StudentTPrior
+    from increment.estimation.results import open_bound_from_two_sided_at_target
+
+    row = infer_lift(
+        metric="m",
+        group_id="t",
+        method="unadjusted",
+        method_role="decision",
+        log_rr=0.30,
+        se_t=0.05,
+        se_c=0.04,
+        prior=StudentTPrior(nu=4, scale=0.1),
+        alpha=0.025,
+        alternative="greater",
+    )
+    expected_p = row.p_value()
+    posterior = (row.posterior_model, row.posterior_prob_favorable, row.prior_spec)
+    converted = open_bound_from_two_sided_at_target(row)
+
+    assert converted.p_value() == expected_p
+    assert converted.require_lift().ub is None
+    assert converted.require_lift().open_side == "upper"
+    assert (converted.posterior_model, converted.posterior_prob_favorable, converted.prior_spec) == posterior
 
 
 def test_open_side_rejects_alternative_mismatch():
@@ -224,10 +255,12 @@ def test_open_bound_conversion_recovers_the_original_posterior():
     )
     converted = open_bound_from_two_sided_at_target(row)
 
-    # Equal posterior readouts at two distinct thresholds: the conversion
-    # recovers the same posterior rather than a shifted or rescaled one.
-    assert converted.prob_beyond(0.10) == pytest.approx(row.prob_beyond(0.10), rel=1e-14)
+    # Conversion changes only the sampling interval shape, preserving the
+    # sampling p-value and keeping the absent posterior absent.
+    assert converted.prob_beyond(0.10) is None
+    assert row.prob_beyond(0.10) is None
     assert converted.p_value() == pytest.approx(row.p_value(), rel=1e-14)
+    assert converted.posterior_available is None
 
 
 @pytest.mark.slow
@@ -728,21 +761,25 @@ class TestEstimateAdversarialConstruction:
             Estimate(value=0.1, lb=0.05, ub=0.15, level=0.95, alpha=0.10)
         assert exc_info.value.code == "estimation.results.estimate.level_contradicts_effective"
 
-    def test_posterior_rechecks_alpha_after_model_copy(self):
-        estimate = Estimate(value=0.1, lb=0.05, ub=0.15, level=0.95, alpha=0.05)
-        result = LiftEstimate(
+    def test_posterior_probability_uses_stored_state_after_sampling_interval_copy(self):
+        from increment.estimation.inference import infer_lift
+        from increment.estimation.priors import StudentTPrior
+
+        result = infer_lift(
             metric="rev",
             group_id="treatment",
             method="unadjusted",
             method_role="decision",
-            lift=estimate,
+            log_rr=0.1,
+            se_t=0.02,
+            se_c=0.02,
+            prior=StudentTPrior(nu=4.0, scale=0.05),
         )
+        estimate = result.require_lift()
         tampered = result.model_copy(update={"lift": estimate.model_copy(update={"alpha": 0.10})})
-        with pytest.raises(InvalidRequestError) as exc_info:
-            tampered.prob_beyond(0.0)
-        assert exc_info.value.code == "estimation.results.lift.liftestimate_level_contradicts"
+        assert tampered.prob_beyond(0.0) == result.prob_beyond(0.0)
 
-    def test_posterior_rechecks_alpha_on_prior_backed_estimates(self):
+    def test_legacy_prior_spec_without_persisted_posterior_returns_none(self):
         from increment.estimation.priors import StudentTPrior
 
         estimate = Estimate(
@@ -763,9 +800,7 @@ class TestEstimateAdversarialConstruction:
             prior_spec=StudentTPrior(nu=4.0, scale=0.05),
         )
         tampered = result.model_copy(update={"lift": estimate.model_copy(update={"alpha": 0.10})})
-        with pytest.raises(InvalidRequestError) as exc_info:
-            tampered.prob_beyond(0.0)
-        assert exc_info.value.code == "estimation.results.lift.liftestimate_level_contradicts"
+        assert tampered.prob_beyond(0.0) is None
 
 
 def test_lift_estimate_carries_winsorization_diagnostics():
@@ -867,59 +902,32 @@ class TestPValueClusterRobust:
             estimate_sequential(snapshot, policy)
         assert raised.value.code == "sequential.route.unsupported"
 
-    def test_dof_none_path_two_sided_default_is_unchanged(self):
-        """Regression: a non-clustered (dof=None) row at the default
-        alternative="two-sided"/null_lift=0.0 computes the same
-        always-two-sided-against-zero p-value as before."""
-        z = _t.ppf(0.975, 1e9)  # ~ norm.ppf(0.975)
+    def test_dof_none_path_without_sampling_statistics_refuses_p_value(self):
         est = LiftEstimate(
             metric="rev",
             group_id="treatment",
             method="unadjusted",
             method_role="decision",
-            lift=Estimate(
-                value=math.expm1(0.10),
-                lb=math.expm1(0.10 - z * 0.05),
-                ub=math.expm1(0.10 + z * 0.05),
-                level=0.95,
-                alpha=0.05,
-            ),
+            lift=Estimate(value=0.1, lb=0.05, ub=0.15, level=0.95),
         )
-        from scipy.stats import norm
+        with pytest.raises(InvalidRequestError) as exc_info:
+            est.p_value()
+        assert exc_info.value.code == "estimation.results.lift.p_value_missing_log_mean_or_se"
 
-        assert est.p_value() == pytest.approx(2 * norm.cdf(-2.0), rel=1e-6)
-
-    def test_dof_none_path_honors_alternative(self):
-        """A non-clustered (dof=None) row now honors a declared one-sided
-        `alternative` -- a "greater" test reads the one-sided tail (half
-        the always-two-sided-against-zero value this used to return),
-        matching the cluster-robust branch's own alternative-aware
-        convention."""
-        z = _t.ppf(0.975, 1e9)  # ~ norm.ppf(0.975)
+    def test_dof_none_path_without_statistics_refuses_one_sided_p_value(self):
         est = LiftEstimate(
             metric="rev",
             group_id="treatment",
             method="unadjusted",
             method_role="decision",
             alternative="greater",
-            lift=Estimate(
-                value=math.expm1(0.10),
-                lb=math.expm1(0.10 - z * 0.05),
-                ub=math.expm1(0.10 + z * 0.05),
-                level=0.95,
-                alpha=0.05,
-            ),
+            lift=Estimate(value=math.expm1(0.10), lb=0.05, ub=0.15, level=0.95),
         )
-        from scipy.stats import norm
+        with pytest.raises(InvalidRequestError) as exc_info:
+            est.p_value()
+        assert exc_info.value.code == "estimation.results.lift.p_value_missing_log_mean_or_se"
 
-        assert est.p_value() == pytest.approx(norm.sf(2.0), rel=1e-6)
-
-    def test_dof_none_path_honors_null_lift(self):
-        """A non-clustered row with a nonzero declared `null_lift` (margin)
-        computes its p-value against that shifted null, not 0 -- the
-        margin sibling of `test_dof_none_path_honors_alternative`."""
-        mu, sigma = math.log1p(0.10), 0.02
-        z = _t.ppf(0.975, 1e9)
+    def test_dof_none_path_without_statistics_refuses_shifted_null_p_value(self):
         est = LiftEstimate(
             metric="rev",
             group_id="treatment",
@@ -927,21 +935,11 @@ class TestPValueClusterRobust:
             method_role="decision",
             alternative="greater",
             null_lift=0.05,
-            lift=Estimate(
-                value=math.expm1(mu),
-                lb=math.expm1(mu - z * sigma),
-                ub=math.expm1(mu + z * sigma),
-                level=0.95,
-                alpha=0.05,
-            ),
+            lift=Estimate(value=0.10, lb=0.05, ub=0.15, level=0.95),
         )
-        from scipy.stats import norm
-
-        z_against_margin = (mu - math.log1p(0.05)) / sigma
-        assert est.p_value() == pytest.approx(norm.sf(z_against_margin), rel=1e-6)
-        # Sanity: this must differ from testing against 0 -- proves the
-        # shifted null actually moved the answer, not a no-op.
-        assert est.p_value() != pytest.approx(norm.sf(mu / sigma), rel=1e-3)
+        with pytest.raises(InvalidRequestError) as exc_info:
+            est.p_value()
+        assert exc_info.value.code == "estimation.results.lift.p_value_missing_log_mean_or_se"
 
     def test_dof_set_path_honors_null_lift(self):
         """A cluster-robust row with a declared margin must test against the
@@ -1100,7 +1098,7 @@ def test_lift_estimate_repr_distinguishes_open_from_unavailable_interval():
     assert "stat_sig=True" in text
 
 
-def test_closed_normal_reconstruction_refuses_unrepresentable_tail():
+def test_sampling_only_row_does_not_reconstruct_posterior_from_interval():
     result = LiftEstimate(
         metric="value",
         group_id="treatment",
@@ -1109,9 +1107,7 @@ def test_closed_normal_reconstruction_refuses_unrepresentable_tail():
         lift=Estimate(value=0.1, lb=0.05, ub=0.15, level=1.0, alpha=math.ulp(0.0)),
         scale="linear",
     )
-    with pytest.raises(InvalidRequestError) as exc_info:
-        result.prob_beyond(0.0)
-    assert exc_info.value.code == "estimation.tails.unresolvable"
+    assert result.prob_beyond(0.0) is None
 
 
 def _binomial_set(**overrides: Any) -> BinomialConfidenceSet:

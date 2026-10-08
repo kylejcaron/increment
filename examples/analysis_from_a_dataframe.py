@@ -228,7 +228,7 @@ def _(mo):
     analysis.run(prior=Normal(mu=mu, sigma=sigma))
     ```
 
-    This is especially helpful for smaller sized experiments - and if your prior is well calibrated over historical experiments (which is no easy task), it can help resolve peeking and multiple comparison issues.
+    This adds a separate posterior summary; it does not replace the sampling inference or the declared multiplicity/sequential procedure.
     """)
     return
 
@@ -237,7 +237,7 @@ def _(mo):
 def _(Normal, baseline, estimates_to_readout, readout_table):
     prior_results = baseline.run(prior=Normal(mu=0.0, sigma=0.05))
     readout_table(
-        estimates_to_readout(prior_results, informative_prior=True),
+        estimates_to_readout(prior_results),
         title="Checkout experiment — informative prior",
     )
     return

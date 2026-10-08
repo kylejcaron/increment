@@ -37,7 +37,6 @@ def test_scale_defaults_to_log_for_backcompat():
 
 
 def test_posterior_roundtrip_log_scale():
-    # infer_lift with flat prior: posterior is Normal(log_rr, sqrt(se_t^2+se_c^2))
     est = infer_lift(
         metric="m",
         group_id="t",
@@ -46,55 +45,56 @@ def test_posterior_roundtrip_log_scale():
         log_rr=0.15 - 0.05,
         se_t=0.03,
         se_c=0.04,
+        prior=Normal(mu=0.1, sigma=0.2),
         alpha=0.05,
     )
     post = est._posterior()
     assert isinstance(post, Normal)
-    assert math.isclose(post.mu, 0.10, rel_tol=1e-9)
-    assert math.isclose(post.sigma, math.sqrt(0.03**2 + 0.04**2), rel_tol=1e-6)
+    assert post.mu == est.posterior_latent_mean
+    assert post.sigma == est.posterior_latent_sd
 
 
-def test_posterior_requires_interval():
+def test_p_value_requires_sampling_statistics_not_posterior_interval_reconstruction():
     est = LiftEstimate(
         metric="m",
         group_id="t",
         method="unadjusted",
         method_role="decision",
-        lift=Estimate(value=0.1),
+        lift=Estimate(value=0.1, lb=-0.05, ub=0.4, level=0.95),
     )
     with pytest.raises(InvalidRequestError) as exc_info:
         est.p_value()
-    assert exc_info.value.code == "estimation.results.lift.liftestimate_carries_no"
-
-
-def test_posterior_rejects_asymmetric_interval():
-    # A hand-built interval that is not a symmetric Normal quantile interval
-    # on the log scale must be refused, not silently misread.
-    est = LiftEstimate(
-        metric="m",
-        group_id="t",
-        method="unadjusted",
-        method_role="decision",
-        lift=Estimate(value=0.10, lb=-0.05, ub=0.40, level=0.95),
-    )
-    with pytest.raises(InvalidRequestError) as exc_info:
-        est.p_value()
-    assert exc_info.value.code == "estimation.results.lift.liftestimate_interval_symmetric"
+    assert exc_info.value.code == "estimation.results.lift.p_value_missing_log_mean_or_se"
 
 
 def _est(mu: float, sigma: float, level: float = 0.95) -> LiftEstimate:
-    """Build a log-scale estimate whose posterior is exactly Normal(mu, sigma)."""
+    """Build a log-scale row with explicit, matching sampling and posterior state."""
     z = norm.ppf((1 + level) / 2)
+    alpha = 1 - level
     return LiftEstimate(
         metric="m",
         group_id="t",
         method="unadjusted",
         method_role="decision",
+        sampling_available=True,
+        posterior_available=True,
+        posterior_model="normal",
+        posterior_scale="log",
+        posterior_estimate=math.expm1(mu),
+        posterior_lb=math.expm1(mu - z * sigma),
+        posterior_ub=math.expm1(mu + z * sigma),
+        posterior_level=level,
+        posterior_alpha=alpha,
+        posterior_latent_mean=mu,
+        posterior_latent_sd=sigma,
         lift=Estimate(
             value=math.expm1(mu),
             lb=math.expm1(mu - z * sigma),
             ub=math.expm1(mu + z * sigma),
             level=level,
+            alpha=alpha,
+            log_mean=mu,
+            log_se=sigma,
         ),
     )
 
@@ -131,6 +131,9 @@ def _interface_estimate(**updates) -> LiftEstimate:
         method="unadjusted",
         scale="linear",
         method_role="decision",
+        posterior_available=True,
+        posterior_model="normal",
+        posterior_scale="linear",
         lift=Estimate(value=0.0),
     )
     return estimate.model_copy(update=updates)
@@ -148,8 +151,12 @@ def test_risk_methods_use_posterior_interface():
     assert estimate.risk_if_shipped_favorable() == pytest.approx(0.2)
 
 
-def test_p_value_uses_posterior_interface():
-    assert _interface_estimate().p_value() == pytest.approx(0.5)
+def test_p_value_does_not_read_posterior_interface():
+    from increment.errors import InvalidRequestError
+
+    with pytest.raises(InvalidRequestError) as raised:
+        _interface_estimate().p_value()
+    assert raised.value.code == "estimation.results.lift.p_value_missing_log_mean_or_se"
 
 
 def test_chance_to_beat_matches_normal_cdf():
@@ -188,6 +195,16 @@ def _absolute_linear_est(mu: float, sigma: float, level: float = 0.95) -> LiftEs
         method_role="decision",
         scale="linear",
         value_scale="absolute",
+        posterior_available=True,
+        posterior_model="normal",
+        posterior_scale="linear",
+        posterior_estimate=mu,
+        posterior_lb=mu - z * sigma,
+        posterior_ub=mu + z * sigma,
+        posterior_level=level,
+        posterior_alpha=1 - level,
+        posterior_latent_mean=mu,
+        posterior_latent_sd=sigma,
         lift=Estimate(value=mu, lb=mu - z * sigma, ub=mu + z * sigma, level=level),
     )
 
@@ -240,9 +257,14 @@ def test_linear_scale_dispatch():
         method="iptw",
         method_role="decision",
         scale="linear",
+        posterior_available=True,
+        posterior_model="normal",
+        posterior_scale="linear",
+        posterior_estimate=mu,
+        posterior_latent_mean=mu,
+        posterior_latent_sd=sigma,
         lift=Estimate(value=mu, lb=mu - z * sigma, ub=mu + z * sigma, level=0.95),
     )
-    assert math.isclose(est.chance_to_beat(), norm.cdf(mu / sigma), rel_tol=1e-9)
     # linear-scale risk: sigma*phi(mu/sigma) - mu*Phi(-mu/sigma), checked numerically
     want, _ = quad(lambda x: max(0.0, -x) * norm.pdf(x, mu, sigma), -0.5, 0.5)
     assert math.isclose(est.risk_if_shipped(), want, rel_tol=1e-6)
@@ -257,10 +279,7 @@ def test_iptw_estimate_stamps_linear_scale():
     assert est.scale == "linear"
 
 
-def test_posterior_rejects_value_at_or_below_negative_one_on_log_scale():
-    """value/lb <= -1 is outside the log scale's domain (log1p(-1) = -inf);
-    a hand-built out-of-contract estimate must get the descriptive error,
-    not an opaque math domain error."""
+def test_legacy_interval_without_sampling_statistics_cannot_compute_p_value():
     est = LiftEstimate(
         metric="m",
         group_id="t",
@@ -270,30 +289,44 @@ def test_posterior_rejects_value_at_or_below_negative_one_on_log_scale():
     )
     with pytest.raises(InvalidRequestError) as exc_info:
         est.p_value()
-    assert exc_info.value.code == "estimation.results.lift.liftestimate_value_lb"
-
-
-def test_prob_beyond_rejects_threshold_at_or_below_negative_one_on_log_scale():
-    est = _est(mu=0.10, sigma=0.05)
-    with pytest.raises(InvalidRequestError) as exc_info:
-        est.prob_beyond(-1.0)
-    assert exc_info.value.code == "estimation.results.lift.threshold_representable_log"
+    assert exc_info.value.code == "estimation.results.lift.p_value_missing_log_mean_or_se"
 
 
 @pytest.mark.slow
-def test_decision_stats_refuse_on_sequential_inference():
-    from increment.errors import CapabilityError
+def test_sequential_rows_return_no_posterior_but_still_refuse_sampling_p_value():
     from increment.estimation.sequential_runtime import estimate_sequential
     from tests.sequential_cases import registered_bernoulli
 
     snapshot, policy = registered_bernoulli()
     est = estimate_sequential(snapshot, policy).results[0]
     assert est.stat_sig()
-    for method in (est.chance_to_beat, est.p_value):
-        with pytest.raises(CapabilityError) as raised:
-            method()
-        assert raised.value.code == "sequential.route.unsupported"
+    assert est.chance_to_beat() is None
+    assert est.prob_beyond(0.0) is None
+    assert est.prob_within(0.01) is None
+    assert est.risk_if_shipped() is None
+    with pytest.raises(InvalidRequestError) as raised:
+        est.p_value()
+    assert raised.value.code == "estimation.results.lift.posterior_decision_stats_sequential"
 
+
+def test_cluster_rows_without_posterior_return_none_for_posterior_accessors():
+    est = LiftEstimate(
+        metric="m",
+        group_id="t",
+        method="unadjusted",
+        method_role="decision",
+        reference_kind="t",
+        reference_df=9.0,
+        dof=9.0,
+        n_clusters=10,
+        sampling_available=True,
+        posterior_available=False,
+        lift=Estimate(value=0.1, lb=-0.1, ub=0.3, level=0.95, log_mean=0.1, log_se=0.1),
+    )
+    assert est.chance_to_beat() is None
+    assert est.prob_beyond(0.0) is None
+    assert est.prob_within(0.01) is None
+    assert est.risk_if_shipped() is None
 
 def test_risk_if_shipped_favorable_matches_risk_if_shipped_for_increase():
     est = _est(mu=0.02, sigma=0.05).model_copy(update={"preferred_direction": "increase"})
@@ -324,6 +357,12 @@ def test_risk_if_shipped_favorable_is_the_mirror_for_decrease_linear_scale():
         method="iptw",
         method_role="decision",
         scale="linear",
+        posterior_available=True,
+        posterior_model="normal",
+        posterior_scale="linear",
+        posterior_estimate=mu,
+        posterior_latent_mean=mu,
+        posterior_latent_sd=sigma,
         lift=Estimate(value=mu, lb=mu - z * sigma, ub=mu + z * sigma, level=0.95),
         preferred_direction="decrease",
     )
@@ -331,11 +370,9 @@ def test_risk_if_shipped_favorable_is_the_mirror_for_decrease_linear_scale():
     assert math.isclose(est.risk_if_shipped_favorable(), want, rel_tol=1e-6)
 
 
-def test_risk_if_shipped_favorable_requires_preferred_direction():
+def test_risk_if_shipped_favorable_is_unavailable_without_preferred_direction():
     est = _est(mu=0.02, sigma=0.05)  # no preferred_direction resolved
-    with pytest.raises(InvalidRequestError) as exc_info:
-        est.risk_if_shipped_favorable()
-    assert exc_info.value.code == "estimation.results.lift.liftestimate_risk_if"
+    assert est.risk_if_shipped_favorable() is None
 
 
 def test_chance_to_beat_favorable_matches_chance_to_beat_for_increase():
@@ -366,8 +403,6 @@ def test_chance_to_beat_favorable_stays_vs_zero_unlike_prob_favorable():
     assert est.chance_to_beat_favorable() != pytest.approx(est.prob_favorable())
 
 
-def test_chance_to_beat_favorable_requires_preferred_direction():
+def test_chance_to_beat_favorable_is_unavailable_without_preferred_direction():
     est = _est(mu=0.02, sigma=0.05)  # no preferred_direction resolved
-    with pytest.raises(InvalidRequestError) as exc_info:
-        est.chance_to_beat_favorable()
-    assert exc_info.value.code == "estimation.results.lift.liftestimate_chance_to"
+    assert est.chance_to_beat_favorable() is None

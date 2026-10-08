@@ -285,6 +285,78 @@ def test_every_arm_evidence_result_round_trips_and_has_a_frame(tmp_path: Path, n
     assert columns
 
 
+_DIGEST_ADAPTER_NAMES = tuple(name for name in _ADAPTER_NAMES if name != "breakout_moments")
+
+
+@pytest.mark.parametrize("adapter_name", _DIGEST_ADAPTER_NAMES)
+def test_readout_snapshot_replays_and_tracks_changed_ingress_arms(
+    tmp_path: Path, adapter_name: str
+) -> None:
+    from increment import readouts
+    from increment.errors import CapabilityError
+    from increment.estimation.readout_types import ReadoutResults
+
+    source, _metric = next(
+        adapter for adapter in _adapter_cases(tmp_path) if adapter.name == adapter_name
+    ).build()
+
+    class ChangedTreatmentSource:
+        def __init__(self, delegate):
+            self._delegate = delegate
+
+        def __getattr__(self, name):
+            return getattr(self._delegate, name)
+
+        @staticmethod
+        def _rename_treatment(counts):
+            renamed = dict(counts)
+            if "treatment" in renamed:
+                renamed["treatment_digest_change"] = renamed.pop("treatment")
+            return renamed
+
+        def assignment_counts(self, *, population="assigned"):
+            method = getattr(self._delegate, "assignment_counts", None)
+            if not callable(method):
+                raise CapabilityError(
+                    "source does not expose population counts",
+                    code="readout.scope.source_digest_unavailable",
+                    context={},
+                )
+            return self._rename_treatment(method(population=population))
+
+        def unit_counts(self):
+            return self._rename_treatment(self._delegate.unit_counts())
+
+        def cluster_counts(self):
+            return self._rename_treatment(self._delegate.cluster_counts())
+
+        def moments(self, *args, **kwargs):
+            rows = self._delegate.moments(*args, **kwargs)
+            changed = False
+            output = []
+            for row in rows:
+                copy = dict(row)
+                if copy.get("group_id") == "treatment":
+                    copy["group_id"] = "treatment_digest_change"
+                    changed = True
+                output.append(copy)
+            assert changed, "adapter did not expose the fixture's treatment evidence"
+            return output
+
+    first = readouts.run(source)
+    replay = readouts.run(source)
+    mutated = readouts.run(ChangedTreatmentSource(source))
+    assert first and replay and mutated
+    first_id = first[0].source_snapshot_id
+    assert first_id is not None
+    assert {row.source_snapshot_id for row in replay} == {first_id}
+    mutated_id = mutated[0].source_snapshot_id
+    assert mutated_id is not None and mutated_id != first_id
+    restored = ReadoutResults.model_validate_json(first.model_dump_json())
+    assert restored.source == first.source
+    assert restored.metadata == first.metadata
+
+
 def test_sql_totals_advertised_summary_sql_succeeds() -> None:
     from tests.source_conformance import sql_totals_source
 

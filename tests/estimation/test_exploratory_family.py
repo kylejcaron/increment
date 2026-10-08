@@ -911,13 +911,6 @@ _REFUSALS = {
     "estimation.family.exploratory_sequential": {
         "always-valid": lambda: [_plain(), _sequential_row()],
     },
-    "breakout.run_breakout_bh_excludes_prior": {
-        "segment-prior": lambda: [_plain(), *_prior_breakout_rows()],
-        "whole-window-prior": lambda: [
-            _plain(),
-            _wald_row("shrunk", 3.0, prior=Normal(mu=0.0, sigma=0.1)),
-        ],
-    },
     "estimation.family.exploratory_construction": {
         "quantile": lambda: [
             _plain(),
@@ -961,14 +954,48 @@ def test_every_offending_row_is_named_and_the_first_hazard_wins():
     assert raised.value.context["rows"] == ("companion/treatment", "companion/treatment")
 
 
-def test_a_segment_prior_row_is_marked_so_it_cannot_enter_a_family():
+def test_prior_bound_sampling_rows_remain_in_exploratory_family():
+    prior_row = _wald_row("prior", 3.0, prior=Normal(mu=0.0, sigma=0.1))
+    prior_free = _wald_row("prior", 3.0)
+    assert prior_row.sampling_available is True
+    assert prior_row.p_value() == pytest.approx(prior_free.p_value())
+
+    actual, plain = select_exploratory_family(
+        [_plain(), prior_row], q=0.1
+    ), select_exploratory_family([_plain(), prior_free], q=0.1)
+    assert actual[1].family_size == plain[1].family_size == 2
+    assert actual[1].discovery == plain[1].discovery
+    assert actual[1].require_lift().value == pytest.approx(prior_free.require_lift().value)
+
+
+def test_a_segment_prior_row_retains_sampling_family_state():
     rows = _prior_breakout_rows()
-    assert rows and all(isinstance(row, BreakoutEstimate) and row.prior_shrunk for row in rows)
+    assert rows and all(
+        isinstance(row, BreakoutEstimate)
+        and row.posterior_available is True
+        and row.sampling_available is True
+        for row in rows
+    )
     summary = _segment_summary(with_conversion=False).query("metric == 'm_a'")
     plain = list(_breakout(summary=summary, metrics=[_mean_metric("m_a")]))
-    assert not any(row.prior_shrunk for row in plain)
+    corrected_prior = select_exploratory_family(rows, q=0.1)
+    corrected_plain = select_exploratory_family(plain, q=0.1)
+    key = lambda row: (row.metric, row.group_id, row.dimension, row.dimension_value)
+    plain_by_key = {key(row): row for row in corrected_plain}
+    assert all(row.sampling_available is True for row in corrected_prior)
+    for row in corrected_prior:
+        baseline = plain_by_key[key(row)]
+        assert row.family_size == baseline.family_size
+        assert row.discovery == baseline.discovery
+        assert row.require_lift().value == pytest.approx(baseline.require_lift().value)
 
-
+def test_legacy_prior_row_without_sampling_marker_refuses_family_reconstruction():
+    row = _wald_row("legacy", 3.0, prior=Normal(mu=0.0, sigma=0.1)).model_copy(
+        update={"sampling_available": None, "prior_shrunk": True}
+    )
+    with pytest.raises(CodedError) as raised:
+        select_exploratory_family([row], q=0.1)
+    assert raised.value.code == "readout.legacy.sampling_unreconstructible"
 def test_construction_refusal_names_each_row_and_why():
     quantile = _wald_row("q", 4.0).model_copy(update={"quantile_p_value": 0.01})
     with pytest.raises(CodedError) as raised:

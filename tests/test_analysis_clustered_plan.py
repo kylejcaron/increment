@@ -614,12 +614,9 @@ def test_clustered_secondary_discovery_parity_with_frame_path():
 
 
 def _quantile_secondary_family_rows() -> list[dict[str, Any]]:
-    """Exposure + 5 continuous quantile-metric facts (no cluster --
-    quantile refuses one): `q_a` an unambiguous shift (in-family,
-    selected), `q_b`/`q_c`/`q_d` near-null (in-family, not selected), and
-    `q_prior` an even larger shift declared with a plan-bound prior
-    (`in_family=False`) -- proving its own extreme effect never enters
-    the shared family no matter how large."""
+    """Exposure + five continuous quantile metrics: q_a is a clear shift,
+    q_b/q_c/q_d are near-null, and q_prior is a larger sampling-family
+    member whose informative prior does not remove its quantile evidence."""
     rng = np.random.default_rng(31)
     metric_names = ["q_a", "q_b", "q_c", "q_d", "q_prior"]
     control_mean, sd = 10.0, 2.0
@@ -721,16 +718,8 @@ def _quantile_secondary_family_defs() -> Definitions:
     )
 
 
-def test_quantile_secondary_family_selects_subset_and_prior_bound_stays_none():
-    """A quantile declared-plan run (no cluster -- a declared cluster
-    refuses an informative prior outright, per `estimate_lift`'s own
-    `CapabilityError`, unrelated to this task, so the prior-bound case is
-    exercised here instead): `q_a` is BH-selected and re-estimated at the
-    FCR level; `q_b`/`q_c`/`q_d` are not selected; `q_prior` -- a
-    prior-bound secondary excluded from the family (`in_family=False`)
-    despite carrying the single largest effect of the five -- stays
-    `discovery=None` at the plan's nominal level, while its in-family
-    siblings all carry real bools."""
+def test_quantile_secondary_family_includes_prior_bound_sampling_member():
+    """A declared prior does not exclude the quantile cell's sampling evidence."""
     con = ibis.duckdb.connect()
     con.create_table("quant_sec_fam_events", obj=_quantile_secondary_family_rows())
     analysis = make_analysis(con, _quantile_secondary_family_defs(), experiment="quant_sec_fam_exp")
@@ -739,14 +728,15 @@ def test_quantile_secondary_family_selects_subset_and_prior_bound_stays_none():
     by_metric = {r.metric: r for r in results}
 
     assert by_metric["q_a"].discovery is True
+    assert by_metric["q_prior"].discovery is True
     for name in ("q_b", "q_c", "q_d"):
         assert by_metric[name].discovery is False
-    assert by_metric["q_prior"].discovery is None
-
-    # R = 1 selected cell of the 4 in-family secondaries: q_prior sits outside
-    # the family, so the denominator stays 4 and the allocation is q*R/m.
-    expected_selected_alpha = SECONDARY_Q * 1 / 4
-    assert expected_selected_alpha == pytest.approx(0.025)
+    expected_selected_alpha = SECONDARY_Q * 2 / 5
+    assert by_metric["q_a"].family_size == by_metric["q_prior"].family_size == 5
     assert by_metric["q_a"].require_lift().alpha == pytest.approx(expected_selected_alpha)
-    for name in ("q_b", "q_c", "q_d", "q_prior"):
+    assert by_metric["q_prior"].require_lift().alpha == pytest.approx(expected_selected_alpha)
+    assert by_metric["q_prior"].quantile_p_value is not None
+    assert by_metric["q_prior"].sampling_available is True
+    assert by_metric["q_prior"].posterior_available is not True
+    for name in ("q_b", "q_c", "q_d"):
         assert by_metric[name].require_lift().alpha == pytest.approx(PLAN_ALPHA)

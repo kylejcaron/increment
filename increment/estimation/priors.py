@@ -4,9 +4,10 @@ A mixture prior updates in closed form against ``infer_lift``'s Normal
 likelihood: the posterior is again a finite normal mixture (see
 ``mixture_posterior``), so every decision statistic stays analytic.
 ``StudentTPrior`` is a three-field declaration (nu, scale, k); its
-Gauss-Laguerre expansion is an implementation detail, computed on
-demand and cached - persisted estimates carry the declaration, never
-the expansion, so the expansion may improve without invalidating them.
+Gauss-Laguerre expansion is computed on demand and cached. Result rows keep
+the declared prior separate from the already-updated posterior; mixture
+posterior components are persisted exactly and replayed without updating them
+again.
 """
 
 from __future__ import annotations
@@ -225,30 +226,38 @@ class MixturePosterior:
         return float((self.weights * per_component).sum())
 
     def expected_negative_part(self, *, scale: Literal["linear", "log"]) -> float:
-        z = self.means / self.sigmas
+        active = self.weights > 0.0
+        weights = self.weights[active]
+        means = self.means[active]
+        sigmas = self.sigmas[active]
+        z = means / sigmas
         if scale == "linear":
-            per = self.sigmas * _norm.pdf(z) - self.means * _norm.cdf(-z)
+            per = sigmas * _norm.pdf(z) - means * _norm.cdf(-z)
         elif scale == "log":
             a = -z
-            per = _norm.cdf(a) - np.exp(self.means + 0.5 * self.sigmas**2) * _norm.cdf(
-                a - self.sigmas
+            per = _norm.cdf(a) - np.exp(means + 0.5 * sigmas**2) * _norm.cdf(
+                a - sigmas
             )
         else:
             _raise("estimation.priors.mixture_posterior.expected_negative_part_scale", scale=scale)
-        return float((self.weights * per).sum())
+        return float((weights * per).sum())
 
     def expected_positive_part(self, *, scale: Literal["linear", "log"]) -> float:
-        z = self.means / self.sigmas
+        active = self.weights > 0.0
+        weights = self.weights[active]
+        means = self.means[active]
+        sigmas = self.sigmas[active]
+        z = means / sigmas
         if scale == "linear":
-            per = self.sigmas * _norm.pdf(z) + self.means * _norm.cdf(z)
+            per = sigmas * _norm.pdf(z) + means * _norm.cdf(z)
         elif scale == "log":
             a = -z
-            per = np.exp(self.means + 0.5 * self.sigmas**2) * _norm.cdf(
-                self.sigmas - a
+            per = np.exp(means + 0.5 * sigmas**2) * _norm.cdf(
+                sigmas - a
             ) - _norm.cdf(-a)
         else:
             _raise("estimation.priors.mixture_posterior.expected_positive_part_scale", scale=scale)
-        return float((self.weights * per).sum())
+        return float((weights * per).sum())
 
 
 def mixture_posterior(

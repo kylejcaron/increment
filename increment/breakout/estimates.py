@@ -77,14 +77,10 @@ from increment.estimation.engine import (
 from increment.estimation.engine import (
     merge_decision_computations as _merge_decision_computations,
 )
-from increment.estimation.family import (
-    BH_EXCLUDES_PRIOR,
-    decision_cells,
-    family_discovery,
-    select_family,
-)
+from increment.estimation.family import decision_cells, family_discovery, select_family
 from increment.estimation.inference import LiftGuardError, Prior
 from increment.estimation.meta import ESTIMATION_META_ALPHA_TOO_SMALL
+from increment.estimation.multiplicity import stamp_multiplicity_status
 from increment.estimation.priors import MixturePrior, StudentTPrior
 from increment.estimation.results import (
     BinomialConfidenceSet,
@@ -181,7 +177,6 @@ _REFUSALS["breakout.retention.unbounded"] = READOUT_REFUSALS["breakout.retention
 _REFUSALS["breakout.retention.completion"] = READOUT_REFUSALS["breakout.retention.completion"]
 _REFUSALS["estimation.meta.alpha_too_small"] = ESTIMATION_META_ALPHA_TOO_SMALL
 _REFUSALS["estimation.diagnostics.alpha"] = ESTIMATION_DIAGNOSTICS_ALPHA
-_REFUSALS["breakout.run_breakout_bh_excludes_prior"] = BH_EXCLUDES_PRIOR
 _refuse = raiser(_REFUSALS)
 
 
@@ -549,6 +544,43 @@ _FAMILY_VIEW_FIELDS = (
     "abs_reference_df",
     "abs_alpha",
     "prior_shrunk",
+    "sampling_available",
+    "sampling_reason_code",
+    "sampling_reason_context",
+    "posterior_available",
+    "posterior_reason_code",
+    "posterior_reason_context",
+    "posterior_model",
+    "posterior_scale",
+    "posterior_estimate",
+    "posterior_lb",
+    "posterior_ub",
+    "posterior_level",
+    "posterior_alpha",
+    "posterior_latent_mean",
+    "posterior_latent_sd",
+    "posterior_prob_favorable",
+    "posterior_components",
+    "prior_spec",
+    "failure_code",
+    "failure_context",
+    "source_snapshot_id",
+    "decision_scope_complete",
+    "decision_scope_reason_code",
+    "decision_scope_reason_context",
+    "family_id",
+    "multiplicity_status",
+    "weight_diagnostics_available",
+    "weight_diagnostics_reason_code",
+    "weight_diagnostics_reason_context",
+    "weight_definition",
+    "weight_grain",
+    "control_weight_ess",
+    "treatment_weight_ess",
+    "control_weight_max_share",
+    "treatment_weight_max_share",
+    "control_weight_n",
+    "treatment_weight_n",
 )
 
 
@@ -620,9 +652,11 @@ class BreakoutEstimate(_RowIdentity):
     abs_alpha: float | None = Field(default=None, gt=0.0, lt=1.0, allow_inf_nan=False)
     # Mirrors LiftEstimate.abs_alpha: the central-equivalent alpha of abs_lb/abs_ub.
     excluded: ExclusionReason | None = None
+    # Declared mixture prior, separate from posterior_components.
+    prior_spec: StudentTPrior | MixturePrior | None = None
+    # Historical prior-present marker; modern sampling/posterior availability fields
+    # determine which inference products are available.
     prior_shrunk: bool = False
-    # True when the cell was estimated under an informative prior: lift.log_mean/log_se are
-    # then the raw pre-prior statistics while value/lb/ub are the posterior (mirrors LiftEstimate).
 
     @model_validator(mode="after")
     def _lift_or_excluded(self):
@@ -919,7 +953,15 @@ def _append_frame_value(
     estimate_field: str | None,
     binomial_set_field: str | None,
 ) -> None:
-    if name == estimate_field:
+    if name == "posterior_components":
+        from increment._canonical import canonical_json_bytes
+
+        data[name].append(
+            None
+            if value is None
+            else canonical_json_bytes(value.model_dump(mode="json")).decode()
+        )
+    elif name == estimate_field:
         data[name].append(None if value is None else value.value)
         data["lb"].append(None if value is None else value.lb)
         data["ub"].append(None if value is None else value.ub)
@@ -1002,6 +1044,8 @@ def _copy_common_fields(source: LiftEstimate, /, **overrides: Any) -> dict[str, 
         "relative_unavailable_reason": source.relative_unavailable_reason,
         "sequential_result": source.sequential_result,
         "binomial_set": source.binomial_set,
+        "prior_spec": source.prior_spec,
+        "posterior_components": source.posterior_components,
         "estimand": source.estimand,
         "value_scale": source.value_scale,
         "note": source.note,
@@ -1126,6 +1170,7 @@ def to_frame[M: BaseModel](
                 "sequential_validity_regime",
                 "sequential_alpha",
                 "sequential_components",
+                "posterior_components",
                 "set_numerical_qualification",
             )
             else _scalar_dtype(model.model_fields[name].annotation)
@@ -1675,7 +1720,7 @@ def daily_sequential_projection(rows: Sequence[LiftEstimate]) -> DailyLiftEstima
                 family_nominal_alpha=row.family_nominal_alpha,
             )
         )
-    return DailyLiftEstimates(output)
+    return DailyLiftEstimates(stamp_multiplicity_status(output))
 
 
 def _relative_meta_moments(row: BreakoutEstimate) -> tuple[float | None, float | None]:
@@ -2392,6 +2437,7 @@ class _BreakoutContext(NamedTuple):
     methods: list[Method] | None
     methods_by_metric: Mapping[str, list[Method]] | None
     prior: Prior | None
+    prior_by_metric: Mapping[str, Prior | None] | None
     alpha: float
     alternative: str
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None
@@ -2730,11 +2776,12 @@ def _estimate_breakout_slice_metrics(  # noqa: PLR0915
                 metric.name, context.method_roles
             )
             resolved_roles = _derive_method_roles(configured, requested_roles)
+            metric_prior = (context.prior_by_metric or {}).get(metric.name, context.prior)
             mixed_groups = _mixed_binomial_method_groups(
                 metric,
                 configured,
                 inference=context.inference,
-                prior=context.prior,
+                prior=metric_prior,
             )
             groups = list(mixed_groups) if mixed_groups is not None else [configured]
             for group_index, method_group in enumerate(groups):
@@ -2762,7 +2809,7 @@ def _estimate_breakout_slice_metrics(  # noqa: PLR0915
                     metric=metric,
                     summary=method_rows,
                     control_group=context.control_group,
-                    prior=context.prior,
+                    prior=metric_prior,
                     alpha=context.alpha,
                     alternative=context.alternative,
                     methods=method_group,
@@ -2891,6 +2938,7 @@ class _BreakoutFamilyContext(NamedTuple):
     methods: list[Method] | None
     methods_by_metric: Mapping[str, list[Method]] | None
     prior: Prior | None
+    prior_by_metric: Mapping[str, Prior | None] | None
     alternative: str
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None
     method_roles_by_metric: Mapping[str, Mapping[str, Literal["decision", "sensitivity"]]] | None
@@ -2929,6 +2977,7 @@ def _apply_breakout_family_correction(
     methods = context.methods
     methods_by_metric = context.methods_by_metric
     prior = context.prior
+    prior_by_metric = context.prior_by_metric
     method_roles = context.method_roles
     alternative = context.alternative
     method_roles_by_metric = context.method_roles_by_metric
@@ -3006,7 +3055,7 @@ def _apply_breakout_family_correction(
             metrics=[metrics_by_name[metric_name]],
             summary=metric_rows,
             control_group=control_group,
-            prior=prior,
+            prior=(prior_by_metric or {}).get(metric_name, prior),
             alpha=_fcr_alpha_for(alternative, outcome.fcr_alpha),
             methods=[decision_method],
             alternative=alternative,
@@ -3138,7 +3187,7 @@ def _snapshot_breakout(
                 family_threshold=row.family_threshold,
             )
         )
-    return BreakoutEstimates(output)
+    return BreakoutEstimates(stamp_multiplicity_status(output))
 
 
 def run_breakout(  # noqa: PLR0913
@@ -3160,6 +3209,7 @@ def run_breakout(  # noqa: PLR0913
     method_roles_by_metric: Mapping[str, Mapping[str, Literal["decision", "sensitivity"]]]
     | None = None,
     methods_by_metric: Mapping[str, list[Method]] | None = None,
+    _prior_by_metric: Mapping[str, Prior | None] | None = None,
     policy_name: Literal["compiled_plan", "default_exploratory"] = "default_exploratory",
 ) -> BreakoutEstimates:
     """Estimate lift for every distinct value of a dimension. Partitions
@@ -3188,7 +3238,7 @@ def run_breakout(  # noqa: PLR0913
         roster and current/frozen likelihood, including missing cells with
         log evidence -infinity. Fixed-horizon inputs retain the present-row
         family and require complete p-value evidence. Every row is exploratory.
-        Posterior effect priors are excluded from family testing.
+        Informative priors remain separate from the sampling evidence used for selection.
     q : float
         FDR level for ``correction="bh"``'s family selection. Unused
         otherwise.
@@ -3216,8 +3266,6 @@ def run_breakout(  # noqa: PLR0913
     """
     if correction not in ("none", "bonferroni", "bh"):
         _refuse("breakout.run_breakout_correction", correction=correction)
-    if correction == "bh" and prior is not None:
-        _refuse("breakout.run_breakout_bh_excludes_prior")
     if methods is not None and not methods:
         _refuse("breakout.run_breakout_methods")
     if inference is not None:
@@ -3262,6 +3310,7 @@ def run_breakout(  # noqa: PLR0913
         methods_by_metric=methods_by_metric,
         inference=inference,
         prior=prior,
+        prior_by_metric=_prior_by_metric,
     )
     frame = nw.from_native(summary, eager_only=True, pass_through=True)
     if isinstance(frame, nw.DataFrame):
@@ -3304,6 +3353,7 @@ def run_breakout(  # noqa: PLR0913
             methods,
             methods_by_metric,
             prior,
+            _prior_by_metric,
             alpha_seg,
             alternative,
             inference,
@@ -3345,6 +3395,7 @@ def run_breakout(  # noqa: PLR0913
         methods,
         methods_by_metric,
         prior,
+        _prior_by_metric,
         alternative,
         method_roles,
         method_roles_by_metric,
@@ -3353,7 +3404,7 @@ def run_breakout(  # noqa: PLR0913
     if policy_name != "default_exploratory":
         results = [row.model_copy(update={"policy_name": policy_name}) for row in results]
 
-    output = BreakoutEstimates(results)
+    output = BreakoutEstimates(stamp_multiplicity_status(results))
     return output
 
 
@@ -4340,5 +4391,7 @@ def run_daily_lift(  # noqa: PLR0913
             )
         )
     return DailyLiftEstimates(
-        _stamp_asof_monitoring_notes(results, view=view, inference=inference, design=design)
+        stamp_multiplicity_status(
+            _stamp_asof_monitoring_notes(results, view=view, inference=inference, design=design)
+        )
     )

@@ -26,16 +26,30 @@ class MetricRows:
     evidence_count: int
 
 
-def _frame_digest(native):
-    import narwhals as nw
-
+def _frame_digest_and_arms(frame):
     from increment.estimation.readout_types import StreamingDigest
 
     digest = StreamingDigest()
-    frame = nw.from_native(native, eager_only=True)
+    arms = set()
     for row in frame.iter_rows(named=True):
         digest.update(row)
-    return digest.hexdigest(), digest.count
+        group_id = row.get("group_id")
+        if group_id is not None:
+            arms.add(str(group_id))
+    return frozenset(arms), digest.hexdigest(), digest.count
+
+
+def _rows_digest_and_arms(rows):
+    from increment.estimation.readout_types import StreamingDigest
+
+    digest = StreamingDigest()
+    arms = set()
+    for row in rows:
+        digest.update(row)
+        group_id = row.get("group_id")
+        if group_id is not None:
+            arms.add(str(group_id))
+    return frozenset(arms), digest.hexdigest(), digest.count
 
 
 def _rows_digest(rows):
@@ -65,12 +79,9 @@ def _load_metric_rows(
         # Reuse this capture so the aggregate arm gate does not trigger another read.
         raw_source = cast("RawOutcomeSource", src)
         native = raw_source.unit_frame(metric, outcome_stage="raw")
-
         frame = nw.from_native(native, eager_only=True)
-        evidence_sha256, evidence_count = _frame_digest(native)
-        observed = frozenset(
-            str(group) for group in frame["group_id"].unique().to_list() if group is not None
-        )
+
+        observed, evidence_sha256, evidence_count = _frame_digest_and_arms(frame)
         if not observed - {str(control_group)}:
             return MetricRows(
                 rows=(),
@@ -113,10 +124,7 @@ def _load_metric_rows(
 
         native = src.unit_frame(metric)
         frame = nw.from_native(native, eager_only=True)
-        evidence_sha256, evidence_count = _frame_digest(native)
-        observed = frozenset(
-            str(group) for group in frame["group_id"].to_list() if group is not None
-        )
+        observed, evidence_sha256, evidence_count = _frame_digest_and_arms(frame)
         return MetricRows(
             rows=(),
             unit_frame=native,
@@ -128,8 +136,7 @@ def _load_metric_rows(
         )
     _refuse_unsupported_by(metric, by)
     rows = cast("list[Mapping[str, Any]]", src.moments(metric, grain="total", by=by))
-    observed = frozenset(str(r["group_id"]) for r in rows if r.get("group_id") is not None)
-    evidence_sha256, evidence_count = _rows_digest(rows)
+    observed, evidence_sha256, evidence_count = _rows_digest_and_arms(rows)
     return MetricRows(
         rows=tuple(rows),
         unit_frame=None,

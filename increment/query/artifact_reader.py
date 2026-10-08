@@ -833,6 +833,9 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 self._source_context = _artifact_source_context(self._manifest.context)[1]
                 return self._source_context
             specs = self._metric_specs()
+            from increment.query.source import _artifact_source_context
+
+            experiment, _ = _artifact_source_context(self._manifest.context)
             metrics = tuple(self._trusted_metric(spec) for spec in specs)
             from increment._analysis_config import resolve_configs
             from increment.plan import compile_decision_plan
@@ -851,6 +854,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
                     prior=None,
                 ),
                 cluster=None,
+                trigger_name=experiment.trigger,
             )
         assert self._source_context is not None
         return self._source_context

@@ -573,6 +573,30 @@ class TestRefusalMatrix:
         assert result.abs_diff == pytest.approx(4)
         assert result.abs_lb is not None and result.abs_lb > 0
 
+    def test_set_only_relative_readout_keeps_confidence_evidence_without_posterior_stats(self):
+        from increment.tables import estimates_to_readout
+
+        table = pa.table(
+            {
+                "user_id": [f"u{i}" for i in range(6)],
+                "variant": ["T", "T", "T", "C", "C", "C"],
+                "revenue": [3.0, 5.0, 4.0, 0.0, 0.0, 0.0],
+                "x": [1.0] * 6,
+            }
+        )
+        (result,) = estimate_ate(
+            _src(table), _DESIGN, methods=[Method(name="iptw")]
+        ).results
+
+        (readout,) = estimates_to_readout([result])
+
+        assert result.lift is None
+        assert result.relative_confidence_set is not None
+        assert readout["relative_confidence_set"] == result.relative_confidence_set
+        assert readout["stat_sig"] is True
+        assert readout["chance_to_beat (advisory)"] is None
+        assert readout["risk_if_shipped (advisory)"] is None
+
     @pytest.mark.parametrize(
         "mapping",
         [

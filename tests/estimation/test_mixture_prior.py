@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import numpy as np
 import pytest
 
@@ -302,24 +303,32 @@ def _mixture_lift(alpha=0.05, alternative="two-sided"):
 
 
 class TestInferLiftMixture:
-    def test_interval_is_mixture_quantiles(self):
+    def test_sampling_interval_and_mixture_posterior_quantiles_are_separate(self):
         est = _mixture_lift()
-        assert est.require_lift().value == pytest.approx(0.1538506996, abs=1e-6)
-        assert est.require_lift().lb == pytest.approx(0.0484573187, abs=1e-6)
-        assert est.require_lift().ub == pytest.approx(0.2812695873, abs=1e-6)
+        assert est.require_lift().value == pytest.approx(0.2214027582, abs=1e-9)
+        assert est.require_lift().lb == pytest.approx(0.1073854659, abs=1e-9)
+        assert est.require_lift().ub == pytest.approx(0.3471593619, abs=1e-9)
+        assert est.posterior_estimate == pytest.approx(0.1538506996, abs=1e-6)
+        assert est.posterior_lb == pytest.approx(0.0484573187, abs=1e-6)
+        assert est.posterior_ub == pytest.approx(0.2812695873, abs=1e-6)
 
     def test_raw_sufficient_statistics_stay_raw(self):
         est = _mixture_lift()
         assert est.require_lift().log_mean == pytest.approx(0.20, abs=1e-12)
         assert est.require_lift().log_se == pytest.approx(0.05, abs=1e-12)
 
-    def test_prior_spec_persists_the_declaration(self):
-        # The spec is the three-field declaration, not the 80-component
-        # expansion - stored artifacts must not bake in today's K or quadrature scheme.
-        est = _mixture_lift()
-        assert est.prior_spec == StudentTPrior(nu=4.0, scale=0.05)
+    def test_prior_spec_stays_declared_and_posterior_components_are_separate(self):
+        prior = StudentTPrior(nu=4.0, scale=0.05)
+        estimate = _mixture_lift()
+        posterior = mixture_posterior(
+            estimate.require_lift().log_mean, estimate.require_lift().log_se, prior.components()
+        )
+        assert estimate.prior_spec == prior
+        assert estimate.posterior_components.weights == tuple(float(w) for w in posterior.weights)
+        assert estimate.posterior_components.means == tuple(float(x) for x in posterior.means)
+        assert estimate.posterior_components.sigmas == tuple(float(x) for x in posterior.sigmas)
 
-    def test_raw_mixture_prior_is_persisted_verbatim(self):
+    def test_raw_mixture_prior_remains_declared_and_posterior_state_is_exact(self):
         prior = MixturePrior(weights=(0.7, 0.3), means=(0.0, 0.0), sigmas=(0.01, 0.08))
         est = infer_lift(
             metric="m",
@@ -331,7 +340,72 @@ class TestInferLiftMixture:
             se_c=0.04,
             prior=prior,
         )
+        posterior = mixture_posterior(
+            est.require_lift().log_mean, est.require_lift().log_se, prior
+        )
         assert est.prior_spec == prior
+        assert est.posterior_components.weights == tuple(float(w) for w in posterior.weights)
+        assert est.posterior_components.means == tuple(float(x) for x in posterior.means)
+        assert est.posterior_components.sigmas == tuple(float(x) for x in posterior.sigmas)
+
+    def test_zero_weight_posterior_component_retains_original_position(self):
+        prior = MixturePrior(
+            weights=(0.5, 0.5), means=(0.0, 10.0), sigmas=(0.01, 0.01)
+        )
+        estimate = infer_lift(
+            metric="m",
+            group_id="T",
+            method="unadjusted",
+            method_role="decision",
+            log_rr=0.0,
+            se_t=0.03,
+            se_c=0.04,
+            prior=prior,
+        )
+        posterior = mixture_posterior(
+            estimate.require_lift().log_mean, estimate.require_lift().log_se, prior
+        )
+        assert posterior.weights[1] == 0.0
+        assert estimate.posterior_components.weights == tuple(float(w) for w in posterior.weights)
+        assert estimate.posterior_components.means == tuple(float(x) for x in posterior.means)
+        assert estimate.posterior_components.sigmas == tuple(float(x) for x in posterior.sigmas)
+
+    def test_zero_mass_overflow_component_does_not_poison_posterior_risk(self):
+        prior = MixturePrior(
+            weights=(0.5, 0.5), means=(0.0, 2000.0), sigmas=(0.02, 0.02)
+        )
+        estimate = infer_lift(
+            metric="m",
+            group_id="T",
+            method="unadjusted",
+            method_role="decision",
+            log_rr=0.0,
+            se_t=0.24,
+            se_c=0.32,
+            prior=prior,
+        )
+        lift = estimate.require_lift()
+        posterior = mixture_posterior(lift.log_mean, lift.log_se, prior)
+        assert posterior.weights[1] == 0.0
+        assert posterior.means[1] > 709.0
+        assert estimate.posterior_components.weights == tuple(float(w) for w in posterior.weights)
+        assert estimate.posterior_components.means == tuple(float(x) for x in posterior.means)
+        assert estimate.posterior_components.sigmas == tuple(float(x) for x in posterior.sigmas)
+        active = posterior.weights > 0.0
+        effective = MixturePosterior(
+            weights=posterior.weights[active],
+            means=posterior.means[active],
+            sigmas=posterior.sigmas[active],
+        )
+        assert math.isfinite(estimate.risk_if_shipped())
+        assert estimate.risk_if_shipped() == pytest.approx(
+            effective.expected_negative_part(scale="log")
+        )
+        unfavorable = estimate.model_copy(update={"preferred_direction": "decrease"})
+        assert unfavorable.risk_if_shipped_favorable() == pytest.approx(
+            effective.expected_positive_part(scale="log")
+        )
+
 
     def test_normal_prior_does_not_stamp_prior_spec(self):
         from increment.estimation.inference import Normal

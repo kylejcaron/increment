@@ -9,7 +9,7 @@ from increment.breakout.estimates import LiftEstimates, reject_quantile_metrics
 from increment.estimation.adjust import observational_evidence
 from increment.estimation.assignment_integrity import assignment_integrity
 from increment.estimation.engine import Method
-from increment.estimation.results import LiftEstimate
+from increment.estimation.readout_types import CellKey, ReadoutScope, cell_order, freeze
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import (
     SEQUENTIAL_POLICIES,
@@ -17,7 +17,6 @@ from increment.estimation.sequential import (
     AsymptoticMean,
     MixedFamily,
 )
-from increment.estimation.readout_types import freeze
 from increment.readouts._common import (
     _raise,
     _refuse_if_no_treatment_arm,
@@ -27,6 +26,7 @@ from increment.readouts._common import (
 )
 from increment.readouts._encouragement import encouragement_rows
 from increment.readouts._metric_rows import _load_metric_rows
+from increment.readouts._multiplicity_scope import attach_multiplicity_scope
 from increment.readouts._observational import _estimate_observational
 from increment.readouts._passes import _raise_if_all_lift_cells_refused
 from increment.readouts._randomized import (
@@ -77,8 +77,8 @@ def run(
     AlwaysValid plan, registered raw likelihood evidence drives `e_bh_select`.
     Selected intervals are reinverted at the capped FCR allocation from the
     same stopped checkpoint; unselected cells retain their nominal intervals.
-    A non-family secondary (prior-bound, or a quantile metric under an
-    AlwaysValid plan) estimates once at nominal, with no discovery verdict.
+    A non-family secondary (explicitly outside the declared family, or a
+    quantile metric under an AlwaysValid plan) estimates once at nominal, with no discovery verdict.
 
     Under Encouragement, dispatches to encouragement_rows, which delegates
     per metric group to estimate_encouragement instead of estimate_lift;
@@ -298,21 +298,19 @@ def _scoped_randomized_results(
     population,
 ):
     """Attach the complete randomized arm roster and captured cell outcomes."""
-    from increment.readouts._common import _runtime_method_roles
     from increment.estimation.readout_types import (
         CellFailure,
-        CellKey,
         PopulationRoster,
         ReadoutMetadata,
-        ReadoutScope,
         SourceReadoutScope,
-        cell_order,
     )
-    from increment.readouts._design_scope import resolve_roster
+    from increment.readouts._common import _runtime_method_roles
+    from increment.readouts._design_scope import _roster_evidence_arms, resolve_roster
 
     roster_arms, roster_source, roster_complete, assignment_counts, integrity_counts = (
         resolve_roster(src, design, population, observed_by_metric)
     )
+    known_roster_arms = _roster_evidence_arms(observed_by_metric, assignment_counts)
     source = _randomized_source(selected, evidence_components, assignment_counts, population)
     request = {
         "view": "run",
@@ -327,6 +325,10 @@ def _scoped_randomized_results(
             name: value.model_dump(mode="json") for name, value in plan.procedures.items()
         },
     }
+    trigger_name = src.context.trigger_name
+    if trigger_name is not None:
+        request["trigger_declared"] = True
+        request["trigger_name"] = trigger_name
     snapshot_id = _randomized_snapshot_id(source, request)
 
     failure_by_cell = {}
@@ -384,9 +386,14 @@ def _scoped_randomized_results(
             )
         elif group_id not in observed_by_metric.get(metric_name, set()):
             observed = sorted(observed_by_metric.get(metric_name, set()))
+            code = (
+                "readout.cell.missing_metric_observations"
+                if group_id in known_roster_arms
+                else "readout.cell.missing_arm"
+            )
             cell_failures[cell] = CellFailure(
                 hypothesis=cell.hypothesis(),
-                code="readout.cell.missing_arm",
+                code=code,
                 context={
                     "metric": metric_name,
                     "group_id": group_id,
@@ -423,6 +430,7 @@ def _scoped_randomized_results(
                 value_scale=cell.value_scale,
                 alternative=cell.alternative,
                 inference=cell.inference,
+                role=plan.procedures[cell.metric].role if plan.declared else None,
                 lift=None,
                 failure_code=failure.code,
                 failure_context=failure.context,
@@ -478,12 +486,13 @@ def _scoped_randomized_results(
         decision_complete_by_population={population: complete},
         integrity=(integrity,),
     )
+    output, families = attach_multiplicity_scope(output, ordered_cells, plan, configs, snapshot_id)
     scope = ReadoutScope(
         snapshot_id=snapshot_id,
         cells=ordered_cells,
         decision_cells=ordered_decisions,
         populations=(population,),
-        families=(),
+        families=families,
         by_source={snapshot_id: source_scope},
     )
     metadata = ReadoutMetadata(scope=scope, cells=tuple(records))
@@ -518,7 +527,6 @@ def _run_prepared(
             source_snapshot(src),
             metrics=[metric.name for metric in selected],
             estimands=estimands,
-            triggered_declared=False,
         )
     call_prior = cast("Prior | None", None if prior is UNSET else prior)
     cluster = src.context.cluster
@@ -587,6 +595,7 @@ def _run_prepared(
             plan,
             rows,
             capture.get("computations", []),
+            configs=configs,
             population=population,
             expected_for=lambda arms: encouragement_expected(
                 selected,
@@ -638,6 +647,7 @@ def _run_prepared(
             plan,
             rows,
             obs_computations,
+            configs=configs,
             population=population,
             expected_for=lambda arms: observational_expected(
                 selected, configs, design, plan, value_scale=value_scale, arms=arms

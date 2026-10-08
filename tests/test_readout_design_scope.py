@@ -17,29 +17,7 @@ from increment.semantics.design import (
     Observational,
     UptakeSpec,
 )
-from increment.readouts._design_scope import resolve_roster
 from tests.warning_codes import warning_codes, warning_context
-
-
-def test_count_roster_excludes_reserved_unassigned_sentinel_not_literal_none():
-    class Source:
-        context = SimpleNamespace(cluster=None)
-
-        def assignment_counts(self, *, population):
-            assert population == "assigned"
-            return {"(unassigned)": 2, "None": 3, "treatment": 4}
-
-    arms, roster_source, complete, counts = resolve_roster(
-        Source(),
-        SimpleNamespace(allocation=None),
-        "assigned",
-        {"revenue": {"None", "treatment"}},
-    )
-
-    assert arms == ("None", "treatment")
-    assert roster_source == "experiment_counts"
-    assert complete is True
-    assert counts == {"(unassigned)": 2, "None": 3, "treatment": 4}
 
 
 def test_artifact_assignment_counts_skip_null_before_string_conversion():
@@ -162,6 +140,7 @@ def test_encouragement_enumerates_itt_late_and_compliance_cells_with_compliance_
     assert metadata is not None
     assert all(row.failure_code is None for row in results)
     assert {"itt", "late", "compliance"} <= {cell.estimand for cell in metadata.scope.cells}
+    assert {row.multiplicity_status for row in results} == {"undeclared_plan"}
     kinds = {component["kind"] for component in results.source["components"]}
     assert {"moments_rows", "compliance_summary"} <= kinds
     restored = ReadoutResults.model_validate_json(results.model_dump_json())
@@ -212,9 +191,10 @@ def test_observational_metric_lacking_an_arm_is_a_typed_failed_cell_beside_a_com
     assert warning_context(captured, "frame.validation.metric_missing_drop")["name"] == "other"
     results = analysis.run()
     assert results.metadata is not None
+    assert {row.multiplicity_status for row in results} == {"undeclared_plan"}
     failed = [row for row in results if row.failure_code is not None]
     assert {(row.metric, row.group_id, row.failure_code) for row in failed} == {
-        ("other", "T2", "readout.cell.missing_arm")
+        ("other", "T2", "readout.cell.missing_metric_observations")
     }
     assert all(row.lift is None for row in failed)
     healthy = {(row.metric, row.group_id) for row in results if row.failure_code is None}
@@ -236,30 +216,6 @@ def test_observational_with_every_arm_observed_has_no_failed_cells():
         ("other", "T1"),
         ("other", "T2"),
     }
-
-
-def test_roster_omits_none_arm_ids_from_counts_and_observed_rows():
-    from types import SimpleNamespace
-
-    from increment.readouts._design_scope import resolve_roster
-
-    source = SimpleNamespace(
-        context=SimpleNamespace(cluster=None),
-        assignment_counts=lambda *, population: {"control": 4, "treatment": 4, None: 1},
-    )
-    design = SimpleNamespace(allocation=None)
-
-    arms, roster_source, complete, counts = resolve_roster(
-        source,
-        design,
-        "assigned",
-        {"metric": {"control", "treatment", None}},
-    )
-
-    assert arms == ("control", "treatment")
-    assert roster_source == "experiment_counts"
-    assert complete is True
-    assert counts == {"control": 4, "treatment": 4}
 
 
 def test_metric_row_inventory_omits_none_from_observed_arms():

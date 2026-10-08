@@ -932,6 +932,12 @@ def test_clustered_artifact_run_integrity_uses_randomization_unit_counts(tmp_pat
     (integrity,) = next(iter(results.metadata.scope.by_source.values())).integrity
     assert integrity.randomization_grain == "cluster"
     assert integrity.observed == {"C": 25, "T": 25}
+    assert integrity.expected == {"C": 0.5, "T": 0.5}
+    assert any(
+        component["kind"] == "assignment_counts"
+        and component["population"] == "assigned"
+        for component in results.source["components"]
+    )
     assert integrity.status == "not_rejected"
     adopted.close()
     native.close()

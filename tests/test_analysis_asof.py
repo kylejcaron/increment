@@ -1865,6 +1865,19 @@ def test_run_daily_lift_returns_nan_for_day_missing_control_arm(con):
     assert day1.metric == "revenue"
     assert day1.group_id == "treatment"
     assert day1.lift is None
+    assert day1.unavailable == "no_control_arm"
+    assert DailyLiftEstimate.model_validate_json(day1.model_dump_json()) == day1
+
+    frame = results.to_frame()
+    day1_frame = frame[frame["ds"].dt.date == date(2025, 6, 1)]
+    assert len(day1_frame) == 1 and day1_frame["lift"].isna().all()
+    from increment.tables import estimates_to_readout
+
+    rendered = {
+        row["ds"]: row for row in estimates_to_readout(results)
+    }
+    assert rendered[date(2025, 6, 1)]["unavailable"] == "no_control_arm"
+    assert rendered[date(2025, 6, 1)]["lift"] is None
 
     day2 = by_day[date(2025, 6, 2)]
     assert isinstance(day2, DailyLiftEstimate)
@@ -1873,6 +1886,7 @@ def test_run_daily_lift_returns_nan_for_day_missing_control_arm(con):
     assert day2.require_lift().value > 0, (
         "day 2 treatment (21) > control (11) -- expected positive lift"
     )
+    assert rendered[date(2025, 6, 2)]["lift"] is not None
 
 
 def _analysis_with_daily_ratio_metric_window_dilution(con):

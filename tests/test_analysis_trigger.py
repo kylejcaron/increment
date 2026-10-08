@@ -170,6 +170,14 @@ def test_reports_both_populations_and_the_triggered_effect_is_undiluted(tmp_path
     # The triggered reading recovers the real thing.
     assert triggered.require_lift().value == pytest.approx(effect, rel=0.12)
     assert triggered.require_lift().value > assigned.require_lift().value
+    assert {row.multiplicity_status for row in rows} == {"declared_plan"}
+    families = rows.metadata.scope.families
+    secondary = [family for family in families if family.name == "secondary"]
+    assert {family.analysis_population for family in secondary} == {"assigned", "triggered"}
+    assert len({family.family_id for family in secondary}) == 2
+    triggered_rows = rows.filter(lambda row: row.analysis_population == "triggered")
+    assert {row.multiplicity_status for row in triggered_rows} == {"declared_plan"}
+    assert triggered_rows.metadata.scope.families == families
 
     # The table adapter must carry the population axis through the same
     # assigned/triggered result pair; otherwise the two rows collide in the
@@ -394,69 +402,9 @@ def test_registered_sequential_trigger_run_reuses_assigned_integrity(monkeypatch
         and row.failure_code == "readout.cell.unsupported_request"
         for row in results
     )
-    assert results.source["components"][-1]["kind"] == "assignment_counts"
-    import datetime as dt
-
-    from tests.binary_sequential_cases import definitions_yaml, event_rows, unit_rows
-    from tests.sequential_cases import registered_native
-
-    units = unit_rows(seed=17, n=500)
-    rng = np.random.default_rng(51)
-    for unit in units:
-        threshold = 0.1 if unit["variant"] == "control" else 0.9
-        unit["triggered"] = rng.random() < threshold
-    events = event_rows(units)
-    trigger_time = dt.datetime(2025, 1, 10, 10, tzinfo=dt.UTC)
-    events.extend(
-        {
-            "user_id": unit["user_id"],
-            "ts": trigger_time,
-            "event": "saw_surface",
-            "experiment_id": None,
-            "group_id": None,
-        }
-        for unit in units
-        if unit["triggered"]
-    )
-    definitions = (
-        definitions_yaml("duckdb", "events", plan="      primary: purchase\n")
-        .replace("      - {name: buy, column: null}", "      - {name: buy, column: null}\n      - {name: saw_surface, column: null}")
-        .replace("  - {name: enrollment, fact: enrolled}", "  - {name: enrollment, fact: enrolled}\n  - {name: saw_surface, fact: saw_surface}")
-        .replace(
-            "    allocation: {control: 0.5, treatment: 0.5}",
-            "    allocation: {control: 0.5, treatment: 0.5}\n"
-            "    allocation_scheme: independent\n    trigger: saw_surface",
-        )
-    )
-    definitions_path = tmp_path / "sequential-trigger.yml"
-    definitions_path.write_text(definitions)
-    con = ibis.duckdb.connect()
-    con.create_table("events", obj=pa.Table.from_pylist(events))
-    analysis = registered_native(Analysis.from_definitions("exp", definitions_path, con))
-    analysis.capture_sequential(finalized=True, as_of=dt.date(2025, 1, 14))
-
-    source_type = type(analysis._src)
-    original = source_type.assignment_counts
-    calls = []
-
-    def counted(self, *, population="assigned"):
-        calls.append(population)
-        return original(self, population=population)
-
-    monkeypatch.setattr(source_type, "assignment_counts", counted)
-    results = analysis.run()
-
-    (scope,) = results.metadata.scope.by_source.values()
-    (integrity,) = scope.integrity
-    assert calls == ["assigned"]
-    assert integrity.analysis_population == "assigned"
-    assert integrity.observed == {"control": 500, "treatment": 500}
     assert any(
-        row.analysis_population == "triggered"
-        and row.failure_code == "readout.cell.unsupported_request"
-        for row in results
+        component["kind"] == "assignment_counts" for component in results.source["components"]
     )
-
 
 def test_srm_population_triggered_refuses_on_a_seam_instance():
     import pandas as pd

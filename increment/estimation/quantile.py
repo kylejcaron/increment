@@ -743,10 +743,9 @@ def estimate_quantile_lift(
             if _QUANTILE_SUPPORTS_WELCH_REFERENCE
             else None
         )
-        # Inverting the bracket construction gives an alpha-free p-value, so multiplicity
-        # reallocation cannot move it. The inversion ignores priors; with a prior, leave it
-        # unset so p_value() uses the prior-aware Normal-posterior branch.
-        p_value = _inverted_p_value(control, treatment, null=0.0) if prior is None else None
+        # Quantile inversion is sampling evidence; its construction is independent
+        # of the separately stored posterior.
+        p_value = _inverted_p_value(control, treatment, null=0.0)
         for m in methods:
             est = infer_lift(
                 metric=metric.name,

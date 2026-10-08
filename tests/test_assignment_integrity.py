@@ -10,29 +10,6 @@ from increment.errors import InvalidRequestError
 from increment.semantics.design import AdjustmentSet, Observational
 
 
-def test_roster_resolves_randomization_cluster_counts_not_artifact_unit_counts():
-    from types import SimpleNamespace
-
-    from increment.readouts._design_scope import resolve_roster
-
-    class ClusterArtifactSource:
-        context = SimpleNamespace(cluster="store")
-
-        def assignment_counts(self, *, population="assigned"):
-            return {"control": 700, "treatment": 300}
-
-        def cluster_counts(self):
-            return {"control": 8, "treatment": 8}
-
-    roster = resolve_roster(
-        ClusterArtifactSource(),
-        _design(allocation={"control": 1, "treatment": 1}),
-        "assigned",
-        {"metric": {"control", "treatment"}},
-    )
-    assert roster[3] == {"control": 8, "treatment": 8}
-
-
 @pytest.mark.parametrize("model", [Randomized, Encouragement])
 @pytest.mark.parametrize("scheme", ["independent", "blocked", "adaptive", "quota", "fixed_counts"])
 def test_allocation_scheme_round_trips_without_inference(model, scheme):

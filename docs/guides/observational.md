@@ -947,8 +947,8 @@ designs only) cannot read covariates from an artifact; use `from_definitions`.
     decision methods are examined: a sensitivity method such as `unadjusted`
     does not prevent the refusal.
   - A ratio metric that is a member of a Benjamini-Hochberg (`bh`) or e-BH
-    (`e_bh`) family without an informative prior raises it at entry with
-    that family named in the context, even when other metrics in the request
+    (`e_bh`) family raises it at entry, whether or not an informative prior
+    is declared, with that family named in the context, even when other metrics
     are supported.
   - In other mixed metric lists, each unsupported pairing of a ratio metric
     with an IPTW, DML, or AIPW method is skipped with a warning

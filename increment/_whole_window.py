@@ -168,17 +168,6 @@ class WholeWindowReadouts:
                 prior=req.prior,
                 value_scale=req.value_scale,
             )
-            if self._experiment is not None and self._experiment.trigger is not None:
-                from increment.readouts._sequential_scope import scope_sequential_results
-
-                result = scope_sequential_results(
-                    self._src,
-                    result,
-                    result.sequential_snapshot,
-                    metrics=[m.name for m in req.metrics],
-                    estimands=req.estimands,
-                    triggered_declared=True,
-                )
             return result
         design_summary_only = _design_compliance_only(self._src, req.estimands)
         if not req.metrics and not design_summary_only:

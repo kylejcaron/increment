@@ -99,16 +99,8 @@ def _partition_secondary_family(
     list[tuple[Metric, ResolvedMetricConfig, Any, bool, list[Method]]],
     list[tuple[Metric, ResolvedMetricConfig, Any, bool, list[Method]]],
 ]:
-    family = [
-        entry
-        for entry in entries
-        if getattr(entry[2].family, "member", False) and entry[1].prior is None
-    ]
-    non_family = [
-        entry
-        for entry in entries
-        if not getattr(entry[2].family, "member", False) or entry[1].prior is not None
-    ]
+    family = [entry for entry in entries if getattr(entry[2].family, "member", False)]
+    non_family = [entry for entry in entries if not getattr(entry[2].family, "member", False)]
     return family, non_family
 
 
@@ -123,7 +115,7 @@ def _load_family_rows(
     """Each secondary's rows, and the smallest level the family can decide a p-value at.
 
     That level is the plan's ``q`` over every hypothesis the family tests (the metric x treatment
-    arm cells of its members: a prior-bound or non-member secondary is not one); a conversion
+    arm cells of its members: an explicit non-member secondary is not one); a conversion
     decision row is routed at it, so its p-value is never read at a tail it is not dense for.
     A quantile metric is refused before any data is read."""
     loaded: dict[str, Any] = {}
@@ -136,7 +128,7 @@ def _load_family_rows(
     hypotheses = sum(
         loaded[metric.name].n_treatment_arms
         for metric, config, test, *_ in secondary_entries
-        if getattr(test.family, "member", False) and config.prior is None
+        if getattr(test.family, "member", False)
     )
     return loaded, family_route_alpha(plan.q, hypotheses)
 
@@ -251,9 +243,7 @@ def _estimate_randomized_secondary_family(
     refused_cells: list[tuple[str, str, str, str]] = []
     loaded, route_alpha = _load_family_rows(src, secondary_entries, design, plan, by=by)
     for metric, config, test, is_quantile, _metric_methods in secondary_entries:
-        member_route_alpha = (
-            route_alpha if getattr(test.family, "member", False) and config.prior is None else None
-        )
+        member_route_alpha = route_alpha if getattr(test.family, "member", False) else None
         metric_rows = loaded[metric.name]
         rows, metric_observed, evidence_component, observed_groups = _secondary_source_rows(
             metric_rows, is_quantile, design.control_group
@@ -279,10 +269,7 @@ def _estimate_randomized_secondary_family(
                 inference=effective_inference,
                 advisory_seen=advisory_seen,
                 retry=(
-                    "family"
-                    if is_quantile
-                    or (getattr(test.family, "member", False) and config.prior is None)
-                    else "cells"
+                    "family" if is_quantile or getattr(test.family, "member", False) else "cells"
                 ),
                 methods=_metric_methods,
                 route_alpha=None if is_quantile else member_route_alpha,

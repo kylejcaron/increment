@@ -19,6 +19,8 @@ from increment.estimation.results import (
     _fcr_alpha_for,
     open_bound_from_two_sided_at_target,
 )
+from increment.errors import refuse
+from increment.estimation._adjust.common import SUPPORTED_RATIO_METRIC
 from increment.readouts._common import (
     _raise,
     _runtime_method_roles,
@@ -84,6 +86,21 @@ def _estimate_observational(
     methods_by_metric = {
         metric.name: _runtime_methods(config_by_name[metric.name], design) for metric in selected
     }
+    for metric in selected:
+        if metric.type != "ratio":
+            continue
+        role = plan.procedures[metric.name].role
+        for method in methods_by_metric[metric.name]:
+            if method.name not in {"aipw", "dml", "iptw"}:
+                continue
+            refuse(
+                SUPPORTED_RATIO_METRIC,
+                method=method.name,
+                metric=metric.name,
+                role=role,
+                family="secondary" if role == "secondary" else None,
+                correction="bh" if role == "secondary" else None,
+            )
     selected = [metric for metric in selected if methods_by_metric[metric.name]]
     non_secondary = [m for m in selected if plan.procedures[m.name].role != "secondary"]
     secondary = [m for m in selected if plan.procedures[m.name].role == "secondary"]
@@ -168,14 +185,14 @@ def _estimate_observational_secondary_family(
     """Nominal pass at plan.alpha, BH-select at plan.q, FCR-reestimate the
     selected cells -- the observational sibling of
     _estimate_randomized_secondary_family, built on estimate_ate's own
-    DecisionComputation[LiftEstimate] return value. Every secondary joins
-    the family unless its config carries an informative prior (the same
-    exemption randomized secondaries use).
+    DecisionComputation[LiftEstimate] return value. Membership follows the declared plan.
     """
     from increment.decision import ArmHypothesisKey
 
-    family = [m for m in secondary if config_by_name[m.name].prior is None]
-    non_family = [m for m in secondary if config_by_name[m.name].prior is not None]
+    family = [m for m in secondary if getattr(plan.procedures[m.name].family, "member", False)]
+    non_family = [
+        m for m in secondary if not getattr(plan.procedures[m.name].family, "member", False)
+    ]
     roles_by_metric = {
         metric.name: _runtime_method_roles(methods_by_metric[metric.name]) for metric in secondary
     }

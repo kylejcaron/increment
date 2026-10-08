@@ -87,7 +87,7 @@ def _view_policies() -> CompiledViewPolicies:
 @pytest.mark.parametrize(
     ("bound_prior", "named_family", "expected_discovery"),
     [(True, True, True), (True, False, None), (False, True, None)],
-    ids=["prior-exclusion", "explicit-no-family", "prior-free-exclusion"],
+    ids=["legacy-bound-prior-restored", "explicit-no-family", "prior-free-exclusion"],
 )
 def test_portable_prior_reset_restores_declared_family(
     tmp_path, bound_prior, named_family, expected_discovery

@@ -1256,8 +1256,8 @@ def test_run_composes_cuped_with_prior(informative_prior_summary_frame):
         analysis.run(decision_method=cuped_method[0], prior=Normal(mu=0.0, sigma=0.01))
     )[0]
 
-    assert cuped.require_lift().value < unadjusted.require_lift().value
-    assert abs(shrunk.require_lift().value) < abs(cuped.require_lift().value)
+    assert shrunk.require_lift() == cuped.require_lift()
+    assert shrunk.posterior_estimate != pytest.approx(cuped.require_lift().value)
 
 
 def test_run_per_metric_declared_priors_shrink_independently(informative_prior_summary_frame):
@@ -1291,9 +1291,8 @@ def test_run_per_metric_declared_priors_shrink_independently(informative_prior_s
     shrunk_by_name = {r.metric: r for r in _lift_rows(bound_analysis.run())}
 
     for name in ("revenue", "orders"):
-        assert abs(shrunk_by_name[name].require_lift().value) < abs(
-            by_name[name].require_lift().value
-        ), f"{name}: declared prior did not shrink its own estimate"
+        assert shrunk_by_name[name].require_lift() == by_name[name].require_lift()
+        assert shrunk_by_name[name].posterior_estimate is not None
 
 
 def test_run_call_wide_prior_overrides_declared_per_metric_prior(informative_prior_summary_frame):
@@ -1309,7 +1308,8 @@ def test_run_call_wide_prior_overrides_declared_per_metric_prior(informative_pri
     declared = _lift_rows(analysis.run())[0]
     overridden = _lift_rows(analysis.run(prior=Normal(mu=0.0, sigma=0.01)))[0]
 
-    assert abs(overridden.require_lift().value) < abs(declared.require_lift().value), (
+    assert overridden.require_lift() == declared.require_lift()
+    assert overridden.posterior_estimate != pytest.approx(declared.require_lift().value), (
         "call-wide prior= must win over the declared (near-flat) MetricSpec.prior"
     )
 
@@ -1433,7 +1433,8 @@ def test_run_forwards_prior(unit_summary_analysis):
     shrunk = unit_summary_analysis.run(prior=Normal(mu=0.0, sigma=0.01))[0]
 
     assert flat.require_lift().value > 0.0
-    assert abs(shrunk.require_lift().value) < abs(flat.require_lift().value)
+    assert shrunk.require_lift() == flat.require_lift()
+    assert shrunk.posterior_estimate is not None
 
 
 def test_run_forwards_alternative_label(unit_summary_analysis):
@@ -2115,7 +2116,8 @@ def test_from_unit_panel_run_forwards_prior():
     shrunk = _lift_rows(analysis.run(prior=Normal(mu=0.0, sigma=0.01)))[0]
 
     assert flat.require_lift().value > 0.0
-    assert abs(shrunk.require_lift().value) < abs(flat.require_lift().value)
+    assert shrunk.require_lift() == flat.require_lift()
+    assert shrunk.posterior_estimate is not None
 
 
 @pytest.fixture(scope="session")

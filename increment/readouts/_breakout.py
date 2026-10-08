@@ -20,6 +20,7 @@ from increment.breakout.estimates import (
 )
 from increment.estimation.encouragement import ESTIMANDS, estimate_encouragement
 from increment.estimation.engine import Method, _validate_methods
+from increment.estimation.multiplicity import stamp_multiplicity_status
 from increment.estimation.sequential import SEQUENTIAL_POLICIES
 from increment.readouts._common import (
     _raise,
@@ -91,8 +92,8 @@ def breakout(
     at the FCR level. Exact registered sequential breakouts select over their
     retained roster and reinvert selected intervals at the capped FCR
     allocation from the same stopped checkpoints. Corrected asymptotic-mean
-    families instead use fixed-roster Bonferroni familywise inference. Any
-    informative prior is refused with ``correction="bh"``.
+    families instead use fixed-roster Bonferroni familywise inference. A declared informative
+    prior changes posterior fields only; BH selection still consumes the row's sampling evidence.
 
 
     Under a fixed-horizon plan, a metric with a non-inferiority margin --
@@ -177,10 +178,8 @@ def breakout(
                     family_threshold=row.family_threshold,
                 )
             )
-        return BreakoutEstimates(output)
+        return BreakoutEstimates(stamp_multiplicity_status(output))
 
-    if correction == "bh" and any(config.prior is not None for config in resolved_configs):
-        _raise("readout.breakout_correction_bh")
     methods_by_metric = {
         config.metric.name: _runtime_methods(config, design) for config in resolved_configs
     }
@@ -254,7 +253,9 @@ def breakout(
                         )
                     )
         return BreakoutEstimates(
-            [row.model_copy(update={"policy_name": "compiled_plan"}) for row in enc_results]
+            stamp_multiplicity_status(
+                [row.model_copy(update={"policy_name": "compiled_plan"}) for row in enc_results]
+            )
         )
     results: list[BreakoutEstimate] = []
     if correction == "bh":
@@ -278,6 +279,7 @@ def breakout(
                 dimension=dimension,
                 methods=None,
                 prior=None,
+                _prior_by_metric={name: config.prior for name, config in configs.items()},
                 alpha=alpha,
                 correction=correction,
                 q=q,
@@ -309,4 +311,4 @@ def breakout(
                     policy_name="compiled_plan",
                 )
             )
-    return BreakoutEstimates(results)
+    return BreakoutEstimates(stamp_multiplicity_status(results))

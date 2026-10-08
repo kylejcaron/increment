@@ -94,7 +94,6 @@ _REFUSALS = refusals(
             UnsupportedRequestError,
             template="metric(s) {combined} declare a non-inferiority margin (Metric.margin/margin_abs, or a plan-bound ExperimentMetric.margin), but a per-metric shifted null is not built for the as-of encouragement view -- run() applies the margin to the whole-window ITT row, or declare a one-sided plan alternative for a test against null_lift=0.0",
         ),
-        "readout.breakout_correction_bh": "breakout: correction='bh' cannot use an informative prior; BH/e-BH family selection requires frequentist p-values/e-values",
         "readout.srm_source_declared": "srm() requires a source with a declared design -- this source was constructed without one (design=None). Pass design= at construction (or control=/control_group= to derive Randomized).",
     },
 )

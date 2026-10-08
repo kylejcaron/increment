@@ -27,6 +27,7 @@ from increment.estimation.readout_types import (
 from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential_result import AsymptoticSequentialResult
 from increment.readouts._common import _require_design
+from increment.readouts._multiplicity_scope import attach_multiplicity_scope
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -61,7 +62,7 @@ def _snapshot_identity(
     snapshot,
     metrics,
     estimands,
-    triggered_declared,
+    trigger_name,
     assignment_counts,
     *,
     source=None,
@@ -100,8 +101,10 @@ def _snapshot_identity(
         "registration_id": snapshot.registration_id,
         "alpha": plan.alpha,
         "q": plan.q,
-        "trigger_declared": triggered_declared,
+        "trigger_declared": trigger_name is not None,
     }
+    if trigger_name is not None:
+        request["trigger_name"] = trigger_name
     preimage = {
         "kind": "increment.readout.snapshot",
         "version": 1,
@@ -119,7 +122,6 @@ def scope_sequential_results(
     *,
     metrics: Sequence[str] | None,
     estimands: Sequence[str] | None,
-    triggered_declared: bool,
 ) -> LiftEstimates:
     """Attach scope to the assigned sequential rows, reporting unsupported triggered cells.
 
@@ -130,6 +132,7 @@ def scope_sequential_results(
     plan = src.context.plan
     design = _require_design(src, "run")
     registration = plan.inference.registration
+    trigger_name = src.context.trigger_name
     from increment.readouts._design_scope import resolve_roster
 
     existing_source_scope = None
@@ -152,7 +155,7 @@ def scope_sequential_results(
         snapshot,
         metrics,
         estimands,
-        triggered_declared,
+        trigger_name,
         integrity_counts,
         source=existing_source,
     )
@@ -160,7 +163,7 @@ def scope_sequential_results(
     assigned_rows = {CellKey.from_row(row): row for row in rows}
     decision_assigned = [cell for cell in assigned_rows if cell.method_role == "decision"]
     triggered_cells = {}
-    if triggered_declared:
+    if trigger_name is not None:
         for cell in decision_assigned:
             triggered_cells[cell.model_copy(update={"analysis_population": "triggered"})] = cell
 
@@ -238,7 +241,7 @@ def scope_sequential_results(
         )
     ]
     populations = ("assigned",)
-    if triggered_declared:
+    if trigger_name is not None:
         complete["triggered"] = False
         populations = ("assigned", "triggered")
         rosters.append(
@@ -258,6 +261,14 @@ def scope_sequential_results(
             randomization_grain="cluster" if getattr(src.context, "cluster", None) else "unit",
         )
     )
+    output, families = attach_multiplicity_scope(
+        output,
+        all_cells,
+        plan,
+        src.context.configs,
+        snapshot_id,
+        family_populations={"assigned"},
+    )
     source_scope = SourceReadoutScope(
         source_snapshot_id=snapshot_id,
         cells=all_cells,
@@ -271,7 +282,7 @@ def scope_sequential_results(
         cells=all_cells,
         decision_cells=decision_cells,
         populations=populations,
-        families=(),
+        families=families,
         by_source={snapshot_id: source_scope},
     )
     metadata = ReadoutMetadata(

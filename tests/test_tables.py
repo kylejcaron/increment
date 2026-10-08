@@ -97,6 +97,7 @@ def _daily_estimate(
         method=method,
         method_role="decision",
         ds=ds,
+        sampling_available=True,
         lift=None if unavailable is not None else Estimate(value=value, lb=lb, ub=ub, level=level),
         unavailable=unavailable,
         dimension=dimension,
@@ -206,7 +207,7 @@ def test_readout_table_population_labels_align_trend_keys():
     triggered_trend_frame = to_frame(triggered_trend, model=DailyLiftEstimate)
     assert isinstance(assigned_trend_frame, pd.DataFrame)
     assert isinstance(triggered_trend_frame, pd.DataFrame)
-    assert "analysis_population" not in assigned_trend_frame.columns
+    assert assigned_trend_frame["analysis_population"].eq("assigned").all()
     triggered_trend_frame["analysis_population"] = "triggered"
     trend_frame = pd.concat(
         [assigned_trend_frame, triggered_trend_frame],
@@ -269,6 +270,34 @@ def test_liftestimate_to_row_stat_sig_one_sided_greater_checks_only_lower_tail()
     assert lift.ub is not None and lift.ub < 0.0  # interval entirely below 0
     assert est.require_lift().excludes(0.0) is True  # the old (wrong) check would say "significant"
     assert estimates_to_readout([est])[0]["stat_sig"] is False  # the fixed check says no
+
+
+@pytest.mark.parametrize(
+    "estimate",
+    [
+        _breakout_estimate(
+            "revenue", "T", "unadjusted", "country", "US", 0.2, lb=0.1, ub=0.3
+        ).model_copy(update={"prior_shrunk": True}),
+        _daily_estimate(
+            "revenue", "T", "unadjusted", date(2025, 1, 1), 0.2, lb=0.1, ub=0.3
+        ).model_copy(update={"sampling_available": None}),
+    ],
+)
+def test_legacy_prior_bound_breakout_and_unknown_daily_sampling_refuse(estimate):
+    from increment.errors import InvalidRequestError
+
+    with pytest.raises(InvalidRequestError) as raised:
+        estimates_to_readout([estimate])
+    assert raised.value.code == "readout.legacy.sampling_unreconstructible"
+    assert raised.value.context["remedy"] == "recompute_from_source"
+
+
+def test_prior_free_legacy_breakout_sampling_remains_readable():
+    estimate = _breakout_estimate(
+        "revenue", "T", "unadjusted", "country", "US", 0.2, lb=0.1, ub=0.3
+    ).model_copy(update={"sampling_available": None, "prior_shrunk": False})
+    (row,) = estimates_to_readout([estimate])
+    assert row["stat_sig"] is True
 
 
 def test_liftestimate_to_row_stat_sig_one_sided_less_checks_only_upper_tail():
@@ -601,6 +630,7 @@ class TestNullAbsPrecedesBinomialSet:
             alternative=lift_est.alternative,
             null_lift=lift_est.null_lift,
             reference_kind=lift_est.reference_kind,
+            sampling_available=True,
         )
         assert estimates_to_readout([daily_est])[0]["stat_sig"] is lift_est.stat_sig()
 
@@ -653,18 +683,10 @@ def test_estimates_to_readout_preserves_breakout_family_metadata():
     assert row["family_threshold"] == pytest.approx(0.025)
 
 
-# Constants behind _valid_estimate: derive the advisory decision-stat tests'
-# expected values straight from these, not from the library's own output.
-_VALID_LOG_T = 0.15
-_VALID_SE_T = 0.03
-_VALID_LOG_C = 0.05
-_VALID_SE_C = 0.04
-
-
-def _valid_estimate(metric="revenue", group_id="T"):
-    """A LiftEstimate whose interval is a genuine posterior-consistent
-    quantile (built via infer_lift), unlike _estimate()'s hand-picked
-    linear-symmetric lb/ub - decision-stat methods require the former."""
+def _valid_estimate(
+    metric="revenue", group_id="T", prior=None, preferred_direction=None, null_lift=0.0
+):
+    """A well-formed Normal estimate for posterior-qualified readout tests."""
     from increment.estimation.inference import infer_lift
 
     return infer_lift(
@@ -675,227 +697,151 @@ def _valid_estimate(metric="revenue", group_id="T"):
         log_rr=_VALID_LOG_T - _VALID_LOG_C,
         se_t=_VALID_SE_T,
         se_c=_VALID_SE_C,
+        prior=prior,
+        preferred_direction=preferred_direction,
+        null_lift=null_lift,
     )
 
 
-def _valid_estimate_expected_decision_stats():
-    """Closed-form chance_to_beat / risk_if_shipped for _valid_estimate,
-    computed by hand from the fixture constants.
+_VALID_LOG_T = 0.15
+_VALID_SE_T = 0.03
+_VALID_LOG_C = 0.05
+_VALID_SE_C = 0.04
 
-    Under the default (approximately flat) prior, the posterior on the log
-    ratio is Normal with mu = log_t - log_c and sigma = sqrt(se_t^2 + se_c^2):
-    here mu = 0.10, sigma = 0.05.
 
-    - chance_to_beat = P(lift > 0) = P(X > 0) = Phi(mu / sigma) = Phi(2).
-    - risk_if_shipped = E[max(0, -(e^X - 1))] for X ~ N(mu, sigma^2), which
-      has the lognormal partial-expectation closed form
-      Phi(-mu/sigma) - exp(mu + sigma^2 / 2) * Phi(-mu/sigma - sigma).
-    """
-    import math
+def test_estimates_to_readout_qualifies_only_stored_posterior_values():
+    from increment.estimation.inference import Normal
 
-    mu = _VALID_LOG_T - _VALID_LOG_C
-    sigma = math.sqrt(_VALID_SE_T**2 + _VALID_SE_C**2)
-
-    def phi(x):
-        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
-
-    chance_to_beat = phi(mu / sigma)
-    a = -mu / sigma
+    no_prior = _valid_estimate()
+    (no_prior_row,) = estimates_to_readout([no_prior])
+    assert no_prior_row["posterior_chance_to_beat"] is None
     assert no_prior_row["posterior_risk_if_shipped"] is None
     assert no_prior_row["posterior_prob_favorable"] is None
-    assert not {
-        "chance_to_beat",
-        "risk_if_shipped",
-        "prob_favorable",
-    } & no_prior_row.keys()
+    assert no_prior_row["posterior_components"] is None
+    assert not {"chance_to_beat", "risk_if_shipped", "prob_favorable"} & no_prior_row.keys()
 
-def test_estimates_to_readout_adds_advisory_decision_stat_columns_by_default():
-    est = _valid_estimate()
-    want_chance_to_beat, want_risk_if_shipped = _valid_estimate_expected_decision_stats()
-    (row,) = estimates_to_readout([est])
-    assert "chance_to_beat (advisory)" in row
-    assert "risk_if_shipped (advisory)" in row
-    assert row["chance_to_beat (advisory)"] == pytest.approx(want_chance_to_beat)
-    assert row["risk_if_shipped (advisory)"] == pytest.approx(want_risk_if_shipped)
+    posterior = _valid_estimate(prior=Normal(mu=0.0, sigma=0.1))
+    (row,) = estimates_to_readout([posterior])
+    assert row["posterior_chance_to_beat"] == pytest.approx(posterior.chance_to_beat())
+    assert row["posterior_risk_if_shipped"] == pytest.approx(posterior.risk_if_shipped())
+    assert "chance_to_beat" not in row
+    assert "risk_if_shipped" not in row
 
 
-def test_estimates_to_readout_informative_prior_drops_advisory_suffix():
-    est = _valid_estimate()
-    want_chance_to_beat, want_risk_if_shipped = _valid_estimate_expected_decision_stats()
-    (row,) = estimates_to_readout([est], informative_prior=True)
-    assert "chance_to_beat" in row
-    assert "risk_if_shipped" in row
-    assert "chance_to_beat (advisory)" not in row
-    assert row["chance_to_beat"] == pytest.approx(want_chance_to_beat)
-    assert row["risk_if_shipped"] == pytest.approx(want_risk_if_shipped)
-
-
-def test_estimates_to_readout_decision_stats_none_for_point_only_estimate():
-    est = _estimate("revenue", "T", "unadjusted", 0.12)  # no lb/ub
-    (row,) = estimates_to_readout([est])
-    assert row["chance_to_beat (advisory)"] is None
-    assert row["risk_if_shipped (advisory)"] is None
-
-
-def test_estimates_to_readout_decision_stats_none_for_less_alternative_without_preferred_direction():
-    """A lower-is-better ('less') metric's direction-aware chance_to_beat/
-    risk_if_shipped (prob_favorable()/risk_if_shipped_favorable()) still
-    require preferred_direction to be resolved - None, not a crash, when
-    it wasn't (same requirement prob_favorable() itself documents)."""
-    from increment.estimation.inference import infer_lift
+def test_estimates_to_readout_preserves_direction_aware_stored_posterior():
+    from increment.estimation.inference import Normal, infer_lift
 
     est = infer_lift(
         metric="latency",
         group_id="T",
         method="unadjusted",
         method_role="decision",
-        log_rr=0.05 - 0.15,
-        se_t=0.03,
-        se_c=0.04,
-        alternative="less",
-    )
-    assert est.alternative == "less"
-    assert est.preferred_direction is None
-    (row,) = estimates_to_readout([est])
-    assert row["chance_to_beat (advisory)"] is None
-    assert row["risk_if_shipped (advisory)"] is None
-
-
-def test_prob_favorable_pins_normal_tail_for_declared_increase():
-    import math
-
-    from scipy.stats import norm
-
-    from increment.estimation.inference import infer_lift
-
-    log_t, se_t, log_c, se_c, null_lift = 0.15, 0.03, 0.05, 0.04, -0.01
-    est = infer_lift(
-        metric="revenue",
-        group_id="T",
-        method="unadjusted",
-        method_role="decision",
-        log_rr=log_t - log_c,
-        se_t=se_t,
-        se_c=se_c,
-        null_lift=null_lift,
-        preferred_direction="increase",
-    )
-    # Hand-computed via the flat-prior posterior on log-RR: prob_favorable
-    # (increase) = P(lift > null_lift), independent of prob_favorable() itself.
-    mu_n = log_t - log_c
-    sigma_n = math.sqrt(se_t**2 + se_c**2)
-    want = norm.sf((math.log1p(null_lift) - mu_n) / sigma_n)
-    (row,) = estimates_to_readout([est])
-    assert row["prob_favorable"] == pytest.approx(want, rel=1e-9)
-
-
-def test_estimates_to_readout_decision_stats_direction_aware_for_less_alternative():
-    """The primary guardrail case: alternative='less' on a decrease-preferred
-    metric (e.g. latency) gets a real, correctly-signed chance_to_beat/
-    risk_if_shipped, not a blank cell or the direction-blind (backwards)
-    number the raw methods would give."""
-    from increment.estimation.inference import infer_lift
-
-    est = infer_lift(
-        metric="latency",
-        group_id="T",
-        method="unadjusted",
-        method_role="decision",
-        log_rr=0.05 - 0.15,  # treatment mean below control -> a genuine decrease
+        log_rr=-0.10,
         se_t=0.03,
         se_c=0.04,
         alternative="less",
         preferred_direction="decrease",
+        prior=Normal(mu=0.0, sigma=0.1),
     )
     (row,) = estimates_to_readout([est])
-    assert row["chance_to_beat (advisory)"] == pytest.approx(est.chance_to_beat_favorable())
-    assert row["risk_if_shipped (advisory)"] == pytest.approx(est.risk_if_shipped_favorable())
-    # A genuine decrease scores a HIGH chance-to-beat; the direction-blind
-    # chance_to_beat() (P(lift>0)) would score the same win LOW.
-    assert row["chance_to_beat (advisory)"] > 0.5
-    assert row["chance_to_beat (advisory)"] != pytest.approx(est.chance_to_beat())
-    assert row["risk_if_shipped (advisory)"] != pytest.approx(est.risk_if_shipped())
+    assert row["posterior_chance_to_beat"] == pytest.approx(est.chance_to_beat_favorable())
+    assert row["posterior_risk_if_shipped"] == pytest.approx(est.risk_if_shipped_favorable())
+    assert row["posterior_prob_favorable"] == pytest.approx(est.prob_favorable())
 
 
-def test_estimates_to_readout_decision_stats_less_alternative_stay_vs_zero_under_margin():
-    """Regression: chance_to_beat and risk_if_shipped must share the same
-    reference point (0) even once a non-inferiority null_lift/margin is
-    set. Previously chance_to_beat silently switched to prob_favorable()'s
-    null_lift-anchored P(lift < null_lift) - the margin-pass probability,
-    inflated relative to the vs-0 P(lift < 0) risk_if_shipped implies."""
-    from increment.estimation.inference import infer_lift
-
-    est = infer_lift(
-        metric="latency",
-        group_id="T",
-        method="unadjusted",
-        method_role="decision",
-        log_rr=0.05 - 0.15,
-        se_t=0.03,
-        se_c=0.04,
-        alternative="less",
-        preferred_direction="decrease",
-        null_lift=0.02,  # a 2% non-inferiority margin - must not shift chance_to_beat
-    )
-    (row,) = estimates_to_readout([est])
-    # chance_to_beat stays vs-0 (chance_to_beat_favorable), independent of null_lift.
-    assert row["chance_to_beat (advisory)"] == pytest.approx(est.chance_to_beat_favorable())
-    # It must NOT equal prob_favorable(), which folds the margin in and would be
-    # strictly higher here (P(lift < 0.02) > P(lift < 0) for a "decrease" metric).
-    assert row["chance_to_beat (advisory)"] != pytest.approx(est.prob_favorable())
-    assert row["chance_to_beat (advisory)"] < est.prob_favorable()
-
-
-def test_estimates_to_readout_prob_favorable_not_skipped_for_less_alternative():
-    """prob_favorable is direction-AWARE (reads preferred_direction, not
-    alternative): a harm/futility test (alternative='less' on an
-    increase-preferred metric) still gets a correct, non-None reading.
-    chance_to_beat, now also direction-aware, reads the same number
-    rather than the None it used to."""
-    from increment.estimation.inference import infer_lift
+def test_estimates_to_readout_preserves_persisted_favorable_probability_at_shifted_null():
+    from increment.estimation.inference import Normal, infer_lift
 
     est = infer_lift(
         metric="revenue",
         group_id="T",
         method="unadjusted",
         method_role="decision",
-        log_rr=0.05 - 0.15,
-        se_t=0.03,
-        se_c=0.04,
-        alternative="less",
+        log_rr=0.10,
+        se_t=0.04,
+        se_c=0.03,
+        null_lift=0.08,
         preferred_direction="increase",
+        prior=Normal(mu=0.0, sigma=0.1),
     )
-    assert est.alternative == "less"
+    assert est.posterior_prob_favorable != est.prob_favorable()
     (row,) = estimates_to_readout([est])
-    assert row["chance_to_beat (advisory)"] == pytest.approx(est.prob_favorable())
-    assert row["prob_favorable"] is not None
-    assert row["prob_favorable"] == pytest.approx(est.prob_favorable())
+    assert row["posterior_prob_favorable"] == est.posterior_prob_favorable
 
 
-def test_estimates_to_readout_prob_favorable_none_without_preferred_direction():
-    est = _valid_estimate()  # no preferred_direction resolved
-    (row,) = estimates_to_readout([est])
-    assert row["prob_favorable"] is None
+def test_estimates_to_readout_preserves_breakout_and_daily_posterior_probability():
+    from increment.estimation.inference import Normal, infer_lift
+    from increment.breakout.estimates import _copy_common_fields
+
+    lift = infer_lift(
+        metric="revenue",
+        group_id="T",
+        method="unadjusted",
+        method_role="decision",
+        log_rr=0.10,
+        se_t=0.04,
+        se_c=0.03,
+        preferred_direction="increase",
+        prior=Normal(mu=0.0, sigma=0.1),
+    )
+    breakout = BreakoutEstimate(
+        **_copy_common_fields(lift),
+        dimension="country",
+        dimension_value="US",
+        source="observed",
+    )
+    daily = DailyLiftEstimate(
+        **_copy_common_fields(lift),
+        ds=date(2025, 1, 1),
+    )
+    for row_model in (breakout, daily):
+        (row,) = estimates_to_readout([row_model])
+        assert row["posterior_prob_favorable"] == lift.posterior_prob_favorable
 
 
-def test_estimates_to_readout_prob_favorable_none_for_breakout_estimate():
-    est = _breakout_estimate("revenue", "T", "unadjusted", "country", "US", 0.12, lb=0.02, ub=0.22)
-    (row,) = estimates_to_readout([est])
-    assert row["prob_favorable"] is None
+
+def test_readout_rows_keep_canonical_mixture_components_for_every_result_view():
+    from increment._canonical import canonical_json_bytes
+    from increment.breakout.estimates import _copy_common_fields
+    from increment.estimation.inference import infer_lift
+    from increment.estimation.priors import MixturePrior
+
+    lift = infer_lift(
+        metric="revenue",
+        group_id="T",
+        method="unadjusted",
+        method_role="decision",
+        log_rr=0.1,
+        se_t=0.04,
+        se_c=0.03,
+        preferred_direction="increase",
+        prior=MixturePrior(weights=(0.4, 0.6), means=(0.0, 0.1), sigmas=(0.02, 0.15)),
+    )
+    expected = canonical_json_bytes(lift.posterior_components.model_dump(mode="json")).decode()
+    breakout = BreakoutEstimate(
+        **_copy_common_fields(lift), dimension="country", dimension_value="US", source="observed"
+    )
+    daily = DailyLiftEstimate(**_copy_common_fields(lift), ds=date(2025, 1, 1))
+    for estimate in (lift, breakout, daily):
+        (row,) = estimates_to_readout([estimate])
+        assert row["posterior_components"] == expected
 
 
-def test_estimates_to_readout_decision_stats_none_for_breakout_estimate():
-    est = _breakout_estimate("revenue", "T", "unadjusted", "country", "US", 0.12, lb=0.02, ub=0.22)
-    (row,) = estimates_to_readout([est])
-    assert row["chance_to_beat (advisory)"] is None
-    assert row["risk_if_shipped (advisory)"] is None
+def test_estimates_to_readout_keeps_posterior_values_missing_without_direction():
+    (row,) = estimates_to_readout([_valid_estimate()])
+    assert row["posterior_prob_favorable"] is None
 
 
-def test_estimates_to_readout_decision_stats_none_for_sequential_estimate():
-    est = _certified_row()
-    (row,) = estimates_to_readout([est])
-    assert row["chance_to_beat (advisory)"] is None
-    assert row["risk_if_shipped (advisory)"] is None
+def test_estimates_to_readout_leaves_posterior_values_missing_for_breakout_and_sequential():
+    breakout = _breakout_estimate(
+        "revenue", "T", "unadjusted", "country", "US", 0.12, lb=0.02, ub=0.22
+    )
+    (breakout_row,) = estimates_to_readout([breakout])
+    assert breakout_row["posterior_chance_to_beat"] is None
+    sequential = _certified_row()
+    (sequential_row,) = estimates_to_readout([sequential])
+    assert sequential_row["posterior_chance_to_beat"] is None
+    assert sequential_row["posterior_risk_if_shipped"] is None
 
 
 def test_tables_module_imports_without_tables_extra():
@@ -1649,39 +1595,10 @@ def _latency_estimate():
     return est.model_copy(update={"preferred_direction": "decrease"})
 
 
-def _phi(x):
-    import math
-
-    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
-
-
-def test_estimates_to_readout_decision_stats_direction_aware_for_decrease_two_sided():
-    """The most common monitoring shape: a decrease-preferred metric under
-    the DEFAULT two-sided test. chance_to_beat must read the favorable
-    (below-zero) tail: Phi(-mu/sigma) = Phi(5), not the raw increase-
-    assuming P(lift > 0) = Phi(-5) ~ 2.9e-7."""
-    import math
-
-    est = _latency_estimate()
-    assert est.alternative == "two-sided"
-    (row,) = estimates_to_readout([est])
-    mu, sigma = _LATENCY_LOG_LIFT, _LATENCY_SE
-    want_chance_to_beat = _phi(-mu / sigma)  # Phi(5): a near-certain win
-    assert row["chance_to_beat (advisory)"] == pytest.approx(want_chance_to_beat, rel=1e-9)
-    # risk for a decrease metric is the expected magnitude of lift moving UP:
-    # E[max(0, e^X - 1)] = e^{mu + s^2/2} Phi(mu/s + s) - Phi(mu/s).
-    want_risk = math.exp(mu + 0.5 * sigma**2) * _phi(mu / sigma + sigma) - _phi(mu / sigma)
-    assert row["risk_if_shipped (advisory)"] == pytest.approx(want_risk, rel=1e-9)
-
-
-def test_estimates_to_readout_decision_stats_raw_for_increase_two_sided():
-    """An increase-preferred metric under two-sided keeps the raw vs-0
-    reading - the dispatch must not disturb the default shape."""
-    est = _valid_estimate().model_copy(update={"preferred_direction": "increase"})
-    want_chance_to_beat, want_risk = _valid_estimate_expected_decision_stats()
-    (row,) = estimates_to_readout([est])
-    assert row["chance_to_beat (advisory)"] == pytest.approx(want_chance_to_beat)
-    assert row["risk_if_shipped (advisory)"] == pytest.approx(want_risk)
+def test_estimates_to_readout_does_not_recommend_unavailable_posterior():
+    (row,) = estimates_to_readout([_latency_estimate()])
+    assert row["posterior_chance_to_beat"] is None
+    assert row["posterior_risk_if_shipped"] is None
 
 
 # Absolute-scale rows (value_scale="absolute": LATE, compliance) must not
@@ -1939,35 +1856,27 @@ def _orange_rule_count(table) -> int:
 
 
 class TestRenderedDecisionStats:
-    """The decision layer must be VISIBLE: chance_to_beat, risk_if_shipped
-    and (under a shifted null) prob_favorable were computed by the adapter
-    but absent from the rendered HTML. What must NOT be visible is a
-    per-metric ship/no-ship verdict, or flat-prior numbers presented
-    unasked as if they were calibrated."""
-
-    def test_advisory_stats_are_opt_in(self):
+    def test_stored_posterior_statistics_are_opt_in_and_explicitly_qualified(self):
         pytest.importorskip("coeftable")
-        est = _inferred_estimate("revenue", 0.03, 0.02)
+        from increment.estimation.inference import Normal
+
+        est = _valid_estimate(
+            prior=Normal(mu=0.0, sigma=0.1),
+            preferred_direction="increase",
+            null_lift=-0.01,
+        )
         rows = estimates_to_readout([est])
         default = readout_table(rows).gt().as_raw_html()
-        assert "Chance to beat (advisory)" not in default
-        assert "Risk if shipped (advisory)" not in default
+        assert "Posterior chance to beat" not in default
+        assert "Posterior risk if shipped" not in default
+        assert "Posterior P(favorable)" not in default
 
         opted_in = readout_table(rows, advisory=True).gt().as_raw_html()
-        assert "Chance to beat (advisory)" in opted_in
-        assert "Risk if shipped (advisory)" in opted_in
-        # Rendered strings match the estimate's own methods exactly at the
-        # displayed precision - not just substring presence.
+        assert "Posterior chance to beat" in opted_in
+        assert "Posterior risk if shipped" in opted_in
+        assert "Posterior P(favorable)" in opted_in
         assert f"{est.chance_to_beat() * 100:.1f}%" in opted_in
         assert f"{est.risk_if_shipped() * 100:.1f}%" in opted_in
-
-    def test_informative_prior_drops_advisory_suffix(self):
-        pytest.importorskip("coeftable")
-        est = _inferred_estimate("revenue", 0.03, 0.02)
-        rows = estimates_to_readout([est], informative_prior=True)
-        html = readout_table(rows).gt().as_raw_html()
-        assert "Chance to beat" in html
-        assert "Chance to beat (advisory)" not in html
 
     def test_no_per_metric_verdict_column(self):
         pytest.importorskip("coeftable")
@@ -1998,17 +1907,11 @@ class TestRenderedDecisionStats:
         (forest,) = [c for c in table.columns if type(c).__name__ == "Forest"]
         assert getattr(forest, "ref", None) == 0.0
 
-    def test_prob_favorable_rendered_only_under_shifted_null(self):
+    def test_unstored_probability_is_not_rendered(self):
         pytest.importorskip("coeftable")
-        margin = _inferred_estimate(
-            "retention", 0.001, 0.005, level=0.90, alternative="greater", null_lift=-0.05
-        )
-        html = readout_table(estimates_to_readout([margin])).gt().as_raw_html()
-        assert "P(favorable)" in html
-        assert f"{margin.prob_favorable() * 100:.1f}%" in html
         plain = _inferred_estimate("revenue", 0.03, 0.02)
-        html_plain = readout_table(estimates_to_readout([plain])).gt().as_raw_html()
-        assert "P(favorable)" not in html_plain
+        html = readout_table(estimates_to_readout([plain]), advisory=True).gt().as_raw_html()
+        assert "Posterior P(favorable)" not in html
 
     def test_shifted_null_adds_default_orange_rule_and_keeps_zero_ref(self):
         ct = pytest.importorskip("coeftable")
@@ -2402,6 +2305,7 @@ def test_flat_joint_rows_preserve_disconnected_set_significance(model, control_m
         abs_lb=bounds[0],
         abs_ub=bounds[1],
         abs_reference_kind="normal",
+        sampling_available=True,
         **extra,
     )
     restored = model.model_validate_json(estimate.model_dump_json())
@@ -2473,6 +2377,7 @@ def test_flat_partial_joint_rows_preserve_additive_margin_decision(model):
         abs_lb=8,
         abs_ub=12,
         null_abs=0,
+        sampling_available=True,
         **extra,
     )
     restored = model.model_validate_json(estimate.model_dump_json())

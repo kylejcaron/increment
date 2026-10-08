@@ -2040,7 +2040,7 @@ class AnalysisPlan(_Base):
         ``None`` declares no primary.
     secondaries : tuple[PlanEntry, ...] | None
         Metrics judged as a discovery family at ``q`` rather than against
-        ``alpha``. A prior-bound entry sits outside the family.
+        ``alpha``. A prior changes posterior state, not the sampling evidence of a declared member.
     guardrails : tuple[PlanEntry, ...]
         Metrics that must not move adversely. A guardrail needs an
         explicit non-neutral ``preferred_direction`` on the metric, since

@@ -440,27 +440,17 @@ def _panel_with_breakout_rows_for_config() -> list[dict[str, object]]:
 def test_panel_breakout_uses_callwide_methods_not_declared_methods(correction):
     analysis = _configured_panel_breakout_analysis(correction)
 
-    if correction == "bh":
-        with pytest.raises(InvalidRequestError) as raised:
-            analysis.run_breakout()
-        assert raised.value.code == "readout.breakout_correction_bh"
-    else:
-        results = analysis.run_breakout()
-        assert results
-        assert {row.method for row in results} == {"declared"}
+    results = analysis.run_breakout()
+    assert results
+    assert {row.method for row in results} == {"declared"}
 
-    if correction == "bh":
-        with pytest.raises(InvalidRequestError) as raised:
-            analysis.run_breakout(decision_method=Method(name="call-wide"))
-        assert raised.value.code == "readout.breakout_correction_bh"
-    else:
-        explicit = analysis.run_breakout(decision_method=Method(name="call-wide"))
-        assert explicit
-        assert {row.method for row in explicit} == {"call-wide"}
+    explicit = analysis.run_breakout(decision_method=Method(name="call-wide"))
+    assert explicit
+    assert {row.method for row in explicit} == {"call-wide"}
 
 
-@pytest.mark.parametrize("correction", ["none", "bonferroni"])
-def test_panel_breakout_ignores_declared_prior_but_honors_callwide_prior(correction):
+@pytest.mark.parametrize("correction", ["none", "bonferroni", "bh"])
+def test_panel_breakout_keeps_declared_prior_separate_from_sampling(correction):
     from increment.estimation import Normal
 
     declared_prior = Normal(mu=0.0, sigma=0.01)
@@ -468,21 +458,18 @@ def test_panel_breakout_ignores_declared_prior_but_honors_callwide_prior(correct
     without_declared_prior = _panel_breakout_analysis_with_prior(correction, None)
 
     declared_results = with_declared_prior.run_breakout()
-    # With no declared prior at all, the metric's own (near-flat default)
-    # posterior looks nothing like the tight Normal(0, 0.01) shrinkage above,
-    # proving the metric's declared prior is genuinely load-bearing, not
-    # silently unused.
     undeclared_results = without_declared_prior.run_breakout()
     for declared, undeclared in zip(declared_results, undeclared_results, strict=True):
-        assert undeclared.require_lift().value != pytest.approx(declared.require_lift().value)
+        assert declared.require_lift().value == pytest.approx(undeclared.require_lift().value)
+        assert declared.posterior_estimate is not None
+        assert undeclared.posterior_estimate is None
 
-    # A callwide prior equal to the metric's own declared one, passed to the
-    # analysis that declares NO prior, must reproduce the declared-prior
-    # analysis exactly -- proving the callwide override is honored, not the
-    # metric's (here absent) declaration.
     override_results = without_declared_prior.run_breakout(prior=declared_prior)
     assert [row.require_lift().value for row in override_results] == pytest.approx(
         [row.require_lift().value for row in declared_results]
+    )
+    assert [row.posterior_estimate for row in override_results] == pytest.approx(
+        [row.posterior_estimate for row in declared_results]
     )
 
 
