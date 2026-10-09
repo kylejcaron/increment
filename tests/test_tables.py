@@ -909,6 +909,86 @@ def test_readout_table_renders_two_metrics_one_method():
     assert "Lift %" in html
 
 
+def test_readout_table_marks_known_multiplicity_when_other_status_is_missing():
+    pytest.importorskip("coeftable")
+    known, missing = estimates_to_readout(
+        [
+            _estimate("m", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
+            _estimate("other", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
+        ]
+    )
+    known["multiplicity_status"] = "exploratory_unadjusted"
+    missing["multiplicity_status"] = None
+
+    html = readout_table([known, missing]).gt().as_raw_html()
+
+    assert "m¹" in html
+    assert "¹ Exploratory, unadjusted for multiplicity (1 of 2 rows)" in html
+    assert "other¹" not in html
+
+
+def test_readout_table_disambiguates_metric_colliding_with_status_marker():
+    pytest.importorskip("coeftable")
+    exploratory, declared = estimates_to_readout(
+        [
+            _estimate("m", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
+            _estimate("m¹", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
+        ]
+    )
+    exploratory["multiplicity_status"] = "exploratory_unadjusted"
+    declared["multiplicity_status"] = "declared_plan"
+
+    html = readout_table([exploratory, declared]).gt().as_raw_html()
+
+    assert "m¹ (Exploratory, unadjusted for multiplicity)" in html
+    assert "m¹ (Declared plan)" in html
+
+
+def test_readout_table_marks_declared_plan_when_other_status_is_missing():
+    pytest.importorskip("coeftable")
+    declared, missing = estimates_to_readout(
+        [
+            _estimate("planned", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
+            _estimate("unknown", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
+        ]
+    )
+    declared["multiplicity_status"] = "declared_plan"
+    missing["multiplicity_status"] = None
+
+    html = readout_table([declared, missing]).gt().as_raw_html()
+
+    assert "planned¹" in html
+    assert "¹ Declared plan (1 of 2 rows)" in html
+    assert "unknown¹" not in html
+
+
+def test_readout_table_disambiguates_metric_matching_generated_suffix():
+    pytest.importorskip("coeftable")
+    rows = estimates_to_readout(
+        [
+            _estimate("m", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
+            _estimate("m¹", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
+            _estimate(
+                "m¹ (Unknown multiplicity status)",
+                "T",
+                "unadjusted",
+                0.12,
+                lb=0.02,
+                ub=0.22,
+            ),
+        ]
+    )
+    rows[0]["multiplicity_status"] = "exploratory_unadjusted"
+    rows[1]["multiplicity_status"] = None
+    rows[2]["multiplicity_status"] = None
+
+    html = readout_table(rows).gt().as_raw_html()
+
+    assert "m¹ (Exploratory, unadjusted for multiplicity)" in html
+    assert "m¹ (Unknown multiplicity status)" in html
+    assert "m¹ (Unknown multiplicity status) [row 2]" in html
+
+
 def test_readout_table_splits_columns_for_two_methods():
     """Two distinct method values produce a split-column table."""
     pytest.importorskip("coeftable")

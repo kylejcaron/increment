@@ -1093,6 +1093,11 @@ class ReadoutResults:
     @staticmethod
     def model_validate_json(text):
         import json
+        from importlib import import_module
+
+        # The breakout module registers its collection classes at import time.
+        # Load it only during decoding to avoid a static dependency cycle.
+        import_module("increment.breakout.estimates")
 
         from increment.estimation.contrast_results import ContrastResult, ContrastResults
         from increment.sequential_state import SequentialSnapshot

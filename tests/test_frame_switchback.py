@@ -96,6 +96,25 @@ def test_switchback_analysis_run_reports_unsupported_assignment_integrity():
     assert integrity.code == "integrity.switchback_assignment_law"
 
 
+def test_artifact_context_refuses_switchback_source_with_method_context():
+    analysis = Analysis.from_switchback_panel(
+        pl.DataFrame(_rows()),
+        unit="unit",
+        cycle="cycle",
+        period="period",
+        step="step",
+        group="group",
+        metrics={"mean": "mean"},
+        identification=_identification(),
+        assignment=_assignment(),
+    )
+    with pytest.raises(CapabilityError) as raised:
+        _ = analysis.artifact_context
+
+    assert raised.value.code == "facade.analysis.contrast_unavailable"
+    assert raised.value.context["method"] == "artifact_context"
+
+
 @pytest.mark.parametrize("mismatch", ["assignment", "groups", "conversion", "unknown"])
 def test_invalid_envelope_identity_refuses_before_frame_access(monkeypatch, mismatch):
     from tests.estimation.test_unit_cycle_envelope import envelope

@@ -600,6 +600,12 @@ class Analysis:
                     method=method,
                     experiment="<unknown>",
                     trigger=None,
+                    route=(
+                        "switchback"
+                        if self._state.family == "contrast"
+                        else classify_source(self._src)
+                    ),
+                    supported_sources=("from_definitions", "from_unit_day_artifact"),
                 )
             _refuse(_CONTRAST_UNAVAILABLE, method=method)
         return self._state
@@ -1654,6 +1660,27 @@ class Analysis:
         return self._experiment
 
     @property
+    def artifact_context(self) -> ArtifactContext:
+        """The trusted artifact context for this definitions-backed analysis.
+
+        Pass this value as ``expected_context`` when reopening an artifact
+        published from the same analysis.
+        """
+        state = self._require_arm_state("artifact_context")
+        if not isinstance(state, DefinitionsArmAnalysisState):
+            _refuse(
+                _ANALYSIS_OPERATION,
+                message="artifact_context requires Analysis.from_definitions",
+                operation="materialize",
+            )
+        return self._artifact_context(
+            state.definitions,
+            self.experiment,
+            self._on_mixed_assignment,
+            design=self._design,
+        )
+
+    @property
     def metrics(self) -> list[Metric]:
         """All metrics and guardrails for this experiment."""
         return list(self._metrics)
@@ -1944,6 +1971,8 @@ class Analysis:
                 method="run",
                 experiment="<unknown>",
                 trigger=None,
+                route="switchback",
+                supported_sources=("from_definitions", "from_unit_day_artifact"),
             )
         added = self._exploratory_metrics(exploratory_metrics, caller="run")
         if isinstance(self._state, ContrastAnalysisState):
@@ -2382,6 +2411,8 @@ class Analysis:
                     method="run_breakout",
                     experiment="<unknown>",
                     trigger=None,
+                    route="switchback",
+                    supported_sources=("from_definitions", "from_unit_day_artifact"),
                 )
             reader = BreakoutReadouts(src=self._src, experiment=experiment)
             registration = getattr(self._plan.inference, "registration", None)

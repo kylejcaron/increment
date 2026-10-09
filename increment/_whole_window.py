@@ -148,6 +148,8 @@ def validate_whole_window(
             method="run",
             experiment="<unknown>" if experiment is None else experiment.name,
             trigger=None if experiment is None else experiment.trigger,
+            route=route,
+            supported_sources=("from_definitions", "from_unit_day_artifact"),
         )
     if route != "native" and req.metrics:
         return
@@ -223,6 +225,8 @@ class WholeWindowReadouts:
                     method="run",
                     experiment=self._experiment.name,
                     trigger=self._experiment.trigger,
+                    route=route,
+                    supported_sources=("from_definitions", "from_unit_day_artifact"),
                 )
             populations = (
                 ("triggered",) if req.population == "triggered" else ("assigned", "triggered")
@@ -256,6 +260,8 @@ class WholeWindowReadouts:
                         method="run",
                         experiment="<unknown>",
                         trigger=None,
+                        route=_day_axis_source_route(self._src),
+                        supported_sources=("from_definitions", "from_unit_day_artifact"),
                     )
                 source = self._readout_source(
                     population="triggered",
@@ -294,6 +300,8 @@ class WholeWindowReadouts:
                 method="run",
                 experiment="<unknown>",
                 trigger=None,
+                route="native",
+                supported_sources=("from_definitions", "from_unit_day_artifact"),
             )
         metric_names = [m.name for m in req.metrics]
 

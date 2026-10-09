@@ -24,10 +24,12 @@ declared or selected; it does not apply a new correction:
 | `exploratory`, outside a BH/e-BH or Bonferroni family | `exploratory_unadjusted` | Exploratory, without family adjustment. |
 | `exploratory`, inside a BH/e-BH or Bonferroni family | `exploratory_family` | Member of the named adjusted family: BH/e-BH selection or Bonferroni alpha division. |
 
-`readout_table` does not repeat this provenance in a column on every row.
-It shows one header note for each informative unadjusted or exploratory
-status; declared-plan rows need no note. The original `multiplicity_status`
-and family fields remain available on result objects and in `to_frame()`.
+`readout_table` keeps this disclosure in the header when all rows share an
+informative status. For mixed statuses, it adds a superscript marker to
+each known unadjusted or exploratory row and explains the marker and row
+count in the header; declared-plan rows need no marker. The original
+`multiplicity_status` and family fields remain available on result objects
+and in `to_frame()`.
 
 For example, five metrics without a declared plan each retain alpha `0.05`
 and report `undeclared_plan`; five declared primaries share alpha `0.05`,

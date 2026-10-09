@@ -222,8 +222,9 @@ def to_frame[M: BaseModel](
     model : type[M] | None
         Which model *estimates* holds. Required when *estimates* is
         empty, since an empty sequence carries no runtime type trace.
-    backend : {"pandas", "polars", "pyarrow"}
-        Which native library to build.
+    backend : Backend
+        Native dataframe backend to build: ``"pandas"``, ``"polars"``, or
+        ``"pyarrow"``.
 
     Returns
     -------

@@ -1446,6 +1446,88 @@ def test_triggered_compliance_history_uses_population_independent_horizon():
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table.*:DeprecationWarning")
+def test_triggered_compliance_history_uses_uptake_feed_completion_not_trigger_feed():
+    cutoff = datetime(2025, 1, 31, 23, 59, tzinfo=UTC)
+    con, analysis, context, store, _panel = native_fixture(
+        ("full",),
+        triggered=True,
+        separate_uptake=True,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            cutoff,
+            {
+                "events": datetime(2025, 1, 3, 23, 59, tzinfo=UTC),
+                "uptake_events": cutoff,
+            },
+        ),
+    )
+    try:
+        from increment.query.artifact_contract import unit_day_artifact_extension_catalog
+
+        extensions = [
+            entry.request
+            for entry in unit_day_artifact_extension_catalog(context)
+            if entry.request.kind
+            in {"trigger_population", "trigger_measure_stats", "encouragement_uptake"}
+        ]
+        ref = analysis.publish_unit_day_artifact(store, extensions=extensions)
+        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        try:
+            native_dates = [
+                row.ds
+                for row in analysis.run_asof_lift(estimands=("compliance",), population="triggered")
+            ]
+            artifact_dates = [
+                row.ds
+                for row in adopted.run_asof_lift(estimands=("compliance",), population="triggered")
+            ]
+            assert native_dates == artifact_dates
+            assert len(native_dates) > 2
+        finally:
+            adopted.close()
+    finally:
+        analysis.close()
+        con.disconnect()
+
+
+@pytest.mark.filterwarnings("ignore:fetch_arrow_table.*:DeprecationWarning")
+def test_triggered_compliance_history_keeps_triggers_after_uptake_events():
+    con, analysis, context, store, _panel = native_fixture(
+        ("full",), triggered=True, open_ended=True
+    )
+    con.raw_sql(
+        "UPDATE events SET ts = TIMESTAMPTZ '2025-01-11 00:00:00+00' WHERE event = 'triggered'"
+    )
+    try:
+        from increment.query.artifact_contract import unit_day_artifact_extension_catalog
+
+        extensions = [
+            entry.request
+            for entry in unit_day_artifact_extension_catalog(context)
+            if entry.request.kind
+            in {"trigger_population", "trigger_measure_stats", "encouragement_uptake"}
+        ]
+        ref = analysis.publish_unit_day_artifact(store, extensions=extensions)
+        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        try:
+            native_dates = [
+                row.ds
+                for row in analysis.run_asof_lift(estimands=("compliance",), population="triggered")
+            ]
+            artifact_dates = [
+                row.ds
+                for row in adopted.run_asof_lift(estimands=("compliance",), population="triggered")
+            ]
+            assert native_dates == artifact_dates
+            assert native_dates[0] == date(2025, 1, 11)
+            assert native_dates[-1] == date(2025, 1, 11)
+        finally:
+            adopted.close()
+    finally:
+        analysis.close()
+        con.disconnect()
+
+
+@pytest.mark.filterwarnings("ignore:fetch_arrow_table.*:DeprecationWarning")
 def test_triggered_compliance_history_stops_at_pinned_observation_edge():
     cutoff = datetime(2025, 1, 5, 23, 59, tzinfo=UTC)
     con, analysis, context, store, _panel = native_fixture(
@@ -1582,6 +1664,86 @@ def test_triggered_compliance_keeps_missing_control_date_and_continues(tmp_path)
                 jan5 = next(row for row in rows if row.ds == date(2025, 1, 5))
                 assert (jan5.n_control, jan5.n_treat) == (8, 8)
                 assert any(row.ds == date(2025, 1, 5) and row.lift is not None for row in rows)
+        finally:
+            adopted.close()
+    finally:
+        analysis.close()
+        con.disconnect()
+
+
+@pytest.mark.filterwarnings("ignore:fetch_arrow_table.*:DeprecationWarning")
+def test_triggered_compliance_completes_control_only_date_with_missing_treatment():
+    con, analysis, context, store, _panel = native_fixture(("full",), triggered=True)
+    con.raw_sql(
+        "UPDATE events SET ts = TIMESTAMPTZ '2025-01-04 00:00:00+00' "
+        "WHERE event = 'triggered' AND group_id = 'control'"
+    )
+    con.raw_sql(
+        "UPDATE events SET ts = TIMESTAMPTZ '2025-01-05 00:00:00+00' "
+        "WHERE event = 'triggered' AND group_id = 'treatment'"
+    )
+    try:
+        from increment.query.artifact_contract import unit_day_artifact_extension_catalog
+
+        extensions = [
+            entry.request
+            for entry in unit_day_artifact_extension_catalog(context)
+            if entry.request.kind
+            in {"trigger_population", "trigger_measure_stats", "encouragement_uptake"}
+        ]
+        ref = analysis.publish_unit_day_artifact(store, extensions=extensions)
+        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        try:
+            for source in (analysis, adopted):
+                rows = source.run_asof_lift(estimands=("compliance",), population="triggered")
+                jan4 = next(row for row in rows if row.ds == date(2025, 1, 4))
+                assert jan4.group_id == "treatment"
+                assert jan4.lift is None
+                assert jan4.failure_code == "readout.cell.missing_arm"
+                assert (jan4.n_control, jan4.n_treat) == (8, 0)
+                jan5 = next(row for row in rows if row.ds == date(2025, 1, 5))
+                assert jan5.lift is not None
+                assert (jan5.n_control, jan5.n_treat) == (8, 8)
+        finally:
+            adopted.close()
+    finally:
+        analysis.close()
+        con.disconnect()
+
+
+@pytest.mark.parametrize("clustered", [False, True])
+@pytest.mark.filterwarnings("ignore:fetch_arrow_table.*:DeprecationWarning")
+def test_triggered_compliance_insufficient_early_sample_continues(clustered):
+    con, analysis, context, store, _panel = native_fixture(
+        ("full",), triggered=True, clustered=clustered
+    )
+    con.raw_sql(
+        "UPDATE events SET ts = TIMESTAMPTZ '2025-01-05 00:00:00+00' WHERE event = 'triggered'"
+    )
+    con.raw_sql(
+        "UPDATE events SET ts = TIMESTAMPTZ '2025-01-04 00:00:00+00' "
+        "WHERE event = 'triggered' AND user_id IN ('control0_0', 'treatment0_0')"
+    )
+    try:
+        from increment.query.artifact_contract import unit_day_artifact_extension_catalog
+
+        extensions = [
+            entry.request
+            for entry in unit_day_artifact_extension_catalog(context)
+            if entry.request.kind
+            in {"trigger_population", "trigger_measure_stats", "encouragement_uptake"}
+        ]
+        ref = analysis.publish_unit_day_artifact(store, extensions=extensions)
+        adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        try:
+            for source in (analysis, adopted):
+                with pytest.warns(IncrementRuntimeWarning) if clustered else nullcontext():
+                    rows = source.run_asof_lift(estimands=("compliance",), population="triggered")
+                early = next(row for row in rows if row.ds == date(2025, 1, 4))
+                assert early.lift is None
+                assert early.failure_code == "readout.cell.missing_metric_observations"
+                later = next(row for row in rows if row.ds == date(2025, 1, 5))
+                assert later.lift is not None
         finally:
             adopted.close()
     finally:
