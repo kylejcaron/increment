@@ -2261,8 +2261,9 @@ def asof_group_summary(
         Uptake events already satisfy the elapsed-timestamp window; do not
         apply another calendar-day mask.
     _uptake_certified_edge : dt.date | None
-        Certified last day of uptake coverage, used to freeze uptake values
-        beyond the observed edge.
+        Certified last day of uptake coverage. When
+        ``completed_windows_only=True``, cohorts must have a completed uptake
+        window through this edge; it does not freeze uptake values.
     _uptake_day_boundary_offset : dt.timedelta
         Day-boundary offset applied to uptake calendar windows.
     _outcome_observation_end : ir.Scalar | None

@@ -696,10 +696,13 @@ def test_triggered_planning_baseline_refuses_when_control_has_no_trigger(tmp_pat
 def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_grains(
     tmp_path, assigned_sizes, analyzed_sizes, expected_df
 ):
+
+    import warnings
     from fractions import Fraction
 
     from scipy.stats import chi2
 
+    from increment import IncrementRuntimeWarning
     from increment.estimation.arm_contract import ArmPlanningProcedure
     from increment.power import (
         PowerDesign,
@@ -713,6 +716,36 @@ def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_gr
         TriggerMeasureStatsRequest,
         TriggerPopulationRequest,
     )
+
+    def run_with_small_cluster_advisories(source, n_clusters):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", IncrementRuntimeWarning)
+            results = source.run(metrics=["revenue"])
+        assert [
+            (warning.message.code, dict(warning.message.context))
+            for warning in caught
+            if isinstance(warning.message, IncrementRuntimeWarning)
+        ] == [
+            (
+                "estimation.engine.small_total_clusters",
+                {
+                    "metric_name": "revenue",
+                    "n_clusters": n_clusters,
+                    "cluster": "store_id",
+                    "floor": 40,
+                },
+            ),
+            (
+                "estimation.engine.small_total_clusters",
+                {
+                    "metric_name": "revenue",
+                    "n_clusters": 2 * sum(size > 0 for size in analyzed_sizes),
+                    "cluster": "store_id",
+                    "floor": 40,
+                },
+            ),
+        ]
+        return results
 
     groups = [
         [Fraction(20 + 10 * cluster + (-4 if member % 2 == 0 else 4)) for member in range(size)]
@@ -770,7 +803,10 @@ def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_gr
                 1 + ((1 + manual.cluster_size_cv**2) * float(analyzed_mean) - 1) * float(icc)
             )
         for source in (analysis, reopened):
-            results = {row.analysis_population: row for row in source.run(metrics=["revenue"])}
+            results = {
+                row.analysis_population: row
+                for row in run_with_small_cluster_advisories(source, 2 * len(assigned_sizes))
+            }
             assert set(results) == {"assigned", "triggered"}
             assert results["assigned"].reference_df == len(assigned_sizes) - 1
             result = results["triggered"]
@@ -805,6 +841,9 @@ def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_gr
 
 @pytest.mark.filterwarnings("always::increment.errors.IncrementRuntimeWarning")
 def test_staggered_cluster_triggers_anchor_planning_and_observed_counts(tmp_path):
+    import warnings
+
+    from increment import IncrementRuntimeWarning
     from increment.semantics.artifact import (
         AssignmentCountsRequest,
         ClusterIdentityRequest,
@@ -849,11 +888,34 @@ def test_staggered_cluster_triggers_anchor_planning_and_observed_counts(tmp_path
             assert integrity.grain == "cluster"
             assert integrity.observed == {"control": 3, "treatment": 3}
             assert integrity.unit_counts == {"control": 6, "treatment": 6}
-            result = next(
-                row
-                for row in source.run(metrics=["revenue"])
-                if row.analysis_population == "triggered"
-            )
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", IncrementRuntimeWarning)
+                results = source.run(metrics=["revenue"])
+            assert [
+                (warning.message.code, dict(warning.message.context))
+                for warning in caught
+                if isinstance(warning.message, IncrementRuntimeWarning)
+            ] == [
+                (
+                    "estimation.engine.small_total_clusters",
+                    {
+                        "metric_name": "revenue",
+                        "n_clusters": 8,
+                        "cluster": "store_id",
+                        "floor": 40,
+                    },
+                ),
+                (
+                    "estimation.engine.small_total_clusters",
+                    {
+                        "metric_name": "revenue",
+                        "n_clusters": 6,
+                        "cluster": "store_id",
+                        "floor": 40,
+                    },
+                ),
+            ]
+            result = next(row for row in results if row.analysis_population == "triggered")
             assert result.reference_df == 2
     finally:
         analysis.close()
@@ -1014,6 +1076,7 @@ class TestPlanningBaselineOnWarehouseRoutes:
         finally:
             con.disconnect()
 
+    @pytest.mark.slow
     def test_triggered_cuped_planning_uses_assignment_anchored_preperiod(  # noqa: PLR0915
         self, tmp_path
     ):

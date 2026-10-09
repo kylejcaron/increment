@@ -68,6 +68,7 @@ class TestDensePlansNearTheThresholdAreEnumerated:
         assert result.power_basis == "asymptotic"
 
 
+@pytest.mark.slow
 class TestBorderlinePlansAreTheUnionOfBothRoutes:
     def _geometry(self) -> tuple[RejectionGeometry, _binomial.BinomialDecision, int]:
         key = _binomial_key(_procedure(), N, N)
@@ -298,6 +299,7 @@ class TestAStructuralFiniteRouteUnderAuto:
             ) == pytest.approx(expected, rel=1e-9, abs=1e-15)
 
 
+@pytest.mark.slow
 class TestPublicSolversAgree:
     def test_the_sized_plan_reaches_its_target_and_its_effect_is_the_sized_plans(self):
         baseline = Baseline.from_proportion(0.3)

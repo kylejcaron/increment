@@ -20,7 +20,10 @@ from increment.dashboard._html import overview_notes, overview_rows
 from increment.errors import CapabilityError, InvalidRequestError
 from tests.test_dashboard_capture import _METRICS, _double_the_treatment_arm, _workspace
 
-pytestmark = pytest.mark.filterwarnings("ignore::increment.errors.IncrementWarning")
+pytestmark = [
+    pytest.mark.filterwarnings("ignore::increment.errors.IncrementWarning"),
+    pytest.mark.slow,
+]
 
 ADDED = "purchases_per_user"
 _SAVED = (

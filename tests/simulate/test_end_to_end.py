@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sys
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -259,6 +261,7 @@ def test_whole_run_failure_counts_as_failed_for_every_attempted_key_including_br
 # Step 3: calibration test (parameter_recovery mark)
 
 
+@pytest.mark.xdist_group("simulate-end-to-end-calibration")
 @pytest.mark.slow
 @pytest.mark.parameter_recovery
 class TestCalibration:
@@ -282,16 +285,26 @@ class TestCalibration:
     @pytest.fixture(scope="class")
     @classmethod
     def fair_result(cls):
-        """Run the full calibration (200 replications, fair assignment)."""
-        scenario = Scenario(
-            n_units=cls.N_UNITS,
-            n_days=14,
-            true_lift={"conversion": 0.0, "count": 0.0, "revenue": 0.0},
-            assignment_ratio=0.5,
-            unit_heterogeneity=0.3,
-            seed=0,
-        )
-        return run_end_to_end(scenario, replications=cls.N_REPS)
+        """Load the source-versioned 200-replication calibration fixture."""
+        from tests._shared_cache import fixture_cache_key, get_or_build
+
+        def build():
+            scenario = Scenario(
+                n_units=cls.N_UNITS,
+                n_days=14,
+                true_lift={"conversion": 0.0, "count": 0.0, "revenue": 0.0},
+                assignment_ratio=0.5,
+                unit_heterogeneity=0.3,
+                seed=0,
+            )
+            return run_end_to_end(scenario, replications=cls.N_REPS)
+
+        if os.environ.get("INCREMENT_DISABLE_FIXTURE_CACHE") == "1":
+            return build()
+        root = Path(__file__).resolve().parents[2]
+        source_key = fixture_cache_key(root, Path(__file__))
+        cache_root = root / ".cache" / "increment-fixtures"
+        return get_or_build(cache_root, f"end-to-end-fair-{source_key}", build)
 
     def test_full_population_no_exclusions_or_failures(self, fair_result):
         """A healthy well-specified scenario attempts, points, and covers

@@ -1209,7 +1209,10 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
       const status = str(message.status);
       if (status === 'updating') { clearTimeout(waiting); setStatus('Updating the page from this snapshot; nothing is read again.'); }
       else if (status) { clearTimeout(waiting); setStatus('The selection was not changed: ' + status, 'error'); }
-    } else if (message.type === 'restore' && VIEWS.includes(str(message.view))) navigate(str(message.view));
+    } else if (message.type === 'restore') {
+      if (populationOptions.includes(str(message.population))) setPopulation(str(message.population));
+      if (VIEWS.includes(str(message.view))) navigate(str(message.view));
+    }
   });
   renderAdded();
 
@@ -1322,6 +1325,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     mounted.clear();
     groupDownload.set('', '');
     populationSelect.value = data.population;
+    toHost({ type: 'set-population', population });
     renderHero();
     renderAdded();
     showView(activeView);

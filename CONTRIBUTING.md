@@ -186,6 +186,24 @@ Refresh them with the complete fast suite, preserving worker group suffixes:
 make test-fast PYTEST_ARGS="-n auto --dist loadgroup -p no:tach --store-durations --durations-path .github/fast-test-durations.json"
 ```
 
+The root pytest hook uses the ignored `.test_durations` cache for stable,
+longest-first local scheduling across fast and slow tests. Each run refreshes
+the call durations it executes; to populate the whole map, run the full suite:
+
+```bash
+uv run pytest --durations=0 -m "" tests
+```
+
+Without `.test_durations`, ordinary tests retain collection order. Markdown
+snippets are still scheduled after ordinary tests and retain their source order
+within each file.
+
+Dashboard and simulation tests reuse expensive prepared fixtures under the
+ignored `.cache/increment-fixtures/` directory. Cache entries are keyed by
+source and the installed Python environment. Set
+`INCREMENT_DISABLE_FIXTURE_CACHE=1` to bypass the cache and rebuild fixtures;
+remove `.cache/increment-fixtures/` to clear all cached fixtures.
+
 The complete PostgreSQL suite runs across three isolated PostgreSQL services,
 balanced with `pytest-split` and `.github/postgres-test-durations.json`.
 The weights come from hosted run 36941053401; new cases still run using the

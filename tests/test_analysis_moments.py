@@ -284,6 +284,18 @@ def test_moments_reject_noncanonical_source_identity_at_replay():
     assert refused.value.code == "moments.format.invalid"
 
 
+def test_moments_reject_conflicting_boolean_and_integer_identities():
+    from increment.sources import SOURCE_IDENTITY_FIELD
+
+    rows = _moment_rows()
+    rows[0][SOURCE_IDENTITY_FIELD] = json.dumps({"generation": True})
+    rows[1][SOURCE_IDENTITY_FIELD] = json.dumps({"generation": 1})
+
+    with pytest.raises(WireFormatError) as refused:
+        Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="control")
+    assert refused.value.code == "moments.format.invalid"
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [("n", float(2**61)), ("successes", float(2**61 - 513)), ("successes", True)],

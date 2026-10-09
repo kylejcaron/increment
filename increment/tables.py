@@ -1463,8 +1463,12 @@ def readout_table(
     )
     if level_note is not None:
         notes.append(level_note)
-    if notes:
-        subtitle = " · ".join(([subtitle] if subtitle else []) + notes)
+    if title:
+        if notes:
+            subtitle = " · ".join(([subtitle] if subtitle else []) + notes)
+    elif notes or subtitle:
+        title = " · ".join(([subtitle] if subtitle else []) + notes)
+        subtitle = ""
     return table.header(title, subtitle)
 
 

@@ -231,12 +231,7 @@ def _publish_and_adopt(
     for `runner.run_case`'s `finally` block to disconnect once that
     lifetime ends.
     """
-    context = native._artifact_context(
-        native._defs,  # ty: ignore[invalid-argument-type]
-        native.experiment,
-        native._on_mixed_assignment,
-        design=native._design,
-    )
+    context = native.artifact_context
     store = WarehouseArtifactStore(con, schema_name="artifacts")
     requests = [
         entry.request
@@ -7343,7 +7338,7 @@ def _encouragement_multi_metric_breakout_case() -> ParityCase:
 # small treatment arm: from there `armstats.binary_counts` checks the Bernoulli second moment
 # against the rounding bound of the arm's units, and each ingress builds that moment its own
 # way. One large arm keeps the build within bounded memory and time.
-_CEILING_CONTROL_UNITS = 4_000_100
+_CEILING_CONTROL_UNITS = 4_000_001
 _CEILING_TREATMENT_UNITS = 4_000
 _CEILING_CONTROL_CONVERSIONS = 4_000
 _CEILING_TREATMENT_CONVERSIONS = 80
@@ -7430,9 +7425,8 @@ def _ceiling_scale_frame() -> Any:
 
 
 def _exact_binomial_beyond_the_former_arm_ceiling_case() -> ParityCase:
-    """The exact binomial route on a control arm of 4,000,100 units reaches the same counts, and
+    """The exact binomial route on a control arm of 4,000,001 units reaches the same counts, and
     so the same interval, through every ingress that builds its moments differently: a
-    warehouse aggregation (definitions, unit-day artifact), a per-unit frame (summary, panel)
     and an exported moments cube."""
     import numpy as np
     import pyarrow as pa

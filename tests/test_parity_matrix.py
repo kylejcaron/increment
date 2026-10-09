@@ -51,6 +51,15 @@ def _params(cells: Iterable[matrix.Cell]) -> list:
     return params
 
 
+def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
+    cells = {
+        "test_cell": matrix.iter_cells,
+        "test_asymptotic_retention_cell": matrix.iter_asymptotic_retention_cells,
+    }.get(metafunc.function.__name__)
+    if cells is not None:
+        metafunc.parametrize("cell", _params(cells()))
+
+
 def _assert_runners_produced_rows(
     case: ParityCase, outcomes: dict[str, matrix.Outcome], result: CaseResult
 ) -> None:
@@ -271,7 +280,6 @@ def test_percentile_winsor_unsupported_ingress_classifications_remain_source_spe
         )
 
 
-@pytest.mark.parametrize("cell", _params(matrix.iter_cells()))
 def test_cell(cell: matrix.Cell) -> None:
     """Each leg of the cell (a day-axis view has a value leg and a lift leg) runs on its own,
     so one leg refusing never hides the other's rows."""
@@ -313,7 +321,6 @@ def test_asymptotic_retention_variant_enumerates_every_retention_sequential_cell
         assert exact is not None and exact.kind == "always_valid"
 
 
-@pytest.mark.parametrize("cell", _params(matrix.iter_asymptotic_retention_cells()))
 def test_asymptotic_retention_cell(cell: matrix.Cell) -> None:
     """Retention under the asymptotic scalar-mean route is held to the cell's recorded
     per-ingress outcomes, as the exact-Bernoulli route is: the matched ingresses that run

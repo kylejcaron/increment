@@ -1408,6 +1408,7 @@ class TestApproximateRoute:
         assert runtime == [False, True, True, True]
         assert plus[0].tolist() == [False, False, True, True]
 
+    @pytest.mark.slow
     def test_a_plan_beyond_the_replay_budget_leaves_its_lightest_pairs_ambiguous(self, monkeypatch):
         """Budgeted mass remains diagnostic when the remaining probability is material."""
         n, p_c, p_t = 300, 0.1, 0.2

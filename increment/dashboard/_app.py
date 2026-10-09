@@ -626,8 +626,10 @@ def _explore_scope(
 ) -> dict[str, dict[str, Any]]:
     names = [model.name for model in all_metrics(snapshot)]
     entries: dict[str, dict[str, Any]] = {name: {} for name in names}
+    declared = set(metric_names(snapshot))
     for view_key, (view, complete) in _VIEWS.items():
         batch = None
+        batch_by_metric: dict[str, Any] = {}
         if view != "cumulative_lift":
             # Absolute values are independent per metric, so one call serves them all; the
             # lift family is read per metric so each keeps its own declared multiplicity.
@@ -641,7 +643,12 @@ def _explore_scope(
                     breakout=breakout,
                 )
             )
-        declared = set(metric_names(snapshot))
+            if batch is not None:
+                grouped: dict[str, list[Any]] = {metric: [] for metric in names}
+                for row in batch:
+                    if row.metric in grouped:
+                        grouped[row.metric].append(row)
+                batch_by_metric = {metric: type(batch)(rows) for metric, rows in grouped.items()}
         for metric in names:
             # The metric=None batch covers declared metrics only; added metrics load their own.
             entries[metric][view_key] = _explore_entry(
@@ -651,7 +658,7 @@ def _explore_scope(
                 view_key=view_key,
                 breakout=breakout,
                 correction=correction,
-                batch=batch if metric in declared else None,
+                batch=batch_by_metric.get(metric) if metric in declared else None,
             )
     return entries
 
@@ -678,7 +685,7 @@ def _explore_entry(
     scope = "the whole experiment" if breakout is None else f"{breakout[1]} segments"
     try:
         if batch is not None:
-            data = type(batch)(row for row in batch if row.metric == metric)
+            data = batch
         else:
             data = load_explore(
                 analysis,

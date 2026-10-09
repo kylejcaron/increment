@@ -927,6 +927,20 @@ def test_readout_table_marks_known_multiplicity_when_other_status_is_missing():
     assert "other¹" not in html
 
 
+def test_readout_table_shows_disclosures_without_a_title():
+    pytest.importorskip("coeftable")
+    rows = estimates_to_readout(
+        [
+            _estimate("m", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
+        ]
+    )
+    rows[0]["decision_scope_complete"] = False
+
+    html = readout_table(rows, title="").gt().as_raw_html()
+
+    assert "Decision scope is incomplete" in html
+
+
 def test_readout_table_disambiguates_metric_colliding_with_status_marker():
     pytest.importorskip("coeftable")
     exploratory, declared = estimates_to_readout(

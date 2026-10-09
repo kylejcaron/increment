@@ -15,6 +15,9 @@ def test_all_cli_help_needs_no_private_authorization():
     environment = {
         key: value for key, value in os.environ.items() if not key.startswith("INCREMENT_")
     }
+    for key in ("INCREMENT_TESTMON_LOCK_OWNER", "INCREMENT_TESTMON_LOCK_ROLE"):
+        if key in os.environ:
+            environment[key] = os.environ[key]
     result = subprocess.run(
         [sys.executable, "-m", "scripts.run_test_tier", "all", "--help"],
         cwd=project,
@@ -34,6 +37,7 @@ def test_focused_cli_refuses_any_missing_selector_among_options(tmp_path):
     existing = tmp_path / "existing.py"
     existing.write_text("def test_existing():\n    pass\n")
     missing = tmp_path / "missing.py"
+    environment = {**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
     result = subprocess.run(
         [
             sys.executable,
@@ -46,6 +50,7 @@ def test_focused_cli_refuses_any_missing_selector_among_options(tmp_path):
             str(missing),
         ],
         cwd=project,
+        env=environment,
         text=True,
         capture_output=True,
         timeout=60,
@@ -110,6 +115,119 @@ def test_tier_marker_selection_remains_scoped_to_declared_policy():
     assert TIERS["slow"].marker == TIER_MARKERS["slow"]
     assert TIERS["all"].marker == ""
     assert TIERS["examples"].marker == "examples"
+
+
+def test_focused_runner_uses_serial_mode_below_recorded_xdist_overhead(tmp_path):
+    from scripts.run_test_tier import _serial_if_small_focused_selection
+
+    project = tmp_path
+    test_file = project / "tests" / "test_small.py"
+    test_file.parent.mkdir()
+    test_file.write_text("")
+    durations = project / ".github" / "fast-test-durations.json"
+    durations.parent.mkdir()
+    durations.write_text('{"tests/test_small.py::test_a": 0.5, "tests/test_small.py::test_b": 1.0}')
+
+    selected = _serial_if_small_focused_selection(
+        "focused",
+        [str(test_file), "-n", "4", "--dist", "loadgroup", "-q"],
+        project,
+    )
+
+    assert selected == [str(test_file), "-q"]
+
+
+def test_focused_runner_keeps_workers_for_larger_recorded_selections(tmp_path):
+    from scripts.run_test_tier import _serial_if_small_focused_selection
+
+    project = tmp_path
+    test_file = project / "tests" / "test_large.py"
+    test_file.parent.mkdir()
+    test_file.write_text("")
+    durations = project / ".github" / "fast-test-durations.json"
+    durations.parent.mkdir()
+    durations.write_text('{"tests/test_large.py::test_a": 5.0}')
+    args = [str(test_file), "-n", "4", "--dist", "loadgroup"]
+
+    assert _serial_if_small_focused_selection("focused", args, project) == args
+
+
+def test_focused_runner_requires_every_selected_file_to_be_small(tmp_path):
+    from scripts.run_test_tier import _serial_if_small_focused_selection
+
+    project = tmp_path
+    first = project / "tests" / "test_one.py"
+    second = project / "tests" / "test_two.py"
+    first.parent.mkdir()
+    first.write_text("")
+    second.write_text("")
+    durations = project / ".github" / "fast-test-durations.json"
+    durations.parent.mkdir()
+    durations.write_text('{"tests/test_one.py::test_a": 1.0, "tests/test_two.py::test_b": 3.5}')
+    args = [str(first), str(second), "-n", "2", "--dist", "loadgroup"]
+
+    assert _serial_if_small_focused_selection("focused", args, project) == args
+
+
+def test_focused_runner_keeps_workers_for_unrecorded_node_selector(tmp_path):
+    from scripts.run_test_tier import _serial_if_small_focused_selection
+
+    project = tmp_path
+    test_file = project / "tests" / "test_small.py"
+    test_file.parent.mkdir()
+    test_file.write_text("")
+    durations = project / ".github" / "fast-test-durations.json"
+    durations.parent.mkdir()
+    durations.write_text('{"tests/test_small.py::test_a": 0.5}')
+    args = [f"{test_file}::test_new", "-n", "2", "--dist", "loadgroup"]
+
+    assert _serial_if_small_focused_selection("focused", args, project) == args
+
+
+def test_focused_main_classifies_selection_before_adding_internal_options(tmp_path, monkeypatch):
+    import scripts.run_test_tier as runner
+
+    test_file = tmp_path / "test_small.py"
+    test_file.write_text("def test_one(): pass\n")
+    durations = tmp_path / ".github" / "fast-test-durations.json"
+    durations.parent.mkdir()
+    durations.write_text('{"test_small.py::test_one": 0.5}')
+    monkeypatch.chdir(tmp_path)
+    commands = []
+    monkeypatch.setattr(
+        runner, "run_with_budget", lambda command, **kwargs: commands.append(command) or 0
+    )
+
+    assert runner.main(["focused", str(test_file), "-n", "2", "--dist", "loadgroup"]) == 0
+    assert "-n" not in commands[0]
+    assert "--dist" not in commands[0]
+
+
+def test_tiny_pytest_selection_runs_without_xdist_plugin(tmp_path):
+    test_file = tmp_path / "test_without_xdist.py"
+    test_file.write_text("def test_smoke(): pass\n")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            str(test_file),
+            "-p",
+            "conftest",
+            "-p",
+            "no:xdist",
+        ],
+        cwd=Path(__file__).parents[1],
+        text=True,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout
 
 
 @pytest.mark.parametrize(

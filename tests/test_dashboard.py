@@ -13,8 +13,10 @@ import dataclasses
 import datetime as dt
 import io
 import json
+import os
 import random
 import re
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -220,6 +222,35 @@ def _arm_rows(
     return rows
 
 
+def _shared_snapshot(request: pytest.FixtureRequest, key: str, experiment: str):
+    """Build or load a source-versioned prepared snapshot from the repo cache."""
+    from tests._shared_cache import fixture_cache_key, get_or_build
+
+    def build():
+        connection = request.getfixturevalue("dashboard_con")
+        definitions = request.getfixturevalue("dashboard_definitions")
+        analysis = _analysis(connection, definitions, experiment)
+        if key == "storefront":
+            config = DashboardConfig(
+                expected_allocation={"control": 0.5, "treatment": 0.5},
+                source_label="Unit fixture",
+            )
+        else:
+            config = DashboardConfig(
+                expected_allocation={"baseline": 0.7, "candidate": 0.3},
+                title="Pricing copy rewrite",
+                provenance={"Fixture": "in-memory"},
+            )
+        return prepare_dashboard(analysis, config=config)
+
+    if os.environ.get("INCREMENT_DISABLE_FIXTURE_CACHE") == "1":
+        return build()
+    root = Path(__file__).resolve().parents[1]
+    source_key = fixture_cache_key(root, Path(__file__))
+    cache_root = root / ".cache" / "increment-fixtures"
+    return get_or_build(cache_root, f"dashboard-{key}-{source_key}", build)
+
+
 @pytest.fixture(scope="session")
 def dashboard_definitions(tmp_path_factory: pytest.TempPathFactory) -> str:
     path = tmp_path_factory.mktemp("dashboard_definitions")
@@ -318,24 +349,13 @@ def _analysis(con, definitions: str, experiment: str):
 
 
 @pytest.fixture(scope="session")
-def storefront(dashboard_con, dashboard_definitions) -> DashboardSnapshot:
-    analysis = _analysis(dashboard_con, dashboard_definitions, "storefront_refresh")
-    config = DashboardConfig(
-        expected_allocation={"control": 0.5, "treatment": 0.5},
-        source_label="Unit fixture",
-    )
-    return prepare_dashboard(analysis, config=config)
+def storefront(request: pytest.FixtureRequest) -> DashboardSnapshot:
+    return _shared_snapshot(request, "storefront", "storefront_refresh")
 
 
 @pytest.fixture(scope="session")
-def pricing(dashboard_con, dashboard_definitions) -> DashboardSnapshot:
-    analysis = _analysis(dashboard_con, dashboard_definitions, "pricing_copy")
-    config = DashboardConfig(
-        expected_allocation={"baseline": 0.7, "candidate": 0.3},
-        title="Pricing copy rewrite",
-        provenance={"Fixture": "in-memory"},
-    )
-    return prepare_dashboard(analysis, config=config)
+def pricing(request: pytest.FixtureRequest) -> DashboardSnapshot:
+    return _shared_snapshot(request, "pricing", "pricing_copy")
 
 
 @pytest.mark.slow
@@ -449,6 +469,7 @@ def test_explore_rejects_same_name_binding_changes_before_query(
 # Binding: the same calls serve two differently shaped experiments.
 
 
+@pytest.mark.slow
 def test_even_split_experiment_binds_declared_metadata(storefront: DashboardSnapshot) -> None:
     assert storefront.experiment_name == "storefront_refresh"
     assert storefront.title == "storefront_refresh"
@@ -524,6 +545,7 @@ def _with_primary_row(snapshot: DashboardSnapshot, **changes: Any) -> DashboardS
         ("decrease", 0.02, 0.18, "unfavorable"),
     ],
 )
+@pytest.mark.slow
 def test_primary_headline_colors_significant_results_by_declared_direction(
     storefront: DashboardSnapshot,
     direction: str,
@@ -1360,6 +1382,7 @@ def _guardrail_snapshot(
     )
 
 
+@pytest.mark.slow
 def test_readout_csv_round_trips_an_adverse_guardrail_with_its_tested_alternative(
     storefront: DashboardSnapshot,
 ) -> None:
@@ -1581,6 +1604,7 @@ def test_health_status_is_qualified_and_never_a_ship_recommendation(
     assert healthy["kind"] == "healthy"
 
 
+@pytest.mark.slow
 def test_an_engine_refusal_is_visible_for_its_own_state_only(
     dashboard_con, dashboard_definitions, monkeypatch
 ) -> None:
@@ -1643,6 +1667,7 @@ def test_health_renders_not_applicable_allocation_as_not_checked(
     assert "independent assignment was not declared" in html
 
 
+@pytest.mark.slow
 def test_unexpected_engine_failures_are_not_swallowed(
     dashboard_con, dashboard_definitions, monkeypatch
 ) -> None:

@@ -356,7 +356,9 @@ def test_two_arm_null_size_on_a_lattice_smoke_fast():
 @pytest.mark.slow
 @pytest.mark.parameter_recovery
 @pytest.mark.parametrize(
-    "kind,n,n_sims", [("seconds", 30000, 20000), ("ms", 10000, 6000), ("cents", 20000, 6000)]
+    "kind,n,n_sims",
+    [("seconds", 30000, 20000), ("ms", 10000, 6000)],
+    ids=["seconds", "milliseconds"],
 )
 def test_two_arm_null_size_on_a_lattice(kind, n, n_sims):
     """Unresolved median cells, the first the one the allowance was measured

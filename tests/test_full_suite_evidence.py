@@ -1,5 +1,6 @@
 """Full-suite artifacts survive failed runs and repeated parallel invocations."""
 
+import io
 import json
 import os
 import shutil
@@ -32,6 +33,11 @@ def test_failed_parallel_run_retains_evidence_without_overwriting_previous_run(t
     shutil.copyfile(
         project / "scripts" / "_test_tier_policy.py",
         sample / "scripts" / "_test_tier_policy.py",
+    )
+    shutil.copyfile(project / "scripts" / "_test_impact.py", sample / "scripts" / "_test_impact.py")
+    shutil.copyfile(
+        project / "scripts" / "run_test_tier_plugin.py",
+        sample / "scripts" / "run_test_tier_plugin.py",
     )
     (sample / ".gitignore").write_text("__pycache__/\n.pytest_cache/\n")
     subprocess.run(["git", "init", "-q", str(sample)], check=True)
@@ -609,6 +615,7 @@ def test_affected_xdist_run_retains_controller_selection_and_worker_results(tmp_
     assert manifest["deselected_tests"] == 1
     assert manifest["worker_allowance"] == "2"
     assert manifest["resolved_worker_count"] == 2
+    assert manifest["selection_route"] == "import_graph"
     assert manifest["outcome"] == "passed"
     reports = [
         json.loads(line)
@@ -788,6 +795,25 @@ def test_affected_runner_requires_evidence_after_zero_exit(tmp_path: Path) -> No
         affected_evidence_root=tmp_path,
     )
     assert status != 0
+
+
+def test_affected_runner_uses_current_stderr_after_capture_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts import run_test_tier
+
+    stream = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", stream)
+
+    status = run_test_tier.run_with_budget(
+        [sys.executable, "-c", "pass"],
+        tier="fast",
+        budget_seconds=10,
+        affected_evidence_root=tmp_path,
+    )
+
+    assert status == 1
+    assert "pytest: error: affected evidence rejected" in stream.getvalue()
 
 
 def test_affected_runner_accepts_setup_skip_terminal_outcome(tmp_path: Path) -> None:

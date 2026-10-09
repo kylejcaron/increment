@@ -15,12 +15,25 @@ import sys
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from functools import cache
 from importlib import metadata
 from pathlib import Path
 from typing import NoReturn, TextIO
 
+from scripts._test_impact import (
+    _source_snapshots,
+    affected_test_paths,
+    mark_testmon_nested_context,
+    record_testmon_full_run,
+    subprocess_consumer_test_paths,
+    testmon_database_lock,
+    testmon_environment_fingerprint,
+    testmon_full_tiers,
+    testmon_nested_context,
+    write_testmon_coverage,
+)
 from scripts._test_tier_policy import TIER_MARKERS
 
 _TIMEOUT_STATUS = 124
@@ -105,7 +118,16 @@ def _changed_paths(base: str, cwd: Path) -> tuple[list[tuple[str, str, str | Non
             index += 1
             changes.append((status, path, None))
     untracked = _git_output("ls-files", "--others", "--exclude-standard", "-z", cwd=cwd).split("\0")
-    changes.extend(("?", path, None) for path in untracked if path)
+    generated_testmon_files = {
+        ".testmondata",
+        ".testmondata-wal",
+        ".testmondata-shm",
+        ".testmondata.full",
+        ".testmondata.full.tmp",
+    }
+    changes.extend(
+        ("?", path, None) for path in untracked if path and path not in generated_testmon_files
+    )
     paths = [cwd / name for _, old, new in changes for name in (old, new) if name]
     return changes, paths
 
@@ -295,6 +317,15 @@ def _affected_context(base: str, cwd: Path, tier: str) -> tuple[str, dict[str, o
         if status != "D" and (new or old).endswith(".py") and not (new or old).startswith("tests/")
     ]
     dynamic_consumers = _dynamic_import_tests(cwd) if changed_source_modules else []
+    subprocess_consumers = subprocess_consumer_test_paths(cwd) if changed_source_modules else []
+    import_consumers = affected_test_paths(
+        cwd,
+        [
+            new or old
+            for status, old, new in changes
+            if status != "D" and (new or old).endswith(".py")
+        ],
+    )
     if refused:
         raise ValueError("affected validation refused: " + "; ".join(sorted(set(refused))))
     source_identity = hashlib.sha256()
@@ -321,6 +352,8 @@ def _affected_context(base: str, cwd: Path, tier: str) -> tuple[str, dict[str, o
         "environment_id": _environment_identity(cwd),
         "worker_allowance": "serial",
         "retained_dynamic_consumers": dynamic_consumers,
+        "retained_subprocess_consumers": subprocess_consumers,
+        "retained_import_consumers": import_consumers,
         "changed_paths": [path.relative_to(cwd).as_posix() for path in sorted(paths)],
     }
     return resolved, identity
@@ -329,6 +362,7 @@ def _affected_context(base: str, cwd: Path, tier: str) -> tuple[str, dict[str, o
 def _affected_environment(identity: dict[str, object]) -> dict[str, str | None]:
     changed_paths = identity["changed_paths"]
     retained_dynamic = identity["retained_dynamic_consumers"]
+    retained_imports = identity["retained_import_consumers"]
     changed_tests = (
         [
             path
@@ -347,13 +381,39 @@ def _affected_environment(identity: dict[str, object]) -> dict[str, str | None]:
         if isinstance(retained_dynamic, list)
         else []
     )
-    retained_tests = sorted(set(changed_tests) | set(dynamic_tests))
+    import_tests = (
+        [
+            path
+            for path in retained_imports
+            if isinstance(path, str) and path.startswith("tests/") and path.endswith(".py")
+        ]
+        if isinstance(retained_imports, list)
+        else []
+    )
+    subprocess_consumers = identity.get("retained_subprocess_consumers", [])
+    subprocess_tests = (
+        [
+            path
+            for path in subprocess_consumers
+            if isinstance(path, str) and path.startswith("tests/") and path.endswith(".py")
+        ]
+        if isinstance(subprocess_consumers, list)
+        else []
+    )
+    retained_tests = sorted(
+        set(changed_tests) | set(dynamic_tests) | set(import_tests) | set(subprocess_tests)
+    )
     worker_allowance = identity.get("worker_allowance", "serial")
     return {
         "INCREMENT_AFFECTED_EVIDENCE": json.dumps(identity, sort_keys=True),
         "INCREMENT_AFFECTED_TEST_PATHS": json.dumps(retained_tests),
         "INCREMENT_AFFECTED_DYNAMIC_TEST_PATHS": json.dumps(dynamic_tests),
+        "INCREMENT_AFFECTED_IMPORT_TEST_PATHS": json.dumps(import_tests),
+        "INCREMENT_AFFECTED_SUBPROCESS_TEST_PATHS": json.dumps(subprocess_tests),
         "INCREMENT_AFFECTED_WORKER_ALLOWANCE": str(worker_allowance),
+        "INCREMENT_AFFECTED_CHANGED_PATHS": json.dumps(changed_paths),
+        "INCREMENT_AFFECTED_USE_TESTMON": "1",
+        "INCREMENT_AFFECTED_TIER": str(identity.get("tier", "fast")),
     }
 
 
@@ -387,12 +447,108 @@ TIERS = {
 }
 
 
+def can_certify_testmon_full_run(tier: str, arguments: Sequence[str]) -> bool:
+    """Reject pytest arguments that can reduce collection or skip test execution."""
+    if tier not in {"fast", "slow", "all"}:
+        return False
+    if os.environ.get("PYTEST_ADDOPTS"):
+        return False
+    value_options = {
+        "-n",
+        "--numprocesses",
+        "--dist",
+        "--durations",
+        "--evidence-root",
+        "--maxfail",
+    }
+    flag_options = {
+        "-q",
+        "--quiet",
+        "-v",
+        "--verbose",
+        "-x",
+        "--exitfirst",
+        "--runtime-diagnostics",
+    }
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "-p":
+            if index + 1 >= len(arguments) or arguments[index + 1] != "no:tach":
+                return False
+            index += 2
+            continue
+        if argument in value_options:
+            if index + 1 == len(arguments):
+                return False
+            index += 2
+            continue
+        if argument in flag_options or argument.startswith(
+            ("-qq", "-vv", "--numprocesses=", "--dist=", "--durations=", "--maxfail=")
+        ):
+            index += 1
+            continue
+        if argument.startswith("--evidence-root="):
+            index += 1
+            continue
+        return False
+    return True
+
+
+def _full_run_certification_complete(path: Path) -> bool:
+    try:
+        evidence = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(evidence, dict) or evidence.get("safe") is not True:
+        return False
+    collected = evidence.get("collected")
+    reported = evidence.get("reported")
+    if (
+        not isinstance(collected, list)
+        or not collected
+        or not all(isinstance(nodeid, str) for nodeid in collected)
+        or len(collected) != len(set(collected))
+        or not isinstance(reported, list)
+        or not all(isinstance(nodeid, str) for nodeid in reported)
+        or len(reported) != len(set(reported))
+    ):
+        return False
+    return set(collected) == set(reported)
+
+
+def _full_run_certification_dist(path: Path) -> str | None:
+    try:
+        evidence = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if isinstance(evidence, dict) and evidence.get("dist") == "loadgroup":
+        return "loadgroup"
+    return None
+
+
 def build_pytest_command(tier: Tier, extra_args: Sequence[str]) -> list[str]:
     # External evidence directories must not change configuration or test selection.
     config = Path(__file__).resolve().parents[1] / "pyproject.toml"
-    command = [sys.executable, "-m", "pytest", "-c", str(config), "-p", "tests._evidence"]
+    command = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-c",
+        str(config),
+        "-p",
+        "tests._evidence",
+    ]
+    nested_test_run = "PYTEST_CURRENT_TEST" in os.environ
+    if nested_test_run:
+        # Nested subprocesses must not inherit affected selection or certification hooks.
+        command.extend(("-p", "no:pytest-testmon"))
+    else:
+        command.extend(("-p", "scripts.run_test_tier_plugin"))
     if tier.marker is not None:
         command.extend(("-m", tier.marker))
+    if not nested_test_run:
+        command.append("--testmon-noselect")
     command.extend(extra_args)
     return command
 
@@ -670,6 +826,24 @@ def _supervise_process(
                 next_heartbeat = now + heartbeat_seconds
 
 
+def _supervised_child_environment(extra_env: Mapping[str, str | None] | None) -> dict[str, str]:
+    environment = os.environ.copy()
+    for name, value in (extra_env or {}).items():
+        if value is None:
+            environment.pop(name, None)
+        else:
+            environment[name] = value
+    return environment
+
+
+def _mark_supervised_testmon_child(environment: dict[str, str]) -> None:
+    if "INCREMENT_TESTMON_LOCK_OWNER" not in environment:
+        return
+    environment["INCREMENT_TESTMON_LOCK_ROLE"] = (
+        "nested" if environment.get("INCREMENT_TESTMON_LOCK_ROLE") == "nested" else "owner-child"
+    )
+
+
 def run_with_budget(
     command: Sequence[str],
     *,
@@ -677,11 +851,13 @@ def run_with_budget(
     budget_seconds: float | None,
     heartbeat_seconds: float = 30.0,
     grace_seconds: float = 5.0,
-    stream: TextIO = sys.stderr,
+    stream: TextIO | None = None,
     extra_env: Mapping[str, str | None] | None = None,
     affected_evidence_root: Path | None = None,
 ) -> int:
     """Supervise ``command``; ``None`` disables its deadline, not signal cleanup."""
+
+    stream = sys.stderr if stream is None else stream
     started = time.monotonic()
     deadline = None if budget_seconds is None else started + budget_seconds
     owner_token = uuid.uuid4().hex
@@ -708,12 +884,8 @@ def run_with_budget(
     startup_gate: int | None = None
     timed_out = False
     try:
-        child_environment = os.environ.copy()
-        for name, value in (extra_env or {}).items():
-            if value is None:
-                child_environment.pop(name, None)
-            else:
-                child_environment[name] = value
+        child_environment = _supervised_child_environment(extra_env)
+        _mark_supervised_testmon_child(child_environment)
         child_environment["INCREMENT_EVIDENCE_OWNER"] = owner_token
         process, windows_job, startup_gate = _start_process(command, env=child_environment)
         _raise_pending()
@@ -779,6 +951,36 @@ def run_with_budget(
             print(f"pytest: error: affected evidence rejected ({evidence})", file=stream)
             return 1
     return status
+
+
+def _run_affected_with_map(
+    command: Sequence[str],
+    *,
+    tier_name: str,
+    extra_env: dict[str, str | None],
+    evidence_root: Path,
+) -> int:
+    root = Path.cwd()
+    tier = TIERS[tier_name]
+    with testmon_database_lock(root):
+        complete_tiers = testmon_full_tiers(root)
+        previous_environment = testmon_environment_fingerprint(root)
+        result = run_with_budget(
+            command,
+            tier=tier_name,
+            budget_seconds=(
+                None if os.environ.get("GITHUB_ACTIONS") == "true" else tier.budget_seconds
+            ),
+            extra_env=extra_env,
+            affected_evidence_root=evidence_root,
+        )
+        if (
+            result == 0
+            and tier_name in complete_tiers
+            and previous_environment == testmon_environment_fingerprint(root)
+        ):
+            write_testmon_coverage(root, complete_tiers)
+        return result
 
 
 def _affected_main(argv: Sequence[str]) -> int:
@@ -864,14 +1066,137 @@ def _affected_main(argv: Sequence[str]) -> int:
         f"Affected-test validation: base={base} tier={args.tier} worker_allowance={worker_display}",
         flush=True,
     )
-    tier = TIERS[args.tier]
-    return run_with_budget(
+    return _run_affected_with_map(
         command,
-        tier=args.tier,
-        budget_seconds=None if os.environ.get("GITHUB_ACTIONS") == "true" else tier.budget_seconds,
+        tier_name=args.tier,
         extra_env=extra_env,
-        affected_evidence_root=evidence_root,
+        evidence_root=evidence_root,
     )
+
+
+_SMALL_SELECTION_SERIAL_SECONDS = 4.0
+
+
+def _focused_missing_selector(pytest_args: Sequence[str], project_root: Path) -> str | None:
+    """Find missing file selectors before pytest option parsing can reject them."""
+    options_with_values = {
+        "-n",
+        "--numprocesses",
+        "--dist",
+        "-k",
+        "--keyword",
+        "-m",
+        "--markexpr",
+        "--maxfail",
+        "--durations",
+        "--evidence-root",
+    }
+    flags_without_values = {"-x", "--runtime-diagnostics"}
+    index = 0
+    while index < len(pytest_args):
+        argument = pytest_args[index]
+        if argument in options_with_values:
+            index += 2
+            continue
+        if argument.startswith(
+            (
+                "-n",
+                "--numprocesses=",
+                "--dist=",
+                "--keyword=",
+                "--markexpr=",
+                "--maxfail=",
+                "--durations=",
+                "--evidence-root=",
+            )
+        ):
+            index += 1
+            continue
+        if argument in flags_without_values or argument in {"-q", "-v"}:
+            index += 1
+            continue
+        if argument.startswith(("-q", "-v")):
+            index += 1
+            continue
+        if argument.startswith("-"):
+            return None
+        path = argument.split("::", 1)[0]
+        if path.endswith((".py", ".md")) and not (project_root / path).is_file():
+            return argument
+        index += 1
+    return None
+
+
+def _serial_if_small_focused_selection(
+    tier: str, pytest_args: list[str], project_root: Path
+) -> list[str]:
+    """Remove xdist only when every selected node has a recorded small duration."""
+    if tier != "focused" or not pytest_args:
+        return pytest_args
+
+    targets: list[str] = []
+    index = 0
+    while index < len(pytest_args):
+        argument = pytest_args[index]
+        if argument in {"-n", "--numprocesses", "--dist"}:
+            index += 2
+            continue
+        if argument.startswith(("-n", "--numprocesses=", "--dist=")):
+            index += 1
+            continue
+        if argument == "-q":
+            index += 1
+            continue
+        if argument.startswith("-"):
+            return pytest_args
+        if argument.split("::", 1)[0].endswith((".py", ".md")):
+            targets.append(argument)
+            index += 1
+            continue
+        return pytest_args
+    if not targets:
+        return pytest_args
+
+    duration_path = project_root / ".github" / "fast-test-durations.json"
+    try:
+        durations = json.loads(duration_path.read_text())
+    except FileNotFoundError:
+        return pytest_args
+
+    selected_durations: list[float] = []
+    for target in targets:
+        path, separator, selector = target.partition("::")
+        try:
+            relative = Path(path).resolve().relative_to(project_root.resolve()).as_posix()
+        except ValueError:
+            return pytest_args
+        if separator:
+            nodeid = f"{relative}::{selector}"
+            if nodeid not in durations:
+                return pytest_args
+            selected_durations.append(durations[nodeid])
+            continue
+        matching = [
+            value for nodeid, value in durations.items() if nodeid.startswith(f"{relative}::")
+        ]
+        if not matching:
+            return pytest_args
+        selected_durations.extend(matching)
+    if sum(selected_durations) >= _SMALL_SELECTION_SERIAL_SECONDS:
+        return pytest_args
+
+    arguments: list[str] = []
+    index = 0
+    while index < len(pytest_args):
+        argument = pytest_args[index]
+        if argument in {"-n", "--numprocesses", "--dist"}:
+            index += 2
+        elif argument.startswith(("-n", "--numprocesses=", "--dist=")):
+            index += 1
+        else:
+            arguments.append(argument)
+            index += 1
+    return arguments
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -896,7 +1221,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         "INCREMENT_AFFECTED_EVIDENCE": "",
         "INCREMENT_AFFECTED_TEST_PATHS": "[]",
         "INCREMENT_AFFECTED_DYNAMIC_TEST_PATHS": "[]",
+        "INCREMENT_AFFECTED_IMPORT_TEST_PATHS": "[]",
+        "INCREMENT_AFFECTED_SUBPROCESS_TEST_PATHS": "[]",
+        "INCREMENT_AFFECTED_CHANGED_PATHS": "[]",
+        "INCREMENT_AFFECTED_USE_TESTMON": None,
+        "INCREMENT_AFFECTED_TESTMON_READY": None,
+        "INCREMENT_AFFECTED_TIER": None,
         "INCREMENT_AFFECTED_WORKER_ALLOWANCE": "serial",
+        "INCREMENT_TESTMON_CERTIFICATION_REPORT": None,
+        "INCREMENT_TESTMON_EXPECTED_CONFIG": None,
+        "INCREMENT_TESTMON_EXPECTED_MARK": None,
     }
     if os.environ.get("INCREMENT_AFFECTED_EVIDENCE"):
         extra_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = None
@@ -916,11 +1250,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 4
+        missing_selector = _focused_missing_selector(args.pytest_args, Path.cwd())
+        if missing_selector is not None:
+            print(
+                f"pytest: error: focused selectors must be existing test files: "
+                f"{missing_selector!r}",
+                file=sys.stderr,
+            )
+            return 4
         explicit_marker = any(
             argument.startswith("-m")
             or argument == "--markexpr"
             or argument.startswith("--markexpr=")
             for argument in args.pytest_args
+        )
+        args.pytest_args = _serial_if_small_focused_selection(
+            args.tier, args.pytest_args, Path.cwd()
         )
         args.pytest_args[:0] = [
             "-p",
@@ -929,12 +1274,61 @@ def main(argv: Sequence[str] | None = None) -> int:
         ]
         if not explicit_marker:
             args.pytest_args[2:2] = ["--focused-file-defaults"]
-    return run_with_budget(
-        build_pytest_command(tier, args.pytest_args),
-        tier=args.tier,
-        budget_seconds=None if os.environ.get("GITHUB_ACTIONS") == "true" else tier.budget_seconds,
-        extra_env=extra_env,
+    root = Path.cwd()
+    mark_testmon_nested_context(root)
+    os.environ["TESTMON_DATAFILE"] = str(root / ".testmondata")
+    certification_report = None
+    if can_certify_testmon_full_run(args.tier, args.pytest_args):
+        certification_report = root / f".testmondata.full-report-{uuid.uuid4().hex}.json"
+        expected_config = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        extra_env.update(
+            {
+                "INCREMENT_TESTMON_CERTIFICATION_REPORT": str(certification_report),
+                "INCREMENT_TESTMON_EXPECTED_CONFIG": str(expected_config),
+                "INCREMENT_TESTMON_EXPECTED_MARK": tier.marker or "",
+            }
+        )
+    lock_context = (
+        nullcontext(False)
+        if "PYTEST_CURRENT_TEST" in os.environ and not testmon_nested_context(root)
+        else testmon_database_lock(root)
     )
+    with lock_context:
+        source_snapshot = None
+        if certification_report is not None:
+            try:
+                source_snapshot = _source_snapshots(root)
+            except (OSError, UnicodeDecodeError):
+                pass
+        result = run_with_budget(
+            build_pytest_command(tier, args.pytest_args),
+            tier=args.tier,
+            budget_seconds=(
+                None if os.environ.get("GITHUB_ACTIONS") == "true" else tier.budget_seconds
+            ),
+            extra_env=extra_env,
+        )
+        sources_unchanged = False
+        if source_snapshot is not None:
+            try:
+                sources_unchanged = _source_snapshots(root) == source_snapshot
+            except (OSError, UnicodeDecodeError):
+                pass
+        if (
+            result == 0
+            and certification_report is not None
+            and sources_unchanged
+            and _full_run_certification_complete(certification_report)
+        ):
+            record_testmon_full_run(
+                root,
+                args.tier,
+                test_dist=_full_run_certification_dist(certification_report),
+                expected_source_snapshot=source_snapshot,
+            )
+        if certification_report is not None:
+            certification_report.unlink(missing_ok=True)
+    return result
 
 
 if __name__ == "__main__":

@@ -1,6 +1,3 @@
 # H1: pytest.raises(..., match=...) on coded or unresolved exceptions
 # ---
 # H2: private-attribute reach-ins outside the two sanctioned shims
-tests/test_decision_wire.py::_assert_legacy_prior_roundtrip::_state  # Moments-only Analysis has no public export operation; protects the legacy export/reload roundtrip.
-tests/test_sequential_public_sources.py::test_checkpoint_export_preserves_captured_assignment_counts_and_omits_legacy_counts::_src  # Clears a captured checkpoint before legacy re-adoption; no public reset seam exists.
-tests/parity_harness/cases.py::_publish_and_adopt::_defs  # Analysis exposes no public Definitions accessor for the expected artifact context.

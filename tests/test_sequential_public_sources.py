@@ -233,9 +233,14 @@ def test_checkpoint_export_preserves_captured_assignment_counts_and_omits_legacy
 
     from increment import capture_sequential_snapshot
     from increment.semantics.design import Randomized
-    from increment.sources import ASSIGNMENT_COUNTS_FIELD
+    from increment.sources import ASSIGNMENT_COUNTS_FIELD, MomentsSource, export_source_moments
 
     specs = [MetricSpec(name="outcome", type="conversion")]
+    design = Randomized(
+        control_group="control",
+        allocation={"control": 0.5, "treatment": 0.5},
+        allocation_scheme="independent",
+    )
     frame = _frame([0, 1] * 24, [1, 1] * 24)
     analysis = _analysis(frame, specs, _plan(specs, "bernoulli"))
     _row(analysis)
@@ -249,15 +254,7 @@ def test_checkpoint_export_preserves_captured_assignment_counts_and_omits_legacy
         "control": 48,
         "treatment": 48,
     }
-    replay = Analysis.from_moments(
-        payload,
-        metrics=specs,
-        design=Randomized(
-            control_group="control",
-            allocation={"control": 0.5, "treatment": 0.5},
-            allocation_scheme="independent",
-        ),
-    )
+    replay = Analysis.from_moments(payload, metrics=specs, design=design)
     assert replay.sequential_snapshot().assignment_counts == snapshot.assignment_counts
 
     legacy_snapshot = capture_sequential_snapshot(
@@ -276,23 +273,20 @@ def test_checkpoint_export_preserves_captured_assignment_counts_and_omits_legacy
         finalized=True,
         reveal_cursor=snapshot.reveal_cursor,
     )
-    source = analysis._src
-    source._sequential_snapshot = None
-    source.adopt_sequential_snapshot(legacy_snapshot)
+    payload[0]["sequential_snapshot"] = legacy_snapshot.model_dump_json()
+    payload[0].pop(ASSIGNMENT_COUNTS_FIELD, None)
+    legacy_source = MomentsSource(
+        payload,
+        metrics=analysis.metrics,
+        study_id=str(payload[0]["experiment_id"]),
+        design=design,
+    )
     legacy_path = tmp_path / "legacy-checkpoint-counts.parquet"
-    analysis.export(legacy_path)
+    export_source_moments(legacy_source, legacy_path, observational_refusal=lambda _metric: None)
     legacy_wire = pq.read_table(legacy_path).to_pylist()
     assert ASSIGNMENT_COUNTS_FIELD not in legacy_wire[0]
 
-    legacy_replay = Analysis.from_moments(
-        legacy_wire,
-        metrics=specs,
-        design=Randomized(
-            control_group="control",
-            allocation={"control": 0.5, "treatment": 0.5},
-            allocation_scheme="independent",
-        ),
-    )
+    legacy_replay = Analysis.from_moments(legacy_wire, metrics=specs, design=design)
     legacy_results = legacy_replay.run()
     assert legacy_results.metadata is not None
     integrity = next(iter(legacy_results.metadata.scope.by_source.values())).integrity[0]
