@@ -239,7 +239,7 @@ def test_registered_checkpoint_keeps_an_unmodeled_quantile_sibling_exportable(
         registered.close()
     (envelope,) = pq.read_table(path).to_pylist()
     assert envelope["record_kind"] == "sequential_checkpoint"
-    assert envelope["moments_format"] == 9
+    assert envelope["moments_format"] == 10
     assert "metric" not in envelope
     replay = Analysis.from_moments([envelope], metrics=_mixed_catalog_specs(), control="control")
     try:

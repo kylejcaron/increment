@@ -110,6 +110,49 @@ class TestClosedForm:
         assert result.mde_unavailable_reason is None
         assert result.effective_var == 2.0  # no CUPED
 
+    def test_power_result_repr_summarizes_fixed_plan_without_nested_dumps(self):
+        result = required_sample_size(
+            procedure=make_procedure(),
+            relative_lift=0.2,
+            baseline=Baseline(mean=1.0, var=2.0),
+        )
+
+        display = repr(result)
+        assert len(display) < 500
+        assert "n_per_arm=" in display and "n_total=" in display
+        assert "power=" in display and "mde_relative=" in display
+        assert "relative" in display and "asymptotic" in display
+        assert "closed_form_model_only_v1" in display
+        assert "effective_var=" in display
+        assert "inference_to_declare=" not in display
+        from rich.pretty import pretty_repr
+
+        rich_display = pretty_repr(result)
+        assert "numerical_qualification" in rich_display
+        assert "inference_to_declare" not in rich_display
+
+    def test_power_result_repr_distinguishes_sequential_expected_size(self):
+        result = required_sample_size(
+            procedure=make_procedure(inference=GaussianScoreMixture(), population="assigned"),
+            relative_lift=0.2,
+            baseline=Baseline(mean=1.0, var=2.0),
+            planned_looks=4,
+        )
+
+        display = repr(result)
+        assert result.expected_n_total is not None
+        assert "expected_n_total=" in display
+        assert "sequential" in display
+        assert "n_total=" in display
+        assert "power=" in display
+        assert "numerical_qualification=" in display
+        assert "sequential_crossing_quadrature_v1" in display
+        assert "inference_to_declare=" not in display
+        from rich.pretty import pretty_repr
+
+        rich_display = pretty_repr(result)
+        assert "expected_n_total" in rich_display and "n_total" in rich_display
+
 
 # Step 1b: Conversion (Bernoulli) planning sizes the treatment arm at its
 # own rate -- closed form, independent of the solver.
@@ -1002,6 +1045,10 @@ class TestPowerResultInvariants:
         }
         kwargs.update(overrides)
         return PowerResult(**kwargs)
+
+    def test_repr_shows_exact_unavailable_mde_reason(self):
+        result = self._result(mde_relative=None, mde_unavailable_reason="unattainable")
+        assert "mde_relative=unavailable (unattainable)" in repr(result)
 
     @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
     def test_rejects_nonfinite_power(self, bad):

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
 from increment._moment_plan import X_SLOT_ROLES
+from increment._source_identity import source_identities_equal, source_identity_is_canonical
 from increment._source_types import (
     ComplianceArm,
     ComplianceSummary,
@@ -284,12 +285,35 @@ _BREAKOUT_COMPLIANCE = _RefusalSpec(
 )
 
 
-# Fixed-horizon wire-format version stamped on exported moments cubes; the column
-# survives parquet -> to_pylist round-trips. Registered sequential checkpoints
-# use the separate sequential format below.
-MOMENTS_FORMAT = 10
-SEQUENTIAL_MOMENTS_FORMAT = 9
-_SUPPORTED_MOMENTS_FORMATS = frozenset({MOMENTS_FORMAT, SEQUENTIAL_MOMENTS_FORMAT})
+# Fixed-horizon and sequential moments wire formats have separate version
+# sequences. The source identity field was added after format 10 fixed cubes
+# and format 9 sequential checkpoints were released.
+MOMENTS_FORMAT = 11
+SEQUENTIAL_MOMENTS_FORMAT = 10
+_PREVIOUS_FIXED_MOMENTS_FORMAT = 10
+_PREVIOUS_SEQUENTIAL_MOMENTS_FORMAT = 9
+_SUPPORTED_FIXED_MOMENTS_FORMATS = frozenset({_PREVIOUS_FIXED_MOMENTS_FORMAT, MOMENTS_FORMAT})
+_SUPPORTED_SEQUENTIAL_MOMENTS_FORMATS = frozenset(
+    {_PREVIOUS_SEQUENTIAL_MOMENTS_FORMAT, SEQUENTIAL_MOMENTS_FORMAT}
+)
+_SUPPORTED_MOMENTS_FORMATS = (
+    _SUPPORTED_FIXED_MOMENTS_FORMATS | _SUPPORTED_SEQUENTIAL_MOMENTS_FORMATS
+)
+SOURCE_IDENTITY_FIELD = "source_identity"
+
+
+def _legacy_moments_source_identity(version: int, study_id: str) -> dict[str, object] | None:
+    if version not in {
+        _PREVIOUS_FIXED_MOMENTS_FORMAT,
+        _PREVIOUS_SEQUENTIAL_MOMENTS_FORMAT,
+    }:
+        return None
+    return {
+        "legacy_moments_format": version,
+        "study_id": study_id,
+        "artifacts": [],
+    }
+
 
 ASSIGNMENT_COUNTS_FIELD = "assignment_counts"
 DECISION_PLAN_FIELD = "decision_plan"
@@ -513,15 +537,12 @@ def _strip_sequential_envelope(stripped: dict[str, object], *, version: int, n_r
     if kind != "sequential_checkpoint":
         if checkpoint is not None or kind is not None:
             sequential_refuse("source.invalid", "checkpoint state requires a typed envelope")
-        if version == SEQUENTIAL_MOMENTS_FORMAT:
-            sequential_refuse(
-                "source.invalid",
-                f"format {SEQUENTIAL_MOMENTS_FORMAT} moments require exactly one typed sequential checkpoint envelope",
-            )
         return False
-    if version != SEQUENTIAL_MOMENTS_FORMAT or not isinstance(checkpoint, str):
+    if not isinstance(checkpoint, str):
+        sequential_refuse("source.invalid", "checkpoint envelope requires its snapshot payload")
+    if version not in _SUPPORTED_SEQUENTIAL_MOMENTS_FORMATS:
         sequential_refuse(
-            "continuation.legacy", "checkpoint envelopes require the current exact format"
+            "continuation.legacy", "checkpoint envelopes require a supported sequential format"
         )
     if n_rows != 1:
         sequential_refuse("source.invalid", "checkpoint envelopes cannot mix with moment rows")
@@ -531,7 +552,7 @@ def _strip_sequential_envelope(stripped: dict[str, object], *, version: int, n_r
     return True
 
 
-def _validate_moments_plan_format_pair(version: int, plans: set[str]) -> None:
+def _validate_moments_plan_format_pair(plans: set[str], *, sequential_checkpoint: bool) -> None:
     """Reject a sequential/fixed plan before compiled-plan semantic decoding."""
     if not plans:
         return
@@ -546,15 +567,15 @@ def _validate_moments_plan_format_pair(version: int, plans: set[str]) -> None:
             continue
         inference = wire.get("inference")
         kind = inference.get("kind") if isinstance(inference, Mapping) else None
-        if version != SEQUENTIAL_MOMENTS_FORMAT and kind in ("always_valid", "asymptotic_mean"):
+        if not sequential_checkpoint and kind in ("always_valid", "asymptotic_mean"):
             sequential_refuse(
                 "continuation.legacy",
                 "legacy sequential plans cannot replay without the current checkpoint envelope",
             )
-        if version == SEQUENTIAL_MOMENTS_FORMAT and kind == "fixed":
+        if sequential_checkpoint and kind == "fixed":
             sequential_refuse(
                 "source.invalid",
-                f"format {SEQUENTIAL_MOMENTS_FORMAT} moments require a sequential checkpoint plan",
+                "sequential checkpoint format requires a sequential checkpoint plan",
             )
 
 
@@ -598,7 +619,41 @@ def _validate_moment_counts(row: Mapping[str, object]) -> None:
             _refuse(_MOMENTS_COUNT_OUT_OF_RANGE, field=field, value=count, n=int(n))
 
 
-def _strip_moments_envelope_row(row, row_count):
+def _parse_source_identity(payload: object) -> dict[str, object] | None:
+    if payload is None:
+        return None
+    if not isinstance(payload, str):
+        _refuse(
+            _MOMENTS_FORMAT_INVALID,
+            received=payload,
+            required="a source identity JSON object",
+        )
+    try:
+        identity = json.loads(payload, object_pairs_hook=_reject_duplicate_keys)
+    except _CodedError:
+        raise
+    except (json.JSONDecodeError, ValueError):
+        _refuse(
+            _MOMENTS_FORMAT_INVALID,
+            received="invalid source identity JSON",
+            required="a source identity JSON object",
+        )
+    if not isinstance(identity, Mapping) or any(not isinstance(key, str) for key in identity):
+        _refuse(
+            _MOMENTS_FORMAT_INVALID,
+            received=identity,
+            required="a source identity JSON object",
+        )
+    if not source_identity_is_canonical(identity):
+        _refuse(
+            _MOMENTS_FORMAT_INVALID,
+            received="noncanonical source identity",
+            required="a canonical JSON source identity",
+        )
+    return dict(cast("Mapping[str, object]", identity))
+
+
+def _strip_moments_envelope_row(row, row_count, *, require_source_identity: bool):
     stripped = dict(row)
     if "moments_format" not in stripped:
         _refuse(_MOMENTS_FORMAT_LEGACY, received=None, required=MOMENTS_FORMAT)
@@ -609,6 +664,7 @@ def _strip_moments_envelope_row(row, row_count):
         _refuse(_MOMENTS_FORMAT_INVALID, received=payload, required=MOMENTS_FORMAT)
     stripped.pop(ASSIGNMENT_COUNTS_FIELD, None)
     stripped.pop(COMPLIANCE_SUMMARY_FIELD, None)
+    source_identity = _parse_source_identity(stripped.pop(SOURCE_IDENTITY_FIELD, None))
     has_trigger = TRIGGER_NAME_FIELD in stripped
     trigger_name = stripped.pop(TRIGGER_NAME_FIELD, None)
     if (
@@ -623,9 +679,18 @@ def _strip_moments_envelope_row(row, row_count):
         )
     envelope_identity = None
     kind = stripped.get("record_kind")
+    sequential_checkpoint = kind == "sequential_checkpoint"
     if kind == "design_summary":
-        if version != MOMENTS_FORMAT:
+        if version not in _SUPPORTED_FIXED_MOMENTS_FORMATS:
+            if version > max(_SUPPORTED_MOMENTS_FORMATS):
+                _refuse(_MOMENTS_FORMAT_FUTURE, received=version, required=MOMENTS_FORMAT)
             _refuse(_MOMENTS_FORMAT_INVALID, received=version, required=MOMENTS_FORMAT)
+        if version == MOMENTS_FORMAT and require_source_identity and source_identity is None:
+            _refuse(
+                _MOMENTS_FORMAT_INVALID,
+                received=None,
+                required="source identity in current moments format",
+            )
         if row_count != 1:
             invalid_compliance_state("design_summary requires exactly one complete envelope")
         identity = stripped.pop("experiment_id", None)
@@ -642,16 +707,42 @@ def _strip_moments_envelope_row(row, row_count):
         stripped.pop("record_kind")
         output_row = None
     elif _strip_sequential_envelope(stripped, version=version, n_rows=row_count):
+        if (
+            version == SEQUENTIAL_MOMENTS_FORMAT
+            and require_source_identity
+            and source_identity is None
+        ):
+            _refuse(
+                _MOMENTS_FORMAT_INVALID,
+                received=None,
+                required="source identity in current sequential moments format",
+            )
         output_row = None
     else:
+        if version == MOMENTS_FORMAT and require_source_identity and source_identity is None:
+            _refuse(
+                _MOMENTS_FORMAT_INVALID,
+                received=None,
+                required="source identity in current moments format",
+            )
         output_row = stripped
-    return version, payload, has_trigger, trigger_name, envelope_identity, output_row
+    return (
+        version,
+        payload,
+        has_trigger,
+        trigger_name,
+        envelope_identity,
+        output_row,
+        source_identity,
+        sequential_checkpoint,
+    )
 
 
 def _check_moments_format(
     rows: Sequence[Mapping[str, object]],
     *,
     require_plan: bool = True,
+    require_source_identity: bool = True,
 ) -> tuple[
     int,
     list[dict[str, object]],
@@ -660,21 +751,36 @@ def _check_moments_format(
     dict[str, object] | None,
     str | None,
     str | None,
+    dict[str, object] | None,
 ]:
-    """Validate and strip current format, plan, count and compliance envelopes."""
+    """Validate and strip moments format, plan, count, and source envelopes."""
     out: list[dict[str, object]] = []
     versions: set[int] = set()
     plans: set[str] = set()
     envelope_identity: str | None = None
+    source_identities: list[dict[str, object]] = []
+    sequential_rows: set[bool] = set()
     trigger_values: list[object] = []
     trigger_rows = 0
     unplanned = 0
     planned_rows = 0
     for row in rows:
-        version, payload, has_trigger, trigger_name, row_identity, output_row = (
-            _strip_moments_envelope_row(row, len(rows))
+        (
+            version,
+            payload,
+            has_trigger,
+            trigger_name,
+            row_identity,
+            output_row,
+            source_identity,
+            sequential_checkpoint,
+        ) = _strip_moments_envelope_row(
+            row, len(rows), require_source_identity=require_source_identity
         )
         versions.add(version)
+        sequential_rows.add(sequential_checkpoint)
+        if source_identity is not None:
+            source_identities.append(source_identity)
         if payload is None:
             unplanned += 1
         else:
@@ -695,9 +801,32 @@ def _check_moments_format(
             seen=sorted(versions),
             required=MOMENTS_FORMAT,
         )
+    if len(sequential_rows) > 1:
+        _refuse(
+            _MOMENTS_FORMAT_INVALID,
+            received="mixed fixed and sequential records",
+            required="one moments source kind",
+        )
+    if source_identities and len(source_identities) != len(rows):
+        _refuse(
+            _MOMENTS_FORMAT_INVALID,
+            received="source identity missing from some rows",
+            required="one consistent source identity across the moments cube",
+        )
+    if source_identities and any(
+        not source_identities_equal(item, source_identities[0]) for item in source_identities[1:]
+    ):
+        _refuse(
+            _MOMENTS_FORMAT_INVALID,
+            received="conflicting source identities",
+            required="one consistent source identity across the moments cube",
+        )
     version = next(iter(versions), MOMENTS_FORMAT)
     _parse_moments_format(version)
-    _validate_moments_plan_format_pair(version, plans)
+    sequential_checkpoint = next(iter(sequential_rows), False)
+    if not sequential_checkpoint and version not in _SUPPORTED_FIXED_MOMENTS_FORMATS:
+        _refuse(_MOMENTS_FORMAT_INVALID, received=version, required=MOMENTS_FORMAT)
+    _validate_moments_plan_format_pair(plans, sequential_checkpoint=sequential_checkpoint)
     _validate_cube_plan_payload(
         plans,
         unplanned,
@@ -739,6 +868,7 @@ def _check_moments_format(
         _cube_compliance_state(rows),
         envelope_identity,
         trigger_name,
+        source_identities[0] if source_identities else None,
     )
 
 
@@ -997,7 +1127,12 @@ class MomentsSource(SequentialSourceMixin):
         path: Literal["warehouse", "frame"] = "frame",
         _trusted_trigger_name: str | None = None,
         configs: Sequence[ResolvedMetricConfig] | None = None,
+        _source_snapshot_evidence: Any | None = None,
+        _source: Any | None = None,
+        _source_identity_record: Mapping[str, object] | None = None,
     ) -> None:
+        self._source_snapshot_evidence = _source_snapshot_evidence
+        self._source = _source
         (
             _version,
             stripped,
@@ -1006,7 +1141,22 @@ class MomentsSource(SequentialSourceMixin):
             compliance_payload,
             envelope_identity,
             embedded_trigger_name,
-        ) = _check_moments_format(rows, require_plan=plan is None)
+            source_identity_record,
+        ) = _check_moments_format(
+            rows,
+            require_plan=plan is None,
+            require_source_identity=_source_identity_record is None,
+        )
+        self._source_identity_record = (
+            source_identity_record
+            if source_identity_record is not None
+            else _source_identity_record
+        )
+        self._source_identity_record = (
+            self._source_identity_record
+            if self._source_identity_record is not None
+            else _legacy_moments_source_identity(_version, study_id)
+        )
         if envelope_identity is not None and envelope_identity != study_id:
             invalid_compliance_state(
                 "design summary experiment identity differs from requested study"
@@ -1126,7 +1276,7 @@ class MomentsSource(SequentialSourceMixin):
         from increment.sequential_state import sequential_refuse, snapshot_from_json
 
         if getattr(compiled.inference, "registration", None) is not None and any(
-            row.get("moments_format") != SEQUENTIAL_MOMENTS_FORMAT for row in rows
+            row.get("moments_format") not in _SUPPORTED_SEQUENTIAL_MOMENTS_FORMATS for row in rows
         ):
             sequential_refuse(
                 "continuation.legacy",
@@ -1250,6 +1400,7 @@ def _design_summary_row(
     counts: str,
     compliance: str | None,
     trigger_name: str | None,
+    source_identity: str,
 ) -> dict[str, object]:
     """Encode a complete fixed-horizon, outcome-free Encouragement source."""
     if compliance is None:
@@ -1263,6 +1414,7 @@ def _design_summary_row(
         DECISION_PLAN_FIELD: plan,
         ASSIGNMENT_COUNTS_FIELD: counts,
         COMPLIANCE_SUMMARY_FIELD: compliance,
+        SOURCE_IDENTITY_FIELD: source_identity,
     }
     if trigger_name is not None:
         row[TRIGGER_NAME_FIELD] = trigger_name
@@ -1275,7 +1427,7 @@ def export_source_moments(
     *,
     observational_refusal: Callable[[Any], object],
 ) -> None:
-    """Export total moments and immutable source-level compliance identity.
+    """Export total moments with immutable source identity and compliance state.
 
     A registered sequential plan exports its finalized checkpoint, which holds unit-record
     proofs and the declaration, never moments rows, so an unmodeled catalog quantile is not
@@ -1285,10 +1437,12 @@ def export_source_moments(
     import pyarrow as pa
     import pyarrow.parquet as pq
 
+    from increment._source_identity import source_identity
     from increment.decision_wire import compiled_plan_to_json
     from increment.semantics.design import Encouragement
 
     context = source.context
+    identity_payload = json.dumps(source_identity(source), sort_keys=True, separators=(",", ":"))
     plan_payload = compiled_plan_to_json(
         context.plan,
         legacy_prior_exclusions=getattr(source, "_legacy_prior_exclusions", frozenset()),
@@ -1303,6 +1457,7 @@ def export_source_moments(
             "moments_format": SEQUENTIAL_MOMENTS_FORMAT,
             DECISION_PLAN_FIELD: plan_payload,
             SEQUENTIAL_SNAPSHOT_FIELD: snapshot.model_dump_json(),
+            SOURCE_IDENTITY_FIELD: identity_payload,
         }
         if snapshot.assignment_counts is not None:
             accounting_labels = {MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL}
@@ -1359,6 +1514,7 @@ def export_source_moments(
                     "moments_format": MOMENTS_FORMAT,
                     DECISION_PLAN_FIELD: plan,
                     ASSIGNMENT_COUNTS_FIELD: counts,
+                    SOURCE_IDENTITY_FIELD: identity_payload,
                 }
             )
             if payload is not None:
@@ -1367,7 +1523,11 @@ def export_source_moments(
                 row[TRIGGER_NAME_FIELD] = context.trigger_name
             rows.append(row)
     if not rows and not context.metrics:
-        rows = [_design_summary_row(context.study_id, plan, counts, payload, context.trigger_name)]
+        rows = [
+            _design_summary_row(
+                context.study_id, plan, counts, payload, context.trigger_name, identity_payload
+            )
+        ]
     table = pa.Table.from_pylist(rows).replace_schema_metadata(
         {b"increment.moments_format": str(MOMENTS_FORMAT).encode()}
     )
@@ -1403,7 +1563,9 @@ class BreakoutMomentsSource(SequentialSourceMixin):
         design: Randomized | Encouragement | Observational | None = None,
         plan: AnalysisPlan | CompiledDecisionPlan | None = None,
         configs: Sequence[ResolvedMetricConfig] | None = None,
+        _source: Any | None = None,
     ) -> None:
+        self._source = _source
         self._rows = [dict(r) for r in rows]
         self._dimension = dimension
         self._source_name = source_name

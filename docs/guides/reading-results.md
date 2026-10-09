@@ -20,11 +20,23 @@ with an additive value numerically.
 `ContrastResults.to_frame` does not, because every contrast is additive; only
 the readout adapter below adds `value_scale="absolute"` to contrast rows.
 
+The `readout_table` coeftable keeps per-row estimate evidence compact:
+decision-scope completeness, partial-view state, and multiplicity provenance
+appear once as header notes only when informative. They remain on result
+objects and in `to_frame()`; failure rows keep a concise `Failure` column
+with their full structured context on the result object.
+
 When a triggered experiment is read without a `population` argument, `Analysis.run()` keeps
 assigned and triggered results as separate rows. Pass `population="assigned"` or
 `population="triggered"` to select one population; a selected result never pools the two.
 Registered sequential inference remains assignment-scoped, so a triggered run preserves an
 unavailable row with its refusal code and reason rather than borrowing assigned checkpoints.
+
+Daily and as-of `DailyLiftEstimate` rows have a compact representation for
+ordinary printing: identity/date, estimate and interval geometry, scale,
+inference/status, and any unavailable reason. Sequential bounds are labeled
+as ratios; exact checkpoint and certificate state remains available through
+`row.sequential_result` when explicitly inspected.
 
 ## What to read
 
@@ -42,6 +54,18 @@ For a `LiftEstimate` row `r`:
 
 For a `ContrastResult` row `c`, read `c.estimate.value`, `c.estimate.lb`,
 `c.estimate.ub`, `c.null_abs`, and `c.alternative`. All are additive.
+
+Scoped readouts carry a `source_snapshot_id` that identifies the canonical
+request, pinned source evidence and source identity, and integer sufficient
+statistics such as counts. The identity excludes floating-point aggregates
+and derived estimates, so the same unchanged evidence and request retains its
+identity even when warehouse reduction order changes the last bits of a
+floating-point result. Different requests, effective methods, populations, or
+sources remain distinct; a saved result retains the identity it was created
+with. If the request, pinned source identity, and counts stay the same while
+floating-point outcome data change, this identity cannot distinguish those
+changes. It is an identity for the recorded inputs, not a checksum of all
+numeric outputs.
 
 ## Read the result as a decision, not just a number
 

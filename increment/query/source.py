@@ -1524,6 +1524,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             design=self.context.design,
             plan=self.context.plan,
             configs=self.context.configs,
+            _source=self,
         )
 
     def breakout_sources(

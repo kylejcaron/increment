@@ -1,6 +1,7 @@
 import importlib
 from typing import TYPE_CHECKING
 
+from increment.estimation._score_design import PsiFn, ScoreDesign
 from increment.estimation.absorption import AbsorptionResult, absorb_one_way
 from increment.estimation.armstats import (
     ArmStats,
@@ -43,9 +44,7 @@ from increment.estimation.targeting import (
     CateValidation,
     ClanRow,
     GroupEffect,
-    PsiFn,
     RankTest,
-    ScoreDesign,
     validate_cate_arrays,
 )
 from increment.estimation.variance import (

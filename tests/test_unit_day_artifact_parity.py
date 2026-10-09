@@ -1950,7 +1950,7 @@ def test_export_and_fused_breakout_summaries_match_the_definitions_source(
             [{field: row[field] for field in exported_fields} for row in adopted_rows],
         )
         assert all(type(row["successes"]) is int for row in adopted_rows)
-        assert {row["moments_format"] for row in adopted_rows} == {10}
+        assert {row["moments_format"] for row in adopted_rows} == {11}
     finally:
         adopted_source.close()
         adopted.close()
@@ -2592,10 +2592,15 @@ def test_adoption_known_total_horizon_preserves_unit_population(tmp_path, open_e
 
     con, native, context, store = _native(definitions=_definitions(tmp_path, open_ended=open_ended))
     seed_event_log(con, n_units=200)
-    adopted = None
+    adopted = adopted_again = None
     try:
         ref = native.publish_unit_day_artifact(store)
         adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+        second_ref = native.publish_unit_day_artifact(store)
+        adopted_again = Analysis.from_unit_day_artifact(store, second_ref, expected_context=context)
+        first_ids = {row.source_snapshot_id for row in adopted.run_asof_lift()}
+        second_ids = {row.source_snapshot_id for row in adopted_again.run_asof_lift()}
+        assert first_ids and second_ids and first_ids.isdisjoint(second_ids)
 
         with warnings.catch_warnings(record=True) as recorded:
             warnings.simplefilter("always", UserWarning)
@@ -2610,8 +2615,36 @@ def test_adoption_known_total_horizon_preserves_unit_population(tmp_path, open_e
             source: Any = _native_source(adopted)
             for source_metric in source.context.metrics:
                 assert source._reduce(source_metric, "total", population_units=frozenset()) == []
+        artifact_moments_path = tmp_path / "artifact-moments.parquet"
+        adopted.export(artifact_moments_path)
+        second_artifact_moments_path = tmp_path / "artifact-moments-again.parquet"
+        adopted_again.export(second_artifact_moments_path)
+        import pyarrow.parquet as pq
+
+        artifact_replay = Analysis.from_moments(
+            pq.read_table(artifact_moments_path).to_pylist(),
+            metrics={"purchase_rate": "conversion"},
+            control="control",
+        )
+        artifact_replay_again = None
+        try:
+            artifact_replay_again = Analysis.from_moments(
+                pq.read_table(second_artifact_moments_path).to_pylist(),
+                metrics={"purchase_rate": "conversion"},
+                control="control",
+            )
+            first_replay_ids = {row.source_snapshot_id for row in artifact_replay.run()}
+            second_replay_ids = {row.source_snapshot_id for row in artifact_replay_again.run()}
+            assert first_replay_ids and second_replay_ids
+            assert first_replay_ids.isdisjoint(second_replay_ids)
+        finally:
+            if artifact_replay_again is not None:
+                artifact_replay_again.close()
+            artifact_replay.close()
         assert any(issubclass(item.category, UserWarning) for item in recorded)
     finally:
+        if adopted_again is not None:
+            adopted_again.close()
         if adopted is not None:
             adopted.close()
         native.close()

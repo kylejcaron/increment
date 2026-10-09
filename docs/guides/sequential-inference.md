@@ -123,11 +123,12 @@ previous=parent, append=True)` for a batch of new units. Existing unit
 identities cannot appear in that batch. Full-prefix capture checks every
 old record proof and reuses the parent's exact sufficient state.
 
-`analysis.export(path)` writes a format-9 sequential checkpoint envelope,
-containing a version-2 registration/snapshot/checkpoint and a version-3
-compiled plan. `Analysis.from_moments` can replay this exact state.
-Legacy format-8 sequential moment files cannot resume the process.
-Fixed-horizon moments use format 10; sequential format 9 remains unchanged.
+`analysis.export(path)` writes a format-10 sequential checkpoint envelope,
+containing the version-2 registration/snapshot/checkpoint, a version-3
+compiled plan, and the originating source identity. `Analysis.from_moments`
+can replay this exact state. The preceding sequential format 9 remains
+readable; fixed-horizon format 11 carries the same source identity, while the
+preceding fixed-horizon format 10 remains readable.
 
 Every rational in that envelope -- prior hyperparameters, `rho`,
 `treatment_probability`, cell `alpha` and `null_lift`, `q`, adjustment

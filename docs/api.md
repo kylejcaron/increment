@@ -71,31 +71,38 @@ writer:
 
 | Format | Written by | Read by `from_moments` |
 |---|---|---|
-| 9 | registered sequential `export` (one typed checkpoint envelope) | yes |
-| 10 | fixed-horizon `export`, with integer `n` and nullable integer `successes` | yes |
+| 11 | fixed-horizon `export`, with source identity and exact counts | yes |
+| 10 | preceding fixed-horizon export, or current sequential checkpoint export | yes |
+| 9 | preceding sequential checkpoint export | yes |
 | below 9 | no longer written | refused, `moments.format.unsupported_legacy` |
-| above 10 | not written by this release | refused, `moments.format.unsupported_future` |
+| above 11 | not written by this release | refused, `moments.format.unsupported_future` |
 
 A cube must use one format (`moments.format.mixed`) and repeat no
-`(metric, group_id)` row (`moments.rows.duplicate`). Every row stamped below 9,
-including each row of a sequential analysis written as format 8, is refused with
-`moments.format.unsupported_legacy` before any plan is read. Only a
-checkpoint envelope restamped below 9 reaches `sequential.continuation.legacy`:
-a checkpoint resumes only from the current format.
-Re-export from the raw definitions with the
-current release, or pin the release that wrote the file. Nothing is
-downgraded or filled in silently.
-
-Fixed-horizon formats 7 and 8 must be re-exported from their original data.
-Format 10 carries exact success counts for eligible unit-grain, declared
-conversion and retention outcomes. Cluster-aggregate rows and other outcomes
-carry `successes=null`. Every ordinary row requires integer `n >= 1` and,
-when present, integer `0 <= successes <= n`; import and export refuse invalid
-ranges with `moments.count_out_of_range`, including unselected imported rows.
-Exact counts travel as these integers; the floating centered moments are used only
-to check that a count agrees with them and are not a source from which to recover
-one. Preserve count columns as integers through storage and partition
-merges; do not cast them through floating point. Sequential format 9 is unchanged.
+`(metric, group_id)` row (`moments.rows.duplicate`). Fixed and sequential
+formats are distinguished by their typed record envelope; fixed-horizon
+format 10 and sequential format 9 remain readable. Every row stamped below 9,
+including each row of a sequential analysis written as format 8, is refused
+with `moments.format.unsupported_legacy` before any plan is read. A checkpoint
+envelope restamped below the preceding sequential format reaches
+`sequential.continuation.legacy`: a checkpoint resumes only from a supported
+sequential format. Re-export from the raw definitions with the current release,
+or pin the release that wrote the file. Nothing is downgraded or filled in silently.
+Current fixed-horizon format 11 and sequential format 10 exports carry the
+originating source identity. `from_moments` restores that identity instead
+of deriving a new one from the replay object's default study name. The
+snapshot identity remains based on the canonical request, pinned evidence and
+source identity, and integer sufficient statistics—not floating aggregates.
+Older fixed-horizon format 10 and sequential format 9 cubes lack that field.
+Their replay identity is conservatively namespaced by the legacy format and
+study ID because original source provenance cannot be recovered. The
+`source_identity` field is self-asserted input, not authenticated provenance.
+Every ordinary row requires integer `n >= 1` and, when present, integer
+`0 <= successes <= n`; import and export refuse invalid ranges with
+`moments.count_out_of_range`, including unselected imported rows. Exact counts
+travel as integers; floating centered moments only check that a count agrees
+with them and are not a source from which to recover one. Preserve count
+columns as integers through storage and partition merges; do not cast them
+through floating point.
 
 **Unit-day artifacts.** Artifact context format 2 is the only supported
 context. It carries no fact, dimension or exposure SQL; source recipes are

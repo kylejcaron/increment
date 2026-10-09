@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
+import subprocess
+from pathlib import Path
 
 import ibis
 import pytest
@@ -14,10 +17,11 @@ from increment.dashboard import (
     render_health,
     render_metric_details,
 )
-from increment.dashboard._app import build_payload
+from increment.dashboard._app import build_payload, document
 from increment.dashboard._data import estimate_for_metric, row_for_metric
 from increment.errors import InvalidRequestError
 from tests.test_analysis_trigger import _events, _write_defs
+from tests.test_compatibility_js import _node_gate, _resolve_node, _running_in_ci
 
 pytestmark = pytest.mark.filterwarnings("ignore::increment.errors.IncrementWarning")
 
@@ -65,6 +69,34 @@ def _assigned_dashboard(tmp_path):
     return Analysis.from_definitions("exp", definitions, con)
 
 
+def _assert_dashboard_population_dom_behavior(tmp_path, payload):
+    node_path, version_output = _resolve_node()
+    action, reason = _node_gate(node_path, version_output, _running_in_ci())
+    if action == "skip":
+        pytest.skip(reason)
+    if action == "fail":
+        pytest.fail(reason)
+    assert node_path is not None
+
+    dashboard_file = tmp_path / "dashboard.html"
+    dashboard_file.write_text(document(payload), encoding="utf-8")
+    environment = os.environ.copy()
+    environment["INCREMENT_DASHBOARD_DOCUMENT"] = str(dashboard_file)
+    root = Path(__file__).resolve().parents[1]
+    script = root / "tests/js/dashboard_population_interactions.test.mjs"
+    result = subprocess.run(
+        [node_path, "--test", str(script)],
+        cwd=root,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"node --test {script} failed:\n--- stdout ---\n{result.stdout}\n"
+        f"--- stderr ---\n{result.stderr}"
+    )
+
+
 def test_dashboard_snapshot_retains_population_specific_headline_and_group_evidence(tmp_path):
     analysis = _triggered_dashboard(tmp_path)
     try:
@@ -99,6 +131,7 @@ def test_dashboard_snapshot_retains_population_specific_headline_and_group_evide
             payload["populationViews"]["triggered"]["readoutCsv"]
             != payload["populationViews"]["assigned"]["readoutCsv"]
         )
+        _assert_dashboard_population_dom_behavior(tmp_path, payload)
         for population in ("assigned", "triggered"):
             trajectory = load_explore(
                 analysis,
@@ -130,32 +163,12 @@ def test_dashboard_without_trigger_is_assigned_only(tmp_path):
         analysis.close()
 
 
-def test_triggered_explore_refusal_has_population_specific_route_forward(tmp_path):
-    import dataclasses
-
-    from increment._source_operations import DashboardExploreCapture
-    from increment.errors import CodedError
-
+def test_triggered_explore_retains_triggered_daily_series(tmp_path):
     analysis = _triggered_dashboard(tmp_path)
     try:
         snapshot = prepare_dashboard(
             analysis,
             config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
-        )
-        key = ("triggered", "daily_values", None, False, None)
-        refusal = CodedError(
-            "run_daily_lift does not support triggered compliance estimates; use population='assigned'.",
-            code="facade.analysis.triggered_compliance_unsupported",
-            context={"method": "run_daily_lift"},
-        )
-        metric_key = ("triggered", "daily_values", "revenue", False, None)
-        snapshot = dataclasses.replace(
-            snapshot,
-            explore={
-                **snapshot.explore,
-                key: DashboardExploreCapture.refused(key, refusal),
-                metric_key: DashboardExploreCapture.refused(metric_key, refusal),
-            },
         )
         payload = build_payload(analysis, snapshot=snapshot)
         triggered = payload["populationViews"]["triggered"]["explore"]["overall"]["revenue"][
@@ -164,10 +177,12 @@ def test_triggered_explore_refusal_has_population_specific_route_forward(tmp_pat
         assigned = payload["populationViews"]["assigned"]["explore"]["overall"]["revenue"][
             "daily_values"
         ]
-        assert triggered["routeForward"]
-        assert "facade.analysis.triggered_compliance_unsupported" in triggered["caption"]
-        assert triggered["pointCount"] == 0
+        assert "routeForward" not in triggered
+        assert triggered["pointCount"] > 0
         assert assigned["pointCount"] > 0
+        assert {row.analysis_population for row in snapshot.population_estimates["triggered"]} == {
+            "triggered"
+        }
     finally:
         analysis.close()
 

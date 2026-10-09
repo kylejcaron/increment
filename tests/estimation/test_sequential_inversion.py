@@ -867,6 +867,40 @@ def test_metadata_rejects_invalid_field_combinations():
         )
 
 
+def test_confidence_bounds_repr_summarizes_ratio_geometry_without_certificates():
+    from increment.estimation._sequential_likelihood import BernoulliState, BetaPrior
+
+    bounds = bernoulli_confidence_sequence(
+        BernoulliState(1, 1),
+        BernoulliState(1, 1),
+        BetaPrior(1, 1),
+        BetaPrior(1, 1),
+        alpha=F(1, 10),
+    )
+
+    rendered = repr(bounds)
+    assert "ratio" in rendered
+    assert "confidence" in rendered
+    assert bounds.status in rendered
+    assert "EndpointCertificate" not in rendered
+    assert "LikelihoodCertificate" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("lower", "upper", "empty", "expected"),
+    [
+        (F(1, 3), F(2, 3), False, "[0.3333, 0.6667]"),
+        (None, F(2, 3), False, "[−∞, 0.6667]"),
+        (F(1, 3), None, False, "[0.3333, +∞]"),
+        (F(2), F(1), True, "∅"),
+    ],
+)
+def test_interval_display_keeps_unbounded_and_empty_geometry(lower, upper, empty, expected):
+    from increment._display import format_interval
+
+    assert format_interval(lower, upper, empty=empty) == expected
+
+
 def _evaluation(ratio, log_e):
     zero, evidence = Interval.exact(0), Interval.exact(log_e)
     return EndpointEvaluation(

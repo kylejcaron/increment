@@ -822,6 +822,52 @@ def test_panel_finalization_daily_projection_and_replay(tmp_path):
     assert list(replay.run_asof_lift(completed_windows_only=True)) == list(daily)
 
 
+def test_asymptotic_daily_repr_keeps_disconnected_bounds_and_reasons():
+    specs = [MetricSpec(name="outcome", type="mean", window_days=2)]
+    plan = _plan(specs, panel=True)
+    start = date(2025, 1, 1)
+
+    def asof_row(control, treatment):
+        frame = _frame(control, treatment)
+        frame["exposed"] = start
+        frame["day"] = start
+        analysis = Analysis.from_unit_panel(
+            frame,
+            unit="unit",
+            group="arm",
+            date="day",
+            exposure_date="exposed",
+            design=Randomized(control_group="control"),
+            metrics=specs,
+            experiment_id="experiment",
+            plan=plan,
+            observation_end=start + timedelta(days=20),
+        )
+        analysis.capture_sequential(finalized=True, as_of=start + timedelta(days=14))
+        rows = analysis.run_asof_lift(completed_windows_only=True)
+        assert len(rows) == 1
+        return rows[0]
+
+    disconnected = asof_row([-1, 1] * 40, [10, 12] * 40)
+    assert disconnected.lift is None
+    assert disconnected.sequential_result.bounds.status == "disconnected"
+    rendered = repr(disconnected)
+    assert " ∪ " in rendered
+    assert disconnected.sequential_result.point_reason in rendered
+
+    unavailable = asof_row([], [10, 12] * 40)
+    assert unavailable.lift is None
+    assert unavailable.sequential_result.bounds.reason is not None
+    rendered = repr(unavailable)
+    assert unavailable.sequential_result.point_reason in rendered
+    assert unavailable.sequential_result.bounds.reason in rendered
+
+    point_only = asof_row([1, 1] * 40, [2, 3] * 40)
+    assert point_only.lift is not None
+    assert point_only.sequential_result.bounds.reason is not None
+    assert point_only.sequential_result.bounds.reason in repr(point_only)
+
+
 @pytest.mark.slow
 def test_secondary_family_daily_decisions_preserve_allocations_and_replay(tmp_path):
     import pyarrow.parquet as pq

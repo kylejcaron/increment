@@ -277,7 +277,7 @@ def test_every_arm_evidence_result_round_trips_and_has_a_frame(tmp_path: Path, n
     if hasattr(result, "to_frame"):
         frame = result.to_frame()
     else:
-        from increment.breakout.estimates import to_frame
+        from increment.breakout.projection import to_frame
 
         frame = to_frame(result, model=type(result[0]))
     assert len(frame) == len(result)

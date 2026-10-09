@@ -24,8 +24,8 @@ from increment.breakout.estimates import (
     EstimateList,
     LiftEstimates,
     run_breakout,
-    to_frame,
 )
+from increment.breakout.projection import to_frame
 from increment.errors import CapabilityError, IncrementWarning, InvalidRequestError
 from increment.estimation.armstats import centered_row_from_raw_sums
 from increment.estimation.binomial_rr import FINITE_SAMPLE_MAX_ARM_SIZE

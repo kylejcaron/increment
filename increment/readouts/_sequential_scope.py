@@ -6,6 +6,7 @@ from hashlib import sha256
 from typing import TYPE_CHECKING, Any
 
 from increment._canonical import canonical_digest_bytes, canonical_json_bytes
+from increment._source_identity import source_identity
 from increment.breakout.estimates import LiftEstimates
 from increment.estimation.assignment_integrity import assignment_integrity
 from increment.estimation.decision_types import (
@@ -71,6 +72,7 @@ def _snapshot_identity(
     source=None,
     component_source: str | None = None,
     dimension: str | None = None,
+    source_identity_record: Any = None,
 ):
     if source is None:
         components = [
@@ -113,6 +115,7 @@ def _snapshot_identity(
         "alpha": plan.alpha,
         "q": plan.q,
         "trigger_declared": trigger_name is not None,
+        "source_identity": source_identity_record,
     }
     if trigger_name is not None:
         request["trigger_name"] = trigger_name
@@ -197,6 +200,7 @@ def scope_sequential_results(
         trigger_name,
         integrity_counts,
         source=existing_source,
+        source_identity_record=source_identity(src),
     )
 
     family_cells = tuple(sorted({CellKey.from_row(row) for row in rows}, key=cell_order))

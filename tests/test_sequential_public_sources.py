@@ -21,6 +21,14 @@ from tests.analysis_factory import _native_source
 from tests.sequential_cases import registration
 
 
+def _assert_cross_source_readouts_equal(left, right):
+    identity_fields = {"source_snapshot_id", "family_id"}
+    assert [row.model_dump(exclude=identity_fields) for row in left] == [
+        row.model_dump(exclude=identity_fields) for row in right
+    ]
+    assert [row.source_snapshot_id for row in left] != [row.source_snapshot_id for row in right]
+
+
 def _plan(specs, law, *, cells=None, date=None, exposure_date="exposure"):
     design = Randomized(control_group="control")
     base = registration(law, cells=cells)
@@ -184,7 +192,7 @@ def test_frame_current_wire_and_moments_replay_same_actual_decision(tmp_path, la
     path = tmp_path / "checkpoint.parquet"
     analysis.export(path)
     payload = pq.read_table(path).to_pylist()
-    assert payload[0]["moments_format"] == 9
+    assert payload[0]["moments_format"] == 10
     assert '"wire_version":3' in payload[0]["decision_plan"]
     legacy_payload = [dict(payload[0], moments_format=8)]
     with pytest.raises(CapabilityError) as legacy:
@@ -192,8 +200,21 @@ def test_frame_current_wire_and_moments_replay_same_actual_decision(tmp_path, la
     assert legacy.value.code == "sequential.continuation.legacy"
     replay = Analysis.from_moments(payload, metrics=specs, control="control")
     assert replay.sequential_snapshot() == snapshot
-    assert _row(replay).require_sequential_result() == original.require_sequential_result()
-    assert _row(replay).stat_sig()
+    replayed = _row(replay)
+    assert replayed.require_sequential_result() == original.require_sequential_result()
+    assert replayed.source_snapshot_id == original.source_snapshot_id
+    assert replayed.family_id == original.family_id
+    previous_format = [dict(payload[0], moments_format=9)]
+    previous_format[0].pop("source_identity")
+    previous_replay = Analysis.from_moments(previous_format, metrics=specs, control="control")
+    try:
+        previous_snapshot = previous_replay.sequential_snapshot()
+        assert previous_snapshot == snapshot
+        previous_result = _row(previous_replay)
+        assert previous_result.require_sequential_result() == original.require_sequential_result()
+        assert previous_result.source_snapshot_id != original.source_snapshot_id
+    finally:
+        previous_replay.close()
     projected = replay.run().to_frame(backend="pandas")
     assert isinstance(projected, pd.DataFrame)
     assert projected["sequential_log_e"].iloc[0] == str(
@@ -787,7 +808,7 @@ def test_exported_checkpoint_replays_exact_rationals_and_refuses_mutated_ones(
     path = tmp_path / "checkpoint.parquet"
     analysis.export(path)
     payload = pq.read_table(path).to_pylist()
-    assert payload[0]["moments_format"] == 9
+    assert payload[0]["moments_format"] == 10
     replay = Analysis.from_moments(payload, metrics=specs, control="control")
     replayed = replay.sequential_snapshot()
     assert replayed == snapshot
@@ -1213,7 +1234,8 @@ def test_native_artifact_and_current_wire_replay_actual_likelihood(tmp_path, law
             )
             assert _row(adopted).stat_sig()
             native_daily = native.run_asof_lift(completed_windows_only=True)
-            assert list(adopted.run_asof_lift(completed_windows_only=True)) == list(native_daily)
+            adopted_daily = adopted.run_asof_lift(completed_windows_only=True)
+            _assert_cross_source_readouts_equal(adopted_daily, native_daily)
             path = tmp_path / "artifact-checkpoint.parquet"
             adopted.export(path)
             specs = [
@@ -1225,7 +1247,8 @@ def test_native_artifact_and_current_wire_replay_actual_likelihood(tmp_path, law
             assert (
                 _row(replayed).require_sequential_result() == native_row.require_sequential_result()
             )
-            assert list(replayed.run_asof_lift(completed_windows_only=True)) == list(native_daily)
+            replayed_daily = replayed.run_asof_lift(completed_windows_only=True)
+            _assert_cross_source_readouts_equal(replayed_daily, native_daily)
         # New units enter after every previously finalized unit in reveal order.
         connection.raw_sql(
             "INSERT INTO enrolled VALUES "
@@ -1505,9 +1528,10 @@ def test_native_uptake_only_capture_and_wire_never_need_the_outcome_table(tmp_pa
             )
             assert replay.sequential_snapshot() == snapshot
             assert list(replay.run(estimands=("compliance",))) == list(rows)
-            assert list(
-                replay.run_asof_lift(estimands=("compliance",), completed_windows_only=True)
-            ) == list(daily)
+            replayed_daily = replay.run_asof_lift(
+                estimands=("compliance",), completed_windows_only=True
+            )
+            _assert_cross_source_readouts_equal(replayed_daily, daily)
     finally:
         native.close()
 
@@ -1550,9 +1574,10 @@ def test_uptake_checkpoint_ignores_unbounded_outcome_retention_in_the_catalog(tm
         )
         assert [metric.name for metric in replay.metrics] == ["outcome", "stay"]
         assert replay.sequential_snapshot() == snapshot
-        assert list(
-            replay.run_asof_lift(estimands=("compliance",), completed_windows_only=True)
-        ) == list(daily)
+        replayed_daily = replay.run_asof_lift(
+            estimands=("compliance",), completed_windows_only=True
+        )
+        _assert_cross_source_readouts_equal(replayed_daily, daily)
 
         # Every request that reads outcomes still meets the retention guards.
         for source in (native, replay):

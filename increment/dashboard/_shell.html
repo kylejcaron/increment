@@ -809,48 +809,46 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 
   /* ---------- Payload -------------------------------------------------------- */
   let data;
-  try {
-    const source = JSON.parse($('dashboard-data').textContent);
-    const options = Array.isArray(source.populationOptions) ? source.populationOptions : ['assigned'];
-    const requested = new URLSearchParams(window.location.search).get('population');
-    const population = options.includes(requested) ? requested : source.defaultPopulation || 'assigned';
-    data = Object.assign({}, source.populationViews && source.populationViews[population] || source, {
-      defaultPopulation: source.defaultPopulation || 'assigned',
-      populationOptions: options,
-      populationViews: source.populationViews || {},
+  let source;
+  let populationOptions = ['assigned'];
+  let populationViews = {};
+  let defaultPopulation = 'assigned';
+  function dataForPopulation(population) {
+    const selected = populationOptions.includes(population) ? population : defaultPopulation;
+    return Object.assign({}, populationViews[selected] || source, {
+      defaultPopulation,
+      populationOptions,
+      populationViews,
+      population: selected,
     });
-    data.population = population;
+  }
+  try {
+    source = JSON.parse($('dashboard-data').textContent);
+    populationOptions = Array.isArray(source.populationOptions) ? source.populationOptions : ['assigned'];
+    populationViews = source.populationViews && typeof source.populationViews === 'object' ? source.populationViews : {};
+    defaultPopulation = populationOptions.includes(source.defaultPopulation) ? source.defaultPopulation : 'assigned';
+    data = dataForPopulation(defaultPopulation);
   } catch (error) {
     document.body.replaceChildren(el('p', { className: 'fatal', role: 'alert', text: 'The dashboard data is missing or invalid, so nothing can be shown.' }));
     return;
   }
   const populationControl = $('population-control');
   const populationSelect = $('population-select');
-  if (populationControl && populationSelect && data.populationOptions.length > 1) {
+  if (populationControl && populationSelect && populationOptions.length > 1) {
     populationControl.hidden = false;
     populationSelect.value = data.population;
-    populationSelect.addEventListener('change', () => {
-      try {
-        sessionStorage.setItem(
-          'increment.dashboard.population-ui-state',
-          JSON.stringify({ readoutMetric: selectedReadoutMetric, explore: exploreState })
-        );
-      } catch { /* population selection still works when session storage is unavailable */ }
-      const params = new URLSearchParams(window.location.search);
-      params.set('population', populationSelect.value);
-      window.location.search = params.toString();
-    });
+    populationSelect.addEventListener('change', () => setPopulation(populationSelect.value));
   }
-  const metrics = Array.isArray(data.metrics) ? data.metrics : [];
+  let metrics = Array.isArray(data.metrics) ? data.metrics : [];
   const metricByKey = new Map(metrics.map((metric) => [metric.key, metric]));
-  const scopes = data.scopes && typeof data.scopes === 'object' ? data.scopes : {};
-  const scopeKeys = Object.keys(scopes).sort((a, b) => (a === 'overall' ? -1 : b === 'overall' ? 1 : 0));
-  const explore = data.explore && typeof data.explore === 'object' ? data.explore : {};
-  const exploreMetrics = (() => {
+  let scopes = data.scopes && typeof data.scopes === 'object' ? data.scopes : {};
+  let scopeKeys = Object.keys(scopes).sort((a, b) => (a === 'overall' ? -1 : b === 'overall' ? 1 : 0));
+  let explore = data.explore && typeof data.explore === 'object' ? data.explore : {};
+  let exploreMetrics = (() => {
     const covered = metrics.filter((metric) => scopeKeys.some((scope) => own(own(explore, scope), metric.key) !== undefined));
     return covered.length ? covered : metrics;
   })();
-  const fileBase = slug(data.title);
+  let fileBase = slug(data.title);
 
   /* ---------- Native HTML mounting ------------------------------------------- */
   // Id rewriting, CSS scoping, title aliases and metric controls live in the native adapter
@@ -888,9 +886,9 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   });
 
   /* ---------- Shared hero ---------------------------------------------------- */
-  const primary = data.primary && typeof data.primary === 'object' ? data.primary : null;
-  const healthStatus = data.healthStatus && typeof data.healthStatus === 'object' ? data.healthStatus : null;
-  const healthKind = healthStatus && ['healthy', 'warning', 'unavailable', 'not_checked'].includes(healthStatus.kind) ? healthStatus.kind : 'unavailable';
+  let primary = data.primary && typeof data.primary === 'object' ? data.primary : null;
+  let healthStatus = data.healthStatus && typeof data.healthStatus === 'object' ? data.healthStatus : null;
+  let healthKind = healthStatus && ['healthy', 'warning', 'unavailable', 'not_checked'].includes(healthStatus.kind) ? healthStatus.kind : 'unavailable';
   const toneClass = (tone) => 'tone-' + (TONES.includes(tone) ? tone : 'neutral');
 
   function intervalLine(info) {
@@ -906,6 +904,8 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     $('hero-description').textContent = [str(data.description), str(data.populationDisclaimer)].filter(Boolean).join(' ');
     $('hero-meta').textContent = str(data.meta) + ' · Population: ' + str(data.populationLabel || 'Assigned');
     const box = $('hero-primary');
+    for (const tone of TONES) box.classList.remove(toneClass(tone));
+    $('hero').classList.toggle('no-primary', !primary);
     if (primary) {
       box.hidden = false;
       box.classList.add(toneClass(primary.tone));
@@ -914,7 +914,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
       $('hero-primary-interval').textContent = intervalLine(primary);
       $('hero-primary-method').textContent = str(primary.method);
     } else {
-      $('hero').classList.add('no-primary');
+      box.hidden = true;
     }
     const pill = $('hero-health');
     if (healthStatus) {
@@ -924,6 +924,8 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
       $('hero-health-label').textContent = str(healthStatus.label);
       $('hero-health-detail').textContent = str(healthStatus.detail);
       pill.title = str(healthStatus.detail);
+    } else {
+      pill.hidden = true;
     }
   }
 
@@ -984,35 +986,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 
   /* ---------- Explore -------------------------------------------------------- */
   const exploreState = { view: 'overview', scope: scopeKeys.includes('overall') ? 'overall' : scopeKeys[0], metric: exploreMetrics.length ? exploreMetrics[0].key : null, mode: 'relative', cadence: 'cumulative', complete: false };
-  let populationUiState = null;
-  try {
-    const stored = sessionStorage.getItem('increment.dashboard.population-ui-state');
-    sessionStorage.removeItem('increment.dashboard.population-ui-state');
-    populationUiState = stored ? JSON.parse(stored) : null;
-  } catch { /* stale or unavailable session state cannot block the dashboard */ }
-  if (populationUiState && typeof populationUiState === 'object') {
-    const savedExplore = populationUiState.explore;
-    if (metricByKey.has(populationUiState.readoutMetric)) {
-      selectedReadoutMetric = populationUiState.readoutMetric;
-    }
-    if (savedExplore && typeof savedExplore === 'object') {
-      if (savedExplore.view === 'overview' || savedExplore.view === 'series') {
-        exploreState.view = savedExplore.view;
-      }
-      if (scopeKeys.includes(savedExplore.scope)) exploreState.scope = savedExplore.scope;
-      if (metricByKey.has(savedExplore.metric)) exploreState.metric = savedExplore.metric;
-      if (savedExplore.mode === 'relative' || savedExplore.mode === 'cumulative') {
-        exploreState.mode = savedExplore.mode;
-      }
-      if (savedExplore.cadence === 'daily' || savedExplore.cadence === 'cumulative') {
-        exploreState.cadence = savedExplore.cadence;
-      }
-      if (typeof savedExplore.complete === 'boolean') {
-        exploreState.complete = savedExplore.complete;
-      }
-    }
-  }
-  const overview = data.overview && typeof data.overview === 'object' ? data.overview : {};
+  let overview = data.overview && typeof data.overview === 'object' ? data.overview : {};
   const groupDownload = createDownload($('group-download'));
   const ROLE_ORDER = ['primary', 'secondary', 'guardrail', 'exploratory'];
   const ROLE_LABELS = { primary: 'Primary', secondary: 'Secondary outcomes', guardrail: 'Guardrails', exploratory: 'Added (exploratory)' };
@@ -1163,9 +1137,9 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   // The page is a captured snapshot; only the hosting notebook can prepare a new one. A host that
   // can (the dashboard widget) answers our `ready` with `bridge`; without one the picker is
   // read-only. Messages are accepted only from the parent window and carry a source tag.
-  const added = data.exploratory && typeof data.exploratory === 'object' ? data.exploratory : {};
-  const available = Array.isArray(added.available) ? added.available : [];
-  const selectedAdded = Array.isArray(added.selected) ? added.selected.map(str) : [];
+  let added = data.exploratory && typeof data.exploratory === 'object' ? data.exploratory : {};
+  let available = Array.isArray(added.available) ? added.available : [];
+  let selectedAdded = Array.isArray(added.selected) ? added.selected.map(str) : [];
   const HOST = 'inc-dashboard-host';
   let bridged = false;
   let draft = new Set(selectedAdded);
@@ -1253,15 +1227,17 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 
   /* The Report is one compact summary. Its payload (data.report) is separate from the detailed
      Readout payload and never depends on Explore selections. */
-  const report = data.report && typeof data.report === 'object' ? data.report : {};
+  let report = data.report && typeof data.report === 'object' ? data.report : {};
   const reportDownload = createDownload($('report-download'));
 
   function mountReport() {
     $('report-title').textContent = str(data.title);
     $('report-meta').textContent = str(data.meta);
+    const box = $('report-primary-box');
+    box.hidden = true;
+    for (const tone of TONES) box.classList.remove(toneClass(tone));
     const interval = primary ? intervalLine(primary) : '';
     if (primary && (str(primary.effect) || interval)) {
-      const box = $('report-primary-box');
       box.hidden = false;
       box.classList.add(toneClass(primary.tone));
       $('report-primary-metric').textContent = str(primary.label);
@@ -1306,6 +1282,52 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     }
     ensureMounted(view);
   }
+  // Both population snapshots are embedded; change their projection inside the srcdoc without navigation.
+  function setPopulation(population) {
+    if (!populationOptions.includes(population) || population === data.population) return;
+    const activeView = currentView || 'readout';
+    data = dataForPopulation(population);
+    metrics = Array.isArray(data.metrics) ? data.metrics : [];
+    metricByKey.clear();
+    for (const metric of metrics) metricByKey.set(metric.key, metric);
+    scopes = data.scopes && typeof data.scopes === 'object' ? data.scopes : {};
+    scopeKeys = Object.keys(scopes).sort((a, b) => (a === 'overall' ? -1 : b === 'overall' ? 1 : 0));
+    explore = data.explore && typeof data.explore === 'object' ? data.explore : {};
+    const covered = metrics.filter((metric) => scopeKeys.some((scope) => own(own(explore, scope), metric.key) !== undefined));
+    exploreMetrics = covered.length ? covered : metrics;
+    fileBase = slug(data.title);
+    primary = data.primary && typeof data.primary === 'object' ? data.primary : null;
+    healthStatus = data.healthStatus && typeof data.healthStatus === 'object' ? data.healthStatus : null;
+    healthKind = healthStatus && ['healthy', 'warning', 'unavailable', 'not_checked'].includes(healthStatus.kind) ? healthStatus.kind : 'unavailable';
+    overview = data.overview && typeof data.overview === 'object' ? data.overview : {};
+    report = data.report && typeof data.report === 'object' ? data.report : {};
+    added = data.exploratory && typeof data.exploratory === 'object' ? data.exploratory : {};
+    available = Array.isArray(added.available) ? added.available : [];
+    selectedAdded = Array.isArray(added.selected) ? added.selected.map(str) : [];
+    draft = new Set(selectedAdded);
+
+    if (selectedReadoutMetric && !metricByKey.has(selectedReadoutMetric)) {
+      selectedReadoutMetric = null;
+      $('inspector').hidden = true;
+      $('readout-layout').classList.remove('inspector-open');
+    }
+    if (!scopeKeys.includes(exploreState.scope)) {
+      exploreState.scope = scopeKeys.includes('overall') ? 'overall' : scopeKeys[0];
+    }
+    if (!exploreMetrics.some((metric) => metric.key === exploreState.metric)) {
+      exploreState.metric = exploreMetrics.length ? exploreMetrics[0].key : null;
+    }
+    if (!exploreMetrics.length) exploreState.view = 'overview';
+    exploreBuilt = false;
+    mounted.clear();
+    groupDownload.set('', '');
+    populationSelect.value = data.population;
+    renderHero();
+    renderAdded();
+    showView(activeView);
+    fitFrame();
+  }
+
 
   function navigate(view) {
     showView(view);

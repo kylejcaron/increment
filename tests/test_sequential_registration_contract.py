@@ -659,7 +659,13 @@ def test_automatic_native_registration_survives_artifact_reopen(tmp_path):
         with Analysis.from_unit_day_artifact(store, reference, expected_context=context) as adopted:
             restored = adopted.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
             assert restored == first
-            assert list(adopted.run()) == expected
+            actual = list(adopted.run())
+            assert [
+                row.model_dump(exclude={"source_snapshot_id", "family_id"}) for row in actual
+            ] == [row.model_dump(exclude={"source_snapshot_id", "family_id"}) for row in expected]
+            assert {row.source_snapshot_id for row in actual}.isdisjoint(
+                row.source_snapshot_id for row in expected
+            )
     finally:
         connection.disconnect()
 
@@ -861,7 +867,7 @@ def test_fixed_moments_sequential_stamp_requires_sequential_envelope(tmp_path):
         path = tmp_path / "fixed.parquet"
         source.export(path)
         payload = pq.read_table(path).to_pylist()
-        assert payload and payload[0]["moments_format"] == 10
+        assert payload and payload[0]["moments_format"] == 11
         supported = Analysis.from_moments(
             payload,
             metrics=[MetricSpec(name="outcome", type="conversion")],
@@ -873,7 +879,10 @@ def test_fixed_moments_sequential_stamp_requires_sequential_envelope(tmp_path):
         )
         with pytest.raises(CapabilityError) as exc:
             Analysis.from_moments(
-                [dict(row, moments_format=9) for row in payload],
+                [
+                    dict(row, record_kind="sequential_checkpoint", moments_format=9)
+                    for row in payload
+                ],
                 metrics=[MetricSpec(name="outcome", type="conversion")],
                 control="control",
             )
@@ -892,7 +901,7 @@ def test_sequential_moments_format8_refuses_before_replay(tmp_path):
         path = tmp_path / "sequential.parquet"
         source.export(path)
         payload = pq.read_table(path).to_pylist()
-        assert payload and payload[0]["moments_format"] == 9
+        assert payload and payload[0]["moments_format"] == 10
         supported = Analysis.from_moments(
             payload,
             metrics=[MetricSpec(name="outcome", type="conversion")],

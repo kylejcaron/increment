@@ -4,9 +4,12 @@ This notebook builds a deterministic two-arm experiment with assignment events,
 trigger events, and outcomes. Its dashboard defaults to the triggered cohort and
 switches every readout together between **Assigned** and **Triggered**. The
 triggered-only caveat is always visible: triggered-cohort inference is
-appropriate only when triggering is unaffected by treatment. When the source
-refuses a triggered daily/as-of view, its refusal remains visible and the
-assignment-level view is a separate route.
+appropriate only when triggering is unaffected by treatment. Definitions and
+unit-day artifacts with trigger evidence also expose triggered daily/as-of
+encouragement compliance; cohort membership begins at each trigger, but uptake
+windows remain anchored at assignment. If another source cannot provide
+triggered membership, its refusal remains visible rather than substituting the
+assigned population.
 
 Assigned-population allocation checks describe assignment integrity; triggered
 checks describe balance in the triggered cohort. They are separate statuses,

@@ -363,6 +363,131 @@ def _triggered_day_axis_cases() -> tuple[ParityCase, ...]:
     )
 
 
+def _triggered_encouragement_compliance_case() -> ParityCase:
+    """Trigger-selected compliance parity; uptake still uses its assignment anchor."""
+    rows = _encouragement_rows_for_parity()
+    assignments = [row for row in rows if row["event"] == "exposure"]
+    rows.extend(
+        ds._row(row["user_id"], dt.datetime(2025, 1, 11, 9), "saw_surface") for row in assignments
+    )
+    payload = _encouragement_defs_dict(AnalysisPlan(primary="revenue"))
+    payload["fact_sources"][0]["facts"].append({"name": "saw_surface", "column": None})
+    payload["exposures"].append({"name": "saw_surface", "fact": "saw_surface"})
+    payload["experiments"][0]["trigger"] = "saw_surface"
+    definitions = Definitions.model_validate(payload)
+    cutoff = dt.datetime(2025, 1, 19, 23, 59, tzinfo=dt.UTC)
+    evidence = SourceSnapshotEvidence(
+        observation_cutoff_ts=cutoff,
+        complete_through_by_feed={"events": cutoff},
+    )
+
+    def build_native(*, artifact: bool = False) -> Analysis:
+        con = ds.duckdb_connection(rows)
+        native = make_analysis(
+            con, definitions, experiment="exp", source_snapshot_evidence=evidence
+        )
+        return _publish_and_adopt(con, native) if artifact else _track_connection(native, con)
+
+    design = definitions.experiments[0].resolved_design()
+    metric = MetricSpec(name="revenue", type="mean", preferred_direction="increase")
+    frame = _encouragement_oracle_frame_for_parity()
+
+    def build_summary() -> Analysis:
+        return Analysis.from_unit_summary(
+            frame,
+            unit="user_id",
+            group="group",
+            metrics=[metric],
+            design=design,
+            uptake="clicked",
+        )
+
+    def build_panel() -> Analysis:
+        panel = frame.copy()
+        panel["ds"] = dt.date(2025, 1, 10)
+        panel["exposed"] = dt.date(2025, 1, 10)
+        return Analysis.from_unit_panel(
+            panel,
+            unit="user_id",
+            group="group",
+            date="ds",
+            exposure_date="exposed",
+            metrics=[metric],
+            design=design,
+            uptake="clicked",
+        )
+
+    def build_moments() -> Analysis:
+        source = build_summary()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "encouragement.parquet"
+                source.export(path)
+                rows = pq.read_table(path).to_pylist()
+        finally:
+            source.close()
+        return Analysis.from_moments(rows, metrics=[metric], design=design)
+
+    def build_switchback() -> Analysis:
+        return _neighboring_integer_switchback_analysis()
+
+    unsupported = {
+        "from_unit_summary": "SOURCE: unit summaries have no trigger declaration or trigger anchors.",
+        "from_unit_panel": "SOURCE: unit panels have no trigger declaration or trigger anchors.",
+        "from_moments": "SOURCE: portable moments have no per-unit trigger anchors.",
+        "from_switchback_panel": "SOURCE: switchback contrasts have no triggered assignment population.",
+    }
+    code = "facade.analysis.trigger_unsupported"
+
+    def probe_source(name: str, _analysis: Analysis) -> None:
+        if name != "from_definitions":
+            return
+        for builder, supports_assigned in (
+            (build_summary, True),
+            (build_panel, True),
+            (build_moments, True),
+            (build_switchback, False),
+        ):
+            candidate = builder()
+            try:
+                for method_name, kwargs in (
+                    ("run", {"population": "triggered"}),
+                    ("run_breakout", {"population": "triggered"}),
+                    ("run_daily_lift", {"population": "triggered", "estimands": ("compliance",)}),
+                    ("run_asof_lift", {"population": "triggered", "estimands": ("compliance",)}),
+                ):
+                    with pytest.raises(CodedError) as raised:
+                        getattr(candidate, method_name)(**kwargs)
+                    expected_code = code
+                    assert raised.value.code == expected_code, (
+                        builder,
+                        method_name,
+                        raised.value.code,
+                    )
+                if supports_assigned:
+                    candidate.run(population="assigned")
+            finally:
+                candidate.close()
+
+    return ParityCase(
+        id="triggered_encouragement_compliance_asof",
+        build={
+            "from_definitions": build_native,
+            "from_unit_day_artifact": lambda: build_native(artifact=True),
+            "from_unit_summary": build_summary,
+            "from_unit_panel": build_panel,
+            "from_moments": build_moments,
+            "from_switchback_panel": build_switchback,
+        },
+        estimands=("compliance",),
+        view="asof_lift",
+        population="triggered",
+        waive=unsupported,
+        waived_refusal_codes=dict.fromkeys(unsupported, code),
+        source_probe=probe_source,
+    )
+
+
 # Definitions/artifact put the CUPED override on the plan's ExperimentMetric;
 # the frame path refuses plan-level sensitivity_methods overrides and takes it on
 # the MetricSpec. Both plans share role/q/alpha; dataset.py's docstring explains
@@ -6461,7 +6586,7 @@ def _mixed_quantile_checkpoint_probes(
             analysis.export(path)
             (envelope,) = pq.read_table(path).to_pylist()
         assert envelope["record_kind"] == "sequential_checkpoint"
-        assert envelope["moments_format"] == 9
+        assert envelope["moments_format"] == 10
         assert not {"metric", "group_id", "n", "sum", "sum_sq", "ref", "ref_den"} & envelope.keys()
         replay = checked_declaration(
             lambda: Analysis.from_moments([envelope], metrics=summary_specs, design=design)
@@ -6472,9 +6597,17 @@ def _mixed_quantile_checkpoint_probes(
             assert restored == snapshot, constructor
             actual = replay.run(metrics=["purchase_rate"])
             check_rows(actual)
+            identity_fields = {"source_snapshot_id", "family_id"}
             assert nested_close(
-                [row.model_dump() for row in expected], [row.model_dump() for row in actual]
+                [row.model_dump(exclude=identity_fields) for row in expected],
+                [row.model_dump(exclude=identity_fields) for row in actual],
             ), constructor
+            assert [row.source_snapshot_id for row in expected] == [
+                row.source_snapshot_id for row in actual
+            ], constructor
+            assert [getattr(row, "family_id", None) for row in expected] == [
+                getattr(row, "family_id", None) for row in actual
+            ], constructor
         finally:
             _close_parity_analysis(replay)
 
@@ -8067,7 +8200,7 @@ def _conversion_route_observational_case() -> ParityCase:
     )
 
 
-# Exact unit counts must survive every producer seam, format-10 export/replay, and
+# Exact unit counts must survive every producer seam, format-11 export/replay, and
 # emitted-row comparison. Switchback contrasts block periods rather than parallel arms.
 _EXACT_COUNT_SWITCHBACK_WAIVE = {
     "from_switchback_panel": (
@@ -8149,7 +8282,7 @@ def _export_counts_and_replay(
     """
     try:
         rows = _export_rows(analysis)
-        assert {row["moments_format"] for row in rows} == {10}
+        assert {row["moments_format"] for row in rows} == {11}
         for name, arms in expected.items():
             _assert_arm_counts(
                 f"export/{name}", [row for row in rows if row["metric"] == name], arms
@@ -8483,6 +8616,7 @@ def _exact_retention_case(
 
 PARITY_CASES: tuple[ParityCase, ...] = (
     *_triggered_day_axis_cases(),
+    _triggered_encouragement_compliance_case(),
     _exact_conversion_case(export_from="from_definitions"),
     _exact_conversion_case(export_from="from_unit_panel"),
     _exact_retention_case(export_from="from_definitions"),

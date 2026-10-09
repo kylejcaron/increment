@@ -15,6 +15,7 @@ from increment.estimation.readout_types import (
     cell_order,
     family_identity,
 )
+from increment.readouts._source_digest import input_evidence
 
 
 def attach_multiplicity_scope(
@@ -352,7 +353,7 @@ def scoped_collection(
     identity_request = _identity_request(rows, request)
     payload = {
         "kind": "increment.readout.snapshot",
-        "version": 1,
+        "version": 2,
         "collection": collection_type.__name__,
         "view": view,
         "request": _request_snapshot(
@@ -370,12 +371,16 @@ def scoped_collection(
             }
         ),
         "source": {
-            "kind": "readout_rows",
+            "kind": "readout_input_evidence",
+            "route": route,
+            "source": source,
             "sha256": sha256(
                 canonical_json_bytes(
                     sorted(
                         (
-                            row.model_dump(mode="json", exclude={"source_snapshot_id"})
+                            input_evidence(
+                                row.model_dump(mode="json", exclude={"source_snapshot_id"})
+                            )
                             for row in rows
                         ),
                         key=canonical_json_bytes,

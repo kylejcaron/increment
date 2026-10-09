@@ -1086,13 +1086,15 @@ class ArtifactPublisher:
         certified_edge = None
         evidence = self._source_snapshot_evidence
         if evidence is not None:
-            _, certified_edge = _effective_snapshot_edge(
+            uptake_feed_name = _find_fact_source(self._defs, request.uptake_name)[0].name
+            observed_edge, certified_edge = _effective_snapshot_edge(
                 evidence.observation_cutoff_ts,
-                evidence.complete_through_by_feed.get(
-                    _find_fact_source(self._defs, request.uptake_name)[0].name
-                ),
+                evidence.complete_through_by_feed.get(uptake_feed_name),
                 self._experiment.day_boundary_offset,
                 self._experiment.observation_horizon_day,
+            )
+            observation_edge = (
+                observed_edge if observation_edge is None else min(observation_edge, observed_edge)
             )
         return _PublicationExtensionSpec(
             entry,

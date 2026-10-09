@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Literal
 
 from increment import readouts
 from increment._analysis_config import UNSET, _Unset
-from increment._day_axis import _day_axis_source_route
+from increment._day_axis import _TRIGGER_UNSUPPORTED, _day_axis_source_route
 from increment._literals import ValueScale
 from increment._readout_request import _raise as _raise_readout
 from increment.errors import CapabilityError, InvalidRequestError, RefusalSpec
@@ -126,7 +126,29 @@ def validate_whole_window(
     route: RouteName,
 ) -> None:
     """Validate native and empty seam requests before any moments are read."""
-    del plan, design, experiment
+    if route == "artifact" and req.metrics:
+        _validate_run_request(
+            src,
+            decision_method=req.decision_method,
+            sensitivity_methods=req.sensitivity_methods,
+            prior=req.prior,
+            metrics=[m.name for m in req.metrics],
+            estimands=req.estimands,
+            value_scale=req.value_scale,
+        )
+    if (
+        req.population == "triggered"
+        and getattr(plan.inference, "registration", None) is None
+        and (
+            route not in ("native", "artifact") or experiment is None or experiment.trigger is None
+        )
+    ):
+        _refuse(
+            _TRIGGER_UNSUPPORTED,
+            method="run",
+            experiment="<unknown>" if experiment is None else experiment.name,
+            trigger=None if experiment is None else experiment.trigger,
+        )
     if route != "native" and req.metrics:
         return
     if route == "native" and req.value_scale:
@@ -188,11 +210,36 @@ class WholeWindowReadouts:
                 )
             )
             return _select_population(result, req.population)
+        if (
+            route in ("native", "artifact")
+            and self._experiment is not None
+            and self._experiment.trigger is not None
+            and req.population in (None, "triggered")
+        ):
+            validate_populations = getattr(self._src, "validate_populations", None)
+            if validate_populations is None:
+                _refuse(
+                    _TRIGGER_UNSUPPORTED,
+                    method="run",
+                    experiment=self._experiment.name,
+                    trigger=self._experiment.trigger,
+                )
+            populations = (
+                ("triggered",) if req.population == "triggered" else ("assigned", "triggered")
+            )
+            validate_populations(populations, operation="run")
         design_summary_only = _design_compliance_only(self._src, req.estimands)
         if not req.metrics and not design_summary_only:
             from increment.breakout.estimates import LiftEstimates
 
             return LiftEstimates()
+        if (
+            route in ("native", "artifact")
+            and self._experiment is not None
+            and self._experiment.trigger is not None
+            and req.population in (None, "triggered")
+        ):
+            self._validate_trigger()
         if route != "native":
             return self._run_seam_family(req)
         return self._run_native_family(req, design_summary_only=design_summary_only)
@@ -203,8 +250,13 @@ class WholeWindowReadouts:
         def _read(population: Literal["assigned", "triggered"]) -> LiftEstimates:
             source = self._src
             if population == "triggered":
-                assert self._experiment is not None
-                self._validate_trigger()
+                if self._experiment is None:
+                    _refuse(
+                        _TRIGGER_UNSUPPORTED,
+                        method="run",
+                        experiment="<unknown>",
+                        trigger=None,
+                    )
                 source = self._readout_source(
                     population="triggered",
                     selected=req.metrics,
@@ -236,7 +288,13 @@ class WholeWindowReadouts:
     def _run_native_family(
         self, req: WholeWindowRequest, *, design_summary_only: bool
     ) -> LiftEstimates:
-        assert self._experiment is not None
+        if self._experiment is None:
+            _refuse(
+                _TRIGGER_UNSUPPORTED,
+                method="run",
+                experiment="<unknown>",
+                trigger=None,
+            )
         metric_names = [m.name for m in req.metrics]
 
         def _run_arm(
@@ -255,7 +313,6 @@ class WholeWindowReadouts:
             )
 
         if req.population == "triggered":
-            self._validate_trigger()
             source = self._readout_source(
                 population="triggered",
                 selected=req.metrics,
@@ -273,7 +330,6 @@ class WholeWindowReadouts:
         assigned = _run_arm(source, "assigned")
         if req.population == "assigned" or self._experiment.trigger is None:
             return assigned
-        self._validate_trigger()
         triggered = self._readout_source(
             population="triggered",
             selected=req.metrics,

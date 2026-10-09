@@ -188,6 +188,44 @@ def test_from_unit_panel_run_daily_returns_daily_metric_values():
     assert day1_treatment.unavailable == "few_units"
 
 
+def test_day_axis_snapshot_identity_tracks_binary_input_counts():
+    import pandas as pd
+
+    rows = [
+        {"user_id": unit, "variant": arm, "day": "2026-01-01", "converted": value}
+        for arm, values in (
+            ("control", (0, 0, 0, 0)),
+            ("treatment", (0, 0, 0, 0)),
+        )
+        for index, value in enumerate(values)
+        for unit in (f"{arm}-{index}",)
+    ]
+    changed_rows = [dict(row) for row in rows]
+    changed_rows[-1]["converted"] = 1
+
+    def analyze(frame):
+        return Analysis.from_unit_panel(
+            pd.DataFrame(frame),
+            unit="user_id",
+            group="variant",
+            date="day",
+            control="control",
+            metrics={"converted": "conversion"},
+            experiment_id="same-study",
+        )
+
+    baseline, changed = analyze(rows), analyze(changed_rows)
+    try:
+        baseline_rows, changed_results = baseline.run_daily(), changed.run_daily()
+        assert {row.n for row in baseline_rows} == {row.n for row in changed_results}
+        assert {row.source_snapshot_id for row in baseline_rows}.isdisjoint(
+            {row.source_snapshot_id for row in changed_results}
+        )
+    finally:
+        baseline.close()
+        changed.close()
+
+
 @pytest.fixture
 def panel_breakout_analysis():
     import pandas as pd
@@ -769,6 +807,59 @@ def encouragement_panel_analysis():
         ),
         uptake="clicked",
     )
+
+
+def test_compliance_asof_snapshot_identity_tracks_arm_counts():
+    import pandas as pd
+
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    def analysis(units_per_arm: int):
+        rows = []
+        for arm, variant in (("control", 0), ("treatment", 1)):
+            for unit in range(units_per_arm):
+                clicked = float(variant and unit % 2 == 0)
+                for day in ("2026-01-01", "2026-01-02"):
+                    rows.append(
+                        {
+                            "unit": f"{arm}-{unit}",
+                            "variant": arm,
+                            "day": day,
+                            "revenue": float(unit),
+                            "clicked": clicked,
+                        }
+                    )
+        return Analysis.from_unit_panel(
+            pd.DataFrame(rows),
+            unit="unit",
+            group="variant",
+            date="day",
+            metrics={"revenue": "mean"},
+            design=Encouragement(
+                control_group="control",
+                uptake=UptakeSpec(fact="clicked"),
+                exclusion_restriction=ExclusionRestriction(
+                    acknowledged=True, justification="assignment only changes uptake"
+                ),
+                min_first_stage_z=0.001,
+            ),
+            uptake="clicked",
+        )
+
+    small = analysis(100)
+    large = analysis(120)
+    try:
+        small_rows = list(small.run_asof_lift(estimands=("compliance",)))
+        large_rows = list(large.run_asof_lift(estimands=("compliance",)))
+        assert small_rows and large_rows
+        assert all(row.n_control == 100 and row.n_treat == 100 for row in small_rows)
+        assert all(row.n_control == 120 and row.n_treat == 120 for row in large_rows)
+        assert {row.source_snapshot_id for row in small_rows}.isdisjoint(
+            {row.source_snapshot_id for row in large_rows}
+        )
+    finally:
+        small.close()
+        large.close()
 
 
 def test_from_unit_panel_run_asof_lift_encouragement_estimands(encouragement_panel_analysis):

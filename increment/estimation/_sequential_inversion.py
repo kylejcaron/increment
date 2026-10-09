@@ -398,6 +398,16 @@ class ConfidenceBounds:
             return "full-domain"
         return "interval"
 
+    def __repr__(self) -> str:
+        from increment._display import format_interval
+
+        interval = format_interval(self.lower, self.upper, empty=self.empty)
+        confidence = float(1 - self.alpha)
+        return (
+            f"ConfidenceBounds({interval} ratio, confidence={confidence:.1%}, "
+            f"status={self.status!r})"
+        )
+
 
 def _arguments(
     alpha: Fraction, max_width: Fraction, alternative: Alternative

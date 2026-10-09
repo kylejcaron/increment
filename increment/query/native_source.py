@@ -38,6 +38,7 @@ from increment.query._native_day_source import (
     _refuse_missing_pre_period,
     _refuse_unsupported_day_metric,
 )
+from increment.query._native_materialization import _NativeMaterializationMixin
 from increment.query._native_refusals import (
     _NATIVE_COMPLIANCE_DESIGN_MISMATCH,
     _NATIVE_COVARIATE_AMBIGUOUS,
@@ -70,7 +71,6 @@ from increment.query.builders import (
     compliance_event_horizon,
     daily_exposure_counts,
     daily_group_summary,
-    declared_binary_metrics,
     first_exposures,
     group_summary,
     join_breakout_dimension,
@@ -80,7 +80,6 @@ from increment.query.builders import (
     panel_spine,
     post_exposure_stats,
     pre_period_stats,
-    resolved_measure_key,
     site_volume,
     triggered_population,
     union_event_horizon,
@@ -150,7 +149,7 @@ if TYPE_CHECKING:
     from increment.sources import Grain, MomentSource
 
 
-class DefinitionsMomentSource(SequentialSourceMixin):
+class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin):
     """MomentSource over the definitions/ibis pipeline - the warehouse
     sibling of SqlPanelSource, FrameTotalsSource, FramePanelSource,
     MomentsSource. The one substrate offering every grain plus SQL
@@ -748,34 +747,6 @@ class DefinitionsMomentSource(SequentialSourceMixin):
                 )
         return union_event_horizon(event_tables, self._experiment)
 
-    def materialize(self) -> None:
-        """Rebuild materialized tables from current warehouse state.
-
-        Each explicit call rescans the source; reuse is confined to one
-        operation. No materialization is needed for store='none' or no metrics.
-        """
-        if self._store == "none" or not self._metrics:
-            return
-        self._validate_mixed_assignments()
-        self._invalidate_materialization()
-        self._materialize()
-        self._reduction_calls += 1
-
-    def _note_reduction(self) -> None:
-        """Called once per top-level readout call (never for panel_sql/summary_sql).
-
-        Each call past the store threshold rebuilds from current warehouse
-        state. Nested reductions share that operation's materialization.
-        """
-        self._validate_mixed_assignments()
-        self._reduction_calls += 1
-        if self._store == "none":
-            return
-        threshold = 1 if self._store == "always" else 2
-        if self._reduction_calls >= threshold:
-            self._invalidate_materialization()
-            self._materialize()
-
     @property
     def _publisher(self) -> ArtifactPublisher:
         # Built per call: bound accessors and audit counters must stay live.
@@ -815,81 +786,6 @@ class DefinitionsMomentSource(SequentialSourceMixin):
         return self._publisher.publish(
             store, extensions=extensions, source=self, refresh_of=refresh_of
         )
-
-    @contextmanager
-    def _reduction_batch(self):
-        """Count one source-owned reduction for a nested batch of views."""
-        outer = self._reduction_batch_depth == 0
-        if outer:
-            self._note_reduction()
-        self._reduction_batch_depth += 1
-        try:
-            yield
-        finally:
-            self._reduction_batch_depth -= 1
-
-    def _temp_name(self, *parts: str) -> str:
-        """Backend-portable temp-table name, via the shared warehouse session."""
-        return self._session.temp_name(*parts)
-
-    def _materialize_table(self, name: str, expr: ir.Table) -> ir.Table:
-        """``CREATE TEMP TABLE``, degrading to unmaterialized on failure, via the session."""
-        return self._session.materialize_table(name, expr)
-
-    def _materialize(self) -> None:
-        """Materialize the shared spine and one stats table per distinct measure.
-
-        Within one operation, several declared metrics can resolve to
-        the same underlying measure (same fact, filters, and value
-        column); their ``stats`` tables agree in every load-bearing
-        column, so this keys materialized stats by
-        ``resolved_measure_key`` rather than metric name - N metrics
-        sharing one measure get one ``CREATE TEMP TABLE`` instead of N.
-        Uses ``_union_event_horizon``, the same memoized bound
-        ``_build_panel_for_metric_impl`` threads into every spine, so the
-        materialized spine is numerically identical to a fused readout's.
-        """
-        exposures = self._get_exposures()
-        raw: dict[
-            str, tuple[Table, Table, Table, Table, Table | None, Table, str | None, ir.Scalar]
-        ] = {}
-        for metric in self._metrics:
-            raw[metric.name] = self._build_panel_for_metric_impl(exposures, metric)
-
-        spine_name = self._temp_name(self._experiment_name, "spine")
-        spine_expr = panel_spine(exposures, self._experiment, end_date=self._union_event_horizon())
-        spine = self._materialize_table(spine_name, spine_expr)
-
-        # Metrics sharing a measure (see `resolved_measure_key`) share one
-        # materialized stats table instead of each re-scanning the same events.
-        measure_tables: dict[
-            tuple[
-                str, tuple[tuple[str, str, tuple[str | int | float | bool, ...]], ...], str | None
-            ],
-            Table,
-        ] = {}
-        for metric in self._metrics:
-            panel, _spine, stats, _events, den_events, fact_tbl, value_col, data_as_of = raw[
-                metric.name
-            ]
-            measure_ref = metric.numerator if isinstance(metric, RatioMetric) else metric
-            measure_key = resolved_measure_key(measure_ref, value_column=value_col)
-            materialized_stats = measure_tables.get(measure_key)
-            if materialized_stats is None:
-                stats_name = self._temp_name(self._experiment_name, "stats", metric.name)
-                materialized_stats = self._materialize_table(stats_name, stats)
-                measure_tables[measure_key] = materialized_stats
-            self._panel_cache[("assigned", metric)] = (
-                panel,
-                spine,
-                materialized_stats,
-                raw[metric.name][3],
-                den_events,
-                fact_tbl,
-                value_col,
-                data_as_of,
-            )
-        self._materialized = True
 
     def _build_breakout_properties_table(
         self, fact_source: FactSource, property_name: str, exposures: Table
@@ -1484,6 +1380,56 @@ class DefinitionsMomentSource(SequentialSourceMixin):
         days = spine.filter(spine.ds.notnull()).select("ds").distinct().order_by("ds")
         return [row["ds"] for row in self._con.to_pyarrow(days).to_pylist()]
 
+    def triggered_compliance_dates(self) -> Sequence[object]:
+        """Dense trigger-entry history through the observed uptake horizon."""
+        self._validate_trigger_capability(operation="compliance_dates")
+        design = cast(Encouragement, self._context.design)
+        trigger_exposures = self._get_trigger_population(operation="compliance_dates")
+        trigger_days = (
+            trigger_exposures.mutate(
+                ds=_local_date(trigger_exposures.first_trigger_ts, self._experiment)
+            )
+            .filter(trigger_exposures.first_trigger_ts.notnull())
+            .select("ds")
+            .distinct()
+        )
+        trigger_bounds = (
+            ibis.literal(1)
+            .name("_one")
+            .as_table()
+            .select(
+                first=trigger_days.ds.min(),
+                last=trigger_days.ds.max(),
+            )
+        )
+        bounds = self._con.to_pyarrow(trigger_bounds).to_pylist()[0]
+        if bounds["first"] is None:
+            return []
+        assignment_exposures = self._get_exposures()
+        uptake_fs, _ = _find_fact_source(self._defs, design.uptake.fact)
+        uptake_table = self._get_fact_table(uptake_fs)
+        uptake_events = self._uptake_source_events(uptake_table, design.uptake.fact)
+        horizon = compliance_event_horizon(assignment_exposures, uptake_events, self._experiment)
+        horizon_table = ibis.literal(1).name("_one").as_table().select(edge=horizon)
+        horizon_day = self._con.to_pyarrow(horizon_table).to_pylist()[0]["edge"]
+        snapshot_edge = None
+        evidence = self._session.source_snapshot_evidence
+        if evidence is not None:
+            snapshot_edge, _ = _effective_snapshot_edge(
+                evidence.observation_cutoff_ts,
+                evidence.complete_through_by_feed.get(uptake_fs.name),
+                self._experiment.day_boundary_offset,
+                self._experiment.observation_horizon_day,
+            )
+            horizon_day = snapshot_edge if horizon_day is None else min(horizon_day, snapshot_edge)
+        last = max(bounds["last"], horizon_day) if horizon_day is not None else bounds["last"]
+        if snapshot_edge is not None:
+            last = min(last, snapshot_edge)
+        return [
+            bounds["first"] + dt.timedelta(days=offset)
+            for offset in range((last - bounds["first"]).days + 1)
+        ]
+
     def dashboard_group_data(
         self,
         *,
@@ -1647,27 +1593,54 @@ class DefinitionsMomentSource(SequentialSourceMixin):
         uptake_fact_tbl = self._get_fact_table(uptake_fs)
         uptake_events = self._uptake_source_events(uptake_fact_tbl, design.uptake.fact)
         window_days = design.uptake.window_days
+        triggered = population == "triggered"
         exposures = (
             self._get_trigger_population(operation="compliance_summary")
-            if population == "triggered"
+            if triggered
             else self._get_exposures()
         )
         if cluster is not None:
             self._validate_cluster_labels(exposures, cluster)
         if as_of is not None:
+            membership_anchor = (
+                exposures.first_trigger_ts if triggered else exposures.first_exposure_ts
+            )
             exposures = exposures.filter(
-                _local_date(exposures.first_exposure_ts, self._experiment) <= ibis.literal(as_of)
+                _local_date(membership_anchor, self._experiment) <= ibis.literal(as_of)
             )
             uptake_events = uptake_events.filter(
                 _local_date(uptake_events.ts, self._experiment) <= ibis.literal(as_of)
             )
+        uptake_exposures = exposures
+        if triggered:
+            uptake_exposures = self._get_exposures().semi_join(
+                exposures.select("unit_id").distinct(), "unit_id"
+            )
         if completed_windows_only:
-            exposures = exposures.filter(
-                _local_date(exposures.first_exposure_ts, self._experiment)
+            uptake_completion_ts = uptake_exposures.first_exposure_ts + ibis.interval(
+                days=window_days
+            )
+            uptake_exposures = uptake_exposures.filter(
+                _local_date(uptake_exposures.first_exposure_ts, self._experiment)
                 + ibis.interval(days=window_days)
                 <= ibis.literal(as_of)
             )
-        totals = _attach_uptake_flag(exposures, exposures, uptake_events, window_days)
+            certified_edge = self._uptake_certified_edge(design.uptake.fact)
+            if certified_edge is not None:
+                certified_edge_exclusive = (
+                    dt.datetime.combine(certified_edge + dt.timedelta(days=1), dt.time())
+                    - self._experiment.day_boundary_offset
+                ).replace(tzinfo=dt.UTC)
+                uptake_exposures = uptake_exposures.filter(
+                    uptake_completion_ts
+                    <= _utc_timestamp_literal(
+                        uptake_exposures.first_exposure_ts, certified_edge_exclusive
+                    )
+                )
+            exposures = exposures.semi_join(
+                uptake_exposures.select("unit_id").distinct(), "unit_id"
+            )
+        totals = _attach_uptake_flag(exposures, uptake_exposures, uptake_events, window_days)
         totals = totals.mutate(y=totals.d, metric=ibis.literal("uptake"))
         base_rows = self._con.to_pyarrow(
             totals.group_by("group_id").agg(
@@ -1705,82 +1678,6 @@ class DefinitionsMomentSource(SequentialSourceMixin):
             as_of=as_of,
             arms=tuple(ComplianceArm(**row) for row in rows.values()),
         )
-
-    # Keep metric summary assembly cohesive so all derived tables share one reduction.
-    def _build_metric_summary(  # noqa: PLR0913
-        self,
-        metric: Metric,
-        exposures: Table,
-        spine: Table,
-        stats: Table,
-        den_events: Table | None,
-        fact_tbl: Table,
-        value_col: str | None,
-        data_as_of: ir.Scalar,
-        *,
-        cluster: str | None,
-        uptake_events: Table | None,
-        uptake_window_days: int | None,
-        warn_on_censoring: bool,
-        want_cuped: bool = True,
-        by: Sequence[str] = (),
-        properties_table: Table | None = None,
-    ) -> tuple[Table, Table | None, Table | None, Table]:
-        """Build summary, pre-period stats, denominator stats, and unit totals.
-        Retention cohorts reuse pre-period stats; quantiles use the unit totals.
-        Disable want_cuped when no requested method needs pre-period covariates.
-        """
-        # CUPED covariate: built from the same fact/value_column/aggregation as
-        # the outcome (a ratio's numerator); docs/guides/cuped.md.
-        pre_events = self._build_pre_events(fact_tbl, metric, value_col) if want_cuped else None
-        pre_stats = (
-            pre_period_stats(
-                pre_events, exposures, self._experiment, source_key=f"{metric.name}:pre"
-            )
-            if pre_events is not None
-            else None
-        )
-        den_stats = (
-            post_exposure_stats(
-                den_events,
-                exposures,
-                source_key=f"{metric.name}:den",
-                experiment=self._experiment,
-            )
-            if den_events is not None
-            else None
-        )
-        totals = unit_totals(
-            spine,
-            stats,
-            metric,
-            self._experiment,
-            pre_stats=pre_stats,
-            den_stats=den_stats,
-            uptake_events=uptake_events,
-            uptake_window_days=uptake_window_days,
-            uptake_exposures=exposures,
-            by=list(by) or None,
-            properties_table=properties_table,
-            data_as_of=data_as_of,
-            warn_on_censoring=(
-                (lambda query: self._con.to_pyarrow(query).to_pylist())
-                if warn_on_censoring
-                else False
-            ),
-        )
-        totals = winsorize_unit_totals(totals, metric)
-        # The metric type fixes the denominator family: a clustered ratio row carries
-        # its own per-cluster denominator total instead of the cluster size.
-        summary = group_summary(
-            totals,
-            by=list(by) or None,
-            cluster=cluster,
-            ratio_metrics=[metric.name] if metric.type == "ratio" else None,
-            uptake=uptake_events is not None,
-            binary_metrics=declared_binary_metrics([metric]),
-        )
-        return summary, pre_stats, den_stats, totals
 
     def _preflight_breakout(self, breakout: Breakout, *, operation: str) -> FactSource:
         """Resolve and validate one breakout without touching warehouse state.
@@ -2455,6 +2352,7 @@ class DefinitionsMomentSource(SequentialSourceMixin):
             design=self._context.design,
             plan=self._context.plan,
             configs=self._context.configs,
+            _source=self,
         )
 
     def breakout_summaries(
@@ -2904,9 +2802,12 @@ class DefinitionsMomentSource(SequentialSourceMixin):
             )
         import pyarrow as pa
 
+        from increment._source_identity import source_identity
         from increment.decision_wire import compiled_plan_to_json
         from increment.sources import ASSIGNMENT_COUNTS_FIELD, MOMENTS_FORMAT
 
+        identity_record = source_identity(self)
+        identity_payload = json.dumps(identity_record, sort_keys=True, separators=(",", ":"))
         selected = list(metrics)
         cube = self._moments_for_metrics(
             methods=methods,
@@ -2946,6 +2847,7 @@ class DefinitionsMomentSource(SequentialSourceMixin):
                 json.dumps(assignment_counts, sort_keys=True, separators=(",", ":")),
                 compliance_payload,
                 self.context.trigger_name,
+                identity_payload,
             )
             return MomentsSource(
                 [row],
@@ -2956,6 +2858,8 @@ class DefinitionsMomentSource(SequentialSourceMixin):
                 plan=self._context.plan,
                 path="warehouse",
                 _trusted_trigger_name=self.context.trigger_name,
+                _source_snapshot_evidence=self._session.source_snapshot_evidence,
+                _source_identity_record=identity_record,
             )
         from increment.sources import MomentsSource
 
@@ -2968,6 +2872,8 @@ class DefinitionsMomentSource(SequentialSourceMixin):
             plan=self._context.plan,
             path="warehouse",
             _trusted_trigger_name=self.context.trigger_name,
+            _source_snapshot_evidence=self._session.source_snapshot_evidence,
+            _source_identity_record=identity_record,
         )
 
     def build_panel_for_metric(
@@ -3004,14 +2910,15 @@ class DefinitionsMomentSource(SequentialSourceMixin):
         for the wire-format contract.
 
         Fixed-horizon exports carry ``group_summary`` rows, or one metric-free
-        ``design_summary`` envelope, stamped ``moments_format=10``. Registered
-        sequential exports instead carry one
-        typed ``sequential_checkpoint`` envelope stamped ``moments_format=9``;
-        they are not ordinary fixed moments rows. ``from_moments`` validates
-        and strips these transport columns before constructing its immutable
-        context. Formats 1-8 and missing or partial decision-plan
-        payloads are refused; all supported inference variants and view
-        policies round-trip without fallback.
+        ``design_summary`` envelope, stamped ``moments_format=11`` with the
+        originating source identity. Registered sequential exports carry one
+        typed ``sequential_checkpoint`` envelope stamped ``moments_format=10``
+        with the same identity. The preceding fixed-horizon format 10 and
+        sequential format 9 remain readable. ``from_moments`` validates and
+        strips these transport columns before constructing its immutable
+        context. Formats 1-8 and missing or partial decision-plan payloads are
+        refused; supported inference variants and view policies round-trip
+        without fallback.
         """
         if getattr(self.context.plan.inference, "registration", None) is not None:
             from increment.sources import export_source_moments
@@ -3052,8 +2959,14 @@ class DefinitionsMomentSource(SequentialSourceMixin):
         import pyarrow as pa
         import pyarrow.parquet as pq
 
+        from increment._source_identity import source_identity
         from increment.decision_wire import compiled_plan_to_json
-        from increment.sources import DECISION_PLAN_FIELD, MOMENTS_FORMAT, _validate_moment_counts
+        from increment.sources import (
+            DECISION_PLAN_FIELD,
+            MOMENTS_FORMAT,
+            SOURCE_IDENTITY_FIELD,
+            _validate_moment_counts,
+        )
 
         moments = self._moments_for_metrics()
         for row in moments.to_pylist():
@@ -3076,6 +2989,11 @@ class DefinitionsMomentSource(SequentialSourceMixin):
                 [compiled_plan_to_json(self._context.plan)] * moments.num_rows,
                 type=pa.string(),
             ),
+        )
+        identity_payload = json.dumps(source_identity(self), sort_keys=True, separators=(",", ":"))
+        moments = moments.append_column(
+            SOURCE_IDENTITY_FIELD,
+            pa.array([identity_payload] * moments.num_rows, type=pa.string()),
         )
         compliance_payload = self._compliance_wire_payload()
         if compliance_payload is not None:

@@ -15,10 +15,9 @@ from scipy.stats import norm
 from increment.errors import IncrementWarning, InvalidRequestError
 from increment.estimation._adjust.encoding import CovariateLayout
 from increment.estimation._adjust.learners import LogisticPropensity, RidgeOutcome
+from increment.estimation._score_design import PsiFn, ScoreDesign
 from increment.estimation.cate import Covariate, fit_cate
 from increment.estimation.targeting import (
-    PsiFn,
-    ScoreDesign,
     TargetingSelection,
     _clan,
     _curve_weights,
@@ -294,7 +293,7 @@ def test_score_design_names_follow_rows_and_leave_arithmetic_plain():
     """The design a custom score reads is an ndarray whose column names ride
     along with row selection and copies, are empty on a narrower view, and
     never leak into arithmetic or reductions."""
-    from increment.estimation.targeting import ScoreDesign
+    from increment.estimation._score_design import ScoreDesign
 
     matrix = np.array([[1.0, 0.0], [2.0, 1.0], [3.0, 0.0]])
     design = ScoreDesign(matrix, ("spend", "platform=android"), ("spend", "platform"))
@@ -1283,6 +1282,78 @@ class TestTargetingRule:
         assert rule.threshold is not None
         assert rule.policy_value is not None
         assert rule.uplift_vs_average is not None
+
+    def test_public_cate_results_have_concise_meaningful_representations(self):
+        rule = targeting_rule_arrays(**_step_fixture(), interact=[SPEND], n_groups=4, fraction=0.4)
+        validation = rule.validation
+
+        validation_display = repr(validation)
+        rule_display = repr(rule)
+        group_display = repr(validation.groups[-1])
+        clan_display = repr(validation.clan[0])
+
+        assert len(validation_display) < 500
+        assert "gate=passed" in validation_display
+        assert "AUTOC" in validation_display
+        assert "n_holdout" in validation_display
+        assert "evaluation_population" not in validation_display
+        assert len(rule_display) < 500
+        assert "recommendation='target'" in rule_display
+        assert "fraction=0.4" in rule_display
+        assert "threshold=" in rule_display
+        assert "policy_value=+2.5" in rule_display and "point only" in rule_display
+        assert "validation=" not in rule_display
+        assert str(rule) == rule_display
+        from rich.pretty import pretty_repr
+
+        rich_display = pretty_repr(validation)
+        assert "gate" in rich_display and "Bonferroni-corrected" in rich_display
+        assert "evaluation_population" not in rich_display
+        assert "effect=" in group_display and "interval=" in group_display
+        assert "support_failures" not in group_display
+        assert "difference=" in clan_display and "interval=" in clan_display
+        assert "bootstrap_seed" not in clan_display
+
+    def test_cate_rank_repr_keeps_unavailable_reasons(self):
+        rule = targeting_rule_arrays(**_step_fixture(), interact=[SPEND], n_groups=4, fraction=0.4)
+        rank = rule.validation.autoc.model_copy(
+            update={"p_value": None, "unavailable_reason": "rank_test_unavailable"}
+        )
+        validation = rule.validation.model_copy(update={"autoc": rank, "passed": False})
+        display = repr(validation)
+        assert "AUTOC=+0.7255, p=unavailable" in display
+        assert "unavailable_reason='rank_test_unavailable'" in display
+
+    def test_targeting_repr_discloses_target_population_and_weighting(self):
+        rule = targeting_rule_arrays(**_step_fixture(), interact=[SPEND], n_groups=4, fraction=0.4)
+        display = repr(rule)
+        assert "population='full target population'" in display
+        assert "weighting='member_count'" in display
+        from rich.pretty import pretty_repr
+
+        rich_display = pretty_repr(rule)
+        assert "population" in rich_display and "weighting" in rich_display
+
+    def test_failed_gate_repr_preserves_unavailability_reason(self):
+        rule = targeting_rule_arrays(
+            **_step_fixture(), interact=[SPEND], n_groups=4, fraction=0.4, alpha=0.01
+        )
+        assert not rule.validation.passed
+        validation_display = repr(rule.validation)
+        assert "gate=failed" in validation_display
+        assert "AUTOC" in validation_display
+        assert "evaluation_population" not in validation_display
+        from rich.pretty import pretty_repr
+
+        rich_display = pretty_repr(rule)
+        assert "recommendation" in rich_display and "policy_intervals" in rich_display
+        assert "evaluation_population" not in rich_display
+        display = repr(rule)
+        assert "recommendation='simple'" in display
+        assert "AUTOC" in display
+        assert "threshold=unavailable" in display
+        assert "vs alpha=" in display
+        assert "validation=" not in display
 
     def test_a_small_valid_fraction_reports_a_finite_point_value(self):
         """policy_value/uplift_vs_average ship without an interval
@@ -2451,6 +2522,7 @@ def test_cluster_validation_all_ties_and_empty_groups_have_precise_reasons():
     assert result.autoc.estimate == 0
     assert result.autoc.se is None and result.autoc.p_value is None
     assert result.autoc.unavailable_reason == "estimation.targeting.degenerate_rank_distribution"
+    assert "unavailable_reason='estimation.targeting.degenerate_rank_distribution'" in repr(result)
     assert result.groups[1].effect is None and result.groups[1].se is None
     assert result.groups[1].unavailable_reason == "estimation.targeting.empty_group"
     assert result.passed is False

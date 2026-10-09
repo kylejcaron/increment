@@ -813,13 +813,19 @@ ref distribution and store authorization are the authenticity boundary.
 
 ### Moments wire migration
 
-`Analysis.from_moments` accepts centered, complete `moments_format=10`
-rows, including a complete embedded `decision_plan`. Fixed-horizon formats 1–8
-are refused with `moments.format.unsupported_legacy`, and formats above 10 with
-`moments.format.unsupported_future`. Re-export from the original observations,
-or pin the Increment revision that wrote the old cube; a cube alone cannot
-recover exact binary counts from rounded moments. `from_moments` is separate
-from the unit-day artifact boundary.
+`Analysis.from_moments` accepts centered, complete `moments_format=11`
+fixed-horizon rows, including a complete embedded `decision_plan` and source
+identity record. It also reads the preceding fixed-horizon format 10 and
+sequential checkpoint formats 9 and 10; formats above 11 are refused with
+`moments.format.unsupported_future`. Fixed-horizon formats 1–8 are refused
+with `moments.format.unsupported_legacy`. Re-export from the original
+observations, or pin the Increment revision that wrote the old cube; a cube
+alone cannot recover exact binary counts from rounded moments.
+`from_moments` is separate from the unit-day artifact boundary.
+Legacy fixed-horizon format 10 and sequential format 9 lack a source identity
+field. Their replay identity includes a legacy-format namespace and study ID;
+the original provenance cannot be reconstructed. A `source_identity` embedded
+in a moments cube is self-asserted, not authenticated provenance.
 
 Each ordinary row carries integer `n >= 1` and nullable integer `successes`
 between zero and `n`. Eligible unit-grain conversion and retention outcomes
@@ -840,20 +846,22 @@ declarations must match selected metrics; an unselected clipped metric does
 not require its configuration to replay an ordinary sibling. Format stamps
 and wire-schema validation still cover every row of the imported cube.
 
-A fixed-horizon Encouragement source with an empty metric catalog exports one
-format-10 `design_summary` envelope instead of outcome rows. It carries the
-experiment identity, complete assignment counts and compliance state, and an
-empty-metric fixed-horizon decision plan. Reload with `metrics=[]` and the same
-design. Missing state, mixed rows, outcome fields, a different identity, or a
-nonempty metric catalog are refused; overriding the plan cannot bypass envelope
-validation. This envelope is not a sequential checkpoint.
+An empty-metric fixed-horizon Encouragement export carries one current
+format-11 `design_summary` envelope instead of outcome rows. It includes the
+experiment identity, complete assignment counts and compliance state, source
+identity, and empty-metric fixed-horizon decision plan. Reload with
+`metrics=[]` and the same design. Missing state, mixed rows, outcome fields, a
+different identity, or a nonempty metric catalog are refused; overriding the
+plan cannot bypass envelope validation. This envelope is not a sequential
+checkpoint.
 
-Registered sequential exports use one format-9 `sequential_checkpoint` envelope
-carrying the exact snapshot, retained roster, registration (schema version 2,
-including the source mapping identity and compliance policy) and parent-linked
-record proof. Their embedded compiled plan uses wire version 3. Rounded
-fixed-horizon moments and legacy format-8 sequential envelopes cannot resume a
-sequential process. See [Sequential inference](sequential-inference.md) for
+Registered sequential exports use one current format-10
+`sequential_checkpoint` envelope carrying the exact snapshot, retained roster,
+registration (schema version 2, including source mapping identity and
+compliance policy), parent-linked record proof, and source identity. Their
+embedded compiled plan uses wire version 3. The preceding sequential format 9
+remains readable. Rounded fixed-horizon moments and legacy format-8 sequential
+envelopes cannot resume a sequential process. See [Sequential inference](sequential-inference.md) for
 explicit finalization, idempotent replay and append-only continuation.
 
 ## Running it

@@ -22,6 +22,7 @@ from increment.errors import (
     DefinitionError,
     IncrementWarning,
     InvalidRequestError,
+    UnsupportedRequestError,
 )
 from increment.estimation.results import LiftEstimate
 from increment.semantics import load
@@ -104,6 +105,121 @@ def test_triggered_request_requires_explicit_snapshot_evidence_but_assigned_does
         analysis.close()
 
 
+def test_snapshot_identity_distinguishes_pinned_source_evidence(tmp_path):
+    path = _write_defs(tmp_path)
+    cutoff = dt.datetime(2024, 1, 31, tzinfo=dt.UTC)
+    later_cutoff = dt.datetime(2024, 2, 1, tzinfo=dt.UTC)
+    earlier_watermark = dt.datetime(2024, 1, 30, tzinfo=dt.UTC)
+    evidence = (
+        (cutoff, cutoff),
+        (cutoff, cutoff),
+        (later_cutoff, cutoff),
+        (cutoff, earlier_watermark),
+    )
+    analyses = []
+    connections = []
+    try:
+        for evidence_cutoff, watermark in evidence:
+            connection = ibis.duckdb.connect()
+            connection.create_table("events", obj=_events(n_per_arm=100))
+            connections.append(connection)
+            analysis = Analysis.from_definitions(
+                "exp",
+                path,
+                connection,
+                source_snapshot_evidence=SourceSnapshotEvidence(
+                    evidence_cutoff, {"events": watermark}
+                ),
+            )
+            analyses.append(analysis)
+        first, same, different_cutoff, different_watermark = [
+            analysis.run(metrics=["revenue"]) for analysis in analyses
+        ]
+        assert all((first, same, different_cutoff, different_watermark))
+        assert first[0].source_snapshot_id == same[0].source_snapshot_id
+        assert first[0].source_snapshot_id != different_cutoff[0].source_snapshot_id
+        assert first[0].source_snapshot_id != different_watermark[0].source_snapshot_id
+        asof_first, asof_same, asof_different = [
+            analysis.run_asof(metrics=["revenue"], population="assigned")
+            for analysis in analyses[:3]
+        ]
+        assert asof_first[0].source_snapshot_id == asof_same[0].source_snapshot_id
+        assert asof_first[0].source_snapshot_id != asof_different[0].source_snapshot_id
+        triggered = analyses[0].run_asof(metrics=["revenue"], population="triggered")
+        assert triggered[0].source_snapshot_id != asof_first[0].source_snapshot_id
+    finally:
+        for analysis in analyses:
+            analysis.close()
+        for connection in connections:
+            connection.disconnect()
+
+
+def test_native_pinned_identity_survives_moments_export_reload(tmp_path):
+    import json
+
+    import pyarrow.parquet as pq
+
+    connection = ibis.duckdb.connect()
+    connection.create_table("events", obj=_events(n_per_arm=100))
+    analysis = Analysis.from_definitions(
+        "exp",
+        _write_defs(tmp_path, trigger=None),
+        connection,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            dt.datetime(2024, 1, 31, tzinfo=dt.UTC),
+            {"events": dt.datetime(2024, 1, 30, tzinfo=dt.UTC)},
+        ),
+    )
+    replay = changed_replay = None
+    try:
+        path = tmp_path / "pinned-moments.parquet"
+        analysis.export(path)
+        rows = pq.read_table(path).to_pylist()
+        source_identity = json.loads(rows[0]["source_identity"])
+        assert source_identity["source_snapshot_evidence"] == {
+            "observation_cutoff_ts": "2024-01-31T00:00:00+00:00",
+            "complete_through_by_feed": {
+                "events": "2024-01-30T00:00:00+00:00",
+            },
+        }
+        replay = Analysis.from_moments(
+            rows,
+            metrics={"revenue": "mean"},
+            control="C",
+        )
+        replay_row = replay.run()[0]
+
+        changed_identity = {
+            **source_identity,
+            "source_snapshot_evidence": {
+                **source_identity["source_snapshot_evidence"],
+                "observation_cutoff_ts": "2024-02-01T00:00:00+00:00",
+            },
+        }
+        changed_rows = [
+            {
+                **row,
+                "source_identity": json.dumps(
+                    changed_identity, sort_keys=True, separators=(",", ":")
+                ),
+            }
+            for row in rows
+        ]
+        changed_replay = Analysis.from_moments(
+            changed_rows,
+            metrics={"revenue": "mean"},
+            control="C",
+        )
+        assert changed_replay.run()[0].source_snapshot_id != replay_row.source_snapshot_id
+    finally:
+        if changed_replay is not None:
+            changed_replay.close()
+        if replay is not None:
+            replay.close()
+        analysis.close()
+        connection.disconnect()
+
+
 def test_triggered_encouragement_uptake_remains_assignment_anchored(tmp_path):
     definitions = _defs_yaml(end='"2024-01-10"', observation_end='"2024-01-31"').replace(
         "window_days: 7", "window_days: 3"
@@ -128,28 +244,57 @@ def test_triggered_encouragement_uptake_remains_assignment_anchored(tmp_path):
     path = tmp_path / "encouragement.yml"
     path.write_text(definitions)
     rows = {
-        "user_id": ["C0", "T0", "C0", "T0", "T0", "C0", "T0"],
-        "group_id": ["C", "T", "C", "T", "T", "C", "T"],
+        "user_id": [
+            "C0",
+            "T0",
+            "C1",
+            "T1",
+            "C0",
+            "T0",
+            "C1",
+            "T1",
+            "T0",
+            "T1",
+            "C0",
+            "T0",
+            "C1",
+            "T1",
+        ],
+        "group_id": ["C", "T", "C", "T", "C", "T", "C", "T", "T", "T", "C", "T", "C", "T"],
         "ts": [
             np.datetime64("2024-01-02T00:00:00"),
             np.datetime64("2024-01-02T00:00:00"),
+            np.datetime64("2024-01-02T00:00:00"),
+            np.datetime64("2024-01-02T00:00:00"),
+            np.datetime64("2024-01-04T00:00:00"),
+            np.datetime64("2024-01-04T00:00:00"),
             np.datetime64("2024-01-04T00:00:00"),
             np.datetime64("2024-01-04T00:00:00"),
             np.datetime64("2024-01-03T00:00:00"),
+            np.datetime64("2024-01-03T00:00:00"),
+            np.datetime64("2024-01-05T00:00:00"),
+            np.datetime64("2024-01-05T00:00:00"),
             np.datetime64("2024-01-05T00:00:00"),
             np.datetime64("2024-01-05T00:00:00"),
         ],
         "event": [
             "enrolled",
             "enrolled",
+            "enrolled",
+            "enrolled",
+            "saw_surface",
+            "saw_surface",
             "saw_surface",
             "saw_surface",
             "clicked",
+            "clicked",
+            "revenue",
+            "revenue",
             "revenue",
             "revenue",
         ],
-        "value": [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0],
-        "experiment_id": ["exp"] * 7,
+        "value": [0.0] * 10 + [1.0, 2.0, 3.0, 4.0],
+        "experiment_id": ["exp"] * 14,
     }
     con = ibis.duckdb.connect()
     con.create_table("events", obj=pa.table(rows))
@@ -167,16 +312,40 @@ def test_triggered_encouragement_uptake_remains_assignment_anchored(tmp_path):
 
         moments = _native_source(analysis)._moments_for_metrics(population="triggered").to_pylist()
         by_group = {row["group_id"]: row for row in moments}
-        assert by_group["T"]["sum_d"] == 1.0
+        assert by_group["T"]["sum_d"] == 2.0
         completed = analysis.run_asof(population="triggered", completed_windows_only=True)
         mature_by_day_arm = {(row.ds, row.group_id): row.n for row in completed}
-        assert mature_by_day_arm[(dt.date(2024, 1, 9), "T")] == 1
+        assert mature_by_day_arm[(dt.date(2024, 1, 9), "T")] == 2
         assert by_group["C"]["sum_d"] == 0.0
-        from increment.errors import UnsupportedRequestError
-
-        with pytest.raises(UnsupportedRequestError) as raised:
-            analysis.run_asof_lift(estimands=["compliance"], population="triggered")
-        assert raised.value.code == "facade.analysis.triggered_compliance_unsupported"
+        triggered_asof = analysis.run_asof_lift(estimands=["compliance"], population="triggered")
+        assert triggered_asof
+        assert {row.estimand for row in triggered_asof} == {"compliance"}
+        assert {row.analysis_population for row in triggered_asof} == {"triggered"}
+        expected_history = {dt.date(2024, 1, 4) + dt.timedelta(days=offset) for offset in range(27)}
+        assert {row.ds for row in triggered_asof} == expected_history
+        assert all(row.require_lift().value == pytest.approx(1.0) for row in triggered_asof)
+        triggered_daily = analysis.run_daily_lift(estimands=["compliance"], population="triggered")
+        assert triggered_daily
+        assert {row.estimand for row in triggered_daily} == {"compliance"}
+        assert {row.analysis_population for row in triggered_daily} == {"triggered"}
+        assert {row.ds for row in triggered_daily} == expected_history
+        assert all(row.require_lift().value == pytest.approx(1.0) for row in triggered_daily)
+        with pytest.raises(InvalidRequestError) as unknown_dimension:
+            analysis.run_asof_lift(
+                estimands=["compliance"],
+                population="triggered",
+                dimension="missing_dimension",
+            )
+        assert unknown_dimension.value.code == "facade.analysis.unknown_dimension"
+        with pytest.raises(UnsupportedRequestError) as daily_dimension:
+            analysis.run_daily_lift(
+                estimands=["compliance"],
+                population="triggered",
+                dimension="missing_dimension",
+            )
+        assert daily_dimension.value.code == (
+            "facade.analysis.daily_compliance_dimension_unsupported"
+        )
     finally:
         analysis.close()
 
@@ -240,60 +409,6 @@ def test_empty_triggered_late_request_returns_unavailable_late_cells(tmp_path):
         assert {row.null_lift for row in rows} == {-0.25}
         assert {row.policy_name for row in rows} == {"compiled_plan"}
     finally:
-        analysis.close()
-        con.disconnect()
-
-
-def test_registered_triggered_compliance_refuses_before_snapshot_read(tmp_path, monkeypatch):
-    from increment._day_axis import DayAxisReadouts
-    from increment.errors import UnsupportedRequestError
-    from tests.sequential_cases import registered_native
-
-    definitions = (
-        _defs_yaml(end='"2024-01-10"', observation_end='"2024-01-31"')
-        .replace(
-            "      - name: saw_surface\n        column: null",
-            "      - name: saw_surface\n        column: null\n      - name: clicked\n        column: null",
-        )
-        .replace(
-            "    control_group: C\n",
-            "    control_group: C\n"
-            "    design:\n"
-            "      mechanism: encouragement\n"
-            "      uptake: {fact: clicked, window_days: 2}\n"
-            "      one_sided: true\n"
-            "      exclusion_restriction: {acknowledged: true, justification: gates revenue}\n",
-        )
-    )
-    definitions = definitions.replace(
-        "    type: mean\n    entity: user_id\n    fact: revenue\n    aggregation: sum\n    window_days: 7",
-        "    type: conversion\n    entity: user_id\n    fact: revenue\n    window_days: 7",
-    )
-    path = tmp_path / "registered-encouragement.yml"
-    path.write_text(definitions)
-    con = ibis.duckdb.connect()
-    con.create_table("events", obj=_events(n_per_arm=20))
-    analysis = Analysis.from_definitions(
-        "exp",
-        path,
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            dt.datetime(2024, 1, 31, tzinfo=dt.UTC),
-            {"events": dt.datetime(2024, 1, 31, tzinfo=dt.UTC)},
-        ),
-    )
-    registered = registered_native(analysis)
-
-    def fail_if_snapshot_is_read(*args, **kwargs):
-        pytest.fail("compliance refusal must precede snapshot evidence access")
-
-    monkeypatch.setattr(DayAxisReadouts, "_evidence", fail_if_snapshot_is_read)
-    try:
-        with pytest.raises(UnsupportedRequestError) as raised:
-            registered.run_asof_lift(population="triggered", estimands=["compliance"])
-        assert raised.value.code == "facade.analysis.triggered_compliance_unsupported"
-    finally:
-        registered.close()
         analysis.close()
         con.disconnect()
 
@@ -876,6 +991,214 @@ def test_run_breakout_returns_distinct_triggered_population_and_families(tmp_pat
                 native_row.require_lift().value
             )
     finally:
+        if adopted is None:
+            analysis.close()
+            con.disconnect()
+        else:
+            _close_parity_analysis(adopted)
+
+
+def test_triggered_artifact_windowed_quantile_refuses_before_evidence_read(tmp_path):
+    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+
+    con = ibis.duckdb.connect()
+    con.create_table(
+        "events",
+        obj=_with_preassignment_region(_events(n_per_arm=30, trigger_rate=0.5, effect=0.6)),
+    )
+    path = tmp_path / "windowed-quantile.yml"
+    path.write_text(
+        _defs_yaml()
+        .replace("    type: mean\n", "    type: quantile\n    quantile: 0.5\n")
+        .replace(
+            "    facts:\n",
+            "    properties:\n"
+            "      - {name: region, column: region, dtype: string, as_of: pre_exposure}\n"
+            "    facts:\n",
+        )
+        .replace(
+            "    plan:\n",
+            "    breakouts: [{property: region, source: events}]\n    plan:\n",
+        )
+    )
+    analysis = Analysis.from_definitions(
+        "exp",
+        path,
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
+        ),
+    )
+    adopted = None
+    try:
+        adopted = _publish_and_adopt(
+            con, analysis, kinds=("breakout_dimension", "assignment_counts")
+        )
+        with pytest.raises(InvalidRequestError) as raised:
+            adopted.run_breakout(population="triggered")
+        assert raised.value.code == "frame.metric.window_days_supported"
+    finally:
+        if adopted is None:
+            analysis.close()
+            con.disconnect()
+        else:
+            _close_parity_analysis(adopted)
+
+
+def test_triggered_artifact_without_breakouts_returns_empty_estimates(tmp_path):
+    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+
+    path = _write_defs(tmp_path)
+    path.write_text(
+        path.read_text().replace("    type: mean\n", "    type: quantile\n    quantile: 0.5\n")
+    )
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=_events(n_per_arm=10))
+    analysis = Analysis.from_definitions(
+        "exp",
+        path,
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
+        ),
+    )
+    adopted = None
+    try:
+        adopted = _publish_and_adopt(
+            con,
+            analysis,
+            kinds=("trigger_population", "assignment_counts", "trigger_measure_stats"),
+        )
+        assert adopted.run_breakout() == []
+        assert adopted.run_breakout(population="assigned") == []
+        assert adopted.run_breakout(population="triggered") == []
+    finally:
+        if adopted is None:
+            analysis.close()
+            con.disconnect()
+        else:
+            _close_parity_analysis(adopted)
+
+
+def test_triggered_artifact_run_refuses_invalid_estimand_before_population_read(
+    tmp_path, monkeypatch
+):
+    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=_events(n_per_arm=10))
+    analysis = Analysis.from_definitions(
+        "exp",
+        _write_defs(tmp_path),
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
+        ),
+    )
+    adopted = None
+    armed = False
+    try:
+        adopted = _publish_and_adopt(
+            con,
+            analysis,
+            kinds=("trigger_population", "assignment_counts", "trigger_measure_stats"),
+        )
+        query_calls = []
+        for method in ("execute", "to_pyarrow"):
+            original = getattr(con, method, None)
+            if original is not None:
+
+                def guard_query(*args, _method=method, _original=original, **kwargs):
+                    if armed:
+                        query_calls.append(_method)
+                        raise AssertionError("invalid request must not query the artifact")
+                    return _original(*args, **kwargs)
+
+                monkeypatch.setattr(con, method, guard_query)
+        armed = True
+        with pytest.raises(InvalidRequestError) as refused:
+            adopted.run(population="triggered", estimands=["late"])
+        assert refused.value.code == "readout.assignment.estimands"
+        assert query_calls == []
+    finally:
+        armed = False
+        if adopted is None:
+            analysis.close()
+            con.disconnect()
+        else:
+            _close_parity_analysis(adopted)
+
+
+def test_triggered_artifact_breakout_refuses_invalid_method_before_population_read(
+    tmp_path, monkeypatch
+):
+    from increment.estimation.engine import Method
+    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+
+    definitions = (
+        _defs_yaml()
+        .replace(
+            "    facts:\n",
+            "    properties:\n"
+            "      - {name: region, column: region, dtype: string, as_of: pre_exposure}\n"
+            "    facts:\n",
+        )
+        .replace(
+            "    plan:\n",
+            "    breakouts: [{property: region, source: events}]\n    plan:\n",
+        )
+    )
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=_with_preassignment_region(_events(n_per_arm=10)))
+    path = tmp_path / "triggered-breakout.yml"
+    path.write_text(definitions)
+    analysis = Analysis.from_definitions(
+        "exp",
+        path,
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
+        ),
+    )
+    adopted = None
+    armed = False
+    try:
+        adopted = _publish_and_adopt(
+            con,
+            analysis,
+            kinds=(
+                "breakout_dimension",
+                "trigger_population",
+                "assignment_counts",
+                "trigger_measure_stats",
+            ),
+        )
+        query_calls = []
+        for method in ("execute", "to_pyarrow"):
+            original = getattr(con, method, None)
+            if original is not None:
+
+                def guard_query(*args, _method=method, _original=original, **kwargs):
+                    if armed:
+                        query_calls.append(_method)
+                        raise AssertionError("invalid request must not query the artifact")
+                    return _original(*args, **kwargs)
+
+                monkeypatch.setattr(con, method, guard_query)
+        armed = True
+        with pytest.raises(InvalidRequestError) as refused:
+            adopted.run_breakout(
+                population="triggered",
+                decision_method=Method(name="iptw"),
+            )
+        assert refused.value.code == "estimation.engine.method_name_observational"
+        assert query_calls == []
+    finally:
+        armed = False
         if adopted is None:
             analysis.close()
             con.disconnect()
@@ -2209,6 +2532,83 @@ def test_triggered_asof_empty_segment_keeps_bonferroni_family_size(tmp_path):
         one.close()
         two_con.disconnect()
         one_con.disconnect()
+
+
+def test_triggered_daily_primary_keeps_full_treatment_roster_alpha_when_arm_is_empty(
+    tmp_path,
+):
+    definitions = _defs_yaml().replace(
+        "    plan:\n      secondaries: [revenue]",
+        "    plan:\n      primary: revenue\n      alternative: greater",
+    )
+    path = tmp_path / "three-arm.yml"
+    path.write_text(definitions)
+    events = []
+    for group in ("C", "T1", "T2"):
+        for index in range(40):
+            user_id = f"{group}-{index}"
+            events.extend(
+                (
+                    {
+                        "user_id": user_id,
+                        "group_id": group,
+                        "ts": dt.datetime(2024, 1, 1),
+                        "event": "enrolled",
+                        "value": 0.0,
+                        "experiment_id": "exp",
+                    },
+                    {
+                        "user_id": user_id,
+                        "group_id": group,
+                        "ts": dt.datetime(2024, 1, 2),
+                        "event": "saw_surface",
+                        "value": 0.0,
+                        "experiment_id": "exp",
+                    },
+                )
+            )
+            if group != "T2":
+                value = (7.0 if index % 2 == 0 else 9.0) + (0.4 if group == "T1" else 0.0)
+                events.append(
+                    {
+                        "user_id": user_id,
+                        "group_id": group,
+                        "ts": dt.datetime(2024, 1, 3),
+                        "event": "revenue",
+                        "value": value,
+                        "experiment_id": "exp",
+                    }
+                )
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=pa.Table.from_pylist(events))
+    cutoff = dt.datetime(2024, 1, 5, tzinfo=dt.UTC)
+    analysis = Analysis.from_definitions(
+        "exp",
+        path,
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            cutoff,
+            {"events": cutoff},
+        ),
+    )
+    try:
+        rows = analysis.run_daily_lift(population="triggered")
+        treatment = next(
+            row for row in rows if row.ds == dt.date(2024, 1, 3) and row.group_id == "T1"
+        )
+        assert treatment.unavailable is None, treatment.model_dump()
+        lift = treatment.require_lift()
+        assert lift.log_mean is not None and lift.log_se is not None
+        from scipy.stats import norm as _norm
+
+        p_value = float(_norm.sf(lift.log_mean / lift.log_se))
+        assert lift.alpha is not None
+        assert lift.alpha == pytest.approx(0.05)
+        assert lift.alpha / 2.0 == pytest.approx(0.025)
+        assert 0.025 < p_value < 0.05
+    finally:
+        analysis.close()
+        con.disconnect()
 
 
 def test_triggered_asof_empty_dimension_with_unbounded_retention_uses_asof_roster(

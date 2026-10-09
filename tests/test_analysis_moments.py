@@ -6,6 +6,7 @@ after the facade is implemented.
 
 from __future__ import annotations
 
+import json
 import warnings
 from typing import cast
 
@@ -113,16 +114,87 @@ def test_current_fixed_horizon_moments_round_trip(tmp_path):
     path = tmp_path / "current.parquet"
     original.export(path)
     payload = pq.read_table(path).to_pylist()
-    assert {row["moments_format"] for row in payload} == {10}
+    assert {row["moments_format"] for row in payload} == {11}
     replay = Analysis.from_moments(payload, metrics={"revenue": "mean"}, control="control")
     (original_row,) = original.run()
     (replay_row,) = replay.run()
     assert replay_row.model_dump(exclude={"source_snapshot_id"}) == original_row.model_dump(
         exclude={"source_snapshot_id"}
     )
-    # Format-10 moments retain the exact evidence and request semantics, so
-    # content identity is shared across the live and replayed source.
+    # Format-11 moments retain the exact source identity and request semantics,
+    # so content identity is shared across the live and replayed source.
     assert replay_row.source_snapshot_id == original_row.source_snapshot_id
+
+
+def test_legacy_moments_identity_is_stable_across_reload(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    original = Analysis.from_unit_summary(
+        pa.table(
+            {
+                "unit": [1, 2, 3, 4],
+                "arm": ["control", "control", "treatment", "treatment"],
+                "revenue": [10.0, 12.0, 18.0, 20.0],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        metrics={"revenue": "mean"},
+        control="control",
+        experiment_id="exp",
+    )
+    source_path = tmp_path / "source.parquet"
+    original.export(source_path)
+    legacy_rows = [
+        {key: value for key, value in row.items() if key != "source_identity"}
+        | {"moments_format": 10}
+        for row in pq.read_table(source_path).to_pylist()
+    ]
+    legacy_path = tmp_path / "legacy.parquet"
+    pq.write_table(pa.Table.from_pylist(legacy_rows), legacy_path)
+    legacy = Analysis.from_moments(
+        pq.read_table(legacy_path).to_pylist(),
+        metrics={"revenue": "mean"},
+        control="control",
+        experiment_id="exp",
+    )
+    reloaded = None
+    try:
+        (original_row,) = original.run()
+        (legacy_row,) = legacy.run()
+        assert legacy_row.source_snapshot_id != original_row.source_snapshot_id
+
+        reloaded = Analysis.from_moments(
+            pq.read_table(legacy_path).to_pylist(),
+            metrics={"revenue": "mean"},
+            control="control",
+            experiment_id="exp",
+        )
+        (reloaded_row,) = reloaded.run()
+        assert reloaded_row.source_snapshot_id == legacy_row.source_snapshot_id
+    finally:
+        if reloaded is not None:
+            reloaded.close()
+        legacy.close()
+        original.close()
+
+
+def test_triggered_run_refuses_unit_summary_and_moment_replay():
+    import pyarrow as pa
+
+    analysis = Analysis.from_unit_summary(
+        pa.table({"unit": [1, 2], "arm": ["control", "treatment"], "revenue": [1.0, 2.0]}),
+        unit="unit",
+        group="arm",
+        metrics={"revenue": "mean"},
+        control="control",
+    )
+    replay = Analysis.from_moments(_moment_rows(), metrics={"revenue": "mean"}, control="control")
+    for candidate in (analysis, replay):
+        with pytest.raises(CapabilityError) as refused:
+            candidate.run(population="triggered")
+        assert refused.value.code == "facade.analysis.trigger_unsupported"
 
 
 @pytest.mark.parametrize("version", [7, 8])
@@ -132,6 +204,30 @@ def test_legacy_moments_cannot_claim_exact_count_transport(version):
             _moment_rows(moments_format=version), metrics={"revenue": "mean"}, control="control"
         )
     assert exc.value.code == "moments.format.unsupported_legacy"
+
+
+def test_moments_reject_noncanonical_source_identity_at_replay():
+    from increment.sources import SOURCE_IDENTITY_FIELD
+
+    rows = _moment_rows()
+    for row in rows:
+        row[SOURCE_IDENTITY_FIELD] = json.dumps({"oversized": 2**53})
+
+    with pytest.raises(WireFormatError) as refused:
+        Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="control")
+    assert refused.value.code == "moments.format.invalid"
+
+
+def test_moments_reject_conflicting_boolean_and_integer_identities():
+    from increment.sources import SOURCE_IDENTITY_FIELD
+
+    rows = _moment_rows()
+    rows[0][SOURCE_IDENTITY_FIELD] = json.dumps({"generation": True})
+    rows[1][SOURCE_IDENTITY_FIELD] = json.dumps({"generation": 1})
+
+    with pytest.raises(WireFormatError) as refused:
+        Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="control")
+    assert refused.value.code == "moments.format.invalid"
 
 
 @pytest.mark.parametrize(
@@ -219,9 +315,9 @@ def test_export_round_trips_through_from_moments(seeded_con, seeded_defs, tmp_pa
     import pyarrow.parquet as pq
 
     table = pq.read_table(p)
-    assert table.schema.metadata[b"increment.moments_format"] == b"10"
+    assert table.schema.metadata[b"increment.moments_format"] == b"11"
     rows = table.to_pylist()
-    assert {r["moments_format"] for r in rows} == {10}
+    assert {r["moments_format"] for r in rows} == {11}
     assert {r["metric"] for r in rows} == {"purchase_rate", "avg_session_duration", "d7_retention"}
 
     b = Analysis.from_moments(
