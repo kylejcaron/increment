@@ -23,6 +23,11 @@ import pytest
 from scipy.stats import t
 
 from increment.errors import InvalidRequestError
+from increment.power import (
+    segment_pairwise_achieved_power,
+    segment_pairwise_minimum_detectable_effect,
+    segment_pairwise_required_sample_size,
+)
 from increment.power.core import (
     Baseline,
     PowerDesign,
@@ -30,9 +35,6 @@ from increment.power.core import (
     achieved_power,
     minimum_detectable_effect,
     required_sample_size,
-    segment_pairwise_achieved_power,
-    segment_pairwise_minimum_detectable_effect,
-    segment_pairwise_required_sample_size,
 )
 
 from ._procedures import make_procedure

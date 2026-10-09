@@ -20,13 +20,13 @@ import pytest
 
 from increment.errors import InvalidRequestError
 from increment.estimation.absorption import absorb_one_way
+from increment.power import segment_pairwise_required_sample_size
 from increment.power.core import (
     Baseline,
     PowerDesign,
     achieved_power,
     minimum_detectable_effect,
     required_sample_size,
-    segment_pairwise_required_sample_size,
 )
 
 from ._procedures import make_procedure

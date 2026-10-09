@@ -29,6 +29,11 @@ from increment.estimation.armstats import SummaryStats
 from increment.estimation.quantile import _log_quantile_se_impl, log_quantile_se
 from increment.estimation.sequential import GaussianScoreMixture
 from increment.frame import MetricSpec, synthesise_metric
+from increment.power import (
+    segment_pairwise_achieved_power,
+    segment_pairwise_minimum_detectable_effect,
+    segment_pairwise_required_sample_size,
+)
 from increment.power.core import (
     _SHIFT_SPAN,
     Baseline,
@@ -41,18 +46,15 @@ from increment.power.core import (
     _log1mexp,
     _prepare_solver,
     _quantile_n_min,
-    _segment_arm_sizes,
     _supplied_effect,
     achieved_power,
     joint_q_power_fixed,
     joint_q_power_random,
     minimum_detectable_effect,
     required_sample_size,
-    segment_pairwise_achieved_power,
-    segment_pairwise_minimum_detectable_effect,
-    segment_pairwise_required_sample_size,
 )
-from increment.semantics.models import QuantileMetric
+from increment.power.pairwise import _segment_arm_sizes
+from increment.semantics.models import MethodSpec, QuantileMetric
 
 from ._procedures import make_procedure
 from ._results import available_mde
@@ -1442,12 +1444,13 @@ class TestMDETwoSidedRootFind:
         finder evaluates power from nc directly rather than reconstructing an
         absolute theta around theta0 and subtracting it back off, which would
         lose the increment for a large null and a small standard error."""
-        from increment.power.core import _mde_theta, _se_sq
+        from increment.power.core import _mde_theta
 
         # se ~ 6e-15 << ulp(theta0) ~ 1.1e-13 at this near-maximum null, so a
         # theta0 + mde_theta reconstruction would round the increment away
         # entirely; the noncentrality path is unaffected and the distances match.
-        se2 = _se_sq(500, 500, Baseline(mean=1.0, var=1e-26))
+        baseline = Baseline(mean=1.0, var=1e-26)
+        se2 = baseline.effective_var / baseline.mean**2 * (1 / 500 + 1 / 500)
         d = PowerDesign(power=0.8)
         zero = _mde_theta(
             se2, d, make_procedure(alpha=0.05, alternative="two-sided", null_lift=0.0)
@@ -1652,6 +1655,82 @@ class TestSegmentPairwise:
 
         assert exc_info.value.code == "power.segment_pairwise_solvers"
         assert field in exc_info.value.context["unsupported"]  # ty: ignore[unsupported-operator]
+
+    @pytest.mark.parametrize("solver", ["required", "achieved", "mde"])
+    def test_pairwise_sensitivity_cuped_does_not_subsidize_decision(self, solver):
+        procedure = ArmPlanningProcedure.standard("mean").model_copy(
+            update={"sensitivity_methods": (MethodSpec(name="cuped", variance_reduction="cuped"),)}
+        )
+        baseline_a = Baseline(mean=1.0, var=1.0, cuped_rho=0.9)
+        baseline_b = Baseline(mean=1.2, var=2.0, cuped_rho=0.8)
+        plain_a = Baseline(mean=1.0, var=1.0)
+        plain_b = Baseline(mean=1.2, var=2.0)
+
+        if solver == "required":
+            with_sensitivity = segment_pairwise_required_sample_size(
+                0.3, 0.05, 0.2, 0.2, baseline_a, procedure, baseline_b=baseline_b
+            )
+            without_sensitivity = segment_pairwise_required_sample_size(
+                0.3, 0.05, 0.2, 0.2, plain_a, procedure, baseline_b=plain_b
+            )
+        elif solver == "achieved":
+            with_sensitivity = segment_pairwise_achieved_power(
+                10_000, 0.3, 0.05, 0.2, 0.2, baseline_a, procedure, baseline_b=baseline_b
+            )
+            without_sensitivity = segment_pairwise_achieved_power(
+                10_000, 0.3, 0.05, 0.2, 0.2, plain_a, procedure, baseline_b=plain_b
+            )
+        else:
+            with_sensitivity = segment_pairwise_minimum_detectable_effect(
+                10_000, 0.2, 0.2, baseline_a, procedure, baseline_b=baseline_b
+            )
+            without_sensitivity = segment_pairwise_minimum_detectable_effect(
+                10_000, 0.2, 0.2, plain_a, procedure, baseline_b=plain_b
+            )
+
+        assert with_sensitivity == without_sensitivity
+
+    @pytest.mark.parametrize("baseline_side", ["a", "b"])
+    def test_pairwise_refuses_clustered_cuped_baseline(self, baseline_side):
+        procedure = ArmPlanningProcedure.standard("mean", clustered=True)
+        clustered = Baseline(mean=1.0, var=1.0, avg_cluster_size=20.0, cuped_rho=0.6)
+        baseline_a = (
+            clustered
+            if baseline_side == "a"
+            else Baseline(mean=1.0, var=1.0, avg_cluster_size=20.0)
+        )
+        baseline_b = clustered if baseline_side == "b" else None
+
+        with pytest.raises(CapabilityError) as raised:
+            segment_pairwise_required_sample_size(
+                0.3, 0.05, 0.2, 0.2, baseline_a, procedure, baseline_b=baseline_b
+            )
+
+        assert raised.value.code == "arm.adjustment.cluster_cuped"
+
+    def test_pairwise_refuses_finite_sample_for_mean_metric(self):
+        procedure = make_procedure(metric_type="mean", conversion_inference="finite_sample")
+        baseline = Baseline(mean=1.0, var=1.0)
+
+        with pytest.raises(InvalidRequestError) as raised:
+            segment_pairwise_required_sample_size(0.3, 0.05, 0.2, 0.2, baseline, procedure)
+
+        assert raised.value.code == "conversion_inference.finite_sample.metric_type"
+
+    @pytest.mark.parametrize("solver", ["required", "achieved", "mde"])
+    def test_pairwise_absolute_procedure_uses_coded_refusal(self, solver):
+        procedure = ArmPlanningProcedure.standard("mean", value_scale="absolute")
+        baseline = Baseline(mean=1.0, var=1.0)
+
+        with pytest.raises(InvalidRequestError) as raised:
+            if solver == "required":
+                segment_pairwise_required_sample_size(0.3, 0.05, 0.2, 0.2, baseline, procedure)
+            elif solver == "achieved":
+                segment_pairwise_achieved_power(10_000, 0.3, 0.05, 0.2, 0.2, baseline, procedure)
+            else:
+                segment_pairwise_minimum_detectable_effect(10_000, 0.2, 0.2, baseline, procedure)
+
+        assert raised.value.code == "power.power_solvers_relative"
 
     @pytest.mark.parametrize("solver", ["required", "achieved", "mde"])
     def test_pairwise_default_baselines_return_power_result(self, solver):

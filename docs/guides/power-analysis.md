@@ -214,7 +214,15 @@ answer. Delta-decision enumeration is bounded at 100,000 count pairs, and
 finite-sample replay at 150,000 directional replays per evaluation. A solve
 stores at most 10,000,000 control/treatment count cells across its null and
 evaluated alternative windows. A supplied effect, an MDE search and each
-`power_curve` row are separate solves. Exceeding the cell bound raises
+`power_curve` row are separate solves: each is bounded by the cells of its own
+requests, and an MDE search's interval bounds read only what that search decided.
+A count pair's decision is the runtime's own, the same whichever request decides
+it, so the solves of one design share those decisions: a companion MDE search
+copies the cells the supplied effect or the sizing already decided instead of
+replaying them, and replays of each interval's far endpoint only the cells its
+bound depends on; an endpoint whose power and cells no bound reads (the far end
+of the admissible effects, the far endpoints of wide intervals above the answer)
+is never replayed, while one a curvature term reads is. Exceeding the cell bound raises
 `power.binomial_replay_bound_exceeded`; an MDE search that reaches it can leave
 a companion `mde_relative=None` with `mde_unavailable_reason="numerical_resolution"`.
 These are planner limits: the finite-sample runtime ceiling remains
@@ -436,6 +444,15 @@ distinguish the target, direct MDE calculation refuses with
 `power.minimum_detectable_effect.numerical_resolution`. An otherwise valid
 sample-size or achieved-power result remains available and records the missing
 companion MDE through `mde_unavailable_reason`.
+
+The Gaussian recursion is bounded to 256 planned looks, 300,000,000 estimated
+kernel-work units, and 4,096 nodes. A design beyond these limits is refused
+with `power.boundary_crossing_quadrature`,
+`power.sequential_sample_size`, or
+`power.minimum_detectable_effect.numerical_resolution`, as appropriate; it is
+not assigned a midpoint estimate or called statistically unattainable. Use
+fewer planned looks or group looks only if that changed schedule matches the
+design. This prospective route does not size registered likelihood policies.
 
 Combining a CUPED method with non-fixed inference is not supported. Such a
 procedure is refused with `arm.adjustment.sequential_cuped`. Clustered

@@ -11,6 +11,7 @@ from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation._tails import student_t_isf
 from increment.estimation.arm_contract import ArmPlanningProcedure
 from increment.estimation.sequential import GaussianScoreMixture
+from increment.power import segment_pairwise_achieved_power
 from increment.power.core import (
     Baseline,
     PowerDesign,
@@ -20,7 +21,6 @@ from increment.power.core import (
     achieved_power,
     minimum_detectable_effect,
     required_sample_size,
-    segment_pairwise_achieved_power,
 )
 from increment.power.curve import power_curve
 from increment.semantics.models import InferenceSpec

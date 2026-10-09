@@ -39,11 +39,13 @@ from increment.power.core import (
     joint_q_power_random,
     minimum_detectable_effect,
     required_sample_size,
+)
+from increment.power.curve import PowerCurve, PowerCurvePoint, power_curve
+from increment.power.pairwise import (
     segment_pairwise_achieved_power,
     segment_pairwise_minimum_detectable_effect,
     segment_pairwise_required_sample_size,
 )
-from increment.power.curve import PowerCurve, PowerCurvePoint, power_curve
 from increment.power.switchback import (
     SwitchbackBaseline,
     SwitchbackPowerResult,

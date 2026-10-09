@@ -68,7 +68,11 @@ A plan whose finite-sample pairs together weigh at most half of `RESOLUTION` (co
 routes to the delta method with near certainty) replays none. Both budgets choose from every
 pair of the evaluation's windows by weight, whether or not the geometry already holds the pair,
 so the pairs an evaluation decides, and its enclosure, are a function of its request alone: the
-same on a fresh geometry, on one shared with other evaluations, and on a repeat.
+same on a fresh geometry, on one shared with other evaluations, and on a repeat. A pair's
+decision is the runtime's own whichever request decides it, so the geometries of one decision
+share a store of the decided pairs and copy from it before replaying; an evaluation may be
+reserved (`RejectionGeometry.prepare`) and decided later, in whole or, for an interval bound
+(`closure_bound_before`), only where the bound depends on it.
 
 Route ``approximate`` replays the same search with a continuity-corrected Normal
 tail for the conditional sum and exact single-binomial tails when either
@@ -98,7 +102,7 @@ to the delta method with near certainty is enumerated only below `ENUMERATION_CE
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import Literal
@@ -1627,6 +1631,194 @@ class _Segment:
         return self.j0 + self.plus.shape[1] - 1
 
 
+class _CellGrid:
+    """Cells of one decision over control counts ``[x0, x0 + rows)`` by disjoint
+    treatment-count segments, merged whenever a request overlaps or touches them, so distant
+    windows (a rate near one, say) never force the counts between them to be stored."""
+
+    def __init__(self) -> None:
+        self.x0 = 0
+        self.rows = 0
+        self.segments: list[_Segment] = []
+
+    def clear(self) -> None:
+        self.x0, self.rows, self.segments = 0, 0, []
+
+    def row_span(self, x_lo: int, x_hi: int) -> tuple[int, int]:
+        """First and last control count of the stored rows extended to ``[x_lo, x_hi]``."""
+        if not self.rows:
+            return x_lo, x_hi
+        return min(self.x0, x_lo), max(self.x0 + self.rows - 1, x_hi)
+
+    def touching(self, j_lo: int, j_hi: int) -> list[_Segment]:
+        """The segments that overlap or touch ``[j_lo, j_hi]``."""
+        return [s for s in self.segments if s.j0 <= j_hi + 1 and s.j1 >= j_lo - 1]
+
+    def containing(self, j_lo: int, j_hi: int) -> _Segment | None:
+        for segment in self.segments:
+            if segment.j0 <= j_lo and segment.j1 >= j_hi:
+                return segment
+        return None
+
+    def stored_after(self, x_lo: int, x_hi: int, j_lo: int, j_hi: int) -> int:
+        """Cells stored once ``[x_lo, x_hi] x [j_lo, j_hi]`` is covered: every segment spans all
+        rows, and the one covering the request absorbs the segments it touches."""
+        x0, x1 = self.row_span(x_lo, x_hi)
+        touching = self.touching(j_lo, j_hi)
+        merged = max([j_hi, *(s.j1 for s in touching)]) - min([j_lo, *(s.j0 for s in touching)]) + 1
+        apart = sum(s.j1 - s.j0 + 1 for s in self.segments if all(s is not t for t in touching))
+        return (x1 - x0 + 1) * (apart + merged)
+
+    def keep(self, rows_lo: int, rows_hi: int, spans: list[tuple[int, int]]) -> None:
+        """Drop every stored cell outside the rows ``[rows_lo, rows_hi]`` by the treatment
+        ``spans``."""
+        kept: list[_Segment] = []
+        for first, last in spans:
+            shape = (rows_hi - rows_lo + 1, last - first + 1)
+            segment = _Segment(
+                first, np.zeros(shape, bool), np.zeros(shape, bool), np.zeros(shape, bool)
+            )
+            top, bottom = max(rows_lo, self.x0), min(rows_hi, self.x0 + self.rows - 1)
+            for old in self.segments:
+                left, right = max(first, old.j0), min(last, old.j1)
+                if left > right or top > bottom:
+                    continue
+                new_rows = slice(top - rows_lo, bottom - rows_lo + 1)
+                new_cols = slice(left - first, right - first + 1)
+                old_rows = slice(top - self.x0, bottom - self.x0 + 1)
+                old_cols = slice(left - old.j0, right - old.j0 + 1)
+                segment.plus[new_rows, new_cols] = old.plus[old_rows, old_cols]
+                segment.minus[new_rows, new_cols] = old.minus[old_rows, old_cols]
+                segment.known[new_rows, new_cols] = old.known[old_rows, old_cols]
+            kept.append(segment)
+        self.x0, self.rows, self.segments = rows_lo, rows_hi - rows_lo + 1, kept
+
+    def _cover_rows(self, x_lo: int, x_hi: int) -> None:
+        x0, x1 = self.row_span(x_lo, x_hi)
+        if (x0, x1 - x0 + 1) == (self.x0, self.rows):
+            return
+        top = self.x0 - x0
+        for segment in self.segments:
+            for name in ("plus", "minus", "known"):
+                old = getattr(segment, name)
+                new = np.zeros((x1 - x0 + 1, old.shape[1]), bool)
+                new[top : top + self.rows] = old
+                setattr(segment, name, new)
+        self.x0, self.rows = x0, x1 - x0 + 1
+
+    def _merged(self, j_lo: int, j_hi: int) -> _Segment:
+        """The one segment covering ``[j_lo, j_hi]``, absorbing every
+        segment that overlaps or touches it."""
+        touching = self.touching(j_lo, j_hi)
+        if len(touching) == 1 and touching[0].j0 <= j_lo and touching[0].j1 >= j_hi:
+            return touching[0]
+        j0 = min([j_lo, *(s.j0 for s in touching)])
+        j1 = max([j_hi, *(s.j1 for s in touching)])
+        shape = (self.rows, j1 - j0 + 1)
+        merged = _Segment(j0, np.zeros(shape, bool), np.zeros(shape, bool), np.zeros(shape, bool))
+        for segment in touching:
+            cols = slice(segment.j0 - j0, segment.j1 - j0 + 1)
+            merged.plus[:, cols] = segment.plus
+            merged.minus[:, cols] = segment.minus
+            merged.known[:, cols] = segment.known
+        self.segments = sorted(
+            [s for s in self.segments if all(s is not t for t in touching)] + [merged],
+            key=lambda s: s.j0,
+        )
+        return merged
+
+    def locate(self, x_lo: int, x_hi: int, j_lo: int, j_hi: int) -> tuple[_Segment, slice, slice]:
+        """The one segment covering ``[x_lo, x_hi] x [j_lo, j_hi]``, storing what it lacks, with
+        the row and column slices of the rectangle inside it."""
+        self._cover_rows(x_lo, x_hi)
+        segment = self._merged(j_lo, j_hi)
+        return segment, *self._slices(segment, x_lo, x_hi, j_lo, j_hi)
+
+    def view(self, x_lo: int, x_hi: int, j_lo: int, j_hi: int) -> tuple[_Segment, slice, slice]:
+        """The segment holding a rectangle stored earlier, with its slices."""
+        segment = self.containing(j_lo, j_hi)
+        assert segment is not None and self.x0 <= x_lo and x_hi < self.x0 + self.rows, (
+            "a rectangle is read only once it is stored"
+        )
+        return segment, *self._slices(segment, x_lo, x_hi, j_lo, j_hi)
+
+    def _slices(
+        self, segment: _Segment, x_lo: int, x_hi: int, j_lo: int, j_hi: int
+    ) -> tuple[slice, slice]:
+        rows = slice(x_lo - self.x0, x_hi - self.x0 + 1)
+        cols = slice(j_lo - segment.j0, j_hi - segment.j0 + 1)
+        return rows, cols
+
+    def read(
+        self, x_lo: int, x_hi: int, j_lo: int, j_hi: int
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Copies of the plus, minus and known flags over ``[x_lo, x_hi] x [j_lo, j_hi]``, false
+        wherever nothing is stored."""
+        shape = (x_hi - x_lo + 1, j_hi - j_lo + 1)
+        plus, minus, known = (np.zeros(shape, bool) for _ in range(3))
+        top, bottom = max(x_lo, self.x0), min(x_hi, self.x0 + self.rows - 1)
+        if top > bottom:
+            return plus, minus, known
+        rows = slice(top - x_lo, bottom - x_lo + 1)
+        stored = slice(top - self.x0, bottom - self.x0 + 1)
+        for segment in self.segments:
+            left, right = max(j_lo, segment.j0), min(j_hi, segment.j1)
+            if left > right:
+                continue
+            cols = slice(left - j_lo, right - j_lo + 1)
+            held = slice(left - segment.j0, right - segment.j0 + 1)
+            plus[rows, cols] = segment.plus[stored, held]
+            minus[rows, cols] = segment.minus[stored, held]
+            known[rows, cols] = segment.known[stored, held]
+        return plus, minus, known
+
+    def write(
+        self,
+        x_lo: int,
+        x_hi: int,
+        j_lo: int,
+        j_hi: int,
+        plus: np.ndarray,
+        minus: np.ndarray,
+        decided: np.ndarray,
+    ) -> None:
+        """Store the ``decided`` cells of ``[x_lo, x_hi] x [j_lo, j_hi]`` with their flags."""
+        segment, rows, cols = self.locate(x_lo, x_hi, j_lo, j_hi)
+        segment.plus[rows, cols][decided] = plus[decided]
+        segment.minus[rows, cols][decided] = minus[decided]
+        segment.known[rows, cols] |= decided
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _Evaluation:
+    """An evaluation reserved on its geometry (`RejectionGeometry.prepare`): its windows and
+    the cells it decides (`RejectionGeometry._selected`), undecided until `complete`."""
+
+    wc: _Window
+    wt: _Window
+    selected: np.ndarray
+
+    def meets(self, j_lo: int, j_hi: int) -> bool:
+        """Whether its treatment window meets ``[j_lo, j_hi]``."""
+        return self.wt.lo <= j_hi and self.wt.hi >= j_lo
+
+
+def _tail_extremes(
+    tail: Callable[[np.ndarray, int, float], np.ndarray],
+    k_lo: np.ndarray,
+    k_hi: np.ndarray,
+    n: int,
+    p: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per row, the least and the greatest of the computed ``tail(k, n, p)`` over the counts
+    ``k_lo <= k <= k_hi`` of that row."""
+    lengths = k_hi - k_lo + 1
+    starts = np.cumsum(lengths) - lengths
+    k = np.arange(int(lengths.sum())) - np.repeat(starts, lengths) + np.repeat(k_lo, lengths)
+    values = tail(k, n, p)
+    return np.minimum.reduceat(values, starts), np.maximum.reduceat(values, starts)
+
+
 class RejectionGeometry:
     """The decided rejection set of one runtime decision, grown on demand.
 
@@ -1655,6 +1847,18 @@ class RejectionGeometry:
     would refuse it; when the stored cells (footprint and cache) would exceed it while the
     footprint fits, the cache is dropped and the footprint kept.
 
+    A cell's decision is the runtime's own, the same whichever request decides it, so
+    geometries of one decision share a ``store`` of the cells any of them decided and copy from
+    it before deciding: a solve on a fresh geometry (an effect search, whose bounds read only
+    what it decided itself) decides the same cells and reads the same values, replaying only
+    those no earlier solve reached. The store is bounded by ``max_cells`` like the geometry and
+    dropped whole when a solve's cells would take it past that.
+
+    An evaluation is reserved (`prepare`: its refusals, the bound on stored cells and the
+    choice of its cells, deciding nothing) and completed (`complete`) separately, so a search
+    may reserve a candidate in order and decide it only once a value or a bound depends on
+    it (`closure_bound_before`).
+
     ``route`` is ``exact`` for the runtime's own replay; ``approximate`` replays the Normal-tail
     model of the finite-sample decision instead, which proposes a size and is not a claim on the
     runtime.
@@ -1666,6 +1870,7 @@ class RejectionGeometry:
         route: Route,
         max_cells: int = PLANNING_CELL_CEILING,
         routing: Routing | None = None,
+        store: _CellGrid | None = None,
     ) -> None:
         self.decision = decision
         self.route = route
@@ -1679,14 +1884,27 @@ class RejectionGeometry:
         assert self.finite_from <= decision.n_c or routing is not None, (
             "a refused decision has no rejection geometry"
         )
-        self.x0 = 0
-        self.rows = 0
-        self.segments: list[_Segment] = []
+        self.grid = _CellGrid()
+        self.store = _CellGrid() if store is None else store
         # Effect searches already solved on this geometry, keyed by their control rate,
         # compliance, target, baseline variance and route mode: a curve's companion effects.
         self.effects: dict[tuple[float | str, ...], object] = {}
         # The current solve's rows and its treatment spans, merged as the segments are.
         self._footprint: tuple[int, int, list[tuple[int, int]]] | None = None
+        # Evaluations reserved and not yet completed, in order.
+        self._pending: list[_Evaluation] = []
+
+    @property
+    def x0(self) -> int:
+        return self.grid.x0
+
+    @property
+    def rows(self) -> int:
+        return self.grid.rows
+
+    @property
+    def segments(self) -> list[_Segment]:
+        return self.grid.segments
 
     def begin_solve(self) -> None:
         """Start a solve: the cells stored so far become a cache, outside its footprint."""
@@ -1710,88 +1928,9 @@ class RejectionGeometry:
     def _keep_footprint(self) -> None:
         """Drop every stored cell outside the solve's footprint (the cache of earlier solves)."""
         if self._footprint is None:
-            self.x0, self.rows, self.segments = 0, 0, []
+            self.grid.clear()
             return
-        rows_lo, rows_hi, spans = self._footprint
-        kept: list[_Segment] = []
-        for first, last in spans:
-            shape = (rows_hi - rows_lo + 1, last - first + 1)
-            segment = _Segment(
-                first, np.zeros(shape, bool), np.zeros(shape, bool), np.zeros(shape, bool)
-            )
-            top, bottom = max(rows_lo, self.x0), min(rows_hi, self.x0 + self.rows - 1)
-            for old in self.segments:
-                left, right = max(first, old.j0), min(last, old.j1)
-                if left > right or top > bottom:
-                    continue
-                new_rows = slice(top - rows_lo, bottom - rows_lo + 1)
-                new_cols = slice(left - first, right - first + 1)
-                old_rows = slice(top - self.x0, bottom - self.x0 + 1)
-                old_cols = slice(left - old.j0, right - old.j0 + 1)
-                segment.plus[new_rows, new_cols] = old.plus[old_rows, old_cols]
-                segment.minus[new_rows, new_cols] = old.minus[old_rows, old_cols]
-                segment.known[new_rows, new_cols] = old.known[old_rows, old_cols]
-            kept.append(segment)
-        self.x0, self.rows, self.segments = rows_lo, rows_hi - rows_lo + 1, kept
-
-    def _row_span(self, x_lo: int, x_hi: int) -> tuple[int, int]:
-        """First and last control count of the stored rows extended to ``[x_lo, x_hi]``."""
-        if not self.rows:
-            return x_lo, x_hi
-        return min(self.x0, x_lo), max(self.x0 + self.rows - 1, x_hi)
-
-    def _touching(self, j_lo: int, j_hi: int) -> list[_Segment]:
-        """The segments that overlap or touch ``[j_lo, j_hi]``."""
-        return [s for s in self.segments if s.j0 <= j_hi + 1 and s.j1 >= j_lo - 1]
-
-    def _stored_after(self, x_lo: int, x_hi: int, j_lo: int, j_hi: int) -> int:
-        """Cells stored once ``[x_lo, x_hi] x [j_lo, j_hi]`` is covered: every segment spans all
-        rows, and the one covering the request absorbs the segments it touches."""
-        x0, x1 = self._row_span(x_lo, x_hi)
-        touching = self._touching(j_lo, j_hi)
-        merged = max([j_hi, *(s.j1 for s in touching)]) - min([j_lo, *(s.j0 for s in touching)]) + 1
-        apart = sum(s.j1 - s.j0 + 1 for s in self.segments if all(s is not t for t in touching))
-        return (x1 - x0 + 1) * (apart + merged)
-
-    def _cover_rows(self, x_lo: int, x_hi: int) -> None:
-        x0, x1 = self._row_span(x_lo, x_hi)
-        if (x0, x1 - x0 + 1) == (self.x0, self.rows):
-            return
-        top = self.x0 - x0
-        for segment in self.segments:
-            for name in ("plus", "minus", "known"):
-                old = getattr(segment, name)
-                new = np.zeros((x1 - x0 + 1, old.shape[1]), bool)
-                new[top : top + self.rows] = old
-                setattr(segment, name, new)
-        self.x0, self.rows = x0, x1 - x0 + 1
-
-    def _merged(self, j_lo: int, j_hi: int) -> _Segment:
-        """The one segment covering ``[j_lo, j_hi]``, absorbing every
-        segment that overlaps or touches it."""
-        touching = self._touching(j_lo, j_hi)
-        if len(touching) == 1 and touching[0].j0 <= j_lo and touching[0].j1 >= j_hi:
-            return touching[0]
-        j0 = min([j_lo, *(s.j0 for s in touching)])
-        j1 = max([j_hi, *(s.j1 for s in touching)])
-        shape = (self.rows, j1 - j0 + 1)
-        merged = _Segment(j0, np.zeros(shape, bool), np.zeros(shape, bool), np.zeros(shape, bool))
-        for segment in touching:
-            cols = slice(segment.j0 - j0, segment.j1 - j0 + 1)
-            merged.plus[:, cols] = segment.plus
-            merged.minus[:, cols] = segment.minus
-            merged.known[:, cols] = segment.known
-        self.segments = sorted(
-            [s for s in self.segments if all(s is not t for t in touching)] + [merged],
-            key=lambda s: s.j0,
-        )
-        return merged
-
-    def _containing(self, j_lo: int, j_hi: int) -> _Segment | None:
-        for segment in self.segments:
-            if segment.j0 <= j_lo and segment.j1 >= j_hi:
-                return segment
-        return None
+        self.grid.keep(*self._footprint)
 
     def _reserve(self, x_lo: int, x_hi: int, j_lo: int, j_hi: int) -> tuple[_Segment, slice, slice]:
         """Bound the footprint of ``[x_lo, x_hi] x [j_lo, j_hi]``, store it, and return the one
@@ -1800,14 +1939,10 @@ class RejectionGeometry:
         needed = self._footprint_cells(footprint)
         if needed > self.max_cells:
             raise ReplayBoundExceeded(needed)
-        if self._stored_after(x_lo, x_hi, j_lo, j_hi) > self.max_cells:
+        if self.grid.stored_after(x_lo, x_hi, j_lo, j_hi) > self.max_cells:
             self._keep_footprint()
         self._footprint = footprint
-        self._cover_rows(x_lo, x_hi)
-        segment = self._merged(j_lo, j_hi)
-        rows = slice(x_lo - self.x0, x_hi - self.x0 + 1)
-        cols = slice(j_lo - segment.j0, j_hi - segment.j0 + 1)
-        return segment, rows, cols
+        return self.grid.locate(x_lo, x_hi, j_lo, j_hi)
 
     def _routed_flags(
         self, x_lo: int, x_hi: int, j_lo: int, j_hi: int
@@ -1845,7 +1980,9 @@ class RejectionGeometry:
         select: np.ndarray | None,
     ) -> None:
         """Decide the cells of *select* (every cell a route decides when ``None``) of the
-        reserved rectangle ``window = (x_lo, x_hi, j_lo, j_hi)`` that are not yet decided."""
+        reserved rectangle ``window = (x_lo, x_hi, j_lo, j_hi)`` that are not yet decided:
+        copied from the store where another geometry of this decision decided them, decided by
+        their route otherwise and stored."""
         x_lo, x_hi, j_lo, j_hi = window
         row_in, col_in = self._routed_flags(x_lo, x_hi, j_lo, j_hi)
         routed = row_in[:, None] & col_in[None, :]
@@ -1854,12 +1991,26 @@ class RejectionGeometry:
         todo = select & ~segment.known[rows, cols]
         if not todo.any():
             return
-        delta = todo & routed
-        replay_cells = todo & ~routed
+        fresh = todo
+        if self.store.rows:
+            plus, minus, stored = self.store.read(x_lo, x_hi, j_lo, j_hi)
+            copied = todo & stored
+            if copied.any():
+                segment.plus[rows, cols][copied] = plus[copied]
+                segment.minus[rows, cols][copied] = minus[copied]
+                fresh = todo & ~copied
+        delta = fresh & routed
+        replay_cells = fresh & ~routed
         if delta.any():
             self._decide_routed(segment, rows, cols, (x_lo, j_lo), delta)
         if replay_cells.any():
             self._replay(segment, rows, cols, (x_lo, j_lo), replay_cells)
+        if fresh.any():
+            if self.store.stored_after(x_lo, x_hi, j_lo, j_hi) > self.max_cells:
+                self.store.clear()
+            self.store.write(
+                x_lo, x_hi, j_lo, j_hi, segment.plus[rows, cols], segment.minus[rows, cols], fresh
+            )
         segment.known[rows, cols] |= todo
 
     def _off_route_bound(self, wc: _Window, wt: _Window, rows: np.ndarray | None = None) -> float:
@@ -1996,23 +2147,20 @@ class RejectionGeometry:
         ]
         for req, mask in zip(requests, classify(self.decision, self.route, requests), strict=True):
             target = segment.plus if req.kind == "plus" else segment.minus
-            row = req.x_c - self.x0
+            row = req.x_c - self.grid.x0
             target[row, req.j0 - segment.j0 : req.j1 - segment.j0 + 1] = mask
 
     def cells(self, x_lo: int, x_hi: int, j_lo: int, j_hi: int) -> tuple[np.ndarray, np.ndarray]:
         """Plus and minus rejection masks over ``[x_lo, x_hi] x [j_lo, j_hi]``, every cell
         decided by its route (a pair neither route decides rejects in neither direction)."""
         self.ensure(x_lo, x_hi, j_lo, j_hi)
-        segment = self._containing(j_lo, j_hi)
-        assert segment is not None
-        rows = slice(x_lo - self.x0, x_hi - self.x0 + 1)
-        cols = slice(j_lo - segment.j0, j_hi - segment.j0 + 1)
+        segment, rows, cols = self.grid.view(x_lo, x_hi, j_lo, j_hi)
         return segment.plus[rows, cols], segment.minus[rows, cols]
 
-    def _request(
-        self, p_c: float, p_t: float
-    ) -> tuple[_Window, _Window, _Segment, slice, slice, np.ndarray]:
-        """Reserve and decide the evaluation's own selected cells, with `evaluate`'s refusals."""
+    def prepare(self, p_c: float, p_t: float) -> _Evaluation:
+        """Reserve an evaluation at the rates ``(p_c, p_t)`` with `evaluate`'s refusals: its
+        rectangle is stored (the bound on stored cells applies) and its cells chosen, none
+        decided. `complete` decides them."""
         decision = self.decision
         refusing = self.finite_from > 0
         if refusing and self.routing is not None:
@@ -2038,18 +2186,20 @@ class RejectionGeometry:
                 raise FiniteRouteUnavailable(refused_mass)
         # The bound on stored cells refuses an oversized window before any mask is allocated.
         try:
-            segment, rows, cols = self._reserve(wc.lo, wc.hi, wt.lo, wt.hi)
+            self._reserve(wc.lo, wc.hi, wt.lo, wt.hi)
         except ReplayBoundExceeded as exceeded:
             raise ReplayBoundExceeded(exceeded.cells, p_t) from None
-        selected = self._selected(wc, wt)
-        self._decide(segment, rows, cols, (wc.lo, wc.hi, wt.lo, wt.hi), selected)
-        return wc, wt, segment, rows, cols, selected
+        evaluation = _Evaluation(wc, wt, self._selected(wc, wt))
+        self._pending.append(evaluation)
+        return evaluation
 
-    def evaluate(self, p_c: float, p_t: float) -> BinomialPower:
-        """Rejection mass of this request's decided cells, enclosed by its undecided and
-        omitted mass. Earlier requests cannot change the enclosure. Refuse when the runtime's
-        unavailable finite-sample route carries more than half of `RESOLUTION`."""
-        wc, wt, segment, rows, cols, selected = self._request(p_c, p_t)
+    def complete(self, evaluation: _Evaluation) -> BinomialPower:
+        """Decide a reserved evaluation's cells and sum its rejection mass, enclosed by its
+        undecided and omitted mass. Earlier requests cannot change the enclosure."""
+        wc, wt, selected = evaluation.wc, evaluation.wt, evaluation.selected
+        self._pending.remove(evaluation)
+        segment, rows, cols = self.grid.view(wc.lo, wc.hi, wt.lo, wt.hi)
+        self._decide(segment, rows, cols, (wc.lo, wc.hi, wt.lo, wt.hi), selected)
         # Only the evaluation's own selection is read: a cell an earlier evaluation of this
         # geometry decided outside it is undecided here, so the enclosure is the same on a fresh
         # geometry, a shared one and a repeat.
@@ -2068,6 +2218,16 @@ class RejectionGeometry:
             ambiguous=_up(undecided * inflation) if undecided else 0.0,
             certified=self.route == "exact",
         )
+
+    def evaluate(self, p_c: float, p_t: float) -> BinomialPower:
+        """Rejection mass of this request's decided cells, enclosed by its undecided and
+        omitted mass. Earlier requests cannot change the enclosure. Refuse when the runtime's
+        unavailable finite-sample route carries more than half of `RESOLUTION`."""
+        return self.complete(self.prepare(p_c, p_t))
+
+    def pending_within(self, j_lo: int, j_hi: int) -> list[_Evaluation]:
+        """The reserved, uncompleted evaluations whose treatment windows meet ``[j_lo, j_hi]``."""
+        return [evaluation for evaluation in self._pending if evaluation.meets(j_lo, j_hi)]
 
     def point_upper(self, p_c: float, p_lo: float, p_hi: float, bound: float) -> float:
         """Convert a true-probability upper bound into one for every computed point.
@@ -2090,6 +2250,101 @@ class RejectionGeometry:
         )
         return min(1.0, _up(bound * inflation))
 
+    def _rejection_edges(
+        self, wc: _Window, low: int, high: int, *, settled: bool
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Per control count of ``wc``, the first treatment count in ``[low, high]`` that may
+        reject in the plus direction (``high + 1`` when none) and the last that may in the minus
+        direction (``low - 1``): a decided count where it rejects, an undecided count in both
+        directions, and so every count of a control row the geometry does not hold. With
+        ``settled``, the undecided cells the reserved evaluations (`prepare`) will decide count
+        as non-rejections instead."""
+        n_t = self.decision.n_t
+        rows = np.arange(wc.lo, wc.hi + 1) - self.grid.x0
+        t = np.full(rows.size, low, np.int64)
+        s = np.full(rows.size, high, np.int64)
+        segment = self.grid.containing(low, high)
+        inside = (rows >= 0) & (rows < self.grid.rows)
+        if segment is not None and inside.any():
+            r = rows[inside]
+            cols = slice(low - segment.j0, high - segment.j0 + 1)
+            j = np.arange(low, high + 1)
+            plus = segment.plus[r, cols]
+            minus = segment.minus[r, cols]
+            open_ = ~segment.known[r, cols]
+            if settled:
+                open_ = open_ & ~self._reserved_cells(wc, inside, low, high, open_)
+            may_plus = plus | open_
+            may_minus = minus | open_
+            first_index = np.argmax(may_plus, axis=1)
+            t[inside] = np.where(may_plus.any(axis=1), j[first_index], high + 1)
+            last_index = j.size - 1 - np.argmax(may_minus[:, ::-1], axis=1)
+            s[inside] = np.where(may_minus.any(axis=1), j[last_index], low - 1)
+        if "plus" not in self.decision.kinds:
+            t[:] = n_t + 1
+        if "minus" not in self.decision.kinds:
+            s[:] = -1
+        return t, s
+
+    def _reserved_cells(
+        self, wc: _Window, inside: np.ndarray, low: int, high: int, open_: np.ndarray
+    ) -> np.ndarray:
+        """Over the rows of ``wc`` the geometry holds by the counts ``[low, high]``, the open
+        cells some reserved evaluation will decide."""
+        x = np.arange(wc.lo, wc.hi + 1)[inside]
+        reserved = np.zeros(open_.shape, bool)
+        for evaluation in self.pending_within(low, high):
+            top, bottom = max(int(x[0]), evaluation.wc.lo), min(int(x[-1]), evaluation.wc.hi)
+            left, right = max(low, evaluation.wt.lo), min(high, evaluation.wt.hi)
+            if top > bottom or left > right:
+                continue
+            rows = slice(top - int(x[0]), bottom - int(x[0]) + 1)
+            cols = slice(left - low, right - low + 1)
+            own_rows = slice(top - evaluation.wc.lo, bottom - evaluation.wc.lo + 1)
+            own_cols = slice(left - evaluation.wt.lo, right - evaluation.wt.lo + 1)
+            reserved[rows, cols] |= evaluation.selected[own_rows, own_cols]
+        return reserved & open_
+
+    def _closure_edge(self, p_lo: float, p_hi: float, low: int, high: int) -> float:
+        """The mass below ``low`` at ``p_lo`` and above ``high`` at ``p_hi``, every row's share
+        of the counts outside the frame."""
+        n_t = self.decision.n_t
+        below = float(_rr._fast_binom_cdf(np.asarray(low - 1), n_t, p_lo))
+        above = float(_rr._fast_binom_sf(np.asarray(high), n_t, p_hi))
+        return below + above
+
+    def _closure_from_edges(
+        self,
+        wc: _Window,
+        p_lo: float,
+        p_hi: float,
+        low: int,
+        high: int,
+        t: np.ndarray,
+        s: np.ndarray,
+    ) -> float:
+        n_t = self.decision.n_t
+        with np.errstate(invalid="ignore"):
+            up = _rr._fast_binom_sf(t - 1, n_t, p_hi)
+            down = _rr._fast_binom_cdf(s, n_t, p_lo)
+            edge = self._closure_edge(p_lo, p_hi, low, high)
+        rows_bound = np.minimum(1.0, up + down + edge)
+        # Every term is a SciPy tail within the allowance; a row's sum and the edge sum round,
+        # then the dot product over the control window.
+        inflation = _inflation(
+            wc.error,
+            _allowance(n_t),
+            _UNIT_ROUNDOFF,
+            _UNIT_ROUNDOFF,
+            _compounded(wc.size),
+        )
+        return min(1.0, _up(_up(float(wc.weights @ rows_bound) * inflation) + wc.omitted))
+
+    def _closure_frame(self, p_c: float, p_lo: float, p_hi: float) -> tuple[_Window, int, int]:
+        n_t = self.decision.n_t
+        wc = _window(self.decision.n_c, p_c)
+        return wc, _window_bounds(n_t, p_lo)[0], _window_bounds(n_t, p_hi)[1]
+
     def closure_bound(self, p_c: float, p_lo: float, p_hi: float) -> float:
         """Upper bound on the replayed decision set's rejection probability (the runtime's on the
         ``exact`` route) at control rate ``p_c`` and every
@@ -2111,46 +2366,85 @@ class RejectionGeometry:
         This bound may overcount gaps in a rejection set or combine directional maxima at
         opposite endpoints. Its tightness is not a certificate of monotonicity.
         """
-        decision = self.decision
-        n_t = decision.n_t
-        wc = _window(decision.n_c, p_c)
-        low, high = _window_bounds(n_t, p_lo)[0], _window_bounds(n_t, p_hi)[1]
-        rows = np.arange(wc.lo, wc.hi + 1) - self.x0
-        # A row without decided counts across [low, high] may reject at every one.
-        t = np.full(rows.size, low, np.int64)
-        s = np.full(rows.size, high, np.int64)
-        segment = self._containing(low, high)
-        inside = (rows >= 0) & (rows < self.rows)
-        if segment is not None and inside.any():
-            r = rows[inside]
-            cols = slice(low - segment.j0, high - segment.j0 + 1)
-            j = np.arange(low, high + 1)
-            plus = segment.plus[r, cols]
-            minus = segment.minus[r, cols]
-            open_ = ~segment.known[r, cols]
-            may_plus = plus | open_
-            may_minus = minus | open_
-            first_index = np.argmax(may_plus, axis=1)
-            t[inside] = np.where(may_plus.any(axis=1), j[first_index], high + 1)
-            last_index = j.size - 1 - np.argmax(may_minus[:, ::-1], axis=1)
-            s[inside] = np.where(may_minus.any(axis=1), j[last_index], low - 1)
-        if "plus" not in decision.kinds:
-            t[:] = n_t + 1
-        if "minus" not in decision.kinds:
-            s[:] = -1
+        wc, low, high = self._closure_frame(p_c, p_lo, p_hi)
+        t, s = self._rejection_edges(wc, low, high, settled=False)
+        return self._closure_from_edges(wc, p_lo, p_hi, low, high, t, s)
+
+    def closure_bound_before(self, p_c: float, p_lo: float, p_hi: float) -> float:
+        """`closure_bound` as it reads once every reserved evaluation (`prepare`) is complete,
+        computed before they are: of their cells, only those the bound could depend on are
+        decided.
+
+        Completing decides an evaluation's selected cells, which turns an undecided count,
+        one that may reject in both directions, into one that rejects or does not: a row's
+        first plus edge can only move up and its last minus edge only down. The edges once
+        every reserved evaluation is complete therefore lie between those read now and those
+        read with every cell they will decide a non-rejection. A row's bound is a
+        nondecreasing function of its two computed tails, so over that box of edges it lies
+        between its values at the least and at the greatest computed tails of the box
+        (`_fixed_rows`); where those agree the row's bound is fixed. The rows where they do
+        not have the reserved cells inside the frame decided (`_settle`), the cells the
+        complete bound reads, and are read again.
+        """
+        wc, low, high = self._closure_frame(p_c, p_lo, p_hi)
+        t, s = self._rejection_edges(wc, low, high, settled=False)
+        while self.pending_within(low, high):
+            t_settled, s_settled = self._rejection_edges(wc, low, high, settled=True)
+            fixed = self._fixed_rows(wc, p_lo, p_hi, low, high, (t, t_settled), (s_settled, s))
+            if fixed.all():
+                break
+            self._settle(wc, ~fixed, low, high)
+            t, s = self._rejection_edges(wc, low, high, settled=False)
+        return self._closure_from_edges(wc, p_lo, p_hi, low, high, t, s)
+
+    def _fixed_rows(
+        self,
+        wc: _Window,
+        p_lo: float,
+        p_hi: float,
+        low: int,
+        high: int,
+        t_box: tuple[np.ndarray, np.ndarray],
+        s_box: tuple[np.ndarray, np.ndarray],
+    ) -> np.ndarray:
+        """Which rows of ``wc`` have the same bound (`_closure_from_edges`) at every pair of
+        edges in the box ``t_box[0] <= t <= t_box[1]``, ``s_box[0] <= s <= s_box[1]``: the row
+        bound is the smaller of one and ``up + down + edge``, nondecreasing in the two computed
+        tails, so it is fixed when its value at their least is its value at their greatest."""
+        n_t = self.decision.n_t
+        t_lo, t_hi = t_box
+        s_lo, s_hi = s_box
+        fixed = (t_lo == t_hi) & (s_lo == s_hi)
+        rows = np.flatnonzero(~fixed)
+        if rows.size == 0:
+            return fixed
         with np.errstate(invalid="ignore"):
-            up = _rr._fast_binom_sf(t - 1, n_t, p_hi)
-            down = _rr._fast_binom_cdf(s, n_t, p_lo)
-            below = float(_rr._fast_binom_cdf(np.asarray(low - 1), n_t, p_lo))
-            above = float(_rr._fast_binom_sf(np.asarray(high), n_t, p_hi))
-        rows_bound = np.minimum(1.0, up + down + (below + above))
-        # Every term is a SciPy tail within the allowance; a row's sum and the edge sum round,
-        # then the dot product over the control window.
-        inflation = _inflation(
-            wc.error,
-            _allowance(n_t),
-            _UNIT_ROUNDOFF,
-            _UNIT_ROUNDOFF,
-            _compounded(wc.size),
-        )
-        return min(1.0, _up(_up(float(wc.weights @ rows_bound) * inflation) + wc.omitted))
+            up_lo, up_hi = _tail_extremes(
+                _rr._fast_binom_sf, t_lo[rows] - 1, t_hi[rows] - 1, n_t, p_hi
+            )
+            down_lo, down_hi = _tail_extremes(
+                _rr._fast_binom_cdf, s_lo[rows], s_hi[rows], n_t, p_lo
+            )
+            edge = self._closure_edge(p_lo, p_hi, low, high)
+        least = np.minimum(1.0, up_lo + down_lo + edge)
+        most = np.minimum(1.0, up_hi + down_hi + edge)
+        fixed[rows] = least == most
+        return fixed
+
+    def _settle(self, wc: _Window, rows: np.ndarray, low: int, high: int) -> None:
+        """Decide the cells of the reserved evaluations at the control counts of ``wc`` flagged
+        in ``rows`` by the treatment counts ``[low, high]``."""
+        for evaluation in self.pending_within(low, high):
+            top, bottom = max(wc.lo, evaluation.wc.lo), min(wc.hi, evaluation.wc.hi)
+            left, right = max(low, evaluation.wt.lo), min(high, evaluation.wt.hi)
+            if top > bottom or left > right:
+                continue
+            own = evaluation.selected[
+                top - evaluation.wc.lo : bottom - evaluation.wc.lo + 1,
+                left - evaluation.wt.lo : right - evaluation.wt.lo + 1,
+            ]
+            select = own & rows[top - wc.lo : bottom - wc.lo + 1, None]
+            if not select.any():
+                continue
+            segment, row_slice, col_slice = self.grid.view(top, bottom, left, right)
+            self._decide(segment, row_slice, col_slice, (top, bottom, left, right), select)

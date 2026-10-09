@@ -43,10 +43,6 @@ partial compliance can reach. A target above the reachable maximum has no
 minimum detectable effect; supplied-effect queries still answer and carry
 the missing companion as a numeric null with its reason.
 
-The segment-pairwise solvers keep the baseline-only variance
-``v / m^2 * (1/n_T + 1/n_C)`` for each segment: an explicitly documented
-approximation, not the arm model above. They refuse a quantile metric with
-the readout's own breakout refusal, since a quantile readout has no segments.
 """
 
 from __future__ import annotations
@@ -54,7 +50,7 @@ from __future__ import annotations
 import math
 import sys
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from typing import Literal, NoReturn, cast
 
@@ -66,19 +62,11 @@ from scipy.stats import chi2 as _chi2
 from scipy.stats import ncx2 as _ncx2
 from scipy.stats import norm as _norm
 
-from increment._finite_sample_refusals import (
-    refuse_finite_sample_cuped,
-    refuse_finite_sample_metric_type,
-)
+from increment._finite_sample_refusals import refuse_finite_sample_metric_type
 from increment._literals import Alternative, ConversionInference
-from increment.compatibility import (
-    PowerDesign,
-    Unsupported,
-    refuse_unsupported,
-)
+from increment.compatibility import PowerDesign, Unsupported, refuse_unsupported
 from increment.decision import FixedInference
 from increment.errors import (
-    CodedError,
     CodedModel,
     InvalidRequestError,
     RefusalSpec,
@@ -123,6 +111,7 @@ from increment.power._binomial import (
     ReplayBoundExceeded,
     Route,
     Routing,
+    _Evaluation,
     margin_dominates,
     refused,
     solver_floor,
@@ -133,7 +122,6 @@ from increment.power._binomial import (
     window_cells,
     window_decided,
 )
-from increment.power._noncentral_t import _scalar_power_from_nc
 from increment.power._search import (
     _LOG_FLOAT_MAX,
     _MDE_NUMERICAL_RESOLUTION,
@@ -142,6 +130,28 @@ from increment.power._search import (
     bisect_first_true,
     float_from_ordinal,
     float_ordinal,
+)
+from increment.power._shared import POWER_SOLVERS_RELATIVE
+from increment.power._shared import (
+    cluster_counts as _cluster_counts,
+)
+from increment.power._shared import (
+    compute_arms as _compute_arms,
+)
+from increment.power._shared import (
+    derive_axes_from_baseline as _derive_axes_from_baseline,
+)
+from increment.power._shared import (
+    mde_theta as _mde_theta,
+)
+from increment.power._shared import (
+    power_at as _shared_power_at,
+)
+from increment.power._shared import (
+    power_from_nc as _power_from_nc,
+)
+from increment.power._shared import (
+    validate_relative_lift as _validate_relative_lift,
 )
 from increment.power._validation import (
     _require_finite,
@@ -161,7 +171,20 @@ from increment.power.sequential import (
     _SequentialMde,
     _SequentialMdeSearch,
 )
-from increment.semantics.models import InferenceSpec, MethodSpec, QuantileMetric
+from increment.semantics.models import InferenceSpec, QuantileMetric
+
+
+def _power_at(
+    theta: float,
+    se2: float,
+    design: PowerDesign,
+    procedure: ArmPlanningProcedure,
+    *,
+    dof: float | None = None,
+) -> float:
+    """Power at a fixed variance, retained for core's existing consumers."""
+    return _shared_power_at(theta, se2, design, procedure, dof=dof)
+
 
 _FLOAT_MAX = sys.float_info.max
 # Largest treatment arm the quantile size search probes: the binomial bracket
@@ -176,15 +199,6 @@ PowerBasis = Literal["asymptotic", "exact", "approximate"]
 # ``maximum_power``, the largest power the size search found on its grid of
 # sizes or in the large-sample limit; "sample_size_limit" when the target is
 # reachable only beyond 2**40 units per arm.
-_SEGMENT_PAIRWISE_N_PER_ARM_TOO_SMALL = RefusalSpec(
-    "power.segment_pairwise_achieved_n_per_arm_too_small",
-    InvalidRequestError,
-    template=(
-        "n_per_arm={n_per_arm} is too small to split segments A (q={q_a}) and B "
-        "(q={q_b}) into 2-arm designs ({exc}); increase n_per_arm or the "
-        "smaller segment's share"
-    ),
-)
 
 _REFUSALS = refusals(
     InvalidRequestError,
@@ -257,40 +271,17 @@ _REFUSALS = refusals(
         "power.power.effective_var": "effective_var must be > 0, got {effective_var}",
         "power.log_exp_needs": "log(1 - exp(x)) needs x <= 0, got {x}",
         "power.procedure_armplanningprocedure": "procedure must be ArmPlanningProcedure, got {procedure_type}",
-        "power.power_solvers_relative": "power solvers require a relative ArmPlanningProcedure decision",
+        "power.power_solvers_relative": POWER_SOLVERS_RELATIVE,
         "power.binomial_enclosure_requires_counts": "a binomial planning enclosure requires an unadjusted fixed-horizon conversion or retention count decision, not this {metric_type!r} plan -- use achieved_power for model-based point power",
         "power.core.n_per_arm_int": "n_per_arm must be an integer (got {n_per_arm!r})",
         "power.core.n_per_arm_min": "n_per_arm must be >= {minimum} for metric {metric_type!r} (got {n_per_arm})",
         "power.sequential_sample_size": "sequential sample-size power could not meet its numerical tolerance at n_per_arm={n_per_arm}: {reason}",
-        "power.noncentral_t_unresolved": "noncentral-t power at noncentrality {nc!r} with {dof!r} degrees of freedom and tail allocation {tail_alpha!r} is unresolved: its tail integral did not resolve within the quadrature's panel limits",
         "power.sequential_sample_size_target_inside_enclosure": "sequential sample-size target lies inside the certified power enclosure at n_per_arm={n_per_arm}: ({lower}, {upper})",
         "power.relative_lift_lies": "relative_lift={relative_lift} lies below the null boundary (null_lift={null_lift}) but alternative='greater' -- no sample size gives this design more than alpha power; flip the alternative or the sign of relative_lift",
         "power.relative_lift_lies_above_null": "relative_lift={relative_lift} lies above the null boundary (null_lift={null_lift}) but alternative='less' -- no sample size gives this design more than alpha power; flip the alternative or the sign of relative_lift",
         "power.size_design_relative": "cannot size a design for a relative_lift exactly at the null boundary (relative_lift={relative_lift}, null_lift={null_lift}): the distance to detect is zero, so no finite sample size reaches any power above alpha -- pass a lift away from the null (the same refusal segment_pairwise_required_sample_size makes for theta=0)",
         "power.sample_size_detecting": "the sample size detecting relative_lift={relative_lift} against null_lift={null_lift} at this baseline exceeds the float64 range: the log-scale distance is too small for the planning variance",
         "power.sequential_design_more": "sequential design requires more than 1024x the fixed-horizon sample size to reach power={power} -- check the InferenceSpec(kind='asymptotic_mean') declared on ArmPlanningProcedure.standard() for a mismatch with the target relative_lift",
-        "power.segment_share_n": "segment share q={q} of n_total={n_total} implies only {n_total_seg:.3g} units, too few for a 2-arm design at allocation={allocation} (need >= {min_n_total_seg:.3g} total at this allocation); increase n_total or the segment's share",
-        "power.q_a": "q_a must be in (0, 1)",
-        "power.q_b": "q_b must be in (0, 1)",
-        "power.q_a_q": "q_a + q_b must be <= 1, got {q_a_plus_q_b}",
-        "power.segment_pairwise_solvers": RefusalSpec(
-            "power.segment_pairwise_solvers",
-            InvalidRequestError,
-            lambda *, unsupported: (
-                "segment-pairwise solvers do not support non-default Baseline fields: "
-                + ", ".join(unsupported)
-            ),
-        ),
-        "power.segment_clustered_baseline": "segment {segment}'s clustered baseline requires at least two clusters per arm (got {k_total} total, n_t={n_t}, n_c={n_c}); increase n_total or the segment's share",
-        "power.supports_fixed_horizon": "{caller} supports fixed-horizon ArmPlanningProcedure only",
-        "power.segment_pairwise_required": "segment_pairwise_required_sample_size does not support a shifted null (null_lift={null_lift}): the underlying formula has no theta0 term, so a nonzero null is not well-defined here",
-        "power.r_a_below": "r_a ({r_a}) is below r_b ({r_b}) (theta={theta:.6g}) but alternative='greater' -- no sample size gives this design more than alpha power; flip the alternative or the order of r_a and r_b",
-        "power.r_a_above": "r_a ({r_a}) is above r_b ({r_b}) (theta={theta:.6g}) but alternative='less' -- no sample size gives this design more than alpha power; flip the alternative or the order of r_a and r_b",
-        "power.r_a_r": "r_a ({r_a}) and r_b ({r_b}) give the same relative lift (theta=0); no finite sample size can distinguish segment A from segment B in this design",
-        "power.solved_too_small": "the solved-for N ({n_total}) is too small to split segments A (q={q_a}) and B (q={q_b}) into 2-arm designs ({exc}); this can happen when the contrast between r_a and r_b is large relative to the smaller segment's share, needing more of the solved-for N per segment than a 2-arm split allows -- narrow the contrast, raise the smaller segment's share, or accept that an easy-to-detect contrast needs a manually-chosen larger N",
-        "power.segment_pairwise_achieved": "segment_pairwise_achieved_power does not support a shifted null (null_lift={null_lift}): the underlying formula has no theta0 term, so a nonzero null is not well-defined here",
-        "power.segment_pairwise_minimum": "segment_pairwise_minimum_detectable_effect does not support a shifted null (null_lift={null_lift}): the underlying formula has no theta0 term, so a nonzero null is not well-defined here",
-        "power.segment_pairwise_achieved_n_per_arm_too_small": _SEGMENT_PAIRWISE_N_PER_ARM_TOO_SMALL,
         "power.tau_b": "tau_b must be >= 0, got {tau_b}",
         "power.theta_var_one": "theta and var must be 1-D (one value per segment), got shapes {theta_shape} and {var_shape}",
         "power.theta_var_same": "theta and var must have the same shape, got {theta_shape} vs {var_shape}",
@@ -970,16 +961,6 @@ def _planned_quantile_fields(baseline: Baseline) -> tuple[str | None, float | No
     return None, None
 
 
-def _se_sq(n_T: float, n_C: float, baseline: Baseline) -> float:
-    """Baseline-only log-ratio variance ``v / m^2 * (1/n_T + 1/n_C)``.
-
-    Retained for the segment-pairwise solvers, whose documented model
-    evaluates every arm at its segment's baseline. The arm trio uses
-    ``_arm_log_se_sq`` instead.
-    """
-    return baseline.effective_var / (baseline.mean**2) * (1.0 / n_T + 1.0 / n_C)
-
-
 def _is_bounded_metric(procedure: ArmPlanningProcedure) -> bool:
     """Conversion and retention rates live in ``(0, 1]`` and carry a Bernoulli shape."""
     return procedure.metric.metric_type in ("conversion", "retention")
@@ -1327,15 +1308,6 @@ def _require_bounded_rate(
         )
 
 
-def _cluster_counts(n_T: int, n_C: int, baseline: Baseline) -> tuple[int | None, int | None]:
-    """Required randomized clusters from assigned units and assigned mean size."""
-    m = baseline.avg_cluster_size
-    if m <= 1.0:
-        return None, None
-    k_t = math.ceil(n_T / m)
-    return k_t, k_t + math.ceil(n_C / m)
-
-
 _CLUSTER_TOO_FEW = RefusalSpec(
     "power.cluster.too_few_clusters",
     InvalidRequestError,
@@ -1383,102 +1355,6 @@ def _cluster_dof(
     return float(min(represented_t - 1, represented_c - 1))
 
 
-def _compute_arms(n_T: int, design: PowerDesign, *, minimum_per_arm: int = 2) -> tuple[int, int]:
-    """Return (n_T, n_C) given the treatment-arm size.
-
-    Control-arm size is derived from the allocation ratio so that
-    n_T : n_C approx allocation : (1 - allocation).
-    """
-    if n_T < minimum_per_arm:
-        n_T = minimum_per_arm
-    n_C = max(minimum_per_arm, math.ceil(n_T * (1.0 - design.allocation) / design.allocation))
-    return n_T, n_C
-
-
-def _power_from_nc(
-    nc: float,
-    procedure: ArmPlanningProcedure,
-    *,
-    dof: float | None = None,
-) -> float:
-    """Power at noncentrality ``nc`` (signed toward the alternative).
-
-    Parameterizing on ``nc`` directly avoids reconstructing an absolute
-    ``theta`` around a shifted null and subtracting it back off: when the null
-    is large relative to the standard error, that round trip rounds the
-    increment away and turns a root-find objective into a step function.
-    An infinite ``nc`` (a variance that underflowed) is the exact limit:
-    certain detection on its side, none on the other. The normal reference
-    uses the survival ufuncs behind ``scipy.stats.norm`` directly: the
-    minimum-detectable-effect search evaluates this dozens of times. A tail
-    the kernel cannot resolve is refused, never reported as zero power.
-    """
-    decision = cast("RelativeDecisionPolicy", procedure.decision)
-    tail_alpha = procedure.compiled_tail_alpha
-    power = _scalar_power_from_nc(
-        nc, alternative=decision.alternative, tail_alpha=tail_alpha, dof=dof
-    )
-    if math.isnan(power):
-        _raise("power.noncentral_t_unresolved", nc=nc, dof=dof, tail_alpha=tail_alpha)
-    return power
-
-
-def _power_at(
-    theta: float,
-    se2: float,
-    design: PowerDesign,
-    procedure: ArmPlanningProcedure,
-    *,
-    dof: float | None = None,
-) -> float:
-    decision = cast("RelativeDecisionPolicy", procedure.decision)
-    theta0 = math.log1p(decision.null_lift)
-    nc = (theta - theta0) / math.sqrt(se2)
-    return _power_from_nc(nc, procedure, dof=dof)
-
-
-def _derive_axes_from_baseline(
-    procedure: ArmPlanningProcedure, baseline: Baseline
-) -> ArmPlanningProcedure:
-    """Auto-derive the quantile metric type and CUPED/compliance/
-    triggering/absorption from the Baseline the solver call already
-    received, wherever the procedure still carries standard()'s
-    undeclared default for that axis. A procedure whose axis was
-    explicitly set to something else is left untouched here; a genuine
-    conflict with the baseline is then reported by arm_planning_support's
-    baseline-compatibility check (or, for a ``QuantileBaseline``, by
-    ``_prepare_solver``), which fires only on a real mismatch."""
-    if isinstance(baseline, QuantileBaseline) and procedure.metric.metric_type == "mean":
-        procedure = procedure.model_copy(
-            update={"metric": procedure.metric.model_copy(update={"metric_type": "quantile"})}
-        )
-    analysis = procedure.analysis
-    analysis_updates: dict[str, str] = {}
-    if baseline.compliance != 1.0 and analysis.identification == "randomized":
-        analysis_updates["identification"] = "encouragement"
-    if baseline.trigger_rate != 1.0 and analysis.population == "assigned":
-        analysis_updates["population"] = "triggered"
-    if baseline.icc != 0.0 and analysis.variance_adjustment == "none":
-        analysis_updates["variance_adjustment"] = "factor_absorption"
-    if analysis_updates:
-        procedure = procedure.model_copy(
-            update={"analysis": analysis.model_copy(update=analysis_updates)}
-        )
-    already_cuped = any(
-        method.variance_reduction != "none"
-        for method in (procedure.decision_method, *procedure.sensitivity_methods)
-    )
-    if baseline.cuped_rho != 0.0 and not already_cuped:
-        if procedure.decision_method.conversion_inference == "finite_sample":
-            refuse_finite_sample_cuped(
-                procedure.decision_method.name, adjusted_by="baseline_cuped_rho"
-            )
-        procedure = procedure.model_copy(
-            update={"decision_method": MethodSpec(name="cuped", variance_reduction="cuped")}
-        )
-    return procedure
-
-
 def _prepare_solver(
     procedure: ArmPlanningProcedure,
     baseline: Baseline,
@@ -1492,7 +1368,6 @@ def _prepare_solver(
         _raise("power.power_solvers_relative")
     baseline = Baseline.model_validate(baseline)
     procedure = _derive_axes_from_baseline(procedure, baseline)
-    # Sensitivity-only CUPED must not subsidize an unadjusted decision.
     if procedure.decision_method.variance_reduction == "none" and baseline.cuped_rho != 0.0:
         baseline = baseline.model_copy(update={"cuped_rho": 0.0})
     support = arm_planning_support(procedure, baseline=baseline)
@@ -1511,8 +1386,7 @@ def _prepare_solver(
 
 
 def _require_finite_sample_plannable(procedure: ArmPlanningProcedure) -> None:
-    """Refuse an explicit ``finite_sample`` decision method on a plan the runtime would not
-    decide with the finite-sample route, as the runtime refuses the same request."""
+    """Refuse an explicit finite-sample plan the runtime cannot decide."""
     if _conversion_mode(procedure) != "finite_sample" or _runtime_binomial(procedure):
         return
     if procedure.metric.metric_type not in ("conversion", "retention"):
@@ -1749,71 +1623,6 @@ def _refuse_unreached_quantile_power(
             "recording_grid" if design.power >= maximum_power else "sample_size_limit"
         ),
     )
-
-
-def _mde_theta(
-    se2: float,
-    design: PowerDesign,
-    procedure: ArmPlanningProcedure,
-    *,
-    dof: float | None = None,
-) -> float:
-    """Minimum detectable log-scale effect (distance from the null) at a
-    FIXED variance ``se2``.
-
-    This is the segment-pairwise model's inverse and, at ``se2=1.0``, the
-    dimensionless fixed-reference quantile sum the arm solvers seed their
-    searches with. It is not the arm trio's inverse: that variance moves
-    with the alternative (see ``_solve_arm_mde``).
-
-    A test's own null-boundary power (``2*tail_alpha`` two-sided,
-    ``tail_alpha`` one-sided) already exceeds any target power at or
-    below it: the zero-distance effect trivially clears that target, so
-    no finite closed-form or root-found distance is meaningful there.
-    That domain edge is checked once, before either solve path, instead
-    of letting the closed form return a wrong-signed effect or the root
-    finder fail for lack of a sign change at the endpoint.
-    """
-    decision = cast("RelativeDecisionPolicy", procedure.decision)
-    se = math.sqrt(se2)
-    theta0 = math.log1p(decision.null_lift)
-    null_power = _power_at(theta0, se2, design, procedure, dof=dof)
-    if design.power <= null_power:
-        return 0.0
-    z_alpha = float(_norm.isf(procedure.compiled_tail_alpha))
-    z_power = float(_norm.ppf(design.power))
-    alternative = decision.alternative
-    direction = 1.0 if alternative in ("two-sided", "greater") else -1.0
-    if dof is None and alternative != "two-sided":
-        return direction * se * (z_alpha + z_power)
-
-    from scipy.optimize import brentq
-
-    target = design.power
-
-    def gap(nc_abs: float) -> float:
-        return _power_from_nc(direction * nc_abs, procedure, dof=dof) - target
-
-    lo, hi = 0.0, max(1.0, z_alpha + z_power)
-    while gap(hi) < 0.0:
-        hi *= 2.0
-    return direction * brentq(gap, lo, hi, xtol=1e-12) * se
-
-
-def _mde_relative(
-    se2: float,
-    design: PowerDesign,
-    procedure: ArmPlanningProcedure,
-    *,
-    dof: float | None = None,
-) -> float:
-    """Minimum detectable relative effect at a fixed variance ``se2``
-    (segment-pairwise model)."""
-    return math.expm1(_mde_theta(se2, design, procedure, dof=dof))
-
-
-def _validate_relative_lift(relative_lift: float) -> None:
-    _require_relative_domain("relative_lift", relative_lift)
 
 
 def _supplied_effect(
@@ -2447,6 +2256,17 @@ class _BinomialPlan:
             return _modelled(self.arm.power(distance, theta))
         return self.geometry.evaluate(self.p_c, self.rate(theta))
 
+    def prepare(self, theta: float, distance: float) -> BinomialPower | _Evaluation:
+        """`evaluate` in two steps: the closed-form value where the effect is planned in closed
+        form, otherwise the evaluation reserved on the geometry (`RejectionGeometry.prepare`,
+        with `evaluate`'s refusals) for `complete` to decide."""
+        if self.closed(theta):
+            return _modelled(self.arm.power(distance, theta))
+        return self.geometry.prepare(self.p_c, self.rate(theta))
+
+    def complete(self, evaluation: _Evaluation) -> BinomialPower:
+        return self.geometry.complete(evaluation)
+
     def routing_context(self) -> dict[str, object]:
         """The route fields a replay-bound refusal carries."""
         context: dict[str, object] = {"conversion_inference": self.mode}
@@ -2498,12 +2318,6 @@ class _BinomialPlan:
             return False, False
         narrowest, widest = window_cell_bounds(decision, self.p_c, low, high)
         return widest > ENUMERATION_CELLS, every_dense and narrowest > ENUMERATION_CELLS
-
-    def bound(self, theta_a: float, theta_b: float) -> float:
-        """Upper bound on computed point power throughout an interval of effects."""
-        low, high = sorted((self.rate(theta_a), self.rate(theta_b)))
-        bound = self.geometry.closure_bound(self.p_c, low, high)
-        return self.geometry.point_upper(self.p_c, low, high, bound)
 
 
 def _render_replay_bound(
@@ -2680,12 +2494,26 @@ def _binomial_curvature_gap(n: int, low: float, high: float) -> Fraction:
 
 
 @dataclass(slots=True)
+class _Probe:
+    """One candidate effect of a search. Its evaluation is reserved when the probe is made
+    (the search's budget and the geometry's bound are charged then) and decided when its
+    power is first read (`_BinomialMdeSearch.value`)."""
+
+    theta: float
+    distance: float
+    pending: _Evaluation | None
+    power: BinomialPower | None
+
+
+@dataclass(slots=True)
 class _BinomialMdeState:
     evaluations: int = 0
     unresolved: tuple[float, float] | None = None
     lower: float = 0.0
     upper: float = 0.0
     basis: PowerBasis = "exact"
+    # Probes reserved and not yet decided, in the order they were made.
+    deferred: list[_Probe] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2696,6 +2524,14 @@ class _BinomialMdeSearch(_MdeSearch):
     Otherwise subdivide left first. A returned evaluated point reaches the target,
     and every unexcluded earlier effect is within ``atol + rtol * abs(effect)``.
     Wider unresolved intervals refuse instead of being skipped for a later band.
+
+    An interval's far endpoint is reserved when the interval is formed and decided only once
+    its power is read (a narrow interval, the curvature term of an interval narrow enough for
+    it to be below one, the unattainable report); an interval bound decides of its cells only
+    those the bound could depend on (`RejectionGeometry.closure_bound_before`). The intervals
+    formed, the bounds read and the answer are those of deciding every endpoint when it is
+    formed; an endpoint no bound reads (the far end of the admissible effects, the far
+    endpoints of wide intervals above the answer) is never replayed.
     """
 
     model: _BinomialPlan
@@ -2729,14 +2565,6 @@ class _BinomialMdeSearch(_MdeSearch):
         if self.state.evaluations > _BINOMIAL_MDE_EVALUATIONS:
             raise _SearchBudgetExhausted
 
-    def interval_bound(self, theta_a: float, theta_b: float) -> float:
-        """Bound every reported point over both the enumerated and closed-form routes."""
-        some, every = self.model.closed_extent(theta_a, theta_b)
-        bound = 0.0 if every else self.model.bound(theta_a, theta_b)
-        if some:
-            bound = max(bound, self.asymptotic_bound(theta_a, theta_b))
-        return bound
-
     def asymptotic_bound(self, theta_a: float, theta_b: float) -> float:
         """The increasing model peaks at the far end; the decreasing model has one peak."""
         low, high = sorted((theta_a, theta_b))
@@ -2757,31 +2585,47 @@ class _BinomialMdeSearch(_MdeSearch):
             _first_ordinal_accepted(float_ordinal(0.0), float_ordinal(edge), self.admissible)
         )
         d_band = -math.log1p(float_from_ordinal(float_ordinal(m_min) + 1) * self.compliance)
-        left = self._evaluate_theta(self.theta0, 0.0)
-        right = self._evaluate_theta(self.theta0 - d_band, -d_band)
-        if self.detected(left) or self.detected(right):
+        left = self._begin_theta(self.theta0, 0.0)
+        self.value(left)
+        right = self._begin_theta(self.theta0 - d_band, -d_band)
+        if self.detected(self.value(left)) or self.detected(self.value(right)):
             return self.unrepresentable("float64_relative_lift")
         bound = self._theta_bound(self.theta0, self.theta0 - d_band, left, right)
         if bound >= self.target:
             self.state.unresolved = (0.0, m_min)
-            self.state.lower = max(left.lower, right.lower)
+            self.state.lower = max(self.value(left).lower, self.value(right).lower)
             self.state.upper = bound
             return self.unresolved(
                 0.0, m_min, "the initial unrepresentable band remains unresolved"
             )
         return m_min
 
-    def evaluate(self, effect: float) -> BinomialPower:
+    def begin(self, effect: float) -> _Probe:
         point = self.candidate(effect)
         assert point is not None
-        return self._evaluate_theta(point[1], point[0])
+        return self._begin_theta(point[1], point[0])
 
-    def _evaluate_theta(self, theta: float, distance: float) -> BinomialPower:
+    def _begin_theta(self, theta: float, distance: float) -> _Probe:
+        """Reserve the evaluation of an effect, charging the search's budget."""
         self._charge()
         try:
-            return self.model.evaluate(theta, distance)
+            prepared = self.model.prepare(theta, distance)
         except FiniteRouteUnavailable:
-            return _UNDECIDED
+            return _Probe(theta, distance, None, _UNDECIDED)
+        if isinstance(prepared, BinomialPower):
+            return _Probe(theta, distance, None, prepared)
+        probe = _Probe(theta, distance, prepared, None)
+        self.state.deferred.append(probe)
+        return probe
+
+    def value(self, probe: _Probe) -> BinomialPower:
+        """The probe's power, decided now if not yet."""
+        if probe.power is None:
+            assert probe.pending is not None
+            self.state.deferred.remove(probe)
+            probe.power = self.model.complete(probe.pending)
+            probe.pending = None
+        return probe.power
 
     def detected(self, power: BinomialPower) -> bool:
         return power.resolved and power.power >= self.target
@@ -2806,25 +2650,36 @@ class _BinomialMdeSearch(_MdeSearch):
             },
         )
 
-    def _bound(self, lo: float, hi: float, left: BinomialPower, right: BinomialPower) -> float:
+    def _bound(self, lo: float, hi: float, left: _Probe, right: _Probe) -> float:
         a, b = self.candidate(lo), self.candidate(hi)
         assert a is not None and b is not None
         return self._theta_bound(a[1], b[1], left, right)
 
-    def _theta_bound(
-        self, theta_a: float, theta_b: float, left: BinomialPower, right: BinomialPower
-    ) -> float:
+    def _closure(self, low_rate: float, high_rate: float) -> float:
+        """Upper bound on computed point power over the treatment rates ``[low_rate,
+        high_rate]`` from the decided cells, deciding of the reserved probes' cells only those
+        the bound could depend on."""
+        geometry, p_c = self.model.geometry, self.model.p_c
+        bound = geometry.closure_bound_before(p_c, low_rate, high_rate)
+        return geometry.point_upper(p_c, low_rate, high_rate, bound)
+
+    def _theta_bound(self, theta_a: float, theta_b: float, left: _Probe, right: _Probe) -> float:
+        """Bound every reported point over both the enumerated and closed-form routes."""
         self._charge()
-        bound = self.interval_bound(theta_a, theta_b)
-        some, _ = self.model.closed_extent(theta_a, theta_b)
+        low_rate, high_rate = sorted((self.model.rate(theta_a), self.model.rate(theta_b)))
+        some, every = self.model.closed_extent(theta_a, theta_b)
+        bound = 0.0 if every else self._closure(low_rate, high_rate)
         if some:
+            bound = max(bound, self.asymptotic_bound(theta_a, theta_b))
             self.state.basis = "asymptotic"
             return bound
-        low_rate, high_rate = sorted((self.model.rate(theta_a), self.model.rate(theta_b)))
         gap = _binomial_curvature_gap(self.model.key.n_t, low_rate, high_rate)
-        true_upper = min(
-            1.0, math.nextafter(float(Fraction(max(left.upper, right.upper)) + gap), math.inf)
-        )
+        if gap >= 1:
+            # The endpoint powers cannot lower a bound the gap alone takes to one.
+            true_upper = 1.0
+        else:
+            upper = max(self.value(left).upper, self.value(right).upper)
+            true_upper = min(1.0, math.nextafter(float(Fraction(upper) + gap), math.inf))
         point_upper = self.model.geometry.point_upper(
             self.model.p_c, low_rate, high_rate, true_upper
         )
@@ -2841,35 +2696,37 @@ class _BinomialMdeSearch(_MdeSearch):
         return float_from_ordinal(first + (last - first) // 2)
 
     def between(
-        self, lo: float, hi: float, left: BinomialPower, right: BinomialPower
+        self, lo: float, hi: float, left: _Probe, right: _Probe
     ) -> tuple[float, float] | _MdeRefusal | None:
         pending = self.state.unresolved
         if pending is not None and abs(lo - pending[0]) > self.tolerance(lo):
             return self.unresolved(lo, hi, "an earlier detectable region remains unresolved")
-        if self.detected(left):
-            return lo, left.reported
+        first = self.value(left)
+        if self.detected(first):
+            return lo, first.reported
         bound = self._bound(lo, hi, left, right)
         if bound < self.target:
             return None
         width = abs(hi - lo)
         adjacent = abs(float_ordinal(hi) - float_ordinal(lo)) <= 1
         if width <= self.tolerance(hi) / 4.0 or adjacent:
-            if self.detected(right):
+            last = self.value(right)
+            if self.detected(last):
                 if pending is not None and abs(hi - pending[0]) > self.tolerance(hi):
                     return self.unresolved(
                         lo, hi, "an earlier detectable region remains unresolved"
                     )
-                return hi, right.reported
+                return hi, last.reported
             if pending is None:
                 self.state.unresolved = (lo, hi)
-                self.state.lower = max(left.lower, right.lower)
+                self.state.lower = max(first.lower, last.lower)
                 self.state.upper = bound
                 self.state.basis = (
-                    "approximate" if not left.resolved or not right.resolved else left.basis
+                    "approximate" if not first.resolved or not last.resolved else first.basis
                 )
             return None
         mid = self._midpoint(lo, hi)
-        middle = self.evaluate(mid)
+        middle = self.begin(mid)
         earlier = self.between(lo, mid, left, middle)
         if earlier is not None:
             return earlier
@@ -2938,11 +2795,14 @@ def _search_binomial_mde(
     if dense is not None:
         return dense
     # Interval closure depends on known decisions. Start each uncached effect solve with
-    # the same knowledge, so its numerical stopping point cannot depend on earlier queries.
+    # the same knowledge, so its numerical stopping point cannot depend on earlier queries;
+    # the cells themselves are the runtime's own decisions, copied from the shared store.
     geometry = model.geometry
     model = replace(
         model,
-        geometry=RejectionGeometry(model.key, geometry.route, geometry.max_cells, geometry.routing),
+        geometry=RejectionGeometry(
+            model.key, geometry.route, geometry.max_cells, geometry.routing, geometry.store
+        ),
     )
     search = _BinomialMdeSearch.of(
         plan, model, target=target, null_lift=null_lift, alternative=alternative
@@ -2971,18 +2831,19 @@ def _ordered_exclusion(search: _BinomialMdeSearch) -> tuple[float, float] | _Mde
         return m_min
     m_max = search.upper_endpoint(m_min)
     try:
-        first = search.evaluate(m_min)
-        if search.detected(first):
-            return m_min, first.reported
-        last = search.evaluate(m_max)
+        first = search.begin(m_min)
+        if search.detected(search.value(first)):
+            return m_min, search.value(first).reported
+        last = search.begin(m_max)
         found = search.between(m_min, m_max, first, last)
         if found is not None:
             return found
         if search.state.unresolved is not None:
             return search.unresolved(m_min, m_max, "no resolved point reaches the target")
         limiting = "bounded_rate_ceiling" if search.sigma > 0.0 else "relative_lift_floor"
+        final = search.value(last)
         return search.unattainable(
-            last.power if last.resolved else None, limiting, power_basis=last.basis
+            final.power if final.resolved else None, limiting, power_basis=final.basis
         )
     except _SearchBudgetExhausted:
         return search.unresolved(m_min, m_max, "the ordered interval search exhausted its budget")
@@ -4185,359 +4046,6 @@ def _solve_together(
         )
         for query in queries
     ]
-
-
-# Pairwise segment-difference solvers - detect a difference between two
-# segments' lifts; see segment_pairwise_required_sample_size for the formula.
-
-
-def _segment_arm_sizes(q: float, n_total: float, design: PowerDesign) -> tuple[int, int]:
-    """Split a segment share into treatment/control arms.
-
-    Every derived arm holds at least two units, so the allocation-aware
-    segment threshold is ``2 / min(allocation, 1 - allocation)``; below it,
-    flooring the arms would fabricate units not present in the segment.
-    """
-    n_total_seg = q * n_total
-    min_alloc = min(design.allocation, 1.0 - design.allocation)
-    min_n_total_seg = 2 / min_alloc
-    if n_total_seg < min_n_total_seg:
-        _raise(
-            "power.segment_share_n",
-            q=q,
-            n_total=n_total,
-            n_total_seg=n_total_seg,
-            allocation=design.allocation,
-            min_n_total_seg=min_n_total_seg,
-        )
-    n_t = max(2, math.ceil(n_total_seg * design.allocation))
-    n_c = max(2, math.ceil(n_total_seg * (1.0 - design.allocation)))
-    return n_t, n_c
-
-
-def _pairwise_theta(r_a: float, r_b: float) -> float:
-    _validate_relative_lift(r_a)
-    _validate_relative_lift(r_b)
-    return math.log1p(r_a) - math.log1p(r_b)
-
-
-def _validate_segment_shares(q_a: float, q_b: float) -> None:
-    if not 0 < q_a < 1:
-        _raise("power.q_a")
-    if not 0 < q_b < 1:
-        _raise("power.q_b")
-    if q_a + q_b > 1.0 + 1e-9:
-        _raise("power.q_a_q", q_a_plus_q_b=q_a + q_b)
-
-
-def _validate_pairwise_baselines(baseline_a: Baseline, baseline_b: Baseline) -> None:
-    unsupported = [
-        field
-        for field in ("compliance", "trigger_rate")
-        if any(getattr(baseline, field) != 1.0 for baseline in (baseline_a, baseline_b))
-    ]
-    if unsupported:
-        _raise("power.segment_pairwise_solvers", unsupported=unsupported)
-
-
-def _validate_pairwise_cluster_floor(
-    n_t: int, n_c: int, baseline: Baseline, *, segment: str
-) -> None:
-    """Require the analyzer's structural minimum of two clusters per arm."""
-    if baseline.avg_cluster_size <= 1.0:
-        return
-    k_t, k_total = _cluster_counts(n_t, n_c, baseline)
-    assert k_t is not None and k_total is not None
-    k_c = k_total - k_t
-    if k_t < 2 or k_c < 2:
-        _raise(
-            "power.segment_clustered_baseline",
-            segment=segment,
-            k_total=k_total,
-            n_t=n_t,
-            n_c=n_c,
-        )
-
-
-def _pairwise_se_sq(
-    n_total: float,
-    q_a: float,
-    q_b: float,
-    baseline_a: Baseline,
-    baseline_b: Baseline,
-    design: PowerDesign,
-) -> float:
-    """Variance of the segment-A-minus-segment-B log-lift contrast at total N."""
-    n_a_t, n_a_c = _segment_arm_sizes(q_a, n_total, design)
-    n_b_t, n_b_c = _segment_arm_sizes(q_b, n_total, design)
-    _validate_pairwise_cluster_floor(n_a_t, n_a_c, baseline_a, segment="A")
-    _validate_pairwise_cluster_floor(n_b_t, n_b_c, baseline_b, segment="B")
-    return _se_sq(n_a_t, n_a_c, baseline_a) + _se_sq(n_b_t, n_b_c, baseline_b)
-
-
-def _prepare_pairwise(
-    procedure: ArmPlanningProcedure,
-    baseline_a: Baseline,
-    baseline_b: Baseline | None,
-    design: PowerDesign | None,
-    *,
-    q_a: float,
-    q_b: float,
-    caller: str,
-) -> tuple[ArmPlanningProcedure, Baseline, Baseline, PowerDesign, RelativeDecisionPolicy]:
-    """Shared preamble for the three segment-pairwise solvers: baseline
-    prep, design defaulting, and the fixed-horizon/segment-share guards.
-
-    A quantile metric is refused with the readout's own breakout code: its
-    segments have no readout to plan for, and a ``QuantileBaseline``
-    carries no per-unit variance the segment model could scale."""
-    quantile_baseline = next(
-        (b for b in (baseline_a, baseline_b) if isinstance(b, QuantileBaseline)), None
-    )
-    if quantile_baseline is not None or (
-        isinstance(procedure, ArmPlanningProcedure) and procedure.metric.metric_type == "quantile"
-    ):
-        refuse(
-            READOUT_REFUSALS["readout.metric.quantile_breakout"],
-            metric=None if quantile_baseline is None else quantile_baseline.metric_name,
-            solver=caller,
-            route=(
-                "plan the whole-population quantile lift with required_sample_size, "
-                "achieved_power or minimum_detectable_effect"
-            ),
-        )
-    procedure, baseline_a = _prepare_solver(procedure, baseline_a)
-    if baseline_b is None:
-        baseline_b = baseline_a
-    else:
-        _, baseline_b = _prepare_solver(procedure, baseline_b)
-    _validate_pairwise_baselines(baseline_a, baseline_b)
-    if design is None:
-        design = PowerDesign()
-    else:
-        design = PowerDesign.model_validate(design)
-    if not isinstance(procedure.inference, FixedInference):
-        _raise("power.supports_fixed_horizon", caller=caller)
-    _validate_segment_shares(q_a, q_b)
-    decision = cast("RelativeDecisionPolicy", procedure.decision)
-    return procedure, baseline_a, baseline_b, design, decision
-
-
-def _reraise_cluster_floor(exc: ValueError) -> None:
-    """The cluster-floor refusal keeps its own code; other split failures
-    become the calling solver's own refusal."""
-    if isinstance(exc, CodedError) and exc.code == "power.segment_clustered_baseline":
-        raise exc
-
-
-def segment_pairwise_required_sample_size(
-    r_a: float,
-    r_b: float,
-    q_a: float,
-    q_b: float,
-    baseline_a: Baseline,
-    procedure: ArmPlanningProcedure,
-    baseline_b: Baseline | None = None,
-    design: PowerDesign | None = None,
-) -> PowerResult:
-    """Experiment-wide N needed to detect segment A's lift differing from segment B's.
-
-    ``r_a``/``r_b`` are the two segments' relative lifts; ``q_a``/``q_b``
-    are their shares of the *whole* experiment (a 10% segment out of ten
-    still has ``q=0.10`` regardless of how many other segments exist).
-    Cost is ``n_total = n_ATE(delta) * (1/q_a + 1/q_b)``, where
-    ``delta = log1p(r_a) - log1p(r_b)`` is the log-scale contrast (not
-    ``log1p(r_a - r_b)``: that errs -27.7% at (0.50, 0.20) and +19.4% at
-    (0.30, -0.10)), and ``n_ATE(delta)`` is the total N a standard
-    50/50-allocation experiment would need to detect ``delta`` as a plain
-    ATE. ``1/q_a + 1/q_b`` reduces to the simpler
-    ``n_ATE(delta)/(q(1-q))`` form only when ``q_a + q_b = 1`` (a
-    2-segment breakout); with more segments the two forms diverge and the
-    simpler one understates N.
-
-    ``n_per_arm``/``n_total`` are experiment-wide (summed across every
-    segment, not just A and B). ``effective_var`` reflects segment A's
-    baseline only. ``baseline_b`` defaults to ``baseline_a``;
-    ``design.allocation`` governs the treatment/control split within
-    each segment. Cluster design effects flow in via each baseline's
-    ``effective_var``, but ``PowerResult.n_clusters_*`` stays ``None``:
-    no single cluster count is meaningful across two possibly-different
-    baselines. Fixed-horizon only; sequential planning for segment
-    contrasts is not yet supported.
-
-    Raises
-    ------
-    ValueError
-        If ``r_a`` and ``r_b`` give the same relative lift (theta=0), the
-        same refusal ``required_sample_size`` makes for a lift exactly
-        at its null boundary. Also raised if the solved-for N is too
-        small for either segment's 2-arm split (see ``_segment_arm_sizes``).
-    """
-    procedure, baseline_a, baseline_b, design, decision = _prepare_pairwise(
-        procedure,
-        baseline_a,
-        baseline_b,
-        design,
-        q_a=q_a,
-        q_b=q_b,
-        caller="segment_pairwise_required_sample_size",
-    )
-    theta = _pairwise_theta(r_a, r_b)
-    if decision.null_lift != 0.0:
-        _raise("power.segment_pairwise_required", null_lift=decision.null_lift)
-    alternative = decision.alternative
-    if alternative == "greater" and theta < 0.0:
-        _raise("power.r_a_below", r_a=r_a, r_b=r_b, theta=theta)
-    if alternative == "less" and theta > 0.0:
-        _raise("power.r_a_above", r_a=r_a, r_b=r_b, theta=theta)
-
-    k = 1.0 / design.allocation + 1.0 / (1.0 - design.allocation)
-    term_a = baseline_a.effective_var / (baseline_a.mean**2 * q_a)
-    term_b = baseline_b.effective_var / (baseline_b.mean**2 * q_b)
-    z_sum = float(_norm.isf(procedure.compiled_tail_alpha)) + float(_norm.ppf(design.power))
-
-    if abs(theta) < 1e-15:
-        _raise("power.r_a_r", r_a=r_a, r_b=r_b)
-
-    n_total_float = k * z_sum**2 * (term_a + term_b) / theta**2
-    n_t = max(2, math.ceil(n_total_float * design.allocation))
-    n_t, n_c = _compute_arms(n_t, design)
-
-    try:
-        se2 = _pairwise_se_sq(n_t + n_c, q_a, q_b, baseline_a, baseline_b, design)
-    except ValueError as exc:
-        _reraise_cluster_floor(exc)
-        _raise("power.solved_too_small", n_total=n_t + n_c, q_a=q_a, q_b=q_b, exc=str(exc))
-    return PowerResult(
-        n_per_arm=n_t,
-        n_total=n_t + n_c,
-        power=min(_power_at(theta, se2, design, procedure), 1.0),
-        power_basis="asymptotic",
-        mde_relative=_mde_relative(se2, design, procedure),
-        effective_var=baseline_a.effective_var,
-    )
-
-
-def segment_pairwise_achieved_power(
-    n_per_arm: int,
-    r_a: float,
-    r_b: float,
-    q_a: float,
-    q_b: float,
-    baseline_a: Baseline,
-    procedure: ArmPlanningProcedure,
-    baseline_b: Baseline | None = None,
-    design: PowerDesign | None = None,
-) -> PowerResult:
-    """Achieved power for detecting segment A's lift differing from segment B's
-    at an experiment-wide treatment-arm size of ``n_per_arm``.
-
-    ``PowerResult.effective_var`` reflects segment A's baseline only; it
-    does not summarize ``baseline_b``. Fixed-horizon only; sequential
-    planning for segment contrasts is not yet supported.
-
-    Raises
-    ------
-    ValueError
-        If ``n_per_arm`` implies too few units in either segment's share
-        for a 2-arm split (see ``_segment_arm_sizes``); increase
-        ``n_per_arm`` or the smaller segment's share.
-    """
-    procedure, baseline_a, baseline_b, design, decision = _prepare_pairwise(
-        procedure,
-        baseline_a,
-        baseline_b,
-        design,
-        q_a=q_a,
-        q_b=q_b,
-        caller="segment_pairwise_achieved_power",
-    )
-    if decision.null_lift != 0.0:
-        _raise("power.segment_pairwise_achieved", null_lift=decision.null_lift)
-    theta = _pairwise_theta(r_a, r_b)
-
-    n_t, n_c = _compute_arms(n_per_arm, design)
-    try:
-        se2 = _pairwise_se_sq(n_t + n_c, q_a, q_b, baseline_a, baseline_b, design)
-    except ValueError as exc:
-        _reraise_cluster_floor(exc)
-        _raise(
-            "power.segment_pairwise_achieved_n_per_arm_too_small",
-            n_per_arm=n_per_arm,
-            q_a=q_a,
-            q_b=q_b,
-            exc=str(exc),
-        )
-    return PowerResult(
-        n_per_arm=n_t,
-        n_total=n_t + n_c,
-        power=min(_power_at(theta, se2, design, procedure), 1.0),
-        power_basis="asymptotic",
-        mde_relative=_mde_relative(se2, design, procedure),
-        effective_var=baseline_a.effective_var,
-    )
-
-
-def segment_pairwise_minimum_detectable_effect(
-    n_per_arm: int,
-    q_a: float,
-    q_b: float,
-    baseline_a: Baseline,
-    procedure: ArmPlanningProcedure,
-    baseline_b: Baseline | None = None,
-    design: PowerDesign | None = None,
-) -> PowerResult:
-    """Smallest segment-A-vs-segment-B difference detectable at ``n_per_arm``.
-
-    ``mde_relative`` is ``exp(delta) - 1`` for the smallest detectable
-    log-scale contrast ``delta = log(1+r_A) - log(1+r_B)``: the smallest
-    detectable ratio ``(1+r_A)/(1+r_B) - 1``, not a lift against a
-    single baseline mean.
-
-    ``PowerResult.effective_var`` reflects segment A's baseline only; it
-    does not summarize ``baseline_b``. Fixed-horizon only; sequential
-    planning for segment contrasts is not yet supported.
-
-    Raises
-    ------
-    ValueError
-        If ``n_per_arm`` implies too few units in either segment's share
-        for a 2-arm split (see ``_segment_arm_sizes``); increase
-        ``n_per_arm`` or the smaller segment's share.
-    """
-    procedure, baseline_a, baseline_b, design, decision = _prepare_pairwise(
-        procedure,
-        baseline_a,
-        baseline_b,
-        design,
-        q_a=q_a,
-        q_b=q_b,
-        caller="segment_pairwise_minimum_detectable_effect",
-    )
-    if decision.null_lift != 0.0:
-        _raise("power.segment_pairwise_minimum", null_lift=decision.null_lift)
-
-    n_t, n_c = _compute_arms(n_per_arm, design)
-    try:
-        se2 = _pairwise_se_sq(n_t + n_c, q_a, q_b, baseline_a, baseline_b, design)
-    except ValueError as exc:
-        _reraise_cluster_floor(exc)
-        _raise(
-            "power.segment_pairwise_achieved_n_per_arm_too_small",
-            n_per_arm=n_per_arm,
-            q_a=q_a,
-            q_b=q_b,
-            exc=str(exc),
-        )
-    mde_theta = _mde_theta(se2, design, procedure)
-    return PowerResult(
-        n_per_arm=n_t,
-        n_total=n_t + n_c,
-        power=min(_power_at(mde_theta, se2, design, procedure), 1.0),
-        power_basis="asymptotic",
-        mde_relative=math.expm1(mde_theta),
-        effective_var=baseline_a.effective_var,
-    )
 
 
 # Cochran's Q (increment.estimation.meta.cochran_q) tests whether K
