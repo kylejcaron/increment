@@ -103,7 +103,7 @@ if TYPE_CHECKING:
     from increment._analysis_config import ResolvedMetricConfig
     from increment._readout_request import ReadoutRequest
     from increment.decision import DecisionComputation, DecisionFailure, PValueEvidence
-    from increment.winsor import BootstrapReference, WinsorRawState
+    from increment.winsor import BootstrapReference, InfluenceReference, WinsorRawState
 # 40 (sandwich variance itself noisy, so borderline significance is fragile).
 _WARN_TOTAL_CLUSTERS = 40
 
@@ -2860,7 +2860,8 @@ def estimate_lift(  # noqa: PLR0913
     cluster: str | None = None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
     raw_outcomes: Mapping[str, WinsorRawState] | None = None,
-    winsor_references: Mapping[tuple[str, str], BootstrapReference] | None = None,
+    winsor_references: Mapping[tuple[str, str], BootstrapReference | InfluenceReference]
+    | None = None,
     *,
     summary_population: Literal["assigned", "triggered"] | None = None,
 ) -> DecisionComputation[LiftEstimate]:
@@ -2959,7 +2960,8 @@ def _estimate_lift(  # noqa: PLR0913
     cluster: str | None = None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
     raw_outcomes: Mapping[str, WinsorRawState] | None = None,
-    winsor_references: Mapping[tuple[str, str], BootstrapReference] | None = None,
+    winsor_references: Mapping[tuple[str, str], BootstrapReference | InfluenceReference]
+    | None = None,
     *,
     summary_population: Literal["assigned", "triggered"] | None = None,
     route_alpha: float | None = None,

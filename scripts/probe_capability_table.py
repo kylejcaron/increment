@@ -321,6 +321,19 @@ def _row_logged_policy_contrast() -> None:
         )
 
 
+def _row_percentile_winsor() -> None:
+    """Pooled percentile winsorization: positive, zero-inclusive and size-routed pools."""
+    from tests.parity_harness.cases import (
+        _winsor_size_routed_case,
+        _winsor_three_arm_case,
+        _winsor_zero_inclusive_case,
+    )
+
+    _report_case(_winsor_three_arm_case())
+    _report_case(_winsor_zero_inclusive_case(1))
+    _report_case(_winsor_size_routed_case())
+
+
 def report_additional_cells() -> None:
     """Cells `PARITY_CASES` does not (yet) carry a row for. Extend this
     function, not just the printed labels, as each capability grows its
@@ -330,6 +343,7 @@ def report_additional_cells() -> None:
     _row_planning_baseline_mean()
     _row_planning_baseline_quantile()
     _row_logged_policy_contrast()
+    _row_percentile_winsor()
 
 
 if __name__ == "__main__":

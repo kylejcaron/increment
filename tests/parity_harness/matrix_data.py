@@ -85,8 +85,7 @@ class Unit:
 
 
 def units(*, positive: bool = False) -> list[Unit]:
-    """The enrolled units. *positive* gives every unit an in-window purchase (a
-    percentile winsorization pilot needs strictly positive outcomes)."""
+    """The enrolled units; *positive* selects an all-positive purchase fixture."""
     out: list[Unit] = []
     for arm, prefix in _ARMS:
         treated = arm == "treatment"

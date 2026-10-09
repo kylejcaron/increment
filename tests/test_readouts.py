@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
+from narwhals.typing import IntoDataFrame
 
 from increment._source_types import MomentSource
 from increment.breakout.estimates import LiftEstimates
@@ -379,6 +380,221 @@ def _winsorized_totals_source(winsorization: dict[str, object], *, design=None, 
         design=design,
         plan=plan,
     )
+
+
+def _capture_winsor_state(native: IntoDataFrame):
+    from increment.estimation.winsor import _raw_state_from_source
+
+    source = _winsorized_totals_source(
+        {"upper_percentile": 0.75},
+        design=Randomized(control_group="control"),
+    )
+    return _raw_state_from_source(source, source.context.metrics[0], native=native)
+
+
+def test_winsor_raw_capture_canonicalizes_numeric_ids_and_preserves_arm_values():
+    native = pa.table(
+        {
+            "unit_id": [1, 2, 3, 4],
+            "group_id": ["treatment", "control", "treatment", "control"],
+            "y": [5.0, 2.0, 3.0, 1.0],
+        }
+    )
+
+    raw = _capture_winsor_state(native)
+
+    assert raw.counts == (("control", 2), ("treatment", 2))
+    assert tuple((arm.group_id, arm.values) for arm in raw.arms) == (
+        ("control", (1.0, 2.0)),
+        ("treatment", (3.0, 5.0)),
+    )
+
+
+def test_winsor_raw_capture_detects_duplicates_after_string_canonicalization():
+    native = pd.DataFrame(
+        {
+            "unit_id": pd.Series([1, "1", "t0", "t1"], dtype=object),
+            "group_id": ["control", "control", "treatment", "treatment"],
+            "y": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+
+    with pytest.raises(InvalidRequestError) as raised:
+        _capture_winsor_state(native)
+
+    assert raised.value.code == "estimation.winsor.invalid_state"
+
+
+def test_winsor_raw_capture_detects_late_numeric_string_id_collision():
+    native = pd.DataFrame(
+        {
+            "unit_id": pd.Series([*(f"u{i}" for i in range(100)), 1, "1"], dtype=object),
+            "group_id": ["control", "treatment"] * 51,
+            "y": [float(i + 1) for i in range(102)],
+        }
+    )
+
+    with pytest.raises(InvalidRequestError) as raised:
+        _capture_winsor_state(native)
+
+    assert raised.value.code == "estimation.winsor.invalid_state"
+
+
+@pytest.mark.parametrize("use_decimal", [False, True], ids=["object-float", "object-decimal"])
+def test_winsor_raw_capture_accepts_pandas_object_numeric_outcomes(use_decimal):
+    if use_decimal:
+        from decimal import Decimal
+
+        outcomes = [Decimal("1.0"), Decimal("2.0"), Decimal("3.0"), Decimal("4.0")]
+    else:
+        outcomes = [1.0, 2.0, 3.0, 4.0]
+    native = pd.DataFrame(
+        {
+            "unit_id": ["c1", "t1", "c2", "t2"],
+            "group_id": ["control", "treatment", "control", "treatment"],
+            "y": pd.Series(outcomes, dtype=object),
+        }
+    )
+
+    raw = _capture_winsor_state(native)
+
+    assert tuple((arm.group_id, arm.values) for arm in raw.arms) == (
+        ("control", (1.0, 3.0)),
+        ("treatment", (2.0, 4.0)),
+    )
+
+
+def test_winsor_raw_capture_accepts_arrow_decimal_outcomes():
+    from decimal import Decimal
+
+    native = pa.table(
+        {
+            "unit_id": ["c1", "t1", "c2", "t2"],
+            "group_id": ["control", "treatment", "control", "treatment"],
+            "y": pa.array(
+                [Decimal("1.0"), Decimal("2.0"), Decimal("3.0"), Decimal("4.0")],
+                type=pa.decimal128(10, 1),
+            ),
+        }
+    )
+
+    raw = _capture_winsor_state(native)
+
+    assert tuple((arm.group_id, arm.values) for arm in raw.arms) == (
+        ("control", (1.0, 3.0)),
+        ("treatment", (2.0, 4.0)),
+    )
+
+
+@pytest.mark.parametrize("backend", ["pandas", "arrow"])
+def test_winsor_raw_capture_canonicalizes_nan_identity_consistently(backend):
+    if backend == "pandas":
+        native = pd.DataFrame(
+            {
+                "unit_id": pd.Series(["c1", "t1", "c2", "t2", np.nan], dtype=object),
+                "group_id": ["control", "treatment", "control", "treatment", "control"],
+                "y": [1.0, 2.0, 3.0, 4.0, 5.0],
+            }
+        )
+    else:
+        native = pa.table(
+            {
+                "unit_id": [1.0, 2.0, 3.0, 4.0, float("nan")],
+                "group_id": ["control", "treatment", "control", "treatment", "control"],
+                "y": [1.0, 2.0, 3.0, 4.0, 5.0],
+            }
+        )
+
+    raw = _capture_winsor_state(native)
+
+    assert raw.counts == (("control", 3), ("treatment", 2))
+
+
+@pytest.mark.parametrize(
+    "identity_dtype",
+    ["object", "string", "string[pyarrow]", "Int64"],
+    ids=["object", "string-python", "string-pyarrow", "nullable-int"],
+)
+def test_winsor_raw_capture_rejects_pandas_nullable_missing_identity(identity_dtype):
+    unit_ids = [1, 2, pd.NA, 4] if identity_dtype == "Int64" else ["c0", "t0", pd.NA, "t1"]
+    native = pd.DataFrame(
+        {
+            "unit_id": pd.Series(unit_ids, dtype=identity_dtype),
+            "group_id": ["control", "treatment", "control", "treatment"],
+            "y": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+
+    with pytest.raises(InvalidRequestError) as raised:
+        _capture_winsor_state(native)
+
+    assert raised.value.code == "estimation.winsor.invalid_state"
+
+
+@pytest.mark.parametrize("backend", ["arrow", "polars"])
+def test_winsor_raw_capture_rejects_native_missing_identity(backend):
+    if backend == "arrow":
+        native = pa.table(
+            {
+                "unit_id": pa.array(["c0", "t0", None, "t1"]),
+                "group_id": ["control", "treatment", "control", "treatment"],
+                "y": [1.0, 2.0, 3.0, 4.0],
+            }
+        )
+    else:
+        import polars as pl
+
+        native = pl.DataFrame(
+            {
+                "unit_id": ["c0", "t0", None, "t1"],
+                "group_id": ["control", "treatment", "control", "treatment"],
+                "y": [1.0, 2.0, 3.0, 4.0],
+            }
+        )
+
+    with pytest.raises(InvalidRequestError) as raised:
+        _capture_winsor_state(native)
+
+    assert raised.value.code == "estimation.winsor.invalid_state"
+
+
+@pytest.mark.parametrize(
+    ("unit_ids", "groups", "outcomes"),
+    [
+        (
+            [None, "c1", "t0", "t1"],
+            ["control", "control", "treatment", "treatment"],
+            [1.0, 2.0, 3.0, 4.0],
+        ),
+        (
+            ["c0", "c1", "t0", "t1"],
+            ["control", None, "treatment", "treatment"],
+            [1.0, 2.0, 3.0, 4.0],
+        ),
+        (
+            ["same", "same", "t0", "t1"],
+            ["control", "control", "treatment", "treatment"],
+            [float("nan"), 2.0, 3.0, 4.0],
+        ),
+        (
+            ["c0", "c1", "t0", "t1"],
+            ["control", "control", "treatment", "treatment"],
+            [1.0, float("nan"), 3.0, 4.0],
+        ),
+        (
+            ["c0", "c1", "t0", "t1"],
+            ["control", "control", "treatment", "treatment"],
+            [1.0, None, 3.0, 4.0],
+        ),
+    ],
+)
+def test_winsor_raw_capture_refuses_invalid_input(unit_ids, groups, outcomes):
+    native = pa.table({"unit_id": unit_ids, "group_id": groups, "y": outcomes})
+
+    with pytest.raises(InvalidRequestError) as raised:
+        _capture_winsor_state(native)
+
+    assert raised.value.code == "estimation.winsor.invalid_state"
 
 
 def test_run_duplicate_method_names_refuse_before_source_access(monkeypatch):
@@ -975,6 +1191,63 @@ def test_percentile_winsorization_refuses_observational_run():
     )
     with pytest.raises(CapabilityError) as exc_info:
         readouts.run(source, sensitivity_methods=())
+    assert exc_info.value.code == "readout.metric.percentile_winsorization"
+
+
+_WINSOR_METHODS = (
+    "pooled-size-route-v1",
+    "positive-log-kernel-bootstrap-t-v1",
+    "influence-normal-v1",
+)
+
+
+@pytest.mark.parametrize("inference_method", _WINSOR_METHODS)
+@pytest.mark.parametrize("hazard", ["cuped", "breakout", "cluster", "prior"])
+def test_percentile_winsorization_refuses_unsupported_combinations_for_every_method(
+    hazard, inference_method
+):
+    """CUPED, breakouts, clusters and priors are refused before any winsor construction runs,
+    with one code whichever bootstrap, analytic or routed method the request names."""
+    from increment import readouts
+    from increment.frame import FrameTotalsSource
+
+    winsorization: dict[str, object] = {
+        "upper_percentile": 0.75,
+        "inference": {"method": inference_method},
+    }
+    if hazard == "cluster":
+        frame = pa.table(
+            {
+                "user_id": ["u1", "u2", "u3", "u4", "u5", "u6"],
+                "variant": ["control", "control", "control", "treatment", "treatment", "treatment"],
+                "store": ["s1", "s2", "s3", "s4", "s5", "s6"],
+                "revenue": [10.0, 20.0, 15.0, 30.0, 40.0, 25.0],
+            }
+        )
+        source = FrameTotalsSource.from_frame(
+            frame,
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics=[MetricSpec(name="revenue", type="mean", winsorization=winsorization)],
+            design=Randomized(control_group="control"),
+            cluster="store",
+        )
+    else:
+        source = _winsorized_totals_source(
+            winsorization, design=Randomized(control_group="control")
+        )
+    with pytest.raises(CapabilityError) as exc_info:
+        if hazard == "cuped":
+            readouts.run(
+                source, sensitivity_methods=(Method(name="cuped", variance_reduction="cuped"),)
+            )
+        elif hazard == "breakout":
+            readouts.run(source, by=("variant",))
+        elif hazard == "prior":
+            readouts.run(source, prior=Normal(mu=0.0, sigma=0.1))
+        else:
+            readouts.run(source)
     assert exc_info.value.code == "readout.metric.percentile_winsorization"
 
 

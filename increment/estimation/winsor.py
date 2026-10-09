@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
 
@@ -40,26 +40,45 @@ from increment.estimation._winsor_bootstrap import (
 from increment.estimation._winsor_bootstrap import (
     full_procedure_bootstrap_reference as full_procedure_bootstrap_reference,
 )
+from increment.estimation._winsor_influence import (
+    influence_confidence_set as influence_confidence_set,
+)
+from increment.estimation._winsor_influence import (
+    influence_reference as influence_reference,
+)
 from increment.estimation._winsor_permutation import (
     conditional_permutation_test as conditional_permutation_test,
 )
 from increment.winsor import (
     BootstrapReference,
+    InfluenceReference,
     RawArm,
     SetInterval,
     WinsorConfidenceSet,
     WinsorRawState,
+    _bootstrap_reference_context,
     _rank_interval,
     _rank_region_fields,
     winsor_refuse,
 )
 
+ComputedWinsorReference = BootstrapReference | InfluenceReference
 if TYPE_CHECKING:
     from narwhals.typing import IntoDataFrame
 
     from increment._source_types import MomentSource, RawOutcomeSource
     from increment.estimation.results import LiftEstimate
     from increment.semantics.models import Metric, Winsorization
+
+
+def _pandas_identity_has_missing_sentinel(native_frame: Any) -> bool:
+    import pandas as pd
+
+    for column in ("unit_id", "group_id"):
+        for value in native_frame[column].array:
+            if value is None or value is pd.NA or value is pd.NaT:
+                return True
+    return False
 
 
 def raw_state_from_source(source: MomentSource, metric: Metric) -> WinsorRawState:
@@ -87,20 +106,74 @@ def _raw_state_from_source(
         raw_source = cast("RawOutcomeSource", source)
         native = raw_source.unit_frame(metric, outcome_stage="raw")
     frame = nw.from_native(native, eager_only=True)
-    rows = frame.select("unit_id", "group_id", "y").rows(named=True)
-    if any(row["unit_id"] is None or row["group_id"] is None for row in rows):
+    raw_frame = frame.select("unit_id", "group_id", "y")
+    unit_ids = raw_frame.get_column("unit_id")
+    group_ids = raw_frame.get_column("group_id")
+    outcomes = raw_frame.get_column("y")
+    pandas_like = frame.implementation.is_pandas_like()
+    unit_values = unit_ids.to_numpy() if pandas_like else None
+    group_values = group_ids.to_numpy() if pandas_like else None
+    if pandas_like:
+        assert native is not None
+        missing_identity = _pandas_identity_has_missing_sentinel(cast(Any, native))
+    else:
+        missing_identity = bool(unit_ids.is_null().any() or group_ids.is_null().any())
+    if missing_identity:
         winsor_refuse("invalid_state", "Raw unit and arm identities must be present.")
-    identities = [str(r["unit_id"]) for r in rows]
-    if len(set(identities)) != len(identities):
+    if unit_ids.dtype == nw.String and not pandas_like:
+        duplicate_ids = int(unit_ids.n_unique()) != raw_frame.shape[0]
+    else:
+        if unit_values is None:
+            unit_values = unit_ids.to_numpy()
+        identities: set[str] = set()
+        duplicate_ids = False
+        for unit_id in unit_values:
+            identity = str(unit_id)
+            if identity in identities:
+                duplicate_ids = True
+                break
+            identities.add(identity)
+    if duplicate_ids:
         winsor_refuse("invalid_state", "Raw outcome frame must contain exactly one row per unit.")
-    arms: dict[str, list[float]] = {}
-    for row in rows:
-        value = row["y"]
-        if value is None or not math.isfinite(value):
-            winsor_refuse(
-                "invalid_state", "Raw outcomes must be finite after declared missingness handling."
-            )
-        arms.setdefault(str(row["group_id"]), []).append(float(value))
+    values = outcomes.to_numpy()
+    if outcomes.is_null().any():
+        winsor_refuse(
+            "invalid_state", "Raw outcomes must be finite after declared missingness handling."
+        )
+    finite_outcomes = (
+        np.isfinite(values).all()
+        if values.dtype.kind in "biuf"
+        else all(math.isfinite(value) for value in values)
+    )
+    if not finite_outcomes:
+        winsor_refuse(
+            "invalid_state", "Raw outcomes must be finite after declared missingness handling."
+        )
+    if group_values is None:
+        group_values = group_ids.to_numpy()
+    labels = group_values.tolist()
+    if set(map(type, labels)) != {str}:
+        labels = [str(label) for label in labels]
+    label_array = np.asarray(labels, dtype=object)
+    outcome_array = np.asarray(values, dtype=np.float64)
+    captured_arms = [
+        RawArm(group_id=group_id, values=tuple(outcome_array[label_array == group_id].tolist()))
+        for group_id in dict.fromkeys(labels)
+    ]
+    del (
+        labels,
+        label_array,
+        outcome_array,
+        group_values,
+        unit_values,
+        values,
+        unit_ids,
+        group_ids,
+        outcomes,
+        raw_frame,
+        frame,
+        native,
+    )
     spec = getattr(source, "_specs_by_name", {}).get(metric.name)
     assert config.upper_percentile is not None
     return WinsorRawState(
@@ -115,7 +188,7 @@ def _raw_state_from_source(
         quantile=config.upper_percentile,
         support=config.support,
         inference=config.inference,
-        arms=tuple(RawArm(group_id=g, values=tuple(v)) for g, v in arms.items()),
+        arms=tuple(captured_arms),
     )
 
 
@@ -279,6 +352,35 @@ def influence_studentization(
     return math.fsum(terms)
 
 
+def build_winsor_references(
+    raw: WinsorRawState,
+    control: str,
+    treatments: tuple[str, ...],
+    *,
+    validation_context: Mapping[object, object] | None = None,
+) -> dict[str, ComputedWinsorReference]:
+    """Build one reference per treatment with the method the raw state resolves to.
+
+    Rank inference carries no precomputed reference and returns an empty map.
+    """
+    executed = raw.executed_method
+    if executed == "positive-log-kernel-bootstrap-t-v1":
+        from increment.estimation._winsor_bootstrap import full_procedure_bootstrap_references
+
+        return dict(
+            full_procedure_bootstrap_references(
+                raw, control, treatments, validation_context=validation_context
+            )
+        )
+    if executed == "influence-normal-v1":
+        from increment.estimation._winsor_influence import influence_references
+
+        return dict(
+            influence_references(raw, control, treatments, validation_context=validation_context)
+        )
+    return {}
+
+
 def estimate_winsor_lift(
     raw: WinsorRawState,
     control: str,
@@ -290,23 +392,37 @@ def estimate_winsor_lift(
     null_lift: float = 0.0,
     null_abs: float | None = None,
     preferred_direction: PreferredDirection | None = None,
-    reference: BootstrapReference | None = None,
+    reference: ComputedWinsorReference | None = None,
 ) -> LiftEstimate:
     """Build the public row without manufacturing a posterior or a standard error."""
     from increment.estimation.results import Estimate, LiftEstimate
 
-    if raw.inference.method == "joint-rank-projection-v1":
+    executed = raw.executed_method
+    validation_context: dict[object, object] | None = None
+    if executed == "joint-rank-projection-v1":
         if reference is not None:
-            winsor_refuse("pool_mismatch", "Rank inference cannot consume bootstrap roots.")
+            winsor_refuse("pool_mismatch", "Rank inference cannot consume a stored reference.")
         region = joint_confidence_set(raw, control, treatment, alpha)
     else:
+        # One exact point summary serves the reference, the set and the row.
+        _, validation_context = _bootstrap_reference_context(raw)
         if reference is None:
-            reference = full_procedure_bootstrap_reference(raw, control, treatment)
-        if reference.raw != raw or (reference.control, reference.treatment) != (control, treatment):
+            reference = build_winsor_references(
+                raw, control, (treatment,), validation_context=validation_context
+            )[treatment]
+        if (
+            reference.method != executed
+            or reference.raw != raw
+            or (reference.control, reference.treatment) != (control, treatment)
+        ):
             winsor_refuse(
-                "pool_mismatch", "Bootstrap reference differs from requested raw contrast."
+                "pool_mismatch", "Stored reference differs from the requested raw contrast."
             )
-        region = bootstrap_confidence_set(reference, alpha)
+        region = (
+            bootstrap_confidence_set(reference, alpha, validation_context=validation_context)
+            if isinstance(reference, BootstrapReference)
+            else influence_confidence_set(reference, alpha, validation_context=validation_context)
+        )
     cutoff = reference.observed_cutoff if reference is not None else _linear_cutoff(raw)
     point = None
     if region.point is not None:
@@ -320,32 +436,37 @@ def estimate_winsor_lift(
             )
         else:
             point = Estimate(value=region.point)
-    return LiftEstimate(
-        metric=raw.metric,
-        group_id=treatment,
-        method=method,
-        method_role=method_role,
-        reference_kind="confidence_set",
-        confidence_set=region,
-        lift=point,
-        abs_diff=region.additive_point,
-        abs_lb=region.additive.lower.value,
-        abs_ub=region.additive.upper.value,
-        abs_alpha=(
+    row = {
+        "metric": raw.metric,
+        "group_id": treatment,
+        "method": method,
+        "method_role": method_role,
+        "reference_kind": "confidence_set",
+        "confidence_set": region,
+        "lift": point,
+        "abs_diff": region.additive_point,
+        "abs_lb": region.additive.lower.value,
+        "abs_ub": region.additive.upper.value,
+        "abs_alpha": (
             region.alpha
             if region.additive.lower.value is not None and region.additive.upper.value is not None
             else None
         ),
-        null_lift=null_lift,
-        null_abs=null_abs,
-        preferred_direction=preferred_direction,
-        analysis_population=raw.population,
-        winsor_upper_percentile=raw.quantile,
-        winsor_upper_bound=cutoff,
-        winsor_control_n_lower=0,
-        winsor_treatment_n_lower=0,
-        winsor_control_n_upper=sum(y > cutoff for y in raw.arm(control).values),
-        winsor_treatment_n_upper=sum(y > cutoff for y in raw.arm(treatment).values),
-        winsor_control_n=len(raw.arm(control).values),
-        winsor_treatment_n=len(raw.arm(treatment).values),
-    )
+        "null_lift": null_lift,
+        "null_abs": null_abs,
+        "preferred_direction": preferred_direction,
+        "analysis_population": raw.population,
+        "winsor_upper_percentile": raw.quantile,
+        "winsor_upper_bound": cutoff,
+        "winsor_control_n_lower": 0,
+        "winsor_treatment_n_lower": 0,
+        "winsor_control_n_upper": _count_above(raw.arm(control).values, cutoff),
+        "winsor_treatment_n_upper": _count_above(raw.arm(treatment).values, cutoff),
+        "winsor_control_n": len(raw.arm(control).values),
+        "winsor_treatment_n": len(raw.arm(treatment).values),
+    }
+    return LiftEstimate.model_validate(row, context=validation_context)
+
+
+def _count_above(values: tuple[float, ...], cutoff: float) -> int:
+    return int(np.count_nonzero(np.fromiter(values, dtype=np.float64, count=len(values)) > cutoff))

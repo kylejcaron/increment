@@ -244,22 +244,29 @@ metrics:
 
 For heavy-tailed mean outcomes, add `winsorization` to the mean metric. Its
 typed `inference` specification persists through frame construction, native
-definitions, artifact context, and result JSON. Positive percentile inference
-defaults to `positive-log-kernel-bootstrap-t-v1`; explicit
+definitions, artifact context, and result JSON. Percentile inference defaults
+to `pooled-size-route-v1`, which runs `influence-normal-v1` on pools of at
+least 20,000 units with an expected `N (1 - q)` of at least 100 above the cutoff
+and `positive-log-kernel-bootstrap-t-v1` otherwise; the executed method is
+recorded on the confidence set and its reference. Explicit
 `joint-rank-projection-v1` retains the uniform rank method. Method choice and
-seed/stream must be set before examining inferential results. The bootstrap's
-typed public status is `experimental`, and its persisted qualification is
-`pointwise_asymptotic_model_conditioned_v1`: a pointwise asymptotic candidate
-under its iid positive smooth-density model, not a universal finite-sample or
-heterogeneous-effect claim.
+seed/stream must be set before examining inferential results. Every method's
+typed public status is `experimental`. The bootstrap's persisted qualification
+is `pointwise_asymptotic_model_conditioned_v1`, the influence interval's is
+`pointwise_asymptotic_influence_v1`, and a routed request carries
+`pointwise_asymptotic_size_routed_v1`: pointwise asymptotic candidates under an
+iid nonnegative smooth-positive-density model, not universal finite-sample or
+heterogeneous-effect claims.
 The full historical calibration manifest remains unresolved. It records 12
 known alternative variance failures plus contamination width-failure evidence;
 bounded normal/binomial diagnostics do not turn these into passes. An experimental
 inference specification reports its descriptive confidence set and withholds decision
 evidence (`evidence.experimental_reference`). The rank
-method's qualification is `uniform_support_conditioned_v1`; it permits zeros
-and requires externally justified support. Bootstrap requires strictly positive
-outcomes. Percentile cutoffs are pooled across all eligible arms before the
+method's qualification is `uniform_support_conditioned_v1` and it requires
+externally justified support. Zero outcomes are accepted by every method; the
+bootstrap and influence constructions require the percentile to sit above the
+pooled zero share and refuse otherwise (`estimation.winsor.cutoff_in_zero_atom`).
+Percentile cutoffs are pooled across all eligible arms before the
 transformed per-unit values are aggregated. Fixed values use the declared cap
 directly. The same cutoff is applied to every arm, and the estimate concerns the
 capped outcome.

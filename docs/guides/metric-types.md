@@ -54,10 +54,6 @@ those values with sum semantics before winsorization.
   aggregation: sum
   winsorization:
     upper_percentile: 0.99
-    inference: {method: joint-rank-projection-v1}
-    support:
-      lower: 0
-      provenance: "Revenue is nonnegative by the measurement definition"
 ```
 
 ```python
@@ -81,39 +77,87 @@ adjustment.
 Winsorization is not supported for conversion, retention, ratio, quantile,
 active, or sitewide metrics. Daily, as-of, and cohort readouts are refused.
 For a single upper percentile, randomized fixed-horizon two-sided unit
-inference defaults to `positive-log-kernel-bootstrap-t-v1`. This full-procedure
-bootstrap uses 1,999 fixed-count resamples from an arm-specific log-kernel
-pilot, recomputing the pooled cutoff, means, density and full influence
-studentization in every replicate. It requires strictly positive outcomes,
-nondegenerate log variances, independent iid arms, and a smooth positive
-population cutoff. Its public qualification is
+inference defaults to `pooled-size-route-v1`, a provisional size route between
+two constructions of the same estimand. Pools of at least 20,000 units whose
+expected count above the cutoff, `N (1 - q)`, is at least 100 run
+`influence-normal-v1`; every smaller request runs
+`positive-log-kernel-bootstrap-t-v1`. The method that ran is recorded as
+`confidence_set.method` (and on `confidence_set.reference.method`); the request
+keeps the route literal in `confidence_set.raw.inference.method`. The thresholds
+are provisional pending the zero-inflated calibration campaign across the route
+boundary (tracked as `1e0h`); either construction can also be requested
+explicitly through `inference: {method: ...}`.
+
+Outcomes may be zero. The log-kernel pilot acts on each arm's positive
+outcomes and resamples the arm's zeros with the same probability as any
+positive value, so the estimated zero share, the estimated cutoff and their
+cross term are part of every interval. On strictly positive outcomes the
+construction is identical to the earlier positive-only method, root for root.
+The pooled cutoff must sit above the zero atom: with pooled zero share `pi`,
+`upper_percentile` must exceed `pi`, and the p`q` of all units is then the
+`(q - pi) / (1 - pi)` quantile of the positive outcomes (p99 at 90 % zeros is p90
+of purchasers). A request whose type-7 cutoff has a zero as its lower neighbour
+(the pooled quantile sits in the atom, or interpolates between zero and the
+smallest positive outcome) refuses with
+`estimation.winsor.cutoff_in_zero_atom`; raise `upper_percentile` or use a fixed
+`upper_value`. Negative outcomes refuse with
+`estimation.winsor.pilot_negative_outcome`; an arm with fewer than two positive
+outcomes (including an all-zero arm) refuses with
+`estimation.winsor.pilot_degenerate`. Close to the atom (zero share just below
+`upper_percentile`) bootstrap replicates whose resampled cutoff lands on a zero
+are failed roots, and the interval is reported unavailable with reason
+`bootstrap_replicate_failure` rather than approximated.
+
+`positive-log-kernel-bootstrap-t-v1` is a full-procedure bootstrap-t: 1,999
+fixed-count resamples from the arm-specific pilot, recomputing the pooled
+cutoff, means, density and full influence studentization in every replicate.
+It requires nondegenerate positive log variances, independent iid arms, and a
+smooth positive population cutoff. Its public qualification is
 `pointwise_asymptotic_model_conditioned_v1`: it is an experimental candidate
 for specified populations, not a universal finite-sample or heterogeneous-
 effects guarantee. Calibration remains unresolved for the preserved stress
 grid, including 12 alternative rows with known clipped-variance failures and
 the contamination width failure evidence; these rows remain unavailable
-evidence, not passes. The typed public status is `experimental`: the descriptive
+evidence, not passes. No external upper-tail bound is required.
+
+`influence-normal-v1` is the analytic influence-function interval: one pooled
+cutoff, clipped means, the same positive-part log-kernel density at the cutoff
+scaled by each arm's positive share, and the centred empirical influence
+variance over every pool arm (estimated cutoff, estimated zero shares and the
+cross term included), closed with normal quantiles on the log-ratio and
+difference scales. It costs one partition and one density pass: the estimate
+takes 0.002 s for two arms of 10,000 and 0.2 s for two arms of 1,000,000 with
+90 % zeros (0.5 s with 50 % zeros), against 1.1 s and minutes for the bootstrap;
+a public readout at that size spends a further few seconds on raw-outcome
+capture and the per-unit evidence digest. Its qualification is
+`pointwise_asymptotic_influence_v1`: a first-order normal approximation that
+drops the bootstrap-t refinement, which is why the route reserves it for large
+pools with a populated upper tail. A size-routed request carries
+`pointwise_asymptotic_size_routed_v1` until the pool resolves it.
+
+The typed public status of every method is `experimental`: the descriptive
 confidence set is reported and decision evidence is withheld
-(`evidence.experimental_reference`), as described below. No
-external upper-tail bound is required.
+(`evidence.experimental_reference`), as described below.
 Select `inference: {method: joint-rank-projection-v1}` for the optional
 uniform rank confidence set. That method requires an explicit finite lower
-support declaration justified independently of the sample. It permits zeros,
-so the revenue example above selects it explicitly. Certified Decimal rank
-calibration supports at most 64 units in each pool arm; larger arms refuse
+support declaration justified independently of the sample. Certified Decimal
+rank calibration supports at most 64 units in each pool arm; larger arms refuse
 before calibration with `estimation.winsor.rank_size_unsupported`. This limit
 binds computation and is not a statistical sample-size requirement. It does not
-apply to the bootstrap method.
+apply to the bootstrap or influence methods.
 All arms contribute to the allocation-weighted cutoff, including arms outside
-the reported contrast. Clustered, adjusted, sequential, observational,
-breakout, factor, and lower-percentile inference remain unsupported.
-`run()` supports the fixed-horizon, two-sided independent-unit path when the
-source preserves raw outcomes; transformed moments alone cannot reconstruct
-cutoff uncertainty. Sequential, observational, clustered and segmented requests
-continue to refuse before estimation.
-Both persisted inference methods currently carry `status="experimental"`.
-Their descriptive confidence sets remain available, but neither supplies
-decision or family-selection evidence.
+the reported contrast. Clustered, CUPED-adjusted, prior-weighted, sequential,
+observational, breakout, factor, one-sided and lower-percentile inference refuse
+before estimation with `readout.metric.percentile_winsorization` (sequential
+requests with `sequential.transform.unpredictable` at source construction),
+whichever winsor method the request names; ratio metrics cannot declare
+winsorization. Multiplicity roles are unaffected: experimental rows carry no
+decision evidence into a family. `run()` supports the fixed-horizon, two-sided
+independent-unit path when the source preserves raw outcomes; transformed
+moments alone cannot reconstruct cutoff uncertainty.
+Every persisted inference method carries `status="experimental"`. Their
+descriptive confidence sets remain available, but none supplies decision or
+family-selection evidence.
 
 `source.unit_frame(metric, outcome_stage="raw")` returns the exact outcomes
 after missingness handling and before winsorization. The default remains
@@ -143,14 +187,16 @@ portion after this identity check.
 `status` equal to `finite`, `unbounded`, or `undefined`. Nonfinite endpoints
 have numeric `value=None` and an explicit reason. Use these endpoints even
 when the empirical point is undefined. The discriminated `.reference` stores
-either rank error allocations or the bootstrap pilot, explicit RNG seed/stream,
-centering targets, SEs, and all roots (including failed roots). `.cutoff` is a
-confidence region only for rank inference; bootstrap cutoff diagnostics live
-in the bootstrap reference. `reintervalize(alpha)` uses the stored roots without
-reading or rerandomizing. Tails finer than `2/2000` are unresolved, and any
-failed root makes the interval unavailable. `p_value()` inverts the stored
-bootstrap effect test; rank inference retains its coarse single-level test.
-Posterior probabilities remain unavailable.
+rank error allocations, the bootstrap pilot (positive log centres and the
+arm's zero count), explicit RNG seed/stream, centering targets, SEs and all
+roots (including failed roots), or the influence reference's cutoff,
+cutoff-scaled pooled density and both standard errors. `.cutoff` is a confidence region only for
+rank inference; bootstrap cutoff diagnostics live in the bootstrap reference.
+`reintervalize(alpha)` uses the stored roots or standard errors without
+reading or rerandomizing. Bootstrap tails finer than `2/2000` are unresolved,
+and any failed root makes the interval unavailable. `p_value()` inverts the
+stored bootstrap effect test or the normal pivot of the influence reference;
+rank inference retains its coarse single-level test.
 
 `WinsorInferenceSpec(seed=1729, stream=0)` records the default PCG64DXSM stream.
 Prespecify distinct stream ordinals for repeated datasets, independently of

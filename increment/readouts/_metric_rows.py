@@ -31,12 +31,14 @@ def _frame_digest_and_arms(frame):
     from increment.estimation.readout_types import StreamingDigest
 
     digest = StreamingDigest()
-    arms = set()
-    for row in frame.iter_rows(named=True):
-        digest.update(row)
-        group_id = row.get("group_id")
-        if group_id is not None:
-            arms.add(str(group_id))
+    digest.update_rows(frame.iter_rows(named=True))
+    arms: set[str] = set()
+    if "group_id" in frame.columns:
+        arms = {
+            str(group_id)
+            for group_id in frame.get_column("group_id").to_list()
+            if group_id is not None
+        }
     return frozenset(arms), digest.hexdigest(), digest.count
 
 
@@ -94,17 +96,15 @@ def _load_metric_rows(
                 evidence_count=evidence_count,
             )
         raw = _raw_state_from_source(src, metric, native=native)
-        references = {}
-        if raw.inference.method == "positive-log-kernel-bootstrap-t-v1":
-            from increment.estimation._winsor_bootstrap import full_procedure_bootstrap_reference
+        from increment.estimation.winsor import build_winsor_references
 
-            references = {
-                (metric.name, arm.group_id): full_procedure_bootstrap_reference(
-                    raw, control_group, arm.group_id
-                )
-                for arm in raw.arms
-                if arm.group_id != control_group
-            }
+        treatments = tuple(arm.group_id for arm in raw.arms if arm.group_id != control_group)
+        references = {
+            (metric.name, treatment): reference
+            for treatment, reference in build_winsor_references(
+                raw, control_group, treatments
+            ).items()
+        }
         observed = frozenset(a.group_id for a in raw.arms)
         # Keep the immutable raw state with the loaded evidence so repeated
         # family passes reinvert without fetching or changing the cutoff pool.
