@@ -128,6 +128,7 @@ from increment.sources import (
     MomentSource,
     SourceContext,
     SourceOperation,
+    _health_snapshot_id,
 )
 
 __all__ = ["Analysis", "fit_predeclared_adjustment"]
@@ -1716,31 +1717,8 @@ class Analysis:
         )
 
     def _health_snapshot_id(self, checks: Sequence[HealthCheck]) -> str | None:
-        from hashlib import sha256
-        from math import isfinite
-
-        from increment._canonical import canonical_json_bytes
-        from increment._source_identity import source_identity
-
-        def hash_safe(value: object) -> object:
-            if isinstance(value, float) and not isfinite(value):
-                marker = "nan" if value != value else ("inf" if value > 0 else "-inf")
-                return {"$nonfinite_float": marker}
-            if isinstance(value, Mapping):
-                return {str(key): hash_safe(item) for key, item in value.items()}
-            if isinstance(value, (list, tuple)):
-                return [hash_safe(item) for item in value]
-            return value
-
         evidence = [check.model_dump(mode="json") for check in checks]
-        fingerprint = hash_safe(
-            {
-                "source": source_identity(self._src),
-                "cutoff": self._health_cutoff(),
-                "health_evidence": evidence,
-            }
-        )
-        return "sha256:" + sha256(canonical_json_bytes(fingerprint)).hexdigest()
+        return _health_snapshot_id(self._src, self._health_cutoff(), evidence)
 
     def _health_cutoff(self) -> str | None:
         if isinstance(self._src, TriggeredHealthEvidenceOperation):

@@ -15,9 +15,14 @@ from numbers import Integral, Real
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
+from increment._canonical import canonical_json_bytes
 from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
 from increment._moment_plan import X_SLOT_ROLES
-from increment._source_identity import source_identities_equal, source_identity_is_canonical
+from increment._source_identity import (
+    source_identities_equal,
+    source_identity,
+    source_identity_is_canonical,
+)
 from increment._source_types import (
     ComplianceArm,
     ComplianceSummary,
@@ -42,6 +47,32 @@ from increment.errors import (
     refuse as _refuse,
 )
 from increment.sequential_source import SequentialSourceMixin
+
+
+def _health_snapshot_id(source: Any, cutoff: str | None, health_evidence: object) -> str:
+    """Fingerprint health evidence together with its source identity and cutoff."""
+    from hashlib import sha256
+    from math import isfinite
+
+    def hash_safe(value: object) -> object:
+        if isinstance(value, float) and not isfinite(value):
+            marker = "nan" if value != value else ("inf" if value > 0 else "-inf")
+            return {"$nonfinite_float": marker}
+        if isinstance(value, Mapping):
+            return {str(key): hash_safe(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [hash_safe(item) for item in value]
+        return value
+
+    fingerprint = hash_safe(
+        {
+            "source": source_identity(source),
+            "cutoff": cutoff,
+            "health_evidence": health_evidence,
+        }
+    )
+    return "sha256:" + sha256(canonical_json_bytes(fingerprint)).hexdigest()
+
 
 _WINSOR_METADATA_MISSING = _RefusalSpec(
     "moments.winsorization.metadata_missing",

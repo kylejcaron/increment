@@ -689,3 +689,32 @@ def test_health_missing_assignment_scheme_suggests_supported_routes() -> None:
     route = str(assigned.context["route"])
     assert "allocation_scheme='independent'" in route
     assert "Analysis.srm(inference='fixed')" in route
+
+
+def test_health_snapshot_fingerprint_canonicalizes_nonfinite_evidence() -> None:
+    import hashlib
+    from types import SimpleNamespace
+
+    from increment._canonical import canonical_json_bytes
+    from increment.sources import _health_snapshot_id
+
+    source = SimpleNamespace(_source_identity_record={"artifact": "stable"})
+    evidence = [{"rate": float("inf"), "values": [float("nan"), float("-inf")]}]
+    expected = {
+        "source": {"artifact": "stable"},
+        "cutoff": "2024-01-16T00:00:00+00:00",
+        "health_evidence": [
+            {
+                "rate": {"$nonfinite_float": "inf"},
+                "values": [
+                    {"$nonfinite_float": "nan"},
+                    {"$nonfinite_float": "-inf"},
+                ],
+            }
+        ],
+    }
+
+    assert (
+        _health_snapshot_id(source, "2024-01-16T00:00:00+00:00", evidence)
+        == "sha256:" + hashlib.sha256(canonical_json_bytes(expected)).hexdigest()
+    )
