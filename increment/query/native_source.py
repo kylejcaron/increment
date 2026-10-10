@@ -2978,15 +2978,15 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         for the wire-format contract.
 
         Fixed-horizon exports carry ``group_summary`` rows, or one metric-free
-        ``design_summary`` envelope, stamped ``moments_format=11`` with the
+        ``design_summary`` envelope, stamped ``moments_format=12`` with the
         originating source identity. Registered sequential exports carry one
         typed ``sequential_checkpoint`` envelope stamped ``moments_format=10``
-        with the same identity. The preceding fixed-horizon format 10 and
-        sequential format 9 remain readable. ``from_moments`` validates and
-        strips these transport columns before constructing its immutable
-        context. Formats 1-8 and missing or partial decision-plan payloads are
-        refused; supported inference variants and view policies round-trip
-        without fallback.
+        with the same identity. The earlier fixed-horizon formats 10 and 11
+        and sequential format 9 remain readable. ``from_moments`` validates
+        and strips these transport columns before constructing its immutable
+        context. Formats 1-8 and missing or partial
+        decision-plan payloads are refused; supported inference variants and
+        view policies round-trip without fallback.
         """
         if getattr(self.context.plan.inference, "registration", None) is not None:
             from increment.sources import export_source_moments

@@ -1068,13 +1068,16 @@ class Analysis:
         (day axis, ``panel_sql``, ``run_breakout``, ``materialize``).
 
         *rows* must carry centered ``group_summary`` columns, a fixed-horizon
-        ``moments_format=11`` stamp, integer ``n``, nullable integer
-        ``successes``, a source identity record, and a complete embedded
-        ``decision_plan`` on every fixed-horizon row. The preceding fixed
-        format 10 remains readable. Declared binary outcomes require exact
-        success counts. Sequential exports use ``moments_format=10``
-        checkpoint envelopes and a version-3 sequential wire plan; the
-        preceding sequential format 9 remains readable.
+        ``moments_format=12`` stamp, integer ``n``, nullable integer
+        ``successes``, the ratio denominator's third moment ``cden3`` on
+        every denominator row, a source identity record, and a complete
+        embedded ``decision_plan`` on every fixed-horizon row. The earlier
+        fixed formats 10 and 11 remain readable; their ratio rows predate ``cden3``,
+        so their lift rows report the denominator-skew coverage check as
+        unavailable. Declared binary outcomes require exact success counts.
+        Sequential exports use ``moments_format=10`` checkpoint envelopes
+        and a version-3 sequential wire plan; the preceding sequential
+        format 9 remains readable.
         Encouragement exports additionally carry cluster identity, member
         counts, and full bivariate uptake/size moments on every row. Supply
         the same Encouragement design when reloading; an omitted experiment_id
@@ -1082,7 +1085,7 @@ class Analysis:
         match the exported cohort. A
         cube without that state cannot provide design-level compliance.
         An empty-metric fixed-horizon Encouragement export carries one
-        complete format-11 ``design_summary`` envelope. Reload it with
+        complete format-12 ``design_summary`` envelope. Reload it with
         ``metrics=[]``; both its embedded and effective plans must remain
         fixed-horizon and metric-free, even when *plan* is supplied.
 

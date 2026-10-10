@@ -1029,7 +1029,7 @@ def _current_moment_rows(metric_type: str) -> list[dict[str, Any]]:
             **centered_row_from_raw_sums(row),
             "successes": row.get("successes"),
             **winsor,
-            "moments_format": 10,
+            "moments_format": 11,
             "decision_plan": wire,
         }
         for row in _moment_rows(metric_type)

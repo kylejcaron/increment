@@ -127,8 +127,8 @@ old record proof and reuses the parent's exact sufficient state.
 containing the version-2 registration/snapshot/checkpoint, a version-3
 compiled plan, and the originating source identity. `Analysis.from_moments`
 can replay this exact state. The preceding sequential format 9 remains
-readable; fixed-horizon format 11 carries the same source identity, while the
-preceding fixed-horizon format 10 remains readable.
+readable; fixed-horizon format 12 carries the same source identity, while the
+preceding fixed-horizon format 11 remains readable.
 
 Every rational in that envelope -- prior hyperparameters, `rho`,
 `treatment_probability`, cell `alpha` and `null_lift`, `q`, adjustment

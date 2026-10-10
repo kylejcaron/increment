@@ -85,10 +85,12 @@ from increment.estimation.sequential import (
 )
 from increment.estimation.variance import (
     RATIO_DENOMINATOR_PRECISION_THRESHOLD,
+    RATIO_DENOMINATOR_SKEW_THRESHOLD,
     VARIANCE_MODELS,
     VARIANCE_REDUCTION,
     MeanVarianceModel,
     check_positive_mean,
+    ratio_denominator_mean_skewness,
     ratio_denominator_precision,
     ratio_log_mean_se,
     ratio_moments,
@@ -215,6 +217,18 @@ _register_warning(
         f"the enrollment mix. {fix} to remove the changing-unit "
         "approximation; the plug-in standard error keeps coverage "
         "asymptotic either way."
+    ),
+)
+
+_register_warning(
+    "estimation.engine.ratio_denominator_skew",
+    IncrementRuntimeWarning,
+    lambda *, metric, arm, n, skewness, statistic, threshold: (
+        f"metric '{metric}' arm '{arm}': the denominator is too right-skewed for its sample "
+        f"size (sample skewness {skewness:.3g} over sqrt(n={n}) is {statistic:.3g}, above "
+        f"{threshold:.3g}); the delta-method interval undercovers in this region (about 92% "
+        "pooled at nominal 95% in calibration) and is reported unchanged -- add units or check "
+        "the denominator for heavy tails before deciding."
     ),
 )
 
@@ -1636,9 +1650,9 @@ def _infer_lift_result(
             },
         )
     update: dict[str, Any] = dict(_winsorization_result_fields(control, treatment))
-    if inference is None and strategy.ratio_precision_note is not None:
-        # Fixed-horizon ratio rows carry the advisory; infer_lift sets no note of its own.
-        update["note"] = strategy.ratio_precision_note
+    if inference is None and strategy.ratio_notes:
+        # Fixed-horizon ratio rows carry the advisories; infer_lift sets no note of its own.
+        update["note"] = "; ".join(strategy.ratio_notes)
     return result.model_copy(update=update), None
 
 
@@ -1672,9 +1686,10 @@ class _LiftVarianceStrategy:
     n_clusters: int | None
     absolute_moments: tuple[float, float, float, float] | None
     methods: tuple[_LiftMethodStrategy, ...]
-    # Advisory for a unit-grain ratio contrast whose denominator mean is
-    # poorly resolved; None for every other contrast.
-    ratio_precision_note: str | None
+    # Advisories for a fixed-horizon unit-grain ratio contrast: the
+    # denominator-precision note, then the denominator-skew coverage note or
+    # its unavailability; empty for every other contrast.
+    ratio_notes: tuple[str, ...]
 
 
 def _prepare_lift_estimation(
@@ -1794,8 +1809,16 @@ def _select_lift_variance_strategy(
     control_group: str,
     cluster: str | None,
     method_strategies: tuple[_LiftMethodStrategy, ...],
+    *,
+    fixed_horizon: bool,
 ) -> _LiftVarianceStrategy:
-    """Resolve one contrast's grain, capability, and hoisted moments."""
+    """Resolve one contrast's grain, capability, hoisted moments and ratio advisories.
+
+    The ratio advisories are evaluated for a fixed-horizon unit-grain ratio
+    contrast only: the denominator-skew region was measured for the
+    single-look interval, and a clustered row's denominator is a cluster
+    total whose skew/count regime is not the measured one.
+    """
     dof: float | None = None
     n_clusters: int | None = None
     if cluster is not None:
@@ -1844,6 +1867,16 @@ def _select_lift_variance_strategy(
         abs_t, abs_se_t = _ratio_abs_diff_se(treatment)
         abs_c, abs_se_c = _ratio_abs_diff_se(control)
         absolute_moments = (abs_t, abs_se_t, abs_c, abs_se_c)
+    ratio_notes: tuple[str, ...] = ()
+    if fixed_horizon and cluster is None and metric_type == "ratio":
+        ratio_notes = tuple(
+            note
+            for note in (
+                _ratio_denominator_precision_note(treatment, control),
+                _ratio_denominator_skew_note(treatment, control),
+            )
+            if note is not None
+        )
     return _LiftVarianceStrategy(
         variance_model=variance_model,
         metric_type=metric_type,
@@ -1851,11 +1884,7 @@ def _select_lift_variance_strategy(
         n_clusters=n_clusters,
         absolute_moments=absolute_moments,
         methods=method_strategies,
-        ratio_precision_note=(
-            _ratio_denominator_precision_note(treatment, control)
-            if cluster is None and metric_type == "ratio"
-            else None
-        ),
+        ratio_notes=ratio_notes,
     )
 
 
@@ -1874,8 +1903,75 @@ def _ratio_denominator_precision_note(treatment: ArmStats, control: ArmStats) ->
         "ratio_denominator_precision: the denominator is too noisy at this sample size for "
         "the interval to hold its stated level (relative standard error of the denominator mean "
         f"{', '.join(flagged)} exceeds {RATIO_DENOMINATOR_PRECISION_THRESHOLD:.3g}). Expect "
-        "under-coverage; add units or check the denominator for heavy tails before deciding."
+        "under-coverage; add units or check the denominator for heavy tails before deciding"
     )
+
+
+def _ratio_denominator_skew_note(treatment: ArmStats, control: ArmStats) -> str | None:
+    """Coverage advisory for a ratio contrast whose denominator mean is skewed
+    beyond the measured under-covering region in either arm.
+
+    An arm whose third moment overflowed or is inconsistent with its second cannot be
+    checked; the note reports that gap while valid moments in the other arm are still
+    checked. The estimate proceeds in either case.
+    """
+    unavailable = [
+        (arm.group_id, arm.skew_den_unavailable())
+        for arm in (treatment, control)
+        if arm.skew_den_unavailable() is not None
+    ]
+    reasons = []
+    missing = [group_id for group_id, reason in unavailable if reason == "missing"]
+    inconsistent = [group_id for group_id, reason in unavailable if reason == "inconsistent"]
+    if missing:
+        reasons.append(
+            f"the moments for {', '.join(missing)} do not carry the denominator's third moment "
+            "(cden3)"
+        )
+    if inconsistent:
+        reasons.append(
+            f"the third moment for {', '.join(inconsistent)} is non-finite or inconsistent "
+            "with the second (overflowed or mis-aggregated upstream)"
+        )
+    unavailable_note = (
+        "ratio_denominator_skew: unavailable -- "
+        + "; ".join(reasons)
+        + ", so those arms could not be checked"
+        if reasons
+        else None
+    )
+    flagged: list[str] = []
+    unavailable_groups = {group_id for group_id, _reason in unavailable}
+    for arm in (treatment, control):
+        if arm.group_id in unavailable_groups:
+            continue
+        statistic = ratio_denominator_mean_skewness(arm)
+        if statistic <= RATIO_DENOMINATOR_SKEW_THRESHOLD:
+            continue
+        skewness = arm.skew_den()
+        flagged.append(f"{arm.group_id}={statistic:.3g} (skewness {skewness:.3g}, n={arm.n})")
+        _warn(
+            "estimation.engine.ratio_denominator_skew",
+            metric=arm.metric,
+            arm=arm.group_id,
+            n=arm.n,
+            skewness=skewness,
+            statistic=statistic,
+            threshold=RATIO_DENOMINATOR_SKEW_THRESHOLD,
+            skip_file_prefixes=PACKAGE_FRAMES,
+        )
+    warning_note = None
+    if flagged:
+        warning_note = (
+            "ratio_denominator_skew: the denominator is too right-skewed for its sample size for "
+            "the interval to hold its stated level (standardized skewness of the denominator mean "
+            f"{', '.join(flagged)} exceeds {RATIO_DENOMINATOR_SKEW_THRESHOLD:.3g}; about 92% "
+            "pooled coverage at nominal 95% in calibration). The estimate and interval are "
+            "reported unchanged; add units or check the denominator for heavy tails before deciding"
+        )
+    if unavailable_note and warning_note:
+        return f"{warning_note}; {unavailable_note}"
+    return warning_note or unavailable_note
 
 
 def _binomial_eligible(
@@ -2876,14 +2972,21 @@ def estimate_lift(  # noqa: PLR0913
     metadata, so population is never inferred from them.
 
     Ratio metrics use a first-order delta-method SE (``RatioVarianceModel``):
-    under a heavily right-skewed denominator the interval undercovers at
-    small n (see that class). The carried moments cannot reveal skew, but
-    they do reveal how precisely each arm's denominator mean is resolved:
-    a fixed-horizon unit-grain ratio row whose arm exceeds
+    under a heavily right-skewed denominator the interval undercovers (see
+    that class). A fixed-horizon unit-grain ratio row is checked against the
+    measured region on each arm's denominator moments. An arm whose
+    denominator-mean skewness ``ratio_denominator_mean_skewness`` exceeds
+    ``RATIO_DENOMINATOR_SKEW_THRESHOLD`` raises the coded
+    ``estimation.engine.ratio_denominator_skew`` warning (context: metric,
+    arm, n, skewness, statistic, threshold) and the row carries a
+    ``ratio_denominator_skew`` note naming each flagged arm; a row whose
+    moments lack the denominator's third moment carries the note's
+    unavailability instead of passing silently. An arm exceeding
     ``RATIO_DENOMINATOR_PRECISION_THRESHOLD`` on ``ratio_denominator_precision``
-    carries a ``ratio_denominator_precision`` note naming the arm, the
-    statistic and the threshold. The note is advisory: the interval is
-    reported unchanged.
+    additionally carries the ``ratio_denominator_precision`` note. Both are
+    advisory: the estimate and interval are reported unchanged. Sequential
+    and clustered ratio rows carry neither (the region was measured for
+    the single-look unit-grain interval).
 
     An unadjusted, unclustered, fixed-horizon conversion or retention row
     takes the route ``Method.conversion_inference`` selects whether or not
@@ -3136,6 +3239,7 @@ def _estimate_lift(  # noqa: PLR0913
             control_group,
             cluster,
             method_strategies,
+            fixed_horizon=inference is None,
         )
         metric_type = prepared.metric_types[treatment.metric]
         for method_strategy in strategy.methods:

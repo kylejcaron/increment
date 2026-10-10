@@ -71,30 +71,36 @@ writer:
 
 | Format | Written by | Read by `from_moments` |
 |---|---|---|
-| 11 | fixed-horizon `export`, with source identity and exact counts | yes |
-| 10 | preceding fixed-horizon export, or current sequential checkpoint export | yes |
+| 12 | fixed-horizon `export`, with source identity, exact counts and the ratio denominator's third moment `cden3` | yes |
+| 11 | preceding fixed-horizon export, with source identity and exact counts | yes; a ratio row loads with its denominator-skew coverage check unavailable |
+| 10 | earlier fixed-horizon export, or current sequential checkpoint export | yes; a fixed-horizon ratio row loads with its denominator-skew coverage check unavailable |
 | 9 | preceding sequential checkpoint export | yes |
 | below 9 | no longer written | refused, `moments.format.unsupported_legacy` |
-| above 11 | not written by this release | refused, `moments.format.unsupported_future` |
+| above 12 | not written by this release | refused, `moments.format.unsupported_future` |
 
 A cube must use one format (`moments.format.mixed`) and repeat no
 `(metric, group_id)` row (`moments.rows.duplicate`). Fixed and sequential
 formats are distinguished by their typed record envelope; fixed-horizon
-format 10 and sequential format 9 remain readable. Every row stamped below 9,
+formats 10 and 11 and sequential format 9 remain readable. Every row stamped below 9,
 including each row of a sequential analysis written as format 8, is refused
 with `moments.format.unsupported_legacy` before any plan is read. A checkpoint
 envelope restamped below the preceding sequential format reaches
 `sequential.continuation.legacy`: a checkpoint resumes only from a supported
 sequential format. Re-export from the raw definitions with the current release,
 or pin the release that wrote the file. Nothing is downgraded or filled in silently.
-Current fixed-horizon format 11 and sequential format 10 exports carry the
+A format-12 ratio row without `cden3` is refused with
+`moments.denominator_third_moment_missing`; format-10 and format-11 ratio rows carry no
+`cden3`, and every lift row estimated from them says the denominator-skew
+coverage check was unavailable instead of passing silently.
+Fixed-horizon formats 11 and 12 and sequential format 10 exports carry the
 originating source identity. `from_moments` restores that identity instead
 of deriving a new one from the replay object's default study name. The
 snapshot identity remains based on the canonical request, pinned evidence and
 source identity, and integer sufficient statistics—not floating aggregates.
-Older fixed-horizon format 10 and sequential format 9 cubes lack that field.
-Their replay identity is conservatively namespaced by the legacy format and
-study ID because original source provenance cannot be recovered. The
+Fixed-horizon format 10 and sequential format 9 cubes lack that field, and a
+format 11 cube may be loaded without it. Their replay identity is
+conservatively namespaced by the legacy format and study ID because original
+source provenance cannot be recovered. The
 `source_identity` field is self-asserted input, not authenticated provenance.
 Every ordinary row requires integer `n >= 1` and, when present, integer
 `0 <= successes <= n`; import and export refuse invalid ranges with

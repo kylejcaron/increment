@@ -285,14 +285,15 @@ _BREAKOUT_COMPLIANCE = _RefusalSpec(
 )
 
 
-# Fixed-horizon and sequential moments wire formats have separate version
-# sequences. The source identity field was added after format 10 fixed cubes
-# and format 9 sequential checkpoints were released.
-MOMENTS_FORMAT = 11
+# Fixed and sequential moments formats have separate version sequences. Fixed
+# format 12 carries the ratio denominator's third moment ``cden3``; format 11
+# added the source identity field. Every previously readable format stays
+# readable (formats 10 and 11 load with the denominator-skew check unavailable).
+MOMENTS_FORMAT = 12
 SEQUENTIAL_MOMENTS_FORMAT = 10
-_PREVIOUS_FIXED_MOMENTS_FORMAT = 10
+_PREVIOUS_FIXED_MOMENTS_FORMATS = frozenset({10, 11})
 _PREVIOUS_SEQUENTIAL_MOMENTS_FORMAT = 9
-_SUPPORTED_FIXED_MOMENTS_FORMATS = frozenset({_PREVIOUS_FIXED_MOMENTS_FORMAT, MOMENTS_FORMAT})
+_SUPPORTED_FIXED_MOMENTS_FORMATS = _PREVIOUS_FIXED_MOMENTS_FORMATS | {MOMENTS_FORMAT}
 _SUPPORTED_SEQUENTIAL_MOMENTS_FORMATS = frozenset(
     {_PREVIOUS_SEQUENTIAL_MOMENTS_FORMAT, SEQUENTIAL_MOMENTS_FORMAT}
 )
@@ -303,10 +304,7 @@ SOURCE_IDENTITY_FIELD = "source_identity"
 
 
 def _legacy_moments_source_identity(version: int, study_id: str) -> dict[str, object] | None:
-    if version not in {
-        _PREVIOUS_FIXED_MOMENTS_FORMAT,
-        _PREVIOUS_SEQUENTIAL_MOMENTS_FORMAT,
-    }:
+    if version not in _PREVIOUS_FIXED_MOMENTS_FORMATS | {_PREVIOUS_SEQUENTIAL_MOMENTS_FORMAT}:
         return None
     return {
         "legacy_moments_format": version,
@@ -356,6 +354,11 @@ _MOMENTS_COUNT_FIELD_MISSING = _RefusalSpec(
     "moments.count_field_missing",
     _WireFormatError,
     template="current moments rows require {field!r}; re-export from the original data",
+)
+_MOMENTS_DENOMINATOR_THIRD_MOMENT_MISSING = _RefusalSpec(
+    "moments.denominator_third_moment_missing",
+    _WireFormatError,
+    template="moments_format {version} denominator rows require the 'cden3' field; row (metric={metric!r}, group_id={group_id!r}) omits that field. Re-export from the original data, or keep the file at the format that wrote it.",
 )
 _MOMENTS_COUNT_NOT_INTEGER = _RefusalSpec(
     "moments.count_not_integer",
@@ -474,6 +477,16 @@ def _parse_moments_format(stamp: object, *, classify: bool = True) -> int:
         if version > max(_SUPPORTED_MOMENTS_FORMATS):
             _refuse(_MOMENTS_FORMAT_FUTURE, received=version, required=MOMENTS_FORMAT)
     return version
+
+
+def _refuse_unsupported_fixed_format(version: int) -> NoReturn:
+    """A fixed-horizon row stamped outside the supported fixed formats: a
+    later one is future, anything else (a sequential-only stamp on a fixed
+    row) is invalid; stamps below every supported format were already
+    classified legacy."""
+    if version > MOMENTS_FORMAT:
+        _refuse(_MOMENTS_FORMAT_FUTURE, received=version, required=MOMENTS_FORMAT)
+    _refuse(_MOMENTS_FORMAT_INVALID, received=version, required=MOMENTS_FORMAT)
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -619,6 +632,30 @@ def _validate_moment_counts(row: Mapping[str, object]) -> None:
             _refuse(_MOMENTS_COUNT_OUT_OF_RANGE, field=field, value=count, n=int(n))
 
 
+def _validate_moment_row(row: Mapping[str, object], version: int) -> None:
+    """Count and current-format field checks for one ordinary moments row."""
+    _validate_moment_counts(row)
+    _validate_denominator_third_moment(row, version)
+
+
+def _validate_denominator_third_moment(row: Mapping[str, object], version: int) -> None:
+    """A current-format denominator row carries ``cden3``; the previous format
+    predates it and loads with the ratio coverage check unavailable."""
+    if version != MOMENTS_FORMAT or _is_null(row.get("ref_den")):
+        return
+    if "cden3" not in row:
+        _refuse(
+            _MOMENTS_DENOMINATOR_THIRD_MOMENT_MISSING,
+            version=version,
+            metric=row.get("metric"),
+            group_id=row.get("group_id"),
+        )
+
+
+def _is_null(value: object) -> bool:
+    return value is None or (isinstance(value, float) and math.isnan(value))
+
+
 def _parse_source_identity(payload: object) -> dict[str, object] | None:
     if payload is None:
         return None
@@ -682,9 +719,7 @@ def _strip_moments_envelope_row(row, row_count, *, require_source_identity: bool
     sequential_checkpoint = kind == "sequential_checkpoint"
     if kind == "design_summary":
         if version not in _SUPPORTED_FIXED_MOMENTS_FORMATS:
-            if version > max(_SUPPORTED_MOMENTS_FORMATS):
-                _refuse(_MOMENTS_FORMAT_FUTURE, received=version, required=MOMENTS_FORMAT)
-            _refuse(_MOMENTS_FORMAT_INVALID, received=version, required=MOMENTS_FORMAT)
+            _refuse_unsupported_fixed_format(version)
         if version == MOMENTS_FORMAT and require_source_identity and source_identity is None:
             _refuse(
                 _MOMENTS_FORMAT_INVALID,
@@ -825,7 +860,7 @@ def _check_moments_format(
     _parse_moments_format(version)
     sequential_checkpoint = next(iter(sequential_rows), False)
     if not sequential_checkpoint and version not in _SUPPORTED_FIXED_MOMENTS_FORMATS:
-        _refuse(_MOMENTS_FORMAT_INVALID, received=version, required=MOMENTS_FORMAT)
+        _refuse_unsupported_fixed_format(version)
     _validate_moments_plan_format_pair(plans, sequential_checkpoint=sequential_checkpoint)
     _validate_cube_plan_payload(
         plans,
@@ -837,7 +872,7 @@ def _check_moments_format(
     _validate_moment_experiment_identity(out)
     seen_keys: set[tuple[str, str]] = set()
     for row in out:
-        _validate_moment_counts(row)
+        _validate_moment_row(row, version)
         key = (str(row.get("metric")), str(row.get("group_id")))
         if key in seen_keys:
             _refuse(_MOMENTS_DUPLICATE_ROWS, key=key)

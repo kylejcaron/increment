@@ -75,7 +75,7 @@ def _moment_rows(**extra: object) -> list[dict[str, object]]:
         "winsor_n": None,
         "winsor_n_lower": None,
         "winsor_n_upper": None,
-        "moments_format": 10,
+        "moments_format": 11,
         **extra,
     }
     from increment.decision_wire import compiled_plan_to_json
@@ -114,7 +114,7 @@ def test_current_fixed_horizon_moments_round_trip(tmp_path):
     path = tmp_path / "current.parquet"
     original.export(path)
     payload = pq.read_table(path).to_pylist()
-    assert {row["moments_format"] for row in payload} == {11}
+    assert {row["moments_format"] for row in payload} == {12}
     replay = Analysis.from_moments(payload, metrics={"revenue": "mean"}, control="control")
     (original_row,) = original.run()
     (replay_row,) = replay.run()
@@ -148,7 +148,7 @@ def test_legacy_moments_identity_is_stable_across_reload(tmp_path):
     original.export(source_path)
     legacy_rows = [
         {key: value for key, value in row.items() if key != "source_identity"}
-        | {"moments_format": 10}
+        | {"moments_format": 11}
         for row in pq.read_table(source_path).to_pylist()
     ]
     legacy_path = tmp_path / "legacy.parquet"
@@ -381,9 +381,9 @@ def test_export_round_trips_through_from_moments(seeded_con, seeded_defs, tmp_pa
     import pyarrow.parquet as pq
 
     table = pq.read_table(p)
-    assert table.schema.metadata[b"increment.moments_format"] == b"11"
+    assert table.schema.metadata[b"increment.moments_format"] == b"12"
     rows = table.to_pylist()
-    assert {r["moments_format"] for r in rows} == {11}
+    assert {r["moments_format"] for r in rows} == {12}
     assert {r["metric"] for r in rows} == {"purchase_rate", "avg_session_duration", "d7_retention"}
 
     b = Analysis.from_moments(
@@ -749,7 +749,7 @@ def _v7_rows(experiment_id, ref_y_treatment, cy2):
         "winsor_n_lower": None,
         "winsor_n_upper": None,
         "successes": None,
-        "moments_format": 10,
+        "moments_format": 11,
         "decision_plan": plan,
     }
     return [

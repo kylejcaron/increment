@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 
 def _moment_fields() -> dict[str, object]:
     return {
-        "moments_format": 10,
+        "moments_format": 11,
         "successes": None,
         "winsor_lower_percentile": None,
         "winsor_upper_percentile": None,

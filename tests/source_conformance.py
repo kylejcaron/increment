@@ -142,7 +142,7 @@ def _format10_rows(
         result.append(
             {
                 **row,
-                "moments_format": 10,
+                "moments_format": 11,
                 "decision_plan": wire,
                 **(
                     {"assignment_counts": assignment_counts}

@@ -820,19 +820,24 @@ ref distribution and store authorization are the authenticity boundary.
 
 ### Moments wire migration
 
-`Analysis.from_moments` accepts centered, complete `moments_format=11`
-fixed-horizon rows, including a complete embedded `decision_plan` and source
-identity record. It also reads the preceding fixed-horizon format 10 and
-sequential checkpoint formats 9 and 10; formats above 11 are refused with
-`moments.format.unsupported_future`. Fixed-horizon formats 1–8 are refused
-with `moments.format.unsupported_legacy`. Re-export from the original
-observations, or pin the Increment revision that wrote the old cube; a cube
-alone cannot recover exact binary counts from rounded moments.
+`Analysis.from_moments` accepts centered, complete `moments_format=12`
+fixed-horizon rows, including a complete embedded `decision_plan`, source
+identity record and, on every denominator row, the ratio denominator's
+centered third moment `cden3`. It also reads the earlier fixed-horizon
+formats 10 and 11 and sequential checkpoint formats 9 and 10; formats above
+12 are refused with `moments.format.unsupported_future`. Fixed-horizon
+formats 1–8 are refused with `moments.format.unsupported_legacy`. Re-export
+from the original observations, or pin the Increment revision that wrote the
+old cube; a cube alone cannot recover exact binary counts from rounded
+moments, and a format-10 or format-11 cube cannot recover the third moment:
+its ratio rows load, and every lift row estimated from them reports the
+denominator-skew coverage check as unavailable rather than passing silently.
 `from_moments` is separate from the unit-day artifact boundary.
-Legacy fixed-horizon format 10 and sequential format 9 lack a source identity
-field. Their replay identity includes a legacy-format namespace and study ID;
-the original provenance cannot be reconstructed. A `source_identity` embedded
-in a moments cube is self-asserted, not authenticated provenance.
+Fixed-horizon format 10 and sequential format 9 lack a source identity field,
+and a format 11 cube may be loaded without one. Their replay identity
+includes a legacy-format namespace and study ID; the original provenance
+cannot be reconstructed. A `source_identity` embedded in a moments cube is
+self-asserted, not authenticated provenance.
 
 Each ordinary row carries integer `n >= 1` and nullable integer `successes`
 between zero and `n`. Eligible unit-grain conversion and retention outcomes
