@@ -58,10 +58,33 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   tolerances, invariants, and cross-path parity. They MUST NOT pin permitted
   message wording, private structure, internal wiring, or exact bits where a
   tolerance defines the contract.
-- Start with focused validation:
+- Start with the exact regression:
   `make test TESTS=tests/file.py::test_name`.
-- Run `make check` before pushing. Reserve `make test-all` for final
-  integration or release candidates that change estimation or a wire format.
+- Then run `make test-affected BASE=<task-base-sha>` (default fast, serial);
+  use `TIER=slow` or numeric xdist (`-n 1..8`, with `--dist loadgroup`)
+  when relevant. The affected runner accepts only typed selectors/controls:
+  `-k`, `-m`, `-x`/`--maxfail`, `-q`, `-v`, `--durations`, numeric `-n`,
+  `--dist loadgroup`, `--evidence-root`, and `--runtime-diagnostics`.
+  Arbitrary pytest arguments, alternate configs, addopts/plugins environment,
+  response files, automatic/logical workers, and custom xdist transports are
+  refused. `PYTEST_XDIST_AUTO_NUM_WORKERS` does not override the numeric policy.
+  Resolve and record the task base at dispatch, reuse it across commits/resumes,
+  and use `BASE=HEAD` only for a working-tree-only comparison.
+- Affected selection reuses Tach plus filesystem guards; config,
+  dependency/plugin, conftest/shared-fixture, data, and public lazy-export
+  hazards refuse with a broader route. On source changes it also retains
+  detected dynamic-import consumer files and reports any not run by the
+  current tier/selector; changed files that themselves dynamically load
+  arbitrary paths remain refusals. A zero-selection run is rejected, and
+  successful acceptance requires owned finished evidence whose terminal
+  node IDs exactly match the selected node IDs. Affected-fast does not waive
+  slow, parity, fixture, public-smoke, docs, scientific, or full-suite gates.
+- Dispatch/resume notes record base SHA, commands, numeric/serial worker
+  allowance, remaining acceptance, and evidence location. Selection evidence
+  is tied to source, worktree/environment, and dirty inputs; changed inputs
+  require rerunning it.
+- Run `make check` before pushing. Reserve `make test-all` for final integration
+  or release candidates that change estimation or a wire format.
 - Use `make fmt` for formatting. Build documentation with `nox -s docs`, not
   bare MkDocs; the Nox session exports the notebook-backed pages first.
 

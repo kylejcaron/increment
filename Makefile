@@ -1,4 +1,4 @@
-.PHONY: install fmt lint audit-verbosity complexity complexity-diff typecheck typecheck-sync test test-fast test-slow test-parameter-recovery test-all test-versions test-examples test-doc-snippets prek check ci-local sim demo examples
+.PHONY: install fmt lint audit-verbosity complexity complexity-diff typecheck typecheck-sync test test-fast test-slow test-parameter-recovery test-all test-versions test-examples test-doc-snippets prek check ci-local sim demo examples test-affected
 
 # Loadgroup keeps modules sharing mutable filesystem paths on one worker.
 TEST_RUNNER = uv run --extra demo --extra tables --extra dashboard python -m scripts.run_test_tier
@@ -58,7 +58,13 @@ ifneq ($(strip $(TESTS)),)
 	$(TEST_RUNNER) focused $(TESTS) -x -q
 else
 	$(MAKE) test-fast
+
 endif
+
+test-affected: PYTEST_ARGS =
+test-affected:
+	@test -n "$(BASE)" || { echo 'usage: make test-affected BASE=<gitref> [TIER=fast|slow] [PYTEST_ARGS=<typed-options>]' >&2; exit 2; }
+	$(TEST_RUNNER) --affected-base "$(BASE)" "$(if $(TIER),$(TIER),fast)" -q $(PYTEST_ARGS)
 sim:
 	uv run --extra demo python -m increment.simulate --replications 200
 demo:

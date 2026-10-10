@@ -3,77 +3,27 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import ctypes
+import hashlib
 import json
 import os
+import platform
 import signal
 import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
+from importlib import metadata
 from pathlib import Path
-from typing import TYPE_CHECKING, TextIO
+from typing import NoReturn, TextIO
 
-if TYPE_CHECKING:
-    import pytest
+from scripts._test_tier_policy import TIER_MARKERS
 
 _TIMEOUT_STATUS = 124
-
-
-def pytest_addoption(parser: pytest.Parser) -> None:
-    parser.addoption("--focused-file-defaults", action="store_true")
-    parser.addoption("--focused-path-validation", action="store_true")
-
-
-def pytest_cmdline_main(config: pytest.Config) -> int | None:
-    """Refuse a focused run naming any selector that is not an existing test file."""
-    if not config.getoption("focused_path_validation"):
-        return None
-    base = config.invocation_params.dir
-    rejected = [
-        selector for selector in config.args if not (base / selector.split("::", 1)[0]).is_file()
-    ]
-    if rejected:
-        names = ", ".join(repr(selector) for selector in rejected)
-        print(
-            f"pytest: error: focused selectors must be existing test files: {names}",
-            file=sys.stderr,
-        )
-        return 4
-    return None
-
-
-def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Keep expensive tests only when their node or marker was explicitly selected."""
-    if not config.getoption("focused_file_defaults"):
-        return
-    explicit: dict[Path, list[str]] = {}
-    for selector in config.args:
-        file, separator, node = selector.partition("::")
-        if separator:
-            explicit.setdefault(Path(file).resolve(), []).append(node)
-    paths: dict[Path, Path] = {}
-    kept, deselected = [], []
-    for item in items:
-        if not any(item.get_closest_marker(mark) for mark in ("slow", "parameter_recovery")):
-            kept.append(item)
-            continue
-        if item.path not in paths:
-            paths[item.path] = item.path.resolve()
-        node = item.nodeid.partition("::")[2]
-        selected = any(
-            node == requested
-            or node.startswith(requested + "[")
-            or node.startswith(requested + "::")
-            for requested in explicit.get(paths[item.path], ())
-        )
-        (kept if selected else deselected).append(item)
-    if deselected:
-        config.hook.pytest_deselected(items=deselected)
-        items[:] = kept
 
 
 def _finalize_unfinished_evidence(
@@ -118,6 +68,305 @@ def _finalize_unfinished_evidence(
             temporary.unlink(missing_ok=True)
 
 
+def _git_output(*arguments: str, cwd: Path) -> str:
+    result = subprocess.run(
+        ["git", *arguments],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout
+
+
+def _resolved_commit(base: str, cwd: Path) -> str:
+    try:
+        return _git_output(
+            "rev-parse", "--verify", "--end-of-options", f"{base}^{{commit}}", cwd=cwd
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ValueError(f"affected base is not a resolvable commit: {base}") from error
+
+
+def _changed_paths(base: str, cwd: Path) -> tuple[list[tuple[str, str, str | None]], list[Path]]:
+    raw = _git_output("diff", "--name-status", "-z", base, "--", cwd=cwd)
+    fields = raw.split("\0")
+    changes: list[tuple[str, str, str | None]] = []
+    index = 0
+    while index < len(fields) and fields[index]:
+        status = fields[index]
+        index += 1
+        if status.startswith(("R", "C")):
+            old, new = fields[index : index + 2]
+            index += 2
+            changes.append((status, old, new))
+        else:
+            path = fields[index]
+            index += 1
+            changes.append((status, path, None))
+    untracked = _git_output("ls-files", "--others", "--exclude-standard", "-z", cwd=cwd).split("\0")
+    changes.extend(("?", path, None) for path in untracked if path)
+    paths = [cwd / name for _, old, new in changes for name in (old, new) if name]
+    return changes, paths
+
+
+def _dotted_name(node: ast.expr) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _dotted_name(node.value)
+        return f"{parent}.{node.attr}" if parent is not None else None
+    return None
+
+
+def _has_dynamic_import(tree: ast.AST) -> bool:
+    aliases: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                local = alias.asname or alias.name.partition(".")[0]
+                target = alias.name if alias.asname else alias.name.partition(".")[0]
+                aliases.setdefault(local, set()).add(target)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            for alias in node.names:
+                local = alias.asname or alias.name
+                if module == "builtins" and alias.name == "__import__":
+                    target = "__import__"
+                else:
+                    target = f"{module}.{alias.name}" if module else alias.name
+                aliases.setdefault(local, set()).add(target)
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _dotted_name(node.func)
+        if name is None:
+            continue
+        root, separator, suffix = name.partition(".")
+        targets = aliases.get(root, {root})
+        for target in targets:
+            resolved = f"{target}.{suffix}" if separator else target
+            if (
+                resolved == "__import__"
+                or resolved.endswith(".__import__")
+                or resolved == "importlib.import_module"
+                or resolved.startswith(("importlib.util.", "runpy.", "pkgutil."))
+            ):
+                return True
+    return False
+
+
+def _refusal_route(path: str, contents: bytes | None = None) -> str | None:
+    normalized = path.replace("\\", "/")
+    name = Path(normalized).name
+    if normalized.startswith(("examples/", "data/")):
+        return "make check and the relevant data/fixture validation"
+    if (
+        name == "conftest.py"
+        or normalized in {"tach.toml", "pyproject.toml", "Makefile"}
+        or normalized.startswith(("tests/_", "tests/fixtures/", "scripts/", ".github/"))
+        or Path(name).suffix.lower() in {".toml", ".ini", ".cfg", ".yaml", ".yml", ".json"}
+        or "lock" in name.lower()
+        or normalized == "increment/__init__.py"
+    ):
+        if name == "conftest.py" or normalized.startswith(("tests/_", "tests/fixtures/")):
+            return "make check (and the relevant make test-slow or make test-all fixture tier)"
+        if normalized == "increment/__init__.py":
+            return "make check and the relevant public API tests"
+        return "make check"
+    if Path(normalized).suffix != ".py":
+        return "make check and the relevant data/fixture validation"
+    if normalized.startswith("tests/") and not name.startswith("test_"):
+        return "make check and the relevant fixture-dependent test tier"
+    if contents is not None:
+        try:
+            tree = ast.parse(contents)
+        except (SyntaxError, UnicodeDecodeError):
+            return "make check (collection/import failure cannot be bounded)"
+        if _has_dynamic_import(tree):
+            return "make check and the relevant dynamic-import consumer tests"
+    return None
+
+
+def _dynamic_import_tests(cwd: Path) -> list[str]:
+    consumers = []
+    for path in sorted((cwd / "tests").rglob("*.py")):
+        try:
+            tree = ast.parse(path.read_bytes())
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            continue
+        if _has_dynamic_import(tree):
+            consumers.append(path.relative_to(cwd).as_posix())
+    return consumers
+
+
+def _environment_identity(cwd: Path) -> str:
+    digest = hashlib.sha256(f"{sys.executable}:{sys.version}:{platform.platform()}".encode())
+    installed = sorted(
+        f"{distribution.metadata.get('Name', '').casefold()}=={distribution.version}"
+        for distribution in metadata.distributions()
+    )
+    digest.update("\\0".join(installed).encode())
+    for name in ("pyproject.toml", "uv.lock"):
+        path = cwd / name
+        if path.is_file():
+            digest.update(name.encode())
+            digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def _validate_affected_evidence(
+    evidence_root: Path, *, owner_token: str, pytest_status: int
+) -> str | None:
+    """Accept only finished evidence whose terminal reports exactly match selection."""
+    owned: list[tuple[Path, dict[str, object]]] = []
+    for run in evidence_root.glob("run-*"):
+        manifest = run / "run.json"
+        try:
+            metadata = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (
+            isinstance(metadata, dict)
+            and metadata.get("validation_kind") == "affected"
+            and metadata.get("owner_token") == owner_token
+        ):
+            owned.append((run, metadata))
+    if len(owned) != 1:
+        return "incomplete: expected exactly one owner-matched affected evidence run"
+    run, metadata = owned[0]
+    if metadata.get("status") != "finished":
+        return "incomplete: affected evidence run did not finish"
+    selected = metadata.get("selected_nodeids")
+    if not isinstance(selected, list) or any(not isinstance(nodeid, str) for nodeid in selected):
+        return "incomplete: selected node IDs are missing or malformed"
+    selected_ids = set(selected)
+    if not selected_ids:
+        return "no_affected_tests" if pytest_status == 0 else "pytest_failed"
+    report_path = run / "reports.jsonl"
+    try:
+        report_lines = report_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return "incomplete: terminal report journal is missing"
+    terminal_ids: set[str] = set()
+    try:
+        for line in report_lines:
+            if not line:
+                continue
+            event = json.loads(line)
+            if not isinstance(event, dict) or event.get("event") != "report":
+                continue
+            nodeid = event.get("nodeid")
+            when = event.get("when")
+            outcome = event.get("outcome")
+            if isinstance(nodeid, str) and (
+                when == "call" or (when == "setup" and outcome in {"failed", "skipped"})
+            ):
+                terminal_ids.add(nodeid)
+    except (TypeError, ValueError):
+        return "incomplete: terminal report journal is malformed"
+    if selected_ids != terminal_ids:
+        return "incomplete: selected and terminal report node IDs do not match"
+    if pytest_status != 0:
+        return "pytest_failed"
+    return None
+
+
+def _affected_context(base: str, cwd: Path, tier: str) -> tuple[str, dict[str, object]]:
+    resolved = _resolved_commit(base, cwd)
+    changes, paths = _changed_paths(resolved, cwd)
+    refused = []
+    for status, old, new in changes:
+        if status.startswith(("R", "C")) or status == "D":
+            refused.append(f"{old}: rename/deletion impact cannot be established; run make check")
+        target = new or old
+        target_path = cwd / target
+        try:
+            contents = target_path.read_bytes() if target_path.is_file() else None
+        except OSError:
+            contents = None
+        route = _refusal_route(target, contents)
+        if route is not None:
+            refused.append(f"{target}: impact is not proven; run {route}")
+    changed_source_modules = [
+        new or old
+        for status, old, new in changes
+        if status != "D" and (new or old).endswith(".py") and not (new or old).startswith("tests/")
+    ]
+    dynamic_consumers = _dynamic_import_tests(cwd) if changed_source_modules else []
+    if refused:
+        raise ValueError("affected validation refused: " + "; ".join(sorted(set(refused))))
+    source_identity = hashlib.sha256()
+    for path in sorted(paths):
+        try:
+            relative = path.relative_to(cwd).as_posix()
+            source_identity.update(relative.encode())
+            source_identity.update(b"\0")
+            if path.is_file():
+                source_identity.update(path.read_bytes())
+            source_identity.update(b"\0")
+        except OSError:
+            pass
+    dirty_inputs = source_identity.hexdigest()
+    status = _git_output("status", "--porcelain=v1", "--untracked-files=all", cwd=cwd)
+    identity = {
+        "validation_kind": "affected",
+        "affected_base": resolved,
+        "source_revision": _git_output("rev-parse", "HEAD", cwd=cwd).strip(),
+        "worktree": str(cwd.resolve()),
+        "dirty_inputs": dirty_inputs,
+        "dirty_status": hashlib.sha256(status.encode()).hexdigest(),
+        "tier": tier,
+        "environment_id": _environment_identity(cwd),
+        "worker_allowance": "serial",
+        "retained_dynamic_consumers": dynamic_consumers,
+        "changed_paths": [path.relative_to(cwd).as_posix() for path in sorted(paths)],
+    }
+    return resolved, identity
+
+
+def _affected_environment(identity: dict[str, object]) -> dict[str, str | None]:
+    changed_paths = identity["changed_paths"]
+    retained_dynamic = identity["retained_dynamic_consumers"]
+    changed_tests = (
+        [
+            path
+            for path in changed_paths
+            if isinstance(path, str) and path.startswith("tests/") and path.endswith(".py")
+        ]
+        if isinstance(changed_paths, list)
+        else []
+    )
+    dynamic_tests = (
+        [
+            path
+            for path in retained_dynamic
+            if isinstance(path, str) and path.startswith("tests/") and path.endswith(".py")
+        ]
+        if isinstance(retained_dynamic, list)
+        else []
+    )
+    retained_tests = sorted(set(changed_tests) | set(dynamic_tests))
+    worker_allowance = identity.get("worker_allowance", "serial")
+    return {
+        "INCREMENT_AFFECTED_EVIDENCE": json.dumps(identity, sort_keys=True),
+        "INCREMENT_AFFECTED_TEST_PATHS": json.dumps(retained_tests),
+        "INCREMENT_AFFECTED_DYNAMIC_TEST_PATHS": json.dumps(dynamic_tests),
+        "INCREMENT_AFFECTED_WORKER_ALLOWANCE": str(worker_allowance),
+    }
+
+
+def _affected_runner_environment(identity: dict[str, object]) -> dict[str, str | None]:
+    environment: dict[str, str | None] = _affected_environment(identity)
+    cleared_names = {
+        name for name in os.environ if name.startswith(("PYTEST_", "COV_CORE_", "COVERAGE_"))
+    }
+    environment.update(dict.fromkeys(cleared_names))
+    environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    return environment
+
+
 @dataclass(frozen=True, slots=True)
 class Tier:
     marker: str | None
@@ -126,11 +375,8 @@ class Tier:
 
 TIERS = {
     "focused": Tier(marker="", budget_seconds=180),
-    "fast": Tier(marker=None, budget_seconds=240),
-    "slow": Tier(
-        marker="slow and not parameter_recovery and not examples",
-        budget_seconds=480,
-    ),
+    "fast": Tier(marker=TIER_MARKERS["fast"], budget_seconds=240),
+    "slow": Tier(marker=TIER_MARKERS["slow"], budget_seconds=480),
     # Supports optional pytest-split shards while retaining a local budget.
     "parameter-recovery": Tier(marker="parameter_recovery", budget_seconds=1350),
     "examples": Tier(marker="examples", budget_seconds=300),
@@ -432,6 +678,8 @@ def run_with_budget(
     heartbeat_seconds: float = 30.0,
     grace_seconds: float = 5.0,
     stream: TextIO = sys.stderr,
+    extra_env: Mapping[str, str | None] | None = None,
+    affected_evidence_root: Path | None = None,
 ) -> int:
     """Supervise ``command``; ``None`` disables its deadline, not signal cleanup."""
     started = time.monotonic()
@@ -441,12 +689,10 @@ def run_with_budget(
     forwarded = (signal.SIGINT, signal.SIGTERM)
     forwarded += (vars(signal)["SIGBREAK"],) if os.name == "nt" else ()
     original_handlers = {signum: signal.getsignal(signum) for signum in forwarded}
-
     pending_signal: int | None = None
 
     def interrupt(signum: int, _frame: object) -> None:
         nonlocal pending_signal
-        # Raising inside Popen.wait can strand its internal waitpid lock.
         if pending_signal is None:
             pending_signal = signum
 
@@ -462,10 +708,14 @@ def run_with_budget(
     startup_gate: int | None = None
     timed_out = False
     try:
-        process, windows_job, startup_gate = _start_process(
-            command,
-            env={**os.environ, "INCREMENT_EVIDENCE_OWNER": owner_token},
-        )
+        child_environment = os.environ.copy()
+        for name, value in (extra_env or {}).items():
+            if value is None:
+                child_environment.pop(name, None)
+            else:
+                child_environment[name] = value
+        child_environment["INCREMENT_EVIDENCE_OWNER"] = owner_token
+        process, windows_job, startup_gate = _start_process(command, env=child_environment)
         _raise_pending()
         if startup_gate is not None:
             os.write(startup_gate, b"1")
@@ -504,11 +754,7 @@ def run_with_budget(
                 _close_windows_job(windows_job)
             elif _group_exists(process, process.pid):
                 _stop_process_group(
-                    process,
-                    process.pid,
-                    signal.SIGTERM,
-                    grace_seconds,
-                    windows_job,
+                    process, process.pid, signal.SIGTERM, grace_seconds, windows_job
                 )
         for signum, handler in original_handlers.items():
             signal.signal(signum, handler)
@@ -522,15 +768,138 @@ def run_with_budget(
         else "process_exit"
     )
     _finalize_unfinished_evidence(command, status, owner_token, termination)
+    if affected_evidence_root is not None:
+        evidence = _validate_affected_evidence(
+            affected_evidence_root, owner_token=owner_token, pytest_status=status
+        )
+        if evidence == "no_affected_tests":
+            print("pytest: error: no affected tests were selected", file=stream)
+            return 5
+        if evidence is not None and status == 0:
+            print(f"pytest: error: affected evidence rejected ({evidence})", file=stream)
+            return 1
     return status
 
 
+def _affected_main(argv: Sequence[str]) -> int:
+    class Parser(argparse.ArgumentParser):
+        def error(self, message: str) -> NoReturn:
+            print(
+                f"pytest: error: affected runner accepts only typed options ({message})",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+
+    parser = Parser(add_help=False, allow_abbrev=False)
+    parser.add_argument("--affected-base", required=True, metavar="GITREF")
+    parser.add_argument("tier", choices=("fast", "slow"))
+    parser.add_argument("-k", "--keyword")
+    parser.add_argument("-m", "--markexpr")
+    parser.add_argument("--maxfail", type=int)
+    parser.add_argument("-x", dest="maxfail_one", action="store_true")
+    parser.add_argument("-q", dest="quiet", action="count", default=0)
+    parser.add_argument("-v", dest="verbose", action="count", default=0)
+    parser.add_argument("--durations", type=int)
+    parser.add_argument("-n", dest="workers", type=int)
+    parser.add_argument("--dist", choices=("loadgroup",))
+    parser.add_argument("--evidence-root", default=".test-evidence/affected")
+    parser.add_argument("--runtime-diagnostics", action="store_true")
+    args = parser.parse_args(argv)
+    if args.maxfail_one and args.maxfail is not None:
+        parser.error("-x and --maxfail cannot be combined")
+    if args.workers is not None and not 1 <= args.workers <= 8:
+        parser.error("-n must be a numeric worker count from 1 through 8")
+    if args.dist is not None and args.workers is None:
+        parser.error("--dist requires -n")
+    if args.runtime_diagnostics and not args.evidence_root:
+        parser.error("--runtime-diagnostics requires --evidence-root")
+    for name in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS"):
+        if os.environ.get(name):
+            print(f"pytest: error: affected runner refuses inherited {name}", file=sys.stderr)
+            return 2
+
+    try:
+        base, identity = _affected_context(args.affected_base, Path.cwd(), args.tier)
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        print(f"pytest: error: {error}", file=sys.stderr)
+        return 2
+    worker_allowance = "serial" if args.workers is None else str(args.workers)
+    identity["worker_allowance"] = worker_allowance
+    identity["worker_bound"] = args.workers
+    evidence_root = Path(args.evidence_root).resolve()
+    command = [
+        sys.executable,
+        "-m",
+        "scripts.affected_pytest_launcher",
+        "--tach-base",
+        base,
+        "--tier",
+        args.tier,
+    ]
+    if args.keyword:
+        command.extend(("-k", args.keyword))
+    if args.markexpr:
+        command.extend(("-m", args.markexpr))
+    if args.maxfail_one:
+        command.append("-x")
+    elif args.maxfail is not None:
+        command.extend(("--maxfail", str(args.maxfail)))
+    command.extend(["-q"] * args.quiet)
+    command.extend(["-v"] * args.verbose)
+    if args.durations is not None:
+        command.extend(("--durations", str(args.durations)))
+    if args.workers is not None:
+        command.extend(("-n", str(args.workers)))
+    if args.dist is not None:
+        command.extend(("--dist", args.dist))
+    command.extend(("--evidence-root", str(evidence_root)))
+    if args.runtime_diagnostics:
+        command.append("--runtime-diagnostics")
+
+    extra_env = _affected_runner_environment(identity)
+    worker_display = (
+        "serial" if worker_allowance == "serial" else f"{worker_allowance} (dist=loadgroup)"
+    )
+    print(
+        f"Affected-test validation: base={base} tier={args.tier} worker_allowance={worker_display}",
+        flush=True,
+    )
+    tier = TIERS[args.tier]
+    return run_with_budget(
+        command,
+        tier=args.tier,
+        budget_seconds=None if os.environ.get("GITHUB_ACTIONS") == "true" else tier.budget_seconds,
+        extra_env=extra_env,
+        affected_evidence_root=evidence_root,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if any(
+        argument == "--affected-base" or argument.startswith("--affected-base=")
+        for argument in arguments
+    ):
+        return _affected_main(arguments)
+
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument(
+        "--affected-base",
+        metavar="GITREF",
+        help="Select tests affected since a recorded commit (fast/slow tier only).",
+    )
     parser.add_argument("tier", choices=tuple(TIERS))
     parser.add_argument("pytest_args", nargs=argparse.REMAINDER)
-    args = parser.parse_args(argv)
+    args = parser.parse_args(arguments)
     tier = TIERS[args.tier]
+    extra_env = {
+        "INCREMENT_AFFECTED_EVIDENCE": "",
+        "INCREMENT_AFFECTED_TEST_PATHS": "[]",
+        "INCREMENT_AFFECTED_DYNAMIC_TEST_PATHS": "[]",
+        "INCREMENT_AFFECTED_WORKER_ALLOWANCE": "serial",
+    }
+    if os.environ.get("INCREMENT_AFFECTED_EVIDENCE"):
+        extra_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = None
     if args.tier == "focused":
         if not args.pytest_args:
             print(
@@ -553,13 +922,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             or argument.startswith("--markexpr=")
             for argument in args.pytest_args
         )
-        args.pytest_args[:0] = ["-p", "scripts.run_test_tier", "--focused-path-validation"]
+        args.pytest_args[:0] = [
+            "-p",
+            "scripts.run_test_tier_plugin",
+            "--focused-path-validation",
+        ]
         if not explicit_marker:
             args.pytest_args[2:2] = ["--focused-file-defaults"]
     return run_with_budget(
         build_pytest_command(tier, args.pytest_args),
         tier=args.tier,
         budget_seconds=None if os.environ.get("GITHUB_ACTIONS") == "true" else tier.budget_seconds,
+        extra_env=extra_env,
     )
 
 
