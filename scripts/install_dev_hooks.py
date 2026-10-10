@@ -139,11 +139,10 @@ def _pre_push_wrapper(native: Path, python: Path) -> str:
 def _install_pre_push_guard(hooks: Path, executable: Path, python: Path) -> None:
     hook = hooks / "pre-push"
     native = hooks / "pre-push.prek"
-    if _is_guarded_pre_push(hook, native, executable):
-        return
-    if not _is_managed_hook(hook, executable):
-        raise HookInstallError(f"expected prek-generated pre-push hook at {hook}")
-    hook.replace(native)
+    if not _is_guarded_pre_push(hook, native, executable):
+        if not _is_managed_hook(hook, executable):
+            raise HookInstallError(f"expected prek-generated pre-push hook at {hook}")
+        hook.replace(native)
     hook.write_text(_pre_push_wrapper(native, python), encoding="utf-8")
     hook.chmod(0o755)
 

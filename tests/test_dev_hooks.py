@@ -284,3 +284,42 @@ def test_main_discovers_windows_user_tool_filename(
     rejected = _run("git", "-C", str(repo), "commit", "-m", "bad", check=False)
     assert rejected.returncode != 0
     assert (repo / ".hook-ran").is_file()
+
+
+def test_reinstallation_replaces_removed_guard_interpreter(
+    tmp_path: Path, stable_tool: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable, version = stable_tool
+    repo = _repository(tmp_path / "repo", prek_version=version)
+    remote = _configure_local_remote(repo, tmp_path)
+    with tempfile.TemporaryDirectory(prefix="increment-hook-python-") as directory:
+        interpreters = []
+        for name in ("python-a", "python-b"):
+            environment = Path(directory) / name
+            _run(
+                install_dev_hooks.sys.executable,
+                "-m",
+                "venv",
+                "--without-pip",
+                "--copies",
+                str(environment),
+            )
+            # uv's macOS runtime resolves its shared library relative to the copied binary.
+            for library in (Path(install_dev_hooks.sys.base_prefix) / "lib").glob("libpython*"):
+                (environment / "lib" / library.name).symlink_to(library)
+            interpreters.append(
+                environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+            )
+        original, replacement = interpreters
+        monkeypatch.setattr(install_dev_hooks.sys, "_base_executable", str(original))
+        install_dev_hooks.install_hooks(repo, prek=executable)
+        _run("git", "-C", str(repo), "push", "--quiet", str(remote), "HEAD:refs/heads/original")
+
+        monkeypatch.setattr(install_dev_hooks.sys, "_base_executable", str(replacement))
+        install_dev_hooks.install_hooks(repo, prek=executable)
+        original.unlink()
+        _run("git", "-C", str(repo), "push", "--quiet", str(remote), "HEAD:refs/heads/replacement")
+        assert (
+            _run("git", "-C", str(remote), "rev-parse", "refs/heads/replacement").stdout
+            == _run("git", "-C", str(repo), "rev-parse", "HEAD").stdout
+        )
