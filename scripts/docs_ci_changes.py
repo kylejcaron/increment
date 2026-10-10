@@ -59,7 +59,9 @@ def _decisions(event: str, base: str, head: str, labels: str) -> tuple[bool, boo
         for path in paths
     )
     strict_docs = any(
-        path in _STRICT_ROOTS or path.startswith("docs/") or path in _STRICT_PACKAGE_FILES
+        path in _STRICT_ROOTS
+        or path.startswith(("docs/", "examples/"))
+        or path in _STRICT_PACKAGE_FILES
         for path in paths
     )
     if event == "pull_request" and _REQUIRED_LABELS.intersection(labels.split(",")):

@@ -84,6 +84,12 @@ def test_docs_only_runs_snippets_and_strict_docs(repository):
     assert _run_decision(repo, base) == {"snippets": True, "strict_docs": True}
 
 
+def test_example_changes_require_strict_docs(repository):
+    repo, base = repository
+    _change_and_commit(repo, "examples/power.py")
+    assert _run_decision(repo, base) == {"snippets": False, "strict_docs": True}
+
+
 def test_private_source_runs_snippets_without_strict_docs(repository):
     repo, base = repository
     _change_and_commit(repo, "increment/_private.py")
