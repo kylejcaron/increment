@@ -2752,7 +2752,7 @@ def test_run_declared_secondary_family_survives_a_degenerate_cell():
     assert refunds_row.abs_diff is not None
 
 
-def test_asof_warning_dedupe_resets_for_each_retry(monkeypatch):
+def test_asof_whole_retry_bypasses_captured_warning_replay(monkeypatch):
     import warnings
 
     from increment import readouts
@@ -2799,18 +2799,27 @@ def test_asof_warning_dedupe_resets_for_each_retry(monkeypatch):
         return estimate(*args, **kwargs)
 
     monkeypatch.setattr(_passes, "_estimate_lift", warn_then_estimate)
+    replay_calls = []
+    monkeypatch.setattr(
+        _passes,
+        "_emit_captured_lift_warnings",
+        lambda captured, seen: replay_calls.append((captured, seen)),
+    )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        rows = readouts.asof_lift(source)
+        first_rows = readouts.asof_lift(source)
+        second_rows = readouts.asof_lift(source)
 
-    assert {row.ds for row in rows} == {dt.date(2025, 1, 1), dt.date(2025, 1, 2)}
-    replayed = [
+    assert {row.ds for row in first_rows} == {dt.date(2025, 1, 1), dt.date(2025, 1, 2)}
+    assert {row.ds for row in second_rows} == {dt.date(2025, 1, 1), dt.date(2025, 1, 2)}
+    assert replay_calls == []
+    direct = [
         item.message
         for item in caught
         if isinstance(item.message, IncrementWarning) and item.message.code == spec.code
     ]
-    assert len(replayed) == 2
-    assert all(item.context["metric_name"] == "revenue" for item in replayed)
+    assert len(direct) == 4
+    assert all(item.context["metric_name"] == "revenue" for item in direct)
 
 
 def test_open_ended_sequential_advisory_is_keyed_per_metric_and_emission():
