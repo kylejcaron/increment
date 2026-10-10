@@ -340,7 +340,7 @@ def _testmon_is_registered(config: pytest.Config) -> bool:
 def _restore_duration_order_after_testmon(
     config: pytest.Config,
     items: list[pytest.Item],
-    markdown_order: dict[str, int] | None = None,
+    markdown_order: dict[int, int] | None = None,
 ) -> None:
     if os.environ.get("INCREMENT_DISABLE_DURATION_ORDER") == "1" or not _testmon_is_registered(
         config
@@ -411,7 +411,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             "worker_selected": None,
         }
     markdown_order = {
-        item.nodeid: index
+        id(item): index
         for index, item in enumerate(items)
         if Path(str(item.location[0])).suffix == ".md"
     }

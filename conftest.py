@@ -97,7 +97,7 @@ def _order_by_recorded_duration(
     items: list[pytest.Item],
     durations_path: Path,
     durations: dict[str, float] | None = None,
-    markdown_order: dict[str, int] | None = None,
+    markdown_order: dict[int, int] | None = None,
 ) -> None:
     """Order ordinary tests longest-first and retain Markdown source order."""
     if durations is None:
@@ -113,7 +113,7 @@ def _order_by_recorded_duration(
             key=lambda pair: (
                 _markdown_path(pair[1]) is not None,
                 (
-                    markdown_order.get(pair[1].nodeid, pair[0])
+                    markdown_order.get(id(pair[1]), pair[0])
                     if markdown_order is not None
                     else pair[0]
                 )
