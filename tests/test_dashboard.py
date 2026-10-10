@@ -519,6 +519,20 @@ def test_health_renderer_consumes_restored_health_report(
     report = ExperimentHealth(
         checks=(
             HealthCheck(
+                check="assigned_allocation",
+                analysis_population="assigned",
+                availability="unavailable",
+                code="integrity.allocation_scheme_missing",
+                context={
+                    "reason": "Assignment-law admission is not_checked_missing_declaration.",
+                    "route": (
+                        "Declare allocation_scheme='independent' on a design that uses an "
+                        "independent constant-probability draw, or use "
+                        "Analysis.srm(inference='fixed') for one predeclared look."
+                    ),
+                },
+            ),
+            HealthCheck(
                 check="trigger_rates",
                 analysis_population="triggered",
                 availability="available",
@@ -541,8 +555,9 @@ def test_health_renderer_consumes_restored_health_report(
                 context={
                     "counterfactual_trigger_invariance": "assumed, not established",
                     "trigger_order_stationarity": "assumed, not established",
-                    "triggered_look_policy": "exploratory",
-                    "family_guarantee": None,
+                    "triggered_look_policy": "outcome_independent",
+                    "family_guarantee_status": "assumed, not verified",
+                    "family_guarantee": "asymptotic_sequential",
                     "risk": ("Balanced rates do not establish trigger invariance.",),
                 },
             ),
@@ -556,8 +571,11 @@ def test_health_renderer_consumes_restored_health_report(
 
     assert "Observed trigger rate" in html
     assert "No certified completeness watermark is retained." in html
-    assert "exploratory" in html
+    assert "outcome_independent" in html
     assert "Balanced rates do not establish trigger invariance." in html
+    assert "independent constant-probability draw" in html
+    assert "one predeclared look" in html
+    assert "assumed, not verified" in html
 
 
 def test_both_experiments_share_the_same_sections(

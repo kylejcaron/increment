@@ -410,6 +410,11 @@ def _health_checks_block(report: ExperimentHealth | None) -> str:
         reason = check.context.get("reason")
         if reason is not None:
             body += f'<p class="inc-dashboard-reason">{esc(str(reason))}</p>'
+        route = check.context.get("route")
+        if route is not None:
+            body += (
+                f'<p class="inc-dashboard-note"><strong>Next step:</strong> {esc(str(route))}</p>'
+            )
         if check.rates is not None:
             body += _table(
                 ["Arm", "Observed trigger rate"],
@@ -418,6 +423,7 @@ def _health_checks_block(report: ExperimentHealth | None) -> str:
         for key in (
             "counterfactual_trigger_invariance",
             "trigger_order_stationarity",
+            "family_guarantee_status",
             "triggered_look_policy",
             "family_guarantee",
             "observed_edge",

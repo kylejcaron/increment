@@ -482,3 +482,139 @@ def test_health_unavailable_is_not_nonrejection() -> None:
             code="source.native.trigger_evidence_required",
             context={"reason": "trigger counts were not retained"},
         )
+
+
+def test_health_expected_allocation_completes_independent_design_admission() -> None:
+    analysis = Analysis.from_unit_summary(
+        pa.table(
+            {
+                "unit": ["c1", "c2", "t1", "t2"],
+                "arm": ["C", "C", "T", "T"],
+                "value": [1.0, 2.0, 1.0, 2.0],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        metrics={"value": "mean"},
+        design=Randomized(control_group="C", allocation_scheme="independent"),
+    )
+    assigned = next(
+        check
+        for check in analysis.health_check(expected_allocation={"C": 0.5, "T": 0.5}).checks
+        if check.check == "assigned_allocation"
+    )
+    assert assigned.availability == "available"
+    assert assigned.srm is not None
+    assert assigned.srm.expected == {"C": 0.5, "T": 0.5}
+
+
+def test_health_empty_trigger_population_is_unavailable_not_a_report_failure(tmp_path) -> None:
+    from tests.test_analysis_trigger import _analysis, _events
+
+    analysis = _analysis(
+        tmp_path, _events(n_per_arm=20, trigger_rate=0.0), allocation_scheme="independent"
+    )
+    try:
+        report = analysis.health_check()
+    finally:
+        analysis.close()
+    assigned = next(check for check in report.checks if check.check == "assigned_allocation")
+    triggered = next(check for check in report.checks if check.check == "triggered_balance")
+    rates = next(check for check in report.checks if check.check == "trigger_rates")
+    assert assigned.availability == "available"
+    assert triggered.availability == "unavailable"
+    assert triggered.code == "estimation.diagnostics.total_observed_count"
+    assert triggered.conclusion is None
+    assert rates.availability == "available"
+    assert rates.rates == {"C": 0.0, "T": 0.0}
+
+
+def test_health_srm_report_supports_pickle_and_deepcopy() -> None:
+    import copy
+    import pickle
+
+    analysis = Analysis.from_unit_summary(
+        pa.table(
+            {
+                "unit": ["c1", "c2", "t1", "t2"],
+                "arm": ["C", "C", "T", "T"],
+                "value": [1.0, 2.0, 1.0, 2.0],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        metrics={"value": "mean"},
+        design=Randomized(
+            control_group="C",
+            allocation={"C": 0.5, "T": 0.5},
+            allocation_scheme="independent",
+        ),
+    )
+    report = analysis.health_check()
+    assigned = report.checks[0]
+    assert assigned.srm is not None
+    assert assigned.availability == "available"
+    for restored in (pickle.loads(pickle.dumps(report)), copy.deepcopy(report)):
+        restored_srm = restored.checks[0].srm
+        assert restored_srm is not None
+        assert restored_srm == assigned.srm
+        assert restored_srm.observed == assigned.srm.observed
+
+
+@pytest.mark.parametrize(
+    ("look_policy", "guarantee"),
+    [("exploratory", None), ("outcome_independent", "asymptotic_sequential")],
+)
+def test_health_assumption_discloses_triggered_family_guarantee(
+    tmp_path, look_policy, guarantee
+) -> None:
+    from tests.test_triggered_sequential import _FAMILY_PLAN, _analysis, _events
+
+    plan = _FAMILY_PLAN
+    if look_policy == "outcome_independent":
+        plan += "        triggered_look_policy: outcome_independent\n"
+    secondaries = ("aux_a", "aux_b")
+    analysis, _ = _analysis(
+        tmp_path,
+        _events(n_per_arm=20, secondaries=secondaries),
+        plan=plan,
+        secondaries=secondaries,
+    )
+    try:
+        assumptions = next(
+            check
+            for check in analysis.health_check().checks
+            if check.check == "trigger_assumptions"
+        )
+    finally:
+        analysis.close()
+    assert assumptions.context["triggered_look_policy"] == look_policy
+    assert assumptions.context["family_guarantee"] == guarantee
+    if guarantee is not None:
+        assert assumptions.context["family_guarantee_status"] == "assumed, not verified"
+
+
+def test_health_missing_assignment_scheme_suggests_supported_routes() -> None:
+    analysis = Analysis.from_unit_summary(
+        pa.table(
+            {
+                "unit": ["c1", "c2", "t1", "t2"],
+                "arm": ["C", "C", "T", "T"],
+                "value": [1.0, 2.0, 1.0, 2.0],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        metrics={"value": "mean"},
+        design=Randomized(control_group="C"),
+    )
+    assigned = next(
+        check
+        for check in analysis.health_check(expected_allocation={"C": 0.5, "T": 0.5}).checks
+        if check.check == "assigned_allocation"
+    )
+    assert assigned.availability == "unavailable"
+    assert assigned.code == "integrity.allocation_scheme_missing"
+    route = str(assigned.context["route"])
+    assert "allocation_scheme='independent'" in route
+    assert "Analysis.srm(inference='fixed')" in route

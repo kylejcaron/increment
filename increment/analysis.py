@@ -1390,7 +1390,17 @@ class Analysis:
                     },
                 )
             if population == "assigned":
-                integrity = assignment_integrity(self._design, None)
+                admission_design = self._design
+                if (
+                    admission_design is not None
+                    and expected_allocation is not None
+                    and getattr(admission_design, "allocation_scheme", None) == "independent"
+                    and getattr(admission_design, "allocation", None) is None
+                ):
+                    admission_design = admission_design.model_copy(
+                        update={"allocation": dict(expected_allocation)}
+                    )
+                integrity = assignment_integrity(admission_design, None)
                 if integrity.status == "not_applicable":
                     return HealthCheck(
                         check=check_name,
@@ -1409,6 +1419,18 @@ class Analysis:
                         context={
                             **dict(integrity.context),
                             "reason": f"Assignment-law admission is {integrity.status}.",
+                            **(
+                                {
+                                    "route": (
+                                        "Declare allocation_scheme='independent' on a design "
+                                        "that uses an independent constant-probability draw, or "
+                                        "use Analysis.srm(inference='fixed') for one predeclared "
+                                        "look."
+                                    )
+                                }
+                                if integrity.code == "integrity.allocation_scheme_missing"
+                                else {}
+                            ),
                         },
                     )
             if allocation_observations is not None and population in allocation_observations:
@@ -1434,6 +1456,19 @@ class Analysis:
                         population=population,
                     )
                 except CapabilityError as refusal:
+                    return HealthCheck(
+                        check=check_name,
+                        analysis_population=population,
+                        availability="unavailable",
+                        code=refusal.code,
+                        context={**dict(refusal.context), "reason": str(refusal)},
+                    )
+                except InvalidRequestError as refusal:
+                    if (
+                        population != "triggered"
+                        or refusal.code != "estimation.diagnostics.total_observed_count"
+                    ):
+                        raise
                     return HealthCheck(
                         check=check_name,
                         analysis_population=population,
@@ -1674,6 +1709,21 @@ class Analysis:
         inference = getattr(declared_plan, "inference", runtime_inference)
         registration = getattr(inference, "triggered_registration", None)
         look_policy = getattr(inference, "triggered_look_policy", None)
+        if registration is not None:
+            look_policy = getattr(registration, "look_policy", look_policy)
+        family_models = ()
+        if registration is not None:
+            models_by_metric = {model.metric: model for model in registration.models}
+            family_models = tuple(
+                models_by_metric[cell.metric] for cell in registration.roster if cell.family
+            )
+        family_guarantee = None
+        if look_policy == "outcome_independent" and family_models:
+            family_guarantee = (
+                "asymptotic_sequential"
+                if any(model.law != "bernoulli" for model in family_models)
+                else "finite_sample"
+            )
         return HealthCheck(
             check="trigger_assumptions",
             analysis_population="triggered",
@@ -1683,10 +1733,9 @@ class Analysis:
                 "counterfactual_trigger_invariance": "assumed, not established by balance or rates",
                 "trigger_order_stationarity": "assumed, not established by balance or rates",
                 "triggered_look_policy": look_policy,
-                "family_guarantee": (
-                    None
-                    if registration is None
-                    else getattr(registration, "family_guarantee", None)
+                "family_guarantee": family_guarantee,
+                "family_guarantee_status": (
+                    "assumed, not verified" if family_guarantee is not None else None
                 ),
                 "risk": (
                     "Balanced trigger rates do not verify counterfactual trigger invariance.",

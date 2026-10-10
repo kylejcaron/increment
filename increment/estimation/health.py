@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Literal, cast
+from typing import Any, Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator, model_validator
 
@@ -137,5 +137,18 @@ class ExperimentHealth(BaseModel):
     def __str__(self) -> str:
         return repr(self)
 
+    def __reduce__(self):
+        return _restore_experiment_health, (self.model_dump(mode="python"),)
+
+    def __deepcopy__(self, memo: dict[int, Any] | None = None) -> Self:
+        copied = type(self).model_validate(self.model_dump(mode="python"))
+        if memo is not None:
+            memo[id(self)] = copied
+        return copied
+
 
 __all__ = ["ExperimentHealth", "HealthCheck"]
+
+
+def _restore_experiment_health(values: dict[str, object]) -> ExperimentHealth:
+    return ExperimentHealth.model_validate(values)
