@@ -920,7 +920,14 @@ def _capture_sequential_diagnostic_snapshot(  # noqa: PLR0915
         and previous_cursor is not None
         and _reveal_cursor_moved_backward(reveal_cursor, previous_cursor)
     ):
-        sequential_refuse("source.invalid", "reveal cursor cannot move backward")
+        # A look before the retained one would re-reveal history already
+        # reported: the same hazard as correcting a retained record.
+        sequential_refuse(
+            "continuation.rewrite",
+            "reveal cursor cannot move backward",
+            previous_cursor=str(previous_cursor),
+            requested_cursor=str(reveal_cursor),
+        )
     models = {m.metric: m for m in registration.models}
     states = (
         {

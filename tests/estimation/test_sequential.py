@@ -104,7 +104,9 @@ def test_reveal_cursor_cannot_move_backward_on_an_unchanged_prefix():
             previous=first,
             reveal_cursor=date(2025, 1, 1),
         )
-    assert raised.value.code == "sequential.source.invalid"
+    assert raised.value.code == "sequential.continuation.rewrite"
+    assert raised.value.context["previous_cursor"] == "2025-01-02"
+    assert raised.value.context["requested_cursor"] == "2025-01-01"
 
 
 @pytest.mark.parametrize("operation", ["capture", "link"])
