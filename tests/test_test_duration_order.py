@@ -232,11 +232,9 @@ def test_focused_runner_executes_grouped_markdown_in_source_order(tmp_path, dist
             if report.get("event") == "report" and report.get("when") == "call"
         }
 
-    # First collect and execute through the official runner so Testmon learns
-    # real scheduler-specific node IDs and the producer's longer runtime.
+    # Learn real scheduler-specific node IDs before applying adversarial durations.
     initial_ids = run_focused("warm")
     assert len(initial_ids) == 2
-    assert (project / ".testmondata").is_file()
 
     def source_line(nodeid: str) -> int:
         match = re.search(r"::line:(\d+),column:(\d+)", nodeid)
@@ -254,28 +252,6 @@ def test_focused_runner_executes_grouped_markdown_in_source_order(tmp_path, dist
     }
     (project / ".test_durations").write_text(json.dumps(duration_map))
 
-    # The warm Testmon database and explicit duration map both prefer the
-    # consumer. Preserve the exact final node IDs, including loadgroup suffixes.
+    # Durations prefer the consumer; retain source order and exact final node IDs.
     actual_ids = run_focused("restored")
     assert actual_ids == initial_ids
-
-
-@pytest.mark.parametrize(
-    ("registered_name", "testmon_plugin"),
-    [
-        ("pytest-testmon", None),
-        ("testmon.pytest_testmon", None),
-        (None, object()),
-    ],
-)
-def test_testmon_registration_names_are_recognized(registered_name, testmon_plugin):
-    from scripts.run_test_tier_plugin import _testmon_is_registered
-
-    config = SimpleNamespace(
-        pluginmanager=SimpleNamespace(
-            get_plugin=lambda name: testmon_plugin if name == "TestmonSelect" else None,
-            hasplugin=lambda name: name == registered_name,
-        )
-    )
-
-    assert _testmon_is_registered(cast(pytest.Config, config))
