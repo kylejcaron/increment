@@ -60,17 +60,42 @@ def _prepare_panel(
     )
 
 
+def _day_population(
+    panel: nw.DataFrame[Any],
+    *,
+    identity: nw.DataFrame[Any],
+    ds: Any,
+    value_columns: Sequence[str],
+    ordinal: str,
+) -> nw.DataFrame[Any]:
+    """Construct one logical zero-filled day without retaining the date spine."""
+    observed = panel.filter(nw.col("ds") == ds).select("unit_id", *value_columns)
+    population = identity.with_columns(nw.lit(ds).alias("ds")).join(
+        observed, on="unit_id", how="left"
+    )
+    return population.with_columns(
+        *[nw.col(column).fill_null(0.0).alias(column) for column in value_columns]
+    ).sort(ordinal)
+
+
+def _day_labels(panel: nw.DataFrame[Any]) -> list[Any]:
+    """Return the observed date axis in its justified chronological order."""
+    labels = panel.get_column("ds").unique().to_list()
+    order = _day_axis_label_order(labels)
+    return sorted(labels, key=order.__getitem__)
+
+
 def _densify_panel(
     panel: nw.DataFrame[Any],
     *,
     identity: nw.DataFrame[Any],
     value_columns: Sequence[str],
 ) -> nw.DataFrame[Any]:
-    """Zero-fill enrolled units across observed dates for day-grain consumers."""
+    """Materialize a day spine for the byte-bounded small-panel kernel only."""
     dates = panel.select("ds").unique()
     observed = panel.select("unit_id", "ds", *value_columns)
     dense = identity.join(dates, how="cross").join(observed, on=["unit_id", "ds"], how="left")
-    return dense.with_columns(*[nw.col(c).fill_null(0.0) for c in value_columns])
+    return dense.with_columns(*[nw.col(column).fill_null(0.0) for column in value_columns])
 
 
 def _uptake_day_elapsed(panel: nw.DataFrame[Any], anchor: str) -> nw.Expr:

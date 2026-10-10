@@ -24,14 +24,15 @@ conversion_route``) and the finite-sample binomial risk-ratio inversion on the r
 is the rejection probability of that union over the binomial count lattice
 (``increment.power._binomial``), enclosed by what the plan leaves undecided and by the
 numerical error of its sum: neither route's power alone, and no function of the two. The
-lattice is enumerated while it fits. Its computed rejection mass is published only when
-the internal enclosure bounds its absolute error by ``1e-6``; materially unresolved
-probabilities explicitly refuse. Size and effect targets compare this admitted point
-power. ``conversion_inference="finite_sample"`` always enumerates. Where the counts
-are dense with near certainty and the lattice is too large to enumerate, this model's closed
-form applies (``power_basis="asymptotic"``) and ``power`` is the model's own value, not a
-bound on the runtime. The Bernoulli shape above applies to every conversion and retention plan
-the delta-method route decides.
+The lattice is enumerated while it fits. Its computed rejection mass is published only when
+the internal enclosure bounds its absolute error by ``1e-6`` conditional on the deployed
+SciPy/Boost special-function error model; this is not a cross-build floating-point proof.
+Materially unresolved probabilities explicitly refuse. Size and effect targets compare this
+admitted point power. ``conversion_inference="finite_sample"`` always enumerates. Where the
+counts are dense with near certainty and the lattice is too large to enumerate, this model's
+closed form applies (``power_basis="asymptotic"``) and ``power`` is the model's own value, not
+a bound on the runtime. The Bernoulli shape above applies to every conversion and retention
+plan the delta-method route decides.
 
 Because the variance depends on the alternative, a decreasing direction's
 noncentrality ``d / S(theta0 - d)`` rises to a single peak and then falls:
@@ -58,7 +59,7 @@ from fractions import Fraction
 from typing import Literal, NoReturn, cast
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, computed_field, model_validator
 from scipy.special import ndtr as _ndtr
 from scipy.special import ndtri as _ndtri
 from scipy.stats import chi2 as _chi2
@@ -734,19 +735,21 @@ class PowerResult(CodedModel, BaseModel):
         ``minimum_detectable_effect`` it describes the returned effect's
         implied absolute alternative, which can exceed the target when the
         answer is a domain endpoint. Enumerated binomial power is computed rejection
-        mass admitted only when its maximum absolute numerical error is at most
-        ``1e-6``. It is not a lower confidence bound. Where the basis is
-        ``"asymptotic"``, power is the planning model's own value.
+        mass admitted only when its enclosure resolves maximum absolute error to
+        ``1e-6`` conditional on the deployed SciPy/Boost special-function error
+        model; this is not a cross-build proof. It is not a lower confidence bound.
+        Where the basis is ``"asymptotic"``, power is the planning model's own value.
     power_basis : {"asymptotic", "exact", "approximate"}
-        How ``power`` was computed. ``"asymptotic"``: the log-ratio
-        Normal/noncentral-t planning model (every plan the runtime does not
-        decide with the binomial count rule, and a conversion or retention plan
-        whose counts the runtime takes the delta-method route at with near
-        certainty when its count lattice is too large to enumerate). ``"exact"``:
-        the runtime's unchanged rejection decision summed over the binomial count
-        lattice, with total numerical error and undecided mass bounded by ``1e-6``.
-        Materially unresolved enumeration is refused, not published with an
-        ``"approximate"`` label. That label remains part of the result schema.
+        How ``power`` was computed. ``"asymptotic"`` is the log-ratio planning
+        model; ``"exact"`` is the runtime's decision summed over the binomial count
+        lattice with a resolved computed enclosure; ``"approximate"`` is an
+        unresolved diagnostic with no runtime-power claim. Materially unresolved
+        enumerations are refused rather than published.
+    numerical_qualification : {"closed_form_model_only_v1", "scipy_special_function_error_model_conditional_v1", "unclaimed_approximation_diagnostic_v1"}
+        Arithmetic scope accompanying the planning basis in saved results.
+        Finite-sample enclosure claims are conditional on deployed SciPy
+        special-function error allowance, not uniform across builds.
+        ``approximate`` is an unresolved diagnostic and makes no runtime-power claim.
     mde_relative : float | None
         Minimum detectable relative effect on the complier scale, expressed
         RELATIVE TO the declared null: ``(exp(distance) - 1) /
@@ -816,6 +819,22 @@ class PowerResult(CodedModel, BaseModel):
         discovering it, if at all, from a silently mis-sized design.
         ``None`` for every non-quantile metric.
     """
+
+    @computed_field
+    @property
+    def numerical_qualification(
+        self,
+    ) -> Literal[
+        "closed_form_model_only_v1",
+        "scipy_special_function_error_model_conditional_v1",
+        "unclaimed_approximation_diagnostic_v1",
+    ]:
+        """Arithmetic scope of the reported model, not its statistical guarantee."""
+        if self.power_basis == "asymptotic":
+            return "closed_form_model_only_v1"
+        if self.power_basis == "approximate":
+            return "unclaimed_approximation_diagnostic_v1"
+        return "scipy_special_function_error_model_conditional_v1"
 
     model_config = ConfigDict(frozen=True)
 
@@ -3499,14 +3518,13 @@ def required_sample_size(  # noqa: PLR0915
     """Compute the sample size needed to detect *relative_lift* with the
     given *baseline* assumptions and *design* parameters.
 
-    ``n_per_arm`` is the treatment arm size after ceiling to whole units;
-    ``power`` is the actual (slightly >= target) power at that integer size,
-    with the treatment arm's variance evaluated at *relative_lift*. A runtime-binomial
-    plan uses admitted point power, with absolute numerical error at most ``1e-6``;
-    a materially unresolved candidate refuses rather than silently undersizing.
-    ``mde_relative`` is the companion minimum detectable effect at that
-    size, ``None`` with ``mde_unavailable_reason`` when none exists at
-    ``design.power``.
+    ``n_per_arm`` is the treatment-arm size after ceiling to whole units;
+    ``power`` is the actual (slightly >= target) power at that integer size.
+    A runtime-binomial plan uses admitted point power, with computed enclosure error at most
+    ``1e-6`` conditional on the deployed SciPy/Boost special-function error model; this is
+    not a cross-build proof. A materially unresolved candidate refuses rather than silently
+    undersizing. ``mde_relative`` is the companion minimum detectable effect at that size,
+    ``None`` with ``mde_unavailable_reason`` when none exists at ``design.power``.
 
     ``GaussianScoreMixture`` computes the always-valid Gaussian-model
     planning approximation the runtime's ``asymptotic_mean`` boundary
@@ -3953,14 +3971,14 @@ def minimum_detectable_effect(
     not monotonicity assumptions, exclude earlier regions. A materially unresolved
     earlier interval refuses with ``numerical_resolution`` rather than being skipped
     for a later band. Enumerated points are admitted only with absolute error at most
-    ``1e-6``; closed-form power is the delta-method model's own value.
-    A target excluded throughout the admissible domain is ``unattainable``; one with
-    no representable answer is ``unrepresentable``. Refusals carry a
-    ``power.minimum_detectable_effect.*`` code. The look schedule resolves
-    as in ``required_sample_size``. For fixed-horizon inference, a target at
-    or below the null's own crossing probability is also refused: zero
-    distance already qualifies, so no strictly nonzero minimum detectable
-    effect exists.
+    ``1e-6`` conditional on the deployed SciPy/Boost special-function error model;
+    this is not a cross-build floating-point proof. Closed-form power is the delta-method
+    model's own value. A target excluded throughout the admissible domain is ``unattainable``;
+    one with no representable answer is ``unrepresentable``. Refusals carry a
+    ``power.minimum_detectable_effect.*`` code. The look schedule resolves as in
+    ``required_sample_size``. For fixed-horizon inference, a target at or below the null's own
+    crossing probability is also refused: zero distance already qualifies, so no strictly
+    nonzero minimum detectable effect exists.
     """
     return _minimum_detectable_effect(
         n_per_arm, baseline, procedure, design, planned_looks, cache={}

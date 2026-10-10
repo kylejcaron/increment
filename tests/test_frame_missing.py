@@ -892,6 +892,7 @@ def test_asof_unit_rows_completed_windows_unbounded_retention_refuses() -> None:
             uptake=None,
             uptake_window_days=None,
             completed_windows_only=True,
+            identity_ordinal="__missing_ordinal__",
         )
     assert exc_info.value.code == "frame.moments.asof_moments_completed"
     assert exc_info.value.context["metric"] == "d0_plus"
@@ -917,6 +918,7 @@ def test_asof_unit_rows_retention_without_exposure_refuses() -> None:
             uptake=None,
             uptake_window_days=None,
             completed_windows_only=False,
+            identity_ordinal="__missing_ordinal__",
         )
     assert exc_info.value.code == "frame.moments.asof_unit_rows"
 

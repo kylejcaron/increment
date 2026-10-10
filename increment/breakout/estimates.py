@@ -868,9 +868,10 @@ def _is_optional_binomial_set(annotation: Any) -> bool:
     """Whether a field is declared ``BinomialConfidenceSet | None`` - the
     sole confidence-set-typed field. Detected by name, not structurally
     like :func:`_is_optional_model`: it needs typed ``set_lower``/
-    ``set_upper``/``set_level`` columns in :func:`to_frame`, not that
-    generic BaseModel-valued-scalar's ``repr()`` string fallback (which
-    every OTHER model-valued field, e.g. ``prior_spec``, still gets)."""
+    ``set_upper``/``set_level``/``set_numerical_qualification`` columns in
+    :func:`to_frame`, not that generic BaseModel-valued-scalar's ``repr()``
+    string fallback (which every OTHER model-valued field, e.g. ``prior_spec``,
+    still gets)."""
     args = get_args(annotation)
     return type(None) in args and any(
         isinstance(arg, type) and issubclass(arg, BinomialConfidenceSet)
@@ -901,7 +902,7 @@ def _frame_columns(
                 )
             )
         elif name == binomial_set_field:
-            columns.extend(("set_lower", "set_upper", "set_level"))
+            columns.extend(("set_lower", "set_upper", "set_level", "set_numerical_qualification"))
         else:
             columns.append(name)
     return columns
@@ -947,6 +948,9 @@ def _append_frame_value(
         data["set_lower"].append(None if value is None else value.lower)
         data["set_upper"].append(None if value is None else value.upper)
         data["set_level"].append(None if value is None else value.level)
+        data["set_numerical_qualification"].append(
+            None if value is None else value.numerical_qualification
+        )
     elif value is None:
         data[name].append(None)
     elif isinstance(value, date) and not isinstance(value, datetime):
@@ -1017,11 +1021,11 @@ def to_frame[M: BaseModel](
     flattens into four columns (its name, plus ``lb``/``ub``/``open_side``);
     a ``binomial_set`` field (see :class:`~increment.estimation.results.
     BinomialConfidenceSet`) flattens into ``set_lower``/``set_upper``/
-    ``set_level`` -- always the row's confidence-set bounds/level, even
-    for a set-only row with no finite point (``<estimate field>`` and
-    ``lb``/``ub`` stay ``None`` there; ``set_lower``/``set_upper``/
-    ``set_level`` are the row's ONLY confidence-set representation in
-    that case; see :class:`BinomialConfidenceSet`); every other field
+    ``set_level`` and ``set_numerical_qualification`` -- always the row's
+    confidence-set bounds/level and arithmetic scope, even for a set-only row
+    with no finite point (``<estimate field>`` and ``lb``/``ub`` stay ``None``
+    there; these set columns are the row's ONLY confidence-set representation
+    in that case; see :class:`BinomialConfidenceSet`); every other field
     passes through as a scalar column in declaration order. Most callers
     should use ``results.to_frame()`` on a pipeline's own result rather
     than calling this function directly.
@@ -1043,9 +1047,9 @@ def to_frame[M: BaseModel](
         the ``Estimate``-typed field expanded to
         ``<field name>``/``lb``/``ub``/``open_side`` and a
         ``binomial_set`` field expanded to ``set_lower``/``set_upper``/
-        ``set_level``. ``open_side`` is ``"lower"``/``"upper"`` for a
-        genuinely unbounded one-sided endpoint, and ``None`` both for a
-        closed interval (``lb``/``ub`` both set) and for an unavailable
+        ``set_level``/``set_numerical_qualification``. ``open_side`` is
+        ``"lower"``/``"upper"`` for a genuinely unbounded one-sided endpoint,
+        and ``None`` both for a closed interval (``lb``/``ub`` both set) and for
         one (``lb``/``ub``/``value`` all ``None``) -- distinguish the
         two by whether ``<field name>`` (the point estimate) is
         ``None``.
@@ -1111,6 +1115,7 @@ def to_frame[M: BaseModel](
                 "sequential_validity_regime",
                 "sequential_alpha",
                 "sequential_components",
+                "set_numerical_qualification",
             )
             else _scalar_dtype(model.model_fields[name].annotation)
         )
@@ -1155,6 +1160,8 @@ def to_frame[M: BaseModel](
                 "sequential_components",
             )
         )
+    if binomial_set_field is not None:
+        nullable_strings.append("set_numerical_qualification")
     if backend == "pandas" and nullable_strings:
         # Rewritten after construction: narwhals may otherwise infer a
         # floating object column for all-null optional strings.  Pandas'

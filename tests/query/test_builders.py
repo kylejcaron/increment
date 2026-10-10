@@ -967,7 +967,7 @@ def _spine_stats_fixture(con, *, unit_rows, exposure_first, days, stat_rows):
         }
         for u, ds, n, v in stat_rows
     ]
-    stats_tbl = con.create_table(f"t3_stats_{id(stat_rows)}", obj=stat_dicts)
+    stats_tbl = con.create_table(f"t3_stats_{uuid.uuid4().hex}", obj=stat_dicts)
     return spine, stats_tbl, exp
 
 

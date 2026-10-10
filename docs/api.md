@@ -518,11 +518,17 @@ for method assumptions, finalization, and the qualified asymptotic guarantee.
 ## Power planning
 
 Fixed-horizon binomial planning reports model-based point power. Enumerated
-rejection mass is published only when internal bounds establish absolute error
-at most `1e-6`; a materially unresolved probability refuses with
+rejection mass is published only when its computed enclosure is resolved to
+absolute error at most `1e-6`, conditional on the deployed SciPy/Boost
+special-function error model; this is not a cross-build floating-point proof.
+A materially unresolved probability refuses with
 `power.binomial_probability_unresolved`, rather than returning its lower bound.
 The dense closed-form route reports its model's point probability.
-`PowerResult` has no public numerical-bracket field or accuracy tuning knob.
+`PowerResult.numerical_qualification` serializes that scope:
+`scipy_special_function_error_model_conditional_v1` for a resolved finite-sample
+enclosure, `closed_form_model_only_v1` for the asymptotic model, and
+`unclaimed_approximation_diagnostic_v1` for an unresolved diagnostic. No public
+numerical-bracket field or accuracy tuning knob is exposed.
 Binomial MDE searches the earliest detectable region to `1e-8` absolute plus
 `1e-8` relative tolerance on the relative-effect scale, not the first
 representable float, and reports power evaluated at the returned effect.
@@ -862,11 +868,12 @@ available from the receive-only results namespace.
 
 ::: increment.results.LiftEstimate
 
-Clustered unadjusted and prior-free adjusted rows preserve additive uncertainty
-independently of `relative_confidence_set`. The joint set can be disconnected,
-unbounded, or present without a finite ratio point. Its reference is a qualified
-working approximation; `relative_unavailable_reason` identifies an indefinite
-or unrepresentable covariance without discarding additive output.
+Binomial rows persist `binomial_set.numerical_qualification`:
+`scipy_special_function_error_model_conditional_v1` states the finite-sample
+arithmetic qualification conditional on the deployed SciPy/Boost special-function
+error model, not a cross-build proof. Supported rows saved before this field was
+introduced load as `legacy_unrecorded_v1`, which makes no arithmetic qualification
+claim.
 
 ::: increment.estimation.results.JointContrastReference
 

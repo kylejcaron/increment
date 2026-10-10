@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Literal, assert_never
 
 from increment.estimation._tails import resolvable_expm1, wald_bounds
 from increment.estimation.results import (
+    BINOMIAL_NUMERICAL_QUALIFICATION,
     BinomialConfidenceSet,
     _alpha_eff_for,
     _fcr_alpha_for,
@@ -171,6 +172,7 @@ def _binomial_parent(view: LiftEstimate, alpha: float) -> LiftEstimate:
             level=level,
             geometry=interval.geometry,
             method=bset.method,
+            numerical_qualification=BINOMIAL_NUMERICAL_QUALIFICATION,
             x_c=bset.x_c,
             n_c=bset.n_c,
             x_t=bset.x_t,

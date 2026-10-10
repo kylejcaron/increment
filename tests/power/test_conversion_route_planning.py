@@ -125,6 +125,7 @@ class TestDensePlansAreTheClosedForm:
         result = achieved_power(1_000_000, 0.02, Baseline.from_proportion(0.05), procedure)
         assert result.power_basis == "asymptotic"
         assert 0.0 < result.power < 1.0
+        assert result.numerical_qualification == "closed_form_model_only_v1"
 
     def test_arms_above_the_finite_sample_ceiling_are_planned_with_power(self):
         """No evaluator ceiling binds the closed form: a dense plan at 2e9 per arm has the
@@ -171,6 +172,8 @@ class TestExplicitFiniteSamplePlans:
         baseline = Baseline.from_proportion(p)
         result = achieved_power(n, 0.5, baseline, _plan("finite_sample"))
         assert result.power_basis == "exact"
+        assert result.numerical_qualification == "scipy_special_function_error_model_conditional_v1"
+        assert type(result).model_validate_json(result.model_dump_json()) == result
 
     def test_a_clustered_plan_cannot_plan_finite_sample(self):
         with pytest.raises(CodedError) as raised:

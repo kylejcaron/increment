@@ -22,7 +22,7 @@ from typing import (
 
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, computed_field, model_validator
 
 from increment.decision import FixedInference
 from increment.errors import (
@@ -102,6 +102,22 @@ class PowerCurvePoint(CodedModel, BaseModel):
     expected_n_total: int | None = None
     expected_duration_days: int | None = None
 
+    @computed_field
+    @property
+    def numerical_qualification(
+        self,
+    ) -> Literal[
+        "closed_form_model_only_v1",
+        "scipy_special_function_error_model_conditional_v1",
+        "unclaimed_approximation_diagnostic_v1",
+    ]:
+        """Arithmetic scope of the reported model, not its statistical guarantee."""
+        if self.power_basis == "asymptotic":
+            return "closed_form_model_only_v1"
+        if self.power_basis == "approximate":
+            return "unclaimed_approximation_diagnostic_v1"
+        return "scipy_special_function_error_model_conditional_v1"
+
     @model_validator(mode="after")
     def _check(self) -> PowerCurvePoint:
         _require_companion_mde(self.mde_relative, self.mde_unavailable_reason)
@@ -129,10 +145,28 @@ class PowerCurve(list[PowerCurvePoint]):
         return [row.model_dump() for row in self]
 
     def to_frame(self, backend: Backend = "pandas") -> IntoDataFrame:
+
         fields = PowerCurvePoint.model_fields
-        data = {name: [getattr(row, name) for row in self] for name in fields}
-        schema = {name: _frame_dtype(field.annotation) for name, field in fields.items()}
+        names = list(fields)
+        names.insert(names.index("power_basis") + 1, "numerical_qualification")
+        data = {
+            name: (
+                [row.numerical_qualification for row in self]
+                if name == "numerical_qualification"
+                else [getattr(row, name) for row in self]
+            )
+            for name in names
+        }
+        schema = {
+            name: (
+                nw.String()
+                if name == "numerical_qualification"
+                else _frame_dtype(fields[name].annotation)
+            )
+            for name in names
+        }
         frame = nw.from_dict(data, schema=schema, backend=backend).to_native()
+
         nullable_strings = [
             name
             for name, field in fields.items()

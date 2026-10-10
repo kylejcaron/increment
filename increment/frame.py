@@ -30,6 +30,7 @@ from increment._frame_moments import (
     _apply_spec_missing,
     _apply_winsorization,
     _asof_moment_rows,
+    _AsOfSettings,
     _collapse_to_unit_totals,
     _compliance_arm_rows_panel,
     _compliance_arm_rows_totals,
@@ -238,6 +239,8 @@ _PANEL_CLUSTER = RefusalSpec(
     ),
 )
 
+
+_DAY_PANEL_SCRATCH_BUDGET_BYTES = 64 * 1024 * 1024
 
 _REFUSALS = refusals(
     InvalidRequestError,
@@ -1017,8 +1020,8 @@ class FramePanelSource(SequentialSourceMixin):
         unit_column: str | None = None,
     ) -> None:
         self._sparse_panel = panel
-        self._dense_panel: nw.DataFrame[Any] | None = None
         self._identity: nw.DataFrame[Any] | None = None
+        self._identity_ordinal = _scratch_name(panel, "__unit_ordinal__")
         self._value_columns = tuple(
             sorted(
                 {c for spec in metrics for c in (spec.y_column, spec.denominator) if c}
@@ -1078,21 +1081,31 @@ class FramePanelSource(SequentialSourceMixin):
             cluster=None,
         )
 
-    def _day_panel(self) -> nw.DataFrame[Any]:
-        """Materialize the zero-filled day spine only for day consumers."""
-        if self._dense_panel is None:
-            identity = self._identity
-            if identity is None:
-                identity = self._sparse_panel.select("unit_id", "group_id", *self.breakouts).unique(
-                    subset=["unit_id"]
-                )
-                self._identity = identity
-            self._dense_panel = _densify_panel(
-                self._sparse_panel,
-                identity=identity,
-                value_columns=self._value_columns,
+    def _day_identity(self) -> nw.DataFrame[Any]:
+        """Return the complete per-unit roster and a stable positional index."""
+        if self._identity is None:
+            self._identity = (
+                self._sparse_panel.select("unit_id", "group_id", *self.breakouts)
+                .unique(subset=["unit_id"], maintain_order=True)
+                .with_row_index(self._identity_ordinal)
             )
-        return self._dense_panel
+        return self._identity
+
+    def _bounded_day_panel(self) -> tuple[nw.DataFrame[Any], bool]:
+        """Use the full day spine only when its conservative scratch estimate fits."""
+        identity = self._day_identity()
+        cells = identity.shape[0] * self._sparse_panel.get_column("ds").n_unique()
+        estimated_bytes = cells * (192 + 16 * len(self._value_columns))
+        if estimated_bytes <= _DAY_PANEL_SCRATCH_BUDGET_BYTES:
+            return (
+                _densify_panel(
+                    self._sparse_panel,
+                    identity=identity,
+                    value_columns=self._value_columns,
+                ),
+                True,
+            )
+        return self._sparse_panel, False
 
     def capture_sequential(self, *, as_of, finalized: bool, previous=None):
         from increment._frame_sequential import capture_frame_panel
@@ -1201,9 +1214,14 @@ class FramePanelSource(SequentialSourceMixin):
             synthesised = cast("Sequence[Metric]", self._context.metrics)
             reducer_by = (breakout,) if breakout is not None else ()
             failures: dict[str, _DeferredRefusal] = {}
+            if grain in ("daily", "asof"):
+                day_panel, bounded_dense = self._bounded_day_panel()
             if grain == "daily":
                 rows, failures = _daily_moment_rows(
-                    self._day_panel(),
+                    day_panel,
+                    bounded_dense=bounded_dense,
+                    identity=self._day_identity(),
+                    identity_ordinal=self._identity_ordinal,
                     metrics=self._specs,
                     synthesised=synthesised,
                     experiment_id=self._experiment_id,
@@ -1212,18 +1230,23 @@ class FramePanelSource(SequentialSourceMixin):
                 )
             elif grain == "asof":
                 rows, failures = _asof_moment_rows(
-                    self._day_panel(),
+                    day_panel,
                     self._specs,
-                    synthesised=synthesised,
-                    experiment_id=self._experiment_id,
-                    uptake=self._uptake,
-                    uptake_window_days=self._window_days,
-                    first_exposure=self._first_exposure,
-                    exposure=self._exposure,
-                    completed_windows_only=completed_windows_only,
-                    observation_end=self._observation_end,
-                    fact_max_ds=self._fact_max_ds,
-                    by=reducer_by,
+                    _AsOfSettings(
+                        identity=self._day_identity(),
+                        identity_ordinal=self._identity_ordinal,
+                        bounded_dense=bounded_dense,
+                        synthesised=synthesised,
+                        experiment_id=self._experiment_id,
+                        uptake=self._uptake,
+                        uptake_window_days=self._window_days,
+                        first_exposure=self._first_exposure,
+                        exposure=self._exposure,
+                        completed_windows_only=completed_windows_only,
+                        observation_end=self._observation_end,
+                        fact_max_ds=self._fact_max_ds,
+                        by=reducer_by,
+                    ),
                 )
             else:
                 covariate_names = {
@@ -1400,7 +1423,7 @@ class FramePanelSource(SequentialSourceMixin):
             _raise(
                 "frame.frame_panel.unit_covariate_varies",
                 covariate=name,
-                units=sorted(varying.get_column("unit_id").to_list())[:5],
+                units=sorted(varying.get_column("unit_id").to_list(), key=repr)[:5],
             )
         return per_unit.select("unit_id", name)
 
@@ -1730,7 +1753,7 @@ class FramePanelSource(SequentialSourceMixin):
             unassigned=unassigned + null_exposure,
             synthesised_metrics=synthesised_metrics,
         )
-        source._identity = identity
+        source._identity = identity.with_row_index(source._identity_ordinal)
         return source
 
 

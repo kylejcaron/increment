@@ -1123,6 +1123,7 @@ def _binomial_set(**overrides: Any) -> BinomialConfidenceSet:
         "level": 0.95,
         "geometry": "central",
         "method": BINOMIAL_METHOD,
+        "numerical_qualification": "scipy_special_function_error_model_conditional_v1",
         "x_c": 3,
         "n_c": 10,
         "x_t": 5,
@@ -1131,6 +1132,35 @@ def _binomial_set(**overrides: Any) -> BinomialConfidenceSet:
     }
     base.update(overrides)
     return BinomialConfidenceSet(**base)
+
+
+def test_binomial_numerical_qualification_is_persisted():
+    bset = _binomial_set()
+    assert (
+        bset.model_dump(mode="json")["numerical_qualification"]
+        == "scipy_special_function_error_model_conditional_v1"
+    )
+    assert BinomialConfidenceSet.model_validate_json(bset.model_dump_json()) == bset
+
+
+def test_legacy_binomial_payload_is_explicitly_unqualified():
+    row = LiftEstimate(**_binomial_row())
+    previous_shape = row.model_dump(mode="json")
+    del previous_shape["binomial_set"]["numerical_qualification"]
+
+    legacy_set = BinomialConfidenceSet.model_validate(previous_shape["binomial_set"])
+    restored_row = LiftEstimate.model_validate(previous_shape)
+    assert legacy_set.numerical_qualification == "legacy_unrecorded_v1"
+    assert restored_row.binomial_set == legacy_set
+    json_row = LiftEstimate.model_validate_json(json.dumps(previous_shape))
+    assert json_row.binomial_set is not None
+    assert json_row.binomial_set.numerical_qualification == "legacy_unrecorded_v1"
+
+
+def test_binomial_qualification_survives_pickle_and_deepcopy():
+    bset = _binomial_set()
+    assert copy.deepcopy(bset) == bset
+    assert pickle.loads(pickle.dumps(bset)) == bset
 
 
 def _binomial_row(**overrides: Any) -> dict[str, Any]:
