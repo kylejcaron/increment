@@ -273,6 +273,7 @@ if TYPE_CHECKING:
     from increment.decision import CompiledDecisionPlan
     from increment.estimation.cate import CateResult, Covariate
     from increment.estimation.diagnostics import NotApplicable, SRMResult
+    from increment.estimation.health import ExperimentHealth, HealthCheck
     from increment.estimation.inference import Prior
     from increment.estimation.sitewide import SitewideImpact, SitewideRatioImpact
     from increment.estimation.targeting import (
@@ -1339,6 +1340,334 @@ class Analysis:
             ),
         )
         return src.allocation_history(population=population)
+
+    def health_check(
+        self, *, expected_allocation: Mapping[str, float] | None = None
+    ) -> ExperimentHealth:
+        """Compose existing diagnostics without estimating outcomes or issuing a ship verdict."""
+        if (
+            not isinstance(self._state, ContrastAnalysisState)
+            and classify_source(self._src) == "native"
+        ):
+            return cast(
+                ExperimentHealth,
+                self.dashboard_snapshot(
+                    lambda pinned: pinned._collect_health(expected_allocation),
+                    metrics=self._metrics,
+                ),
+            )
+        return self._collect_health(expected_allocation)
+
+    def _collect_health(
+        self,
+        expected_allocation: Mapping[str, float] | None,
+        *,
+        allocation_observations: Mapping[str, tuple[SRMResult | None, tuple[str, str] | None]]
+        | None = None,
+    ) -> ExperimentHealth:
+        from increment.estimation.diagnostics import NotApplicable
+        from increment.estimation.health import ExperimentHealth, HealthCheck
+
+        experiment = getattr(self._src, "artifact_experiment", None)
+        trigger_name = getattr(experiment, "trigger", None) or getattr(
+            self._context, "trigger_name", None
+        )
+        triggered = trigger_name is not None
+        checks: list[HealthCheck] = []
+
+        def srm_check(population: Literal["assigned", "triggered"]) -> HealthCheck:
+            check_name = "assigned_allocation" if population == "assigned" else "triggered_balance"
+            if allocation_observations is not None and population in allocation_observations:
+                result, refusal = allocation_observations[population]
+                if result is None:
+                    code, reason = refusal or ("", "No allocation result was captured.")
+                    availability = (
+                        "not_applicable"
+                        if code == "dashboard.allocation_not_applicable"
+                        else "unavailable"
+                    )
+                    return HealthCheck(
+                        check=check_name,
+                        analysis_population=population,
+                        availability=availability,
+                        code=code or None,
+                        context={"reason": reason},
+                    )
+            else:
+                try:
+                    result = self.srm(
+                        expected=None if expected_allocation is None else dict(expected_allocation),
+                        population=population,
+                    )
+                except CapabilityError as refusal:
+                    return HealthCheck(
+                        check=check_name,
+                        analysis_population=population,
+                        availability="unavailable",
+                        code=refusal.code,
+                        context={**dict(refusal.context), "reason": str(refusal)},
+                    )
+            if isinstance(result, NotApplicable):
+                return HealthCheck(
+                    check=check_name,
+                    analysis_population=population,
+                    availability="not_applicable",
+                    context={"reason": result.reason},
+                )
+            return HealthCheck(
+                check=check_name,
+                analysis_population=population,
+                availability="available",
+                conclusion=(
+                    "warning"
+                    if result.is_srm
+                    or result.low_expected_count
+                    or result.unassigned_units
+                    or result.mixed_assignment_units
+                    else "not_rejected"
+                ),
+                context={
+                    "grain": result.grain,
+                    "observed": dict(result.observed),
+                    "expected": dict(result.expected),
+                    "unassigned_units": result.unassigned_units,
+                    "mixed_assignment_units": result.mixed_assignment_units,
+                    "low_expected_count": result.low_expected_count,
+                },
+                srm=result,
+            )
+
+        checks.append(srm_check("assigned"))
+        if triggered:
+            checks.append(srm_check("triggered"))
+            try:
+                rates = self.trigger_rates()
+            except CapabilityError as refusal:
+                checks.append(
+                    HealthCheck(
+                        check="trigger_rates",
+                        analysis_population="triggered",
+                        availability="unavailable",
+                        code=refusal.code,
+                        context={**dict(refusal.context), "reason": str(refusal)},
+                    )
+                )
+            else:
+                checks.append(
+                    HealthCheck(
+                        check="trigger_rates",
+                        analysis_population="triggered",
+                        availability="available",
+                        conclusion="descriptive",
+                        context={"description": "Observed trigger share by assigned arm."},
+                        rates=rates,
+                    )
+                )
+            self._append_trigger_maturity(checks)
+            self._append_feed_completeness(checks)
+            checks.append(self._trigger_assumptions())
+        else:
+            for check_name in (
+                "triggered_balance",
+                "trigger_rates",
+                "trigger_maturity",
+                "feed_completeness",
+                "trigger_assumptions",
+            ):
+                checks.append(
+                    HealthCheck(
+                        check=check_name,
+                        analysis_population="triggered",
+                        availability="not_applicable",
+                        context={"reason": "This experiment does not declare a trigger."},
+                    )
+                )
+        return ExperimentHealth(
+            checks=tuple(checks),
+            source_snapshot_id=self._health_snapshot_id(),
+            source_cutoff=self._health_cutoff(),
+        )
+
+    def _append_trigger_maturity(self, checks: list[HealthCheck]) -> None:
+        from increment.estimation.health import HealthCheck
+
+        edges = getattr(self._src, "triggered_observation_edges", None)
+        for metric in sorted(self._metrics, key=lambda item: item.name):
+            if not callable(edges):
+                checks.append(
+                    HealthCheck(
+                        check="trigger_maturity",
+                        analysis_population="triggered",
+                        metric=metric.name,
+                        availability="unavailable",
+                        code="facade.analysis.operation",
+                        context={
+                            "operation": "triggered_observation_edges",
+                            "reason": "This source does not retain trigger maturity evidence.",
+                        },
+                    )
+                )
+                continue
+            try:
+                observed, finalized = edges(metric)
+            except CapabilityError as refusal:
+                checks.append(
+                    HealthCheck(
+                        check="trigger_maturity",
+                        analysis_population="triggered",
+                        metric=metric.name,
+                        availability="unavailable",
+                        code=refusal.code,
+                        context={**dict(refusal.context), "reason": str(refusal)},
+                    )
+                )
+                continue
+            checks.append(
+                HealthCheck(
+                    check="trigger_maturity",
+                    analysis_population="triggered",
+                    metric=metric.name,
+                    availability="available",
+                    conclusion="warning" if finalized is None else "descriptive",
+                    context={
+                        "observed_edge": observed.isoformat(),
+                        "finalized_edge": None if finalized is None else finalized.isoformat(),
+                        "reason": "The metric window is not certified complete."
+                        if finalized is None
+                        else "The retained finalized prefix is shown; no later horizon is inferred.",
+                    },
+                )
+            )
+
+    def _append_feed_completeness(self, checks: list[HealthCheck]) -> None:
+        from increment.estimation.health import HealthCheck
+
+        state = self._state
+        definitions = state.definitions if isinstance(state, DefinitionsArmAnalysisState) else None
+        evidence = self._session.source_snapshot_evidence if self._session is not None else None
+        feeds = sorted({source.name for source in definitions.fact_sources}) if definitions else []
+        manifest = getattr(self._src, "_manifest", None)
+        if definitions is None and manifest is not None:
+            extensions = [
+                extension
+                for extension in manifest.extensions
+                if extension.kind in ("trigger_population", "trigger_measure_stats")
+            ]
+            for extension in extensions:
+                identity = (
+                    "trigger_population"
+                    if extension.kind == "trigger_population"
+                    else f"trigger_measure_stats:{extension.metric_names[0]}"
+                )
+                watermark = extension.complete_through_ts
+                checks.append(
+                    HealthCheck(
+                        check="feed_completeness",
+                        analysis_population="triggered",
+                        metric=(
+                            extension.metric_names[0]
+                            if extension.kind == "trigger_measure_stats"
+                            else None
+                        ),
+                        feed=identity,
+                        availability="unavailable" if watermark is None else "available",
+                        conclusion=None if watermark is None else "descriptive",
+                        context={
+                            "evidence_kind": extension.kind,
+                            "watermark": None if watermark is None else watermark.isoformat(),
+                            "reason": "The artifact extension has no certified completeness watermark."
+                            if watermark is None
+                            else "Certified watermark retained by the published artifact extension.",
+                        },
+                    )
+                )
+            if extensions:
+                return
+        for feed in feeds:
+            watermark = None if evidence is None else evidence.complete_through_by_feed.get(feed)
+            checks.append(
+                HealthCheck(
+                    check="feed_completeness",
+                    analysis_population="triggered",
+                    feed=feed,
+                    availability="unavailable" if watermark is None else "available",
+                    conclusion=None if watermark is None else "descriptive",
+                    context={
+                        "reason": "No certified completeness watermark is retained for this feed."
+                        if watermark is None
+                        else "Certified completeness watermark at the source cutoff.",
+                        "watermark": None if watermark is None else watermark.isoformat(),
+                    },
+                )
+            )
+        if not feeds:
+            checks.append(
+                HealthCheck(
+                    check="feed_completeness",
+                    analysis_population="triggered",
+                    availability="unavailable",
+                    context={
+                        "reason": "This source retains no per-feed completeness certificates."
+                    },
+                )
+            )
+
+    def _trigger_assumptions(self) -> HealthCheck:
+        from increment.estimation.health import HealthCheck
+
+        runtime_inference = self._plan.inference
+        declared_plan = getattr(getattr(self._src, "artifact_experiment", None), "plan", None)
+        if declared_plan is None and isinstance(self._state, DefinitionsArmAnalysisState):
+            declared_plan = self._state.experiment.plan
+        inference = getattr(declared_plan, "inference", runtime_inference)
+        registration = getattr(inference, "triggered_registration", None)
+        look_policy = getattr(inference, "triggered_look_policy", None)
+        return HealthCheck(
+            check="trigger_assumptions",
+            analysis_population="triggered",
+            availability="available",
+            conclusion="descriptive",
+            context={
+                "counterfactual_trigger_invariance": "assumed, not established by balance or rates",
+                "trigger_order_stationarity": "assumed, not established by balance or rates",
+                "triggered_look_policy": look_policy,
+                "family_guarantee": (
+                    None
+                    if registration is None
+                    else getattr(registration, "family_guarantee", None)
+                ),
+                "risk": (
+                    "Balanced trigger rates do not verify counterfactual trigger invariance.",
+                    "Trigger-order stationarity remains an assumption.",
+                ),
+            },
+        )
+
+    def _health_snapshot_id(self) -> str | None:
+        from hashlib import sha256
+
+        from increment._canonical import canonical_json_bytes
+        from increment._source_identity import source_identity
+
+        return "sha256:" + sha256(canonical_json_bytes(source_identity(self._src))).hexdigest()
+
+    def _health_cutoff(self) -> str | None:
+        evidence = self._session.source_snapshot_evidence if self._session is not None else None
+        if evidence is not None:
+            return evidence.observation_cutoff_ts.isoformat()
+        manifest = getattr(self._src, "_manifest", None)
+        if manifest is not None:
+            extension = next(
+                (
+                    extension
+                    for extension in manifest.extensions
+                    if extension.kind == "trigger_population"
+                ),
+                None,
+            )
+            if extension is not None:
+                return extension.observation_cutoff_ts.isoformat()
+        return None
 
     def srm(
         self,
