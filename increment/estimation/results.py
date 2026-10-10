@@ -821,6 +821,58 @@ class _RowIdentity(CodedModel, BaseModel):
         return value
 
 
+def _selection_qualification(row: Any) -> str | None:
+    """Describe an affirmative family selection from the row's retained provenance."""
+    if getattr(row, "discovery", None) is not True:
+        return None
+    status = getattr(row, "multiplicity_status", None)
+    q = getattr(row, "family_q", None)
+    size = getattr(row, "family_size", None)
+    family = f"retained family size {size}" if size is not None else "retained family"
+    level = f" at q={q:g}" if q is not None else ""
+    if getattr(row, "sequential_result", None) is not None:
+        procedure = "e-BH family selection"
+        guarantee = getattr(row, "family_guarantee", None)
+        if (
+            getattr(row, "analysis_population", None) == "triggered"
+            and status == "exploratory_family"
+            and guarantee is None
+        ):
+            return (
+                f"{procedure}{level}; exploratory_family; outcome-dependent triggered looks; "
+                f"no controlled guarantee; {family}"
+            )
+        qualification = (
+            "finite-sample guarantee"
+            if guarantee == "finite_sample"
+            else "asymptotic-sequential guarantee"
+            if guarantee == "asymptotic_sequential"
+            else "no controlled guarantee"
+        )
+        look = (
+            "; outcome-independent triggered-look policy"
+            if getattr(row, "analysis_population", None) == "triggered" and guarantee is not None
+            else ""
+        )
+        return (
+            f"{procedure}{level}; arbitrary-dependence selection{look}; {qualification}; {family}"
+        )
+    if status == "exploratory_family" and q is not None:
+        return (
+            f"Benjamini-Hochberg exploratory family selection{level}; {family}; "
+            "selected interval is FCR-adjusted; FDR qualification requires independence or "
+            "positive dependence; exploratory, not confirmatory"
+        )
+    if status == "exploratory_family":
+        return f"Exploratory Bonferroni family selection; {family}; not confirmatory"
+    if q is not None:
+        return (
+            f"Benjamini-Hochberg family selection{level}; {family}; FDR qualification requires "
+            "independence or positive dependence"
+        )
+    return f"Family selection{level}; {family}"
+
+
 class LiftEstimate(_RowIdentity):
     """A lift estimate, carrying the metadata to identify which (metric,
     method, group) and its persisted inference reference.
@@ -1430,27 +1482,39 @@ class LiftEstimate(_RowIdentity):
             return f"LiftEstimate({', '.join(details)})"
         if self.confidence_set is not None:
             region = self.confidence_set
+            qualification = _selection_qualification(self)
+            suffix = (
+                f", selection_qualification={qualification!r}" if qualification is not None else ""
+            )
             return (
                 f"LiftEstimate(metric={self.metric!r}, group={self.group_id!r}, "
                 f"value={region.point!r}, lower={region.relative.lower!r}, "
-                f"upper={region.relative.upper!r}, reference='confidence_set')"
+                f"upper={region.relative.upper!r}, reference='confidence_set'{suffix})"
             )
         unit = self.value_scale
         if self.relative_unavailable_reason is not None:
+            qualification = _selection_qualification(self)
+            suffix = (
+                f", selection_qualification={qualification!r}" if qualification is not None else ""
+            )
             return (
                 f"LiftEstimate(metric={self.metric!r}, group={self.group_id!r}, "
                 f"value={None if self.lift is None else self.lift.value!r}, "
                 f"relative_unavailable={self.relative_unavailable_reason!r}, "
-                f"abs_diff={self.abs_diff!r})"
+                f"abs_diff={self.abs_diff!r}{suffix})"
             )
         if self.relative_confidence_set is not None:
             relative = self.relative_confidence_set
+            qualification = _selection_qualification(self)
+            suffix = (
+                f", selection_qualification={qualification!r}" if qualification is not None else ""
+            )
             return (
                 f"LiftEstimate(metric={self.metric!r}, group={self.group_id!r}, "
                 f"estimand={self.estimand!r}, value="
                 f"{None if self.lift is None else self.lift.value!r} ({unit}), "
                 f"relative_set={relative.geometry}:{relative.intervals!r}, "
-                f"stat_sig={self.stat_sig()}, discovery={self.discovery!r})"
+                f"stat_sig={self.stat_sig()}, discovery={self.discovery!r}{suffix})"
             )
         if self.sequential_result is not None:
             value = "unavailable" if self.lift is None else f"{self.lift.value:+.4g}"
@@ -1475,10 +1539,12 @@ class LiftEstimate(_RowIdentity):
             else:
                 interval = f"interval=({self.lift.lb:+.4g}, {self.lift.ub:+.4g})"
         stat_sig = self.stat_sig()
+        qualification = _selection_qualification(self)
+        suffix = f", selection_qualification={qualification!r}" if qualification is not None else ""
         return (
             f"LiftEstimate(metric={self.metric!r}, group={self.group_id!r}, "
             f"estimand={self.estimand!r}, value={value} ({unit}), "
-            f"{interval}, stat_sig={stat_sig}, discovery={self.discovery!r})"
+            f"{interval}, stat_sig={stat_sig}, discovery={self.discovery!r}{suffix})"
         )
 
     @property

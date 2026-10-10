@@ -144,6 +144,26 @@ def test_only_a_discovery_is_coloured_as_a_finding(_saved_added_snapshot):
     favorable = coeftable_theme(snapshot.config.theme).favorable
     # An unadjusted interval clearing zero is not a finding unless the family selects it.
     assert shown(False).count(favorable) < shown(True).count(favorable)
+    qualified = shown(True)
+    for token in (
+        "Selection qualification",
+        "Benjamini-Hochberg",
+        "FCR-adjusted",
+        "independence or positive dependence",
+        "not confirmatory",
+    ):
+        assert token in qualified
+    selected = overview.exploratory[0].model_copy(update={"lift": clear, "discovery": True})
+    selected_overview = dataclasses.replace(overview, exploratory=(selected,))
+    selected_rows = overview_rows(dataclasses.replace(snapshot, overview=selected_overview), None)
+    selected_row = next(row for row in selected_rows if row["discovery"])
+    assert selected_row["family_q"] == overview.family_q
+    assert selected_row["family_size"] == overview.family_size
+    representation = repr(selected)
+    assert "Benjamini-Hochberg" in representation
+    assert "FCR-adjusted" in representation
+    assert "independence or positive dependence" in representation
+    assert "not confirmatory" in representation
 
 
 @pytest.mark.integration

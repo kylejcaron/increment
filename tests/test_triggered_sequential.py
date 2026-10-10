@@ -144,6 +144,7 @@ def _events(
     trigger_rate: float = 0.5,
     effect: float = 0.4,
     secondaries: tuple[str, ...] = (),
+    secondary_effect: float = 0.0,
     uptake: bool = False,
     treatment_trigger_delay: int = 0,
 ) -> pa.Table:
@@ -187,7 +188,14 @@ def _events(
             lift = effect if (arm == "T" and triggered) else 0.0
             add(uid, arm, "revenue", base * (1.0 + lift), anchor + dt.timedelta(days=1))
             for name in secondaries:
-                add(uid, arm, name, float(rng.lognormal(0.0, 0.3)), anchor + dt.timedelta(days=1))
+                secondary_lift = secondary_effect if arm == "T" and triggered else 0.0
+                add(
+                    uid,
+                    arm,
+                    name,
+                    float(rng.lognormal(0.0, 0.3)) * (1.0 + secondary_lift),
+                    anchor + dt.timedelta(days=1),
+                )
     return pa.table(
         {
             "user_id": rows["user_id"],
@@ -947,7 +955,10 @@ def test_secondary_family_is_selected_per_population_and_labelled_by_look_policy
         plan += "        triggered_look_policy: outcome_independent\n"
     secondaries = ("aux_a", "aux_b")
     analysis, _ = _analysis(
-        tmp_path, _events(secondaries=secondaries), plan=plan, secondaries=secondaries
+        tmp_path,
+        _events(secondaries=secondaries, secondary_effect=1.0),
+        plan=plan,
+        secondaries=secondaries,
     )
     try:
         spec = analysis.experiment.plan.inference
@@ -991,6 +1002,112 @@ def test_secondary_family_is_selected_per_population_and_labelled_by_look_policy
         assert [row.multiplicity_status for row in restored] == [
             row.multiplicity_status for row in rows
         ]
+    finally:
+        analysis.close()
+
+
+def _assert_exploratory_selection_public_surfaces(rows, selected):
+    from increment.tables import estimates_to_readout, readout_table
+
+    restored = ReadoutResults.model_validate_json(rows.model_dump_json())
+    text = repr(selected)
+    assert "outcome-dependent" in text
+    assert "exploratory_family" in text
+    assert "no controlled guarantee" in text
+    restored_selected = next(
+        row
+        for row in restored
+        if row.analysis_population == "triggered"
+        and row.metric == selected.metric
+        and row.group_id == selected.group_id
+        and row.discovery
+    )
+    assert restored_selected.discovery is True
+    assert restored_selected.family_guarantee is None
+    assert restored_selected.multiplicity_status == "exploratory_family"
+    assert restored_selected.family_id == selected.family_id
+    assert restored_selected.family_axes == selected.family_axes
+    assert restored_selected.family_q == selected.family_q
+    assert restored_selected.family_size == selected.family_size
+    frame = restored.to_frame()
+    selected_frame = frame[
+        (frame["analysis_population"] == "triggered")
+        & (frame["metric"] == selected.metric)
+        & (frame["group_id"] == selected.group_id)
+    ].iloc[0]
+    assert selected_frame["family_id"] == selected.family_id
+    assert selected_frame["multiplicity_status"] == "exploratory_family"
+    assert selected_frame["family_q"] == pytest.approx(selected.family_q)
+    assert all(axis in selected_frame["family_axes"] for axis in selected.family_axes)
+    assert bool(selected_frame["discovery"])
+    import pandas as pd
+
+    assert pd.isna(selected_frame["family_guarantee"])
+    rendered = readout_table(estimates_to_readout(restored)).gt().as_raw_html()
+    assert "outcome-dependent" in rendered
+    assert "no controlled guarantee" in rendered
+
+
+def test_exploratory_selection_is_qualified_on_public_surfaces(tmp_path):
+    secondaries = ("aux_a", "aux_b")
+    analysis, _ = _analysis(
+        tmp_path,
+        _events(secondaries=secondaries, secondary_effect=1.0),
+        plan=_FAMILY_PLAN,
+        secondaries=secondaries,
+    )
+    try:
+        analysis.capture_sequential(finalized=True, as_of=_LATER)
+        rows = analysis.run()
+        selected = next(
+            row
+            for row in rows
+            if row.analysis_population == "triggered"
+            and row.metric in secondaries
+            and row.discovery
+        )
+        _assert_exploratory_selection_public_surfaces(rows, selected)
+    finally:
+        analysis.close()
+
+
+def test_filtered_readout_keeps_original_family_qualification(tmp_path):
+    from increment.tables import estimates_to_readout, readout_table
+
+    secondaries = ("aux_a", "aux_b")
+    analysis, _ = _analysis(
+        tmp_path,
+        _events(secondaries=secondaries, secondary_effect=1.0),
+        plan=_FAMILY_PLAN,
+        secondaries=secondaries,
+    )
+    try:
+        analysis.capture_sequential(finalized=True, as_of=_LATER)
+        rows = analysis.run()
+        selected = next(
+            row
+            for row in rows
+            if row.analysis_population == "triggered"
+            and row.metric in secondaries
+            and row.discovery
+        )
+        qualification = estimates_to_readout([selected])[0]["selection_qualification"]
+        filtered = rows.filter(
+            lambda row: row.analysis_population == "triggered" and row.metric == selected.metric
+        )
+        assert filtered.metadata.scope.families == rows.metadata.scope.families
+        assert filtered.metadata.partial is True
+        filtered_selected = next(row for row in filtered if row.discovery)
+        assert filtered_selected.family_id == selected.family_id
+        assert filtered_selected.family_q == selected.family_q
+        filtered_qualification = estimates_to_readout([filtered_selected])[0][
+            "selection_qualification"
+        ]
+        assert filtered_qualification == qualification
+        html = readout_table(estimates_to_readout(filtered)).gt().as_raw_html()
+        assert "Partial view" in html
+        assert "outcome-dependent" in html
+        assert "no controlled guarantee" in html
     finally:
         analysis.close()
 

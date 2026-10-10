@@ -25,7 +25,11 @@ from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.estimation.contrast import contrast_evidence_available
 from increment.estimation.contrast_results import ContrastResult
 from increment.estimation.readout_types import refuse_legacy_sampling
-from increment.estimation.results import BinomialConfidenceSet, LiftEstimate
+from increment.estimation.results import (
+    BinomialConfidenceSet,
+    LiftEstimate,
+    _selection_qualification,
+)
 
 if TYPE_CHECKING:
     from coeftable import CoefTable, Theme
@@ -188,9 +192,12 @@ def _base_liftestimate_to_row(
         "analysis_population": getattr(est, "analysis_population", "assigned"),
         "role": getattr(est, "role", None),
         "discovery": getattr(est, "discovery", None),
+        "selection_qualification": _selection_qualification(est),
         "family_axes": getattr(est, "family_axes", None),
         "family_q": getattr(est, "family_q", None),
         "family_threshold": getattr(est, "family_threshold", None),
+        "family_guarantee": getattr(est, "family_guarantee", None),
+        "family_nominal_alpha": getattr(est, "family_nominal_alpha", None),
         "family_size": getattr(est, "family_size", None),
         "group_id": est.group_id,
     }
@@ -804,6 +811,11 @@ def _rendered_metadata_columns(
     discovery = _column_values(frame, "discovery")
     if discovery is not None and any(not _is_missing(v) for v in discovery):
         columns["Discovery"] = ["" if _is_missing(v) else ("Yes" if v else "No") for v in discovery]
+    qualifications = _column_values(frame, "selection_qualification")
+    if qualifications is not None and any(not _is_missing(value) for value in qualifications):
+        columns["Selection qualification"] = [
+            "" if _is_missing(value) else str(value) for value in qualifications
+        ]
     levels = _column_values(frame, "level")
     if show_interval_level and levels is not None:
         distinct = {v for v in levels if not _is_missing(v)}

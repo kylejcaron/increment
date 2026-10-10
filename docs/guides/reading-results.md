@@ -26,6 +26,13 @@ appear once as header notes only when informative. They remain on result
 objects and in `to_frame()`; failure rows keep a concise `Failure` column
 with their full structured context on the result object.
 
+An affirmative `r.discovery` is the raw selection result, not another
+significance verdict: it can differ from `r.stat_sig()`. The ordinary
+representation and `readout_table` place a selection qualification next to
+that result, including its procedure, exploratory/confirmatory role, retained
+family, and applicable guarantee or assumption. These disclosures do not
+change the stored selection or interval.
+
 When a triggered experiment is read without a `population` argument, `Analysis.run()` keeps
 assigned and triggered results as separate rows. Pass `population="assigned"` or
 `population="triggered"` to select one population; a selected result never pools the two.
