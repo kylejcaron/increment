@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import UNSET, _Unset
@@ -218,13 +219,21 @@ def _observational_adjustment_identity(src, selected, configs, design, rows):
             key=lambda row: (str(row.get("group_id")), str(row.get("unit_id"))),
         )
         for row in rows:
-            digest.update(row)
+            digest.update({key: _digestable(value) for key, value in row.items()})
         identity[metric.name] = {
             "columns": tuple(frame.columns),
             "sha256": digest.hexdigest(),
             "n_rows": digest.count,
         }
     return identity
+
+
+def _digestable(value):
+    """Missing covariates arrive as NaN; canonical JSON admits only finite
+    numbers, so non-finite floats are encoded as tagged strings."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return "nan" if math.isnan(value) else ("inf" if value > 0 else "-inf")
+    return value
 
 
 def _preflight_roster(src, design, population, observed_by_metric=None, base_roster=None):
