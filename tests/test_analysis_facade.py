@@ -14,7 +14,7 @@ import ibis
 import pytest
 from pydantic import ValidationError
 
-from increment import Analysis, IdentificationError
+from increment import Analysis, IdentificationError, Method
 from increment.breakout.estimates import (
     BreakoutEstimates,
     DailyLiftEstimates,
@@ -27,13 +27,12 @@ from increment.errors import (
     InvalidRequestError,
     UnsupportedRequestError,
 )
-from increment.estimation.diagnostics import SRMResult
-from increment.estimation.engine import Method
+from increment.estimation.diagnostics import NotApplicable, SRMResult
 from increment.estimation.results import LiftEstimate
 from increment.frame import MetricSpec
 from increment.query.artifact_contract import ArtifactContractError
 from increment.readouts import _run as run_readout
-from increment.semantics.design import AdjustmentSet, Observational
+from increment.semantics.design import AdjustmentSet, Observational, Randomized
 from increment.semantics.models import (
     AnalysisPlan,
     Definitions,
@@ -97,12 +96,8 @@ class TestAnalysisReturnsCollectionTypes:
 
     @pytest.mark.slow
     def test_run_breakout_returns_breakout_estimates(self, con):
-        with pytest.warns(
-            UserWarning,
-            match=r"run_breakout: segment .* (?:excluded|skipped|no usable|fewer than)",
-        ):
-            with _ignore_ibis_deprecation():
-                results = self.analysis(con).run_breakout()
+        with _ignore_ibis_deprecation():
+            results = self.analysis(con).run_breakout()
         assert isinstance(results, BreakoutEstimates)
         assert isinstance(results, list)
         assert len(results) > 0
@@ -319,7 +314,8 @@ def test_analysis_run_native_randomized_forwards_prior(seeded_con, seeded_defs):
         )
 
     assert flat.require_lift().value > 0.0
-    assert abs(shrunk.require_lift().value) < abs(flat.require_lift().value)
+    assert shrunk.require_lift() == flat.require_lift()
+    assert shrunk.posterior_estimate is not None
 
 
 def _capture_readout(con, definitions_path, readout: str) -> dict[str, float | None]:
@@ -447,7 +443,11 @@ def test_analysis_from_unit_summary_srm():
         }
     )
     a = Analysis.from_unit_summary(
-        df, unit="user_id", group="variant", control="control", metrics={"revenue": "mean"}
+        df,
+        unit="user_id",
+        group="variant",
+        metrics={"revenue": "mean"},
+        design=Randomized(control_group="control", allocation_scheme="independent"),
     )
     result = a.srm(expected={"control": 0.5, "treatment": 0.5})
     assert isinstance(result, SRMResult)
@@ -469,8 +469,8 @@ def test_analysis_srm_defaults_to_anytime_valid_inference():
         frame,
         unit="user_id",
         group="group",
-        control="control",
         metrics={"revenue": "mean"},
+        design=Randomized(control_group="control", allocation_scheme="independent"),
     )
 
     result = analysis.srm(expected={"control": 0.5, "treatment": 0.5})
@@ -478,6 +478,31 @@ def test_analysis_srm_defaults_to_anytime_valid_inference():
     assert isinstance(result, SRMResult)
     assert result.inference == "always_valid"
     assert result.alpha == 0.001
+
+
+def test_analysis_srm_is_not_applicable_without_declared_independent_scheme():
+    import pandas as pd
+
+    frame = pd.DataFrame(
+        {
+            "user_id": range(8),
+            "group": ["control"] * 4 + ["treatment"] * 4,
+            "revenue": [1.0] * 8,
+        }
+    )
+    analysis = Analysis.from_unit_summary(
+        frame,
+        unit="user_id",
+        group="group",
+        control="control",
+        metrics={"revenue": "mean"},
+    )
+
+    result = analysis.srm(expected={"control": 0.5, "treatment": 0.5})
+
+    assert isinstance(result, NotApplicable)
+    assert result.check == "srm"
+    assert result.reason.startswith("integrity.allocation_scheme_missing")
 
 
 def test_analysis_srm_forwards_explicit_fixed_inference():
@@ -507,10 +532,7 @@ def test_analysis_srm_forwards_explicit_fixed_inference():
 
 
 def test_analysis_from_unit_summary_on_unassigned_threads_through():
-    """The facade forwards on_unassigned to the frame source: default
-    refuses null group labels naming the knob; 'exclude' surfaces the
-    excluded count in unit_counts() and beside srm() with no phantom arm,
-    no extra estimate, and no chi-square degree of freedom."""
+    """The facade forwards on_unassigned to the frame source and counts excluded rows."""
     import pandas as pd
 
     df = pd.DataFrame(
@@ -525,16 +547,16 @@ def test_analysis_from_unit_summary_on_unassigned_threads_through():
             df, unit="user_id", group="variant", control="control", metrics={"revenue": "mean"}
         )
     assert raised.value.code == "source.frame.unassigned"
-    a = Analysis.from_unit_summary(
+    analysis = Analysis.from_unit_summary(
         df,
         unit="user_id",
         group="variant",
-        control="control",
         metrics={"revenue": "mean"},
+        design=Randomized(control_group="control", allocation_scheme="independent"),
         on_unassigned="exclude",
     )
-    assert [e.group_id for e in _lift_rows(a.run())] == ["treatment"]
-    result = a.srm(expected={"control": 0.5, "treatment": 0.5})
+    assert [e.group_id for e in _lift_rows(analysis.run())] == ["treatment"]
+    result = analysis.srm(expected={"control": 0.5, "treatment": 0.5})
     assert isinstance(result, SRMResult)
     assert result.observed == {"treatment": 4, "control": 4}
     assert result.df == 1
@@ -562,12 +584,12 @@ def test_analysis_native_srm(seeded_con, seeded_defs, monkeypatch):
         monkeypatch.setattr(seeded_con, "to_pyarrow", record_query)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            result = a.srm(expected={"control": 0.5, "treatment": 0.5})
+            result = a.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
         assert "query.integrity.mixed_assignments_excluded" not in warning_codes(caught)
         assert isinstance(result, SRMResult)
         assert result.observed["treatment"] == result.observed["control"]
         assert result.is_srm is False
-        assert result.inference == "always_valid"
+        assert result.inference == "fixed"
         assert result.mixed_assignment_units == 0
         assert "(mixed assignment)" not in result.observed
         assert len(queries) == 2
@@ -576,10 +598,8 @@ def test_analysis_native_srm(seeded_con, seeded_defs, monkeypatch):
 
 
 @pytest.mark.slow
-def test_analysis_native_srm_zero_fills_explicit_missing_arm_for_always_valid_prefix(
-    seeded_defs,
-):
-    """A native cumulative prefix retains an explicit, unobserved arm."""
+def test_analysis_native_srm_zero_fills_explicit_missing_arm_for_fixed_look(seeded_defs):
+    """A fixed-look check retains an explicit, unobserved arm."""
     from examples._seed import seed_event_log
 
     con = ibis.duckdb.connect()
@@ -587,17 +607,17 @@ def test_analysis_native_srm_zero_fills_explicit_missing_arm_for_always_valid_pr
     con.raw_sql("DELETE FROM analytics.event_log WHERE group_id = 'treatment'")
 
     with Analysis.from_definitions("new_onboarding_v2", seeded_defs, con) as a:
-        result = a.srm(expected={"control": 0.5, "treatment": 0.5})
+        result = a.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
 
     assert isinstance(result, SRMResult)
-    assert result.inference == "always_valid"
+    assert result.inference == "fixed"
     assert result.observed == {"control": 14, "treatment": 0}
     assert result.is_srm is True
 
 
 @pytest.mark.slow
-def test_analysis_native_srm_always_valid_requires_explicit_allocation(seeded_defs, monkeypatch):
-    """Definition-backed analyses have no implicit known allocation."""
+def test_analysis_native_srm_requires_declared_independent_allocation(seeded_defs, monkeypatch):
+    """Always-valid SRM is not applicable without independent assignment."""
     from examples._seed import seed_event_log
 
     con = ibis.duckdb.connect()
@@ -612,9 +632,9 @@ def test_analysis_native_srm_always_valid_requires_explicit_allocation(seeded_de
             return to_pyarrow(expr, *args, **kwargs)
 
         monkeypatch.setattr(con, "to_pyarrow", record_query)
-        with pytest.raises(InvalidRequestError) as raised:
-            a.srm()
-        assert raised.value.code == "estimation.diagnostics.always_srm_predeclared"
+        not_applicable = a.srm()
+        assert isinstance(not_applicable, NotApplicable)
+        assert not_applicable.reason.startswith("integrity.allocation_scheme_missing")
         assert queries == []
         fixed = a.srm(inference="fixed")
 
@@ -756,7 +776,7 @@ def test_analysis_native_null_assignment_is_accounted_separately(seeded_defs, po
         else:
             with _ignore_ibis_deprecation():
                 analysis.run()
-        result = analysis.srm(expected={"control": 0.5, "treatment": 0.5})
+        result = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
 
     assert isinstance(result, SRMResult)
     assert result.unassigned_units == 1
@@ -785,7 +805,7 @@ def test_analysis_revalidates_mixed_assignments_before_each_readout(seeded_defs)
     con = ibis.duckdb.connect()
     seed_event_log(con, n_units=200)
     with Analysis.from_definitions("new_onboarding_v2", seeded_defs, con) as analysis:
-        result = analysis.srm(expected={"control": 0.5, "treatment": 0.5})
+        result = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
         assert isinstance(result, SRMResult)
         assert result.mixed_assignment_units == 0
 
@@ -824,7 +844,7 @@ def test_analysis_rebuilds_materialized_exposures_when_assignments_change(seeded
         else:
             with _ignore_ibis_deprecation():
                 rows = analysis.run()
-        counts = analysis.srm(expected={"control": 0.5, "treatment": 0.5})
+        counts = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
         assert isinstance(counts, SRMResult)
         assert counts.mixed_assignment_units == 1
         assert sum(counts.observed.values()) == 199
@@ -873,7 +893,7 @@ def test_analysis_rebuilds_materialized_exposures_without_fetching_mixed_identit
                 (row.metric, row.group_id, row.method): row.require_lift().value
                 for row in _lift_rows(analysis.run())
             }
-        repaired = analysis.srm(expected={"control": 0.5, "treatment": 0.5})
+        repaired = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
         assert isinstance(repaired, SRMResult)
         assert repaired.mixed_assignment_units == 1
 
@@ -903,14 +923,14 @@ def test_analysis_rebuilds_materialized_exposures_when_contamination_is_repaired
     ) as analysis:
         with _ignore_ibis_deprecation():
             analysis.run()
-        contaminated = analysis.srm(expected={"control": 0.5, "treatment": 0.5})
+        contaminated = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
         assert isinstance(contaminated, SRMResult)
         assert sum(contaminated.observed.values()) == 199
 
         _remove_second_assignment(con)
         with _ignore_ibis_deprecation():
             analysis.run()
-        repaired = analysis.srm(expected={"control": 0.5, "treatment": 0.5})
+        repaired = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
         assert isinstance(repaired, SRMResult)
         assert repaired.mixed_assignment_units == 0
         assert sum(repaired.observed.values()) == 200
@@ -948,7 +968,7 @@ def test_analysis_native_mixed_assignment_warns_once_and_remains_accounted(seede
         assert "query.integrity.mixed_assignments_excluded" in warning_codes(rec)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            result = analysis.srm(expected={"control": 0.5, "treatment": 0.5})
+            result = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
 
     assert "query.integrity.mixed_assignments_excluded" not in warning_codes(caught)
     assert isinstance(result, SRMResult)
@@ -970,7 +990,7 @@ def test_analysis_native_mixed_assignment_can_be_explicitly_excluded(seeded_defs
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             analysis.run()
-            result = analysis.srm(expected={"control": 0.5, "treatment": 0.5})
+            result = analysis.srm(expected={"control": 0.5, "treatment": 0.5}, inference="fixed")
 
     assert "query.integrity.mixed_assignments_excluded" not in warning_codes(caught)
     assert isinstance(result, SRMResult)
@@ -1257,7 +1277,8 @@ def test_run_composes_cuped_with_prior(informative_prior_summary_frame):
     )[0]
 
     assert cuped.require_lift().value < unadjusted.require_lift().value
-    assert abs(shrunk.require_lift().value) < abs(cuped.require_lift().value)
+    assert shrunk.require_lift() == cuped.require_lift()
+    assert shrunk.posterior_estimate != pytest.approx(cuped.require_lift().value)
 
 
 def test_run_per_metric_declared_priors_shrink_independently(informative_prior_summary_frame):
@@ -1291,9 +1312,8 @@ def test_run_per_metric_declared_priors_shrink_independently(informative_prior_s
     shrunk_by_name = {r.metric: r for r in _lift_rows(bound_analysis.run())}
 
     for name in ("revenue", "orders"):
-        assert abs(shrunk_by_name[name].require_lift().value) < abs(
-            by_name[name].require_lift().value
-        ), f"{name}: declared prior did not shrink its own estimate"
+        assert shrunk_by_name[name].require_lift() == by_name[name].require_lift()
+        assert shrunk_by_name[name].posterior_estimate is not None
 
 
 def test_run_call_wide_prior_overrides_declared_per_metric_prior(informative_prior_summary_frame):
@@ -1309,7 +1329,8 @@ def test_run_call_wide_prior_overrides_declared_per_metric_prior(informative_pri
     declared = _lift_rows(analysis.run())[0]
     overridden = _lift_rows(analysis.run(prior=Normal(mu=0.0, sigma=0.01)))[0]
 
-    assert abs(overridden.require_lift().value) < abs(declared.require_lift().value), (
+    assert overridden.require_lift() == declared.require_lift()
+    assert overridden.posterior_estimate != pytest.approx(declared.require_lift().value), (
         "call-wide prior= must win over the declared (near-flat) MetricSpec.prior"
     )
 
@@ -1433,7 +1454,8 @@ def test_run_forwards_prior(unit_summary_analysis):
     shrunk = unit_summary_analysis.run(prior=Normal(mu=0.0, sigma=0.01))[0]
 
     assert flat.require_lift().value > 0.0
-    assert abs(shrunk.require_lift().value) < abs(flat.require_lift().value)
+    assert shrunk.require_lift() == flat.require_lift()
+    assert shrunk.posterior_estimate is not None
 
 
 def test_run_forwards_alternative_label(unit_summary_analysis):
@@ -2022,13 +2044,16 @@ def test_analysis_run_guardrail_experiment_weak_instrument_narrowed_estimands_ke
     for row in _lift_rows(results):
         by_metric[row.metric].add(row.estimand)
 
-    # A guardrail's suppressed LATE leaves the same outcome-specific
-    # diagnostic as any other metric's -- never an unrequested itt row.
-    expected = {"errors": {"compliance"}, "revenue": {"compliance"}}
+    # Scope completion retains each requested weak-LATE cell as an unavailable
+    # result, alongside the metric-specific and design-wide compliance diagnostics.
+    expected = {"errors": {"compliance", "late"}, "revenue": {"compliance", "late"}}
     if "compliance" in estimands:
         expected["uptake"] = {"compliance"}
     assert dict(by_metric) == expected
     for row in _lift_rows(results):
+        if row.estimand == "late":
+            assert row.failure_code == "estimation.encouragement.late.weak_first_stage"
+            assert row.lift is None
         if row.estimand == "compliance":
             assert row.lift is not None
             assert row.lift.value == pytest.approx(1 / 20)
@@ -2115,7 +2140,8 @@ def test_from_unit_panel_run_forwards_prior():
     shrunk = _lift_rows(analysis.run(prior=Normal(mu=0.0, sigma=0.01)))[0]
 
     assert flat.require_lift().value > 0.0
-    assert abs(shrunk.require_lift().value) < abs(flat.require_lift().value)
+    assert shrunk.require_lift() == flat.require_lift()
+    assert shrunk.posterior_estimate is not None
 
 
 @pytest.fixture(scope="session")
@@ -2360,10 +2386,12 @@ def test_estimate_cate_matches_across_unit_panel_and_unit_summary(tmp_path):
 
 
 def test_observational_ate_matches_across_definitions_artifact_and_unit_summary(tmp_path):
-    """Confounded assignment adjusted on a declared pre-exposure covariate: the
-    warehouse and artifact routes return the dataframe route's rows exactly."""
+    """Confounded assignment adjusted on a declared pre-exposure covariate: the warehouse and artifact routes return the dataframe route's rows exactly."""
+    from collections import Counter
+
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
+    from increment.query.source import open_artifact
     from increment.semantics import load
     from increment.semantics.artifact import UnitCovariateRequest
     from tests.analysis_factory import lift_rows
@@ -2380,6 +2408,8 @@ def test_observational_ate_matches_across_definitions_artifact_and_unit_summary(
         store, extensions=[UnitCovariateRequest(property_name="tenure", source_name="events")]
     )
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    with open_artifact(store, ref, expected_context=context) as artifact_source:
+        assert artifact_source.assignment_counts() == dict(Counter(group.values()))
     oracle = Analysis.from_unit_summary(
         _unit_summary_frame(tenure, group, revenue),
         unit="user_id",

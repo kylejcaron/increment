@@ -643,8 +643,9 @@ def test_from_unit_panel_daily_ratio_ignores_observational_adjustment_capability
 
 def test_randomized_frame_path_unchanged():
     # control="C" sugar still builds Randomized and yields unadjusted estimates.
+    table = _confounded_table(200, seed=11)
     an = Analysis.from_unit_summary(
-        _confounded_table(200, seed=11),
+        table,
         unit="user_id",
         group="variant",
         control="C",
@@ -652,7 +653,17 @@ def test_randomized_frame_path_unchanged():
     )
     (est,) = lift_rows(an.run())
     assert est.method == "unadjusted"
-    assert isinstance(an.srm(expected={"C": 0.5, "T": 0.5}), SRMResult)
+
+    from increment.semantics.design import Randomized
+
+    declared = Analysis.from_unit_summary(
+        table,
+        unit="user_id",
+        group="variant",
+        metrics={"revenue": "mean"},
+        design=Randomized(control_group="C", allocation_scheme="independent"),
+    )
+    assert isinstance(declared.srm(expected={"C": 0.5, "T": 0.5}), SRMResult)
 
 
 # The absolute (additive) channel at the readout layer: margins_abs
@@ -729,7 +740,7 @@ def test_run_margins_abs_reaches_the_estimate_and_decides_on_the_additive_interv
     assert est.alternative == "less"  # decrease-preferred: adverse side is up
     assert est.preferred_direction == "decrease"
     assert est.abs_lb is not None and est.abs_ub is not None
-    assert 0.0 <= est.prob_favorable() <= 1.0
+    assert est.prob_favorable() is None
     assert est.stat_sig() == (est.abs_ub < 0.10)
 
 
@@ -779,17 +790,14 @@ def test_run_margins_abs_also_reaches_an_unadjusted_observational_row():
 
 
 @pytest.mark.filterwarnings("ignore:(IPTW|DML|AIPW) covariate balance advisory:UserWarning")
-def test_absolute_margin_on_a_degenerate_row_refuses_rather_than_falling_back():
-    """No silent substitution of the relative decision when the additive
-    one is unavailable."""
+def test_absolute_margin_without_posterior_probability_stays_unavailable():
+    """A sampling-only absolute guardrail has no posterior probability."""
     from increment import readouts as ro
 
     src = _obs_src(preferred_direction="decrease", margin_abs=0.10)
     (est,) = ro.run(src)
     degenerate = est.model_copy(update={"abs_se": None})
-    with pytest.raises(InvalidRequestError) as exc:
-        degenerate.prob_favorable()
-    assert exc.value.code == "estimation.results.lift.p_value_null_abs_missing_abs_se"
+    assert degenerate.prob_favorable() is None
 
 
 def test_run_value_scale_rescues_a_near_zero_metric_end_to_end():
@@ -867,6 +875,12 @@ def test_run_groups_observational_dispatch_by_declared_methods():
     assert ("signups", "iptw") not in by_metric_method
     assert ("revenue", "unadjusted") not in by_metric_method
 
+    (default,) = ro.run(src, metrics=["revenue"])
+    (explicit,) = ro.run(src, decision_method=Method(name="unadjusted"), metrics=["revenue"])
+    assert default.method == "iptw"
+    assert explicit.method == "unadjusted"
+    assert default.source_snapshot_id != explicit.source_snapshot_id
+
 
 @pytest.mark.filterwarnings("ignore:(IPTW|DML|AIPW) covariate balance advisory:UserWarning")
 def test_run_observational_grouping_preserves_declaration_order():
@@ -940,10 +954,10 @@ def test_run_absolute_metric_in_one_group_does_not_refuse_an_unadjusted_sibling_
 
 
 def test_run_groups_observational_dispatch_by_declared_priors():
-    """Two metrics with distinct declared `prior`s split into separate
-    `estimate_ate` groups - each shrinks toward its OWN prior, proving
-    `readouts.run`'s grouping forwards `config.prior` (not the call-wide
-    scalar) per group."""
+    """Distinct declared priors change only each metric's posterior sidecar.
+
+    Their prior-free sampling estimates stay identical to the no-prior run.
+    """
     from increment.estimation.engine import Method
     from increment.estimation.inference import Normal
     from increment.frame import MetricSpec, from_unit_summary
@@ -976,14 +990,28 @@ def test_run_groups_observational_dispatch_by_declared_priors():
         ],
         design=_OBS_TRIM,
     )
-    shrunk_by_metric = {
+    prior_by_metric = {
         r.metric: r for r in ro.run(bound_src, decision_method=Method(name="unadjusted"))
     }
 
     for name in ("revenue", "signups"):
-        assert abs(shrunk_by_metric[name].require_lift().value) < abs(
-            flat_by_metric[name].require_lift().value
-        ), f"{name}: declared prior did not shrink its own estimate"
+        prior_row = prior_by_metric[name]
+        flat_row = flat_by_metric[name]
+        for field in ("value", "lb", "ub"):
+            assert getattr(prior_row.require_lift(), field) == pytest.approx(
+                getattr(flat_row.require_lift(), field)
+            )
+        assert prior_row.p_value() == pytest.approx(flat_row.p_value())
+        assert prior_row.stat_sig() == flat_row.stat_sig()
+        assert prior_row.sampling_available is True
+        assert prior_row.posterior_available is True
+        assert prior_row.posterior_estimate is not None
+
+    revenue_posterior = prior_by_metric["revenue"].posterior_estimate
+    signups_posterior = prior_by_metric["signups"].posterior_estimate
+    assert revenue_posterior is not None
+    assert signups_posterior is not None
+    assert revenue_posterior < signups_posterior
 
 
 def _two_metric_src(specs):
@@ -1011,12 +1039,18 @@ class _ConstantPropensity:
         return np.full(X.shape[0], self._probability)
 
 
+def _revenue_constant_propensity() -> _ConstantPropensity:
+    return _ConstantPropensity()
+
+
+def _signups_constant_propensity() -> _ConstantPropensity:
+    return _ConstantPropensity()
+
+
 def _split_spec_shapes():
     """Three `MetricSpec` pairs: one that collapses to a single
     `estimate_ate` group, and two that split into one group per metric -
-    by distinct method names, and by distinct-but-functionally-identical
-    learner callables (a plain callable compares by object identity, so
-    two separately-built factories never group)."""
+    by distinct method names, and by distinct importable learner factories."""
     from increment.estimation.engine import Method
     from increment.frame import MetricSpec
 
@@ -1030,13 +1064,13 @@ def _split_spec_shapes():
             MetricSpec(
                 name="revenue",
                 decision_method=Method(
-                    name="iptw", propensity_learner=lambda: _ConstantPropensity()
+                    name="iptw", propensity_learner=_revenue_constant_propensity
                 ),
             ),
             MetricSpec(
                 name="signups",
                 decision_method=Method(
-                    name="iptw", propensity_learner=lambda: _ConstantPropensity()
+                    name="iptw", propensity_learner=_signups_constant_propensity
                 ),
             ),
         ],
@@ -1089,8 +1123,8 @@ def test_global_prior_method_scales_refuse_across_metric_groups_including_defaul
     assert exc.value.code == "estimation.adjust.prior.method_scale"
 
 
-def test_global_prior_ignores_unsupported_default_adjustment_metric():
-    """A skipped default-IPTW ratio cannot change the prior parameterization."""
+def test_default_adjustment_ratio_refuses_during_prior_preflight():
+    """A call-wide prior does not bypass a structurally unsupported ratio method."""
     from increment import readouts as ro
     from increment.estimation.inference import Normal
     from increment.frame import MetricSpec, from_unit_summary
@@ -1116,12 +1150,11 @@ def test_global_prior_ignores_unsupported_default_adjustment_metric():
         design=_OBS_TRIM,
     )
 
-    with pytest.warns(IncrementWarning) as rec:
-        results = ro.run(source, prior=Normal(mu=0.0, sigma=0.1))
-    assert "estimation.adjust.skip_unsupported_metric" in warning_codes(rec)
-    skipped = warning_context(rec, "estimation.adjust.skip_unsupported_metric")
-    assert skipped["metric_name"] == "rev_per_session"
-    assert [result.metric for result in results] == ["revenue"]
+    with pytest.raises(UnsupportedRequestError) as exc:
+        ro.run(source, prior=Normal(mu=0.0, sigma=0.1))
+    assert exc.value.code == "estimation.adjust_common.supported_ratio_metric"
+    assert exc.value.context["metric"] == "rev_per_session"
+    assert exc.value.context["method"] == "iptw"
 
 
 def test_all_ratio_metrics_refuse_at_validation_with_capability_code():
@@ -1147,6 +1180,41 @@ def test_all_ratio_metrics_refuse_at_validation_with_capability_code():
     with pytest.raises(UnsupportedRequestError) as exc:
         ro.run(source)
     assert exc.value.code == "estimation.adjust_common.supported_ratio_metric"
+
+
+def test_ratio_unsupported_sensitivity_does_not_refuse_supported_decision_method():
+    from increment import readouts as ro
+    from increment.estimation.engine import Method
+    from increment.frame import MetricSpec, from_unit_summary
+
+    table = _confounded_table(80, seed=8).append_column("sessions", pa.array(np.ones(80)))
+    source = from_unit_summary(
+        table,
+        unit="user_id",
+        group="variant",
+        control="C",
+        metrics=[
+            MetricSpec(
+                name="rev_per_session",
+                type="ratio",
+                numerator="revenue",
+                denominator="sessions",
+            )
+        ],
+        design=_OBS_TRIM,
+    )
+
+    with pytest.warns(IncrementWarning) as record:
+        rows = ro.run(
+            source,
+            decision_method=Method(name="unadjusted"),
+            sensitivity_methods=[Method(name="iptw")],
+        )
+    assert "estimation.adjust.skip_unsupported_metric" in warning_codes(record)
+
+    decision = next(row for row in rows if row.method_role == "decision")
+    assert decision.method == "unadjusted"
+    assert decision.sampling_available is True
 
 
 def test_global_prior_counts_custom_ratio_adjustment(monkeypatch):
@@ -1514,8 +1582,22 @@ def test_clearing_bound_ratio_prior_revalidates_observational_family(method, rev
     decision = Method(name=method)
     inherited_values = {}
     try:
+        if method == "iptw":
+            for kwargs in ({}, {"prior": None}):
+                with pytest.raises(UnsupportedRequestError) as raised:
+                    bound.run(decision_method=decision, **kwargs)
+                assert raised.value.code == "estimation.adjust_common.supported_ratio_metric"
+                assert raised.value.context["metric"] == "spend_per_click"
+                assert raised.value.context["method"] == "iptw"
+                assert raised.value.context["family"] == "secondary"
+                assert raised.value.context["correction"] == "bh"
+            return
         expected = (
-            {row.metric: row for row in lift_rows(prior_free.run(decision_method=decision))}
+            {
+                row.metric: row
+                for row in lift_rows(prior_free.run(decision_method=decision))
+                if row.method_role == "decision" and row.sampling_available is True
+            }
             if prior_free is not None
             else {}
         )
@@ -1524,23 +1606,14 @@ def test_clearing_bound_ratio_prior_revalidates_observational_family(method, rev
             assert expected["spend_per_click"].family_axes == ("metric", "arm")
             assert expected["spend_per_click"].require_lift().value == pytest.approx(0.6)
         for clear in (False, True, True, False):
-            if clear and method == "iptw":
-                with pytest.raises(UnsupportedRequestError) as raised:
-                    bound.run(decision_method=decision, prior=None)
-                assert raised.value.code == "estimation.adjust_common.supported_ratio_metric"
-                assert raised.value.context["metric"] == "spend_per_click"
-                assert raised.value.context["method"] == "iptw"
-                assert raised.value.context["family"] == "secondary"
-                assert raised.value.context["correction"] == "bh"
-                continue
             kwargs = {"prior": None} if clear else {}
-            if method == "iptw":
-                with pytest.warns(IncrementWarning):
-                    rows = lift_rows(bound.run(decision_method=decision, **kwargs))
-                assert [row.metric for row in rows] == ["revenue"]
-            else:
-                rows = lift_rows(bound.run(decision_method=decision, **kwargs))
-                assert {row.metric for row in rows} == {"revenue", "spend_per_click"}
+            rows = lift_rows(bound.run(decision_method=decision, **kwargs))
+            rows = [
+                row
+                for row in rows
+                if row.method_role == "decision" and row.sampling_available is True
+            ]
+            assert {row.metric for row in rows} == {"revenue", "spend_per_click"}
             for row in rows:
                 interval = row.require_lift()
                 values = (interval.value, interval.lb, interval.ub)
@@ -1555,9 +1628,13 @@ def test_clearing_bound_ratio_prior_revalidates_observational_family(method, rev
                         assert values == pytest.approx(inherited_values[row.metric])
                     else:
                         inherited_values[row.metric] = values
-                    if row.metric == "spend_per_click":
-                        assert row.discovery is None
-                        assert row.family_axes is None
+                    if expected:
+                        oracle = expected[row.metric]
+                        assert row.discovery == oracle.discovery
+                        assert row.family_axes == oracle.family_axes
+                        assert row.family_size == oracle.family_size
+                        if row.metric == "spend_per_click":
+                            assert row.posterior_estimate is not None
     finally:
         bound.close()
         if prior_free is not None:
@@ -1800,7 +1877,12 @@ def test_categorical_adjustment_readout_matches_dummy_oracle(constructor, method
             )
         )
     assert [row.method for row in actual] == [method]
-    assert_rows_match([row.model_dump() for row in oracle], [row.model_dump() for row in actual])
+    # The oracle and categorical input have distinct source/family identities; compare inference.
+    assert_rows_match(
+        [row.model_dump() for row in oracle],
+        [row.model_dump() for row in actual],
+        skip=("source_snapshot_id", "family_id"),
+    )
 
 
 # The same contract on the definitions-backed paths: a declared string
@@ -1893,7 +1975,8 @@ def test_categorical_adjustment_on_definitions_paths_matches_the_dummy_oracle(
     )
     actual = _normalize(analysis.run(decision_method=Method(name=method)))
     assert {method_name for methods in actual.values() for method_name in methods} == {method}
-    assert_rows_match(oracle, actual)
+    # The dummy oracle and definitions-backed source intentionally have different identities.
+    assert_rows_match(oracle, actual, skip=("source_snapshot_id", "family_id"))
 
 
 @pytest.mark.filterwarnings("ignore:(IPTW|DML|AIPW) covariate balance advisory:UserWarning")
@@ -1918,7 +2001,12 @@ def test_categorical_null_level_in_warehouse_source_matches_frame_when_imputed(t
     oracle_rows = lift_rows(oracle.run())
     warehouse_rows = lift_rows(warehouse.run())
     assert [row.estimand for row in warehouse_rows] == ["ate"]
-    assert_rows_match(_normalize(oracle_rows), _normalize(warehouse_rows))
+    # The frame oracle and warehouse source have distinct provenance identities.
+    assert_rows_match(
+        _normalize(oracle_rows),
+        _normalize(warehouse_rows),
+        skip=("source_snapshot_id", "family_id"),
+    )
 
 
 @pytest.mark.parametrize("constructor", ["from_definitions", "from_unit_day_artifact"])

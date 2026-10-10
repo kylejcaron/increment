@@ -8,6 +8,12 @@ independent questions: is the between-segment spread real
 `run_breakout()` call. Combining two calls on one dimension silently merges
 their results into one heterogeneity test or selection problem.
 
+For a trigger-declared experiment, `run_breakout()` returns assigned and
+triggered rows together. Both consumers include `analysis_population` in
+their grouping keys and preserve it on summary and segment outputs, so the
+two populations are never pooled. Scope the input to one population when
+that is the intended question.
+
 ## `segment_heterogeneity`: Q, tau², I², HKSJ, and shrinkage
 
 ```python

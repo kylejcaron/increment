@@ -20,6 +20,8 @@ class ResolvedValueScale:
     scores: ScoreStats
     abs_diff: float | None
     abs_se: float | None
+    posterior_point: float | None = None
+    posterior_scores: ScoreStats | None = None
 
 
 def resolve_value_scale(
@@ -34,8 +36,7 @@ def resolve_value_scale(
     lift_scores_fn: Callable[[float], ScoreStats],
     refuse_near_zero: Callable[[float, float], None],
 ) -> ResolvedValueScale:
-    """Resolve point, scores and the additive sidecar for the requested value_scale;
-    mu0_se, refuse_near_zero and the lift callables run only on the relative-with-prior branch."""
+    """Keep the sampling point/scores prior-free; return the prior likelihood separately."""
     if value_scale == "absolute":
         return ResolvedValueScale(
             point=raw_point,
@@ -43,20 +44,19 @@ def resolve_value_scale(
             abs_diff=None,
             abs_se=None,
         )
+    posterior_point = None
+    posterior_scores = None
     if prior is not None:
         refuse_near_zero(mu0, mu0_se())
-        lift = lift_fn(mu0)
-        return ResolvedValueScale(
-            point=float(lift),
-            scores=lift_scores_fn(mu0),
-            abs_diff=raw_point,
-            abs_se=raw_scores.se(),
-        )
+        posterior_point = float(lift_fn(mu0))
+        posterior_scores = lift_scores_fn(mu0)
     return ResolvedValueScale(
         point=None,
         scores=raw_scores,
         abs_diff=raw_point,
         abs_se=raw_scores.se(),
+        posterior_point=posterior_point,
+        posterior_scores=posterior_scores,
     )
 
 

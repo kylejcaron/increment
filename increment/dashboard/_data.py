@@ -79,6 +79,12 @@ _INVALID_CONFIG = RefusalSpec(
     template="dashboard configuration is unusable: {reason}",
 )
 
+_UNAVAILABLE_POPULATION = RefusalSpec(
+    "dashboard.population_unavailable",
+    InvalidRequestError,
+    template="dashboard population {population!r} was not captured",
+)
+
 _INVALID_SNAPSHOT = RefusalSpec(
     "dashboard.invalid_snapshot",
     InvalidRequestError,
@@ -268,8 +274,18 @@ class DashboardSnapshot:
     group_data: tuple[DashboardGroupData, ...]
     explore: Mapping[ExploreKey, DashboardExploreCapture] = field(default_factory=dict)
     overview: DashboardOverview | None = None
+    overviews: Mapping[Literal["assigned", "triggered"], DashboardOverview] = field(
+        default_factory=dict
+    )
+    population_estimates: Mapping[Literal["assigned", "triggered"], tuple[LiftEstimate, ...]] = (
+        field(default_factory=dict)
+    )
     exploratory_metrics: tuple[Metric, ...] = ()
     offered_metrics: tuple[Metric, ...] = ()
+    triggered_allocation: SRMResult | None = None
+    triggered_allocation_refusal: tuple[str, str] | None = None
+    triggered_allocation_history: tuple[Mapping[str, Any], ...] = ()
+    triggered_allocation_history_refusal: tuple[str, str] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "metrics", tuple(self.metrics))
@@ -284,6 +300,14 @@ class DashboardSnapshot:
         )
         object.__setattr__(self, "group_data", tuple(self.group_data))
         object.__setattr__(self, "explore", MappingProxyType(dict(self.explore)))
+        object.__setattr__(self, "overviews", MappingProxyType(dict(self.overviews)))
+        object.__setattr__(
+            self,
+            "population_estimates",
+            MappingProxyType(
+                {key: tuple(value) for key, value in self.population_estimates.items()}
+            ),
+        )
         object.__setattr__(
             self,
             "allocation_history",
@@ -295,6 +319,22 @@ class DashboardSnapshot:
             )
             if self.allocation_history:
                 refuse(_INVALID_SNAPSHOT, reason="allocation history cannot also be refused")
+        object.__setattr__(
+            self,
+            "triggered_allocation_history",
+            tuple(_freeze(row) for row in self.triggered_allocation_history),
+        )
+        if self.triggered_allocation_history_refusal is not None:
+            object.__setattr__(
+                self,
+                "triggered_allocation_history_refusal",
+                tuple(self.triggered_allocation_history_refusal),
+            )
+            if self.triggered_allocation_history:
+                refuse(
+                    _INVALID_SNAPSHOT,
+                    reason="triggered allocation history cannot also be refused",
+                )
         if (self.allocation is None) == (self.allocation_refusal is None):
             refuse(
                 _INVALID_SNAPSHOT,
@@ -307,15 +347,22 @@ class DashboardSnapshot:
                 rows=len(self.readout_rows),
                 estimates=len(self.estimates),
             )
+        populations = set(self.population_estimates) or (
+            {estimate.analysis_population for estimate in self.estimates}
+            or {item.analysis_population for item in self.group_data}
+            or {"assigned"}
+        )
         expected = {
-            (metric.name, arm)
+            (metric.name, arm, population)
             for metric in self.metrics
+            for population in populations
             for arm in (self.control_group, self.treatment_group)
         }
-        keys = [(item.metric, item.group_id) for item in self.group_data]
+        keys = [(item.metric, item.group_id, item.analysis_population) for item in self.group_data]
         if len(keys) != len(set(keys)) or set(keys) != expected:
             refuse(
-                _INVALID_SNAPSHOT, reason="group evidence must cover each declared metric and arm"
+                _INVALID_SNAPSHOT,
+                reason="group evidence must cover each declared metric, arm, and population",
             )
         for item in self.group_data:
             if item.source_kind not in ("pinned_warehouse", "retained_checkpoint"):
@@ -453,6 +500,7 @@ def group_data_rows(
     selected.sort(
         key=lambda item: (
             metric_order.get(item.metric, len(metric_order)),
+            item.analysis_population,
             arm_order.get(item.group_id, 2),
             item.group_id,
         )
@@ -512,6 +560,9 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
     closes or replaces them.
     """
     experiment = _supported_experiment(analysis)
+    populations: tuple[Literal["assigned", "triggered"], ...] = (
+        ("assigned", "triggered") if experiment.trigger is not None else ("assigned",)
+    )
     primary_metric = _declared_primary(experiment)
     control_group, treatment_group = _declared_arms(experiment, config)
     metrics = _declared_metrics(analysis, experiment)
@@ -532,21 +583,56 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
         allocation_history, allocation_history_refusal = _allocation_history(
             pinned, allocation_refusal
         )
-        estimates = pinned.run()
-        if not isinstance(estimates, LiftEstimates):
+        triggered_allocation = None
+        triggered_allocation_refusal = None
+        triggered_allocation_history = None
+        triggered_allocation_history_refusal = None
+        if "triggered" in populations:
+            triggered_allocation, triggered_allocation_refusal = _allocation_check(
+                pinned, config, population="triggered"
+            )
+            (
+                triggered_allocation_history,
+                triggered_allocation_history_refusal,
+            ) = _allocation_history(
+                pinned,
+                triggered_allocation_refusal,
+                population="triggered",
+            )
+        raw_population_results = {
+            population: pinned.run(population=population) for population in populations
+        }
+        if any(not isinstance(rows, LiftEstimates) for rows in raw_population_results.values()):
             refuse(
                 _UNSUPPORTED_EXPERIMENT,
                 reason="this experiment returns contrast results rather than lift estimates",
             )
+        population_results = cast(
+            "dict[Literal['assigned', 'triggered'], LiftEstimates]", raw_population_results
+        )
+        population_estimates = {
+            population: tuple(row for row in rows if row.analysis_population == population)
+            for population, rows in population_results.items()
+        }
+        estimates = population_estimates["assigned"]
         _require_treatment_arm(estimates, treatment=treatment_group)
         checkpoints = {
             estimate.metric: estimate.sequential_result.checkpoint
             for estimate in estimates
             if estimate.method_role == "decision" and estimate.sequential_result is not None
         }
-        group_data = pinned.dashboard_group_data(metrics=metrics, checkpoints=checkpoints or None)
+        group_data = tuple(
+            row
+            for population in populations
+            for row in pinned.dashboard_group_data(
+                metrics=metrics,
+                checkpoints=(checkpoints or None) if population == "assigned" else None,
+                population=population,
+            )
+        )
         explore = _capture_explore(
             pinned,
+            populations=populations,
             names=tuple(metric.name for metric in metrics),
             added=added,
             scopes=tuple(
@@ -559,8 +645,13 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
             allocation_refusal=allocation_refusal,
             allocation_history=allocation_history,
             allocation_history_refusal=allocation_history_refusal,
+            triggered_allocation=triggered_allocation,
+            triggered_allocation_refusal=triggered_allocation_refusal,
+            triggered_allocation_history=triggered_allocation_history,
+            triggered_allocation_history_refusal=triggered_allocation_history_refusal,
             estimates=tuple(estimates),
             group_data=group_data,
+            population_estimates=population_estimates,
             explore=explore,
         )
 
@@ -571,29 +662,45 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
         () if payload.allocation_history is None else tuple(payload.allocation_history.to_pylist())
     )
     allocation_history_refusal = payload.allocation_history_refusal
-    estimates = payload.estimates
+    triggered_allocation = payload.triggered_allocation
+    triggered_allocation_refusal = payload.triggered_allocation_refusal
+    triggered_allocation_history = (
+        ()
+        if payload.triggered_allocation_history is None
+        else tuple(payload.triggered_allocation_history.to_pylist())
+    )
+    triggered_allocation_history_refusal = payload.triggered_allocation_history_refusal
+    default_population = "triggered" if experiment.trigger is not None else "assigned"
+    population_estimates = dict(payload.population_estimates) or {"assigned": payload.estimates}
+    estimates = population_estimates[default_population]
     captures = {capture.key: capture for capture in payload.explore}
-    overview_keys = [key for key in captures if key[0] in (_OVERVIEW_WHOLE, _OVERVIEW_SEGMENTS)]
-    read = {key: captures.pop(key) for key in overview_keys}
-    refusals = tuple(
-        (
-            str(key[1]),
-            "whole experiment" if key[3] is None else str(key[3][1]),
-            copy.copy(capture.refusal),
-        )
-        for key, capture in read.items()
-        if key[1] is not None and capture.refusal is not None
-    )
-    overview = _overview(
-        read.get((_OVERVIEW_WHOLE, None, False, None)),
-        {
-            key[3]: capture
+    overviews: dict[Literal["assigned", "triggered"], DashboardOverview] = {}
+    for population in populations:
+        read = {
+            key: capture
+            for key, capture in captures.items()
+            if key[0] == population and key[1] in (_OVERVIEW_WHOLE, _OVERVIEW_SEGMENTS)
+        }
+        refusals = tuple(
+            (
+                str(key[2]),
+                "whole experiment" if key[4] is None else str(key[4][1]),
+                copy.copy(capture.refusal),
+            )
             for key, capture in read.items()
-            if key[0] == _OVERVIEW_SEGMENTS and key[1] is None and key[3] is not None
-        },
-        refusals=refusals,
-        q=experiment.plan.q,
-    )
+            if key[2] is not None and capture.refusal is not None
+        )
+        overviews[population] = _overview(
+            read.get((population, _OVERVIEW_WHOLE, None, False, None)),
+            {
+                key[4]: capture
+                for key, capture in read.items()
+                if key[1] == _OVERVIEW_SEGMENTS and key[2] is None and key[4] is not None
+            },
+            refusals=refusals,
+            q=experiment.plan.q,
+        )
+    overview = overviews[default_population]
     return DashboardSnapshot(
         experiment_name=experiment.name,
         binding_fingerprint=_binding_fingerprint(experiment, metrics),
@@ -607,14 +714,20 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
         metrics=metrics,
         breakouts=tuple((b.source, b.property) for b in experiment.breakouts),
         estimates=estimates,
+        population_estimates=population_estimates,
         readout_rows=enriched_rows(estimates),
         allocation=allocation,
         allocation_refusal=allocation_refusal,
         allocation_history=allocation_history,
         allocation_history_refusal=allocation_history_refusal,
+        triggered_allocation=triggered_allocation,
+        triggered_allocation_refusal=triggered_allocation_refusal,
+        triggered_allocation_history=triggered_allocation_history,
+        triggered_allocation_history_refusal=triggered_allocation_history_refusal,
         group_data=payload.group_data,
         explore=captures,
         overview=overview,
+        overviews=overviews,
         exploratory_metrics=shown_models,
         offered_metrics=offered,
         config=config,
@@ -682,18 +795,14 @@ def _declared_metrics(analysis: Analysis, experiment: Experiment) -> tuple[Metri
 
 
 def _allocation_check(
-    analysis: Analysis, config: DashboardConfig
+    analysis: Analysis,
+    config: DashboardConfig,
+    *,
+    population: Literal["assigned", "triggered"] = "assigned",
 ) -> tuple[SRMResult | None, tuple[str, str] | None]:
-    """The assigned-population allocation check, or its refusal code/reason.
-
-    A source that cannot run the check yields a non-passing health item
-    carrying the original code and reason. An invalid request, such as arm
-    labels the data does not contain, is the caller's error and
-    surfaces instead of becoming a badge. Only strings are retained: a caught
-    exception would keep the caller's source referenced.
-    """
+    """Return one population's allocation check, preserving NotApplicable as a refusal."""
     try:
-        result = analysis.srm(expected=dict(config.expected_allocation), population="assigned")
+        result = analysis.srm(expected=dict(config.expected_allocation), population=population)
     except CapabilityError as exc:
         return None, (exc.code, str(exc))
     if isinstance(result, SRMResult):
@@ -702,7 +811,10 @@ def _allocation_check(
 
 
 def _allocation_history(
-    analysis: Analysis, allocation_refusal: tuple[str, str] | None
+    analysis: Analysis,
+    allocation_refusal: tuple[str, str] | None,
+    *,
+    population: Literal["assigned", "triggered"] = "assigned",
 ) -> tuple[pa.Table | None, tuple[str, str] | None]:
     """The assigned-population daily/cumulative allocation history, or its refusal.
 
@@ -716,7 +828,7 @@ def _allocation_history(
     if allocation_refusal is not None:
         return None, allocation_refusal
     try:
-        table = analysis.allocation_history()
+        table = analysis.allocation_history(population=population)
     except CapabilityError as exc:
         return None, (exc.code, str(exc))
     return table, None
@@ -764,22 +876,94 @@ def enriched_rows(
 # Shared read-only accessors for the rendering layer.
 
 
-def decision_rows(snapshot: DashboardSnapshot) -> tuple[Mapping[str, Any], ...]:
-    """Enriched rows for decision methods, in declared metric order."""
-    return tuple(row for row in snapshot.readout_rows if row.get("method_role") == "decision")
+def decision_rows(
+    snapshot: DashboardSnapshot, *, population: str | None = None
+) -> tuple[Mapping[str, Any], ...]:
+    """Decision rows for one population; triggered is the default when captured."""
+    selected = population or _default_population(snapshot)
+    rows = snapshot.readout_rows
+    if selected != _default_population(snapshot):
+        rows = enriched_rows(snapshot.population_estimates.get(selected, ()))
+    return tuple(
+        row
+        for row in rows
+        if row.get("method_role") == "decision"
+        and row.get("analysis_population", "assigned") == selected
+    )
 
 
-def row_for_metric(snapshot: DashboardSnapshot, metric: str) -> Mapping[str, Any] | None:
-    """The decision row for one metric, or ``None`` when it has none."""
-    return next((row for row in decision_rows(snapshot) if row.get("metric") == metric), None)
+def _default_population(snapshot: DashboardSnapshot) -> Literal["assigned", "triggered"]:
+    return "triggered" if "triggered" in snapshot.population_estimates else "assigned"
 
 
-def estimate_for_metric(snapshot: DashboardSnapshot, metric: str) -> LiftEstimate | None:
-    """The original decision estimate for one metric, or ``None``."""
+def _population_snapshot(
+    snapshot: DashboardSnapshot, population: Literal["assigned", "triggered"]
+) -> DashboardSnapshot:
+    """Return the captured state scoped to one population for a standalone section."""
+    if population not in snapshot.population_estimates and not (
+        population == "assigned" and not snapshot.population_estimates
+    ):
+        refuse(_UNAVAILABLE_POPULATION, population=population)
+    estimates = snapshot.population_estimates.get(population, snapshot.estimates)
+    is_default = population == _default_population(snapshot)
+    allocation = snapshot.triggered_allocation if population == "triggered" else snapshot.allocation
+    allocation_refusal = (
+        snapshot.triggered_allocation_refusal
+        if population == "triggered"
+        else snapshot.allocation_refusal
+    )
+    history = (
+        snapshot.triggered_allocation_history
+        if population == "triggered"
+        else snapshot.allocation_history
+    )
+    history_refusal = (
+        snapshot.triggered_allocation_history_refusal
+        if population == "triggered"
+        else snapshot.allocation_history_refusal
+    )
+    overview = snapshot.overviews.get(population, snapshot.overview)
+    return replace(
+        snapshot,
+        estimates=tuple(estimates),
+        population_estimates={population: tuple(estimates)},
+        readout_rows=snapshot.readout_rows if is_default else enriched_rows(estimates),
+        allocation=allocation,
+        allocation_refusal=allocation_refusal,
+        allocation_history=history,
+        allocation_history_refusal=history_refusal,
+        group_data=tuple(
+            row for row in snapshot.group_data if row.analysis_population == population
+        ),
+        explore={key: capture for key, capture in snapshot.explore.items() if key[0] == population},
+        overview=overview,
+        overviews={population: overview} if overview is not None else {},
+    )
+
+
+def row_for_metric(
+    snapshot: DashboardSnapshot, metric: str, *, population: str | None = None
+) -> Mapping[str, Any] | None:
+    """The selected population's decision row for one metric, or ``None``."""
+    return next(
+        (
+            row
+            for row in decision_rows(snapshot, population=population)
+            if row.get("metric") == metric
+        ),
+        None,
+    )
+
+
+def estimate_for_metric(
+    snapshot: DashboardSnapshot, metric: str, *, population: str | None = None
+) -> LiftEstimate | None:
+    """The selected population's original decision estimate for one metric, or ``None``."""
+    selected = population or _default_population(snapshot)
     return next(
         (
             estimate
-            for estimate in snapshot.estimates
+            for estimate in snapshot.population_estimates.get(selected, snapshot.estimates)
             if estimate.metric == metric and estimate.method_role == "decision"
         ),
         None,
@@ -969,6 +1153,28 @@ def _cell_place(cell: Any) -> str:
 def _capture_explore(
     pinned: Analysis,
     *,
+    populations: tuple[Literal["assigned", "triggered"], ...],
+    names: tuple[str, ...],
+    added: tuple[str, ...] = (),
+    scopes: tuple[tuple[BreakoutChoice, DashboardBreakoutReads], ...],
+) -> tuple[DashboardExploreCapture, ...]:
+    return tuple(
+        capture
+        for population in populations
+        for capture in _capture_explore_population(
+            pinned,
+            population=population,
+            names=names,
+            added=added,
+            scopes=scopes,
+        )
+    )
+
+
+def _capture_explore_population(
+    pinned: Analysis,
+    *,
+    population: Literal["assigned", "triggered"],
     names: tuple[str, ...],
     added: tuple[str, ...] = (),
     scopes: tuple[tuple[BreakoutChoice, DashboardBreakoutReads], ...],
@@ -999,10 +1205,12 @@ def _capture_explore(
         complete: bool,
         breakout: BreakoutChoice | None,
     ) -> DashboardExploreCapture:
-        key = (view, metric, complete, breakout)
+        key = (population, view, metric, complete, breakout)
         selected = list(names) if metric is None else [metric]
         try:
-            data = _read_view(reader, view, selected, complete=complete, added=added)
+            data = _read_view(
+                reader, view, selected, complete=complete, added=added, population=population
+            )
         except CodedError as exc:
             captures[key] = DashboardExploreCapture.refused(key, exc)
         else:
@@ -1017,7 +1225,7 @@ def _capture_explore(
             joint = ask(reader, view, None, complete=complete, breakout=breakout)
             independent = view in _INDEPENDENT_VIEWS and joint.refusal is None
             for name in names:
-                key = (view, name, complete, breakout)
+                key = (population, view, name, complete, breakout)
                 if len(names) == 1:
                     captures[key] = replace(joint, metric=name)
                 elif independent:
@@ -1038,7 +1246,9 @@ def _capture_explore(
             # One read serves every added metric; a refused read, or a metric it returns nothing
             # for, is asked alone to keep that metric's own answer.
             try:
-                batch = _read_view(reader, view, list(added), complete=complete, added=added)
+                batch = _read_view(
+                    reader, view, list(added), complete=complete, added=added, population=population
+                )
             except CodedError:
                 batch = None
             for name in added:
@@ -1046,7 +1256,7 @@ def _capture_explore(
                 if batch is None or not rows:
                     ask(reader, view, name, complete=complete, breakout=breakout)
                 else:
-                    key = (view, name, complete, breakout)
+                    key = (population, view, name, complete, breakout)
                     captures[key] = DashboardExploreCapture.answered(
                         key, rows, collection=type(batch)
                     )
@@ -1057,25 +1267,38 @@ def _capture_explore(
         declared: tuple[str, ...],
         read: Callable[[list[str], list[str]], Sequence[Any]],
         collection: Callable[[Iterable[Any]], Sequence[Any]],
+        *,
+        population: Literal["assigned", "triggered"],
     ) -> None:
         """One read of every metric; on a refusal, each metric alone, keeping its own refusal."""
-        key = (view, None, False, breakout)
+        key = (population, view, None, False, breakout)
         try:
+            answered = read(list(declared), list(added))
             captures[key] = DashboardExploreCapture.answered(
-                key, read(list(declared), list(added)), collection=collection
+                key,
+                [
+                    row
+                    for row in answered
+                    if getattr(row, "analysis_population", population) == population
+                ],
+                collection=collection,
             )
             return
         except CodedError:
             pass
         rows: list[Any] = []
         for name in (*declared, *added):
-            one = (view, name, False, breakout)
+            one = (population, view, name, False, breakout)
             try:
                 part = read([name] if name in declared else [], [name] if name in added else [])
             except CodedError as exc:
                 captures[one] = DashboardExploreCapture.refused(one, exc)
             else:
-                rows.extend(part)
+                rows.extend(
+                    row
+                    for row in part
+                    if getattr(row, "analysis_population", population) == population
+                )
         captures[key] = DashboardExploreCapture.answered(key, rows, collection=collection)
 
     def extra(added_names: list[str]) -> dict[str, Any]:
@@ -1086,8 +1309,11 @@ def _capture_explore(
             _OVERVIEW_WHOLE,
             None,
             (),
-            lambda _, added_names: pinned.run(metrics=[], **extra(added_names)),
+            lambda _, added_names: pinned.run(
+                metrics=[], population=population, **extra(added_names)
+            ),
             LiftEstimates,
+            population=population,
         )
     for breakout, reader in scopes:
         overview_read(
@@ -1095,9 +1321,10 @@ def _capture_explore(
             breakout,
             names,
             lambda declared, added_names, reader=reader: reader.uncorrected_segments(
-                metrics=declared, **extra(added_names)
+                metrics=declared, population=population, **extra(added_names)
             ),
             BreakoutEstimates,
+            population=population,
         )
     return tuple(captures.values())
 
@@ -1109,11 +1336,14 @@ def _read_view(
     *,
     complete: bool,
     added: tuple[str, ...],
+    population: Literal["assigned", "triggered"],
 ) -> Any:
     """One view for ``selected``; added metrics go through ``exploratory_metrics``."""
     declared = [name for name in selected if name not in added]
     extra = [name for name in selected if name in added]
-    kwargs: dict[str, Any] = {"exploratory_metrics": extra} if extra else {}
+    kwargs: dict[str, Any] = ({"exploratory_metrics": extra} if extra else {}) | {
+        "population": population
+    }
     if view == "cumulative_lift":
         return reader.run_asof_lift(metrics=declared, completed_windows_only=complete, **kwargs)
     if view == "daily_values":
@@ -1127,7 +1357,7 @@ def _captured(snapshot: DashboardSnapshot, key: ExploreKey, *, metric: str | Non
     """A fresh collection of one captured view, or a fresh copy of its original refusal."""
     capture = snapshot.explore.get(key)
     if capture is None:
-        view, _, complete, breakout = key
+        _, view, _, complete, breakout = key
         refuse(
             _INVALID_VIEW,
             reason="this snapshot did not capture that view; prepare a new snapshot",
@@ -1147,6 +1377,7 @@ def load_explore(
     view: ExploreView,
     completed_windows_only: bool = False,
     breakout: tuple[str | None, str] | None = None,
+    population: Literal["assigned", "triggered"] | None = None,
 ) -> DailyLiftEstimates | DailyMetricValues | BreakoutEstimates:
     """Load exactly the one advanced view a caller asked for.
 
@@ -1178,11 +1409,21 @@ def load_explore(
             view=view,
             metric=metric,
         )
+    selected_population = population or _default_population(snapshot)
     if view == "segments":
-        return _load_segments(snapshot=snapshot, metric=metric, breakout=breakout)
+        return _load_segments(
+            snapshot=snapshot,
+            metric=metric,
+            breakout=breakout,
+            population=selected_population,
+        )
     if breakout is not None:
         breakout = _declared_breakout(snapshot, breakout, view=view, metric=metric)
-    return _captured(snapshot, (view, metric, completed_windows_only, breakout), metric=metric)
+    return _captured(
+        snapshot,
+        (selected_population, view, metric, completed_windows_only, breakout),
+        metric=metric,
+    )
 
 
 def _require_same_experiment(
@@ -1232,6 +1473,7 @@ def _load_segments(
     snapshot: DashboardSnapshot,
     metric: str | None,
     breakout: tuple[str | None, str] | None,
+    population: Literal["assigned", "triggered"],
 ) -> BreakoutEstimates:
     if not snapshot.breakouts:
         # A truthful empty state: no declared breakouts, so nothing was captured or needed.
@@ -1246,7 +1488,7 @@ def _load_segments(
         )
     choice = _declared_breakout(snapshot, breakout, view="segments", metric=metric)
     source, dimension = choice
-    estimates = _captured(snapshot, ("segments", metric, False, choice), metric=metric)
+    estimates = _captured(snapshot, (population, "segments", metric, False, choice), metric=metric)
     # A registered sequential readout answers its registered dimension whatever the scope.
     return BreakoutEstimates(
         estimate

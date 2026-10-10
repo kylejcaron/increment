@@ -123,6 +123,7 @@ experiments:
     end: 2025-02-14
     n_pre_periods: 0
     control_group: control
+    allocation_scheme: independent
     plan:
       view_multiplicity:
         correction: bonferroni
@@ -143,6 +144,7 @@ experiments:
     end: 2025-03-31
     n_pre_periods: 0
     control_group: baseline
+    allocation_scheme: independent
     plan:
       primary: purchase_rate
 
@@ -1208,13 +1210,13 @@ def test_load_explore_segments_filter_by_dimension_source_and_method_without_lea
         wanted[0].model_copy(update={"method_role": "component"}),
         wanted[0].model_copy(update={"source": "other_source"}),
     ]
-    key = ("segments", "checkout_conversion", False, ("event_log", "country"))
+    key = ("assigned", "segments", "checkout_conversion", False, ("event_log", "country"))
     captured = dataclasses.replace(
         storefront,
         explore={
             **storefront.explore,
             key: DashboardExploreCapture.answered(
-                key, wanted + decoys, collection=BreakoutEstimates
+                key, BreakoutEstimates([*wanted, *decoys]), collection=BreakoutEstimates
             ),
         },
     )
@@ -1564,10 +1566,10 @@ def test_health_status_is_qualified_and_never_a_ship_recommendation(
         allocation_refusal=("dashboard.allocation_not_applicable", "no assignment table"),
         allocation_history=(),
     )
-    unavailable = health_status(refused)
-    assert unavailable["kind"] == "unavailable"
-    assert "dashboard.allocation_not_applicable" in unavailable["detail"]
-    assert "no assignment table" in unavailable["detail"]
+    not_checked = health_status(refused)
+    assert not_checked["kind"] == "not_checked"
+    assert "dashboard.allocation_not_applicable" in not_checked["detail"]
+    assert "no assignment table" in not_checked["detail"]
 
     assert storefront.allocation is not None
     flagged = health_status(_with_allocation(storefront, mixed_assignment_units=3))
@@ -1610,6 +1612,37 @@ def test_an_engine_refusal_is_visible_for_its_own_state_only(
     )
 
 
+def test_health_renders_not_applicable_allocation_as_not_checked(
+    dashboard_con, dashboard_definitions, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from increment import Analysis
+    from increment.estimation.diagnostics import NotApplicable
+
+    def not_applicable(_self, **_kwargs: Any) -> NotApplicable:
+        return NotApplicable(
+            check="srm",
+            reason="integrity.allocation_scheme_missing: independent assignment was not declared",
+        )
+
+    monkeypatch.setattr(Analysis, "srm", not_applicable)
+    analysis = _analysis(dashboard_con, dashboard_definitions, "pricing_copy")
+    snapshot = prepare_dashboard(
+        analysis, config=DashboardConfig(expected_allocation={"baseline": 0.7, "candidate": 0.3})
+    )
+
+    from increment.dashboard._app import health_status
+
+    assert health_status(snapshot)["kind"] == "not_checked"
+    assert snapshot.allocation is None
+    assert snapshot.allocation_refusal is not None
+    assert snapshot.allocation_history == ()
+    assert snapshot.allocation_history_refusal == snapshot.allocation_refusal
+    html = render_health(snapshot).text
+    assert "not checked" in html.lower()
+    assert "integrity.allocation_scheme_missing" in html
+    assert "independent assignment was not declared" in html
+
+
 def test_unexpected_engine_failures_are_not_swallowed(
     dashboard_con, dashboard_definitions, monkeypatch
 ) -> None:
@@ -1642,6 +1675,9 @@ def _open_sided_lift(metric: str, group: str, segment: str, day: int, value: flo
         dimension="country",
         dimension_value=segment,
         source="event_log",
+        sampling_available=True,
+        reference_kind="normal",
+        reference_df=None,
     )
 
 

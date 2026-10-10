@@ -20,27 +20,26 @@ def _finite_row(rows):
     raise AssertionError("no finite native as-of row")
 
 
-# Two full as-of sweeps over a conversion metric, each inverting an exact
-# independent-binomial interval per day and arm. That cost is inherent to the
-# exact method, not a defect, so this runs in the slow tier.
 @pytest.mark.slow
-def test_native_asof_prior_shrinks_dimensioned_and_undimensioned(
+def test_native_asof_prior_preserves_sparse_exact_inference_dimensioned_and_undimensioned(
     seeded_pre_period_con, seeded_defs
 ):
+    """Sparse exact sampling stays prior-free when its approximate posterior is unavailable."""
     analysis = Analysis("new_onboarding_v2", seeded_defs, seeded_pre_period_con)
     flat = analysis.run_asof_lift(metrics=["purchase_rate"])
-    shrunk = analysis.run_asof_lift(metrics=["purchase_rate"], prior=Normal(mu=0.0, sigma=0.01))
+    prior = analysis.run_asof_lift(metrics=["purchase_rate"], prior=Normal(mu=0.0, sigma=0.01))
     flat_by_day_arm = {
         (row.ds, row.group_id): row
         for row in flat
         if row.lift is not None and math.isfinite(row.require_lift().value)
     }
-    shrunk_row = _finite_row(row for row in shrunk if (row.ds, row.group_id) in flat_by_day_arm)
-    flat_row = flat_by_day_arm[(shrunk_row.ds, shrunk_row.group_id)]
-    assert abs(shrunk_row.require_lift().value) < abs(flat_row.require_lift().value)
+    prior_row = _finite_row(row for row in prior if (row.ds, row.group_id) in flat_by_day_arm)
+    flat_row = flat_by_day_arm[(prior_row.ds, prior_row.group_id)]
+    assert prior_row.require_lift().value == flat_row.require_lift().value
+    assert prior_row.posterior_available is False
 
     dimensioned = analysis.run_asof_lift(metrics=["purchase_rate"], dimension="country")
-    dimensioned_shrunk = analysis.run_asof_lift(
+    dimensioned_prior = analysis.run_asof_lift(
         metrics=["purchase_rate"], dimension="country", prior=Normal(mu=0.0, sigma=0.01)
     )
     flat_by_key = {
@@ -48,13 +47,14 @@ def test_native_asof_prior_shrinks_dimensioned_and_undimensioned(
         for row in dimensioned
         if row.lift is not None and math.isfinite(row.require_lift().value)
     }
-    shrunk_row = _finite_row(
+    prior_row = _finite_row(
         row
-        for row in dimensioned_shrunk
+        for row in dimensioned_prior
         if (row.ds, row.group_id, row.dimension_value) in flat_by_key
     )
-    flat_row = flat_by_key[(shrunk_row.ds, shrunk_row.group_id, shrunk_row.dimension_value)]
-    assert abs(shrunk_row.require_lift().value) < abs(flat_row.require_lift().value)
+    flat_row = flat_by_key[(prior_row.ds, prior_row.group_id, prior_row.dimension_value)]
+    assert prior_row.require_lift().value == flat_row.require_lift().value
+    assert prior_row.posterior_available is False
 
 
 def test_native_breakout_invalid_inherited_config_refuses_before_scoped_query(con, monkeypatch):

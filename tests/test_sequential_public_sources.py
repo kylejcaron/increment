@@ -1,6 +1,7 @@
 """Bernoulli decisions, portable replay, and immutable source continuation."""
 
 from datetime import date, timedelta
+from fractions import Fraction
 
 import pytest
 
@@ -131,7 +132,26 @@ def _analysis(frame, specs, plan):
 def _row(analysis):
     rows = analysis.run()
     assert isinstance(rows, LiftEstimates)
+    assert {row.multiplicity_status for row in rows} == {"declared_plan"}
     return rows[0]
+
+
+def test_registered_whole_window_family_scope_reports_registration_q():
+    specs = [MetricSpec(name="outcome", type="conversion")]
+    plan = gaussian_plan(
+        specs, law="bernoulli", q=0.2, source_id="experiment", unit="unit", group="arm"
+    )
+    analysis = _analysis(_frame([0, 1] * 20, [1, 1] * 20), specs, plan)
+
+    rows = analysis.run()
+    assert rows.metadata.scope.families
+    registration_q = float(plan.inference.registration.q)
+    assert all(row.family_q == registration_q for row in rows)
+    assert all(
+        scope.family.q == registration_q
+        for scope in rows.metadata.scope.families
+        if scope.family is not None
+    )
 
 
 @pytest.mark.slow
@@ -183,6 +203,147 @@ def test_frame_current_wire_and_moments_replay_same_actual_decision(tmp_path, la
     assert projected["lift"].iloc[0] > 0
 
 
+def test_checkpoint_export_preserves_captured_assignment_counts_and_omits_legacy_counts(
+    tmp_path,
+):
+    import json
+
+    import pyarrow.parquet as pq
+
+    from increment import capture_sequential_snapshot
+    from increment.semantics.design import Randomized
+    from increment.sources import ASSIGNMENT_COUNTS_FIELD
+
+    specs = [MetricSpec(name="outcome", type="conversion")]
+    frame = _frame([0, 1] * 24, [1, 1] * 24)
+    analysis = _analysis(frame, specs, _plan(specs, "bernoulli"))
+    _row(analysis)
+    snapshot = analysis.sequential_snapshot()
+    assert snapshot.assignment_counts == {"control": 48, "treatment": 48}
+
+    path = tmp_path / "checkpoint-counts.parquet"
+    analysis.export(path)
+    payload = pq.read_table(path).to_pylist()
+    assert json.loads(payload[0][ASSIGNMENT_COUNTS_FIELD]) == {
+        "control": 48,
+        "treatment": 48,
+    }
+    replay = Analysis.from_moments(
+        payload,
+        metrics=specs,
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+    )
+    assert replay.sequential_snapshot().assignment_counts == snapshot.assignment_counts
+
+    legacy_snapshot = capture_sequential_snapshot(
+        snapshot.registration,
+        [
+            {
+                "unit_id": row["unit"],
+                "group_id": row["arm"],
+                "values": {"outcome": row["outcome"]},
+                "segments": {},
+            }
+            for row in frame.to_dict(orient="records")
+        ],
+        source_id=snapshot.registration.source_id,
+        definitions_id=snapshot.registration.definitions_id,
+        finalized=True,
+        reveal_cursor=snapshot.reveal_cursor,
+    )
+    source = analysis._src
+    source._sequential_snapshot = None
+    source.adopt_sequential_snapshot(legacy_snapshot)
+    legacy_path = tmp_path / "legacy-checkpoint-counts.parquet"
+    analysis.export(legacy_path)
+    legacy_wire = pq.read_table(legacy_path).to_pylist()
+    assert ASSIGNMENT_COUNTS_FIELD not in legacy_wire[0]
+
+    legacy_replay = Analysis.from_moments(
+        legacy_wire,
+        metrics=specs,
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+    )
+    legacy_results = legacy_replay.run()
+    assert legacy_results.metadata is not None
+    integrity = next(iter(legacy_results.metadata.scope.by_source.values())).integrity[0]
+    assert integrity.status == "not_checked_missing_counts"
+
+
+def test_checkpoint_assignment_counts_are_immutable_after_validation():
+    from typing import cast
+
+    specs = [MetricSpec(name="outcome", type="conversion")]
+    analysis = _analysis(
+        _frame([0, 1] * 24, [1, 1] * 24),
+        specs,
+        _plan(specs, "bernoulli"),
+    )
+    _row(analysis)
+    snapshot = analysis.sequential_snapshot()
+    with pytest.raises(TypeError):
+        cast(dict[str, int], snapshot.assignment_counts)["control"] = 0
+    restored = type(snapshot).model_validate_json(snapshot.model_dump_json())
+    assert restored.assignment_counts == {"control": 48, "treatment": 48}
+
+
+def test_continuation_without_new_capture_counts_does_not_reuse_parent_totals():
+    from typing import cast
+
+    from increment import capture_sequential_snapshot
+    from increment.estimation.assignment_integrity import assignment_integrity
+    from tests.sequential_cases import records
+
+    declaration = registration("bernoulli")
+    previous = capture_sequential_snapshot(
+        declaration,
+        records([0], [1]),
+        source_id=declaration.source_id,
+        definitions_id=declaration.definitions_id,
+        finalized=True,
+        assignment_counts={"control": 100, "treatment": 100},
+    )
+    continued = capture_sequential_snapshot(
+        declaration,
+        records([0, 0], [1, 1]),
+        source_id=declaration.source_id,
+        definitions_id=declaration.definitions_id,
+        finalized=True,
+        previous=previous,
+    )
+    assert continued.ancestors[-1].assignment_counts == {
+        "control": 100,
+        "treatment": 100,
+    }
+    with pytest.raises(TypeError):
+        cast(dict[str, int], continued.ancestors[-1].assignment_counts)["control"] = 0
+    restored = type(continued).model_validate_json(continued.model_dump_json())
+    assert restored.assignment_counts is None
+    assert restored.ancestors[-1].assignment_counts == {
+        "control": 100,
+        "treatment": 100,
+    }
+    assert continued.assignment_counts is None
+    integrity = assignment_integrity(
+        Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme="independent",
+        ),
+        continued.assignment_counts,
+    )
+    assert integrity.status == "not_checked_missing_counts"
+    assert integrity.observed is None
+
+
 @pytest.mark.slow
 def test_frame_zero_event_prefix_append_and_rewrite_do_not_reset_process():
     import pandas as pd
@@ -201,7 +362,7 @@ def test_frame_zero_event_prefix_append_and_rewrite_do_not_reset_process():
     assert displayed["lift"] is None
     assert displayed["sequential_point_reason"]
     assert displayed["sequential_log_e"] == str(first_row.require_exact_sequential_result().log_e)
-    assert displayed["prob_favorable"] is None
+    assert displayed["posterior_prob_favorable"] is None
     assert displayed["stat_sig"] is False
     snapshot = first.sequential_snapshot()
     later = pd.concat(
@@ -344,6 +505,74 @@ def test_sparse_panel_sequential_cohort_and_continuation_match_dense() -> None:
     assert continued[0].states == continued[1].states
 
 
+@pytest.mark.parametrize("scratch_budget", [0, 64 * 1024 * 1024])
+def test_sparse_panel_sequential_state_matches_dense_and_streamed_kernels(
+    scratch_budget: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sequential capture and estimates agree across daily panel kernels."""
+    import pandas as pd
+
+    import increment.frame as frame_module
+
+    monkeypatch.setattr(frame_module, "_DAY_PANEL_SCRATCH_BUDGET_BYTES", scratch_budget)
+    specs = [MetricSpec(name="outcome", type="conversion", window_days=2)]
+    plan = _plan(specs, "bernoulli", date="day", exposure_date="exposed")
+    registration = plan.inference.registration
+    assert registration is not None
+    reveal = registration.reveal.model_copy(update={"longest_window_days": 2})
+    plan = plan.model_copy(
+        update={
+            "inference": InferenceSpec(
+                kind="always_valid",
+                registration=registration.model_copy(update={"reveal": reveal}),
+            )
+        }
+    )
+    days = [date(2026, 1, day) for day in range(1, 5)]
+    rows = [
+        {
+            "unit": f"u{unit_index}",
+            "arm": "control" if unit_index < 4 else "treatment",
+            "day": days[unit_index % len(days)],
+            "exposed": days[0] if unit_index % 2 == 0 else days[2],
+            "outcome": float(unit_index % 3 == 0) if unit_index % len(days) == 0 else 0.0,
+        }
+        for unit_index in range(8)
+    ]
+
+    def analyze(budget: int):
+        monkeypatch.setattr(frame_module, "_DAY_PANEL_SCRATCH_BUDGET_BYTES", budget)
+        return Analysis.from_unit_panel(
+            pd.DataFrame(rows),
+            unit="unit",
+            group="arm",
+            date="day",
+            exposure_date="exposed",
+            control="control",
+            metrics=specs,
+            experiment_id="experiment",
+            observation_end=days[-1],
+            plan=plan,
+        )
+
+    source = analyze(scratch_budget)
+    daily = source.run_daily()
+    snapshot = source.capture_sequential(finalized=True, as_of=days[-1])
+    result = source.run()[0]
+    other = analyze(64 * 1024 * 1024 if scratch_budget == 0 else 0)
+    other_daily = other.run_daily()
+    other_snapshot = other.capture_sequential(finalized=True, as_of=days[-1])
+
+    assert sorted(daily, key=lambda row: (row.ds, row.group_id)) == sorted(
+        other_daily, key=lambda row: (row.ds, row.group_id)
+    )
+    assert snapshot.records == other_snapshot.records
+    assert snapshot.states == other_snapshot.states
+    assert snapshot.prefix_id == other_snapshot.prefix_id
+    assert result == other.run()[0]
+    assert len(snapshot.records) == 8
+
+
 def test_sequential_summary_without_exposure_refuses_before_reading_frame():
     from tests.sequential_cases import UnreadFrame
 
@@ -445,6 +674,7 @@ def test_panel_common_window_only_reveals_finalized_units_and_current_asof(axis,
     assert _row(analysis).stat_sig()
     daily = analysis.run_asof_lift(completed_windows_only=True)
     assert len(daily) == 1
+    assert daily[0].multiplicity_status == "declared_plan"
     assert daily[0].sequential_result == _row(analysis).require_sequential_result()
     assert daily[0].n_control == 96
     assert daily[0].ds == label(14)
@@ -611,7 +841,9 @@ def test_exported_checkpoint_replays_exact_rationals_and_refuses_mutated_ones(
     assert "1e50000" not in str(wrapped.value)
 
 
-def _native_fixture(law, *, uptake_only=False, unbounded_retention=False):
+def _native_fixture(
+    law, *, uptake_only=False, unbounded_retention=False, triggered=False, registration_q=None
+):
     from datetime import UTC, datetime
 
     # All declarations precede construction or reading of either source table.
@@ -675,6 +907,17 @@ def _native_fixture(law, *, uptake_only=False, unbounded_retention=False):
                 "preferred_direction": "increase",
             }
         )
+    if triggered:
+        definition["exposures"].append(
+            {
+                "name": "triggered",
+                "sql": (
+                    "SELECT unit_id, ts, group_id FROM enrolled "
+                    "WHERE CAST(SUBSTR(unit_id, 1, 8) AS INTEGER) < 12"
+                ),
+            }
+        )
+        definition["experiments"][0]["trigger"] = "triggered"
     from increment import SequentialCell, SequentialModel
     from increment.semantics.design import Encouragement
 
@@ -725,6 +968,11 @@ def _native_fixture(law, *, uptake_only=False, unbounded_retention=False):
         base = mean_registration()
     else:
         base = registration(law)
+    base = (
+        base.model_copy(update={"q": Fraction(str(registration_q))})
+        if registration_q is not None
+        else base
+    )
     if uptake_only:
         model = SequentialModel.model_validate(
             {**base.models[0].model_dump(), "metric": "uptake", "observable": "uptake"}
@@ -803,6 +1051,132 @@ def _native_fixture(law, *, uptake_only=False, unbounded_retention=False):
         connection.disconnect()
         raise
     return connection, defs, analysis
+
+
+@pytest.mark.slow
+def test_from_definitions_auto_binding_preserves_omitted_q(tmp_path):
+    import json
+
+    import yaml
+
+    from increment.semantics.models import InferenceSpec
+
+    connection, defs, seeded_analysis = _native_fixture("bernoulli")
+    try:
+        experiment = defs.experiments[0]
+        plan = AnalysisPlan(primary="outcome", inference=InferenceSpec(kind="always_valid"))
+        auto_experiment = experiment.model_copy(
+            update={
+                "plan": plan,
+                "allocation": {"control": 0.5, "treatment": 0.5},
+                "allocation_scheme": "independent",
+            }
+        )
+        auto_defs = defs.model_copy(update={"experiments": (auto_experiment,)})
+        payload = auto_defs.model_dump(mode="json")
+        payload["experiments"][0]["plan"].pop("q", None)
+        definitions_path = tmp_path / "automatic.yaml"
+        definitions_path.write_text(yaml.safe_dump(payload))
+
+        automatic = Analysis.from_definitions(
+            "experiment", definitions_path, connection, store="none"
+        )
+        try:
+            bound_plan = automatic.experiment.plan
+            assert bound_plan.inference is not None
+            assert bound_plan.inference.registration is not None
+            assert "q" not in bound_plan.model_fields_set
+            from increment import compile_unit_day_artifact_context
+
+            context = compile_unit_day_artifact_context("experiment", auto_defs)
+            assert "plan_q_explicit" not in json.loads(context.canonical_json)
+            automatic.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
+            assert len(automatic.run()) == 1
+        finally:
+            automatic.close()
+    finally:
+        seeded_analysis.close()
+
+
+@pytest.mark.slow
+def test_omitted_plan_q_survives_native_and_artifact_replay():
+    import json
+    from datetime import date
+    from typing import cast
+
+    from increment.query.artifact_digest import canonical_json
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+    from increment.semantics.artifact import ArtifactContext, _artifact_context_digest
+    from increment.sources import MomentSource
+
+    connection, defs, native = _native_fixture("bernoulli", registration_q=0.20)
+    try:
+        native.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
+        native_row = _row(native)
+        context = artifact_context(defs, defs.experiments[0], "error")
+        context_payload = json.loads(context.canonical_json)
+        assert "plan_q_explicit" not in context_payload
+        assert context_payload["experiment"]["plan"]["q"] == 0.1
+
+        # Older contexts serialized the default q without recording explicitness.
+        legacy_payload = json.loads(context.canonical_json)
+        legacy_canonical = canonical_json(legacy_payload)
+        legacy_context = ArtifactContext(
+            context_format=context.context_format,
+            canonical_json=legacy_canonical,
+            sha256=_artifact_context_digest(legacy_canonical),
+        )
+        from increment.query.source import _artifact_source_context
+
+        _restored_experiment, legacy_source_context = _artifact_source_context(legacy_context)
+        assert legacy_source_context.plan.q_explicit is False
+
+        # The new explicit-default marker must survive context replay and keep
+        # the registration-q refusal active before the source can read evidence.
+        explicit_experiment = defs.experiments[0].model_copy(
+            update={"plan": defs.experiments[0].plan.model_copy(update={"q": 0.1})}
+        )
+        explicit_defs = defs.model_copy(update={"experiments": (explicit_experiment,)})
+        explicit_context = artifact_context(explicit_defs, explicit_experiment, "error")
+        explicit_payload = json.loads(explicit_context.canonical_json)
+        assert explicit_payload["plan_q_explicit"] is True
+        assert explicit_payload["experiment"]["plan"]["q"] == 0.1
+        _restored_experiment, explicit_source_context = _artifact_source_context(explicit_context)
+        assert explicit_source_context.plan.q_explicit is True
+
+        from increment import readouts
+
+        class UnreadSource:
+            capabilities = frozenset({"total"})
+            breakouts = ()
+            shape = None
+
+            def __init__(self):
+                self.context = explicit_source_context
+                self.moment_calls = 0
+
+            def moments(self, *args, **kwargs):
+                self.moment_calls += 1
+                raise AssertionError("mismatched explicit artifact q must refuse before reads")
+
+        unread = UnreadSource()
+        with pytest.raises(CapabilityError) as mismatched:
+            readouts.run(cast(MomentSource, unread))
+        assert mismatched.value.code == "sequential.source.invalid"
+        assert unread.moment_calls == 0
+
+        store = WarehouseArtifactStore(connection, schema_name="artifacts")
+        reference = native.publish_unit_day_artifact(store)
+        with Analysis.from_unit_day_artifact(store, reference, expected_context=context) as adopted:
+            adopted.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
+            artifact_row = _row(adopted)
+            assert (
+                artifact_row.require_sequential_result() == native_row.require_sequential_result()
+            )
+            assert artifact_row.family_q == native_row.family_q
+    finally:
+        native.close()
 
 
 @pytest.mark.slow
@@ -1389,6 +1763,7 @@ def test_always_valid_plan_reports_every_role_at_its_declared_budget():
     for row in analysis.run():
         # run() is typed as a union; these are arm rows, not contrasts.
         assert isinstance(row, LiftEstimate)
+        assert row.multiplicity_status == "declared_plan"
         observed[row.metric] = (
             row.role,
             row.inference,

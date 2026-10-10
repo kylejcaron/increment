@@ -379,8 +379,8 @@ asymptotic. A member without usable evidence—a missing arm, fewer than two
 observations in an arm, or zero observed variance—contributes log evidence
 of minus infinity, counts in the family size, and is never selected.
 Guardrails share neither this budget nor its selection step; they test at
-the full plan `alpha`. A prior-bound secondary stays outside the family
-under every inference kind, as it does at fixed horizon.
+the full plan `alpha`. Structural prior/inference combinations remain refused; for
+supported fixed-horizon prior-bound rows, declared secondary membership follows sampling evidence.
 
 This is the metric/arm secondary family. A registered breakout family is a
 separate axis whose correction is declared per registration: a continuous

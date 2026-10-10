@@ -58,6 +58,7 @@ class DashboardGroupData:
     source_kind: Literal["pinned_warehouse", "retained_checkpoint"]
     prefix_id: str | None
     unavailable: Mapping[str, str]
+    analysis_population: Literal["assigned", "triggered"] = "assigned"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "unavailable", _freeze(self.unavailable))
@@ -65,8 +66,8 @@ class DashboardGroupData:
 
 # A declared breakout choice as (declared source or None, property).
 BreakoutChoice = tuple[str | None, str]
-# (view, metric or None for every declared metric, completed windows only, breakout choice)
-ExploreKey = tuple[str, str | None, bool, BreakoutChoice | None]
+# (population, view, metric or None, completed windows only, breakout choice)
+ExploreKey = tuple[Literal["assigned", "triggered"], str, str | None, bool, BreakoutChoice | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +79,7 @@ class DashboardExploreCapture:
     every :meth:`load` yields a fresh collection or a fresh copy of that refusal.
     """
 
+    population: Literal["assigned", "triggered"]
     view: str
     metric: str | None
     completed_windows_only: bool
@@ -94,17 +96,23 @@ class DashboardExploreCapture:
         *,
         collection: Callable[[Iterable[Any]], Sequence[Any]],
     ) -> DashboardExploreCapture:
-        view, metric, completed, breakout = key
-        return cls(view, metric, completed, breakout, collection, tuple(rows), None)
+        population, view, metric, completed, breakout = key
+        return cls(population, view, metric, completed, breakout, collection, tuple(rows), None)
 
     @classmethod
     def refused(cls, key: ExploreKey, refusal: CodedError) -> DashboardExploreCapture:
-        view, metric, completed, breakout = key
-        return cls(view, metric, completed, breakout, None, (), copy.copy(refusal))
+        population, view, metric, completed, breakout = key
+        return cls(population, view, metric, completed, breakout, None, (), copy.copy(refusal))
 
     @property
     def key(self) -> ExploreKey:
-        return (self.view, self.metric, self.completed_windows_only, self.breakout)
+        return (
+            self.population,
+            self.view,
+            self.metric,
+            self.completed_windows_only,
+            self.breakout,
+        )
 
     def load(self) -> Sequence[Any]:
         """A fresh collection of the captured rows, or a fresh copy of the captured refusal."""
@@ -132,12 +140,14 @@ class DashboardBreakoutReads:
         metrics: Sequence[str],
         completed_windows_only: bool = False,
         exploratory_metrics: Sequence[str] | None = None,
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> DailyLiftEstimates:
         return self._scoped.run_asof_lift(
             metrics=metrics,
             exploratory_metrics=exploratory_metrics,
             completed_windows_only=completed_windows_only,
             dimension=self.breakout.property,
+            population=population,
         )
 
     def run_asof(
@@ -146,40 +156,54 @@ class DashboardBreakoutReads:
         metrics: Sequence[str],
         completed_windows_only: bool = False,
         exploratory_metrics: Sequence[str] | None = None,
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> DailyMetricValues:
         return self._scoped.run_asof(
             metrics=metrics,
             exploratory_metrics=exploratory_metrics,
             completed_windows_only=completed_windows_only,
             dimension=self.breakout.property,
+            population=population,
         )
 
     def run_daily(
-        self, *, metrics: Sequence[str], exploratory_metrics: Sequence[str] | None = None
+        self,
+        *,
+        metrics: Sequence[str],
+        exploratory_metrics: Sequence[str] | None = None,
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> DailyMetricValues:
         return self._scoped.run_daily(
             metrics=metrics,
             exploratory_metrics=exploratory_metrics,
             dimension=self.breakout.property,
+            population=population,
         )
 
     def run_breakout(
-        self, *, metrics: Sequence[str], exploratory_metrics: Sequence[str] | None = None
+        self,
+        *,
+        metrics: Sequence[str],
+        exploratory_metrics: Sequence[str] | None = None,
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> BreakoutEstimates:
-        return self._scoped.run_breakout(metrics=metrics, exploratory_metrics=exploratory_metrics)
+        return self._scoped.run_breakout(
+            metrics=metrics, exploratory_metrics=exploratory_metrics, population=population
+        )
 
     def uncorrected_segments(
-        self, *, metrics: Sequence[str], exploratory_metrics: Sequence[str] | None = None
+        self,
+        *,
+        metrics: Sequence[str],
+        exploratory_metrics: Sequence[str] | None = None,
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> BreakoutEstimates:
-        """This breakout's segment rows with no view-multiplicity correction.
-
-        The same estimators, methods, roles, and per-metric configuration as
-        :meth:`run_breakout`, but each cell stands alone: no Bonferroni split, no BH
-        selection, and no family fields, so a caller can correct a wider family itself.
-        A registered sequential plan has no fixed-horizon p-values to correct and refuses.
-        """
+        """This breakout's segment rows without the declared correction."""
         return self._scoped._run_breakout(
-            metrics=metrics, exploratory_metrics=exploratory_metrics, correction="none"
+            metrics=metrics,
+            exploratory_metrics=exploratory_metrics,
+            correction="none",
+            population=population,
         )
 
 
@@ -194,6 +218,13 @@ class DashboardSnapshotPayload:
     estimates: tuple[LiftEstimate, ...]
     group_data: tuple[DashboardGroupData, ...]
     explore: tuple[DashboardExploreCapture, ...]
+    population_estimates: Mapping[Literal["assigned", "triggered"], tuple[LiftEstimate, ...]] = (
+        field(default_factory=dict)
+    )
+    triggered_allocation: SRMResult | None = None
+    triggered_allocation_refusal: tuple[str, str] | None = None
+    triggered_allocation_history: pa.Table | None = None
+    triggered_allocation_history_refusal: tuple[str, str] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "estimates", tuple(self.estimates))
@@ -207,7 +238,9 @@ class DashboardSnapshotHandler(Protocol):
 
 @runtime_checkable
 class AllocationHistoryOperation(Protocol):
-    def allocation_history(self) -> pa.Table: ...
+    def allocation_history(
+        self, *, population: Literal["assigned", "triggered"] = "assigned"
+    ) -> pa.Table: ...
 
 
 @runtime_checkable
@@ -227,6 +260,7 @@ class DashboardGroupDataOperation(Protocol):
         *,
         metrics: Sequence[Metric],
         checkpoints: Mapping[str, SequentialCheckpoint] | None = None,
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> tuple[DashboardGroupData, ...]: ...
 
 
@@ -247,7 +281,11 @@ class SummarySqlOperation(Protocol):
 @runtime_checkable
 class BreakoutSourcesOperation(Protocol):
     def breakout_sources(
-        self, breakouts: Sequence[Breakout], *, metrics: Sequence[Metric]
+        self,
+        breakouts: Sequence[Breakout],
+        *,
+        metrics: Sequence[Metric],
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> Sequence[BreakoutMomentsSource]: ...
 
 
@@ -319,7 +357,12 @@ class BreakoutSourceOperation(Protocol):
 
 @runtime_checkable
 class DaySourceOperation(Protocol):
-    def day_source(self, *, metrics: Sequence[Metric]) -> DayEvidenceSource: ...
+    def day_source(
+        self,
+        *,
+        metrics: Sequence[Metric],
+        population: Literal["assigned", "triggered"] = "assigned",
+    ) -> DayEvidenceSource: ...
 
 
 @runtime_checkable

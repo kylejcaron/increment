@@ -240,28 +240,19 @@ def test_native_breakout_uses_callwide_methods_not_declared_methods(con, correct
 
     analysis = _configured_country_breakout_analysis(con, correction)
 
-    if correction == "bh":
-        with pytest.raises(InvalidRequestError) as raised:
-            analysis.run_breakout()
-        assert raised.value.code == "readout.breakout_correction_bh"
-    else:
-        results = analysis.run_breakout()
-        assert results
-        assert {row.method for row in results} == {"declared"}
+    results = analysis.run_breakout()
+    assert results
+    assert {row.method for row in results} == {"declared"}
 
-    if correction == "bh":
-        with pytest.raises(InvalidRequestError) as raised:
-            analysis.run_breakout(decision_method=Method(name="call-wide"))
-        assert raised.value.code == "readout.breakout_correction_bh"
-    else:
-        explicit = analysis.run_breakout(decision_method=Method(name="call-wide"))
-        assert explicit
-        assert {row.method for row in explicit} == {"call-wide"}
+    explicit = analysis.run_breakout(decision_method=Method(name="call-wide"))
+    assert explicit
+    assert {row.method for row in explicit} == {"call-wide"}
 
 
-@pytest.mark.parametrize("correction", ["none", "bonferroni"])
-def test_native_breakout_ignores_declared_prior(con, correction):
+@pytest.mark.parametrize("correction", ["none", "bonferroni", "bh"])
+def test_native_breakout_keeps_declared_prior_separate_from_sampling(con, correction):
     from increment.estimation import Normal
+    from increment.estimation.priors import MixturePrior
 
     configured = _configured_country_breakout_analysis(con, correction)
     baseline = make_analysis_like(
@@ -281,22 +272,69 @@ def test_native_breakout_ignores_declared_prior(con, correction):
 
     def keyed_lifts(results):
         return {
-            (row.metric, row.group_id, row.dimension_value, row.method): row.require_lift().value
+            (row.metric, row.group_id, row.dimension_value): row
             for row in results
             if row.lift is not None
         }
 
+    def assert_same_sampling(actual, expected):
+        assert actual.keys() == expected.keys()
+        for key, row in actual.items():
+            baseline_row = expected[key]
+            assert row.require_lift().value == pytest.approx(baseline_row.require_lift().value)
+            assert row.require_lift().lb == pytest.approx(baseline_row.require_lift().lb)
+            assert row.require_lift().ub == pytest.approx(baseline_row.require_lift().ub)
+            assert row.sampling_available is True
+            assert baseline_row.sampling_available is True
+            assert row.discovery == baseline_row.discovery
+            assert row.family_size == baseline_row.family_size
+            assert row.family_threshold == baseline_row.family_threshold
+
     declared_lifts = keyed_lifts(declared_results)
     baseline_lifts = keyed_lifts(baseline_results)
-    assert {(key[0], key[1], key[2]) for key in declared_lifts} == {
-        (key[0], key[1], key[2]) for key in baseline_lifts
-    }
-    assert list(declared_lifts.values()) != pytest.approx(list(baseline_lifts.values()))
+    assert_same_sampling(declared_lifts, baseline_lifts)
 
     prior_results = baseline.run_breakout(prior=Normal(mu=0.0, sigma=0.01))
     prior_lifts = keyed_lifts(prior_results)
-    assert prior_lifts.keys() == baseline_lifts.keys()
-    assert any(prior_lifts[key] != pytest.approx(baseline_lifts[key]) for key in baseline_lifts)
+    assert_same_sampling(prior_lifts, baseline_lifts)
+    assert any(row.posterior_estimate is not None for row in prior_lifts.values())
+
+    mixture_prior = MixturePrior(weights=(0.4, 0.6), means=(0.0, 0.1), sigmas=(0.02, 0.15))
+    mixture_results = baseline.run_breakout(prior=mixture_prior)
+    mixture_lifts = keyed_lifts(mixture_results)
+    assert_same_sampling(mixture_lifts, baseline_lifts)
+    mixture_row = next(
+        row for row in mixture_lifts.values() if row.posterior_components is not None
+    )
+    assert mixture_row.prior_spec == mixture_prior
+    family_view = mixture_row._family_view()
+    assert family_view is not None
+    assert family_view.posterior_components == mixture_row.posterior_components
+    chance_to_beat = family_view.chance_to_beat()
+    assert chance_to_beat is not None
+    assert 0.0 <= chance_to_beat <= 1.0
+    saved_row = type(mixture_row).model_validate_json(mixture_row.model_dump_json())
+    assert saved_row.posterior_components == mixture_row.posterior_components
+    saved_family_view = saved_row._family_view()
+    assert saved_family_view is not None
+    assert saved_family_view.chance_to_beat() == pytest.approx(chance_to_beat)
+    mixture_frame = mixture_results.to_frame(backend="pandas")
+    assert isinstance(mixture_frame, pd.DataFrame)
+    frame_record = next(
+        record
+        for record in mixture_frame.to_dict(orient="records")
+        if record["metric"] == mixture_row.metric
+        and record["group_id"] == mixture_row.group_id
+        and record["dimension_value"] == mixture_row.dimension_value
+    )
+    frame_record.pop("view_partial", None)
+    frame_data = mixture_row.model_dump(mode="python")
+    frame_data["posterior_components"] = frame_record["posterior_components"]
+    frame_row = type(mixture_row).model_validate(frame_data)
+    frame_family_view = frame_row._family_view()
+    assert frame_family_view is not None
+    assert frame_family_view.posterior_components == mixture_row.posterior_components
+    assert frame_family_view.chance_to_beat() == pytest.approx(chance_to_beat)
 
 
 def test_run_breakout_plan_declared_multiplicity_controls_level(con):
@@ -480,6 +518,25 @@ def test_run_breakout_bh_family_survives_a_degenerate_segment_cell():
         if r.metric == "revenue" and r.dimension_value == "US" and r.excluded is None
     ]
     assert healthy_rows  # the family completed instead of aborting for GB/refunds
+
+    from increment.breakout.estimates import BreakoutEstimate
+    from increment.tables import estimates_to_readout
+
+    for row in degenerate_rows:
+        assert BreakoutEstimate.model_validate_json(row.model_dump_json()) == row
+    frame = results.to_frame(backend="pandas")
+    assert isinstance(frame, pd.DataFrame)
+    failed_frame = frame[(frame["metric"] == "refunds") & (frame["dimension_value"] == "GB")]
+    assert len(failed_frame) == len(degenerate_rows)
+    assert pd.isna(failed_frame["lift"]).all()
+    rendered = estimates_to_readout(results)
+    failed_readout = [
+        row for row in rendered if row["metric"] == "refunds" and row["segment"] == "GB"
+    ]
+    assert len(failed_readout) == len(degenerate_rows)
+    assert all(
+        row["excluded"] == "nonpositive_mean" and row["lift"] is None for row in failed_readout
+    )
 
 
 def test_run_breakout_bh_family_survives_a_tiny_segment_extreme_ratio_cell():
@@ -701,29 +758,55 @@ def test_breakout_propagates_a_cuped_nonpositive_mean_row_unmodified(con):
 
 
 @pytest.mark.slow
-def test_run_breakout_registered_raw_frame_results_roundtrip():
+@pytest.mark.parametrize(
+    ("policy_correction", "correction"),
+    [("bh", "bh"), ("bonferroni", "bonferroni"), ("none", "bh")],
+)
+def test_run_breakout_registered_raw_frame_results_roundtrip(policy_correction, correction):
+    from fractions import Fraction
+
     import pyarrow as pa
 
     from increment import SequentialCell
-    from increment.breakout.estimates import BreakoutEstimate
-    from increment.frame import MetricSpec
+    from increment.frame import MetricSpec, synthesise_metric
+    from increment.readouts import breakout as readout_breakout
+    from increment.semantics.design import Randomized
+    from increment.semantics.models import MultiplicitySpec
+    from increment.sources import BreakoutMomentsSource
     from tests.test_sequential_public_sources import gaussian_plan
 
-    specs = [MetricSpec(name="revenue", type="conversion", window_days=7)]
+    specs = [
+        MetricSpec(name=name, type="conversion", window_days=7) for name in ("revenue", "other")
+    ]
+    family_member = correction == "bh"
+    alpha = Fraction(1, 20) if family_member else Fraction(1, 40)
     cells = tuple(
         SequentialCell(
-            metric="revenue", group_id="treatment", segment=(("country", segment),), family=True
+            metric=spec.name,
+            group_id="treatment",
+            segment=(("country", segment),),
+            family=family_member,
+            alpha=alpha,
         )
+        for spec in specs
         for segment in ("US", "CA")
     )
     plan = gaussian_plan(
         specs,
         law="bernoulli",
         cells=cells,
+        q=0.2,
         unit="unit",
         group="arm",
         date="day",
         exposure_date="exposed",
+    ).model_copy(
+        update={
+            "view_multiplicity": MultiplicitySpec(
+                correction=policy_correction,
+                q=0.1 if policy_correction == "bh" else None,
+            )
+        }
     )
     rows = [
         {
@@ -733,6 +816,7 @@ def test_run_breakout_registered_raw_frame_results_roundtrip():
             "day": date(2025, 1, 1),
             "exposed": date(2025, 1, 1),
             "revenue": int(i % 32 < center),
+            "other": int(i % 32 < center),
         }
         for segment, control, treatment in (("US", 10, 15), ("CA", 20, 15))
         for arm, center in (("control", control), ("treatment", treatment))
@@ -750,16 +834,78 @@ def test_run_breakout_registered_raw_frame_results_roundtrip():
         breakouts=["country"],
         plan=plan,
     )
+
     analysis.capture_sequential(finalized=True, as_of=date(2025, 1, 15))
-    result = analysis.run_breakout()
-    assert {row.dimension_value: row.require_lift().value for row in result} == {
-        "US": 0.5,
-        "CA": -0.25,
+    source = BreakoutMomentsSource(
+        [],
+        dimension="country",
+        metrics=[synthesise_metric(spec) for spec in specs],
+        study_id="frame",
+        design=Randomized(control_group="control"),
+        plan=plan,
+    )
+    source.adopt_sequential_snapshot(analysis.sequential_snapshot())
+    result = readout_breakout(source, "country", correction=correction, q=0.2)
+    inference = source.context.plan.inference
+    _assert_registered_breakout_result(result, correction, inference, alpha)
+
+
+def _assert_registered_breakout_result(result, correction, inference, alpha):
+    from increment.breakout.estimates import BreakoutEstimate
+    from increment.estimation.sequential import AlwaysValid
+
+    assert isinstance(inference, AlwaysValid)
+    assert {(row.metric, row.dimension_value): row.require_lift().value for row in result} == {
+        ("revenue", "US"): 0.5,
+        ("revenue", "CA"): -0.25,
+        ("other", "US"): 0.5,
+        ("other", "CA"): -0.25,
     }
-    assert all(row.discovery for row in result)
+    assert all(row.sequential_result is not None for row in result)
     for row in result:
-        assert row.sequential_result is not None
         assert BreakoutEstimate.model_validate_json(row.model_dump_json()) == row
+    assert result.metadata is not None
+    assert result.metadata.scope is not None
+    scopes = result.metadata.scope.families
+    assert scopes
+    if correction == "bh":
+        (scope,) = scopes
+        family = scope.family
+        assert family is not None
+        assert family.correction == "e_bh"
+        assert family.axes == ("metric", "arm", "segment")
+        assert family.q == float(inference.registration.q)
+        assert family.guarantee == "fdr"
+        assert len(scope.members) == 4
+        assert {row.family_id for row in result} == {scope.family_id}
+        assert {row.family_axes for row in result} == {family.axes}
+        assert {row.family_q for row in result} == {family.q}
+        assert {row.family_guarantee for row in result} == {"finite_sample"}
+    else:
+        assert len(scopes) == 2
+        policies = [scope.family for scope in scopes]
+        assert all(policy is not None for policy in policies)
+        assert {policy.correction for policy in policies if policy is not None} == {"bonferroni"}
+        assert {policy.axes for policy in policies if policy is not None} == {("segment",)}
+        assert {policy.q for policy in policies if policy is not None} == {None}
+        assert {policy.guarantee for policy in policies if policy is not None} == {"fwer"}
+        assert {len(scope.members) for scope in scopes} == {2}
+        for scope in scopes:
+            assert scope.family is not None
+            rows_for_metric = [
+                row for row in result if row.metric in {cell.metric for cell in scope.members}
+            ]
+            assert {row.family_id for row in rows_for_metric} == {scope.family_id}
+        assert {row.family_axes for row in result} == {("segment",)}
+        assert {row.family_q for row in result} == {None}
+        assert all(row.family_id is not None for row in result)
+        assert {row.family_guarantee for row in result} == {"finite_sample"}
+        assert {row.multiplicity_status for row in result} == {"exploratory_family"}
+        assert {
+            row.sequential_result.decision_alpha
+            for row in result
+            if row.sequential_result is not None
+        } == {alpha}
 
 
 def test_run_breakout_removed_kwargs_raise_typeerror(con):

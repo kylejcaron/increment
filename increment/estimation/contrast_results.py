@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from operator import index
-from typing import Literal, SupportsIndex, overload
+from typing import TYPE_CHECKING, Literal, SupportsIndex, overload
 
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
@@ -19,6 +20,9 @@ from increment.semantics.unit_cycle import (
     UnitCycleTApproximation,
     UnitCycleVarianceEnvelope,
 )
+
+if TYPE_CHECKING:
+    from increment.estimation.readout_types import ReadoutMetadata
 
 Backend = Literal["pandas", "polars", "pyarrow"]
 
@@ -185,6 +189,31 @@ class ContrastResult(CodedModel, BaseModel):
     reference_spec: UnitCycleReference | None = None
     provenance: ProspectiveAssumptionProvenance | None = None
     response_meaning: Literal["retained_total", "pre_normalized_retained_mean"] | None = None
+    analysis_population: Literal["assigned"] = "assigned"
+    source_snapshot_id: str | None = None
+    decision_scope_complete: bool | None = None
+    decision_scope_reason_code: str | None = None
+    decision_scope_reason_context: Mapping[str, object] | None = None
+
+    @model_validator(mode="after")
+    def _freeze_scope_context(self):
+        if self.decision_scope_reason_context is not None:
+            from increment._canonical import canonical_json_bytes
+            from increment._immutable import _FrozenMapping
+
+            def freeze(value):
+                if isinstance(value, Mapping):
+                    frozen = _FrozenMapping({key: freeze(item) for key, item in value.items()})
+                    canonical_json_bytes(dict(frozen))
+                    return frozen
+                if isinstance(value, (tuple, list)):
+                    return tuple(freeze(item) for item in value)
+                return value
+
+            object.__setattr__(
+                self, "decision_scope_reason_context", freeze(self.decision_scope_reason_context)
+            )
+        return self
 
     @model_validator(mode="after")
     def _consistent_design(self) -> ContrastResult:
@@ -316,7 +345,53 @@ class ContrastResult(CodedModel, BaseModel):
 
 
 class ContrastResults(list[ContrastResult]):
-    """A typed list of contrast results with backend-neutral frame output."""
+    """Typed contrast results with immutable scope metadata and native frame output."""
+
+    _model = ContrastResult
+
+    def __init__(
+        self,
+        rows=(),
+        *,
+        metadata: ReadoutMetadata | None = None,
+        source=None,
+        sequential_snapshot=None,
+    ):
+        from increment.estimation.readout_types import validate_collection
+
+        super().__init__(rows)
+        self._metadata = metadata
+        self.source = source
+        self.sequential_snapshot = sequential_snapshot
+        validate_collection(self, metadata)
+
+    @property
+    def metadata(self) -> ReadoutMetadata | None:
+        return self._metadata
+
+    @metadata.setter
+    def metadata(self, value) -> None:
+        self._mutation("metadata_set")
+
+    @metadata.deleter
+    def metadata(self) -> None:
+        self._mutation("metadata_delete")
+
+    def __reduce_ex__(self, protocol):
+        from increment.estimation.readout_types import _restore_collection
+
+        return _restore_collection, (
+            type(self),
+            tuple(self),
+            self.metadata,
+            self.source,
+            self.sequential_snapshot,
+        )
+
+    def model_dump_json(self):
+        from increment.estimation.readout_types import dump_collection
+
+        return dump_collection(self)
 
     @overload
     def __getitem__(self, key: SupportsIndex) -> ContrastResult: ...
@@ -326,11 +401,80 @@ class ContrastResults(list[ContrastResult]):
 
     def __getitem__(self, key: SupportsIndex | slice) -> ContrastResult | ContrastResults:
         if isinstance(key, slice):
-            return type(self)(super().__getitem__(key))
+            from increment.estimation.readout_types import partial_metadata
+
+            rows = super().__getitem__(key)
+            return type(self)(
+                rows,
+                metadata=partial_metadata(self.metadata, rows, "slice"),
+                source=self.source,
+                sequential_snapshot=self.sequential_snapshot,
+            )
         return super().__getitem__(index(key))
 
-    def __add__(self, other: list[ContrastResult]) -> ContrastResults:
-        return type(self)(super().__add__(other))
+    def filter(self, predicate):
+        from increment.estimation.readout_types import partial_metadata
+
+        rows = [row for row in self if predicate(row)]
+        return type(self)(
+            rows,
+            metadata=partial_metadata(self.metadata, rows, "filter"),
+            source=self.source,
+            sequential_snapshot=self.sequential_snapshot,
+        )
+
+    def concat(self, other):
+        from increment.estimation.readout_types import concat_collection
+
+        return concat_collection(self, other)
+
+    def __add__(self, other):
+        return self.concat(other)
+
+    def _mutation(self, operation):
+        from increment.estimation.readout_types import refuse_readout
+
+        refuse_readout(
+            "readout.collection.mutation_unsupported",
+            operation=operation,
+            model=type(self).__name__,
+        )
+
+    def append(self, value):
+        self._mutation("append")
+
+    def extend(self, values):
+        self._mutation("extend")
+
+    def insert(self, index, value):
+        self._mutation("insert")
+
+    def pop(self, index=-1):
+        self._mutation("pop")
+
+    def remove(self, value):
+        self._mutation("remove")
+
+    def clear(self):
+        self._mutation("clear")
+
+    def reverse(self):
+        self._mutation("reverse")
+
+    def sort(self, *args, **kwargs):
+        self._mutation("sort")
+
+    def __setitem__(self, key, value):
+        self._mutation("item_set")
+
+    def __delitem__(self, key):
+        self._mutation("item_delete")
+
+    def __iadd__(self, value):
+        self._mutation("iadd")
+
+    def __imul__(self, value):
+        self._mutation("imul")
 
     def to_frame(self, *, backend: Backend = "pandas") -> IntoDataFrame:
         """Return rows as a pandas, polars, or pyarrow frame.
@@ -385,6 +529,11 @@ class ContrastResults(list[ContrastResult]):
             "reference_spec",
             "provenance",
             "response_meaning",
+            "analysis_population",
+            "source_snapshot_id",
+            "decision_scope_complete",
+            "decision_scope_reason_code",
+            "decision_scope_reason_context",
         ]
         data: dict[str, list[object]] = {name: [] for name in columns}
         for result in self:
@@ -404,11 +553,22 @@ class ContrastResults(list[ContrastResult]):
                             value.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
                         )
                     )
+                elif name == "decision_scope_reason_context":
+                    from increment.estimation.readout_types import thaw
+
+                    value = getattr(result, name)
+                    data[name].append(
+                        None
+                        if value is None
+                        else json.dumps(thaw(value), sort_keys=True, separators=(",", ":"))
+                    )
                 else:
                     data[name].append(getattr(result, name))
 
         schema = {
-            name: nw.Float64()
+            name: nw.Boolean()
+            if name == "decision_scope_complete"
+            else nw.Float64()
             if name
             in {
                 "estimate",
@@ -464,7 +624,15 @@ class ContrastResults(list[ContrastResult]):
             for name, values in nullable_ints.items():
                 frame.insert(columns.index(name), name, pd.array(values, dtype="Int64"))
             frame["preferred_direction"] = pd.array(data["preferred_direction"], dtype="string")
-        return frame
+        return (
+            nw.from_native(frame, eager_only=True)
+            .with_columns(
+                nw.lit(None if self.metadata is None else self.metadata.partial).alias(
+                    "view_partial"
+                )
+            )
+            .to_native()
+        )
 
 
 __all__ = ["ContrastResult", "ContrastResults"]

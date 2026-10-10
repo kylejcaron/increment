@@ -85,6 +85,14 @@ for result in results:
 ```text
 revenue: lift=+7.5%
 ```
+**Read the result as a decision, not just a lift.** Check whether required
+metrics and guardrails are present, whether assignment integrity was assessed,
+and which multiplicity status applies before acting. The
+[result-reading guide](docs/guides/reading-results.md) explains failed or
+unavailable cells, posterior availability, and triggered-population readouts.
+For a coded refusal, follow its code and context with the
+[refusal navigation guide](docs/guides/refusals.md).
+
 
 Replace the generated data with your own unit-level dataframe. No YAML, warehouse
 connection, or DuckDB is required. Other Narwhals-supported eager dataframes work

@@ -9,6 +9,41 @@ again across that metric's own non-control arms at estimation; a
 adversely; a `secondaries` family is judged as a false-discovery-rate
 problem at level `q` instead of a per-metric significance test.
 
+## Reading multiplicity provenance
+
+Lift, breakout and daily/as-of lift rows expose `multiplicity_status`
+alongside the existing `role`, interval alpha and (where the route has a
+source-scoped family) `family_id`. The status discloses how the metric was
+declared or selected; it does not apply a new correction:
+
+| `role` | `multiplicity_status` | Interpretation |
+|---|---|---|
+| `None` | `undeclared_plan` | No metric role was declared; unadjusted. |
+| `unassigned` | `unassigned_in_plan` | A plan exists, but this metric has no assigned role; unadjusted. |
+| `primary`, `secondary`, `guardrail` | `declared_plan` | Retains the existing role-specific allocation and procedure. |
+| `exploratory`, outside a BH/e-BH or Bonferroni family | `exploratory_unadjusted` | Exploratory, without family adjustment. |
+| `exploratory`, inside a BH/e-BH or Bonferroni family | `exploratory_family` | Member of the named adjusted family: BH/e-BH selection or Bonferroni alpha division. |
+
+For example, five metrics without a declared plan each retain alpha `0.05`
+and report `undeclared_plan`; five declared primaries share alpha `0.05`,
+so each receives `0.01` for a single treatment arm. `declared_plan` is
+not a blanket claim of joint error control: guardrails still use their
+existing unsplit alpha. No metric is silently promoted to primary.
+
+Family membership comes from the original source-scoped readout, never
+the number of visible rows. `results.filter(...)` and slicing retain the
+full `results.metadata.scope.families` member lists; `to_frame()` carries
+the row status and `family_id`, and saved readout envelopes preserve them.
+Adding an exploratory metric does not enlarge the declared primary
+family or reallocate its alpha.
+
+Assigned and triggered populations have separate family identities.
+Switching the visible population only changes the rows shown, not either
+population's allocation or membership. Concatenating readouts preserves
+each source's families; it does not create one jointly controlled
+experiment-wide family. Use `family_id` and the source/population scope,
+not a shared family name, to identify which guarantee applies.
+
 ## Declaring families: primary, guardrails, secondaries
 
 ```python

@@ -13,12 +13,9 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._literals import Alternative
+from increment._multiplicity import guarantee_for_correction
 from increment._plan_compatibility import Role
-from increment.decision import (
-    _guarantee_for_correction,
-    _PlanResolution,
-    _resolve_declaration,
-)
+from increment.decision import _PlanResolution, _resolve_declaration
 from increment.errors import (
     InvalidRequestError,
     RefusalSpec,
@@ -281,7 +278,7 @@ def _compile_one_procedure(
             correction=correction,
             q=resolved.q,
             axes=("metric", "arm"),
-            guarantee=_guarantee_for_correction(correction),
+            guarantee=guarantee_for_correction(correction),
             validity_regime="asymptotic_sequential" if asymptotic else "finite_sample",
         )
         membership = FamilyMembership(
@@ -362,7 +359,7 @@ def _compile_view_policy(
     q = (resolved.q if spec is None else spec.q) if correction in ("bh", "e_bh") else None
     if isinstance(inference, AsymptoticMean) and correction == "bonferroni":
         q = resolved.q
-    guarantee = _guarantee_for_correction(correction)
+    guarantee = guarantee_for_correction(correction)
     return MultiplicityFamily(
         name=name,
         correction=correction,
@@ -431,6 +428,7 @@ def _compile_contrast_plan(
         declared=state.resolved.declared,
         alpha=state.resolved.alpha,
         q=state.resolved.q,
+        q_explicit=plan is not None and "q" in plan.model_fields_set,
         path=path,
         inference=FixedInference(),
         procedures=compile_contrast_procedures(plan, metrics, path=path),
@@ -441,7 +439,7 @@ def _compile_contrast_plan(
                 correction="bh",
                 q=state.resolved.q,
                 axes=("metric", "arm", "segment"),
-                guarantee=_guarantee_for_correction("bh"),
+                guarantee=guarantee_for_correction("bh"),
             ),
             encouragement_breakout=MultiplicityFamily(
                 name="breakout",
@@ -521,9 +519,8 @@ def bind_automatic_sequential_plan(
             "segments": {},
         }
     )
-    return AnalysisPlan.model_validate(
-        plan.model_copy(update={"inference": inference}).model_dump()
-    )
+    bound = plan.model_copy(update={"inference": inference})
+    return AnalysisPlan.model_validate(bound)
 
 
 def compile_decision_plan(
@@ -580,6 +577,7 @@ def compile_decision_plan(
         declared=state.resolved.declared,
         alpha=state.resolved.alpha,
         q=state.resolved.q,
+        q_explicit=plan is not None and "q" in plan.model_fields_set,
         path=path,
         inference=state.inference,
         compliance=plan.compliance if plan is not None else None,

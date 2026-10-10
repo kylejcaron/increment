@@ -12,6 +12,11 @@ import pytest
 from increment import Analysis
 from increment.errors import CapabilityError
 from increment.frame import MetricSpec
+from tests.analysis_factory import _native_source
+
+
+def _source_daily_moments(analysis: Analysis) -> object:
+    return _native_source(analysis).moments(analysis.metrics[0], grain="daily")
 
 
 def _summary_analysis() -> Analysis:
@@ -111,7 +116,7 @@ _BUILDERS: tuple[tuple[str, Callable[[], Analysis]], ...] = (
             "from_moments",
             # The source's own grain operation, which no public Analysis method
             # requests; it is the operator contract under test here.
-            lambda a: a._src.moments(a.metrics[0], grain="daily"),
+            lambda a: _source_daily_moments(a),
             "source.moments.grain",
         ),
     ],
@@ -135,7 +140,7 @@ def test_constructor_families_keep_distinct_cluster_refusals(family: str) -> Non
     analysis = dict(_BUILDERS)[family]()
     try:
         with pytest.raises(CapabilityError) as raised:
-            analysis._src.cluster_counts()
+            _native_source(analysis).cluster_counts()
         assert raised.value.code in {
             "source.frame.cluster_grain",
             "source.frame_panel.cluster_grain",
@@ -149,9 +154,8 @@ def test_constructor_families_keep_distinct_cluster_refusals(family: str) -> Non
 def test_definitions_keeps_native_warehouse_cluster_contract(seeded_defs, seeded_con) -> None:
     analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
     try:
-        source = analysis._src
         with pytest.raises(CapabilityError) as raised:
-            source.cluster_counts()
+            _native_source(analysis).cluster_counts()
         assert raised.value.code == "source.native.warehouse_cluster_grain"
     finally:
         analysis.close()
@@ -287,7 +291,7 @@ _MATRIX: tuple[
 
 
 def _invoke_matrix_operation(analysis: Analysis, family: str, operation: str) -> object:
-    source = analysis._src
+    source = _native_source(analysis)
     metric = analysis.metrics[0]
     if operation == "materialize":
         return analysis.materialize()

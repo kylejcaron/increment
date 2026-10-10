@@ -471,14 +471,17 @@ def test_corrected_compliance_breakout_retains_pre_read_scope_refusal():
 
 
 @pytest.mark.slow
-def test_artifact_initial_mapping_rejects_changed_saved_recipe_before_relation_access():
+def test_artifact_initial_mapping_rejects_changed_saved_recipe_before_relation_access(
+    monkeypatch,
+):
+    from contextlib import contextmanager
+
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
-    from increment.query.source import _ArtifactFacadeSource
 
     connection, definitions, native = _native_fixture("bernoulli")
+    relation_reads = []
     try:
-        context = artifact_context(definitions, definitions.experiments[0], "error")
         store = WarehouseArtifactStore(connection, schema_name="artifacts")
         ref = native.publish_unit_day_artifact(store)
         changed = definitions.fact_sources[0].model_copy(
@@ -486,17 +489,33 @@ def test_artifact_initial_mapping_rejects_changed_saved_recipe_before_relation_a
         )
         definitions = definitions.model_copy(update={"fact_sources": (changed,)})
         wrong = artifact_context(definitions, definitions.experiments[0], "error")
-        with Analysis.from_unit_day_artifact(store, ref, expected_context=context) as original:
-            source = original._src
-            with pytest.raises(CapabilityError) as exc:
-                _ArtifactFacadeSource(
-                    store,
-                    source._lifecycle,
-                    source._snapshot,
-                    source._manifest.model_copy(update={"context": wrong}),
-                    expected_context=wrong,
-                )
-            assert exc.value.code == "sequential.source.invalid"
+        original_open_snapshot = store.open_snapshot
+
+        class SnapshotWithChangedContext:
+            def __init__(self, snapshot):
+                self.snapshot = snapshot
+
+            def __getattr__(self, name):
+                return getattr(self.snapshot, name)
+
+            def read_manifest(self, *args, **kwargs):
+                manifest = self.snapshot.read_manifest(*args, **kwargs)
+                return manifest.model_copy(update={"context": wrong})
+
+            def verify_relation(self, relation, *, expected_role):
+                relation_reads.append(expected_role)
+                raise AssertionError("sequential recipe validation must precede relation reads")
+
+        @contextmanager
+        def open_snapshot_with_changed_context(reference):
+            with original_open_snapshot(reference) as snapshot:
+                yield SnapshotWithChangedContext(snapshot)
+
+        monkeypatch.setattr(store, "open_snapshot", open_snapshot_with_changed_context)
+        with pytest.raises(CapabilityError) as exc:
+            Analysis.from_unit_day_artifact(store, ref, expected_context=wrong)
+        assert exc.value.code == "sequential.source.invalid"
+        assert relation_reads == []
     finally:
         connection.disconnect()
 
@@ -1686,7 +1705,10 @@ def test_pre_normalization_bool_null_prefix_replays_but_cannot_be_relabelled_for
     previous = replay.sequential_snapshot()
 
     spelled = _arm_rows(("control", "treatment"), levels=old)
-    assert _summary(spelled, specs, plan, design).sequential_snapshot() == previous
+    captured = _summary(spelled, specs, plan, design).sequential_snapshot()
+    assert captured.records == previous.records
+    assert captured.states == previous.states
+    assert captured.assignment_counts == {"control": 60, "treatment": 60}
     later = pd.concat([spelled, _arm_rows(("control", "treatment"), offset=60, levels=old)])
     appended = _summary(later, specs, plan, design).capture_sequential(
         finalized=True, previous=previous

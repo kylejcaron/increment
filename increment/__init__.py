@@ -85,6 +85,7 @@ if TYPE_CHECKING:
         request_sha256,
         schema_sha256,
     )
+    from increment.query.session import SourceSnapshotEvidence
     from increment.reporting import Report
     from increment.semantics.artifact import (
         ArtifactContext,
@@ -116,6 +117,8 @@ if TYPE_CHECKING:
         SimpleMetricMeasure,
         SiteVolumeExtension,
         SiteVolumeRequest,
+        TriggerMeasureStatsExtension,
+        TriggerMeasureStatsRequest,
         TriggerPopulationExtension,
         TriggerPopulationRequest,
         UnitCovariateExtension,
@@ -211,6 +214,7 @@ __all__ = [
     "CupedPreperiodExtension",
     "AssignmentCountsExtension",
     "TriggerPopulationExtension",
+    "TriggerMeasureStatsExtension",
     "EncouragementUptakeExtension",
     "SiteVolumeExtension",
     "UnitCovariateExtension",
@@ -239,6 +243,7 @@ __all__ = [
     "CupedPreperiodRequest",
     "AssignmentCountsRequest",
     "TriggerPopulationRequest",
+    "TriggerMeasureStatsRequest",
     "EncouragementUptakeRequest",
     "SiteVolumeRequest",
     "UnitCovariateRequest",
@@ -337,6 +342,7 @@ __all__ = [
     "ParallelStudyEnvelope",
     "SwitchbackStudyEnvelope",
     "StudyEnvelope",
+    "SourceSnapshotEvidence",
 ]
 
 _LAZY_IMPORTS = {
@@ -345,6 +351,7 @@ _LAZY_IMPORTS = {
     "impute": ("increment.impute", None),
     "Report": ("increment.reporting", "Report"),
     "Analysis": ("increment.analysis", "Analysis"),
+    "SourceSnapshotEvidence": ("increment.query.session", "SourceSnapshotEvidence"),
     "MetricSpec": ("increment.frame", "MetricSpec"),
     # The identification union every readout's `design=` argument names.
     # Annotation-only: construct one of its members, which are exported
@@ -487,6 +494,10 @@ _LAZY_IMPORTS = {
     "CupedPreperiodExtension": ("increment.semantics.artifact", "CupedPreperiodExtension"),
     "AssignmentCountsExtension": ("increment.semantics.artifact", "AssignmentCountsExtension"),
     "TriggerPopulationExtension": ("increment.semantics.artifact", "TriggerPopulationExtension"),
+    "TriggerMeasureStatsExtension": (
+        "increment.semantics.artifact",
+        "TriggerMeasureStatsExtension",
+    ),
     "EncouragementUptakeExtension": (
         "increment.semantics.artifact",
         "EncouragementUptakeExtension",
@@ -500,6 +511,7 @@ _LAZY_IMPORTS = {
     "CupedPreperiodRequest": ("increment.semantics.artifact", "CupedPreperiodRequest"),
     "AssignmentCountsRequest": ("increment.semantics.artifact", "AssignmentCountsRequest"),
     "TriggerPopulationRequest": ("increment.semantics.artifact", "TriggerPopulationRequest"),
+    "TriggerMeasureStatsRequest": ("increment.semantics.artifact", "TriggerMeasureStatsRequest"),
     "EncouragementUptakeRequest": (
         "increment.semantics.artifact",
         "EncouragementUptakeRequest",

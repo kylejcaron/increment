@@ -14,7 +14,11 @@ from html import escape
 from math import inf
 from typing import TYPE_CHECKING, Any, Literal
 
-from increment.tables import _decision_available, _format_confidence_set
+from increment.tables import (
+    _binomial_qualification_disclosure,
+    _decision_available,
+    _format_confidence_set,
+)
 
 if TYPE_CHECKING:
     from increment.dashboard._data import DashboardSnapshot
@@ -64,18 +68,36 @@ def allocation_grain_label(allocation: SRMResult, *, plural: bool = True) -> str
     return "units" if plural else "unit"
 
 
-def allocation_count_label(allocation: SRMResult) -> str:
-    return f"Enrolled {allocation_grain_label(allocation)}"
+def allocation_count_label(
+    allocation: SRMResult, *, population: Literal["assigned", "triggered"] = "assigned"
+) -> str:
+    label = "Triggered" if population == "triggered" else "Enrolled"
+    return f"{label} {allocation_grain_label(allocation)}"
 
 
-def allocation_population_detail(allocation: SRMResult) -> str:
+def allocation_population_detail(
+    allocation: SRMResult, *, population: Literal["assigned", "triggered"] = "assigned"
+) -> str:
+    label = "Triggered" if population == "triggered" else "Assigned"
     if allocation.grain == "cluster" and allocation.unit_counts:
         units = sum(allocation.unit_counts.values())
-        return f"Assigned clusters · {count_text(units)} member units"
-    return "Assigned population"
+        return f"{label} clusters · {count_text(units)} member units"
+    return f"{label} population"
 
 
-def allocation_verdict(allocation: SRMResult) -> str:
+def allocation_verdict(
+    allocation: SRMResult, *, population: Literal["assigned", "triggered"] = "assigned"
+) -> str:
+    if population == "triggered":
+        if allocation.is_srm:
+            return (
+                "Triggered cohort differs from declared allocation proportions; imbalance may "
+                "reflect treatment-dependent triggering."
+            )
+        return (
+            "Triggered cohort matches declared allocation proportions within the balance-test "
+            "threshold; imbalance may reflect treatment-dependent triggering."
+        )
     if allocation.is_srm:
         return "Sample ratio mismatch detected"
     return "No allocation issues detected"
@@ -170,6 +192,9 @@ def complete_confidence_set_text(row: Mapping[str, Any]) -> str | None:
         scale=str(row.get("value_scale", "relative")),
         lift=row.get("lift"),
     )
+    qualification = _binomial_qualification_disclosure(row.get("binomial_set"))
+    if text and qualification:
+        text = f"{text}; {qualification}"
     return esc(text) if text else None
 
 
@@ -197,7 +222,10 @@ def headline_interval(row: Mapping[str, Any]) -> str:
     lower, higher = endpoints
     opening = "(" if lower == -inf else "["
     closing = ")" if higher == inf else "]"
-    return f"{opening}{headline_endpoint(lower, row)}, {headline_endpoint(higher, row)}{closing}"
+    return (
+        f"{opening}{headline_endpoint(lower, row)}, "
+        f"{headline_endpoint(higher, row)}{closing}{_interval_qualification(row)}"
+    )
 
 
 def primary_tone(row: Mapping[str, Any]) -> str:
@@ -259,7 +287,16 @@ def interval_html(row: Mapping[str, Any]) -> str:
     if endpoints is None:
         return missing_html("no interval available")
     lower, higher = endpoints
-    return f"{headline_endpoint(lower, row)} to {headline_endpoint(higher, row)}"
+    return (
+        f"{headline_endpoint(lower, row)} to {headline_endpoint(higher, row)}"
+        f"{_interval_qualification(row)}"
+    )
+
+
+def _interval_qualification(row: Mapping[str, Any]) -> str:
+    """Keep numerical qualifications beside endpoints shown from the ordinary interval."""
+    qualification = _binomial_qualification_disclosure(row.get("binomial_set"))
+    return f"; {esc(qualification)}" if qualification else ""
 
 
 def null_text(row: Mapping[str, Any]) -> str:

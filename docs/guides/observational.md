@@ -206,6 +206,42 @@ propensities of M arms sum to one, so the band is empty when
 M × `min_propensity` > 1; the refusal names that condition. A trim that
 leaves an arm with no units refuses, naming the arm.
 
+### Weight concentration and effective sample size
+
+IPTW and AIPW rows report each arm's concentration from the inverse marginal
+propensity weights used by that estimator, after the one shared overlap
+retention decision. These are descriptive diagnostics of those retained
+weights, not a new overlap test, a guarantee about causal identification, or
+a correction to the reported interval. In particular, ESS does not select
+degrees of freedom.
+
+For arm weights $w_i$, the reported Kish effective sample size is
+$(\sum_i w_i)^2 / \sum_i w_i^2$, and maximum share is
+$\max_i(w_i)/\sum_i w_i$. Both are invariant to the arm's self-normalization;
+the accompanying definition identifies the inverse marginal propensity
+weights and the retained population. The positive-weight count identifies
+how many units contribute. No clipping is introduced by these diagnostics.
+
+With `cluster=` declared, the reported grain is cluster: each cluster's
+total is the sum of its retained arm weights, and ESS and maximum share are
+computed over those cluster totals. This describes weight concentration
+across independent clusters; it is not score support and does not determine
+the interval's degrees of freedom. Without clustering, the grain is unit.
+For multiple treatments, each treatment and the shared control have one
+summary over the same retained cohort and the same arm-specific weights used
+by the estimator.
+
+The diagnostics are available for unwindowed mean and conversion outcomes
+through `from_unit_summary`, `from_unit_panel`, `from_definitions`, and
+`from_unit_day_artifact`; matched per-unit inputs on these four paths are
+checked for row and interval parity. A moments cube has no per-unit
+propensities or attached covariates and cannot reconstruct the required
+per-arm weight summaries; use one of those per-unit sources. A switchback
+panel has a scheduled contrast, not observational per-unit treatment
+propensities, so these diagnostics do not apply there. Other methods retain
+null diagnostic numbers and an explicit not-applicable reason rather than
+borrowing another method's weights.
+
 ### Balance checks
 
 After weighting, the gate also inspects covariate balance via the
@@ -911,8 +947,8 @@ designs only) cannot read covariates from an artifact; use `from_definitions`.
     decision methods are examined: a sensitivity method such as `unadjusted`
     does not prevent the refusal.
   - A ratio metric that is a member of a Benjamini-Hochberg (`bh`) or e-BH
-    (`e_bh`) family without an informative prior raises it at entry with
-    that family named in the context, even when other metrics in the request
+    (`e_bh`) family raises it at entry, whether or not an informative prior
+    is declared, with that family named in the context, even when other metrics
     are supported.
   - In other mixed metric lists, each unsupported pairing of a ratio metric
     with an IPTW, DML, or AIPW method is skipped with a warning

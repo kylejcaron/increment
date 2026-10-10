@@ -67,7 +67,8 @@ assignment_and_uptake = Analysis.from_unit_summary(
 
 The default still requests all three estimands. Without the declaration, any
 request containing `late` raises `identification.encouragement.exclusion_required`
-before reading outcomes, even if a weak first stage would later suppress LATE.
+before reading outcomes, even if the eventual outcome-cohort LATE cell records
+a weak-first-stage failure.
 The same omission is allowed in YAML and survives artifact and moments
 round trips. Supported sequential ITT/compliance monitoring also needs no
 exclusion declaration; supplying one does not make sequential LATE supported.
@@ -196,8 +197,15 @@ exercise a nonempty catalog.
 The existing unit-panel refusal of `missing="drop"` remains; do not replace
 undefined outcomes with zeros to bypass it. Mixed ITT/LATE requests still
 require their outcome data. Each metric's LATE uses the first stage on that
-metric's matching outcome cohort. As-of compliance includes enrollment and qualifying
-uptake through the requested day; uptake windows are half-open from exposure.
+metric's matching outcome cohort. As-of compliance includes enrollment and
+qualifying uptake through the requested day; uptake windows are half-open from
+exposure.
+
+In fixed-horizon `run()`, a weak first stage for one metric's outcome cohort
+suppresses that cohort's LATE estimate but retains its planned LATE row as a
+typed failure (`failure_code="estimation.encouragement.late.weak_first_stage"`
+and `lift=None`). Other metrics use their own outcome cohorts and can still
+report LATE when their first stages pass.
 
 `from_definitions` and `from_unit_day_artifact` apply uptake windows to raw
 timestamps before day bucketing. For a one-day window starting at noon,
@@ -273,7 +281,9 @@ results also preserve these labels through JSON serialization.
 Interpret LATE only with randomized assignment, a relevant first stage, the
 declared exclusion restriction, and monotonicity (no defiers). Increment
 refuses a weak first stage rather than dividing by a near-zero compliance
-difference and reporting an unstable LATE.
+difference and reporting an unstable LATE. The requested LATE row remains
+visible as a typed failure with no estimate, so a weak cohort is not silently
+omitted.
 
 ## Run the example
 

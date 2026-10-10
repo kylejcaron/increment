@@ -28,6 +28,7 @@ import pytest
 from increment.decision import (
     ArmHypothesisKey,
     DecisionComputation,
+    HypothesisKey,
     PValueEvidence,
 )
 from increment.estimation.family import e_bh_select, select_family
@@ -84,6 +85,8 @@ def _fixed_horizon_cell(idx: int, mu: float, sigma: float) -> tuple[ArmHypothesi
         method="unadjusted",
         method_role="decision",
         lift=Estimate(
+            log_mean=mu,
+            log_se=sigma,
             value=math.expm1(mu),
             lb=math.expm1(mu - z95 * sigma),
             ub=math.expm1(mu + z95 * sigma),
@@ -121,11 +124,14 @@ def _bh_family_fdp(
 def _typed_computation(
     cells: list[tuple[ArmHypothesisKey, LiftEstimate]],
 ) -> DecisionComputation[LiftEstimate]:
-    return DecisionComputation(
+    evidence: dict[HypothesisKey, PValueEvidence] = {}
+    for key, row in cells:
+        p_value = row.p_value()
+        assert p_value is not None
+        evidence[key] = PValueEvidence(key, row.method, p_value, "normal")
+    return DecisionComputation[LiftEstimate](
         results=tuple(row for _, row in cells),
-        evidence={
-            key: PValueEvidence(key, row.method, row.p_value(), "normal") for key, row in cells
-        },
+        evidence=evidence,
         failures={},
     )
 

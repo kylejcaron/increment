@@ -15,7 +15,11 @@ import pytest
 from increment.errors import IncrementWarning, InvalidRequestError
 from increment.query.artifact_contract import ARTIFACT_DOMAIN_ROOT, ArtifactContractError
 from increment.query.artifact_digest import manifest_sha256
-from increment.query.session import WarehouseArtifactStore, WarehouseSession
+from increment.query.session import (
+    SourceSnapshotEvidence,
+    WarehouseArtifactStore,
+    WarehouseSession,
+)
 from increment.semantics.artifact import (
     ArtifactContext,
     BaseRelations,
@@ -31,6 +35,43 @@ def _session():
     # Definitions not needed for temp-table mechanics; fact_table tests
     # build real Definitions via tests.test_analysis helpers.
     return con, WarehouseSession(con, defs=None)  # type: ignore[ty:invalid-argument-type]
+
+
+def test_source_snapshot_evidence_keeps_unknown_watermarks_unknown():
+    evidence = SourceSnapshotEvidence(
+        datetime(2025, 1, 20, 12, tzinfo=UTC),
+        {"trigger": None, "outcomes": datetime(2025, 1, 19, 23, tzinfo=UTC)},
+    )
+    assert evidence.observation_cutoff_ts == datetime(2025, 1, 20, 12, tzinfo=UTC)
+    assert evidence.complete_through_by_feed["trigger"] is None
+    assert evidence.complete_through_by_feed["outcomes"] == datetime(2025, 1, 19, 23, tzinfo=UTC)
+
+
+def test_source_snapshot_evidence_rejects_naive_instants():
+    with pytest.raises(InvalidRequestError) as cutoff:
+        SourceSnapshotEvidence(datetime(2025, 1, 20, 12))
+    assert cutoff.value.code == "query.session.snapshot.cutoff_not_aware"
+    assert cutoff.value.context["field"] == "observation_cutoff_ts"
+
+    with pytest.raises(InvalidRequestError) as feed:
+        SourceSnapshotEvidence(datetime(2025, 1, 20, 12, tzinfo=UTC), {"": None})
+    assert feed.value.code == "query.session.snapshot.feed_name_invalid"
+    assert feed.value.context["value"] == ""
+
+    with pytest.raises(InvalidRequestError) as watermark:
+        SourceSnapshotEvidence(
+            datetime(2025, 1, 20, 12, tzinfo=UTC),
+            {"events": datetime(2025, 1, 20, 12)},
+        )
+    assert watermark.value.code == "query.session.snapshot.watermark_not_aware"
+    assert watermark.value.context["feed"] == "events"
+    assert watermark.value.context["field"] == "complete_through_by_feed"
+
+
+def test_session_does_not_fabricate_source_snapshot_evidence():
+    _con, session = _session()
+    assert session.source_snapshot_evidence is None
+    assert session.pin_sources(()).source_snapshot_evidence is None
 
 
 def test_temp_name_caps_identifier_length():

@@ -304,20 +304,41 @@ _IDENTITY = (
 
 
 def _stable(value: Any) -> Any:
-    """Warehouse reductions are unordered and float sums differ in the last bits per run."""
+    """Warehouse reductions are unordered and floats vary slightly between identical reads."""
     if isinstance(value, float):
         return 0.0 if abs(value) < 1e-12 else float(f"{value:.9g}")
     if isinstance(value, dict):
-        return {key: _stable(item) for key, item in value.items()}
+        return {
+            key: _stable(item)
+            for key, item in value.items()
+            if key not in {"source_snapshot_id", "family_id"}
+        }
     if isinstance(value, list | tuple):
         return [_stable(item) for item in value]
     return value
 
 
-def _fingerprint(rows) -> list[str]:
-    dumped = [_stable(row.model_dump(mode="json")) for row in rows]
+def _fingerprint(rows, *, semantic: bool = False) -> list[str]:
+    dumped = [
+        _stable(row.model_dump(mode="json")) if semantic else row.model_dump(mode="json")
+        for row in rows
+    ]
     dumped.sort(key=lambda row: [json.dumps([row.get(name) for name in _IDENTITY], default=str)])
     return [json.dumps(row, sort_keys=True, default=str) for row in dumped]
+
+
+def _snapshot_ids(rows) -> set[tuple[tuple[Any, ...], str | None, str | None]]:
+    identities = set()
+    for row in rows:
+        dumped = row.model_dump(mode="json")
+        identities.add(
+            (
+                tuple(dumped.get(name) for name in _IDENTITY),
+                dumped.get("source_snapshot_id"),
+                dumped.get("family_id"),
+            )
+        )
+    return identities
 
 
 def _live(analysis, *, view, metric, complete, scope):
@@ -342,7 +363,7 @@ def _live(analysis, *, view, metric, complete, scope):
         ]
     if scope is not None:
         rows = [row for row in rows if row.source == scope[0]]
-    return _fingerprint(rows)
+    return _fingerprint(rows, semantic=True)
 
 
 def _outcome(call) -> tuple[str, ...] | list[str]:
@@ -352,7 +373,7 @@ def _outcome(call) -> tuple[str, ...] | list[str]:
         return ("refused", type(error).__name__, error.code)
 
 
-def _loaded(analysis, snapshot, *, view, metric, complete, scope):
+def _loaded(analysis, snapshot, *, view, metric, complete, scope, semantic=False):
     def load():
         return _fingerprint(
             load_explore(
@@ -362,7 +383,8 @@ def _loaded(analysis, snapshot, *, view, metric, complete, scope):
                 view=view,
                 completed_windows_only=complete,
                 breakout=scope,
-            )
+            ),
+            semantic=semantic,
         )
 
     return _outcome(load)
@@ -389,7 +411,11 @@ def test_every_explore_state_is_the_pinned_read_even_after_the_warehouse_changes
         before = {
             index: _loaded(analysis, snapshot, **request) for index, request in enumerate(requests)
         }
-        assert before == expected
+        before_semantic = {
+            index: _loaded(analysis, snapshot, **request, semantic=True)
+            for index, request in enumerate(requests)
+        }
+        assert before_semantic == expected
         # The matrix is not vacuous: some states carry rows and some are original refusals.
         assert any(isinstance(value, list) and value for value in expected.values())
         assert any(isinstance(value, tuple) for value in expected.values())
@@ -404,7 +430,7 @@ def test_every_explore_state_is_the_pinned_read_even_after_the_warehouse_changes
         after = {
             index: _loaded(analysis, snapshot, **request) for index, request in enumerate(requests)
         }
-        assert after == expected
+        assert after == before
 
 
 def _payload_text(analysis, snapshot) -> str:
@@ -426,11 +452,24 @@ def test_dashboard_payload_ignores_changes_after_preparation_until_reprepared(tm
 
         assert _payload_text(analysis, snapshot) == before
         fresh = prepare_dashboard(analysis, config=CONFIG)
-        assert fresh.allocation is not None and snapshot.allocation is not None
-        assert (
-            fresh.allocation.observed["treatment"] == 2 * snapshot.allocation.observed["treatment"]
-        )
+        assert fresh.readout_rows != snapshot.readout_rows
         assert _payload_text(analysis, fresh) != before
+
+        def treatment_count(captured):
+            if captured.allocation is not None:
+                return captured.allocation.observed["treatment"]
+            counts = {
+                row.assigned_units
+                for row in captured.group_data
+                if row.group_id == "treatment" and row.analysis_population == "assigned"
+            }
+            assert counts and None not in counts
+            assert len(counts) == 1
+            count = next(iter(counts))
+            assert isinstance(count, int)
+            return count
+
+        assert treatment_count(fresh) == 2 * treatment_count(snapshot)
 
 
 def test_explore_reads_nothing_from_the_warehouse_after_preparation(tmp_path):
@@ -517,9 +556,12 @@ def test_a_refused_breakout_never_hides_another_source_of_the_same_property(tmp_
     sources = ("event_log", "profiles")
     with _workspace(tmp_path, units=20, breakout_sources=sources) as (_, analysis):
         healthy = prepare_dashboard(analysis, config=CONFIG)
-        baseline = [_loaded(analysis, healthy, **request, scope=event_log) for request in requests]
+        baseline = [
+            _loaded(analysis, healthy, **request, scope=event_log, semantic=True)
+            for request in requests
+        ]
         answered = [
-            isinstance(_loaded(analysis, healthy, **request, scope=profiles), list)
+            isinstance(_loaded(analysis, healthy, **request, scope=profiles, semantic=True), list)
             for request in requests
         ]
         assert any(answered)
@@ -531,8 +573,8 @@ def test_a_refused_breakout_never_hides_another_source_of_the_same_property(tmp_
         _refuse_the_profiles_breakout(monkeypatch)
         degraded = prepare_dashboard(analysis, config=CONFIG)
         for request, value, was_answered in zip(requests, baseline, answered, strict=True):
-            assert _loaded(analysis, degraded, **request, scope=event_log) == value
-            refused = _loaded(analysis, degraded, **request, scope=profiles)
+            assert _loaded(analysis, degraded, **request, scope=event_log, semantic=True) == value
+            refused = _loaded(analysis, degraded, **request, scope=profiles, semantic=True)
             assert isinstance(refused, tuple)
             if was_answered:
                 assert refused == ("refused", "CapabilityError", _REFUSED_SOURCE)
@@ -543,7 +585,7 @@ def test_an_omitted_breakout_source_shows_the_source_it_resolves_to(tmp_path):
         snapshot = prepare_dashboard(analysis, config=CONFIG)
         for view in ("segments", "cumulative_lift"):
             request = {"view": view, "metric": "checkout_conversion", "complete": False}
-            shown = _loaded(analysis, snapshot, **request, scope=(None, "country"))
+            shown = _loaded(analysis, snapshot, **request, scope=(None, "country"), semantic=True)
             assert isinstance(shown, list) and shown
             assert {json.loads(row)["source"] for row in shown} == {"event_log"}
             assert shown == _live(analysis, **request, scope=("event_log", "country"))
@@ -612,13 +654,17 @@ def test_each_metric_series_is_independent_of_the_metric_selection(tmp_path):
             analysis, snapshot=snapshot, metric="session_seconds", view="cumulative_lift"
         )
         expected = analysis.run_asof_lift(metrics=["session_seconds"])
-        assert _fingerprint(one) == _fingerprint(expected)
-        assert _fingerprint(everyone) == _fingerprint(analysis.run_asof_lift(metrics=list(_NAMES)))
+        assert _fingerprint(one, semantic=True) == _fingerprint(expected, semantic=True)
+        assert _fingerprint(everyone, semantic=True) == _fingerprint(
+            analysis.run_asof_lift(metrics=list(_NAMES)), semantic=True
+        )
         values = load_explore(
             analysis, snapshot=snapshot, metric="session_seconds", view="daily_values"
         )
         assert isinstance(values, DailyMetricValues)
-        assert _fingerprint(values) == _fingerprint(analysis.run_daily(metrics=["session_seconds"]))
+        assert _fingerprint(values, semantic=True) == _fingerprint(
+            analysis.run_daily(metrics=["session_seconds"]), semantic=True
+        )
         assert (
             load_explore(analysis, snapshot=snapshot, metric="checkout_conversion", view="segments")
             == BreakoutEstimates()
@@ -632,12 +678,20 @@ def test_loaded_collections_are_independent_copies_of_the_capture(tmp_path):
             analysis, snapshot=snapshot, metric="checkout_conversion", view="cumulative_values"
         )
         kept = _fingerprint(first)
+        kept_ids = _snapshot_ids(first)
         assert kept
-        first.clear()
+        assert isinstance(first, DailyMetricValues)
+        with pytest.raises(CodedError) as caught:
+            first.clear()
+        assert caught.value.code == "readout.collection.mutation_unsupported"
         again = load_explore(
             analysis, snapshot=snapshot, metric="checkout_conversion", view="cumulative_values"
         )
+        assert again is not first
+        assert _fingerprint(first) == kept
         assert _fingerprint(again) == kept
+        assert _snapshot_ids(first) == kept_ids
+        assert _snapshot_ids(again) == kept_ids
 
 
 @pytest.mark.slow
@@ -648,14 +702,14 @@ def test_registered_sequential_explore_is_captured_at_its_checkpoint():
         analysis.capture_sequential(finalized=True, as_of=dt.date(2025, 1, 16))
         config = DashboardConfig(expected_allocation={"baseline": 1, "candidate": 1})
         snapshot = prepare_dashboard(analysis, config=config)
-        live_lift = _fingerprint(analysis.run_asof_lift(metrics=["conversion"]))
-        live_values = _fingerprint(analysis.run_asof(metrics=["mean"]))
+        live_lift = _fingerprint(analysis.run_asof_lift(metrics=["conversion"]), semantic=True)
+        live_values = _fingerprint(analysis.run_asof(metrics=["mean"]), semantic=True)
         assert live_lift and live_values
         connection.raw_sql("UPDATE events SET value = value * 10 WHERE event = 'purchase'")
-        assert _fingerprint(analysis.run_asof(metrics=["mean"])) != live_values
+        assert _fingerprint(analysis.run_asof(metrics=["mean"]), semantic=True) != live_values
         lift = load_explore(
             analysis, snapshot=snapshot, metric="conversion", view="cumulative_lift"
         )
-        assert _fingerprint(lift) == live_lift
+        assert _fingerprint(lift, semantic=True) == live_lift
         values = load_explore(analysis, snapshot=snapshot, metric="mean", view="cumulative_values")
-        assert _fingerprint(values) == live_values
+        assert _fingerprint(values, semantic=True) == live_values

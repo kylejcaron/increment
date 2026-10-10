@@ -9,6 +9,7 @@ experiments:
     end: 2025-02-14
     n_pre_periods: 0
     control_group: control
+    allocation_scheme: independent
     plan:
       # This joint report includes a quantile guardrail: use fixed-horizon inference.
       view_multiplicity:

@@ -58,6 +58,7 @@ from increment.estimation._adjust.overlap import (
     _propensity_range_guard,
 )
 from increment.estimation._adjust.value_scale import resolve_value_scale
+from increment.estimation._adjust.weight_diagnostics import _weight_summary
 from increment.estimation.adjust import ADJUSTMENTS
 from increment.estimation.inference import Prior
 
@@ -225,7 +226,7 @@ def _iptw_contrast(
     )
     point, scores = resolved.point, resolved.scores
     abs_diff, abs_se = resolved.abs_diff, resolved.abs_se
-    if request.value_scale != "absolute" and request.prior is None:
+    if request.value_scale != "absolute":
         joint_result = _joint_reference_from_influences(
             if_tau,
             psi0,
@@ -243,12 +244,12 @@ def _iptw_contrast(
         point=point,
         scores=scores,
         population=data.population,
-        abs_diff=abs_diff,
-        abs_se=abs_se,
+        absolute=(abs_diff, abs_se),
         estimand="overlap_subpopulation_ate" if data.overlap_trimmed else "ate",
         note=note,
         n_clusters=support.k,
         dof=None,
+        posterior=(resolved.posterior_point, resolved.posterior_scores),
         joint_result=joint_result,
     )
 
@@ -300,6 +301,14 @@ def _iptw_cohort(cohort: AdjustmentCohort, factory: Callable[[], Learner]) -> li
         influences = fixed
         nuisance_note = _FIXED_PROPENSITY_NOTE
     note = f"{data.note}; {nuisance_note}" if data.note else nuisance_note
+    summary = [
+        _weight_summary(w, clusters.inv, clusters.k)
+        if clusters.inv is not None
+        else _weight_summary(w)
+        for w in weights
+    ]
+    definition = "unclipped inverse marginal propensity I(A=a)/p_a(X), retained cohort"
+    grain = "cluster" if clusters.inv is not None else "unit"
     return [
         _iptw_contrast(
             request,
@@ -310,6 +319,20 @@ def _iptw_cohort(cohort: AdjustmentCohort, factory: Callable[[], Learner]) -> li
             psi1=influences[:, a],
             psi0=influences[:, 0],
             note=note,
+        ).model_copy(
+            update={
+                "weight_diagnostics_available": True,
+                "weight_diagnostics_reason_code": None,
+                "weight_diagnostics_reason_context": None,
+                "weight_definition": definition,
+                "weight_grain": grain,
+                "control_weight_n": summary[0][0],
+                "treatment_weight_n": summary[a][0],
+                "control_weight_ess": summary[0][1],
+                "treatment_weight_ess": summary[a][1],
+                "control_weight_max_share": summary[0][2],
+                "treatment_weight_max_share": summary[a][2],
+            }
         )
         for a, (request, support) in enumerate(zip(cohort.requests, supports, strict=True), start=1)
     ]

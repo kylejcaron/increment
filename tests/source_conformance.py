@@ -165,7 +165,7 @@ def _artifact_analysis(tmp_path: Path) -> Any:
     import ibis
 
     from examples._seed import seed_event_log
-    from increment import Analysis
+    from increment import Analysis, SourceSnapshotEvidence
     from increment.query.artifact_contract import unit_day_artifact_extension_catalog
     from increment.query.session import WarehouseArtifactStore
     from tests.test_unit_day_artifact_facade import _definitions
@@ -179,7 +179,13 @@ def _artifact_analysis(tmp_path: Path) -> Any:
     )
     con = ibis.duckdb.connect()
     seed_event_log(con, with_pre_period=True)
-    native = Analysis.from_definitions("new_onboarding_v2", definitions, con)
+    evidence = dt.datetime(2030, 1, 1, tzinfo=dt.UTC)
+    native = Analysis.from_definitions(
+        "new_onboarding_v2",
+        definitions,
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(evidence, {"event_log": evidence}),
+    )
     context = native._artifact_context(
         native._defs,  # ty: ignore[invalid-argument-type]
         native._experiment,
@@ -305,7 +311,7 @@ def definitions_source(
     import ibis
     import yaml
 
-    from increment import Analysis
+    from increment import Analysis, SourceSnapshotEvidence
 
     rows = []
     for index, (group, country, value) in enumerate(
@@ -404,7 +410,16 @@ def definitions_source(
     defs_path.write_text(yaml.safe_dump(defs, sort_keys=False))
     con = ibis.duckdb.connect()
     con.create_table("raw_events", obj=rows)
-    analysis = Analysis.from_definitions("conformance", defs_path, con, store=store)
+    evidence = dt.datetime(2026, 1, 2, tzinfo=dt.UTC)
+    analysis = Analysis.from_definitions(
+        "conformance",
+        defs_path,
+        con,
+        store=store,
+        source_snapshot_evidence=(
+            SourceSnapshotEvidence(evidence, {"events": evidence}) if trigger else None
+        ),
+    )
     experiment = analysis.experiment
     return analysis._src, experiment.breakouts[0]
 

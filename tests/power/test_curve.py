@@ -45,6 +45,7 @@ def _assert_power_result_fields(point: PowerCurvePoint, result: Any) -> None:
     assert point.n_total == result.n_total
     assert point.power == result.power
     assert point.power_basis == result.power_basis
+    assert point.numerical_qualification == result.numerical_qualification
     assert point.mde_relative == result.mde_relative
     assert point.mde_unavailable_reason == result.mde_unavailable_reason
     assert point.effective_var == result.effective_var
@@ -501,6 +502,7 @@ def test_sequential_rows_match_direct_scalar_calls(solve_for: str):
                 planned_looks=2,
             )
         _assert_power_result_fields(point, direct)
+        assert point.numerical_qualification == "sequential_crossing_quadrature_v1"
 
 
 @pytest.mark.slow
@@ -531,6 +533,7 @@ def _point(*, n_per_arm: int = 1_000) -> PowerCurvePoint:
         alpha=0.05,
         power=0.7,
         power_basis="exact",
+        numerical_qualification="scipy_special_function_error_model_conditional_v1",
         mde_relative=0.06,
         effective_var=0.09,
     )
@@ -571,7 +574,12 @@ class TestPowerCurveCollection:
         assert [row.n_per_arm for row in left] == [1_000, 2_000]
 
     def test_approximate_diagnostic_has_no_runtime_power_claim(self):
-        point = _point().model_copy(update={"power_basis": "approximate"})
+        point = _point().model_copy(
+            update={
+                "power_basis": "approximate",
+                "numerical_qualification": "unclaimed_approximation_diagnostic_v1",
+            }
+        )
 
         assert point.numerical_qualification == "unclaimed_approximation_diagnostic_v1"
         assert PowerCurve([point]).to_dicts()[0]["numerical_qualification"] == (
@@ -690,6 +698,7 @@ class TestUnavailableCompanionMde:
                 alpha=0.05,
                 power=0.7,
                 power_basis="asymptotic",
+                numerical_qualification="closed_form_model_only_v1",
                 mde_relative=mde_relative,
                 mde_unavailable_reason=reason,
                 effective_var=0.09,

@@ -71,7 +71,8 @@ from pydantic import (
     model_validator,
 )
 
-from increment._literals import Alternative, MultiplicityCorrection, Role
+from increment._literals import Alternative, Role
+from increment._multiplicity import MultiplicityFamily
 from increment._plan_compatibility import (
     PlanFamilyCompatibilityRequest,
     plan_family_compatibility,
@@ -156,9 +157,6 @@ Renderer = Callable[..., str]
 _REFUSALS = refusals(
     InvalidRequestError,
     {
-        "decision.multiplicity.validate_policy": "{correction} multiplicity requires q",
-        "decision.multiplicity.bh": "q is only valid for BH multiplicity, got {correction!r}",
-        "decision.multiplicity.guarantee_mismatch": "multiplicity guarantee {guarantee!r} does not match correction {correction!r} -- the exact matrix is none->none, bonferroni->fwer, bh/e_bh->fdr",
         "decision.family.nofamily_membership_mark": "NoFamily membership cannot mark member=True",
         "decision.relative_arm.null_lift_greater": "relative null_lift must be greater than -1",
         "decision.absolute_arm.procedures_fixed_inference": "absolute procedures require fixed inference",
@@ -230,69 +228,9 @@ _register_warning(
 )
 
 
-_MultiplicityCorrection = MultiplicityCorrection
-_MultiplicityGuarantee = Literal["none", "fwer", "fdr"]
-
-
-def _guarantee_for_correction(
-    correction: _MultiplicityCorrection,
-) -> _MultiplicityGuarantee:
-    if correction in ("bh", "e_bh"):
-        return "fdr"
-    if correction == "bonferroni":
-        return "fwer"
-    return "none"
-
-
-class MultiplicityFamily(CodedModel, BaseModel):
-    """A named multiplicity procedure and the axes it spans."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    name: str = Field(min_length=1)
-    correction: _MultiplicityCorrection = "none"
-    q: float | None = Field(default=None, gt=0.0, lt=1.0)
-    axes: tuple[str, ...] = ()
-    guarantee: _MultiplicityGuarantee = "none"
-    validity_regime: Literal["finite_sample", "asymptotic_sequential"] = Field(
-        default="finite_sample", exclude_if=lambda value: value == "finite_sample"
-    )
-
-    @model_validator(mode="after")
-    def _validate_policy(self) -> MultiplicityFamily:
-        if self.validity_regime == "asymptotic_sequential" and self.correction not in (
-            "none",
-            "bonferroni",
-            "e_bh",
-        ):
-            from increment.sequential_state import sequential_refuse
-
-            sequential_refuse(
-                "route.unsupported",
-                "asymptotic families support fixed-roster Bonferroni or e-BH selection only",
-            )
-        uses_q = self.correction in ("bh", "e_bh") or (
-            self.correction == "bonferroni" and self.validity_regime == "asymptotic_sequential"
-        )
-        if uses_q and self.q is None:
-            _raise("decision.multiplicity.validate_policy", correction=self.correction)
-        if not uses_q and self.q is not None:
-            _raise("decision.multiplicity.bh", correction=self.correction)
-        expected_guarantee = _guarantee_for_correction(self.correction)
-        if self.guarantee != expected_guarantee:
-            _raise(
-                "decision.multiplicity.guarantee_mismatch",
-                correction=self.correction,
-                guarantee=self.guarantee,
-            )
-        return self
-
-
 class FamilyMembership(CodedModel, BaseModel):
-    """Declaration-level eligibility for a named multiplicity family.
-
-    An effective prior excludes the procedure when resolving a readout.
-    """
+    """Eligibility is explicit: a prior does not remove sampling evidence from a declared
+    family member, and an explicit non-member remains outside it."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -412,6 +350,7 @@ class CompiledDecisionPlan(CodedModel, BaseModel):
     declared: bool
     alpha: float = Field(gt=0.0, lt=1.0)
     q: float = Field(gt=0.0, lt=1.0)
+    q_explicit: bool = False
     path: Literal["warehouse", "frame", "frame/contrast"]
     inference: AsymptoticMean | AlwaysValid | MixedFamily | FixedInference = FixedInference()
     compliance: SequentialCompliancePolicy | None = None

@@ -70,6 +70,7 @@ nav:
       - Method Compatibility Reference: guides/compatibility.md
       - Quickstart: guides/quickstart.md
       - Reading Results: guides/reading-results.md
+      - Refusal Navigation: guides/refusals.md
       - Data Model & YAML Definitions: guides/data-model.md
       - Metric Types: guides/metric-types.md
       - CUPED: guides/cuped.md
@@ -96,4 +97,5 @@ nav:
       - Encouragement Design: examples/encouragement.md
       - Heterogeneous Effects: examples/hte.md
       - A/B Testing Dashboard: examples/ab_testing_dashboard.md
+      - Triggered Population Dashboard: examples/triggered_population_dashboard.md
       - LATE Over Time: examples/late_over_time.md

@@ -76,11 +76,23 @@ def _assert_approx_row_sets(actual_rows, expected_rows) -> None:
     assert not unmatched, f"missing parity rows: {unmatched!r}"
 
 
-def _assert_model_rows_match(actual_rows, expected_rows) -> None:
-    _assert_approx_row_sets(
-        [row.model_dump(mode="json") for row in actual_rows],
-        [row.model_dump(mode="json") for row in expected_rows],
-    )
+def _assert_model_rows_match(actual_rows, expected_rows, *, ignore_source_scope=False) -> None:
+    actual = [row.model_dump(mode="json") for row in actual_rows]
+    expected = [row.model_dump(mode="json") for row in expected_rows]
+    if ignore_source_scope:
+        scope_fields = {
+            "source_snapshot_id",
+            "decision_scope_complete",
+            "decision_scope_reason_code",
+            "decision_scope_reason_context",
+        }
+        # Low-level day.moments -> run_daily results have no readout request or source digest;
+        # compare their outcome fields with the scoped facade, not the facade-only projection.
+        for rows in (actual, expected):
+            for row in rows:
+                for field in scope_fields:
+                    row.pop(field, None)
+    _assert_approx_row_sets(actual, expected)
 
 
 @pytest.fixture
@@ -221,8 +233,8 @@ def test_day_source_matches_daily_and_asof_views(pricing_analysis):
     direct_asof = DailyMetricValues(_run_daily_values(asof_rows, metrics=[metric], view="asof"))
     facade_daily = pricing_analysis.run_daily(metrics=(metric,))
     facade_asof = pricing_analysis.run_asof(metrics=(metric,))
-    _assert_model_rows_match(direct_daily, facade_daily)
-    _assert_model_rows_match(direct_asof, facade_asof)
+    _assert_model_rows_match(direct_daily, facade_daily, ignore_source_scope=True)
+    _assert_model_rows_match(direct_asof, facade_asof, ignore_source_scope=True)
 
 
 def test_day_source_dimensioned_result_is_typed_and_attributed(pricing_con):
@@ -580,9 +592,34 @@ def test_day_source_validates_metrics_passed_directly(pricing_analysis):
 def test_direct_native_view_operations_refuse_declared_trigger_before_warehouse_work(
     tmp_path, monkeypatch
 ):
-    from tests.test_analysis_trigger import _analysis, _events
+    import ibis
 
-    analysis = _analysis(tmp_path, _events(n_per_arm=10))
+    from tests.test_analysis_trigger import (
+        _defs_yaml,
+        _events,
+        _with_preassignment_region,
+    )
+
+    definitions = (
+        _defs_yaml()
+        .replace(
+            "    facts:\n",
+            "    properties:\n"
+            "      - {name: region, column: region, dtype: string, as_of: pre_exposure}\n"
+            "    facts:\n",
+        )
+        .replace(
+            "    plan:\n",
+            "    breakouts: [{property: region, source: events}]\n"
+            "    factors: [{property: region, source: events}]\n"
+            "    plan:\n",
+        )
+    )
+    path = tmp_path / "triggered-definitions.yml"
+    path.write_text(definitions)
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=_with_preassignment_region(_events(n_per_arm=10)))
+    analysis = Analysis.from_definitions("exp", path, con)
     source = _native_source(analysis)
     metric = analysis.metrics[0]
     monkeypatch.setattr(
@@ -591,19 +628,20 @@ def test_direct_native_view_operations_refuse_declared_trigger_before_warehouse_
         lambda: (_ for _ in ()).throw(AssertionError("warehouse work started")),
     )
 
-    calls = (
-        lambda: source.sitewide_evidence(metric),
-        lambda: source.breakout_summaries(metrics=(metric,)),
-        lambda: source.factor_summaries(metrics=(metric,)),
-        lambda: source.breakout_source(cast("Breakout", None), metrics=(metric,)),
-        lambda: source.day_source(metrics=(metric,)),
-        lambda: source.moments(metric, grain="daily"),
-        lambda: source.moments(metric, grain="asof"),
-    )
-    for call in calls:
+    try:
         with pytest.raises(CapabilityError) as raised:
-            call()
+            source.sitewide_evidence(metric)
         assert raised.value.code == "source.native.operation"
+
+        # T3 supports these native summaries, but only after snapshot evidence pins
+        # the trigger population; the refusal must happen before warehouse work.
+        for call in (analysis.breakout_summaries, analysis.factor_summaries):
+            with pytest.raises(CapabilityError) as raised:
+                call()
+            assert raised.value.code == "source.native.trigger_evidence_required"
+    finally:
+        analysis.close()
+        con.disconnect()
 
 
 def test_day_source_subset_plan_is_frozen(pricing_analysis):

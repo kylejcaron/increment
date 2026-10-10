@@ -605,7 +605,13 @@ def test_analysis_run_native_encouragement_forwards_prior(con):
 
     assert flat.estimand == shrunk.estimand == "itt"
     assert flat.require_lift().value > 0.0
-    assert abs(shrunk.require_lift().value) < abs(flat.require_lift().value)
+    assert flat.require_lift().value == shrunk.require_lift().value
+    assert flat.sampling_available is shrunk.sampling_available is True
+    assert flat.posterior_available is not True
+    assert flat.posterior_estimate is None
+    assert shrunk.posterior_available is True
+    assert shrunk.posterior_estimate is not None
+    assert abs(shrunk.posterior_estimate) < abs(shrunk.require_lift().value)
 
 
 def test_run_asof_lift_reports_late_trend_for_native_encouragement_design(con):
@@ -822,6 +828,11 @@ def test_run_asof_lift_returns_frozen_per_day_lift_estimates(con):
 
     by_day = {r.ds: r for r in results}
     assert set(by_day) == {date(2025, 6, 1), date(2025, 6, 2), date(2025, 6, 3)}
+    restored = [type(row).model_validate_json(row.model_dump_json()) for row in results]
+    assert restored == list(results)
+    assert {
+        value.date() if isinstance(value, datetime) else value for value in results.to_frame()["ds"]
+    } == set(by_day)
     day0_lift = by_day[date(2025, 6, 1)].require_lift().value
     # Not hand-computed: "unadjusted" applies posterior shrinkage on top of the raw ratio. The property under test is the FREEZE (below), so just confirm direction (treatment > control).
     assert day0_lift > 0
@@ -1856,14 +1867,32 @@ def test_run_daily_lift_returns_nan_for_day_missing_control_arm(con):
     assert day1.metric == "revenue"
     assert day1.group_id == "treatment"
     assert day1.lift is None
+    assert day1.unavailable == "no_control_arm"
+    assert day1.sampling_available is False
+    assert day1.reference_kind == "normal"
+    assert day1.reference_df is None
+    assert DailyLiftEstimate.model_validate_json(day1.model_dump_json()) == day1
+
+    frame = results.to_frame()
+    day1_frame = frame[frame["ds"].dt.date == date(2025, 6, 1)]
+    assert len(day1_frame) == 1 and day1_frame["lift"].isna().all()
+    from increment.tables import estimates_to_readout
+
+    rendered = {row["ds"]: row for row in estimates_to_readout(results)}
+    assert rendered[date(2025, 6, 1)]["unavailable"] == "no_control_arm"
+    assert rendered[date(2025, 6, 1)]["lift"] is None
 
     day2 = by_day[date(2025, 6, 2)]
     assert isinstance(day2, DailyLiftEstimate)
     assert day2.metric == "revenue"
     assert day2.group_id == "treatment"
+    assert day2.sampling_available is True
+    assert day2.reference_kind == "t"
+    assert day2.reference_df is not None and day2.reference_df > 0
     assert day2.require_lift().value > 0, (
         "day 2 treatment (21) > control (11) -- expected positive lift"
     )
+    assert rendered[date(2025, 6, 2)]["lift"] is not None
 
 
 def _analysis_with_daily_ratio_metric_window_dilution(con):

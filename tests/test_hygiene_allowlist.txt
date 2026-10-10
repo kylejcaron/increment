@@ -1,19 +1,6 @@
 # H1: pytest.raises(..., match=...) on coded or unresolved exceptions
 # ---
 # H2: private-attribute reach-ins outside the two sanctioned shims
-tests/parity_harness/cases.py::_publish_and_adopt::_defs
-tests/query/test_builders.py::TestDayBoundary.test_end_day_enrollment_respects_local_day::_experiment
-tests/query/test_builders.py::TestDayBoundary.test_exposure_day_shifts_under_negative_offset::_experiment
-tests/query/test_builders.py::TestDayBoundary.test_window_membership_follows_the_shifted_day::_experiment
-tests/test_analysis_cluster.py::quantile_source_factory._make::_src
-tests/test_analysis_daily.py::test_artifact_dimensioned_daily_lift_preserves_estimator_warning_contract::_src
-tests/test_constructor_refusal_matrix.py::_invoke_matrix_operation::_src
-tests/test_constructor_refusal_matrix.py::test_constructor_families_keep_distinct_cluster_refusals::_src
-tests/test_constructor_refusal_matrix.py::test_constructor_families_keep_operation_and_grain_refusals::_src
-tests/test_constructor_refusal_matrix.py::test_definitions_keeps_native_warehouse_cluster_contract::_src
-tests/test_reporting.py::_RecordingConnection.__init__::_con
-tests/test_reporting.py::_RecordingConnection.sql::_con
-tests/test_sequential_registration_contract.py::test_artifact_initial_mapping_rejects_changed_saved_recipe_before_relation_access::_src
-tests/test_unit_day_artifact_extensions.py::test_dimension_extension_missing_an_exposure_key_refuses_on_read::_src
-tests/test_unit_day_artifact_parity.py::test_adoption_known_total_horizon_preserves_unit_population::_src
-tests/test_unit_day_artifact_parity.py::test_publication_keeps_validated_stats_when_source_changes::_src
+tests/test_decision_wire.py::_assert_legacy_prior_roundtrip::_state  # Moments-only Analysis has no public export operation; protects the legacy export/reload roundtrip.
+tests/test_sequential_public_sources.py::test_checkpoint_export_preserves_captured_assignment_counts_and_omits_legacy_counts::_src  # Clears a captured checkpoint before legacy re-adoption; no public reset seam exists.
+tests/parity_harness/cases.py::_publish_and_adopt::_defs  # Analysis exposes no public Definitions accessor for the expected artifact context.

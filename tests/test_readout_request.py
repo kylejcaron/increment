@@ -21,6 +21,104 @@ from increment.sources import Grain, MomentSource, SourceOperation
 from tests.sequential_cases import registration
 
 
+def test_component_identity_includes_optional_source_and_dimension_coordinates():
+    from increment.readouts._source_digest import component, composite_source
+
+    digest = "a" * 64
+    first = component(
+        kind="moments_rows",
+        metric="revenue",
+        population="assigned",
+        sha256=digest,
+        source="warehouse",
+        dimension="country",
+    )
+    same = component(
+        kind="moments_rows",
+        metric="revenue",
+        population="assigned",
+        sha256=digest,
+        source="warehouse",
+        dimension="country",
+    )
+    other_dimension = component(
+        kind="moments_rows",
+        metric="revenue",
+        population="assigned",
+        sha256=digest,
+        source="warehouse",
+        dimension="device",
+    )
+
+    assert first == same
+    assert first != other_dimension
+    assert first["source"] == "warehouse"
+    assert first["dimension"] == "country"
+    assert (
+        component(
+            kind="assignment_counts",
+            metric=None,
+            population="assigned",
+            sha256=digest,
+        )["source"]
+        is None
+    )
+    assert composite_source([first]) == composite_source([same])
+    assert composite_source([first]) != composite_source([other_dimension])
+    from increment.readouts._run import _randomized_snapshot_id
+
+    request = {"view": "breakout"}
+    first_id = _randomized_snapshot_id(composite_source([first]), request)
+    same_id = _randomized_snapshot_id(composite_source([same]), request)
+    other_dimension_id = _randomized_snapshot_id(composite_source([other_dimension]), request)
+    assert first_id == same_id
+    assert first_id != other_dimension_id
+    from types import SimpleNamespace
+
+    from increment.readouts._run import _randomized_source
+
+    selected = [SimpleNamespace(name="revenue")]
+    evidence = {"revenue": ("moments_rows", digest, 1)}
+    partition_source = _randomized_source(
+        selected,
+        evidence,
+        None,
+        "assigned",
+        source="warehouse",
+        dimension="country",
+    )
+    repeated_source = _randomized_source(
+        selected,
+        evidence,
+        None,
+        "assigned",
+        source="warehouse",
+        dimension="country",
+    )
+    other_source = _randomized_source(
+        selected,
+        evidence,
+        None,
+        "assigned",
+        source="warehouse",
+        dimension="device",
+    )
+    assert _randomized_snapshot_id(partition_source, request) == _randomized_snapshot_id(
+        repeated_source, request
+    )
+    assert _randomized_snapshot_id(partition_source, request) != _randomized_snapshot_id(
+        other_source, request
+    )
+    assert composite_source([first, same])["components"] == [first, same]
+    import json
+
+    restored_source = json.loads(json.dumps(partition_source))
+    assert restored_source == partition_source
+    assert _randomized_snapshot_id(restored_source, request) == _randomized_snapshot_id(
+        partition_source, request
+    )
+
+
 class _CountingSource:
     operations: frozenset[SourceOperation] = frozenset()
 
@@ -111,6 +209,64 @@ def test_arm_cluster_sequential_refusal_uses_the_canonical_compatibility_code() 
     assert isinstance(spec, RefusalSpec)
     assert spec.code == "arm.inference.cluster"
     assert spec.error_type is CapabilityError
+
+
+def test_sequential_run_refuses_plan_q_mismatch_before_read_and_preserves_refusal():
+    import copy
+    import pickle
+    from fractions import Fraction
+
+    from increment._analysis_config import resolve_configs
+    from increment.frame import synthesise_metric
+    from increment.plan import compile_decision_plan
+    from increment.semantics.models import AnalysisPlan, InferenceSpec
+    from increment.sources import SourceContext
+
+    reg = registration("bernoulli").model_copy(update={"q": Fraction(1, 5)})
+    metric = synthesise_metric(MetricSpec(name="outcome", type="conversion"))
+    design = Randomized(control_group="control")
+    declaration = AnalysisPlan(
+        primary="outcome",
+        q=0.10,
+        inference=InferenceSpec(kind="always_valid", registration=reg),
+    )
+    configs = resolve_configs((metric,), None, None, methods=None, prior=None)
+    plan = compile_decision_plan(
+        declaration, (metric,), path="frame", design=design, configs=configs
+    )
+    context = SourceContext(
+        study_id=reg.source_id,
+        design=design,
+        plan=plan,
+        metrics=(metric,),
+        configs=configs,
+        cluster=None,
+    )
+
+    class UnreadSource:
+        capabilities = frozenset({"total"})
+        breakouts = ()
+        shape = None
+
+        def __init__(self):
+            self.context = context
+            self.moment_calls = 0
+
+        def moments(self, *args, **kwargs):
+            self.moment_calls += 1
+            raise AssertionError("sequential q refusal must precede source reads")
+
+    source = UnreadSource()
+    with pytest.raises(CapabilityError) as raised:
+        readouts.run(cast(MomentSource, source))
+    refusal = raised.value
+    assert refusal.code == "sequential.source.invalid"
+    assert set(refusal.context) == {"reason"}
+    assert isinstance(refusal.context["reason"], str)
+    assert source.moment_calls == 0
+    for restored in (copy.deepcopy(refusal), pickle.loads(pickle.dumps(refusal))):
+        assert restored.code == refusal.code
+        assert restored.context == refusal.context
 
 
 def test_unsupported_readout_refusal_keeps_not_implemented_catch() -> None:

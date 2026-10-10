@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 from scipy.stats import norm as _norm
@@ -60,6 +60,7 @@ from increment.estimation.results import (
     Estimate,
     JointContrastReference,
     LiftEstimate,
+    PosteriorComponents,
     RelativeUnavailableReason,
     _alpha_eff_for,
     relative_confidence_set,
@@ -298,6 +299,89 @@ def normal_posterior(
     return Normal(mu=posterior_mu, sigma=posterior_sigma)
 
 
+class PosteriorFields(TypedDict, total=False):
+    posterior_available: bool
+    posterior_model: Literal["normal", "mixture"]
+    posterior_scale: Literal["log", "linear"]
+    posterior_estimate: float
+    posterior_lb: float
+    posterior_ub: float
+    posterior_level: float
+    posterior_alpha: float
+    posterior_latent_mean: float | None
+    posterior_latent_sd: float | None
+    posterior_prob_favorable: float | None
+    posterior_components: PosteriorComponents | None
+    prior_spec: StudentTPrior | MixturePrior | None
+
+
+def posterior_fields(
+    point: float,
+    se: float,
+    prior: Prior | None,
+    *,
+    alpha: float,
+    alternative: str,
+    scale: Literal["log", "linear"],
+    preferred_direction: PreferredDirection | None,
+    null_lift: float = 0.0,
+    null_abs: float | None = None,
+) -> PosteriorFields:
+    """Persist the supported working-likelihood posterior separately."""
+    if prior is None:
+        return {}
+    alpha_eff = _alpha_eff_for(alternative, alpha)
+    if isinstance(prior, (StudentTPrior, MixturePrior)):
+        posterior = mixture_posterior(point, se, prior.components())
+        center = posterior.quantile(0.5)
+        lower = posterior.quantile(alpha_eff / 2.0)
+        upper = posterior.isf(alpha_eff / 2.0)
+        model = "mixture"
+        latent_mean = latent_sd = None
+        posterior_components = PosteriorComponents(
+            weights=tuple(float(weight) for weight in posterior.weights),
+            means=tuple(float(mean) for mean in posterior.means),
+            sigmas=tuple(float(sigma) for sigma in posterior.sigmas),
+        )
+    else:
+        posterior = normal_posterior(point, se, prior)
+        center = latent_mean = posterior.mu
+        latent_sd = posterior.sigma
+        crit = two_sided_critical_value(_norm.isf, alpha_eff, what="posterior credible interval")
+        lower, upper = wald_bounds(
+            center, crit, posterior.sigma, what="posterior credible interval"
+        )
+        model = "normal"
+        posterior_components = None
+
+    def transform(value: float) -> float:
+        return (
+            resolvable_expm1(value, what="posterior relative quantile") if scale == "log" else value
+        )
+
+    return {
+        "posterior_available": True,
+        "posterior_model": model,
+        "posterior_scale": scale,
+        "posterior_estimate": transform(center),
+        "posterior_lb": transform(lower),
+        "posterior_ub": transform(upper),
+        "posterior_level": math.fsum((1.0, -alpha_eff)),
+        "posterior_alpha": alpha_eff,
+        "posterior_latent_mean": latent_mean,
+        "posterior_latent_sd": latent_sd,
+        "posterior_prob_favorable": (
+            posterior.cdf(null_lift if scale == "linear" else math.log1p(null_lift))
+            if null_abs is None and preferred_direction == "decrease"
+            else posterior.survival(null_lift if scale == "linear" else math.log1p(null_lift))
+            if null_abs is None and preferred_direction == "increase"
+            else None
+        ),
+        "posterior_components": posterior_components,
+        "prior_spec": prior if isinstance(prior, (StudentTPrior, MixturePrior)) else None,
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class SamplingReference:
     """Distribution used to cut an interval or sequential boundary."""
@@ -439,24 +523,23 @@ def infer_lift(  # noqa: PLR0913
     small effect at a large offset.  ``se_t``/``se_c`` remain the per-arm
     delta-method SEs of ``log(point)``, which the offset does not disturb.
 
-    Combines a flat (or supplied) Normal prior on the log risk-ratio with
-    the arms' SEs via ``normal_posterior`` (or a K-component mixture
-    posterior when ``prior`` is a ``StudentTPrior``/``MixturePrior``), then
-    returns the closed-form quantile of that posterior, back-transformed
-    by ``exp(x) - 1``. Because ``exp`` is strictly increasing, the
-    transform of the quantile equals the quantile of the transform, so
-    the CI is exact, not sampled.
+    The ordinary interval is the same prior-free sampling construction
+    regardless of ``prior``. A supported ``Normal``, ``StudentTPrior`` or
+    ``MixturePrior`` adds separate posterior fields from the working
+    log-ratio likelihood; the posterior never changes the sampling point,
+    interval, reference, p-value or significance verdict.
 
-    For ``alternative != "two-sided"``, the interval is computed at
-    ``alpha_eff = 2 * alpha`` through the same two-sided path (both
-    bounds kept), labeled with the honest two-sided coverage ``1 -
-    alpha_eff`` and the caller's direction - the standard one-sided
-    display convention. ``prior`` composes with a one-sided
-    ``alternative``, but is mutually exclusive with ``inference_spec``
-    (frequentist sequential coverage would be voided by a prior-shifted
-    center) and with a cluster-robust ``dof`` (no Normal-Normal conjugate
-    update exists against a t reference; the raw stats become the
-    inference inputs directly).
+    For ``alternative != "two-sided"``, the sampling interval is computed
+    at ``alpha_eff = 2 * alpha`` through the same two-sided path (both
+    bounds kept), labeled with the honest two-sided coverage
+    ``1 - alpha_eff`` and the caller's direction - the standard one-sided
+    display convention. A direct prior-plus-Welch ``arm_ns`` request
+    remains structurally refused; engine routes obtain that prior-free
+    sampling reference separately before adding a supported posterior.
+    A prior is mutually exclusive with ``inference_spec`` (frequentist
+    sequential coverage cannot be changed into posterior inference) and
+    with cluster-robust ``dof`` (no authorized conjugate construction exists
+    against that reference).
 
     ``null_lift``/``null_abs`` are decision metadata only (stamped onto
     the result for ``stat_sig``/``prob_favorable``) and never shift the
@@ -535,45 +618,20 @@ def infer_lift(  # noqa: PLR0913
     if null_abs is not None and not math.isfinite(null_abs):
         refuse(INFER_ATE_NULL_ABS_FINITE, null_abs=null_abs)
 
-    mixture_post = None
+    # Keep the exact prior=None construction, including its near-flat update.
     if dof is not None:
-        # Cluster-robust path: the raw stats ARE the inference inputs; no
-        # conjugate update (see the dof parameter's docstring above).
-        mu_n = log_rr
-        sigma_n = se_log_rr
-    elif isinstance(prior, (StudentTPrior, MixturePrior)):
-        # Mixture prior: quantiles of the K-component posterior replace
-        # mu +/- z*sigma; back-transform stays exact (exp is increasing).
-        mixture_post = mixture_posterior(log_rr, se_log_rr, prior.components())
-        mu_n = mixture_post.quantile(0.5)
-        sigma_n = float("nan")  # never read on this branch
+        mu_n, sigma_n = log_rr, se_log_rr
     else:
-        # Conjugate Normal update
-        posterior = normal_posterior(log_rr, se_log_rr, prior=prior)
-        mu_n = posterior.mu
-        sigma_n = posterior.sigma
-
-    # exp(mu_n) - 1 is the standard delta-method lift (the CI's closed
-    # form); averaging E[exp(X)-1] instead would inflate with SE alone.
+        sampling = normal_posterior(log_rr, se_log_rr, prior=None)
+        mu_n, sigma_n = sampling.mu, sampling.sigma
     assert ref.crit is not None
-    half_width = ref.crit * sigma_n
+    lower_log, upper_log = wald_bounds(
+        mu_n, ref.crit * sigma_n, 1.0, what="infer_lift relative interval"
+    )
+    value = resolvable_expm1(mu_n, what="infer_lift relative point estimate")
+    lb = resolvable_expm1(lower_log, what="infer_lift relative interval lower bound")
+    ub = resolvable_expm1(upper_log, what="infer_lift relative interval upper bound")
     inference_label = "fixed"
-
-    if mixture_post is not None:
-        value = resolvable_expm1(mu_n, what="infer_lift relative point estimate")
-        lb = resolvable_expm1(
-            mixture_post.quantile(alpha_eff / 2.0), what="infer_lift mixture posterior lower bound"
-        )
-        ub = resolvable_expm1(
-            mixture_post.isf(alpha_eff / 2.0), what="infer_lift mixture posterior upper bound"
-        )
-    else:
-        lower_log, upper_log = wald_bounds(
-            mu_n, half_width, 1.0, what="infer_lift relative interval"
-        )
-        value = resolvable_expm1(mu_n, what="infer_lift relative point estimate")
-        lb = resolvable_expm1(lower_log, what="infer_lift relative interval lower bound")
-        ub = resolvable_expm1(upper_log, what="infer_lift relative interval upper bound")
 
     # Additive Wald endpoints: the prior-free absolute-scale reading,
     # fixed-horizon only (no sequential coverage guarantee exists for them).
@@ -617,8 +675,18 @@ def infer_lift(  # noqa: PLR0913
         null_lift=null_lift,
         preferred_direction=preferred_direction,
         lift=estimate,
-        prior_shrunk=prior is not None,
-        prior_spec=prior if isinstance(prior, (StudentTPrior, MixturePrior)) else None,
+        sampling_available=True,
+        **posterior_fields(
+            log_rr,
+            se_log_rr,
+            prior,
+            alpha=alpha,
+            alternative=alternative,
+            scale="log",
+            preferred_direction=preferred_direction,
+            null_lift=null_lift,
+            null_abs=null_abs,
+        ),
         scale="log",
         abs_diff=abs_diff,
         abs_se=abs_se,
@@ -669,7 +737,7 @@ def _validate_additive_sidecar(abs_diff: float, abs_se: float) -> None:
 
 
 # Public inference signature is the API for estimate construction.
-def infer_ate(  # noqa: PLR0913, PLR0915
+def infer_ate(  # noqa: PLR0913
     metric: str,
     group_id: str,
     method: str,
@@ -707,16 +775,11 @@ def infer_ate(  # noqa: PLR0913, PLR0915
     single lift-scale point/SE pair, so lifts ``<= -1`` are representable
     (there is no log floor).
 
-    ``value_scale`` picks what ``lift.value`` reports: the relative lift
-    (default, with the additive pair riding alongside as
-    ``abs_diff``/``abs_se``), or - when the control mean is
-    indistinguishable from 0 and the relative scale is unidentified - the
-    additive ATE itself in the metric's own units. On an ``"absolute"``
-    row with ``prior=None`` the conjugate update is skipped and the
-    posterior is ``Normal(point, scores.se())`` verbatim:
-    ``normal_posterior``'s ``Normal(0, 1e6)`` default is only near-flat
-    in unitless terms, and would otherwise silently shrink a large-SE
-    additive estimate toward 0.
+    ``value_scale`` picks the sampling point's units: relative lift by
+    default (with an additive pair riding alongside as ``abs_diff``/
+    ``abs_se``), or the additive ATE itself in the metric's own units.
+    The sampling point and interval are always the prior-free construction;
+    a supported Normal posterior is stored separately on the row.
 
     When ``joint_reference`` is available, it is authoritative for the additive
     point and SE as well as relative inference; redundant caller ``abs_diff``
@@ -725,18 +788,19 @@ def infer_ate(  # noqa: PLR0913, PLR0915
     selects a separate additive reference (Normal when omitted on this path).
 
     ``prior`` here is on the relative-lift scale (not log-RR); a mixture
-    prior is refused since this path doesn't persist the raw pre-prior
-    statistics a mixture posterior needs - use ``infer_lift`` instead.
+    prior is refused since this path does not support its posterior
+    construction - use ``infer_lift`` where mixture posteriors are supported.
     ``alternative``/``alpha_eff`` follow the same one-sided doubling
     convention as ``infer_lift``, with no log/exp transform to carry
     through. ``null_lift`` has no floor at -1 and, like ``null_abs``, is
     decision metadata only; both must be finite and are refused on
     ``"absolute"`` rows where the corresponding sidecar field is ``None``.
 
-    ``dof``/``n_clusters`` mirror ``infer_lift``'s cluster-robust path: a
-    set ``dof`` bypasses the conjugate update entirely (``mu = point,
-    sigma = scores.se()``) in favor of a t reference, and is mutually
-    exclusive with an informative ``prior``. Outside the joint-reference path,
+    ``dof``/``n_clusters`` select the sampling reference directly and remain
+    structurally incompatible with a prior. A direct request combining a prior
+    with ``joint_reference`` is also refused; the readout adapter may keep the
+    prior-free joint sampling construction and persist a separately computed
+    posterior for supported observational Normal-prior cases.
     ``abs_dof`` requires a set ``dof`` and cuts the additive
     ``abs_diff``/``abs_se`` sidecar's Wald interval at its OWN reference
     instead of reusing the relative lift's critical value: the two
@@ -831,6 +895,7 @@ def infer_ate(  # noqa: PLR0913, PLR0915
             alternative=alternative,
             null_lift=null_lift,
             preferred_direction=preferred_direction,
+            sampling_available=True,
             lift=displayed,
             population=population,
             scale="linear",
@@ -872,14 +937,9 @@ def infer_ate(  # noqa: PLR0913, PLR0915
     )
     alpha_eff = ref.alpha_eff
 
-    if dof is not None or independent is not None or (value_scale == "absolute" and prior is None):
-        # Cluster/Welch references and flat additive inference use raw statistics.
-        mu_n, sigma_n = point, se
-    else:
-        posterior = normal_posterior(point, se, prior=prior)
-        mu_n = posterior.mu
-        sigma_n = posterior.sigma
-
+    # The sampling estimate and interval always use the unshrunk working
+    # likelihood; the declared prior is persisted as a separate posterior.
+    mu_n, sigma_n = point, se
     assert ref.crit is not None, "unreachable: infer_ate never passes a sequential spec"
     z = ref.crit
     lb = mu_n - z * sigma_n
@@ -925,7 +985,18 @@ def infer_ate(  # noqa: PLR0913, PLR0915
         value_scale=value_scale,
         null_lift=null_lift,
         preferred_direction=preferred_direction,
-        prior_shrunk=prior is not None,
+        sampling_available=True,
+        **posterior_fields(
+            point,
+            se,
+            prior,
+            alpha=alpha,
+            alternative=alternative,
+            scale="linear",
+            preferred_direction=preferred_direction,
+            null_lift=null_lift,
+            null_abs=null_abs,
+        ),
         abs_diff=abs_diff,
         abs_se=abs_se,
         null_abs=null_abs,

@@ -94,6 +94,27 @@ _REFUSALS = refusals(
             CapabilityError,
             template="TEMP namespace could not be resolved for {backend}",
         ),
+        "query.session.snapshot.cutoff_not_aware": RefusalSpec(
+            "query.session.snapshot.cutoff_not_aware",
+            InvalidRequestError,
+            template="{field} must be timezone-aware; received {value!r}",
+            keys=frozenset({"field", "value"}),
+        ),
+        "query.session.snapshot.feed_name_invalid": RefusalSpec(
+            "query.session.snapshot.feed_name_invalid",
+            InvalidRequestError,
+            template="feed names must be non-empty strings without NUL; received {value!r}",
+            keys=frozenset({"value"}),
+        ),
+        "query.session.snapshot.watermark_not_aware": RefusalSpec(
+            "query.session.snapshot.watermark_not_aware",
+            InvalidRequestError,
+            template=(
+                "complete-through watermark for feed {feed!r} ({field}) must be "
+                "timezone-aware; received {value!r}"
+            ),
+            keys=frozenset({"feed", "field", "value"}),
+        ),
         "query.session.artifact_publication.handle_closed": "publication handle is closed",
         "query.session.warehouse_artifact.unknown_relation_role": "unknown artifact relation role {role!r}",
         "query.session.warehouse_artifact.publication_handle_sealed": "publication handle is sealed",
@@ -1236,6 +1257,46 @@ class SourceScope:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceSnapshotEvidence:
+    """Event-time cutoff and explicitly certified per-feed completeness.
+
+    A missing or null feed watermark means completeness is unknown; this
+    value is never inferred from rows observed in the feed.
+    """
+
+    observation_cutoff_ts: datetime
+    complete_through_by_feed: Mapping[str, datetime | None] = dataclass_field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if (
+            self.observation_cutoff_ts.tzinfo is None
+            or self.observation_cutoff_ts.utcoffset() is None
+        ):
+            _raise(
+                "query.session.snapshot.cutoff_not_aware",
+                field="observation_cutoff_ts",
+                value=self.observation_cutoff_ts,
+            )
+        cutoff = self.observation_cutoff_ts.astimezone(UTC).replace(tzinfo=UTC)
+        normalized: dict[str, datetime | None] = {}
+        for feed, watermark in self.complete_through_by_feed.items():
+            if not isinstance(feed, str) or not feed or "\x00" in feed:
+                _raise("query.session.snapshot.feed_name_invalid", value=feed)
+            if watermark is not None:
+                if watermark.tzinfo is None or watermark.utcoffset() is None:
+                    _raise(
+                        "query.session.snapshot.watermark_not_aware",
+                        feed=feed,
+                        field="complete_through_by_feed",
+                        value=watermark,
+                    )
+                watermark = watermark.astimezone(UTC).replace(tzinfo=UTC)
+            normalized[feed] = watermark
+        object.__setattr__(self, "observation_cutoff_ts", cutoff)
+        object.__setattr__(self, "complete_through_by_feed", MappingProxyType(normalized))
+
+
+@dataclass(frozen=True, slots=True)
 class _MaterializedRelation:
     requested_name: str
     name: str
@@ -1250,7 +1311,13 @@ class WarehouseSession:
     or metrics. Policy (when to materialize) belongs to callers.
     """
 
-    def __init__(self, con: SQLBackend, defs: Definitions) -> None:
+    def __init__(
+        self,
+        con: SQLBackend,
+        defs: Definitions,
+        *,
+        source_snapshot_evidence: SourceSnapshotEvidence | None = None,
+    ) -> None:
         self._con = con
         self._defs = defs
         self._fact_tables: dict[tuple[str, str], Table] = {}
@@ -1260,6 +1327,7 @@ class WarehouseSession:
         # Suffix every temp-table name so sessions sharing one `con` never collide on
         # CREATE TEMP TABLE, where a forced overwrite can drop an unrelated permanent table.
         self._suffix = uuid.uuid4().hex[:12]
+        self._source_snapshot_evidence = source_snapshot_evidence
 
     @property
     def con(self) -> SQLBackend:
@@ -1268,6 +1336,10 @@ class WarehouseSession:
     @property
     def defs(self) -> Definitions:
         return self._defs
+
+    @property
+    def source_snapshot_evidence(self) -> SourceSnapshotEvidence | None:
+        return self._source_snapshot_evidence
 
     def source_sql(self, sql: str) -> Table:
         """Resolve source SQL against this operation's captured inputs, if any."""
@@ -1283,6 +1355,7 @@ class WarehouseSession:
         *,
         column_hints: Mapping[str, tuple[str | None, str | None]] = MappingProxyType({}),
         scope: SourceScope | None = None,
+        source_snapshot_evidence: SourceSnapshotEvidence | None = None,
     ) -> WarehouseSession:
         """Capture all requested streams in one execution, preserving their types.
 
@@ -1326,10 +1399,16 @@ class WarehouseSession:
             )
             for index, table in enumerate(tables)
         ]
-        pinned = WarehouseSession(self._con, self._defs)
-        pinned._source_tables = {}
+        evidence = (
+            self._source_snapshot_evidence
+            if source_snapshot_evidence is None
+            else source_snapshot_evidence
+        )
+        pinned = WarehouseSession(self._con, self._defs, source_snapshot_evidence=evidence)
         if not branches:
             return pinned
+        pinned._source_tables = {}
+
         expression = ibis.union(*branches, distinct=False) if len(branches) > 1 else branches[0]
         # One CTAS statement fixes every stream at the same execution snapshot.
         captured = pinned.materialize_table(

@@ -16,7 +16,6 @@ import ibis
 import numpy as np
 import pytest
 
-import increment.readouts
 from increment.analysis import Analysis
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.diagnostics import SRMResult, sample_ratio_mismatch
@@ -58,6 +57,7 @@ experiments:
     end: 2025-08-07
     plan: {{secondaries: [revenue_per_user]}}
     control_group: control
+    allocation_scheme: independent
 """
 
 
@@ -227,6 +227,8 @@ def test_native_and_frame_substrates_agree_on_the_clustered_srm(tmp_path):
     clusters tested, units reported."""
     import pandas as pd
 
+    from increment.semantics.design import Randomized
+
     native = _analysis(tmp_path, cluster=True).srm(expected={"control": 0.5, "treatment": 0.5})
 
     units = [
@@ -244,9 +246,12 @@ def test_native_and_frame_substrates_agree_on_the_clustered_srm(tmp_path):
         pd.DataFrame(units),
         unit="user_id",
         group="variant",
-        control="control",
         metrics=[{"name": "revenue_per_user", "type": "mean", "value_column": "revenue"}],
         cluster="store_id",
+        design=Randomized(
+            control_group="control",
+            allocation_scheme="independent",
+        ),
     ).srm(expected={"control": 0.5, "treatment": 0.5})
 
     assert isinstance(native, SRMResult) and isinstance(frame, SRMResult)
@@ -888,28 +893,35 @@ def _quantile_event_rows(
 
 @pytest.fixture
 def quantile_source_factory(tmp_path):
-    """Build a fresh randomized quantile-metric MomentSource on demand."""
+    """Build a fresh randomized quantile-metric Analysis on demand."""
 
     def _make():
         con = ibis.duckdb.connect()
         con.create_table("ql_events", obj=_quantile_event_rows())
         defs = tmp_path / "quantile_defs.yaml"
         defs.write_text(_QUANTILE_DEFS_TEMPLATE)
-        return Analysis("quantile_test", defs, con)._src
+        return Analysis("quantile_test", defs, con)
 
     return _make
 
 
 def test_quantile_run_loads_unit_frame_once_per_metric(quantile_source_factory):
-    """A randomized quantile metric loads its unit frame once."""
+    from tests.analysis_factory import _native_source
+
+    analysis = quantile_source_factory()
+    source: Any = _native_source(analysis)
     calls = {"unit_frame": 0}
-    src = quantile_source_factory()
-    real_unit_frame = src.unit_frame
+    real_unit_frame = source.unit_frame
 
     def counting_unit_frame(metric, **kwargs):
         calls["unit_frame"] += 1
         return real_unit_frame(metric, **kwargs)
 
-    src.unit_frame = counting_unit_frame
-    increment.readouts.run(src)
-    assert calls["unit_frame"] == 1
+    source.unit_frame = counting_unit_frame
+    try:
+        estimates = analysis.run()
+        assert calls["unit_frame"] == 1
+        assert [row.metric for row in estimates] == ["p90_latency"]
+        assert estimates[0].require_lift().value > 0
+    finally:
+        analysis.close()

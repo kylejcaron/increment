@@ -94,10 +94,13 @@ def test_prior_reset_matches_independent_prior_free_analysis(constructor):
                 assert wanted is not None
                 assert getattr(cleared.require_lift(), field) == pytest.approx(wanted)
         restored = lift_rows(analysis.run(metrics=["revenue"]))[0]
+        # The declared prior changes the posterior, not this secondary's
+        # sampling-family membership; see docs/guides/priors-and-decisions.md:171-173.
         for row in (inherited, restored):
-            assert row.discovery is None
-            assert row.family_axes is None
-            assert row.prior_shrunk is True
+            assert row.discovery == expected.discovery
+            assert row.family_axes == expected.family_axes
+            assert row.prior_shrunk is False
+            assert row.posterior_available is True
         for field in ("value", "lb", "ub"):
             assert getattr(restored.require_lift(), field) == pytest.approx(
                 getattr(inherited.require_lift(), field)
@@ -609,6 +612,15 @@ def test_each_day_axis_view_reads_only_its_own_method_and_keeps_its_own_outcome(
         ),
         refusal_only=refuses,
         view=view,
+        unscoped_outputs=(
+            {
+                "from_unit_summary": (
+                    "_SplitDayAxis is a synthetic dispatcher stub without source evidence."
+                )
+            }
+            if not refuses
+            else {}
+        ),
     )
     result = run_case(case)
     assert analysis.calls == [method]

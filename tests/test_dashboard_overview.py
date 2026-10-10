@@ -347,6 +347,10 @@ def _flat(value: object, prefix: str = "") -> dict[str, object]:
 
 def _rows(collection) -> list[dict[str, object]]:
     rows = [_flat(row.model_dump(mode="json")) for row in collection]
+    rows = [
+        {key: value for key, value in row.items() if key not in {"source_snapshot_id", "family_id"}}
+        for row in rows
+    ]
     return sorted(
         rows, key=lambda row: tuple(str(row.get(k)) for k in ("ds", "group_id", "dimension_value"))
     )
@@ -391,8 +395,9 @@ def test_offered_metrics_read_together_match_each_metric_read_alone(
                 )
                 want, got = _rows(expected), _rows(captured)
                 assert len(got) == len(want) > 0
-                for row, reference in zip(got, want, strict=True):
-                    assert row == pytest.approx(reference, rel=1e-9, abs=1e-12)
+                from tests.parity_harness.comparison import nested_close
+
+                assert nested_close(want, got)
                 if view == "segments":
                     discoveries += sum(bool(getattr(row, "discovery", None)) for row in captured)
         assert discoveries > 0 or correction == "bonferroni"

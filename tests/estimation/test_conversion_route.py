@@ -222,6 +222,21 @@ class TestRowsCarryTheirRoute:
         assert row.binomial_set is not None
         assert (row.lift is None) == (counts[0] == 0)
 
+    def test_set_only_binomial_readout_keeps_count_evidence_without_posterior_stats(self):
+        from increment.tables import estimates_to_readout
+
+        row = lift_row((0, 5_000, 2, 5_000))
+        assert row.lift is None
+        assert row.binomial_set is not None
+
+        (readout,) = estimates_to_readout([row])
+
+        assert readout["binomial_set"] == row.binomial_set
+        assert readout["stat_sig"] == row.stat_sig()
+        assert readout["posterior_chance_to_beat"] is None
+        assert readout["posterior_risk_if_shipped"] is None
+        assert not {"chance_to_beat (advisory)", "risk_if_shipped (advisory)"} & readout.keys()
+
     def test_a_corrupted_arm_refuses_identically_under_both_modes(self):
         """Exact counts and binary moments are validated before route selection."""
         bad = ArmStats.from_raw_sums(
@@ -406,14 +421,25 @@ class TestExplicitFiniteSample:
         assert row.binomial_set is None
 
     def test_the_prior_is_served_by_auto_on_the_delta_method_path_as_before(self):
-        computation = estimate_lift(
+        summary = count_summary(3_000, 10_000, 3_300, 10_000)
+        (baseline,) = estimate_lift(
             metrics=[CONVERSION_METRIC],
-            summary=count_summary(300, 10_000, 330, 10_000),
+            summary=summary,
+            control_group="control",
+        ).results
+        (row,) = estimate_lift(
+            metrics=[CONVERSION_METRIC],
+            summary=summary,
             control_group="control",
             prior=Normal(mu=0.0, sigma=0.1),
-        )
-        (row,) = computation.results
+        ).results
         assert row.binomial_set is None
+        assert row.reference_kind == "t"
+        assert row.lift is not None and baseline.lift is not None
+        assert row.lift.value == baseline.lift.value
+        assert row.posterior_available is True
+        assert row.posterior_estimate is not None
+        assert row.posterior_estimate != row.lift.value
 
 
 class TestPlanningRoute:
@@ -688,10 +714,8 @@ class TestBenjaminiHochbergFamilyRoutesAtItsSmallestLevel:
         (row,) = [row for row in alone if row.metric == "a"]
         assert row.reference_kind == "t"
 
-    def test_a_prior_bound_secondary_is_not_a_hypothesis_of_the_family(self):
-        """``c`` carries an informative prior, so it never enters selection: the family is ``a`` and
-        ``d`` (``q / 2``, a 0.05 tail), not three cells (``q / 3``, a tail whose threshold ``d``
-        misses)."""
+    def test_a_prior_bound_secondary_remains_in_the_sampling_family(self):
+        """The prior-bound conversion contributes to routing and typed sampling evidence."""
         from increment import AnalysisPlan
         from increment.estimation.inference import Normal
 
@@ -704,8 +728,12 @@ class TestBenjaminiHochbergFamilyRoutesAtItsSmallestLevel:
             priors={"c": Normal(mu=0.0, sigma=0.5)},
         ).run()
         kinds = _kinds(family)
-        assert kinds["a"] == "binomial"
-        assert kinds["d"] == "t"
+        assert kinds == {"a": "binomial", "c": "t", "d": "binomial"}
+        rows = list(family)
+        assert len(rows) == 3
+        prior_row = next(row for row in rows if row.metric == "c")
+        assert prior_row.sampling_available is True
+        assert prior_row.posterior_available is True
 
     def test_an_encouragement_family_member_is_routed_at_q_over_its_hypotheses(self):
         from increment import AnalysisPlan

@@ -8,7 +8,7 @@ from scipy.stats import norm, t
 
 from increment.errors import InvalidRequestError
 from increment.estimation.armstats import ScoreStats
-from increment.estimation.inference import infer_ate, infer_lift, normal_posterior
+from increment.estimation.inference import infer_ate, infer_lift
 from increment.estimation.results import LiftEstimate, open_bound_from_two_sided_at_target
 
 
@@ -52,10 +52,7 @@ def _parameters(row: LiftEstimate) -> tuple[float, float]:
     e = row.require_lift()
     assert e.log_mean is not None
     assert e.log_se is not None
-    if row.dof is not None or row.value_scale == "absolute":
-        return e.log_mean, e.log_se
-    posterior = normal_posterior(e.log_mean, e.log_se)
-    return posterior.mu, posterior.sigma
+    return e.log_mean, e.log_se
 
 
 def _working_point(row: LiftEstimate, point: float) -> float:
@@ -109,13 +106,8 @@ def test_fixed_fcr_exact_tail_and_recovery(alpha, t_critical, alternative, refer
     assert LiftEstimate.model_validate_json(row.model_dump_json()) == row
     assert open_bound_from_two_sided_at_target(row) is row
     assert row.p_value() == pytest.approx(parent.p_value(), rel=2e-13)
-    # Each row's posterior tails must reproduce its working-scale (mu, sigma). A
-    # t row reads persisted statistics; inverting its endpoints with a Normal z
-    # would inflate sigma by the t/z ratio.
-    assert row.prob_beyond(_working_point(row, mu)) == pytest.approx(0.5, rel=2e-13)
-    assert row.prob_beyond(_working_point(row, mu + sigma)) == pytest.approx(
-        norm.sf(1.0), rel=2e-13
-    )
+    # Sampling tails use the declared reference, never a plug-in posterior.
+    assert row.prob_beyond(_working_point(row, mu)) is None
 
 
 @pytest.mark.parametrize("alternative", ["greater", "less"])
@@ -170,12 +162,7 @@ def test_open_fixed_recovery_without_raw_statistics(alpha, alternative):
         ub=bound if alternative == "less" else None,
     )
     row = LiftEstimate.model_validate(data)
-    # Without raw statistics the row still recovers (mu, sigma) from its own
-    # interval: its posterior tails must reproduce the persisted moments.
-    assert row.prob_beyond(_working_point(row, mu)) == pytest.approx(0.5, rel=2e-13)
-    assert row.prob_beyond(_working_point(row, mu + sigma)) == pytest.approx(
-        norm.sf(1.0), rel=2e-13
-    )
+    assert row.prob_beyond(_working_point(row, mu)) is None
 
 
 @pytest.mark.parametrize("alpha", [0.5, math.nextafter(0.5, 0), math.nextafter(0.5, 1)])
@@ -184,9 +171,7 @@ def test_open_fixed_singular_recovery_requires_raw_statistics(alpha):
     row = row.model_copy(
         update={"lift": row.require_lift().model_copy(update={"log_mean": None, "log_se": None})}
     )
-    with pytest.raises(InvalidRequestError) as exc:
-        row.prob_beyond(0.0)
-    assert exc.value.code == "estimation.results.lift.open_interval_unrecoverable"
+    assert row.prob_beyond(0.0) is None
 
 
 @pytest.mark.parametrize("alternative", ["greater", "less"])
@@ -214,7 +199,9 @@ def test_sequential_fcr_preserves_exact_directional_inversion_and_refuses_poster
 
 
 def test_fcr_conversion_refuses_prior_shrunk_rows():
-    parent = _parent(0.05, "greater").model_copy(update={"prior_shrunk": True})
+    parent = _parent(0.05, "greater").model_copy(
+        update={"prior_shrunk": True, "sampling_available": None}
+    )
     with pytest.raises(InvalidRequestError) as exc:
         open_bound_from_two_sided_at_target(parent)
     assert exc.value.code == "estimation.results.lift.fcr_prior_unsupported"
@@ -249,16 +236,16 @@ def test_fixed_fcr_does_not_recover_allocation_from_level(open_interval):
     parent = parent.model_copy(
         update={"lift": parent.require_lift().model_copy(update={"alpha": None})}
     )
-    with pytest.raises(InvalidRequestError) as exc:
-        if open_interval:
-            parent.prob_beyond(0.0)
-        else:
+    if open_interval:
+        assert parent.prob_beyond(0.0) is None
+    else:
+        with pytest.raises(InvalidRequestError) as exc:
             open_bound_from_two_sided_at_target(parent)
-    assert exc.value.code == "estimation.results.lift.open_interval_unrecoverable"
+        assert exc.value.code == "estimation.results.lift.open_interval_unrecoverable"
 
 
 @pytest.mark.parametrize("alpha", [0.5, 0.6])
-def test_additive_encouragement_recovery_keeps_near_flat_update(alpha):
+def test_additive_encouragement_keeps_posterior_unavailable(alpha):
     from increment.estimation.encouragement import _nn_estimate
 
     lift = _nn_estimate(2e6, 1e6, None, alpha / 2, "greater")
@@ -274,10 +261,7 @@ def test_additive_encouragement_recovery_keeps_near_flat_update(alpha):
         lift=lift,
     )
     row = open_bound_from_two_sided_at_target(parent)
-    posterior = normal_posterior(2e6, 1e6)
-    assert row.require_lift().lb == pytest.approx(posterior.mu - norm.isf(alpha) * posterior.sigma)
-    assert row.prob_beyond(posterior.mu) == pytest.approx(0.5, rel=1e-12)
-    assert row.prob_beyond(posterior.mu + posterior.sigma) == pytest.approx(norm.sf(1.0), rel=1e-12)
+    assert row.prob_beyond(0.0) is None
 
 
 @pytest.mark.parametrize("with_stats", [False, True])

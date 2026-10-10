@@ -6,6 +6,7 @@ scientific acceptance lives in the full frozen calibration manifest.
 
 from __future__ import annotations
 
+import json
 import math
 import warnings
 from typing import TYPE_CHECKING, Any, cast
@@ -15,10 +16,11 @@ import pyarrow as pa
 import pytest
 from scipy.stats import norm
 
-from increment import readouts
+from increment import Analysis, readouts
 from increment.errors import (
     CapabilityError,
     IncrementRuntimeWarning,
+    IncrementWarning,
     InvalidRequestError,
     UnsupportedRequestError,
 )
@@ -31,6 +33,7 @@ from increment.estimation.adjust import estimate_ate
 from increment.estimation.armstats import ScoreStats
 from increment.estimation.engine import Method
 from increment.estimation.inference import Normal
+from increment.estimation.readout_types import ReadoutResults
 from increment.frame import MetricSpec, from_unit_summary
 from increment.semantics.design import (
     AdjustmentSet,
@@ -437,6 +440,144 @@ def test_cross_fit_cluster_advisory_emitted_once(name):
     assert len(advisories) == 1
 
 
+def test_unit_weight_diagnostics_use_the_actual_arm_weights():
+
+    import pandas as pd
+
+    from increment.breakout.estimates import LiftEstimates
+
+    tbl = pa.table(
+        {
+            "u": [f"u{i}" for i in range(24)],
+            "g": ["C"] * 12 + ["T"] * 12,
+            "y": [float(i % 7 + 1) for i in range(24)],
+            "z": [0.0] * 24,
+        }
+    )
+    analysis = Analysis.from_unit_summary(
+        tbl,
+        unit="u",
+        group="g",
+        metrics={"y": "mean"},
+        design=DESIGN,
+    )
+    results = analysis.run(
+        decision_method=Method(name="iptw"),
+        sensitivity_methods=[Method(name="unadjusted")],
+    )
+    assert isinstance(results, LiftEstimates)
+    (row,) = [result for result in results if result.method == "iptw"]
+    unweighted = [result for result in results if result.method == "unadjusted"]
+
+    restored = ReadoutResults.model_validate_json(results.model_dump_json())
+    native_frame = results.to_frame()
+    assert isinstance(native_frame, pd.DataFrame)
+    frame = native_frame
+    restored_weighted = next(result for result in restored if result.method == "iptw")
+    frame_weighted = frame.loc[frame["method"] == "iptw"].iloc[0]
+    for field in (
+        "control_weight_n",
+        "treatment_weight_n",
+        "control_weight_ess",
+        "treatment_weight_ess",
+        "control_weight_max_share",
+        "treatment_weight_max_share",
+    ):
+        assert getattr(restored_weighted, field) == getattr(row, field)
+        assert frame_weighted[field] == pytest.approx(getattr(row, field))
+    assert unweighted
+    assert all(result.weight_diagnostics_available is False for result in unweighted)
+    assert all(
+        result.weight_diagnostics_reason_code == "readout.weight_diagnostics.not_applicable"
+        for result in unweighted
+    )
+    assert all(
+        result.weight_diagnostics_reason_context == {"method": "unadjusted"}
+        for result in unweighted
+    )
+
+    context = unweighted[0].weight_diagnostics_reason_context
+    assert context is not None
+    with pytest.raises(TypeError):
+        cast(Any, context)["method"] = "iptw"
+    assert all(
+        result.weight_diagnostics_reason_context == {"method": "unadjusted"}
+        for result in unweighted
+    )
+    assert unweighted[0].model_dump()["weight_diagnostics_reason_context"] == {
+        "method": "unadjusted"
+    }
+    assert all(result.control_weight_ess is None for result in unweighted)
+    replay_unweighted = [result for result in restored if result.method == "unadjusted"]
+    assert all(result.weight_diagnostics_available is False for result in replay_unweighted)
+    assert all(
+        result.weight_diagnostics_reason_code == "readout.weight_diagnostics.not_applicable"
+        for result in replay_unweighted
+    )
+    assert all(
+        result.weight_diagnostics_reason_context == {"method": "unadjusted"}
+        for result in replay_unweighted
+    )
+    frame_unweighted = frame.loc[frame["method"] == "unadjusted"]
+    assert frame_unweighted["weight_diagnostics_available"].eq(False).all()
+    assert (
+        frame_unweighted["weight_diagnostics_reason_code"]
+        .eq("readout.weight_diagnostics.not_applicable")
+        .all()
+    )
+    assert frame_unweighted["control_weight_ess"].isna().all()
+    assert all(
+        json.loads(context) == {"method": "unadjusted"}
+        for context in frame_unweighted["weight_diagnostics_reason_context"]
+    )
+
+    assert row.weight_diagnostics_available is True
+    assert row.weight_grain == "unit"
+    assert row.control_weight_n == row.treatment_weight_n == 12
+    assert row.control_weight_ess == pytest.approx(12)
+    assert row.treatment_weight_ess == pytest.approx(12)
+    assert row.control_weight_max_share == pytest.approx(1 / 12)
+    assert row.treatment_weight_max_share == pytest.approx(1 / 12)
+
+
+def test_integer_cluster_weights_keep_fractional_concentration_summary():
+    from increment.estimation._adjust.weight_diagnostics import _weight_summary
+
+    n, ess, largest = _weight_summary(
+        np.array([1, 2, 1], dtype=np.int64),
+        np.array([0, 0, 1], dtype=np.int64),
+        2,
+    )
+
+    assert (n, ess, largest) == pytest.approx((2, 8 / 5, 3 / 4))
+
+
+def test_registered_adjustment_preserves_producer_weight_diagnostics():
+    from increment.estimation.adjust import ADJUSTMENTS
+
+    method_name = "test_weight_diagnostics_passthrough"
+
+    def plugin(source, metric, design, **kwargs):
+        rows = iptw_estimate(source, metric, design, learner=ConstantPropensity, **kwargs)
+        return [row.model_copy(update={"method": method_name}) for row in rows]
+
+    original_entries = dict(ADJUSTMENTS._entries)
+    try:
+        ADJUSTMENTS.register(method_name, plugin)
+        source = _source(_table(k_per_arm=20, m=2, seed=19), cluster=None)
+        computation = estimate_ate(source, DESIGN, methods=[Method(name=method_name)])
+        assert computation.results
+        assert all(row.method == method_name for row in computation.results)
+        assert all(row.weight_diagnostics_available is True for row in computation.results)
+        assert all(row.weight_grain == "unit" for row in computation.results)
+        assert all(
+            row.control_weight_n == row.treatment_weight_n == 40 for row in computation.results
+        )
+    finally:
+        ADJUSTMENTS._entries.clear()
+        ADJUSTMENTS._entries.update(original_entries)
+
+
 def test_overlap_trim_recounts_clusters():
     """K is the clusters actually contributing IF terms: trimming a
     singleton cluster to overlap drops it from n_clusters and the dof."""
@@ -458,6 +599,14 @@ def test_overlap_trim_recounts_clusters():
     src = _source(tbl, cluster="store")
     (est,) = iptw_estimate(src, _metric(src), design, learner=lambda: PresetPropensity(e))
 
+    assert est.weight_diagnostics_available is True
+    assert est.weight_grain == "cluster"
+    assert est.control_weight_n == 21
+    assert est.treatment_weight_n == 20
+    assert est.control_weight_ess == pytest.approx(21)
+    assert est.treatment_weight_ess == pytest.approx(20)
+    assert est.control_weight_max_share == pytest.approx(1 / 21)
+    assert est.treatment_weight_max_share == pytest.approx(1 / 20)
     assert est.n_clusters == 41
 
     kept = np.arange(42) != 41
@@ -503,6 +652,14 @@ def test_other_treatment_clusters_never_count_as_control_support():
     src = _source(_three_arm_cluster_table(control_stores=2), cluster="store")
     rows = iptw_estimate(src, _metric(src), DESIGN, learner=ConstantPropensity)
     assert [row.group_id for row in rows] == ["T", "T2"]
+    assert all(row.weight_diagnostics_available is True for row in rows)
+    assert all(row.weight_grain == "cluster" for row in rows)
+    assert rows[0].control_weight_n == rows[1].control_weight_n == 2
+    assert rows[0].control_weight_ess == pytest.approx(rows[1].control_weight_ess)
+    assert rows[0].control_weight_max_share == pytest.approx(rows[1].control_weight_max_share)
+    assert all(row.treatment_weight_n == 2 for row in rows)
+    assert all(row.treatment_weight_ess == pytest.approx(2) for row in rows)
+    assert all(row.treatment_weight_max_share == pytest.approx(0.5) for row in rows)
 
 
 class _SeparatingPropensity:
@@ -825,12 +982,36 @@ def test_informative_prior_refuses_with_cluster():
     assert error.context.get("cluster") == "store"
 
 
-# Decision-stat refusals hold on the clustered adjusted rows (both the
-# relative posterior recovery and the direct absolute-margin branch).
+def test_unsupported_adjusted_ratio_retains_stable_failure_metadata():
+    table = _table(k_per_arm=30, m=4, seed=17).append_column("sessions", pa.array([2.0] * 240))
+    source = from_unit_summary(
+        table,
+        unit="u",
+        group="g",
+        control="C",
+        metrics=[
+            MetricSpec(name="y", type="mean"),
+            MetricSpec(name="rps", type="ratio", numerator="y", denominator="sessions"),
+        ],
+        design=DESIGN,
+    )
+    with pytest.warns(IncrementWarning, match="skipping metric 'rps'"):
+        computation = estimate_ate(source, DESIGN, methods=[Method(name="iptw")])
+    failures = [
+        failure for failure in computation.failures.values() if failure.hypothesis.metric == "rps"
+    ]
+    assert failures
+    assert all(
+        failure.code == "estimation.adjust_common.supported_ratio_metric" for failure in failures
+    )
+    assert all(failure.context["metric"] == "rps" for failure in failures)
+    assert all(failure.context["method"] == "IPTW" for failure in failures)
 
 
+# Clustered rows without persisted posterior state withhold posterior probabilities; the
+# additive sampling p-value still refuses when its t reference cannot support the margin.
 @pytest.mark.filterwarnings("ignore::UserWarning")
-def test_decision_stats_refuse_on_clustered_adjusted_rows():
+def test_clustered_adjusted_row_withholds_posterior_and_refuses_additive_pvalue():
     tbl = _table(k_per_arm=20, m=2, seed=13)
     src = from_unit_summary(
         tbl,
@@ -848,14 +1029,14 @@ def test_decision_stats_refuse_on_clustered_adjusted_rows():
         null_abs={"y": 0.01},
     ).results
 
-    for method, code in (
-        (est.chance_to_beat, "estimation.results.lift.posterior_decision_stats_cluster_robust"),
-        (est.prob_favorable, "estimation.results.lift.p_value_cluster_robust_null_abs"),
-    ):
-        with pytest.raises(InvalidRequestError) as exc_info:
-            method()
-        assert exc_info.value.code == code
-        assert est.reference_df is None
+    # Posterior access follows posterior_available; see
+    # docs/guides/priors-and-decisions.md:142-145.
+    assert est.chance_to_beat() is None
+    assert est.prob_favorable() is None
+    with pytest.raises(InvalidRequestError) as exc_info:
+        est.p_value()
+    assert exc_info.value.code == "estimation.results.lift.p_value_cluster_robust_null_abs"
+    assert est.reference_df is None
 
 
 # Orchestration: estimate_ate / readouts.run thread the declaration.

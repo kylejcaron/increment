@@ -40,6 +40,8 @@ from increment._literals import (
 )
 from increment.errors import CodedModel, CodedValidationMixin, DefinitionError, RefusalSpec
 from increment.semantics.design import (
+    ALLOCATION_SCHEME_INCOMPATIBLE,
+    AllocationScheme,
     ExclusionRestriction,
     UptakeSpec,
     _freeze_allocation,
@@ -84,6 +86,16 @@ DEFINITION_REFUSALS: dict[str, RefusalSpec] = {
     ),
     "definition.artifact.context_sha256_does": RefusalSpec(
         "definition.artifact.context_sha256_does", DefinitionError, _render_definition_message
+    ),
+    "definition.artifact.trigger_metric_scope": RefusalSpec(
+        "definition.artifact.trigger_metric_scope",
+        DefinitionError,
+        _render_definition_message,
+    ),
+    "definition.artifact.trigger_timestamp_timezone": RefusalSpec(
+        "definition.artifact.trigger_timestamp_timezone",
+        DefinitionError,
+        _render_definition_message,
     ),
     "definition.artifact_datetimes_timezone": RefusalSpec(
         "definition.artifact_datetimes_timezone", DefinitionError, _render_definition_message
@@ -529,6 +541,21 @@ DEFINITION_REFUSALS: dict[str, RefusalSpec] = {
     ),
     "definition.unit_day.site_volume_request": RefusalSpec(
         "definition.unit_day.site_volume_request", DefinitionError, _render_definition_message
+    ),
+    "definition.unit_day.trigger_measure_anchor": RefusalSpec(
+        "definition.unit_day.trigger_measure_anchor",
+        DefinitionError,
+        _render_definition_message,
+    ),
+    "definition.unit_day.trigger_measure_keys": RefusalSpec(
+        "definition.unit_day.trigger_measure_keys",
+        DefinitionError,
+        _render_definition_message,
+    ),
+    "definition.unit_day.trigger_measure_metric": RefusalSpec(
+        "definition.unit_day.trigger_measure_metric",
+        DefinitionError,
+        _render_definition_message,
     ),
     "definition.utf": RefusalSpec("definition.utf", DefinitionError, _render_definition_message),
     "definition.winsorization.finite": RefusalSpec(
@@ -1976,7 +2003,7 @@ class MultiplicitySpec(_Base):
         return self
 
 
-class AnalysisPlan(_Base):
+class AnalysisPlan(_ExplicitOnlyFields, _Base):
     """The pre-registered decision rule: how evidence is judged.
 
     Bindings (``ExperimentMetric`` / ``MetricSpec``) say how estimates are
@@ -2038,7 +2065,7 @@ class AnalysisPlan(_Base):
         ``None`` declares no primary.
     secondaries : tuple[PlanEntry, ...] | None
         Metrics judged as a discovery family at ``q`` rather than against
-        ``alpha``. A prior-bound entry sits outside the family.
+        ``alpha``. A prior changes posterior state, not the sampling evidence of a declared member.
     guardrails : tuple[PlanEntry, ...]
         Metrics that must not move adversely. A guardrail needs an
         explicit non-neutral ``preferred_direction`` on the metric, since
@@ -2061,6 +2088,7 @@ class AnalysisPlan(_Base):
     """
 
     alpha: float = Field(default=0.05, gt=0, lt=1)
+    _explicit_only_fields: ClassVar[frozenset[str]] = frozenset({"q"})
     q: float = Field(default=0.10, gt=0, lt=1)
     view_multiplicity: MultiplicitySpec | None = None
     alternative: Alternative = "two-sided"
@@ -2171,7 +2199,7 @@ def local_day(value: datetime, offset: timedelta) -> date:
 
 class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
     _explicit_only_fields: ClassVar[frozenset[str]] = frozenset(
-        {"day_boundary", "allocation", "design"}
+        {"day_boundary", "allocation", "allocation_scheme", "design"}
     )
 
     name: str
@@ -2200,6 +2228,9 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
     control_group: str  # REQUIRED: which group_id is control
     #: Declared assignment weights, never estimated from observed group counts.
     allocation: Mapping[str, float] | None = None
+    allocation_scheme: AllocationScheme | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     #: Optional non-randomized identification mechanism. Absent means
     #: Randomized, built from control_group/allocation above -- see
     #: resolved_design(). mechanism: "randomized" is not a valid value
@@ -2227,6 +2258,14 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
     @model_validator(mode="after")
     def _check_allocation(self):
         _validate_allocation_semantics(self.control_group, self.allocation)
+        if isinstance(self.design, ObservationalDeclaration) and self.allocation_scheme is not None:
+            from increment.errors import refuse
+
+            refuse(
+                ALLOCATION_SCHEME_INCOMPATIBLE,
+                design="observational",
+                allocation_scheme=self.allocation_scheme,
+            )
         return self
 
     @field_validator("start", "end", "observation_end", mode="before")
@@ -2305,11 +2344,16 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
         from increment.semantics.design import Randomized as _Randomized
 
         if self.design is None:
-            return _Randomized(control_group=self.control_group, allocation=self.allocation)
+            return _Randomized(
+                control_group=self.control_group,
+                allocation=self.allocation,
+                allocation_scheme=self.allocation_scheme,
+            )
         if isinstance(self.design, EncouragementDeclaration):
             return _Encouragement(
                 control_group=self.control_group,
                 allocation=self.allocation,
+                allocation_scheme=self.allocation_scheme,
                 uptake=self.design.uptake,
                 exclusion_restriction=self.design.exclusion_restriction,
                 one_sided=self.design.one_sided,
@@ -3622,6 +3666,8 @@ if TYPE_CHECKING:
         SimpleMetricMeasure,
         SiteVolumeExtension,
         SiteVolumeRequest,
+        TriggerMeasureStatsExtension,
+        TriggerMeasureStatsRequest,
         TriggerPopulationExtension,
         TriggerPopulationRequest,
         UnitCovariateExtension,
@@ -3669,6 +3715,8 @@ _ARTIFACT_REEXPORTS = frozenset(
         "UnitCovariateRequest",
         "TriggerPopulationExtension",
         "TriggerPopulationRequest",
+        "TriggerMeasureStatsExtension",
+        "TriggerMeasureStatsRequest",
         "UnitDayArtifactManifest",
         "UnitDayArtifactRef",
     }

@@ -26,6 +26,9 @@ from increment.dashboard._format import (
 from increment.dashboard._html import results_notes
 from increment.estimation.inference import _joint_additive_bounds
 from increment.estimation.results import (
+    BINOMIAL_METHOD,
+    BINOMIAL_NUMERICAL_QUALIFICATION,
+    BinomialConfidenceSet,
     Estimate,
     JointContrastReference,
     relative_confidence_set,
@@ -83,6 +86,65 @@ _UNAVAILABLE = {"lift": None, "confidence_set": None, "binomial_set": None}
 def _fieller(a: float, c: float, *, alternative: str = "two-sided", cov: float = 0.0):
     reference = JointContrastReference(a=a, c=c, var_a=1, var_c=1, cov_ac=cov)
     return relative_confidence_set(reference, alternative=alternative)
+
+
+def test_decision_grade_binomial_set_discloses_numerical_qualification():
+    from increment.dashboard._format import complete_confidence_set_text
+    from increment.estimation.binomial_rr import nuisance_beta
+
+    region = BinomialConfidenceSet(
+        lower=-0.8,
+        upper=1.0,
+        alpha=0.05,
+        level=0.95,
+        decision_alpha=0.05,
+        geometry="central",
+        method=BINOMIAL_METHOD,
+        numerical_qualification=BINOMIAL_NUMERICAL_QUALIFICATION,
+        x_c=10,
+        n_c=20,
+        x_t=12,
+        n_t=20,
+        nuisance_beta=nuisance_beta(0.05),
+    )
+    text = complete_confidence_set_text(
+        {"binomial_set": region, "confidence_set": None, "relative_confidence_set": None}
+    )
+    assert text is not None
+    assert "conditional on deployed SciPy/Boost" in text
+
+
+def test_point_backed_binomial_qualification_keeps_displayed_interval_endpoints():
+    from increment.dashboard._format import interval_html
+    from increment.estimation.binomial_rr import nuisance_beta
+
+    bounded = BinomialConfidenceSet(
+        lower=-0.8,
+        upper=1.0,
+        alpha=0.05,
+        level=0.95,
+        decision_alpha=0.05,
+        geometry="central",
+        method=BINOMIAL_METHOD,
+        numerical_qualification=BINOMIAL_NUMERICAL_QUALIFICATION,
+        x_c=10,
+        n_c=20,
+        x_t=12,
+        n_t=20,
+        nuisance_beta=nuisance_beta(0.05),
+    )
+    row = {
+        "lift": 0.15,
+        "lower": 0.10,
+        "higher": 0.20,
+        "value_scale": "relative",
+        "relative_confidence_set": None,
+        "binomial_set": bounded,
+    }
+    for display_text in (headline_interval(row), interval_html(row)):
+        assert "10.0%" in display_text
+        assert "20.0%" in display_text
+        assert "conditional on deployed SciPy/Boost" in display_text
 
 
 # Complete set text

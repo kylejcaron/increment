@@ -745,10 +745,11 @@ class PowerResult(CodedModel, BaseModel):
         lattice with a resolved computed enclosure; ``"approximate"`` is an
         unresolved diagnostic with no runtime-power claim. Materially unresolved
         enumerations are refused rather than published.
-    numerical_qualification : {"closed_form_model_only_v1", "scipy_special_function_error_model_conditional_v1", "unclaimed_approximation_diagnostic_v1"}
+    numerical_qualification : {"closed_form_model_only_v1", "sequential_crossing_quadrature_v1", "scipy_special_function_error_model_conditional_v1", "unclaimed_approximation_diagnostic_v1"}
         Arithmetic scope accompanying the planning basis in saved results.
-        Finite-sample enclosure claims are conditional on deployed SciPy
-        special-function error allowance, not uniform across builds.
+        Sequential asymptotic power uses its crossing quadrature; finite-sample
+        enclosure claims are conditional on deployed SciPy special-function
+        error allowance, not uniform across builds.
         ``approximate`` is an unresolved diagnostic and makes no runtime-power claim.
     mde_relative : float | None
         Minimum detectable relative effect on the complier scale, expressed
@@ -826,12 +827,17 @@ class PowerResult(CodedModel, BaseModel):
         self,
     ) -> Literal[
         "closed_form_model_only_v1",
+        "sequential_crossing_quadrature_v1",
         "scipy_special_function_error_model_conditional_v1",
         "unclaimed_approximation_diagnostic_v1",
     ]:
         """Arithmetic scope of the reported model, not its statistical guarantee."""
         if self.power_basis == "asymptotic":
-            return "closed_form_model_only_v1"
+            return (
+                "sequential_crossing_quadrature_v1"
+                if self.inference_to_declare is not None
+                else "closed_form_model_only_v1"
+            )
         if self.power_basis == "approximate":
             return "unclaimed_approximation_diagnostic_v1"
         return "scipy_special_function_error_model_conditional_v1"

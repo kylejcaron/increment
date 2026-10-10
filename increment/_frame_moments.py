@@ -16,6 +16,7 @@ from increment._frame_panel import (
     _censoring_warning,
     _day_axis_label_order,
     _observable_end_index,
+    _partition_panel_days,
     _scratch_name,
     _uptake_day_elapsed,
     _with_day_index,
@@ -573,6 +574,13 @@ def _daily_moment_rows(
     from increment._frame_panel import _day_population
 
     labels = panel.get_column("ds").unique().to_list()
+
+    axis_labels = (
+        [*labels, *exposure.get_column("__exposure__").unique().to_list()]
+        if exposure is not None and isinstance(panel.schema["ds"], nw.String)
+        else None
+    )
+    day_slices = _partition_panel_days(panel) if not bounded_dense else None
     rows: list[dict[str, Any]] = []
     failures: dict[str, _DeferredRefusal] = {}
     for spec, metric in zip(metrics, synthesised, strict=True):
@@ -582,10 +590,13 @@ def _daily_moment_rows(
         right_edge = _resolve_window_days(metric)
         spec_rows: list[dict[str, Any]] = []
         try:
+            if axis_labels is not None:
+                _day_axis_label_order(axis_labels)
             for ds in labels if not bounded_dense else [None]:
                 if bounded_dense:
                     population = panel
                 else:
+                    assert day_slices is not None
                     values = [spec.y_column]
                     if spec.denominator is not None:
                         values.append(spec.denominator)
@@ -595,6 +606,7 @@ def _daily_moment_rows(
                         ds=ds,
                         value_columns=values,
                         ordinal=identity_ordinal,
+                        day_slices=day_slices,
                     )
                 if exposure is not None:
                     indexed, day_index = _with_day_index(population, exposure)
@@ -992,6 +1004,7 @@ def _asof_stream_day(
     settings: _AsOfSettings,
     state: _AsOfState,
     completion_days: int | None,
+    day_slices: Mapping[Any, nw.DataFrame[Any]],
 ) -> nw.DataFrame[Any]:
     from increment._frame_panel import _day_population
 
@@ -1013,6 +1026,7 @@ def _asof_stream_day(
         ds=ds,
         value_columns=value_columns,
         ordinal=settings.identity_ordinal,
+        day_slices=day_slices,
     )
     day_index_values = None
     if settings.exposure is not None:
@@ -1114,6 +1128,7 @@ def _asof_streamed_rows(
     metric: Metric,
     labels: Sequence[Any],
     settings: _AsOfSettings,
+    day_slices: Mapping[Any, nw.DataFrame[Any]],
 ) -> list[dict[str, Any]]:
     state = _AsOfState(
         np.zeros(identity.shape[0], dtype=np.float64),
@@ -1124,7 +1139,7 @@ def _asof_streamed_rows(
     result = []
     for ds in labels:
         records = _asof_stream_day(
-            panel, identity, spec, metric, ds, settings, state, completion_days
+            panel, identity, spec, metric, ds, settings, state, completion_days, day_slices
         )
         result.extend(_asof_metric_rows(records, spec, settings))
     return result
@@ -1166,6 +1181,7 @@ def _asof_moment_rows(
     failures: dict[str, _DeferredRefusal] = {}
     if not labels:
         return rows, failures
+    day_slices = _partition_panel_days(panel) if not settings.bounded_dense else None
     panel_order = _day_axis_label_order(labels)
     panel_ds_max = max(labels, key=panel_order.__getitem__)
     for spec, metric in zip(specs, settings.synthesised, strict=True):
@@ -1202,8 +1218,15 @@ def _asof_moment_rows(
             if settings.bounded_dense:
                 metric_rows = _asof_dense_rows(panel, spec, metric, metric_identity, settings)
             else:
+                assert day_slices is not None
                 metric_rows = _asof_streamed_rows(
-                    panel, metric_identity, spec, metric, labels, settings
+                    panel,
+                    metric_identity,
+                    spec,
+                    metric,
+                    labels,
+                    settings,
+                    day_slices=day_slices,
                 )
         except CapabilityError as exc:
             if exc.code != _WINSOR_COLLAPSED_BOUND.code:

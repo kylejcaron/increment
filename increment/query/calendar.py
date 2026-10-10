@@ -77,6 +77,13 @@ _REFUSALS = refusals(
 _raise = raiser(_REFUSALS)
 
 
+def validate_period_grain(grain: str) -> PeriodGrain:
+    """Validate a report period grain before constructing any source query."""
+    if grain not in ("day", "week", "month"):
+        _raise("query.calendar.period_start_unknown_grain", grain=grain)
+    return grain
+
+
 def validate_report_population(population: ir.Table | None) -> None:
     """Admit the population key before a report performs any data query."""
     if population is not None and "unit_id" not in population.columns:

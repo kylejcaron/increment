@@ -140,6 +140,23 @@ def report():
     return Report.from_definitions(Definitions.model_validate(DEFS), con)
 
 
+@pytest.fixture
+def recorded_report(monkeypatch):
+    con = ibis.duckdb.connect()
+    con.create_table("raw_events", ibis.memtable(ROWS))
+    con.create_table("raw_orders", ibis.memtable(ORDER_ROWS))
+    report = Report.from_definitions(Definitions.model_validate(DEFS), con)
+    executed = []
+    original_execute = con.execute
+
+    def record_execute(expression, *args, **kwargs):
+        executed.append(ibis.to_sql(expression))
+        return original_execute(expression, *args, **kwargs)
+
+    monkeypatch.setattr(con, "execute", record_execute)
+    return report, executed
+
+
 @pytest.mark.parametrize("source_order", [("profile", "events"), ("events", "profile")])
 def test_report_fact_resolution_ignores_property_source_order(source_order):
     sources = {
@@ -246,12 +263,12 @@ class _RecordingConnection:
     name = "duckdb"
 
     def __init__(self, con):
-        self._con = con
+        self.connection = con
         self.sql_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def sql(self, *args: object, **kwargs: object):
         self.sql_calls.append((args, kwargs))
-        return self._con.sql(*args, **kwargs)
+        return self.connection.sql(*args, **kwargs)
 
 
 def test_report_uses_definitions_snapshot_after_caller_mutation():
@@ -520,6 +537,7 @@ def test_report_buckets_by_the_declared_day_boundary_not_utc():
     frame = report.metric("rev", grain="day", start=dt.date(2025, 1, 1)).to_frame()
     values = dict(zip(frame.period, frame.value, strict=True))
     assert values[dt.date(2025, 1, 1)] == 10.0
+    assert max(values) == dt.date(2025, 1, 1)
     assert values.get(dt.date(2025, 1, 2), 0.0) == 0.0
 
 
@@ -601,7 +619,7 @@ def test_default_report_horizon_capacity(grain, span):
                 "span": span,
             }
             with pytest.raises(TypeError):
-                cast(Any, raised.value.context)["span"] = 1
+                cast(dict[str, object], raised.value.context)["span"] = 1
         else:
             default_trend = report.metric("revenue", grain=grain, start=start)
             assert default_trend.end is None
@@ -734,15 +752,8 @@ def test_default_horizons_are_selected_per_metric_and_frozen():
         con.disconnect()
 
 
-def test_omitted_end_executes_bound_horizon_aggregate(report, monkeypatch):
-    executed = []
-    original_execute = report._con.execute
-
-    def record_execute(expression, *args, **kwargs):
-        executed.append(ibis.to_sql(expression))
-        return original_execute(expression, *args, **kwargs)
-
-    monkeypatch.setattr(report._con, "execute", record_execute)
+def test_omitted_end_executes_bound_horizon_aggregate(recorded_report):
+    report, executed = recorded_report
     trend = report.metric("revenue", grain="day", start=dt.date(2026, 1, 5))
     assert trend.end is None
     assert len(executed) == 1
@@ -750,15 +761,8 @@ def test_omitted_end_executes_bound_horizon_aggregate(report, monkeypatch):
     assert "VALUES" not in executed[0].upper()
 
 
-def test_omitted_end_ratio_aggregates_bound_component_relations(report, monkeypatch):
-    executed = []
-    original_execute = report._con.execute
-
-    def record_execute(expression, *args, **kwargs):
-        executed.append(ibis.to_sql(expression))
-        return original_execute(expression, *args, **kwargs)
-
-    monkeypatch.setattr(report._con, "execute", record_execute)
+def test_omitted_end_ratio_aggregates_bound_component_relations(recorded_report):
+    report, executed = recorded_report
     trend = report.metric("rev_per_order", grain="day", start=dt.date(2026, 1, 5))
     assert trend.end is None
     assert len(executed) == 1
@@ -766,15 +770,8 @@ def test_omitted_end_ratio_aggregates_bound_component_relations(report, monkeypa
     assert "VALUES" not in executed[0].upper()
 
 
-def test_omitted_end_population_admission_precedes_data_execution(report, monkeypatch):
-    executions = []
-    original_execute = report._con.execute
-
-    def record_execute(expression, *args, **kwargs):
-        executions.append(expression)
-        return original_execute(expression, *args, **kwargs)
-
-    monkeypatch.setattr(report._con, "execute", record_execute)
+def test_omitted_end_population_admission_precedes_data_execution(recorded_report):
+    report, executions = recorded_report
     for invalid_sql in ("SELEC FROM raw_events", "DELETE FROM raw_events"):
         with pytest.raises(InvalidRequestError):
             report.metric(
@@ -793,6 +790,16 @@ def test_omitted_end_population_admission_precedes_data_execution(report, monkey
             population=ibis.memtable({"not_unit_id": ["u1"]}),
         )
     assert raised.value.code == "query.calendar.population_unit_id"
+    assert executions == []
+
+
+def test_omitted_end_rejects_unknown_grain_before_horizon_execution(recorded_report):
+    report, executions = recorded_report
+
+    with pytest.raises(InvalidRequestError) as raised:
+        report.metric("revenue", grain="fortnight", start=dt.date(2026, 1, 5))
+
+    assert raised.value.code == "query.calendar.period_start_unknown_grain"
     assert executions == []
 
 

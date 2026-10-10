@@ -18,21 +18,22 @@ so a path that silently drops the sensitivity row is still caught by
 dict-key comparison, not lost inside a tuple identity a caller has to know
 to split on.
 
-The compared payload is every public field of the emitted row (its `model_dump()`), so a
-field added to a result model is compared without a harness edit: the interval and its
-`alpha`/`log_mean`/`log_se`, winsorization thresholds, counts and `confidence_set`,
-`n_clusters`, the Fieller and binomial sets, null reasons (`unavailable`,
-`relative_unavailable_reason`, `excluded`), family and policy metadata, and a sequential
-row's own evidence (the whole `sequential_result`: `alpha_ceiling`, `decision_alpha`,
-`point_reason`, the certificate, the bounds and the checkpoint's model, cell, arm states and
-`status`, plus its derived `log_e`). Floats agree within `TOLERANCE` relative with the same
-absolute floor; all other values (including exact rationals) agree exactly. Only what names
-the path rather than the result is dropped (`_PATH_SPECIFIC`): the resolved fact `source`
-(known to warehouse routes only), the three identifiers a sequential checkpoint derives from
-its registration (`registration_id`, `filtration_id`, `prefix_id`; they hash the path's
-observation mapping, see below) and, inside a winsor confidence set's raw pool, `study_id`
-(the source's identity) and `missingness` (a frame names its declared policy, a warehouse its
-inclusion rule); the pool's outcome multisets, quantile, support and inference are compared.
+The compared payload is every public field of the emitted row (its `model_dump()`), except
+ingress-specific identity hashes that are validated against retained scope metadata before
+normalization: `source_snapshot_id` and `family_id`, resolved fact `source`, the three identifiers a sequential
+checkpoint derives from its registration (`registration_id`, `filtration_id`, `prefix_id`; they
+hash the path's observation mapping, see below) and, inside a winsor confidence set's raw pool,
+`study_id` (the source's identity) and `missingness` (a frame names its declared policy, a
+warehouse its inclusion rule); the pool's outcome multisets, quantile, support and inference are
+compared. All other fields compare automatically, including interval and its `alpha`/`log_mean`/
+`log_se`, winsorization thresholds, counts and `confidence_set`, `n_clusters`, Fieller and
+binomial sets, null reasons, family and policy metadata, and a sequential row's own evidence.
+`family_id` is omitted because A0 ruling 12 defines it as a source-snapshot-specific physical
+identity; the retained family scope is compared by its name, procedure and cell membership.
+The runners construct each source against a fixed fixture and read it through each ingress, so
+snapshot identity and warehouse fact-source identity are path-specific.
+Floats agree within `TOLERANCE` relative with the same absolute floor; all other values
+(including exact rationals) agree exactly.
 Failure/refusal codes are covered by strict
 row-SET equality (a per-cell failure that silently drops a row on one path
 but not another IS a row-set mismatch) plus `waived_refusal_codes`'
@@ -94,13 +95,14 @@ from tests.warning_codes import warning_codes
 from .cases import CONSTRUCTORS, Absence, ParityCase, _close_parity_analysis
 from .comparison import nested_close
 
-# Dropped from the compared payload because they name the path, not the result (see the
-# module docstring): the fact `source`, the identifiers a sequential row's checkpoint derives
-# from its registration (`registration_id`, `filtration_id` and `prefix_id` hash the
-# path's observation mapping), and the path labels of a winsor confidence set's raw pool.
+# Dropped from the compared payload only after source identity is checked against the retained
+# scope metadata; the other exclusions name the path rather than the result (see module docstring):
+# the fact `source`, sequential checkpoint registration identifiers, and raw-pool path labels.
 _POOL_LABELS = {"raw": {"study_id": True, "missingness": True}}
 _PATH_SPECIFIC: dict[str, Any] = {
     "source": True,
+    # source_snapshot_id is validated against retained scope before it is treated as path-specific.
+    "source_snapshot_id": True,
     "sequential_result": {
         "checkpoint": {"registration_id": True, "filtration_id": True, "prefix_id": True}
     },
@@ -109,9 +111,8 @@ _PATH_SPECIFIC: dict[str, Any] = {
 
 
 def _row_identity(row: Any) -> tuple:
-    # `BreakoutEstimate` has no `analysis_population`; getattr yields None for
-    # every breakout row, so breakout rows still compare consistently. `ds` and
-    # `ds_basis` name a day-axis row's day; they are None on every other row.
+    # `analysis_population` distinguishes assigned and triggered breakout rows.
+    # `ds` and `ds_basis` name a day-axis row's day; they are None otherwise.
     return (
         row.metric,
         row.group_id,
@@ -125,20 +126,19 @@ def _row_identity(row: Any) -> tuple:
 
 
 def _p_value(row: Any) -> float | None:
-    """The row's presentation p-value where the row defines one (a fixed-horizon relative row
-    without a prior), else ``None``; a path that refuses it disagrees with one that does not."""
+    """The row's presentation sampling p-value where its reference permits one."""
     p_value = getattr(row, "p_value", None)
     if (
         p_value is None
         or row.inference != "fixed"
-        or getattr(row, "prior_shrunk", False)
         or row.null_abs is not None
         or row.lift is None
         and row.reference_kind != "binomial"
     ):
         return None
     try:
-        return float(p_value())
+        value = p_value()
+        return None if value is None else float(value)
     except CodedError:
         return None
 
@@ -147,8 +147,9 @@ def _row_payload(row: Any) -> dict[str, Any]:
     """Every public field of the row, plus the derived values the dump does not carry."""
     payload = row.model_dump(mode="python", exclude=_PATH_SPECIFIC)
     payload["p_value"] = _p_value(row)
-    prior_shrunk = getattr(row, "prior_shrunk", False)
-    payload["posterior_prob_favorable"] = row.prob_favorable() if prior_shrunk else None
+    payload["posterior_prob_favorable"] = (
+        row.prob_favorable() if getattr(row, "posterior_available", None) is True else None
+    )
     # `log_e` is a property of the result, not a dumped field. `sequential_result` is None on
     # a non-sequential row: both sides then compare as None.
     sequential_result = getattr(row, "sequential_result", None)
@@ -156,6 +157,104 @@ def _row_payload(row: Any) -> dict[str, Any]:
         float(sequential_result.log_e) if sequential_result is not None else None
     )
     return payload
+
+
+def _validate_source_snapshot_ids(case_id: str, name: str, results: Any) -> dict[tuple, Any]:
+    """Validate row sources and return their source-qualified family scope."""
+    rows = list(results)
+    if not rows:
+        return {}
+    metadata = getattr(results, "metadata", None)
+    scope = getattr(metadata, "scope", None)
+    by_source = getattr(scope, "by_source", None)
+    if scope is None or not by_source:
+        raise AssertionError(
+            f"{case_id}: {name} emitted rows without retained source-scope metadata"
+        )
+    from increment.estimation.readout_types import CellKey
+
+    family_by_cell = {}
+    for family in scope.families:
+        family_source = by_source.get(family.source_snapshot_id)
+        if family_source is None or not set(family.members) <= set(family_source.cells):
+            raise AssertionError(
+                f"{case_id}: {name} family membership is outside its retained source scope"
+            )
+        for cell in family.members:
+            key = family.source_snapshot_id, cell
+            if key in family_by_cell:
+                raise AssertionError(f"{case_id}: {name} scope assigns a cell to multiple families")
+            family_by_cell[key] = family
+    family_for_row = {}
+    for row in rows:
+        source_id = getattr(row, "source_snapshot_id", None)
+        if source_id is None:
+            raise AssertionError(f"{case_id}: {name} emitted a row without source_snapshot_id")
+        source = by_source.get(source_id)
+        if source is None or source.source_snapshot_id != source_id:
+            raise AssertionError(
+                f"{case_id}: {name} row source_snapshot_id does not match retained scope metadata"
+            )
+        cell = CellKey.from_row(row)
+        family = family_by_cell.get((source_id, cell))
+        row_family_id = getattr(row, "family_id", None)
+        if row_family_id != (None if family is None else family.family_id):
+            raise AssertionError(
+                f"{case_id}: {name} row family_id does not match retained family scope"
+            )
+        if family is not None and family.family is not None:
+            row_procedure = (
+                getattr(row, "family_axes", None),
+                getattr(row, "family_q", None),
+                getattr(row, "family_guarantee", None),
+            )
+            scope_procedure = (
+                family.family.axes,
+                family.family.q,
+                family.family.validity_regime,
+            )
+            if row_procedure != scope_procedure:
+                raise AssertionError(
+                    f"{case_id}: {name} row family procedure {row_procedure!r} "
+                    f"does not match retained scope {scope_procedure!r}"
+                )
+        family_for_row[(source_id, cell)] = family
+    return family_for_row
+
+
+def _validate_unscoped_output(case_id: str, name: str, results: Any, reason: str) -> None:
+    """Require explicitly classified test outputs to remain genuinely unscoped."""
+    if not reason.strip():
+        raise AssertionError(f"{case_id}: {name} unscoped output needs a reason")
+    metadata = getattr(results, "metadata", None)
+    if getattr(metadata, "scope", None) is not None:
+        raise AssertionError(f"{case_id}: {name} was classified unscoped but carries a scope")
+    if any(getattr(row, "source_snapshot_id", None) is not None for row in results):
+        raise AssertionError(f"{case_id}: {name} was classified unscoped but has source identities")
+
+
+def _family_map_for_output(case: ParityCase, name: str, results: Any) -> dict[tuple, Any]:
+    reason = case.unscoped_outputs.get(name)
+    if reason is None:
+        return _validate_source_snapshot_ids(case.id, name, results)
+    _validate_unscoped_output(case.id, name, results, reason)
+    return {}
+
+
+def _family_signature(family: Any) -> dict[str, Any] | None:
+    """Return path-independent family identity, procedure, and member cells."""
+    if family is None:
+        return None
+    return {
+        "name": family.name,
+        "procedure": None if family.family is None else family.family.model_dump(mode="json"),
+        "members": tuple(
+            sorted(
+                (cell.model_dump(mode="json", exclude={"source"}) for cell in family.members),
+                key=lambda value: str(sorted(value.items())),
+            )
+        ),
+    }
 
 
 def _record(
@@ -170,16 +269,18 @@ def _record(
     methods[method] = payload
 
 
-def _normalize(estimates: Any) -> dict[tuple, dict[str, dict[str, Any]]]:
-    """`{identity: {method: payload}}` -- `method` (decision vs. every
-    sensitivity method) nests under identity rather than joining it, so a
-    missing sensitivity row is a missing dict key, caught the same way a
-    missing top-level row is. A repeated identity and method raises."""
+def _normalize(estimates: Any, *, family_for_row: dict[tuple, Any] | None = None):
+    """Normalize path identities while retaining the family contract in each row payload."""
     from increment.breakout.estimates import DailyMetricValue
     from increment.estimation.contrast_results import ContrastResult
+    from increment.estimation.readout_types import CellKey
 
+    family_for_row = {} if family_for_row is None else family_for_row
     out: dict[tuple, dict[str, dict[str, Any]]] = {}
     for row in estimates:
+        source_id = getattr(row, "source_snapshot_id", None)
+        family = family_for_row.get((source_id, CellKey.from_row(row)))
+        family_signature = _family_signature(family)
         if isinstance(row, ContrastResult):
             key = (
                 row.metric,
@@ -191,7 +292,9 @@ def _normalize(estimates: Any) -> dict[tuple, dict[str, dict[str, Any]]]:
                 None,
                 None,
             )
-            _record(out, key, row.method, {"contrast": row.model_dump(mode="json")})
+            payload = row.model_dump(mode="json", exclude={"source_snapshot_id", "family_id"})
+            payload["_family_scope"] = family_signature
+            _record(out, key, row.method, {"contrast": payload})
             continue
         if isinstance(row, DailyMetricValue):
             # A per-day absolute value has no method, estimand or lift; `source`
@@ -206,9 +309,15 @@ def _normalize(estimates: Any) -> dict[tuple, dict[str, dict[str, Any]]]:
                 row.ds,
                 row.ds_basis,
             )
-            _record(out, key, "value", {"daily_value": row.model_dump(exclude={"source"})})
+            payload = row.model_dump(exclude={"source", "source_snapshot_id"})
+            payload["_family_scope"] = family_signature
+            _record(out, key, "value", {"daily_value": payload})
             continue
-        _record(out, _row_identity(row), row.method, _row_payload(row))
+        payload = _row_payload(row)
+        payload.pop("source_snapshot_id", None)
+        payload.pop("family_id", None)
+        payload["_family_scope"] = family_signature
+        _record(out, _row_identity(row), row.method, payload)
     return out
 
 
@@ -270,16 +379,19 @@ def _read(analysis: Any, case: ParityCase) -> Any:
             return analysis.run_breakout(**estimand_kwargs, **prior_kwargs, **metric_kwargs)
         return analysis.run(**estimand_kwargs, **prior_kwargs, **metric_kwargs)
     dimension = {"dimension": case.breakout_dimension} if case.breakout_dimension else {}
+    population = {"population": case.population}
     match case.view:
         case "daily":
-            return analysis.run_daily(**metric_kwargs, **dimension)
+            return analysis.run_daily(**metric_kwargs, **dimension, **population)
         case "daily_lift":
-            return analysis.run_daily_lift(**prior_kwargs, **metric_kwargs, **dimension)
+            return analysis.run_daily_lift(
+                **prior_kwargs, **metric_kwargs, **dimension, **population
+            )
         case "asof":
-            return analysis.run_asof(**metric_kwargs, **dimension)
+            return analysis.run_asof(**metric_kwargs, **dimension, **population)
         case _:
             return analysis.run_asof_lift(
-                **estimand_kwargs, **prior_kwargs, **metric_kwargs, **dimension
+                **estimand_kwargs, **prior_kwargs, **metric_kwargs, **dimension, **population
             )
 
 
@@ -389,7 +501,8 @@ def run_case(case: ParityCase) -> CaseResult:
             if expected_warnings:
                 assert caught is not None
                 assert set(warning_codes(caught)) == set(expected_warnings)
-            rows[name] = _normalize(results)
+            family_for_row = _family_map_for_output(case, name, results)
+            rows[name] = _normalize(results, family_for_row=family_for_row)
         except Exception as exc:
             if not isinstance(exc, CodedError):
                 raise

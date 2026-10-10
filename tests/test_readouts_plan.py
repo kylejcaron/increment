@@ -2,15 +2,10 @@
 alpha splitting, and the secondary family's BH / e-BH / FCR machinery.
 
 Every scenario is deterministic (seeded numpy data) and frame-backed via
-`FrameTotalsSource`, except `test_prior_secondary_outside_family` and
-`test_declared_plan_leaves_an_unnamed_metric_unassigned`: a prior-bound
-plan entry is refused on the frame path (methods=/prior= overrides are
-frame-path-only refusals - see the decision compiler), and an unnamed metric
-defaults to `role="secondary"` there rather than `"unassigned"` - both
-cases are built over `increment.sources.MomentsSource` with an explicit
-`path="warehouse"` instead (`MomentsSource`'s own default is
-`path="frame"`, matching `Analysis.from_moments`'s contract), the only
-path that can express either.
+`FrameTotalsSource`, except tests that need a `MomentsSource` with
+`path="warehouse"` to exercise warehouse-only plan bindings/overrides or
+unnamed-metric role resolution. `MomentsSource` otherwise defaults to the
+frame path, matching `Analysis.from_moments`'s contract.
 """
 
 from __future__ import annotations
@@ -25,6 +20,7 @@ import pyarrow as pa
 import pytest
 
 from increment import Analysis, readouts
+from increment.breakout.estimates import LiftEstimates
 from increment.compatibility import _conservative_ratio
 from increment.decision import ArmHypothesisKey, FixedInference
 from increment.errors import (
@@ -38,6 +34,7 @@ from increment.estimation.armstats import centered_row_from_raw_sums
 from increment.estimation.engine import Method, estimate_lift
 from increment.estimation.family import bh_select, e_bh_select
 from increment.estimation.inference import Normal
+from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential import AlwaysValid
 from increment.frame import FrameTotalsSource, MetricSpec
 from increment.readouts import _passes
@@ -278,7 +275,7 @@ def test_primary_interval_at_split_alpha_two_primaries_two_arms():
         assert r.require_lift().level == pytest.approx(1 - 0.0125)
 
 
-def _guarded_three_arm_source(*, all_degenerate: bool = False):
+def _guarded_three_arm_source(*, all_degenerate: bool = False, secondary: bool = False):
     n = 200
     table = pa.table(
         {
@@ -299,7 +296,9 @@ def _guarded_three_arm_source(*, all_degenerate: bool = False):
         group="variant",
         control="control",
         metrics=[MetricSpec(name="revenue")],
-        plan=AnalysisPlan(primary="revenue"),
+        plan=(
+            AnalysisPlan(secondaries=["revenue"]) if secondary else AnalysisPlan(primary="revenue")
+        ),
     )
 
 
@@ -316,8 +315,39 @@ def test_run_retains_valid_whole_window_cells_after_guard():
     assert any(m.context["group_id"] == "treatment_bad" for m in cell_refused)
 
     assert [(r.metric, r.group_id, r.method) for r in results] == [
-        ("revenue", "treatment_good", "unadjusted")
+        ("revenue", "treatment_bad", "unadjusted"),
+        ("revenue", "treatment_good", "unadjusted"),
     ]
+    failed = next(row for row in results if row.group_id == "treatment_bad")
+    assert failed.lift is None
+    assert failed.failure_code == "estimation.engine.lift_guard"
+    assert failed.failure_context is not None
+    assert failed.failure_context["reason"] == "zero_variance"
+    assert isinstance(results, LiftEstimates)
+    assert results.metadata is not None
+    assert any(record.failure is not None for record in results.metadata.cells)
+
+
+def test_secondary_fcr_pass_keeps_producer_failure_in_scoped_results():
+    src = _guarded_three_arm_source(secondary=True)
+
+    with pytest.warns(IncrementWarning):
+        results = readouts.run(src)
+
+    failed = next(row for row in results if row.group_id == "treatment_bad")
+    surviving = next(row for row in results if row.group_id == "treatment_good")
+    assert failed.failure_code == "estimation.engine.lift_guard"
+    assert failed.failure_context is not None
+    assert failed.failure_context["reason"] == "zero_variance"
+    assert failed.lift is None
+    assert surviving.lift is not None
+    assert isinstance(results, LiftEstimates)
+    assert results.metadata is not None
+    failed_record = next(
+        record for record in results.metadata.cells if record.cell.group_id == "treatment_bad"
+    )
+    assert failed_record.failure is not None
+    assert failed_record.failure.code == "estimation.engine.lift_guard"
 
 
 def test_registered_raw_run_refuses_unproved_sensitivity_method():
@@ -580,7 +610,10 @@ def test_secondary_discovery_matches_hand_bh():
     assert {r.metric for r in secondary} == {"m_a", "m_b", "m_c", "m_d"}
 
     p_values = [r.p_value() for r in secondary]
-    selected_idx, _threshold = bh_select(p_values, plan.q)
+    assert all(p_value is not None for p_value in p_values)
+    selected_idx, _threshold = bh_select(
+        [p_value for p_value in p_values if p_value is not None], plan.q
+    )
     selected_set = set(selected_idx)
     assert [r.discovery for r in secondary] == [i in selected_set for i in range(len(secondary))]
     assert selected_set == {i for i, r in enumerate(secondary) if r.metric == "m_a"}
@@ -653,7 +686,10 @@ def test_secondary_discovery_tracks_selection_with_one_sided_fcr_interval():
     # discovery matches BH on the rows' own (one-sided) p_values -- m_a
     # is the sole discovery.
     p_values = [r.p_value() for r in secondary]
-    selected_idx, _threshold = bh_select(p_values, plan.q)
+    assert all(p_value is not None for p_value in p_values)
+    selected_idx, _threshold = bh_select(
+        [p_value for p_value in p_values if p_value is not None], plan.q
+    )
     selected_set = set(selected_idx)
     assert [r.discovery for r in secondary] == [i in selected_set for i in range(len(secondary))]
     assert selected_set == {i for i, r in enumerate(secondary) if r.metric == "m_a"}
@@ -677,7 +713,11 @@ def test_secondary_discovery_tracks_selection_with_one_sided_fcr_interval():
         plan=AnalysisPlan(alternative="two-sided"),
     )
     two_sided = [r for r in readouts.run(two_sided_src) if r.role == "secondary"]
-    two_sided_selected, _ = bh_select([r.p_value() for r in two_sided], plan.q)
+    two_sided_p_values = [r.p_value() for r in two_sided]
+    assert all(p_value is not None for p_value in two_sided_p_values)
+    two_sided_selected, _ = bh_select(
+        [p_value for p_value in two_sided_p_values if p_value is not None], plan.q
+    )
     m_a_index = next(i for i, r in enumerate(two_sided) if r.metric == "m_a")
     assert m_a_index not in two_sided_selected
 
@@ -723,7 +763,9 @@ def test_secondary_discovery_can_disagree_with_stat_sig_when_nominal_cap_binds()
     results = readouts.run(src)
     (row,) = [r for r in results if r.role == "secondary"]
 
-    assert row.p_value() < plan.q  # clears BH's own (generous) selection bar
+    p_value = row.p_value()
+    assert p_value is not None
+    assert p_value < plan.q  # clears BH's own (generous) selection bar
     assert row.discovery is True
     assert row.family_threshold == pytest.approx(plan.q)  # realized R*q/m, uncapped
     lift = row.require_lift()
@@ -927,8 +969,8 @@ def _moments_with_plan(
     return [{**row, "decision_plan": wire} for row in rows]
 
 
-def test_prior_secondary_outside_family():
-    """Effective priors stay outside the family until explicitly cleared."""
+def test_prior_bound_secondary_remains_in_sampling_family():
+    """An effective prior changes posterior state, not declared family membership."""
     n = 2000
     rows = [
         _moments_row("family_metric_1", "control", n, 10.0, 4.0),
@@ -936,7 +978,9 @@ def test_prior_secondary_outside_family():
         _moments_row("family_metric_2", "control", n, 10.0, 4.0),
         _moments_row("family_metric_2", "treatment", n, 10.02, 4.0),  # null -- not selected
         _moments_row("prior_bound_metric", "control", n, 10.0, 4.0),
-        _moments_row("prior_bound_metric", "treatment", n, 12.0, 4.0),  # extreme, but out of family
+        _moments_row(
+            "prior_bound_metric", "treatment", n, 12.0, 4.0
+        ),  # large sampling-family member
     ]
     metrics = [
         MeanMetric(name=name, entity="user_id", fact=name, aggregation="avg_event")
@@ -965,19 +1009,21 @@ def test_prior_secondary_outside_family():
 
     results = readouts.run(src)
     by_metric = {r.metric: r for r in results}
-    assert by_metric["prior_bound_metric"].role == "secondary"
-    assert by_metric["prior_bound_metric"].discovery is None
-    assert by_metric["prior_bound_metric"].require_lift().level == pytest.approx(1.0 - plan.alpha)
+    assert by_metric["prior_bound_metric"].discovery is True
+    assert by_metric["prior_bound_metric"].family_size == 3
+    assert by_metric["prior_bound_metric"].family_axes == ("metric", "arm")
+    assert by_metric["prior_bound_metric"].family_q == pytest.approx(plan.q)
+    assert (
+        by_metric["prior_bound_metric"].family_threshold
+        == by_metric["family_metric_1"].family_threshold
+    )
 
     assert by_metric["family_metric_1"].discovery is True
     assert by_metric["family_metric_2"].discovery is False
-    # m=2 (prior_bound_metric excluded), R=1 and q=0.5 give BH cutoff R*q/m = 0.25,
-    # five times nominal 0.05. Uncapped, the selected interval would use level
-    # 0.75, narrower than an uncorrected 0.95; the cap holds the nominal level.
+    # All three declared secondaries enter the family; sampling family metadata is
+    # identical to a prior-free replay, while the posterior remains separate.
     assert by_metric["family_metric_1"].require_lift().level == pytest.approx(1.0 - plan.alpha)
     assert by_metric["family_metric_2"].require_lift().level == pytest.approx(1.0 - plan.alpha)
-    # The uncapped cutoff is still recorded, so the disclosure survives.
-    assert by_metric["family_metric_1"].family_threshold == pytest.approx(0.25)
     assert by_metric["family_metric_1"].family_axes == ("metric", "arm")
     assert by_metric["family_metric_1"].family_q == pytest.approx(plan.q)
 
@@ -993,6 +1039,9 @@ def test_prior_secondary_outside_family():
     expected = {row.metric: row for row in readouts.run(prior_free_source)}
     assert expected["prior_bound_metric"].discovery is True
     assert expected["prior_bound_metric"].require_lift().value == pytest.approx(0.2)
+    assert by_metric["family_metric_1"].family_threshold == pytest.approx(
+        expected["family_metric_1"].family_threshold
+    )
     for _ in range(2):
         cleared = {row.metric: row for row in readouts.run(src, prior=None)}
         assert cleared.keys() == expected.keys()
@@ -1005,13 +1054,51 @@ def test_prior_secondary_outside_family():
                 (expected_interval.value, expected_interval.lb, expected_interval.ub)
             )
     inherited = {row.metric: row for row in readouts.run(src)}
-    assert inherited["prior_bound_metric"].discovery is None
-    assert inherited["prior_bound_metric"].family_axes is None
-    assert inherited["family_metric_1"].family_threshold == pytest.approx(0.25)
+    for name, row in inherited.items():
+        oracle = expected[name]
+        assert row.discovery == oracle.discovery
+        assert row.family_size == oracle.family_size
+        assert row.family_threshold == oracle.family_threshold
+        assert (
+            row.require_lift().value,
+            row.require_lift().lb,
+            row.require_lift().ub,
+        ) == pytest.approx(
+            (oracle.require_lift().value, oracle.require_lift().lb, oracle.require_lift().ub)
+        )
+    assert inherited["prior_bound_metric"].posterior_estimate != pytest.approx(
+        inherited["prior_bound_metric"].require_lift().value
+    )
+
+    from increment.estimation.priors import MixturePrior
+
+    directional_plan = AnalysisPlan(
+        q=0.5, alternative="greater", secondaries=["prior_bound_metric"]
+    )
+    directional_src = MomentsSource(
+        _moments_with_plan(rows, metrics, directional_plan),
+        metrics=metrics,
+        study_id="e",
+        design=Randomized(control_group="control"),
+        plan=directional_plan,
+        path="warehouse",
+    )
+    directional_rows = readouts.run(
+        directional_src,
+        prior=MixturePrior(weights=(0.4, 0.6), means=(0.0, 0.1), sigmas=(0.02, 0.15)),
+    )
+    directional_row = next(row for row in directional_rows if row.metric == "prior_bound_metric")
+    assert directional_row.discovery is True
+    assert directional_row.posterior_available is True
+    assert directional_row.posterior_components is not None
+    directional_interval = directional_row.require_lift()
+    assert directional_interval.open_side == "upper"
+    assert directional_interval.ub is None
+    assert directional_row.p_value() is not None
 
 
-def test_callwide_prior_is_outside_secondary_family():
-    """A call-wide prior overlay excludes every secondary from BH."""
+def test_callwide_prior_preserves_secondary_sampling_family():
+    """A call-wide prior does not remove declared secondary sampling evidence."""
     n = 2000
     rows = [
         _moments_row("family_metric", "control", n, 10.0, 4.0),
@@ -1035,13 +1122,18 @@ def test_callwide_prior_is_outside_secondary_family():
 
     results = readouts.run(src, prior=Normal(mu=0.0, sigma=0.1))
 
+    baseline = {r.metric: r for r in readouts.run(src, prior=None)}
     assert results
     assert all(r.role == "secondary" for r in results)
-    assert all(r.discovery is None for r in results)
-    assert all(r.family_axes is None for r in results)
+    assert all(r.discovery is not None for r in results)
+    assert all(r.family_axes == ("metric", "arm") for r in results)
+    assert all(r.family_q == pytest.approx(plan.q) for r in results)
+    assert all(r.family_threshold == baseline[r.metric].family_threshold for r in results)
     assert all(
-        r.require_lift().level == pytest.approx(1.0 - src.context.plan.alpha) for r in results
+        r.require_lift().value == pytest.approx(baseline[r.metric].require_lift().value)
+        for r in results
     )
+    assert all(r.posterior_estimate != pytest.approx(r.require_lift().value) for r in results)
 
 
 def test_no_plan_matches_legacy_run():
@@ -1187,8 +1279,12 @@ def test_secondary_family_dedups_by_method_not_by_method_x_arm():
         assert decision.discovery is not None
         assert sensitivity.discovery is None
 
-    assert by_metric["m_a"][0].discovery is True
-    assert by_metric["m_b"][0].discovery is False
+    decision_by_metric = {
+        metric: next(row for row in rows if row.method == "unadjusted")
+        for metric, rows in by_metric.items()
+    }
+    assert decision_by_metric["m_a"].discovery is True
+    assert decision_by_metric["m_b"].discovery is False
 
     # m=2 (metric x arm), not 4 (metric x method x arm): the selected rows'
     # alpha must be q*1/2, not q*1/4.
@@ -1299,6 +1395,71 @@ def test_always_valid_margin_bearing_secondary_discovery_matches_stat_sig():
         assert replay.require_sequential_result() == row.require_sequential_result()
         assert replay.discovery == row.discovery
         assert replay.stat_sig() == row.stat_sig()
+
+
+def test_welch_mean_posterior_favorable_uses_declared_null():
+    n = 80
+    table = pd.DataFrame(
+        [
+            {"unit": f"{group}-{i}", "arm": group, "revenue": base + i % 5}
+            for group, base in (("control", 10.0), ("treatment", 11.0))
+            for i in range(n)
+        ]
+    )
+    analysis = Analysis.from_unit_summary(
+        table,
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                prior=Normal(mu=0.0, sigma=0.1),
+                preferred_direction="increase",
+            )
+        ],
+        plan=AnalysisPlan(secondaries=[ExperimentMetric(metric="revenue", margin=0.02)]),
+    )
+
+    (row,) = analysis.run()
+    assert isinstance(row, LiftEstimate)
+    assert row.reference_kind == "t"
+    assert row.null_lift == pytest.approx(-0.02)
+    assert row.posterior_prob_favorable == pytest.approx(row.prob_favorable())
+    assert row.posterior_prob_favorable != pytest.approx(row.chance_to_beat())
+
+
+def test_dense_conversion_posterior_favorable_uses_declared_null():
+    n = 6000
+    table = pd.DataFrame(
+        [
+            {"unit": f"{group}-{i}", "arm": group, "converted": int(i < successes)}
+            for group, successes in (("control", n // 2), ("treatment", n // 2 + n // 60))
+            for i in range(n)
+        ]
+    )
+    analysis = Analysis.from_unit_summary(
+        table,
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[
+            MetricSpec(
+                name="converted",
+                type="conversion",
+                prior=Normal(mu=0.0, sigma=0.1),
+                preferred_direction="increase",
+            )
+        ],
+        plan=AnalysisPlan(secondaries=[ExperimentMetric(metric="converted", margin=0.02)]),
+    )
+
+    (row,) = analysis.run()
+    assert isinstance(row, LiftEstimate)
+    assert row.binomial_set is None
+    assert row.null_lift == pytest.approx(-0.02)
+    assert row.posterior_prob_favorable == pytest.approx(row.prob_favorable())
+    assert row.posterior_prob_favorable != pytest.approx(row.chance_to_beat())
 
 
 @pytest.mark.parametrize("q", [0.01, 0.50], ids=["uncapped", "capped"])
@@ -2420,8 +2581,14 @@ def test_explicit_none_prior_matches_prior_free_analysis_family_decision():
                 assert wanted is not None
                 assert getattr(actual.require_lift(), field) == pytest.approx(wanted)
         for actual in (inherited_before, inherited_after):
-            assert actual.discovery is None
-            assert actual.family_axes is None
+            assert actual.discovery is True
+            assert actual.family_axes == ("metric", "arm")
+            assert actual.sampling_available is True
+            assert actual.posterior_available is True
+            for field in ("value", "lb", "ub"):
+                wanted = getattr(expected.require_lift(), field)
+                assert wanted is not None
+                assert getattr(actual.require_lift(), field) == pytest.approx(wanted)
         for field in ("value", "lb", "ub"):
             assert getattr(inherited_after.require_lift(), field) == pytest.approx(
                 getattr(inherited_before.require_lift(), field)

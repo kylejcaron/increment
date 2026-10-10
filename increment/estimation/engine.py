@@ -16,7 +16,7 @@ from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from numbers import Integral
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
 
 import narwhals as nw
 from narwhals.typing import IntoDataFrame
@@ -59,7 +59,13 @@ from increment.estimation.conversion_route import (
     route_for_counts,
 )
 from increment.estimation.cuped import AdjustedRatioMoments, fit_cuped, fit_ratio_cuped
-from increment.estimation.inference import LiftGuardError, Prior, infer_lift
+from increment.estimation.inference import (
+    LiftGuardError,
+    PosteriorFields,
+    Prior,
+    infer_lift,
+    posterior_fields,
+)
 from increment.estimation.results import (
     BINOMIAL_METHOD,
     BINOMIAL_NUMERICAL_QUALIFICATION,
@@ -249,18 +255,18 @@ class Method(CodedModel, BaseModel):
     valid here - ``estimate_ate`` dispatches on them - but refused per-call
     by ``_validate_methods`` on the randomized path.
 
-    ``conversion_inference`` chooses the route for an unadjusted, unit-grain,
-    fixed-horizon conversion or retention contrast with no informative prior
-    (it has no effect on any other contrast):
+    ``conversion_inference`` chooses the sampling route for eligible
+    unadjusted, unit-grain, fixed-horizon conversion or retention contrasts
+    (it has no effect on other contrasts):
 
     * ``"auto"`` (the default): rows whose four per-arm success and failure
-      counts are all dense for the requested tail take the approximate
-      delta-method route every unadjusted mean uses (``reference_kind="t"``,
-      ``scale="log"``, no ``binomial_set``), on arm moments formed from those
-      counts; every other row takes the finite-sample route. The route is fixed
-      from those counts before any interval is computed and is labelled on each
-      row, and only rows with ``reference_kind="binomial"`` carry the
-      finite-sample guarantee.
+      counts are all dense for the requested tail take the delta-method
+      route (``reference_kind="t"``, ``scale="log"``); every other row
+      takes the finite-sample route. The prior-free route is selected from
+      counts before any interval is computed, whether or not a prior was
+      declared. A supported posterior is stored separately; a posterior
+      working-likelihood guard does not discard valid exact sampling
+      inference.
     * ``"finite_sample"``: every row takes the finite-sample independent-
       binomial route (``reference_kind="binomial"``), valid at any count and
       validated to ``binomial_rr.FINITE_SAMPLE_MAX_ARM_SIZE`` units per arm.
@@ -546,9 +552,20 @@ def _validate_mixed_winsor_identity(
     return rows
 
 
-def _winsorization_result_fields(
-    control: ArmStats, treatment: ArmStats
-) -> dict[str, int | float | None]:
+class _WinsorizationFields(TypedDict):
+    winsor_lower_percentile: float | None
+    winsor_upper_percentile: float | None
+    winsor_lower_bound: float | None
+    winsor_upper_bound: float | None
+    winsor_control_n: int | None
+    winsor_control_n_lower: int | None
+    winsor_control_n_upper: int | None
+    winsor_treatment_n: int | None
+    winsor_treatment_n_lower: int | None
+    winsor_treatment_n_upper: int | None
+
+
+def _winsorization_result_fields(control: ArmStats, treatment: ArmStats) -> _WinsorizationFields:
     """Map one arm pair's winsorization metadata onto a result row."""
     arm_fields = (
         "winsor_lower_percentile",
@@ -558,21 +575,18 @@ def _winsorization_result_fields(
     )
     configured = control.winsor_n is not None or treatment.winsor_n is not None
     if not configured:
-        return dict.fromkeys(
-            (
-                "winsor_lower_percentile",
-                "winsor_upper_percentile",
-                "winsor_lower_bound",
-                "winsor_upper_bound",
-                "winsor_control_n",
-                "winsor_control_n_lower",
-                "winsor_control_n_upper",
-                "winsor_treatment_n",
-                "winsor_treatment_n_lower",
-                "winsor_treatment_n_upper",
-            ),
-            None,
-        )
+        return {
+            "winsor_lower_percentile": None,
+            "winsor_upper_percentile": None,
+            "winsor_lower_bound": None,
+            "winsor_upper_bound": None,
+            "winsor_control_n": None,
+            "winsor_control_n_lower": None,
+            "winsor_control_n_upper": None,
+            "winsor_treatment_n": None,
+            "winsor_treatment_n_lower": None,
+            "winsor_treatment_n_upper": None,
+        }
     if control.winsor_n is None or treatment.winsor_n is None:
         _refuse("estimation.engine.winsorization_metadata_present")
     for field in arm_fields:
@@ -1134,12 +1148,6 @@ def ratio_pair_cov(
     )
 
 
-def _prior_shrunk_excluded(result: LiftEstimate, *, allow_linear: bool) -> bool:
-    """Whether a prior-shrunk row's log-scale posterior is not recomputable
-    from its raw stats and so must be excluded from typed evidence."""
-    return result.prior_shrunk and result.prior_spec is None and not allow_linear
-
-
 def _raw_stats_evidence(
     result: LiftEstimate, hypothesis: Any
 ) -> tuple[PValueEvidence | None, DecisionFailure | None]:
@@ -1159,6 +1167,16 @@ def _raw_stats_evidence(
                     "metric": result.metric,
                     "group_id": result.group_id,
                     "reason": result.relative_unavailable_reason or str(exc),
+                },
+            )
+        if p_value is None:
+            return None, DecisionFailure(
+                hypothesis,
+                "evidence.p_value.unavailable",
+                {
+                    "metric": result.metric,
+                    "group_id": result.group_id,
+                    "reason": "missing_sampling_statistic",
                 },
             )
         return PValueEvidence(hypothesis, result.method, p_value, "relative_confidence_set"), None
@@ -1236,7 +1254,6 @@ def _lift_decision_bundle(  # noqa: PLR0915
     results: Sequence[LiftEstimate],
     *,
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
-    allow_linear: bool = False,
     sequential_snapshot=None,
 ) -> DecisionComputation[LiftEstimate]:
     """Attach one typed decision value to every decision presentation row."""
@@ -1252,7 +1269,7 @@ def _lift_decision_bundle(  # noqa: PLR0915
     failures: dict[Any, DecisionFailure] = {}
     seen: set[Any] = set()
     output_results = list(results)
-    for idx, result in enumerate(output_results):
+    for result in output_results:
         if result.method_role != "decision":
             continue
         hypothesis = ArmHypothesisKey(result.metric, result.group_id, result.estimand)
@@ -1284,21 +1301,12 @@ def _lift_decision_bundle(  # noqa: PLR0915
                 hypothesis, result.method, result.p_value(), result.confidence_set.method
             )
             continue
-        if _prior_shrunk_excluded(result, allow_linear=allow_linear):
-            # The posterior row stays in `results`; only typed decision
-            # evidence is withheld (its raw-stat p-value is not the posterior's).
-            marker = (
-                "prior_shrunk: decision evidence withheld (Normal prior; "
-                "raw-stat p-value not the posterior's)"
-            )
-            result = result.model_copy(
-                update={"note": marker + (f" | {result.note}" if result.note else "")}
-            )
-            output_results[idx] = result
-            continue
         if result.quantile_p_value is not None:
             evidence[hypothesis] = PValueEvidence(
-                hypothesis, result.method, result.p_value(), "quantile_inversion"
+                hypothesis,
+                result.method,
+                result.quantile_p_value,
+                "quantile_inversion",
             )
             continue
         if result.inference in ("always_valid", "asymptotic_mean"):
@@ -1385,9 +1393,21 @@ def _lift_decision_bundle(  # noqa: PLR0915
         if result.reference_kind == "binomial":
             bset = result.binomial_set
             assert bset is not None, "validated: reference_kind='binomial' rows carry a set"
-            evidence[hypothesis] = PValueEvidence(
-                hypothesis, result.method, result.p_value(), bset.method
-            )
+            p_value = result.p_value()
+            if p_value is None:
+                failures[hypothesis] = DecisionFailure(
+                    hypothesis,
+                    "evidence.p_value.unavailable",
+                    {
+                        "metric": result.metric,
+                        "group_id": result.group_id,
+                        "reason": "missing_sampling_statistic",
+                    },
+                )
+            else:
+                evidence[hypothesis] = PValueEvidence(
+                    hypothesis, result.method, p_value, bset.method
+                )
             continue
         evidence_row, failure_row = _raw_stats_evidence(result, hypothesis)
         if failure_row is not None:
@@ -1468,6 +1488,7 @@ def _infer_clustered_lift_result(
         null_lift=null_lift,
         null_abs=null_abs,
         preferred_direction=preferred_direction,
+        sampling_available=True,
         lift=displayed,
         scale="linear",
         relative_confidence_set=confidence_set,
@@ -1490,13 +1511,8 @@ def _infer_clustered_lift_result(
 def _welch_arm_ns(
     contrast: tuple[ArmStats, ArmStats], strategy: _LiftVarianceStrategy, prior: Prior | None
 ) -> tuple[int, int] | None:
-    """Arm sizes selecting the Welch-Satterthwaite reference, or ``None``.
-
-    A variance model estimated from the arms supports a Welch t reference.
-    An informative prior has its own conjugate reference and refuses a
-    Welch one, so the t reference applies only to the unpriored path.
-    """
-    if prior is not None or not getattr(strategy.variance_model, "supports_welch_reference", False):
+    """Arm sizes selecting the prior-free Welch-Satterthwaite sampling reference."""
+    if not getattr(strategy.variance_model, "supports_welch_reference", False):
         return None
     treatment, control = contrast
     return treatment.n, control.n
@@ -1562,7 +1578,7 @@ def _infer_lift_result(
             log_rr=log_rr,
             se_t=se_t,
             se_c=se_c,
-            prior=prior,
+            prior=None if prior is not None and arm_ns is not None else prior,
             alpha=alpha,
             alternative=alternative,
             inference_spec=inference,
@@ -1584,6 +1600,20 @@ def _infer_lift_result(
             n_clusters=strategy.n_clusters,
             arm_ns=arm_ns,
         )
+        if prior is not None and arm_ns is not None:
+            result = result.model_copy(
+                update=posterior_fields(
+                    log_rr,
+                    math.hypot(se_t, se_c),
+                    prior,
+                    alpha=alpha,
+                    alternative=alternative,
+                    scale="log",
+                    preferred_direction=preferred_direction,
+                    null_lift=null_lift,
+                    null_abs=null_abs,
+                )
+            )
     except LiftGuardError as exc:
         result = None
         guard_reason = exc.reason
@@ -2118,6 +2148,7 @@ def _infer_binomial_lift_result(
         alternative=alternative,
         null_lift=null_lift,
         preferred_direction=preferred_direction,
+        sampling_available=True,
         lift=lift_estimate,
         scale="linear",
         abs_diff=abs_diff,
@@ -2262,6 +2293,82 @@ def _compute_lift_arm_moments(
     return log_rr, se_t, se_c, abs_t, abs_se_t, abs_c, abs_se_c
 
 
+class _PosteriorGuardFields(TypedDict):
+    posterior_available: Literal[False]
+    posterior_reason_code: str
+    posterior_reason_context: dict[str, Any]
+
+
+def _posterior_fields_for_contrast(
+    contrast: tuple[ArmStats, ArmStats],
+    method_strategy: _LiftMethodStrategy,
+    strategy: _LiftVarianceStrategy,
+    prior: Prior | None,
+    *,
+    alpha: float,
+    alternative: str,
+    preferred_direction: PreferredDirection | None,
+    null_lift: float,
+    null_abs: float | None,
+) -> PosteriorFields | _PosteriorGuardFields:
+    """Return a supported posterior, or its existing working-likelihood guard."""
+    if prior is None:
+        return PosteriorFields()
+    treatment, control = contrast
+    try:
+        log_rr, se_t, se_c, *_ = _compute_lift_arm_moments(
+            treatment, control, method_strategy, strategy
+        )
+        infer_lift(
+            metric=treatment.metric,
+            group_id=treatment.group_id,
+            method=method_strategy.method.name,
+            log_rr=log_rr,
+            se_t=se_t,
+            se_c=se_c,
+            alpha=alpha,
+            alternative=alternative,
+            method_role="decision",
+        )
+        return posterior_fields(
+            log_rr,
+            math.hypot(se_t, se_c),
+            prior,
+            alpha=alpha,
+            alternative=alternative,
+            scale="log",
+            preferred_direction=preferred_direction,
+            null_lift=null_lift,
+            null_abs=null_abs,
+        )
+    except LiftGuardError as exc:
+        return _PosteriorGuardFields(
+            posterior_available=False,
+            posterior_reason_code="estimation.engine.lift_guard",
+            posterior_reason_context={
+                "metric": treatment.metric,
+                "group_id": treatment.group_id,
+                "method": method_strategy.method.name,
+                "reason": exc.reason,
+                "display": str(exc),
+            },
+        )
+    except InvalidRequestError as exc:
+        if exc.code != "estimation.armstats.arm_stats.least_compute_metric":
+            raise
+        return _PosteriorGuardFields(
+            posterior_available=False,
+            posterior_reason_code=exc.code,
+            posterior_reason_context={
+                "metric": treatment.metric,
+                "group_id": treatment.group_id,
+                "method": method_strategy.method.name,
+                "reason": exc.code,
+                "display": str(exc),
+            },
+        )
+
+
 def _nonpositive_mean_additive_row(
     contrast: tuple[ArmStats, ArmStats],
     method: Method,
@@ -2308,6 +2415,7 @@ def _nonpositive_mean_additive_row(
         null_lift=null_lift,
         null_abs=null_abs,
         preferred_direction=preferred_direction,
+        sampling_available=True,
         lift=None,
         scale="linear",
         relative_confidence_set=None,
@@ -2633,20 +2741,16 @@ def _lift_for_method(  # noqa: PLR0913
 ) -> tuple[LiftEstimate | None, DecisionFailure | None]:
     """One (contrast, method) row.
 
-    An unadjusted, unclustered, fixed-horizon conversion or retention contrast with no
-    informative prior chooses its route from its four reconstructed counts and the tail
-    allocation alone (``conversion_route.route_for_counts``): the finite-sample
-    independent-binomial inversion, or the delta-method contrast every unadjusted mean
-    takes, here on arms formed from those counts (`_contrast_of_counts`). Every other contrast
-    takes the delta-method contrast on its stored moments, and an explicit
-    ``finite_sample`` request on one is refused rather than served by it.
+    Auto conversion routing is selected from the counts independently of
+    the prior. The prior can add a separately guarded posterior, but cannot
+    replace the prior-free sampling construction.
     """
     treatment, control = contrast
     method = method_strategy.method
     eligible = (
         _binomial_eligible(metric_type, cluster, method_strategy, treatment, control)
         and inference is None
-        and prior is None
+        and (prior is None or method.conversion_inference == "auto")
     )
     if not eligible:
         if method.conversion_inference == "finite_sample":
@@ -2676,7 +2780,7 @@ def _lift_for_method(  # noqa: PLR0913
         )
     valid_alternative, alpha_eff = _validate_binomial_request(
         treatment,
-        prior=prior,
+        prior=None if method.conversion_inference == "auto" else prior,
         alpha=alpha,
         alternative=alternative,
         inference=inference,
@@ -2697,7 +2801,7 @@ def _lift_for_method(  # noqa: PLR0913
         *counts, tail_alpha=route_level / 2.0, mode=method.conversion_inference
     )
     if route == "finite_sample":
-        return _infer_binomial_lift_result(
+        result, failure = _infer_binomial_lift_result(
             contrast,
             counts,
             method,
@@ -2708,6 +2812,22 @@ def _lift_for_method(  # noqa: PLR0913
             null_abs,
             preferred_direction,
         )
+        if result is not None and prior is not None:
+            posterior_contrast = _contrast_of_counts(treatment, control, counts)
+            result = result.model_copy(
+                update=_posterior_fields_for_contrast(
+                    posterior_contrast,
+                    method_strategy,
+                    strategy,
+                    prior,
+                    alpha=alpha,
+                    alternative=valid_alternative,
+                    preferred_direction=preferred_direction,
+                    null_lift=null_lift,
+                    null_abs=null_abs,
+                )
+            )
+        return result, failure
     return _asymptotic_lift_outcome(
         _contrast_of_counts(treatment, control, counts),
         method_strategy,
@@ -2764,17 +2884,18 @@ def estimate_lift(  # noqa: PLR0913
     statistic and the threshold. The note is advisory: the interval is
     reported unchanged.
 
-    An unadjusted, unclustered, fixed-horizon conversion or retention row with no
-    prior takes the route ``Method.conversion_inference`` selects. Under
-    ``"auto"`` the four per-arm success and failure counts and the tail
-    allocation alone decide it (``conversion_route.route_for_counts``): dense
-    counts take the delta-method contrast every unadjusted mean takes
-    (``reference_kind="t"``, ``scale="log"``), and any other counts the
-    finite-sample independent-binomial inversion (``reference_kind="binomial"``).
-    The row's ``reference_kind`` labels which; only the ``"binomial"`` rows
-    carry the finite-sample guarantee. A delta-method row of such a contrast is a function of
-    the four counts alone: the arms' moments are formed from the counts, not read as the
-    producer stored them, so the same counts give the same interval through every ingress.
+    An unadjusted, unclustered, fixed-horizon conversion or retention row
+    takes the route ``Method.conversion_inference`` selects whether or not
+    a prior is declared. Under ``"auto"`` the four per-arm success and
+    failure counts and the tail allocation alone decide it
+    (``conversion_route.route_for_counts``): dense counts take the same
+    delta-method contrast and Welch sampling reference as unadjusted means;
+    other counts take the finite-sample independent-binomial inversion.
+    Only the ``"binomial"`` rows carry the finite-sample guarantee. A
+    delta-method row is a function of the four counts alone: the arms'
+    moments are formed from the counts, not read as stored, so the same
+    counts give the same sampling interval through every ingress. A prior
+    adds a separate posterior where its working likelihood is supported.
 
     ``control_group`` is required - the engine never guesses by sort
     order. ``prior``/``alpha``/``alternative``/``null_lift``/``null_abs``/

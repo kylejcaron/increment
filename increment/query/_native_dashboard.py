@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from fractions import Fraction
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import ibis
 import ibis.expr.types as ir
@@ -181,6 +181,8 @@ def _observed_dashboard_group(
     metric: Metric,
     record: Mapping[str, Any],
     window: tuple[int | None, int | None],
+    *,
+    population: Literal["assigned", "triggered"] = "assigned",
 ) -> DashboardGroupData:
     """Decode one bounded warehouse aggregate into observed group evidence."""
     eligible = int(record["n"] or 0)
@@ -242,4 +244,5 @@ def _observed_dashboard_group(
         source_kind="pinned_warehouse",
         prefix_id=None,
         unavailable=unavailable,
+        analysis_population=population,
     )

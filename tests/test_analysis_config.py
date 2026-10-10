@@ -239,7 +239,14 @@ def test_resolve_configs_explicit_empty_methods_emit_no_estimation_rows(design):
     validate_request(request)
     assert (
         _run_prepared(
-            source, metrics, configs, prior=UNSET, by=(), estimands=None, value_scale=None
+            source,
+            metrics,
+            configs,
+            prior=UNSET,
+            by=(),
+            estimands=None,
+            value_scale=None,
+            population="assigned",
         )
         == []
     )
@@ -269,7 +276,14 @@ def test_lift_option_resolution_preserves_the_observational_decision():
         alpha=0.05,
     )
     (actual,) = _run_prepared(
-        source, metrics, options.configs, prior=UNSET, by=(), estimands=None, value_scale=None
+        source,
+        metrics,
+        options.configs,
+        prior=UNSET,
+        by=(),
+        estimands=None,
+        value_scale=None,
+        population="assigned",
     )
     (expected,) = readouts.run(source)
     assert (actual.method, actual.method_role) == ("iptw", "decision")
@@ -468,8 +482,16 @@ def test_prior_overrides_inherit_clear_replace_without_mutating_declaration():
     inherited = interval(declared.run())
     cleared = interval(declared.run(prior=None))
     replaced = interval(declared.run(prior=replacement))
-    assert inherited == pytest.approx(interval(unshrunk.run(prior=declared_prior)))
-    assert cleared == pytest.approx(interval(unshrunk.run()))
-    assert replaced == pytest.approx(interval(unshrunk.run(prior=replacement)))
-    assert abs(replaced[0]) < abs(inherited[0]) < abs(cleared[0])
+    assert inherited == pytest.approx(cleared)
+    assert inherited == pytest.approx(interval(unshrunk.run()))
+    assert replaced == pytest.approx(inherited)
+    [inherited_row] = lift_rows(declared.run())
+    [replaced_row] = lift_rows(declared.run(prior=replacement))
+    assert inherited_row.posterior_available
+    assert replaced_row.posterior_available
+    assert inherited_row.posterior_estimate != pytest.approx(inherited_row.require_lift().value)
+    assert replaced_row.posterior_estimate != pytest.approx(replaced_row.require_lift().value)
+    [cleared_row] = lift_rows(declared.run(prior=None))
+    assert not cleared_row.posterior_available
+    assert cleared_row.posterior_estimate is None
     assert interval(declared.run()) == pytest.approx(inherited)

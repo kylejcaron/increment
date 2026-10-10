@@ -47,6 +47,7 @@ from increment.query.calendar import (
     rolling_active_values,
     rolling_total_values,
     total_period_values,
+    validate_period_grain,
     validate_report_population,
 )
 
@@ -427,6 +428,7 @@ class Report:
 
         m = self._defs.metric(name)
         assert m is not None  # _validate ran
+        grain = validate_period_grain(grain)
         by = list(by or [])
         z = two_sided_critical_value(norm.isf, alpha, what="report metric confidence interval")
         # Admit and validate the caller population before any data query.

@@ -26,7 +26,9 @@ def test_component_arithmetic_and_portable_welch_reference():
     assert row.n_clusters is None and row.dof is None
     assert row.independent_mean_reference == ref
     assert LiftEstimate.model_validate_json(row.model_dump_json()) == row
-    assert row.p_value() < 1
+    p_value = row.p_value()
+    assert p_value is not None
+    assert p_value < 1
 
 
 def test_single_normal_mean_and_directional_identity():

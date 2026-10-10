@@ -566,6 +566,7 @@ class TestNonInferiority:
             procedure=procedure, n_per_arm=n_res.n_per_arm, relative_lift=0.0, baseline=b, design=d
         )
         assert p_res.power == pytest.approx(d.power, abs=0.01)
+        assert p_res.numerical_qualification == "sequential_crossing_quadrature_v1"
 
     def test_sequential_mde_accepts_shifted_null_and_evaluates_its_own_variance(self):
         """minimum_detectable_effect under sequential inference accepts a

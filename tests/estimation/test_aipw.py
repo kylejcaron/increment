@@ -822,6 +822,27 @@ def _cluster_aipw_src():
     )
 
 
+def test_clustered_aipw_weight_diagnostics_use_cluster_totals():
+    src = _cluster_aipw_src()
+    with pytest.warns(IncrementWarning):
+        with pytest.warns(IncrementRuntimeWarning):
+            (row,) = aipw_estimate(
+                src,
+                _aipw_metric(src, "revenue"),
+                _AIPW_DESIGN,
+                propensity_learner=_HalfPropensity,
+                outcome_learner=_ZeroOutcome,
+            )
+
+    assert row.weight_diagnostics_available is True
+    assert row.weight_grain == "cluster"
+    assert row.control_weight_n == row.treatment_weight_n == 5
+    assert row.control_weight_ess == pytest.approx(5)
+    assert row.treatment_weight_ess == pytest.approx(5)
+    assert row.control_weight_max_share == pytest.approx(0.2)
+    assert row.treatment_weight_max_share == pytest.approx(0.2)
+
+
 def test_cluster_atomicity_reaches_recording_outcome_learners():
     _FingerprintNN1.fit_sets = []
     _FingerprintNN1.predict_sets = []

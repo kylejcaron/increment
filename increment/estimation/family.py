@@ -104,13 +104,6 @@ def _row_labels(rows: Sequence[str]) -> str:
     return ", ".join(rows)
 
 
-#: Shared by ``run_breakout(correction="bh")`` and the exploratory family: the same hazard
-#: (no frequentist p-value to select on) carries the same code on both paths.
-BH_EXCLUDES_PRIOR = RefusalSpec(
-    "breakout.run_breakout_bh_excludes_prior",
-    InvalidRequestError,
-    template="an informative prior cannot enter a BH family: BH/e-BH selection needs frequentist p-values/e-values, and a posterior tail probability is neither",
-)
 _REFUSALS = refusals(
     InvalidRequestError,
     {
@@ -717,7 +710,6 @@ _ADMISSION_ORDER = (
     "estimation.family.exploratory_pre_corrected",
     "estimation.family.exploratory_non_decision",
     "estimation.family.exploratory_sequential",
-    BH_EXCLUDES_PRIOR.code,
 )
 
 
@@ -763,7 +755,6 @@ _ADMISSION_REASONS = {
     "estimation.family.exploratory_pre_corrected": "already family-corrected",
     "estimation.family.exploratory_non_decision": "sensitivity row, not a decision row",
     "estimation.family.exploratory_sequential": "sequential inference",
-    BH_EXCLUDES_PRIOR.code: "informative prior",
 }
 
 
@@ -781,8 +772,12 @@ def _admission_hazard(row: object) -> str | None:
         or getattr(row, "sequential_result", None) is not None
     ):
         return "estimation.family.exploratory_sequential"
-    if getattr(row, "prior_shrunk", False) or getattr(row, "prior_spec", None) is not None:
-        return BH_EXCLUDES_PRIOR.code
+    if getattr(row, "sampling_available", None) is not True and (
+        getattr(row, "prior_shrunk", False) or getattr(row, "prior_spec", None) is not None
+    ):
+        from increment.estimation.readout_types import refuse_legacy_sampling
+
+        refuse_legacy_sampling(row)
     return None
 
 
@@ -795,7 +790,7 @@ def _require_admissible(rows: Sequence[object]) -> None:
             offenders.setdefault(code, []).append(_label(index, row))
     for code in _ADMISSION_ORDER:
         if code in offenders:
-            spec = BH_EXCLUDES_PRIOR if code == BH_EXCLUDES_PRIOR.code else _REFUSALS[code]
+            spec = _REFUSALS[code]
             labels = tuple(offenders[code])
             refuse(spec, rows=labels, reasons=(_ADMISSION_REASONS[code],) * len(labels))
 
@@ -908,6 +903,7 @@ def _stamped[R: BaseModel](row: R, view: LiftEstimate | None, **family: object) 
     if view is not None:
         data.update({name: getattr(view, name) for name in _INTERVAL_FIELDS})
     data.update(family)
+    data["multiplicity_status"] = "exploratory_family"
     return type(row)(**data)
 
 
@@ -944,8 +940,7 @@ def select_exploratory_family(
     or segment rows (``estimation.family.exploratory_row``), rows already corrected
     (``estimation.family.exploratory_pre_corrected``), sensitivity rows
     (``estimation.family.exploratory_non_decision``), sequential rows
-    (``estimation.family.exploratory_sequential``), informative-prior rows
-    (``breakout.run_breakout_bh_excludes_prior``), and rows whose interval cannot be reissued
+    (``estimation.family.exploratory_sequential``), and rows whose interval cannot be reissued
     without approximation (``estimation.family.exploratory_construction``: quantile, percentile
     winsorized, additive-scale and similar constructions, and an additive-only interval whose
     ``abs_alpha`` was not persisted). A cell whose evidence is unavailable

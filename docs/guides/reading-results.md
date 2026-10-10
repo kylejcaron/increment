@@ -20,6 +20,12 @@ with an additive value numerically.
 `ContrastResults.to_frame` does not, because every contrast is additive; only
 the readout adapter below adds `value_scale="absolute"` to contrast rows.
 
+When a triggered experiment is read without a `population` argument, `Analysis.run()` keeps
+assigned and triggered results as separate rows. Pass `population="assigned"` or
+`population="triggered"` to select one population; a selected result never pools the two.
+Registered sequential inference remains assignment-scoped, so a triggered run preserves an
+unavailable row with its refusal code and reason rather than borrowing assigned checkpoints.
+
 ## What to read
 
 For a `LiftEstimate` row `r`:
@@ -36,6 +42,56 @@ For a `LiftEstimate` row `r`:
 
 For a `ContrastResult` row `c`, read `c.estimate.value`, `c.estimate.lb`,
 `c.estimate.ub`, `c.null_abs`, and `c.alternative`. All are additive.
+
+## Read the result as a decision, not just a number
+
+For the question you intend to answer, first confirm the population, estimand,
+scale, and analysis window. Then read the point together with its interval or
+confidence set, the null and alternative, the inference regime, and the row's
+decision status. An interval excluding zero is not a substitute for checking
+the declared null, direction, family status, and whether the result is complete.
+For relative and additive rows, keep the scale attached to every value.
+
+Before acting on a collection, check that all required cells are represented.
+A required cell may be an estimate or an unavailable row; unavailable rows
+preserve the requested cell identity and carry the reason. Do not interpret a
+missing estimate as a null effect or silently drop a failed cell. Use the
+reason to choose the next step: correct missing or invalid source evidence,
+request a supported analysis, or report that the requested result could not be
+estimated. A partial result is not a complete decision.
+
+### Interpret status and scope
+
+- **`NotApplicable` assignment integrity is not a passing check.** It means
+  assignment integrity could not be evaluated for that source, design, or
+  population. Read the status and reason, and use the assigned population at
+  its stated assignment grain for assignment-law checks. Triggered counts
+  describe an outcome subset; they do not validate randomization.
+- **`exploratory_unadjusted` means no family adjustment.** Treat that result
+  as exploratory rather than as a confirmatory discovery. If the question is
+  decision-critical, define the appropriate family and role before using
+  results to decide; see [Multiplicity](multiplicity.md). Filtering displayed
+  rows does not change the retained family scope.
+- **A sampling result does not imply a posterior.** Sampling estimates,
+  confidence sets, p-values, and significance remain distinct from posterior
+  estimates and probabilities. If `posterior_available` is false, use its
+  recorded reason; do not reconstruct a posterior from sampling fields. Read
+  the valid sampling interval if that is the question, or choose a supported
+  posterior route if a Bayesian decision is required.
+- **A triggered result answers a different population question.** It includes
+  units at their first eligible trigger and anchors their outcome window there.
+  Keep it separate from the assigned-population result and its multiplicity
+  family. Conditioning on triggering is causally valid only under the
+  experiment's assumptions; triggering affected by treatment changes the
+  estimand and can introduce selection bias. Use the assigned result for an
+  assignment-based estimate when that is the intended question.
+
+After resolving the status, report the estimate with its scale, interval or
+set, population, and any unavailable or multiplicity caveat. If a requirement
+cannot be supported by the source or construction, use the specific coded
+refusal and its stated route forward instead of substituting another
+population or inference method.
+
 
 ## Fixed horizon: guard the missing point
 
@@ -76,7 +132,24 @@ for r in results:
         f"lift={r.lift.value:+.2%} [{r.lift.lb:+.2%}, {r.lift.ub:+.2%}] "
         f"significant={r.stat_sig()}"
     )
+
+# The full frame retains evidence and decision metadata. Select a concise
+# display view without dropping those fields from the underlying readout.
+decision_table = results.to_frame(backend="polars")[
+    [
+        "metric",
+        "group_id",
+        "method",
+        "lift",
+        "lb",
+        "ub",
+        "sampling_available",
+        "decision_scope_complete",
+        "multiplicity_status",
+    ]
+]
 ```
+
 
 ```text
 revenue / treatment: lift=+6.69% [+0.69%, +13.05%] significant=True

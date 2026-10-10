@@ -8,6 +8,7 @@ Nothing here may import an adapter module.
 
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -75,6 +76,8 @@ class DayEvidenceSource(MomentSource, Protocol):
 
     @property
     def context(self) -> SourceContext: ...
+
+    def triggered_observation_edges(self, metric: Metric) -> tuple[dt.date, dt.date | None]: ...
 
     def moments(
         self,
@@ -150,21 +153,53 @@ class NativeViewSource(Protocol):
         self, metric: Metric, *, include_ratio: bool = False
     ) -> SitewideEvidence: ...
 
+    def validate_populations(
+        self,
+        populations: Sequence[Literal["assigned", "triggered"]],
+        *,
+        operation: str,
+    ) -> None: ...
+
     def breakout_summaries(
-        self, *, metrics: Sequence[Metric]
+        self,
+        *,
+        metrics: Sequence[Metric],
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> dict[str, dict[str, pa.Table]]: ...
 
-    def factor_summaries(self, *, metrics: Sequence[Metric]) -> dict[str, pa.Table]: ...
+    def factor_summaries(
+        self,
+        *,
+        metrics: Sequence[Metric],
+        population: Literal["assigned", "triggered"] = "assigned",
+    ) -> dict[str, pa.Table]: ...
 
     def breakout_source(
-        self, breakout: Breakout, *, metrics: Sequence[Metric]
+        self,
+        breakout: Breakout,
+        *,
+        metrics: Sequence[Metric],
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> BreakoutMomentsSource: ...
 
     def breakout_sources(
-        self, breakouts: Sequence[Breakout], *, metrics: Sequence[Metric]
+        self,
+        breakouts: Sequence[Breakout],
+        *,
+        metrics: Sequence[Metric],
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> Sequence[BreakoutMomentsSource]: ...
 
-    def day_source(self, *, metrics: Sequence[Metric]) -> DayEvidenceSource: ...
+    def assigned_breakout_values(
+        self, breakout: Breakout, *, source_name: str | None = None
+    ) -> Sequence[str]: ...
+
+    def day_source(
+        self,
+        *,
+        metrics: Sequence[Metric],
+        population: Literal["assigned", "triggered"] = "assigned",
+    ) -> DayEvidenceSource: ...
 
 
 _NATIVE_COVARIATE_RESERVED = RefusalSpec(

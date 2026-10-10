@@ -87,5 +87,10 @@
     "justification": "Prospective test population residual variance bound.",
     "declaration_id": "test-declaration"
   },
-  "response_meaning": "retained_total"
+  "response_meaning": "retained_total",
+  "analysis_population": "assigned",
+  "source_snapshot_id": null,
+  "decision_scope_complete": null,
+  "decision_scope_reason_code": null,
+  "decision_scope_reason_context": null
 }

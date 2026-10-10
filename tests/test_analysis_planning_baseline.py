@@ -2,14 +2,17 @@
 from the analysis's own data and declared design, on every constructor
 that can supply it."""
 
+from collections.abc import Mapping
+from datetime import UTC, datetime
+
 import ibis
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 
-from increment import Analysis
-from increment.errors import CapabilityError, CodedError
+from increment import Analysis, SourceSnapshotEvidence
+from increment.errors import CapabilityError, CodedError, IncrementWarning, UnsupportedRequestError
 from increment.estimation.results import LiftEstimate
 from increment.power import Baseline
 
@@ -224,10 +227,8 @@ class TestPlanningBaselineOnDataframeRoutes:
         ],
         ids=["mean", "ratio"],
     )
-    def test_degenerate_covariate_refuses_with_the_runtime_cuped_code(self, metric):
-        """A covariate that is present but constant is a data hazard, not a
-        source that lacks the covariate: planning refuses with the same code
-        the runtime's CUPED fit raises on the same data."""
+    def test_degenerate_covariate_preserves_cuped_code_in_all_failed_refusal(self, metric):
+        """Planning and runtime both retain the specific CUPED guard code."""
         frame = _unit_summary_frame()
         frame["revenue_den"] = [1.0 + (i % 3) for i in range(len(frame))]
         frame["revenue_pre"] = 5.0
@@ -246,11 +247,22 @@ class TestPlanningBaselineOnDataframeRoutes:
         )
         with pytest.raises(CodedError) as planned:
             analysis.planning_baseline("revenue")
-        with pytest.raises(CodedError) as runtime:
-            analysis.run()
-        assert (
-            planned.value.code == runtime.value.code == "estimation.cuped.covariate_zero_variance"
-        )
+        with pytest.warns(IncrementWarning) as runtime_warnings:
+            with pytest.raises(UnsupportedRequestError) as runtime:
+                analysis.run()
+        warning = runtime_warnings[0].message
+        assert isinstance(warning, IncrementWarning)
+        assert warning.code == "readouts.run.cell_refused"
+        failures = runtime.value.context["failures"]
+        assert isinstance(failures, tuple)
+        assert len(failures) == 1
+        failure = failures[0]
+        assert isinstance(failure, Mapping)
+        failure_context = failure.get("context")
+        assert isinstance(failure_context, Mapping)
+        assert failure.get("code") == "estimation.cuped.covariate_zero_variance"
+        assert failure_context.get("weighted_var_x") == 0.0
+        assert planned.value.code == failure.get("code")
 
     @pytest.mark.parametrize("metric_type", ["mean", "ratio"])
     def test_cuped_reduction_matches_the_runtime_cuped_standard_error(self, metric_type):
@@ -567,6 +579,8 @@ def _triggered_analysis(
     assigned_sizes=None,
     analyzed_sizes=None,
     metric_aggregation="sum",
+    source_snapshot_evidence=None,
+    staggered=False,
 ):
     """Selected pilot memberships, or every fifth unit in an IID experiment."""
     con = ibis.duckdb.connect()
@@ -603,14 +617,35 @@ def _triggered_analysis(
             uid = f"{arm}{i}"
             store_id = f"{arm}-store-{cluster}"
             add(uid, arm, "enrolled", None, pd.Timestamp("2024-01-01"), store_id)
-            if member < analyzed_sizes[cluster] if clustered else i % 5 == 0:
-                add(uid, arm, "exposure", None, pd.Timestamp("2024-01-01"), store_id)
+            triggered = member < analyzed_sizes[cluster] if clustered else i % 5 == 0
+            trigger_ts = (
+                pd.Timestamp("2024-01-02") + pd.Timedelta(days=cluster % 3)
+                if staggered and clustered
+                else pd.Timestamp("2024-01-01")
+            )
+            if triggered:
+                add(uid, arm, "exposure", None, trigger_ts, store_id)
             value = (
                 20 + 10 * cluster + (-4 if member % 2 == 0 else 4)
                 if clustered
                 else _triggered_value(i)
             )
-            add(uid, arm, "revenue", value, pd.Timestamp("2024-01-02"), store_id)
+            if staggered and clustered and triggered:
+                add(
+                    uid,
+                    arm,
+                    "revenue",
+                    1000 + value,
+                    pd.Timestamp("2024-01-01"),
+                    store_id,
+                )
+            outcome_offset = 6 if staggered and clustered else 1
+            outcome_ts = (
+                trigger_ts + pd.Timedelta(days=outcome_offset)
+                if triggered
+                else pd.Timestamp("2024-01-02")
+            )
+            add(uid, arm, "revenue", value, outcome_ts, store_id)
             # Anchors the observable data extent past the metric window; this
             # event falls outside the window and is never summed.
             add(uid, arm, "revenue", 0.0, pd.Timestamp("2024-01-20"), store_id)
@@ -622,7 +657,30 @@ def _triggered_analysis(
     )
     defs = defs.replace("    aggregation: sum", f"    aggregation: {metric_aggregation}", 1)
     path.write_text(defs)
-    return con, path, Analysis.from_definitions("exp", str(path), con)
+    evidence = datetime(2030, 1, 1, tzinfo=UTC)
+    evidence = source_snapshot_evidence or SourceSnapshotEvidence(evidence, {"events": evidence})
+    return (
+        con,
+        path,
+        Analysis.from_definitions(
+            "exp",
+            str(path),
+            con,
+            source_snapshot_evidence=evidence,
+        ),
+    )
+
+
+def test_triggered_planning_baseline_refuses_when_control_has_no_trigger(tmp_path):
+    con, _path, analysis = _triggered_analysis(tmp_path)
+    con.raw_sql("DELETE FROM events WHERE event = 'exposure' AND group_id = 'control'")
+    try:
+        with pytest.raises(CodedError) as raised:
+            analysis.planning_baseline("revenue")
+        assert raised.value.code == "query.integrity.trigger_arm_missing"
+    finally:
+        analysis.close()
+        con.disconnect()
 
 
 @pytest.mark.filterwarnings("always::increment.errors.IncrementRuntimeWarning")
@@ -652,6 +710,7 @@ def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_gr
     from increment.semantics.artifact import (
         AssignmentCountsRequest,
         ClusterIdentityRequest,
+        TriggerMeasureStatsRequest,
         TriggerPopulationRequest,
     )
 
@@ -700,6 +759,7 @@ def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_gr
             [
                 TriggerPopulationRequest(trigger_name="exposure"),
                 AssignmentCountsRequest(populations=("assigned", "triggered")),
+                TriggerMeasureStatsRequest(trigger_name="exposure", metric_names=("revenue",)),
                 ClusterIdentityRequest(cluster_name="store_id"),
             ],
         )
@@ -743,6 +803,65 @@ def test_triggered_cluster_source_and_artifact_preserve_assigned_and_analyzed_gr
         con.disconnect()
 
 
+@pytest.mark.filterwarnings("always::increment.errors.IncrementRuntimeWarning")
+def test_staggered_cluster_triggers_anchor_planning_and_observed_counts(tmp_path):
+    from increment.semantics.artifact import (
+        AssignmentCountsRequest,
+        ClusterIdentityRequest,
+        TriggerMeasureStatsRequest,
+        TriggerPopulationRequest,
+    )
+
+    assigned_sizes = [6, 6, 6, 6]
+    analyzed_sizes = [2, 3, 1, 0]
+    con, path, analysis = _triggered_analysis(
+        tmp_path,
+        clustered=True,
+        assigned_sizes=assigned_sizes,
+        analyzed_sizes=analyzed_sizes,
+        staggered=True,
+    )
+    reopened = None
+    try:
+        native = _plan(analysis, "revenue")
+        reopened = _republish(
+            con,
+            path,
+            analysis,
+            [
+                TriggerPopulationRequest(trigger_name="exposure"),
+                AssignmentCountsRequest(populations=("assigned", "triggered")),
+                TriggerMeasureStatsRequest(trigger_name="exposure", metric_names=("revenue",)),
+                ClusterIdentityRequest(cluster_name="store_id"),
+            ],
+        )
+        artifact = _plan(reopened, "revenue")
+        assert native.model_dump() == pytest.approx(artifact.model_dump(), rel=1e-12)
+        assert native.mean == pytest.approx(27.0)
+        assert native.trigger_rate == pytest.approx(6 / 24)
+        assert native.cluster_participation == pytest.approx(3 / 4)
+        for source in (analysis, reopened):
+            integrity = source.srm(
+                expected={"control": 0.5, "treatment": 0.5},
+                inference="fixed",
+                population="triggered",
+            )
+            assert integrity.grain == "cluster"
+            assert integrity.observed == {"control": 3, "treatment": 3}
+            assert integrity.unit_counts == {"control": 6, "treatment": 6}
+            result = next(
+                row
+                for row in source.run(metrics=["revenue"])
+                if row.analysis_population == "triggered"
+            )
+            assert result.reference_df == 2
+    finally:
+        analysis.close()
+        if reopened is not None:
+            reopened.close()
+        con.disconnect()
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize(
     ("late_condition", "metric_aggregation", "observed_units"),
@@ -762,17 +881,21 @@ def test_triggered_cluster_planning_names_incomplete_metric_population(
     from increment.semantics.artifact import (
         AssignmentCountsRequest,
         ClusterIdentityRequest,
+        TriggerMeasureStatsRequest,
         TriggerPopulationRequest,
     )
 
+    certified_edge = datetime(2024, 1, 20, tzinfo=UTC)
     con, path, analysis = _triggered_analysis(
         tmp_path,
         clustered=True,
         assigned_sizes=[10] * 10,
         analyzed_sizes=[2] * 10,
         metric_aggregation=metric_aggregation,
+        source_snapshot_evidence=SourceSnapshotEvidence(certified_edge, {"events": certified_edge}),
     )
     reopened = None
+    fully_certified = None
     try:
         if late_condition is None:
             con.raw_sql(
@@ -784,6 +907,15 @@ def test_triggered_cluster_planning_names_incomplete_metric_population(
                 "UPDATE events SET ts = ts + INTERVAL 17 DAY "
                 f"WHERE {late_condition} AND ts < TIMESTAMP '2024-01-20'"
             )
+        if late_condition is not None:
+            later_edge = datetime(2030, 1, 1, tzinfo=UTC)
+            fully_certified = Analysis.from_definitions(
+                "exp",
+                str(path),
+                con,
+                source_snapshot_evidence=SourceSnapshotEvidence(later_edge, {"events": later_edge}),
+            )
+            _plan(fully_certified, "revenue")
         reopened = _republish(
             con,
             path,
@@ -791,6 +923,7 @@ def test_triggered_cluster_planning_names_incomplete_metric_population(
             [
                 TriggerPopulationRequest(trigger_name="exposure"),
                 AssignmentCountsRequest(populations=("assigned", "triggered")),
+                TriggerMeasureStatsRequest(trigger_name="exposure", metric_names=("revenue",)),
                 ClusterIdentityRequest(cluster_name="store_id"),
             ],
         )
@@ -812,6 +945,8 @@ def test_triggered_cluster_planning_names_incomplete_metric_population(
         analysis.close()
         if reopened is not None:
             reopened.close()
+        if fully_certified is not None:
+            fully_certified.close()
         con.disconnect()
 
 
@@ -854,7 +989,11 @@ class TestPlanningBaselineOnWarehouseRoutes:
             con.disconnect()
 
     def test_artifact_with_trigger_evidence_matches_definitions(self, tmp_path):
-        from increment.semantics.artifact import AssignmentCountsRequest, TriggerPopulationRequest
+        from increment.semantics.artifact import (
+            AssignmentCountsRequest,
+            TriggerMeasureStatsRequest,
+            TriggerPopulationRequest,
+        )
 
         con, path, analysis = _triggered_analysis(tmp_path)
         try:
@@ -866,12 +1005,404 @@ class TestPlanningBaselineOnWarehouseRoutes:
                 [
                     TriggerPopulationRequest(trigger_name="exposure"),
                     AssignmentCountsRequest(populations=("assigned", "triggered")),
+                    TriggerMeasureStatsRequest(trigger_name="exposure", metric_names=("revenue",)),
                 ],
             )
             assert _plan(reopened, "revenue").model_dump() == pytest.approx(
                 native.model_dump(), rel=1e-12
             )
         finally:
+            con.disconnect()
+
+    def test_triggered_cuped_planning_uses_assignment_anchored_preperiod(  # noqa: PLR0915
+        self, tmp_path
+    ):
+        import warnings
+
+        from scipy.optimize import brentq
+        from scipy.stats import norm
+
+        from increment.estimation.arm_contract import ArmPlanningProcedure
+        from increment.estimation.armstats import SummaryStats
+        from increment.estimation.engine import Method
+        from increment.estimation.inference import Normal
+        from increment.estimation.priors import MixturePrior, StudentTPrior
+        from increment.power import PowerDesign, required_sample_size
+        from increment.semantics.artifact import (
+            AssignmentCountsRequest,
+            CupedPreperiodRequest,
+            TriggerMeasureStatsRequest,
+            TriggerPopulationRequest,
+        )
+
+        con = ibis.duckdb.connect()
+        rows = {
+            "unit_id": [],
+            "group_id": [],
+            "ts": [],
+            "event": [],
+            "value": [],
+            "sessions": [],
+            "experiment_id": [],
+        }
+
+        def add(uid, arm, event, value, timestamp, *, sessions=None):
+            rows["unit_id"].append(uid)
+            rows["group_id"].append(arm)
+            rows["ts"].append(pd.Timestamp(timestamp))
+            rows["event"].append(event)
+            rows["value"].append(value)
+            rows["sessions"].append(sessions)
+            rows["experiment_id"].append("exp")
+
+        for arm in ("control", "treatment"):
+            for i in range(40):
+                uid = f"{arm}{i}"
+                assignment_day = "2024-01-11" if i % 4 < 2 else "2024-01-12"
+                add(uid, arm, "enrolled", None, assignment_day)
+                x = float(i % 8)
+                pre_day = (pd.Timestamp(assignment_day) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+                add(uid, arm, "revenue", x, pre_day)
+                # This post-assignment signal differs from the pre-period x;
+                # it would contaminate a trigger-anchored CUPED covariate.
+                add(uid, arm, "revenue", 100.0 if i % 4 == 0 else 50.0, "2024-01-14")
+                if i % 2 == 0:
+                    add(uid, arm, "exposure", None, "2024-01-17")
+                    add(
+                        uid,
+                        arm,
+                        "revenue",
+                        20.0 + x + (i % 3) + (2.0 if arm == "treatment" else 0.0),
+                        "2024-01-18",
+                    )
+                    add(
+                        uid,
+                        arm,
+                        "sessions",
+                        None,
+                        "2024-01-18",
+                        sessions=2.0 + i % 3,
+                    )
+                add(uid, arm, "revenue", 0.0, "2024-02-01")
+        con.create_table("events", obj=pd.DataFrame(rows))
+        defs = (
+            _TRIGGERED_DEFS.replace(
+                "      - name: enrolled",
+                "      - name: sessions\n        column: sessions\n      - name: enrolled",
+            )
+            .replace(
+                "experiments:\n",
+                "  - name: rps\n"
+                "    type: ratio\n"
+                "    entity: unit_id\n"
+                "    numerator:\n"
+                "      fact: revenue\n"
+                "      aggregation: sum\n"
+                "      window_days: 7\n"
+                "    denominator:\n"
+                "      fact: sessions\n"
+                "      aggregation: sum\n"
+                "      window_days: 7\n"
+                "  - name: fixed_revenue\n"
+                "    type: mean\n"
+                "    entity: unit_id\n"
+                "    fact: revenue\n"
+                "    aggregation: sum\n"
+                "    window_days: 7\n"
+                "    preferred_direction: increase\n"
+                "    winsorization: {upper_value: 25}\n"
+                "  - name: percentile_revenue\n"
+                "    type: mean\n"
+                "    entity: unit_id\n"
+                "    fact: revenue\n"
+                "    aggregation: sum\n"
+                "    window_days: 7\n"
+                "    preferred_direction: increase\n"
+                "    winsorization:\n"
+                "      upper_percentile: 0.75\n"
+                "      support: {lower: 0, provenance: fixture non-negative revenue}\n"
+                "experiments:\n",
+            )
+            .replace(
+                '    start: "2024-01-01T00:00:00"',
+                '    start: "2024-01-11T00:00:00"\n'
+                '    end: "2024-01-15T00:00:00"\n'
+                '    observation_end: "2024-02-01T00:00:00"',
+            )
+            .replace(
+                "    plan:\n      primary: revenue\n      secondaries: [revenue_p50]",
+                "    n_pre_periods: 7\n"
+                "    plan:\n"
+                "      primary:\n"
+                "        metric: revenue\n"
+                "        decision_method: {name: cuped, variance_reduction: cuped}\n"
+                "      secondaries:\n"
+                "        - revenue_p50\n"
+                "        - metric: rps\n"
+                "          decision_method: {name: cuped, variance_reduction: cuped}\n"
+                "      guardrails: [fixed_revenue, percentile_revenue]",
+            )
+        )
+        path = tmp_path / "defs_triggered_cuped.yml"
+        path.write_text(defs)
+        evidence = datetime(2030, 1, 1, tzinfo=UTC)
+        analysis = Analysis.from_definitions(
+            "exp",
+            str(path),
+            con,
+            source_snapshot_evidence=SourceSnapshotEvidence(evidence, {"events": evidence}),
+        )
+        reopened = None
+        try:
+            indices = np.arange(0, 40, 2)
+            triggered = 20.0 + indices % 8 + indices % 3
+            denominators = 2.0 + indices % 3
+            expected = Baseline.from_summary(
+                SummaryStats(n=triggered.size, mean=triggered.mean(), var=triggered.var(ddof=1))
+            )
+            expected_ratio = triggered.sum() / denominators.sum()
+            expected_ratio_var = (
+                np.var(triggered - expected_ratio * denominators, ddof=1) / denominators.mean() ** 2
+            )
+            covariate = indices % 8
+            theta_num = np.cov(covariate, triggered, ddof=1)[0, 1] / np.var(covariate, ddof=1)
+            theta_den = np.cov(covariate, denominators, ddof=1)[0, 1] / np.var(covariate, ddof=1)
+            adjusted_num = triggered - theta_num * (covariate - covariate.mean())
+            adjusted_den = denominators - theta_den * (covariate - covariate.mean())
+            expected_ratio_adjusted_var = (
+                np.var(adjusted_num - expected_ratio * adjusted_den, ddof=1)
+                / adjusted_den.mean() ** 2
+            )
+            expected_ratio_rho = np.sqrt(1 - expected_ratio_adjusted_var / expected_ratio_var)
+            expected_rho = 98.0 / np.sqrt(100.0 * 110.0)
+            expected_quantile = float(np.quantile(triggered, 0.5))
+            native = _plan(analysis, "revenue")
+            reopened = _republish(
+                con,
+                path,
+                analysis,
+                [
+                    CupedPreperiodRequest(metric_name="revenue"),
+                    CupedPreperiodRequest(metric_name="rps"),
+                    TriggerPopulationRequest(trigger_name="exposure"),
+                    AssignmentCountsRequest(populations=("assigned", "triggered")),
+                    TriggerMeasureStatsRequest(trigger_name="exposure", metric_names=("revenue",)),
+                    TriggerMeasureStatsRequest(
+                        trigger_name="exposure", metric_names=("revenue_p50",)
+                    ),
+                    TriggerMeasureStatsRequest(trigger_name="exposure", metric_names=("rps",)),
+                    TriggerMeasureStatsRequest(
+                        trigger_name="exposure", metric_names=("fixed_revenue",)
+                    ),
+                    TriggerMeasureStatsRequest(
+                        trigger_name="exposure", metric_names=("percentile_revenue",)
+                    ),
+                ],
+            )
+            artifact = _plan(reopened, "revenue")
+            assert artifact.model_dump() == pytest.approx(native.model_dump(), rel=1e-12)
+            native_ratio = _plan(analysis, "rps")
+            artifact_ratio = _plan(reopened, "rps")
+            assert artifact_ratio.model_dump() == pytest.approx(
+                native_ratio.model_dump(), rel=1e-12
+            )
+            assert (native_ratio.mean, native_ratio.var) == pytest.approx(
+                (expected_ratio, expected_ratio_var), rel=1e-12
+            )
+            assert native_ratio.trigger_rate == pytest.approx(0.5, rel=1e-12)
+            native_quantile = _plan(analysis, "revenue_p50")
+            artifact_quantile = _plan(reopened, "revenue_p50")
+            for baseline in (native_quantile, artifact_quantile):
+                assert baseline.mean == pytest.approx(expected_quantile, rel=1e-12)
+                assert baseline.trigger_rate == pytest.approx(0.5, rel=1e-12)
+            for baseline in (native, artifact):
+                assert (baseline.mean, baseline.var) == pytest.approx(
+                    (expected.mean, expected.var), rel=1e-12
+                )
+                assert baseline.trigger_rate == pytest.approx(0.5, rel=1e-12)
+                assert baseline.cuped_rho == pytest.approx(expected_rho, rel=1e-12)
+                assert baseline.effective_var == pytest.approx(
+                    baseline.var * (1 - expected_rho**2), rel=1e-12
+                )
+                planned = required_sample_size(
+                    0.1, baseline, ArmPlanningProcedure.standard("mean"), PowerDesign()
+                )
+                assert planned.n_triggered_per_arm == round(
+                    planned.n_per_arm * baseline.trigger_rate
+                )
+                assert planned.n_triggered_total == round(planned.n_total * baseline.trigger_rate)
+            assert native_ratio.cuped_rho == pytest.approx(expected_ratio_rho, rel=1e-12)
+            assert native_ratio.effective_var == pytest.approx(
+                expected_ratio_var * (1 - expected_ratio_rho**2), rel=1e-12
+            )
+            assert artifact_ratio.cuped_rho == pytest.approx(expected_ratio_rho, rel=1e-12)
+            assert artifact_ratio.effective_var == pytest.approx(
+                expected_ratio_var * (1 - expected_ratio_rho**2), rel=1e-12
+            )
+
+            mean_control = float(np.mean(triggered))
+            mean_treatment = float(np.mean(triggered + 2.0))
+            log_rr = float(np.log(mean_treatment / mean_control))
+            se_log_rr = float(
+                np.sqrt(
+                    np.var(triggered, ddof=1) / (triggered.size * mean_control**2)
+                    + np.var(triggered + 2.0, ddof=1) / (triggered.size * mean_treatment**2)
+                )
+            )
+
+            def expected_posterior(prior):
+                if isinstance(prior, Normal):
+                    prior_variance = prior.sigma**2
+                    sampling_variance = se_log_rr**2
+                    posterior_variance = 1.0 / (1.0 / prior_variance + 1.0 / sampling_variance)
+                    posterior_mean = posterior_variance * (
+                        prior.mu / prior_variance + log_rr / sampling_variance
+                    )
+                    posterior_sd = float(np.sqrt(posterior_variance))
+                    z_975 = float(norm.ppf(0.975))
+                    latent = (
+                        posterior_mean,
+                        posterior_mean - z_975 * posterior_sd,
+                        posterior_mean + z_975 * posterior_sd,
+                    )
+                else:
+                    mixture = prior.components() if isinstance(prior, StudentTPrior) else prior
+                    prior_means = np.asarray(mixture.means, dtype=float)
+                    prior_sigmas = np.asarray(mixture.sigmas, dtype=float)
+                    weights = np.asarray(mixture.weights, dtype=float)
+                    log_weights = np.log(weights) + norm.logpdf(
+                        log_rr,
+                        loc=prior_means,
+                        scale=np.sqrt(prior_sigmas**2 + se_log_rr**2),
+                    )
+                    weights = np.exp(log_weights - log_weights.max())
+                    weights /= weights.sum()
+                    posterior_variances = 1.0 / (1.0 / prior_sigmas**2 + 1.0 / se_log_rr**2)
+                    posterior_means = posterior_variances * (
+                        prior_means / prior_sigmas**2 + log_rr / se_log_rr**2
+                    )
+                    posterior_sds = np.sqrt(posterior_variances)
+
+                    def mixture_cdf(value):
+                        return float(
+                            np.sum(weights * norm.cdf((value - posterior_means) / posterior_sds))
+                        )
+
+                    left = float(np.min(posterior_means - 12.0 * posterior_sds))
+                    right = float(np.max(posterior_means + 12.0 * posterior_sds))
+                    latent = tuple(
+                        brentq(
+                            lambda value, probability=probability: mixture_cdf(value) - probability,
+                            left,
+                            right,
+                        )
+                        for probability in (0.5, 0.025, 0.975)
+                    )
+                return tuple(float(np.expm1(value)) for value in latent)
+
+            priors = (
+                Normal(mu=0.0, sigma=0.2),
+                StudentTPrior(nu=5, scale=0.2, k=8),
+                MixturePrior(weights=(0.5, 0.5), means=(-0.1, 0.1), sigmas=(0.2, 0.2)),
+            )
+            for prior in priors:
+                posterior_by_ingress = {}
+                expected = expected_posterior(prior)
+                for ingress, source in (("definitions", analysis), ("artifact", reopened)):
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", DeprecationWarning)
+                        plain_rows = source.run(
+                            metrics=["revenue"],
+                            decision_method=Method(name="unadjusted"),
+                            prior=None,
+                        )
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", DeprecationWarning)
+                        informed_rows = source.run(
+                            metrics=["revenue"],
+                            decision_method=Method(name="unadjusted"),
+                            prior=prior,
+                        )
+                    plain = next(
+                        row for row in plain_rows if row.analysis_population == "triggered"
+                    )
+                    informed = next(
+                        row for row in informed_rows if row.analysis_population == "triggered"
+                    )
+                    assert informed.lift == plain.lift
+                    assert informed.reference_kind == plain.reference_kind
+                    assert informed.reference_df == plain.reference_df
+                    assert informed.p_value() == pytest.approx(plain.p_value(), rel=1e-12)
+                    assert informed.posterior_available is True
+                    assert informed.posterior_model == (
+                        "normal" if isinstance(prior, Normal) else "mixture"
+                    )
+                    assert informed.posterior_estimate == pytest.approx(expected[0], rel=1e-8)
+                    assert informed.posterior_lb == pytest.approx(expected[1], rel=1e-8)
+                    assert informed.posterior_ub == pytest.approx(expected[2], rel=1e-8)
+                    posterior_by_ingress[ingress] = (
+                        informed.posterior_estimate,
+                        informed.posterior_lb,
+                        informed.posterior_ub,
+                    )
+                assert posterior_by_ingress["definitions"] == pytest.approx(
+                    posterior_by_ingress["artifact"], rel=1e-12
+                )
+            from typing import Any, cast
+
+            from tests.analysis_factory import _native_source
+
+            expected_percentile_cutoff = float(
+                np.quantile(np.concatenate((triggered, triggered + 2.0)), 0.75)
+            )
+            for source in (analysis, reopened):
+                triggered_source = cast(Any, _native_source(source).triggered_source())
+                metrics_by_name = {metric.name: metric for metric in source.metrics}
+                fixed_metric = metrics_by_name["fixed_revenue"]
+                raw_fixed = triggered_source.unit_frame(
+                    fixed_metric, outcome_stage="raw"
+                ).to_pylist()
+                clipped_fixed = triggered_source.unit_frame(
+                    fixed_metric, outcome_stage="transformed"
+                ).to_pylist()
+                raw_fixed_by_unit = {row["unit_id"]: row["y"] for row in raw_fixed}
+                clipped_fixed_by_unit = {row["unit_id"]: row["y"] for row in clipped_fixed}
+                assert len(raw_fixed_by_unit) == len(clipped_fixed_by_unit) == 40
+                assert clipped_fixed_by_unit == {
+                    unit_id: min(value, 25.0) for unit_id, value in raw_fixed_by_unit.items()
+                }
+
+                from increment.estimation.winsor import raw_state_from_source
+
+                percentile_metric = metrics_by_name["percentile_revenue"]
+                percentile_raw = raw_state_from_source(triggered_source, percentile_metric)
+                assert percentile_raw.population == "triggered"
+                assert sorted(percentile_raw.arm("control").values) == sorted(triggered)
+                assert sorted(percentile_raw.arm("treatment").values) == sorted(triggered + 2.0)
+                raw_percentile = triggered_source.unit_frame(
+                    percentile_metric, outcome_stage="raw"
+                ).to_pylist()
+                clipped_percentile = triggered_source.unit_frame(
+                    percentile_metric, outcome_stage="transformed"
+                ).to_pylist()
+                raw_percentile_by_unit = {row["unit_id"]: row["y"] for row in raw_percentile}
+                clipped_percentile_by_unit = {
+                    row["unit_id"]: row["y"] for row in clipped_percentile
+                }
+                assert clipped_percentile_by_unit == {
+                    unit_id: min(value, expected_percentile_cutoff)
+                    for unit_id, value in raw_percentile_by_unit.items()
+                }
+                assert max(clipped_percentile_by_unit.values()) == pytest.approx(
+                    expected_percentile_cutoff
+                )
+                with pytest.raises(CapabilityError) as raised:
+                    source.run(metrics=["percentile_revenue"])
+                assert raised.value.code == "readout.metric.percentile_winsorization"
+        finally:
+            analysis.close()
+            if reopened is not None:
+                reopened.close()
             con.disconnect()
 
     def test_artifact_without_trigger_evidence_refuses_by_name(self, tmp_path):

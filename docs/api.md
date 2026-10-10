@@ -223,12 +223,13 @@ See [Persisting a `TabularPolicy`](guides/logged-policy.md#persisting-a-tabularp
 
 ## Analysis and reporting
 
-`Analysis.allocation_history()` returns a PyArrow table with
-`experiment_id`, `ds`, `group_id`, `n_daily`, and `n_cumulative`, ordered
-by date and arm. It counts first-assignment enrollments independently of
-metric maturity, respecting the experiment's day boundary and mixed-assignment
-policy. This unit-level history requires a native definitions-backed
-analysis; non-native and clustered sources raise a coded `CapabilityError`.
+`Analysis.allocation_history(population=...)` returns a PyArrow table with
+`experiment_id`, `analysis_population`, `ds`, `group_id`, `n_daily`, and
+`n_cumulative`, ordered by population, date, and arm. `population="assigned"`
+dates cohorts at first assignment; `population="triggered"` dates eligible
+cohorts at their first trigger. Both are available on native definitions-backed
+analyses; non-native, artifact, and clustered sources refuse with a coded
+`CapabilityError`.
 
 `Analysis.available_metrics` lists the saved per-unit metrics on the experiment's unit that the
 experiment does not declare, in definitions order; report-only `total`/`active` metrics and other
@@ -315,14 +316,14 @@ the artifact contract modules.
 | `ClusterIdentityExtension` | Identifies the clustering relation. |
 | `CupedPreperiodExtension` | Supplies a pre-period measure. |
 | `AssignmentCountsExtension` | Captures assignment population counts. |
-| `TriggerPopulationExtension` | Captures the trigger population relation. |
+| `TriggerPopulationExtension` | Version-3, cutoff-bound trigger membership with trigger-feed completeness evidence. |
+| `TriggerMeasureStatsExtension` | Singleton metric trigger-relative per-unit/day sufficient statistics bound to trigger membership. |
 | `EncouragementUptakeExtension` | Captures encouragement uptake data. |
 | `SiteVolumeExtension` | Records site-level measure volume and freshness. |
 | `UnitCovariateExtension` | Carries one declared numeric per-unit covariate. |
 | `UnitCovariateLevelExtension` | Carries one declared categorical per-unit covariate, including nulls. |
-| `ArtifactExtensionCatalogEntry` | Stores a canonical extension definition and source recipe. |
-| `ArtifactExtensionRef` | Tagged union of the ten concrete extension references. |
-| `ArtifactExtensionRequest` | Tagged union of the ten concrete extension requests. |
+| `ArtifactExtensionRef` | Tagged union of the eleven concrete extension references. |
+| `ArtifactExtensionRequest` | Tagged union of the eleven concrete extension requests. |
 
 These are Pydantic models and tagged unions importable from `increment`; see
 `increment.semantics.artifact` for full field detail.
@@ -344,7 +345,8 @@ These are Pydantic models and tagged unions importable from `increment`; see
 ### Artifact extensions
 
 Extension references and descriptors define the supported dimensions,
-assignment, uptake, and site-volume extensions.
+assignment, trigger membership and metric-specific trigger outcomes, uptake,
+and site-volume extensions.
 
 ### Artifact requests
 
@@ -363,6 +365,7 @@ Requests validate caller-supplied extension definitions before publication.
 ::: increment.AssignmentCountsRequest
 
 ::: increment.TriggerPopulationRequest
+::: increment.TriggerMeasureStatsRequest
 
 ::: increment.EncouragementUptakeRequest
 
@@ -373,6 +376,21 @@ Requests validate caller-supplied extension definitions before publication.
 ::: increment.UnitCovariateLevelRequest
 
 ### Artifact publication and storage
+
+`Analysis.from_definitions(..., source_snapshot_evidence=...)` accepts an
+`increment.SourceSnapshotEvidence` only when the upstream source supplies an
+explicit timezone-aware event-time cutoff and optional per-feed certified
+complete-through instants. If omitted, no cutoff is fabricated: assigned-only
+operations remain available, while triggered membership, triggered outcomes,
+and publication of trigger evidence refuse with
+`source.native.trigger_evidence_required`. Missing feed certification remains
+unknown; observed maximum timestamps, publication time, and experiment end are
+never treated as completeness evidence. Triggered artifact outcome requests
+select one `trigger_measure_stats` entry per `(trigger, metric)` and are bound
+to the version-3 trigger membership relation digest and its same pinned cutoff.
+
+::: increment.SourceSnapshotEvidence
+
 
 Publication handles connect validated context to immutable snapshots in the
 authorized artifact store.
@@ -715,7 +733,7 @@ offending row in its `rows` context:
 | Rows with no relative interval (non-positive arm mean) selected by an absolute margin | Supported: the additive interval is reissued from the persisted `abs_diff`, `abs_se`, reference and `abs_alpha`, never narrower than the nominal interval. A row serialized before `abs_alpha` existed has no recorded level to cap at, so it is refused, `estimation.family.exploratory_construction`. |
 | Breakout segments, and whole-window rows beside them | Supported: one family over metric, arm and segment. |
 | Cells excluded by design (too few units, no control arm) | Not hypotheses: returned unchanged, outside the family. Outcome-based exclusions stay in `m` as non-rejections. |
-| Informative prior | Mathematically unsound for BH (a posterior tail is not a frequentist p-value): refused, `breakout.run_breakout_bh_excludes_prior`. |
+| Informative prior | A supported prior changes posterior fields only; family selection uses the persisted sampling evidence. A prior-bound row without a proven sampling-availability marker is refused for recomputation, `readout.legacy.sampling_unreconstructible`. |
 | Sequential inference | Unfinished: refused, `estimation.family.exploratory_sequential`. |
 | Quantile, percentile-winsorized and additive-scale rows | Unfinished: their interval cannot be reissued from persisted state without approximation, so they are refused, `estimation.family.exploratory_construction`. |
 | Rows already corrected, sensitivity rows, day-axis rows | Refused: `estimation.family.exploratory_pre_corrected`, `estimation.family.exploratory_non_decision`, `estimation.family.exploratory_row`. |

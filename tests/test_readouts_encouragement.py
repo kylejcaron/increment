@@ -18,7 +18,7 @@ why the layering decision landed there.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from typing import Any, Literal, cast
 
@@ -321,9 +321,19 @@ def test_missing_compliance_axis_refuses_before_reading_outcomes(monkeypatch, pa
         factor_summaries = unavailable_outcomes
         breakout_source = unavailable_outcomes
         breakout_sources = unavailable_outcomes
+        assigned_breakout_values = unavailable_outcomes
 
-        def day_source(self, *, metrics):
+        def validate_populations(
+            self,
+            populations: Sequence[Literal["assigned", "triggered"]],
+            *,
+            operation: str,
+        ) -> None:
+            assert all(population == "assigned" for population in populations), operation
+
+        def day_source(self, *, metrics, population="assigned"):
             assert metrics == [METRIC]
+            assert population == "assigned"
             reached_day_source.append("day_source")
             raise AssertionError("native day_source reached")
 
@@ -783,7 +793,7 @@ def test_asof_lift_randomized_design_forwards_preferred_direction():
     (result,) = readouts.asof_lift(src)
 
     assert result.preferred_direction == "increase"
-    assert result.prob_favorable() is not None
+    assert result.prob_favorable() is None
 
 
 def test_asof_lift_rejects_estimands_on_randomized_design():
@@ -1049,30 +1059,36 @@ def test_breakout_cuped_late_fits_theta_per_segment():
 
 
 def test_srm_runs_under_encouragement_design_not_suppressed():
-    design = Encouragement(
-        control_group="control",
-        uptake=UptakeSpec(fact="clicked"),
-        exclusion_restriction=ExclusionRestriction(
-            acknowledged=True, justification="assignment only moves revenue via uptake"
-        ),
-        allocation={"control": 0.5, "treatment": 0.5},
-    )
-    src = from_unit_summary(
-        _uptake_table(),
-        unit="user_id",
-        group="variant",
-        control="control",
-        metrics={"revenue": "mean"},
-        uptake="clicked",
-        design=design,
-    )
-    result = readouts.srm(src)
-    # Balanced allocation must not itself be flagged - a real SRMResult
-    # should come back (encouragement assignment is randomized), not NotApplicable.
     from increment.estimation.diagnostics import NotApplicable, SRMResult
 
+    def design(*, allocation_scheme):
+        return Encouragement(
+            control_group="control",
+            uptake=UptakeSpec(fact="clicked"),
+            exclusion_restriction=ExclusionRestriction(
+                acknowledged=True, justification="assignment only moves revenue via uptake"
+            ),
+            allocation={"control": 0.5, "treatment": 0.5},
+            allocation_scheme=allocation_scheme,
+        )
+
+    def source_for(assignment):
+        return from_unit_summary(
+            _uptake_table(),
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics={"revenue": "mean"},
+            uptake="clicked",
+            design=assignment,
+        )
+
+    missing = readouts.srm(source_for(design(allocation_scheme=None)))
+    assert isinstance(missing, NotApplicable)
+    assert missing.reason.startswith("integrity.allocation_scheme_missing")
+
+    result = readouts.srm(source_for(design(allocation_scheme="independent")))
     assert isinstance(result, SRMResult)
-    assert not isinstance(result, NotApplicable)
 
 
 def test_breakout_rejects_estimands_on_randomized_design():
@@ -2831,10 +2847,8 @@ def test_frame_encouragement_in_family_secondary_gets_a_discovery_verdict():
     assert all(r.family_axes == ("metric", "arm") for r in itt)
 
 
-def test_frame_encouragement_callwide_prior_excludes_secondary_family():
-    """A call-wide informative prior keeps encouragement secondaries out of
-    BH/FCR while preserving the primary outcome and canonical compliance
-    passes."""
+def test_frame_encouragement_callwide_prior_preserves_secondary_family():
+    """A call-wide prior preserves the sampling-only ITT secondary family."""
     src = from_unit_summary(
         _two_metric_uptake_table(),
         unit="user_id",
@@ -2849,10 +2863,22 @@ def test_frame_encouragement_callwide_prior_excludes_secondary_family():
     results = readouts.run(src, prior=Normal(mu=0.0, sigma=0.1))
     visits = [r for r in results if r.metric == "visits" and r.estimand == "itt"]
     assert visits
-    assert all(r.role == "secondary" for r in visits)
-    assert all(r.discovery is None for r in visits)
-    assert all(r.family_axes is None for r in visits)
-    assert all(r.require_lift().level == pytest.approx(0.95) for r in visits)
+    assert all(r.discovery is not None for r in visits)
+    assert all(r.family_axes == ("metric", "arm") for r in visits)
+    prior_free = {
+        (r.metric, r.group_id): r
+        for r in readouts.run(src, prior=None)
+        if r.metric == "visits" and r.estimand == "itt"
+    }
+    assert all(r.family_q == pytest.approx(0.02) for r in visits)
+    assert all(
+        r.family_threshold == prior_free[(r.metric, r.group_id)].family_threshold for r in visits
+    )
+    assert all(
+        r.require_lift().value
+        == pytest.approx(prior_free[(r.metric, r.group_id)].require_lift().value)
+        for r in visits
+    )
 
     revenue = [r for r in results if r.metric == "revenue" and r.estimand == "itt"]
     assert revenue
@@ -2866,8 +2892,9 @@ def test_frame_encouragement_callwide_prior_excludes_secondary_family():
 def test_frame_encouragement_compliance_ignores_outcome_config_and_order():
     """The canonical first-stage row is independent of outcome priors/methods.
 
-    Outcome configs still apply to their own ITT rows, but declaration order
-    must not decide which outcome config is borrowed for ``uptake``.
+    Outcome priors apply to each outcome's posterior fields, while the
+    displayed ``lift`` remains the prior-free sampling construction. Declaration
+    order must not decide which outcome config is borrowed for ``uptake``.
     """
 
     def run_with_specs(specs):
@@ -2929,11 +2956,21 @@ def test_frame_encouragement_compliance_ignores_outcome_config_and_order():
     )
     for name in ("revenue", "visits"):
         key = (name, "itt", "treatment")
-        assert declared_by_key[key].require_lift().value == pytest.approx(
-            reversed_by_key[key].require_lift().value
+        declared_estimate = declared_by_key[key]
+        reversed_estimate = reversed_by_key[key]
+        flat_estimate = flat_by_key[key]
+        assert declared_estimate.require_lift().value == pytest.approx(
+            reversed_estimate.require_lift().value
         )
-        assert declared_by_key[key].require_lift().value != pytest.approx(
-            flat_by_key[key].require_lift().value
+        assert declared_estimate.require_lift().value == pytest.approx(
+            flat_estimate.require_lift().value
+        )
+        assert declared_estimate.posterior_available is True
+        assert declared_estimate.posterior_estimate == pytest.approx(
+            reversed_estimate.posterior_estimate
+        )
+        assert declared_estimate.posterior_estimate != pytest.approx(
+            flat_estimate.require_lift().value
         )
 
 

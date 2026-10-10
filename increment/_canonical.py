@@ -158,6 +158,32 @@ def canonical_json_bytes(value: object) -> bytes:
     return _render(_json_value(value))
 
 
+def _digest_value(value: object) -> object:
+    mapping = _mapping(value)
+    if mapping is not None:
+        pairs = [[_digest_value(key), _digest_value(item)] for key, item in mapping.items()]
+        pairs.sort(key=lambda pair: canonical_json_bytes(pair[0]))
+        return ["mapping", pairs]
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, int):
+        return ["integer", str(value)]
+    if isinstance(value, float):
+        return value
+    if isinstance(value, (list, tuple)):
+        return ["sequence", [_digest_value(item) for item in value]]
+    return _json_value(value)
+
+
+def canonical_digest_bytes(value: object) -> bytes:
+    """Encode internal digest inputs with exact, typed full-width integers.
+
+    This is separate from format-1 canonical JSON, whose numeric domain remains
+    restricted for artifact compatibility.
+    """
+    return canonical_json_bytes(_digest_value(value))
+
+
 def canonical_json_loads(payload: str) -> object:
     """Parse canonical JSON while preserving the writer's numeric domain."""
 
@@ -183,4 +209,9 @@ def canonical_json_loads(payload: str) -> object:
     return json.loads(payload, parse_int=parse_int, object_pairs_hook=pairs)
 
 
-__all__ = ["CanonicalJSONError", "canonical_json_bytes", "canonical_json_loads"]
+__all__ = [
+    "CanonicalJSONError",
+    "canonical_digest_bytes",
+    "canonical_json_bytes",
+    "canonical_json_loads",
+]

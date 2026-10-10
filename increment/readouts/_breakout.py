@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import (
     UNSET,
@@ -11,6 +11,7 @@ from increment._analysis_config import (
 )
 from increment._literals import Correction
 from increment._readout_request import ReadoutRequest, validate_request
+from increment._source_types import classify_source
 from increment.breakout.estimates import (
     DEFAULT_RELIABILITY_FLOOR,
     BreakoutEstimate,
@@ -20,6 +21,7 @@ from increment.breakout.estimates import (
 )
 from increment.estimation.encouragement import ESTIMANDS, estimate_encouragement
 from increment.estimation.engine import Method, _validate_methods
+from increment.estimation.multiplicity import stamp_multiplicity_status
 from increment.estimation.sequential import SEQUENTIAL_POLICIES
 from increment.readouts._common import (
     _raise,
@@ -38,6 +40,40 @@ if TYPE_CHECKING:
     from increment.semantics.models import Metric
 
 
+def _scoped_breakout_results(
+    rows: Sequence[BreakoutEstimate],
+    *,
+    src: MomentSource,
+    analysis_population: Literal["assigned", "triggered"],
+    plan: Any,
+    resolved_configs: Any,
+    scope_request: Mapping[str, Any],
+    design: Any,
+    dimension: str,
+    source_name: str | None,
+) -> BreakoutEstimates:
+    route = classify_source(src)
+    if route == "panel":
+        route = "moments"
+    from increment.readouts._multiplicity_scope import scoped_collection
+
+    population_rows = [
+        row.model_copy(update={"analysis_population": analysis_population}) for row in rows
+    ]
+    return scoped_collection(
+        population_rows,
+        BreakoutEstimates,
+        plan,
+        resolved_configs,
+        scope_request,
+        route=route,
+        view="breakout",
+        design=design,
+        dimension=dimension,
+        source=source_name,
+    )
+
+
 def breakout(
     src: MomentSource,
     dimension: str,
@@ -50,6 +86,7 @@ def breakout(
     correction: Correction | None = None,
     q: float | None = None,
     estimands: Sequence[str] | None = None,
+    analysis_population: Literal["assigned", "triggered"] = "assigned",
 ) -> BreakoutEstimates:
     """Relative lift estimated separately for every distinct value of dimension.
 
@@ -91,8 +128,8 @@ def breakout(
     at the FCR level. Exact registered sequential breakouts select over their
     retained roster and reinvert selected intervals at the capped FCR
     allocation from the same stopped checkpoints. Corrected asymptotic-mean
-    families instead use fixed-roster Bonferroni familywise inference. Any
-    informative prior is refused with ``correction="bh"``.
+    families instead use fixed-roster Bonferroni familywise inference. A declared informative
+    prior changes posterior fields only; BH selection still consumes the row's sampling evidence.
 
 
     Under a fixed-horizon plan, a metric with a non-inferiority margin --
@@ -150,6 +187,37 @@ def breakout(
         q=q,
     )
     validate_request(request)
+    from increment.readouts._run import _config_snapshot
+
+    scope_request = {
+        "metrics": [
+            metric.model_dump(mode="json") for metric in sorted(selected, key=lambda m: m.name)
+        ],
+        "configs": [
+            _config_snapshot(config, design)
+            for config in sorted(resolved_configs, key=lambda c: c.metric.name)
+        ],
+        "dimension": dimension,
+        "estimands": None if estimands is None else tuple(estimands),
+        "correction": correction,
+        "q": q,
+        "source_name": source_name,
+        "analysis_population": analysis_population,
+    }
+
+    def scoped(rows):
+        return _scoped_breakout_results(
+            rows,
+            src=src,
+            analysis_population=analysis_population,
+            plan=plan,
+            resolved_configs=resolved_configs,
+            scope_request=scope_request,
+            design=design,
+            dimension=dimension,
+            source_name=source_name,
+        )
+
     if isinstance(plan.inference, SEQUENTIAL_POLICIES):
         from increment._sequential_readouts import sequential_readout
         from increment.sequential_state import sequential_refuse
@@ -177,10 +245,8 @@ def breakout(
                     family_threshold=row.family_threshold,
                 )
             )
-        return BreakoutEstimates(output)
+        return scoped(stamp_multiplicity_status(output))
 
-    if correction == "bh" and any(config.prior is not None for config in resolved_configs):
-        _raise("readout.breakout_correction_bh")
     methods_by_metric = {
         config.metric.name: _runtime_methods(config, design) for config in resolved_configs
     }
@@ -253,8 +319,10 @@ def breakout(
                             ),
                         )
                     )
-        return BreakoutEstimates(
-            [row.model_copy(update={"policy_name": "compiled_plan"}) for row in enc_results]
+        return scoped(
+            stamp_multiplicity_status(
+                [row.model_copy(update={"policy_name": "compiled_plan"}) for row in enc_results]
+            )
         )
     results: list[BreakoutEstimate] = []
     if correction == "bh":
@@ -278,6 +346,7 @@ def breakout(
                 dimension=dimension,
                 methods=None,
                 prior=None,
+                _prior_by_metric={name: config.prior for name, config in configs.items()},
                 alpha=alpha,
                 correction=correction,
                 q=q,
@@ -309,4 +378,4 @@ def breakout(
                     policy_name="compiled_plan",
                 )
             )
-    return BreakoutEstimates(results)
+    return scoped(stamp_multiplicity_status(results))

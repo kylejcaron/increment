@@ -977,7 +977,9 @@ def test_estimate_ate_returns_keyed_failures_when_every_metric_is_refused():
     assert len(computation.failures) == 1
     failure = next(iter(computation.failures.values()))
     assert failure.hypothesis.metric == "rpo"
-    assert failure.code == "estimation.adjust.unavailable"
+    # The public typed ratio refusal is documented at
+    # docs/guides/observational.md:941-943.
+    assert failure.code == "estimation.adjust_common.supported_ratio_metric"
 
 
 def test_prepare_adjustment_requests_shares_the_ratio_and_missing_refusals():

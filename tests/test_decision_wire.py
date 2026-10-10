@@ -87,7 +87,7 @@ def _view_policies() -> CompiledViewPolicies:
 @pytest.mark.parametrize(
     ("bound_prior", "named_family", "expected_discovery"),
     [(True, True, True), (True, False, None), (False, True, None)],
-    ids=["prior-exclusion", "explicit-no-family", "prior-free-exclusion"],
+    ids=["legacy-bound-prior-restored", "explicit-no-family", "prior-free-exclusion"],
 )
 def test_portable_prior_reset_restores_declared_family(
     tmp_path, bound_prior, named_family, expected_discovery
@@ -130,8 +130,8 @@ def test_portable_prior_reset_restores_declared_family(
         for row in rows:
             payload = json.loads(row["decision_plan"])
             family = payload["procedures"]["y"]["family"]
-            # Earlier exports persisted the prior's effective exclusion.
-            family["member"] = False
+            # Legacy wire omitted membership when a bound prior excluded the secondary.
+            family.pop("member", None)
             if not named_family:
                 family["family"] = {"kind": "none"}
             row["decision_plan"] = json.dumps(payload)
@@ -139,6 +139,9 @@ def test_portable_prior_reset_restores_declared_family(
             rows, control="control", metrics=[MetricSpec(name="y", prior=prior)]
         )
         inherited = lift_rows(replay.run())[0]
+        if bound_prior and named_family:
+            _assert_legacy_prior_roundtrip(replay, tmp_path / "legacy-roundtrip.parquet", prior)
+
         expected = lift_rows(oracle.run())[0].require_lift()
         for _ in range(2):
             cleared = lift_rows(replay.run(prior=None))[0]
@@ -154,12 +157,67 @@ def test_portable_prior_reset_restores_declared_family(
         assert restored.discovery is None
         assert restored.require_lift().value == pytest.approx(inherited.require_lift().value)
         if bound_prior:
-            assert restored.require_lift().value < expected.value
+            # Sampling stays prior-free; the declared prior is separate posterior state.
+            assert restored.require_lift().value == pytest.approx(expected.value)
+            assert restored.posterior_estimate is not None
+            assert restored.posterior_estimate < expected.value
+        if bound_prior and named_family:
+            _assert_explicit_nonmember_plan_stays_excluded(rows, prior)
     finally:
         source.close()
         oracle.close()
         if replay is not None:
             replay.close()
+
+
+def _assert_legacy_prior_roundtrip(replay: Any, path: Path, prior: Any) -> None:
+    import pyarrow.parquet as pq
+
+    from increment import Analysis, MetricSpec
+    from increment.sources import export_source_moments
+    from tests.analysis_factory import lift_rows
+
+    before = lift_rows(replay.run(prior=None))[0]
+    export_source_moments(
+        replay._state.source,
+        path,
+        observational_refusal=lambda _metric: None,
+    )
+    reloaded = Analysis.from_moments(
+        pq.read_table(path).to_pylist(),
+        control="control",
+        metrics=[MetricSpec(name="y", prior=prior)],
+    )
+    try:
+        after = lift_rows(reloaded.run(prior=None))[0]
+        assert after.discovery == before.discovery
+        assert after.family_axes == before.family_axes
+        assert after.family_size == before.family_size
+    finally:
+        reloaded.close()
+
+
+def _assert_explicit_nonmember_plan_stays_excluded(rows: Any, prior: Any) -> None:
+    from increment import Analysis, MetricSpec
+    from tests.analysis_factory import lift_rows
+
+    explicit_rows = []
+    for row in rows:
+        payload = json.loads(row["decision_plan"])
+        payload["procedures"]["y"]["family"]["member"] = False
+        explicit_rows.append({**row, "decision_plan": json.dumps(payload)})
+    explicit = Analysis.from_moments(
+        explicit_rows,
+        control="control",
+        metrics=[MetricSpec(name="y", prior=prior)],
+    )
+    try:
+        (row,) = lift_rows(explicit.run(prior=None))
+        assert row.discovery is None
+        assert row.family_axes is None
+        assert row.family_size is None
+    finally:
+        explicit.close()
 
 
 def _rich_plan() -> CompiledDecisionPlan:

@@ -32,6 +32,8 @@ def srm(
     adaptive, dependent, quota, exact-balance, and without-replacement
     protocols do not. Pass ``inference="fixed"`` for one predeclared
     Pearson look.
+    The source must also declare ``allocation_scheme="independent"``; a
+    missing or unsupported scheme returns ``NotApplicable`` before counts are read.
 
     Applies under `Encouragement` too - encouragement assignment IS
     randomized, only uptake is not; an SRM test on the assignment counts
@@ -71,6 +73,18 @@ def srm(
                 "a target allocation to mismatch"
             ),
         )
+    if inference == "always_valid":
+        scheme = getattr(design, "allocation_scheme", None)
+        if scheme != "independent":
+            code = (
+                "integrity.allocation_scheme_missing"
+                if scheme is None
+                else "integrity.allocation_scheme_unsupported"
+            )
+            return NotApplicable(
+                check="srm",
+                reason=f"{code}: always-valid SRM requires independent assignment",
+            )
     expected = resolve_srm_expected(
         expected,
         allocation=getattr(design, "allocation", None),

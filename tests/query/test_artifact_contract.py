@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from pydantic import ValidationError
 
 from increment.errors import InvalidRequestError
 from increment.query import artifact_contract as ac
@@ -74,6 +75,22 @@ def test_compile_context_rejects_unknown_on_mixed_assignment() -> None:
             _EXPERIMENT, _definitions(), on_mixed_assignment=cast("Any", "bogus")
         )
     assert exc_info.value.code == "artifact.on_mixed_assignment"
+
+
+def test_artifact_context_round_trips_declared_allocation_scheme() -> None:
+    definitions = _definitions()
+    experiment = definitions.experiment(_EXPERIMENT)
+    assert experiment is not None
+    declared = experiment.model_copy(update={"allocation_scheme": "independent"})
+    definitions = definitions.model_copy(update={"experiments": (declared,)})
+
+    context = ac.compile_unit_day_artifact_context(_EXPERIMENT, definitions)
+    stored = json.loads(context.canonical_json)["experiment"]
+    assert stored["allocation_scheme"] == "independent"
+    legacy = ac.compile_unit_day_artifact_context(_EXPERIMENT, _definitions())
+    assert "allocation_scheme" not in json.loads(legacy.canonical_json)["experiment"]
+
+    assert definitions.experiment(_EXPERIMENT).resolved_design().allocation_scheme == "independent"
 
 
 def test_compile_context_rejects_non_date_site_volume_coverage() -> None:
@@ -737,3 +754,64 @@ def test_error_context_survives_pickle_and_deepcopy() -> None:
     for clone in (pickle.loads(pickle.dumps(error)), copy.deepcopy(error)):
         assert clone.code == "artifact.refresh.invalid_ref"
         assert dict(clone.context) == {"name": "n1"}
+
+
+def test_trigger_measure_stats_types_are_exported_from_package_root():
+    import increment
+    from increment import TriggerMeasureStatsExtension, TriggerMeasureStatsRequest
+    from increment.semantics.artifact import TriggerMeasureStatsExtension as ArtifactExtension
+    from increment.semantics.artifact import TriggerMeasureStatsRequest as ArtifactRequest
+
+    assert TriggerMeasureStatsRequest is ArtifactRequest
+    assert TriggerMeasureStatsExtension is ArtifactExtension
+    assert {"TriggerMeasureStatsRequest", "TriggerMeasureStatsExtension"} <= set(increment.__all__)
+
+
+def test_trigger_measure_request_is_closed_to_one_metric():
+    from increment.semantics.models import TriggerMeasureStatsRequest
+
+    request = TriggerMeasureStatsRequest.model_validate(
+        {
+            "kind": "trigger_measure_stats",
+            "trigger_name": "checkout",
+            "metric_names": ["revenue"],
+        }
+    )
+    assert request.metric_names == ("revenue",)
+    with pytest.raises(InvalidRequestError):
+        TriggerMeasureStatsRequest.model_validate(
+            {
+                "kind": "trigger_measure_stats",
+                "trigger_name": "checkout",
+                "metric_names": ["revenue", "orders"],
+            }
+        )
+
+
+@pytest.mark.parametrize("legacy_version", [1, 2])
+def test_legacy_trigger_anchor_versions_are_rejected_and_require_republish(legacy_version):
+    from uuid import UUID
+
+    from increment.semantics.artifact import TriggerPopulationExtension
+
+    relation = {
+        "artifact_id": UUID("00000000-0000-0000-0000-000000000001"),
+        "generation_id": UUID("00000000-0000-0000-0000-000000000002"),
+        "role": "trigger_population",
+        "relation": {"name": "trigger_population"},
+        "schema_sha256": "0" * 64,
+        "content_sha256": "1" * 64,
+        "row_count": 0,
+        "primary_key": ["experiment_id", "unit_id"],
+    }
+    payload = {
+        "extension_version": legacy_version,
+        "relation": relation,
+        "definition_sha256": "2" * 64,
+        "source_provenance_sha256": "3" * 64,
+        "trigger_name": "checkout",
+        "observation_cutoff_ts": "2025-01-20T12:00:00Z",
+        "complete_through_ts": None,
+    }
+    with pytest.raises(ValidationError, match="extension_version"):
+        TriggerPopulationExtension.model_validate(payload)

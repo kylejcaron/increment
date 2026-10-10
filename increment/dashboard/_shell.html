@@ -117,6 +117,8 @@ code, .number { font-family: var(--inc-dashboard-mono-font); font-variant-numeri
 .tabs [role="tab"]:hover { background: none; color: var(--accent); }
 .tabs [role="tab"][aria-selected="true"] { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 .nav-note { font-size: 10px; color: var(--muted); padding-bottom: 15px; }
+.population-control { display: inline-flex; align-items: center; gap: 8px; margin: 0 16px 12px auto; font-size: 11px; color: var(--muted); white-space: nowrap; }
+.population-control select { border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; color: var(--ink); background: var(--surface); }
 
 /* ===== Sections shared by views =========================================== */
 .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 18px; margin: 0 0 17px; }
@@ -591,6 +593,12 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
       <button type="button" role="tab" id="tab-health" data-view-target="health" aria-controls="panel-health" aria-selected="false" tabindex="-1">Health</button>
       <button type="button" role="tab" id="tab-report" data-view-target="report" aria-controls="panel-report" aria-selected="false" tabindex="-1">Report</button>
     </div>
+    <label class="population-control" id="population-control" hidden>Population
+      <select id="population-select" aria-label="Analysis population">
+        <option value="assigned">Assigned</option>
+        <option value="triggered">Triggered</option>
+      </select>
+    </label>
     <span class="nav-note">One snapshot · four views</span>
   </nav>
 
@@ -802,10 +810,36 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   /* ---------- Payload -------------------------------------------------------- */
   let data;
   try {
-    data = JSON.parse($('dashboard-data').textContent);
+    const source = JSON.parse($('dashboard-data').textContent);
+    const options = Array.isArray(source.populationOptions) ? source.populationOptions : ['assigned'];
+    const requested = new URLSearchParams(window.location.search).get('population');
+    const population = options.includes(requested) ? requested : source.defaultPopulation || 'assigned';
+    data = Object.assign({}, source.populationViews && source.populationViews[population] || source, {
+      defaultPopulation: source.defaultPopulation || 'assigned',
+      populationOptions: options,
+      populationViews: source.populationViews || {},
+    });
+    data.population = population;
   } catch (error) {
     document.body.replaceChildren(el('p', { className: 'fatal', role: 'alert', text: 'The dashboard data is missing or invalid, so nothing can be shown.' }));
     return;
+  }
+  const populationControl = $('population-control');
+  const populationSelect = $('population-select');
+  if (populationControl && populationSelect && data.populationOptions.length > 1) {
+    populationControl.hidden = false;
+    populationSelect.value = data.population;
+    populationSelect.addEventListener('change', () => {
+      try {
+        sessionStorage.setItem(
+          'increment.dashboard.population-ui-state',
+          JSON.stringify({ readoutMetric: selectedReadoutMetric, explore: exploreState })
+        );
+      } catch { /* population selection still works when session storage is unavailable */ }
+      const params = new URLSearchParams(window.location.search);
+      params.set('population', populationSelect.value);
+      window.location.search = params.toString();
+    });
   }
   const metrics = Array.isArray(data.metrics) ? data.metrics : [];
   const metricByKey = new Map(metrics.map((metric) => [metric.key, metric]));
@@ -856,7 +890,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   /* ---------- Shared hero ---------------------------------------------------- */
   const primary = data.primary && typeof data.primary === 'object' ? data.primary : null;
   const healthStatus = data.healthStatus && typeof data.healthStatus === 'object' ? data.healthStatus : null;
-  const healthKind = healthStatus && ['healthy', 'warning', 'unavailable'].includes(healthStatus.kind) ? healthStatus.kind : 'unavailable';
+  const healthKind = healthStatus && ['healthy', 'warning', 'unavailable', 'not_checked'].includes(healthStatus.kind) ? healthStatus.kind : 'unavailable';
   const toneClass = (tone) => 'tone-' + (TONES.includes(tone) ? tone : 'neutral');
 
   function intervalLine(info) {
@@ -869,8 +903,8 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   function renderHero() {
     document.title = str(data.title) || 'Experiment dashboard';
     $('hero-title').textContent = str(data.title);
-    $('hero-description').textContent = str(data.description);
-    $('hero-meta').textContent = str(data.meta);
+    $('hero-description').textContent = [str(data.description), str(data.populationDisclaimer)].filter(Boolean).join(' ');
+    $('hero-meta').textContent = str(data.meta) + ' · Population: ' + str(data.populationLabel || 'Assigned');
     const box = $('hero-primary');
     if (primary) {
       box.hidden = false;
@@ -936,6 +970,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     mountNative($('readout-table'), data.results, { metrics: 'select' });
     mountNative($('readout-provenance'), data.provenance);
     syncReadoutSelection();
+    if (selectedReadoutMetric) openInspector(selectedReadoutMetric, false);
   }
 
   $('readout-table').addEventListener('click', (event) => {
@@ -949,6 +984,34 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 
   /* ---------- Explore -------------------------------------------------------- */
   const exploreState = { view: 'overview', scope: scopeKeys.includes('overall') ? 'overall' : scopeKeys[0], metric: exploreMetrics.length ? exploreMetrics[0].key : null, mode: 'relative', cadence: 'cumulative', complete: false };
+  let populationUiState = null;
+  try {
+    const stored = sessionStorage.getItem('increment.dashboard.population-ui-state');
+    sessionStorage.removeItem('increment.dashboard.population-ui-state');
+    populationUiState = stored ? JSON.parse(stored) : null;
+  } catch { /* stale or unavailable session state cannot block the dashboard */ }
+  if (populationUiState && typeof populationUiState === 'object') {
+    const savedExplore = populationUiState.explore;
+    if (metricByKey.has(populationUiState.readoutMetric)) {
+      selectedReadoutMetric = populationUiState.readoutMetric;
+    }
+    if (savedExplore && typeof savedExplore === 'object') {
+      if (savedExplore.view === 'overview' || savedExplore.view === 'series') {
+        exploreState.view = savedExplore.view;
+      }
+      if (scopeKeys.includes(savedExplore.scope)) exploreState.scope = savedExplore.scope;
+      if (metricByKey.has(savedExplore.metric)) exploreState.metric = savedExplore.metric;
+      if (savedExplore.mode === 'relative' || savedExplore.mode === 'cumulative') {
+        exploreState.mode = savedExplore.mode;
+      }
+      if (savedExplore.cadence === 'daily' || savedExplore.cadence === 'cumulative') {
+        exploreState.cadence = savedExplore.cadence;
+      }
+      if (typeof savedExplore.complete === 'boolean') {
+        exploreState.complete = savedExplore.complete;
+      }
+    }
+  }
   const overview = data.overview && typeof data.overview === 'object' ? data.overview : {};
   const groupDownload = createDownload($('group-download'));
   const ROLE_ORDER = ['primary', 'secondary', 'guardrail', 'exploratory'];

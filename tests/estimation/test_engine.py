@@ -240,15 +240,15 @@ class TestControlArmSignFlip:
         assert results[0].require_lift().value < 0
 
 
-# Deterministic +40% recovery: _make_arm_stats builds exact sufficient
-# statistics, so the closed-form posterior matches the delta-method CI up to
-# float noise (~1e-7 at n=100k). No Monte-Carlo draws means no
-# parameter_recovery marker.
+# Deterministic +40% recovery: `_make_arm_stats` builds exact sufficient
+# statistics, so the prior-free delta-method interval matches the analytic
+# sampling calculation up to float noise (~1e-7 at n=100k). No Monte-Carlo
+# draws means no `parameter_recovery` marker.
 
 
 class TestParameterRecovery:
     def test_positive_40_percent_lift_recovery(self):
-        """Recover a +40% relative lift with known moments and flat prior."""
+        """Recover a +40% relative lift with known moments and no prior."""
         true_relative_lift = 0.40
         true_log_rr = math.log(1.0 + true_relative_lift)
 
@@ -275,14 +275,14 @@ class TestParameterRecovery:
         assert lift.ub is not None
         assert lift.lb < true_relative_lift < lift.ub
 
-        # value/lb/ub are back-transformed from the closed-form posterior
-        # quantile (no sampling) - always > -1 on the relative scale.
+        # Value/lb/ub are the prior-free sampling interval, back-transformed
+        # from the log-ratio estimate; they are not posterior fields.
         assert lift.value > -1.0
         assert lift.lb > -1.0
 
-        # Flat-prior CI must match the closed-form delta-method CI to
-        # near-float precision -- both sides compute the identical
-        # Normal-Normal update from the same exact sufficient statistics.
+        # The sampling interval must match the closed-form delta-method
+        # interval to near-float precision; both use the same log-ratio
+        # sampling variance computed from exact sufficient statistics.
         se_log_control = math.sqrt(1.0 / (100000 * 1.0**2))
         se_log_treatment = math.sqrt(1.0 / (100000 * 1.4**2))
         se_log_rr = math.sqrt(se_log_control**2 + se_log_treatment**2)
@@ -2016,7 +2016,7 @@ class TestRatioNeighboringMeans:
         assert lift.log_mean is not None
         assert abs(lift.log_mean - want_log_rr) <= math.ulp(want_log_rr)
 
-    def test_subnormal_cross_ratio_keeps_informative_prior_result_accurate(self):
+    def test_prior_cannot_rescue_unrepresentable_sampling_cross_ratio(self):
         from decimal import Decimal, localcontext
         from fractions import Fraction
 
@@ -2026,22 +2026,25 @@ class TestRatioNeighboringMeans:
         den_c, den_t = math.ldexp(1.0, -500), math.ldexp(1.0, 575)
         control = _ratio_arm("control", 1.0, den_c).model_copy(update={"n": 10, "cy2": 0.9})
         treatment = _ratio_arm("treatment", num_t, den_t).model_copy(update={"n": 10, "cy2": 0.9})
-        prior = Normal(mu=0.0, sigma=0.005)
-        result = estimate_lift(
-            metrics=[_ratio_metric()],
-            summary=_summary_df([control, treatment]),
-            control_group="control",
-            prior=prior,
-        ).results[0]
         ratio = Fraction(num_t) * Fraction(den_c) / Fraction(den_t)
         with localcontext() as context:
             context.prec = 100
             log_ratio = float((Decimal(ratio.numerator) / Decimal(ratio.denominator)).ln())
-        variance = 0.01 + 0.01 / num_t**2
-        posterior_mean = log_ratio * prior.sigma**2 / (variance + prior.sigma**2)
-        assert result.require_lift().value == pytest.approx(
-            math.expm1(posterior_mean), rel=1e-12, abs=0
-        )
+        assert math.expm1(log_ratio) == -1.0
+        summary = _summary_df([control, treatment])
+        # `LiftEstimate.lift` is prior-free sampling evidence; a prior cannot
+        # make an unrepresentable sample point reportable
+        # (docs/guides/priors-and-decisions.md:7-9).
+        for prior in (None, Normal(mu=0.0, sigma=0.005)):
+            with pytest.raises(InvalidRequestError) as raised:
+                estimate_lift(
+                    metrics=[_ratio_metric()],
+                    summary=summary,
+                    control_group="control",
+                    prior=prior,
+                )
+            assert raised.value.code == "estimation.tails.unresolvable"
+            assert raised.value.context["what"] == "infer_lift relative point estimate"
 
     def test_shifted_null_matches_mean_metric_reference(self):
         null_lift = 1e-15
