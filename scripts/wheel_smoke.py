@@ -10,6 +10,8 @@ core-only call chain fails to execute.
 
 from __future__ import annotations
 
+import argparse
+import importlib.metadata
 import importlib.util
 import pathlib
 import sys
@@ -148,12 +150,61 @@ def main() -> None:
     assert frame_row["lift"] is None and frame_row["set_lower"] > 0
     assert frame_row["set_upper"] is None
 
+
+def _check_readme_mean_example() -> None:
+    """Execute the README dataframe mean-analysis example with its documented inputs."""
+    from random import Random
+
+    import polars as pl
+
+    from increment import Analysis
+    from increment.estimation.results import LiftEstimate
+
+    rng = Random(0)
+    df = pl.DataFrame(
+        {
+            "user_id": [f"u{i}" for i in range(200)],
+            "variant": ["control"] * 100 + ["treatment"] * 100,
+            "revenue": [rng.gauss(20 + (i >= 100), 5) for i in range(200)],
+        }
+    )
+    results = Analysis.from_unit_summary(
+        df,
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"revenue": "mean"},
+    ).run()
+    if len(results) != 1:
+        raise SystemExit("README mean-analysis example did not produce one result")
+    result = results[0]
+    if not isinstance(result, LiftEstimate) or result.metric != "revenue" or result.lift is None:
+        raise SystemExit("README mean-analysis example did not produce a revenue lift")
+    print(f"README mean-analysis smoke: OK (revenue lift={result.lift.value:+.1%})")
+
+
+def _arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--expected-version")
+    parser.add_argument("--readme-example", action="store_true")
+    parser.add_argument("--demo-extras", action="store_true")
+    return parser.parse_args()
+
+
+def _run() -> None:
+    args = _arguments()
+    main()
+    if args.expected_version is not None:
+        actual = importlib.metadata.version("increment")
+        if actual != args.expected_version:
+            raise SystemExit(
+                f"installed increment version {actual!r} does not match expected "
+                f"{args.expected_version!r}"
+            )
+    if args.readme_example:
+        _check_readme_mean_example()
     print(f"wheel_smoke: OK (package={increment.__file__}; cwd={pathlib.Path.cwd()})")
 
 
 if __name__ == "__main__":
-    if "--demo-extras" in sys.argv[1:]:
-        _check_duckdb_memtable_from_pyarrow()
-        print("wheel_smoke: OK (--demo-extras: sqlglot/DuckDB memtable regression probe passed)")
-    else:
-        main()
+    _run()

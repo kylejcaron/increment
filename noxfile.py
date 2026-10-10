@@ -532,8 +532,10 @@ def wheel_smoke(session: nox.Session) -> None:
     actual installed wheel, not the source tree."""
     script = Path("scripts/wheel_smoke.py").resolve()
     session.install(str(_single_wheel(session)))
+    if "--readme-example" in session.posargs:
+        session.install("polars")
     with TemporaryDirectory(prefix="increment-wheel-smoke-") as tmp, session.chdir(tmp):
-        session.run("python", str(script))
+        session.run("python", str(script), *session.posargs)
 
 
 @nox.session(python="3.12", reuse_venv=False)
