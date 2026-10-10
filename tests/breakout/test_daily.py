@@ -1469,20 +1469,111 @@ class TestDailyLiftEstimate:
         assert est.lift is lift
 
     def test_repr_is_concise_and_exposes_daily_estimate_identity(self):
+        ds = date(2025, 1, 1)
         est = DailyLiftEstimate(
             metric="rev",
             group_id="treatment",
             method="unadjusted",
             method_role="decision",
-            ds=date(2025, 1, 1),
+            ds=ds,
             lift=Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
         )
 
         rendered = repr(est)
-        assert "rev" in rendered and "treatment" in rendered
-        assert "2025-01-01" in rendered and "0.2" in rendered
-        assert "0.1" in rendered and "0.3" in rendered
-        assert "sequential_result" not in rendered
+
+        assert est.metric in rendered and est.group_id in rendered
+        assert ds.isoformat() in rendered
+        assert "interval" in rendered and "relative" in rendered
+
+    def test_unavailable_segment_identity_and_reason_survive_all_representations(self, capsys):
+        from rich.pretty import pretty_repr
+
+        ds = date(2025, 1, 1)
+        est = DailyLiftEstimate(
+            metric="revenue",
+            group_id="treatment",
+            method="unadjusted",
+            method_role="decision",
+            ds=ds,
+            lift=None,
+            unavailable="few_units",
+            dimension="country",
+            dimension_value="US",
+        )
+
+        print(est)
+        printed = capsys.readouterr().out
+        for rendered in (repr(est), str(est), pretty_repr(est), printed):
+            assert est.metric in rendered and est.group_id in rendered
+            assert any(text in rendered for text in (ds.isoformat(), repr(ds)))
+            assert est.dimension is not None and est.dimension_value is not None
+            assert est.dimension in rendered and est.dimension_value in rendered
+            assert "few_units" in rendered
+            assert "unavailable" in rendered and "interval" in rendered
+
+    def test_available_segmented_scale_and_interval_survive_all_representations(self, capsys):
+        from rich.pretty import pretty_repr
+
+        ds = date(2025, 1, 1)
+        est = DailyLiftEstimate(
+            metric="revenue",
+            group_id="treatment",
+            method="unadjusted",
+            method_role="decision",
+            ds=ds,
+            lift=Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
+            value_scale="absolute",
+            dimension="country",
+            dimension_value="US",
+        )
+
+        print(est)
+        printed = capsys.readouterr().out
+        for rendered in (repr(est), str(est), pretty_repr(est), printed):
+            assert est.metric in rendered and est.group_id in rendered
+            assert any(text in rendered for text in (ds.isoformat(), repr(ds)))
+            assert est.dimension is not None and est.dimension_value is not None
+            assert est.dimension in rendered and est.dimension_value in rendered
+            assert "absolute" in rendered
+            assert "interval" in rendered and "confidence" in rendered
+            assert "0.1" in rendered and "0.3" in rendered
+
+    def test_rich_repr_preserves_point_free_sequential_interval_geometry(self):
+        from rich.pretty import pretty_repr
+
+        from increment import AlwaysValid, estimate_sequential
+        from tests.sequential_cases import capture, records, registration
+
+        reg = registration("bernoulli")
+        snapshot = capture(reg, records([0] * 4, [1] * 4))
+        result = estimate_sequential(snapshot, AlwaysValid(registration=reg)).results[0]
+        sequential_result = result.sequential_result
+        assert sequential_result is not None
+        est = DailyLiftEstimate(
+            metric="outcome",
+            group_id="treatment",
+            method="unadjusted",
+            method_role="decision",
+            inference="always_valid",
+            reference_kind="sequential",
+            ds=date(2025, 1, 1),
+            lift=result.lift,
+            sequential_result=sequential_result,
+        )
+
+        rendered = pretty_repr(est)
+
+        assert est.sequential_result is not None
+        assert est.lift is None
+        assert est.sequential_result.bounds.upper is None
+        assert est.sequential_result.bounds.status in rendered
+        assert (
+            est.sequential_result.point_reason is not None
+            and est.sequential_result.point_reason in rendered
+        )
+        assert "ratio_interval" in rendered and "confidence" in rendered
+
+        assert "unavailable" not in rendered
 
     def test_repr_preserves_unavailable_relative_confidence_reason(self):
         from increment.estimation.results import JointContrastReference, RelativeConfidenceSet
@@ -1593,16 +1684,16 @@ class TestDailyLiftEstimate:
     def test_round_trips_on_a_real_run_daily_lift_result(self):
         """model_dump_json() round-trips on a REAL run_daily_lift output,
         the day-axis counterpart of TestBreakoutEstimate's round-trip test."""
+        ds = date(2025, 1, 1)
         rows = [
-            _make_daily_row(n=50, mean=10.0, var=4.0, ds=date(2025, 1, 1), group_id="control"),
-            _make_daily_row(n=50, mean=12.0, var=4.0, ds=date(2025, 1, 1), group_id="treatment"),
+            _make_daily_row(n=50, mean=10.0, var=4.0, ds=ds, group_id="control"),
+            _make_daily_row(n=50, mean=12.0, var=4.0, ds=ds, group_id="treatment"),
         ]
         results = run_daily_lift(rows, [_mean_metric("rev")], control_group="control")
         assert len(results) == 1
         est = results[0]
         rendered = repr(results)
-        assert "DailyLiftEstimate" in rendered and "2025-01-01" in rendered
-        assert "sequential_result" not in rendered
+        assert "DailyLiftEstimate" in rendered and ds.isoformat() in rendered
         round_tripped = DailyLiftEstimate.model_validate_json(est.model_dump_json())
         assert round_tripped == est
 
@@ -1638,6 +1729,8 @@ class TestDailyLiftEstimate:
 
         snapshot, policy = registered_bernoulli(n=4)
         result = estimate_sequential(snapshot, policy).results[0]
+        sequential_result = result.sequential_result
+        assert sequential_result is not None
         row = DailyLiftEstimate(
             metric="revenue",
             group_id="treatment",
@@ -1647,13 +1740,13 @@ class TestDailyLiftEstimate:
             reference_kind="sequential",
             ds=date(2025, 1, 1),
             lift=result.lift,
-            sequential_result=result.sequential_result,
+            sequential_result=sequential_result,
         )
         if not relabel:
             rendered = repr([row])
             assert "ratio_interval" in rendered
-            assert "EndpointCertificate" not in rendered
-            assert "status=" in rendered
+            assert result.sequential_result is not None
+            assert result.sequential_result.bounds.status in rendered
             assert DailyLiftEstimate.model_validate_json(row.model_dump_json()) == row
             return
         payload = row.model_dump()

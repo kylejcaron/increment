@@ -102,7 +102,10 @@ from increment.estimation.sequential import (
     AsymptoticMean,
     MixedFamily,
 )
-from increment.estimation.sequential_result import SequentialResult
+from increment.estimation.sequential_result import (
+    AsymptoticSequentialResult,
+    SequentialResult,
+)
 from increment.estimation.variance import VARIANCE_MODELS
 from increment.semantics.design import Encouragement, Observational, Randomized
 from increment.semantics.models import Metric, RetentionMetric
@@ -1431,18 +1434,64 @@ class DailyLiftEstimate(_RowIdentity):
             ("date", self.ds),
             ("estimand", self.estimand),
             ("population", self.analysis_population),
-            ("estimate", None if self.lift is None else self.lift.value),
         ]
+        if self.dimension is not None:
+            args.extend((("dimension", self.dimension), ("dimension_value", self.dimension_value)))
+        args.append(("scale", self.value_scale))
+        args.append(("estimate", None if self.lift is None else self.lift.value))
+
+        if self.sequential_result is not None:
+            if isinstance(self.sequential_result, AsymptoticSequentialResult):
+                bounds = self.sequential_result.bounds
+                args.append(
+                    (
+                        "ratio_interval",
+                        tuple(
+                            (component.lower, component.upper) for component in bounds.components
+                        ),
+                    )
+                )
+                args.append(("geometry", bounds.status))
+                if bounds.reason is not None:
+                    args.append(("bounds_reason", bounds.reason))
+            else:
+                bounds = self.sequential_result.bounds
+                args.append(("ratio_interval", (bounds.lower, bounds.upper)))
+            if self.lift is None and self.sequential_result.point_reason is not None:
+                args.append(("point_reason", self.sequential_result.point_reason))
+            args.append(("confidence", float(1 - self.sequential_result.bounds.alpha)))
+            args.append(("status", self.sequential_result.bounds.status))
+        elif self.relative_confidence_set is not None:
+            confidence_set = self.relative_confidence_set
+            args.append(
+                (
+                    "interval",
+                    "unavailable"
+                    if confidence_set.geometry == "unavailable"
+                    else confidence_set.intervals,
+                )
+            )
+            if confidence_set.geometry == "unavailable" and confidence_set.reason is not None:
+                args.append(("interval_reason", confidence_set.reason))
+            if self.lift is None and confidence_set.point_unavailable_reason is not None:
+                args.append(("point_reason", confidence_set.point_unavailable_reason))
+            args.append(("confidence", 1 - confidence_set.alpha))
+        elif self.binomial_set is not None:
+            args.append(("interval", (self.binomial_set.lower, self.binomial_set.upper)))
+            args.append(("confidence", self.binomial_set.level))
+        elif self.lift is not None and (self.lift.lb is not None or self.lift.ub is not None):
+            args.append(("interval", (self.lift.lb, self.lift.ub)))
+            if self.lift.level is not None:
+                args.append(("confidence", self.lift.level))
+        elif self.lift is None:
+            args.append(("interval", "unavailable"))
+
+        if self.unavailable is not None:
+            args.append(("unavailable", self.unavailable))
         if self.failure_code is not None:
             args.append(("failure", self.failure_code))
         if self.failure_context is not None and self.failure_context.get("reason") is not None:
             args.append(("reason", self.failure_context["reason"]))
-        if self.relative_confidence_set is not None:
-            confidence_set = self.relative_confidence_set
-            if self.lift is None and confidence_set.point_unavailable_reason is not None:
-                args.append(("point_reason", confidence_set.point_unavailable_reason))
-            if confidence_set.geometry == "unavailable" and confidence_set.reason is not None:
-                args.append(("interval_reason", confidence_set.reason))
         return args
 
 

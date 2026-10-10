@@ -929,16 +929,38 @@ def test_readout_table_marks_known_multiplicity_when_other_status_is_missing():
 
 def test_readout_table_shows_disclosures_without_a_title():
     pytest.importorskip("coeftable")
-    rows = estimates_to_readout(
-        [
-            _estimate("m", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
-        ]
-    )
+    from increment.estimation.multiplicity import stamp_multiplicity_status
+
+    estimates = [
+        _estimate("exploratory", "T", "unadjusted", 0.12, lb=0.02, ub=0.22).model_copy(
+            update={"role": "exploratory"}
+        ),
+        _estimate("planned", "T", "unadjusted", 0.12, lb=0.02, ub=0.22).model_copy(
+            update={"role": "primary"}
+        ),
+    ]
+    stamped = stamp_multiplicity_status(estimates)
+    rows = estimates_to_readout(stamped)
     rows[0]["decision_scope_complete"] = False
+    rows.append(
+        {
+            key: value
+            for key, value in estimates_to_readout(
+                [_estimate("legacy", "T", "unadjusted", 0.12, lb=0.02, ub=0.22)]
+            )[0].items()
+            if key != "multiplicity_status"
+        }
+    )
 
     html = readout_table(rows, title="").gt().as_raw_html()
 
     assert "Decision scope is incomplete" in html
+    assert "exploratory¹" in html
+    assert "¹ Exploratory, unadjusted for multiplicity (1 of 3 rows)" in html
+    assert "planned" in html and "Declared plan" not in html
+    assert "legacy" in html
+    declared_html = readout_table(estimates_to_readout([stamped[1]]), title="").gt().as_raw_html()
+    assert "Declared plan" in declared_html
 
 
 def test_readout_table_disambiguates_metric_colliding_with_status_marker():
