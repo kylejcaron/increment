@@ -246,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         locked = locked_prek_version(args.repo / "uv.lock")
-        executable = _stable_tool_bin() / "prek"
+        executable = _stable_tool_bin() / ("prek.exe" if sys.platform == "win32" else "prek")
         if not executable.is_file() or not os.access(executable, os.X_OK):
             raise HookInstallError(
                 f"stable prek tool is not installed. Install it explicitly with: "

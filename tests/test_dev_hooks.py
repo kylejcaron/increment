@@ -267,3 +267,20 @@ def test_install_rejects_project_environment_executable(
 
     with pytest.raises(install_dev_hooks.HookInstallError):
         install_dev_hooks.install_hooks(repo, prek=local_tool)
+
+
+def test_main_discovers_windows_user_tool_filename(
+    tmp_path: Path, stable_tool: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable, version = stable_tool
+    windows_executable = executable.with_name("prek.exe")
+    executable.rename(windows_executable)
+    repo = _repository(tmp_path / "repo", prek_version=version)
+    monkeypatch.setattr(install_dev_hooks.sys, "platform", "win32")
+
+    assert install_dev_hooks.main(["--repo", str(repo)]) == 0
+    (repo / "bad.py").write_text("reject fixture\n", encoding="utf-8")
+    _run("git", "-C", str(repo), "add", "bad.py")
+    rejected = _run("git", "-C", str(repo), "commit", "-m", "bad", check=False)
+    assert rejected.returncode != 0
+    assert (repo / ".hook-ran").is_file()
