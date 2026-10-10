@@ -244,6 +244,25 @@ def ratio_denominator_precision(arm: ArmStats) -> float:
     return math.sqrt(var_d / arm.n) / d_bar
 
 
+#: Standardized skewness of a denominator MEAN, ``g1 / sqrt(n)``, from which the
+#: pooled coverage of admitted ratio rows falls below 93.5% at nominal 95%
+#: (``calibration/ratio_skew.py``: lognormal denominators sigma 0.5-2.0, n 50-400;
+#: rows at or above it covered 92.2%, rows below it 94.3%).
+RATIO_DENOMINATOR_SKEW_THRESHOLD = 0.30
+
+
+def ratio_denominator_mean_skewness(arm: ArmStats) -> float:
+    """Standardized skewness of the arm's denominator mean, ``g1 / sqrt(n)``.
+
+    ``g1`` is the arm's sample skewness ``m3 / m2**1.5`` (:meth:`ArmStats.skew_den`);
+    dividing by ``sqrt(n)`` gives the skewness of ``d_bar``'s sampling law to
+    first order, the leading Edgeworth term of the mean's departure from
+    normality and so of the delta method's failure to see how ``1 / d_bar``
+    is distributed. Refuses when the third moment was not carried.
+    """
+    return arm.skew_den() / math.sqrt(arm.n)
+
+
 def ratio_log_mean_se(
     num_bar: float,
     den_bar: float,
@@ -610,15 +629,19 @@ class RatioVarianceModel:
             - 2 * Cov(Num, Den) / (Num_bar * Den_bar)
         ]
 
-    Asymptotic: undercovers under heavily right-skewed denominators at
-    small n - with a lognormal(sigma=1.5) denominator and an independent
-    numerator, measured 85.5% coverage at nominal 95% with n=20 units/arm,
-    89.6% at n=50 and 92.7% at n=100; benign denominators are nominal even
-    at n=20 (``calibration/ratio_precision.py``). The
-    second-order moments cannot see the skew itself, but
-    :func:`ratio_denominator_precision` - the denominator mean's relative
-    standard error - tracks the failure, and the engine attaches a
-    ``ratio_denominator_precision`` row note when either arm exceeds
+    Asymptotic: undercovers under heavily right-skewed denominators - with
+    a lognormal(sigma=1.5) denominator and an independent numerator,
+    measured 90.2% coverage at nominal 95% with n=50 units/arm, 92.7% at
+    n=100, 93.1% at n=200 and 93.7% at n=400, and worse at sigma=2.0
+    (85.1% at n=50, 91.7% at n=400); lognormal(sigma=0.5) is nominal at
+    every n (``calibration/ratio_skew.py``). The carried third moment of
+    the denominator exposes the regime: the engine emits the coded
+    ``estimation.engine.ratio_denominator_skew`` warning and attaches a
+    ``ratio_denominator_skew`` row note when either arm's
+    :func:`ratio_denominator_mean_skewness` exceeds
+    ``RATIO_DENOMINATOR_SKEW_THRESHOLD``, and attaches a
+    ``ratio_denominator_precision`` note when either arm's
+    :func:`ratio_denominator_precision` exceeds
     ``RATIO_DENOMINATOR_PRECISION_THRESHOLD``. The interval itself is
     unchanged: a flagged row is still anticonservative. Point estimate
     carries O(1/n) Jensen bias (+1-4pp at n<=200, vanishing by n=2000).

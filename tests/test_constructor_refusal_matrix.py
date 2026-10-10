@@ -80,7 +80,7 @@ def _moments_analysis() -> Analysis:
             "winsor_n": None,
             "winsor_n_lower": None,
             "winsor_n_upper": None,
-            "moments_format": 10,
+            "moments_format": 11,
             "successes": None,
             "decision_plan": wire,
         }

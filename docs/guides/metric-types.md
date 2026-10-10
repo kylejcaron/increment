@@ -472,6 +472,26 @@ method rather than as a simple mean of per-unit ratios.
 Each part is a full measure: its own `fact`, `aggregation`,
 `window_days`, and optional `filters`.
 
+### Heavy-tailed denominators at small samples
+
+The delta-method interval assumes the denominator mean is close to normally
+distributed. A heavily right-skewed denominator (a few units with very many
+sessions) breaks that at small samples: measured at nominal 95%, a
+lognormal(1.5) denominator covers 90.2% at 50 units per arm and 93.7% at 400,
+and a lognormal(2.0) denominator 85.1% and 91.7%, while a lognormal(0.5)
+denominator is nominal at every size. The moments carry the denominator's
+third moment, so each arm's sample skewness is known when the interval is
+built. When either arm's skewness divided by `sqrt(n)` exceeds 0.30, the
+readout raises the `estimation.engine.ratio_denominator_skew` warning naming
+the metric, arm, `n`, skewness and threshold, and the result row's `note`
+records it so tables and the dashboard show it. The estimate and interval are
+reported unchanged; treat the interval as optimistic, add units or examine the
+denominator's tail before deciding. A row estimated from a moments cube written
+before the third moment existed says the check was unavailable rather than
+passing silently. See [limitations](../limitations.md#uncertainty-is-estimated-on-every-path)
+for the measured table and the cases (clustered, sequential) the check does
+not claim.
+
 ### Conditional effects (CATE)
 
 Conditional effects currently support mean and conversion metrics only.

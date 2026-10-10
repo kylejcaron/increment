@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import tempfile
+import warnings
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ import pyarrow as pa
 import pytest
 
 from increment import Analysis
+from increment.errors import IncrementRuntimeWarning
 from increment.estimation.armstats import ArmStats
 from increment.estimation.engine import estimate_lift
 from increment.estimation.variance import (
@@ -30,6 +32,7 @@ from increment.estimation.variance import (
 from increment.frame import MetricSpec
 from increment.semantics.models import Measure, RatioMetric
 from tests.analysis_factory import lift_rows
+from tests.ratio_arms import array_arm, moment_arm, summary
 
 _METRIC = RatioMetric(
     name="rpo", entity="user", numerator=Measure(fact="num"), denominator=Measure(fact="den")
@@ -40,56 +43,14 @@ _SPEC = MetricSpec(name="rps", type="ratio", numerator="revenue", denominator="s
 def _arm(
     group_id: str, *, n: int, y_bar: float, var_y: float, d_bar: float, var_d: float
 ) -> ArmStats:
-    """An arm with exactly these ddof=1 moments and zero numerator/denominator covariance."""
-    return ArmStats.from_raw_sums(
-        study_id="e",
-        metric="rpo",
-        group_id=group_id,
-        n=n,
-        sum_y=n * y_bar,
-        sum_y2=n * y_bar**2 + (n - 1) * var_y,
-        sum_den=n * d_bar,
-        sum_den2=n * d_bar**2 + (n - 1) * var_d,
-        sum_yden=n * y_bar * d_bar,
-    )
-
-
-def _raw_arm(group_id: str, y: np.ndarray, d: np.ndarray) -> ArmStats:
-    return ArmStats.from_raw_sums(
-        study_id="e",
-        metric="rpo",
-        group_id=group_id,
-        n=len(y),
-        sum_y=float(y.sum()),
-        sum_y2=float((y * y).sum()),
-        sum_den=float(d.sum()),
-        sum_den2=float((d * d).sum()),
-        sum_yden=float((y * d).sum()),
-    )
-
-
-def _summary(*arms: ArmStats) -> pd.DataFrame:
-    return pd.DataFrame(
-        {
-            "experiment_id": a.study_id,
-            "metric": a.metric,
-            "group_id": a.group_id,
-            "n": float(a.n),
-            "ref_y": a.ref_y,
-            "cy1": a.cy1,
-            "cy2": a.cy2,
-            "ref_den": a.ref_den,
-            "cden1": a.cden1,
-            "cden2": a.cden2,
-            "cyden": a.cyden,
-        }
-        for a in arms
-    )
+    """An arm with exactly these ddof=1 moments, a symmetric denominator and
+    zero numerator/denominator covariance."""
+    return moment_arm(group_id, n=n, y_bar=y_bar, var_y=var_y, d_bar=d_bar, var_d=var_d)
 
 
 def _row(control: ArmStats, treatment: ArmStats):
     computation = estimate_lift(
-        metrics=[_METRIC], summary=_summary(control, treatment), control_group="control"
+        metrics=[_METRIC], summary=summary(control, treatment), control_group="control"
     )
     assert computation.failures == {}, computation.failures
     (row,) = computation.results
@@ -173,15 +134,16 @@ def _relative_se(values: list[int]) -> float:
 
 def test_advisory_reaches_the_unit_summary_path():
     unit_rows = _units()
-    (row,) = lift_rows(
-        Analysis.from_unit_summary(
-            pa.Table.from_pylist(unit_rows),
-            unit="unit_id",
-            group="group_id",
-            control="control",
-            metrics=[_SPEC],
-        ).run()
-    )
+    with pytest.warns(IncrementRuntimeWarning):
+        (row,) = lift_rows(
+            Analysis.from_unit_summary(
+                pa.Table.from_pylist(unit_rows),
+                unit="unit_id",
+                group="group_id",
+                control="control",
+                metrics=[_SPEC],
+            ).run()
+        )
     assert row.note is not None
     for group_id in ("control", "treatment"):
         stat = _relative_se([r["sessions"] for r in unit_rows if r["group_id"] == group_id])
@@ -272,9 +234,12 @@ def _event_rows(unit_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 @pytest.mark.slow
+@pytest.mark.filterwarnings("ignore::increment.errors.IncrementRuntimeWarning")
 def test_advisory_reaches_every_path_that_estimates_a_ratio_metric():
     """Unit summary, unit panel, definitions, unit-day artifact and portable
-    moments all carry the same advisory for the same per-unit data."""
+    moments all carry the same advisory for the same per-unit data. The same
+    data trips the denominator-skew warning on every path; that warning's
+    parity has its own harness."""
     import ibis
     import pyarrow.parquet as pq
 
@@ -353,10 +318,12 @@ def _advisory_rate(reps: int, seed: int) -> tuple[float, int]:
         for group_id in ("control", "treatment"):
             d = rng.lognormal(0.0, 1.5, size=50)
             y = rng.normal(2.0, 1.0, size=50)
-            arms.append(_raw_arm(group_id, y, d))
-        computation = estimate_lift(
-            metrics=[_METRIC], summary=_summary(*arms), control_group="control"
-        )
+            arms.append(array_arm(group_id, y, d))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", IncrementRuntimeWarning)
+            computation = estimate_lift(
+                metrics=[_METRIC], summary=summary(*arms), control_group="control"
+            )
         if not computation.results:
             continue
         admitted += 1

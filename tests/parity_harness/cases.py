@@ -8376,7 +8376,7 @@ def _export_counts_and_replay(
     """
     try:
         rows = _export_rows(analysis)
-        assert {row["moments_format"] for row in rows} == {11}
+        assert {row["moments_format"] for row in rows} == {12}
         for name, arms in expected.items():
             _assert_arm_counts(
                 f"export/{name}", [row for row in rows if row["metric"] == name], arms

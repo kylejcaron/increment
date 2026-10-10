@@ -251,7 +251,7 @@ def test_export_from_moments_round_trips_run_exactly(analysis, tmp_path):
     path = tmp_path / "moments.parquet"
     analysis.export(path)
     rows = pq.read_table(path).to_pylist()
-    assert {row["moments_format"] for row in rows} == {11}
+    assert {row["moments_format"] for row in rows} == {12}
 
     specs = [_metric_spec(m) for m in analysis.metrics]
     rehydrated_src = Analysis.from_moments(rows, metrics=specs, control="control")

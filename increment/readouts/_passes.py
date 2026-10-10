@@ -39,17 +39,24 @@ def _emit_captured_lift_warnings(
     captured: list[Any],
     advisory_seen: set[tuple[str, str]],
 ) -> None:
-    """Replay estimator warnings while deduplicating known per-metric advisories."""
+    """Replay estimator warnings while deduplicating known per-metric advisories.
+
+    A contrast-level advisory repeats once per treatment arm; the
+    denominator-skew warning names its arm, so it repeats once per flagged
+    arm instead of once per contrast.
+    """
     for record in captured:
         message = str(record.message)
+        key: tuple[str, str] | None
         if "is open-ended (" in message:
-            advisory_kind = "open-ended-sequential"
+            key = (metric_name, "open-ended-sequential")
         elif "total clusters across arms" in message:
-            advisory_kind = "clustered-small-k"
+            key = (metric_name, "clustered-small-k")
+        elif getattr(record.message, "code", None) == "estimation.engine.ratio_denominator_skew":
+            key = (metric_name, f"ratio-denominator-skew:{record.message.context['arm']}")
         else:
-            advisory_kind = None
-        if advisory_kind is not None:
-            key = (metric_name, advisory_kind)
+            key = None
+        if key is not None:
             if key in advisory_seen:
                 continue
             advisory_seen.add(key)
