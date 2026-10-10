@@ -843,6 +843,28 @@ def _capture_registration(registration, source_id, definitions_id, finalized, pr
     return rid
 
 
+def _replay_unchanged_prefix(
+    previous: SequentialSnapshot,
+    triggered: SequentialSnapshot | None,
+    reveal_cursor: date | datetime | str | int | float | None,
+) -> SequentialSnapshot:
+    """A recapture of an unchanged prefix is the parent itself.
+
+    Only an advanced triggered chain or a new reveal label makes a distinct
+    object, and that object still has to prove it continues the parent.
+    """
+    update: dict[str, object] = {}
+    if triggered != previous.triggered:
+        update["triggered"] = triggered
+    if reveal_cursor is not None and reveal_cursor != previous.reveal_cursor:
+        update["reveal_cursor"] = reveal_cursor
+    if not update:
+        return previous
+    snapshot = previous.model_copy(update=update)
+    snapshot.verify_parent(previous)
+    return snapshot
+
+
 def _capture_sequential_diagnostic_snapshot(  # noqa: PLR0915
     registration: SequentialRegistration,
     records: Iterable[Mapping[str, object]],
@@ -1001,12 +1023,7 @@ def _capture_sequential_diagnostic_snapshot(  # noqa: PLR0915
         ]
     prefix = canonical_id(content)
     if previous is not None and prefix == previous.prefix_id:
-        update: dict[str, object] = {"triggered": triggered}
-        if reveal_cursor is not None:
-            update["reveal_cursor"] = reveal_cursor
-        snapshot = previous.model_copy(update=update)
-        snapshot.verify_parent(previous)
-        return snapshot
+        return _replay_unchanged_prefix(previous, triggered, reveal_cursor)
     snapshot = SequentialSnapshot(
         registration=registration,
         registration_id=rid,
