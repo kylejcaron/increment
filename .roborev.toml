@@ -36,6 +36,19 @@ Change quality:
   through ingress and replay rather than relying on field defaults.
 - Replay tests must run claimed consumers on the restored object, not the
   original.
+- Consumer outcomes: use the affected journey contracts in docs/validation.md
+  and tests/readout_journeys.py. Constructor presence and row counts are not
+  evidence that an analyst can reach and correctly interpret the result.
+- Scoped collections: verify every requested cell is present as a result or an
+  identity-preserving unavailable row with its reason, including valid siblings.
+- Sampling and posterior evidence stay distinct; a prior must not change
+  sampling inference, and posterior-dependent decisions need a real posterior
+  or an explicit unavailable reason.
+- Assignment integrity must use the assigned population and declared grain.
+  NotApplicable is not a pass; triggered counts do not validate assignment.
+- Retain multiplicity family scope through filtering. exploratory_unadjusted
+  means no family adjustment. Assigned and triggered are separate populations;
+  conditioning on a trigger does not establish causal validity.
 - Do not block on unshipped design artifacts under docs/superpowers/ already
   accepted by explicit user adjudication. Review the shipped implementation
   against their obligations instead.

@@ -124,23 +124,47 @@ Jupyter Notebook, JupyterLab, or ipywidgets.
   affected mode. The launcher uses a fixed config, sanitized environment,
   explicit plugin set, and a parser-backed effective-option allowlist.
 
-  The Tach selection reuses the dependency graph and filesystem guards. It
-  refuses changes whose impact is not proven (including configuration,
-  dependencies/plugins, conftest/shared fixtures, data, source files that
-  dynamically load arbitrary paths, and public lazy exports). When source
-  changes, it retains every detected dynamic-import consumer test file and
-  reports consumers not selected by the current tier/selector; run the
-  relevant slow/broader validation for those tests. A successful affected run
-  requires finished owner-matched evidence whose exact terminal report node
-  IDs equal its nonempty selected node IDs. A zero-selection run is rejected.
-  Affected-fast is a feedback tool, not a replacement for explicit slow,
-  parity, fixture, public-smoke, documentation, or scientific acceptance.
-  Keep the exact focused regression and required broader gates.
+  The selector uses Testmon only with a complete, matching map for the requested
+  tier and changed function bodies; otherwise it falls back to the conservative
+  local AST import graph. The graph follows transitive source/test-helper
+  imports, resolves public lazy exports, and retains all tests if any graph file
+  is unparseable. Module/class-level or import-executed changes use the graph.
+  Changed tests, dynamic-import helpers and their transitive test consumers,
+  subprocess tests and filesystem guards remain selected. Changes to config,
+  dependencies/plugins, conftest/shared fixtures, data, public lazy exports, or
+  source that dynamically loads arbitrary paths refuse with an explicit broader route.
 
-  Each long-running task's dispatch/resume trail records its base SHA, exact
-  commands, serial/numeric worker allowance, remaining acceptance, and evidence
-  location. Selection evidence is specific to source/worktree/environment and
-  dirty inputs; a changed base or input requires a new run.
+  Normal tiers record per-test executed code in ignored `.testmondata` without
+  enabling selection. Only unfiltered, fully executed fast/slow/all tiers can
+  publish completeness markers. Focused, sharded, help, collection-only and
+  inherited `PYTEST_ADDOPTS` runs cannot certify a tier. Markers bind the database,
+  exact Python/dependency environment, source inventory, collected node IDs,
+  import-time coverage from a fresh interpreter, module/class AST fingerprints,
+  resolved selection controls and terminal reports. Fast/slow certify only their
+  own tier; all certifies both. A tier marker remains valid only while its node
+  IDs still exist in the database, including scheduler group suffixes.
+
+  Affected startup pins and validates the worktree map before Testmon mutates
+  it. Missing, unreadable, corrupt, stale or incomplete maps use the graph.
+  Affected runs never certify a tier. On the Testmon route, changed test-helper
+  consumers remain protected from deselection. Collection restores scheduling
+  after plugin hooks without changing final node IDs.
+
+  Supervised pytest children carry an explicit owner-child role. Nested normal
+  runners bypass Testmon reads/writes and certification; without a valid owner
+  token they do not acquire its database lock. Reusing a live same-worktree lock
+  requires a verified owner token.
+
+  A successful affected run requires finished owner-matched evidence whose exact
+  terminal node IDs equal its nonempty selected node IDs. Evidence records
+  `testmon` or `import_graph` as the selection route. Zero selection is rejected.
+  Affected-fast is feedback, not a replacement for slow, parity, fixtures, public
+  smokes, documentation, scientific or full-suite acceptance.
+
+  Dispatch/resume notes record the immutable base, exact commands, serial/numeric
+  worker allowance, remaining acceptance and evidence location. Evidence is
+  source/worktree/environment/dirty-input specific; changed inputs require a
+  new affected run, not reuse of an earlier green receipt.
 
 
 Before pushing, run:
@@ -190,11 +214,13 @@ Snowflake, and BigQuery checks live under `integration/warehouse_execution/`
 and require dedicated scratch resources and credentials. Contributors do not
 need those services for ordinary changes.
 
-CI requires lint, fast tests on Python 3.12–3.14, package builds, and live
-PostgreSQL 16 probes through `ci-ok`. PostgreSQL may skip a PR only when all
-changes are known prose or static documentation assets. Library, test,
-fixture, dependency, CI, unknown, deletion, and rename changes require it;
-an unavailable diff also requires it. Main pushes never use this filter.
+The checked-in CI candidate requires lint, fast tests on Python 3.12–3.14,
+functional slow tests, package builds, and live PostgreSQL 16 probes through
+`ci-ok`; hosted enforcement and required-check activation remain owner gates.
+PostgreSQL may skip a PR only when all changes are known prose or static
+documentation assets. Library, test, fixture, dependency, CI, unknown,
+deletion, and rename changes require it; an unavailable diff also requires it.
+Main pushes never use this filter.
 
 Each fast Python-version cell has two duration-balanced `pytest-split` shards,
 with `xdist` workers inside each shard. `ci-ok` requires all six jobs. The
@@ -247,6 +273,20 @@ coverage, bias, and parameter-recovery checks also use
 `parameter_recovery` and retain a small fast smoke case. See
 [AGENTS.md](AGENTS.md) for the repository's architecture, parity, numerical,
 and test-contract requirements.
+
+#### Refusal registry gate
+
+Register each refusal lookup key in the registry bound to its caller's
+`raiser(...)`; registration in another module does not satisfy that dispatcher.
+Keep intentional aliases pointing to the canonical spec. The gate checks local
+registration and statically known template keys:
+
+```bash
+make test TESTS='tests/test_refusal_drift.py tests/test_refusal_uniqueness.py tests/test_docs_refusal_guidance.py tests/test_refusal_gate.py'
+```
+
+Dynamic keys are reported as statically unknown and require public
+producer/dispatcher coverage; this gate is not a global refusal catalogue.
 
 ### Backend verification
 
@@ -470,8 +510,11 @@ Every public capability declares its behavior for every metric type in
 2. Classify it as supported, refused, structurally inapplicable, or a known
    gap.
 3. Back the classification with an executable probe.
-4. Update the path-by-capability table in `docs/reference/capabilities-by-entry-point.md`
-   (and re-run `scripts/probe_capability_table.py`).
+4. Update the authoritative bindings in `tests/capability_entry_point_catalog.py`
+   and their consumer/parity evidence; regenerate the path-by-capability page
+   with `uv run python scripts/render_capability_table.py`, then run it with
+   `--check`. Use `scripts/probe_capability_table.py --case <id>` to exercise
+   the named scenario, not to transcribe a second capability table.
 5. Decide where the refusal lives. A rule that does not depend on the data
    source goes in the shared readout gate (`validate_request` and its owners).
    Declare it in `GATE_POLICY` in `tests/test_source_capabilities.py` when it
@@ -595,3 +638,64 @@ duplicate.
 Roborev is optional. The checked-in `.roborev.toml` contains only
 repository-specific review criteria; agent, model, reasoning, timeout, and
 credential settings come from each contributor's global configuration.
+
+### Review and handoffs
+
+Pin the integration branch, absolute worktree and task base before dispatch.
+Assign disjoint files and one writer for shared result schemas, serialization
+boundaries and integration configuration. Consumers need an exercised
+implementation handoff, not an independently invented carrier from a design.
+Keep modules importable after each edit. Preserve partial work and stop the old
+writer before transferring ownership.
+
+Coordinate the host's aggregate CPU/RAM allowance. Scoped correctness checks may
+overlap; one coordinator runs broad integration checks. Reserve an uncontended
+window only for timing measurements, and label measurements under load as
+contended. Integrate a lane after its focused checks and review pass, then run
+the combined focused selection. Include relevant slow tests of each changed test
+file before its integration commit; docs-only clarifications do not justify
+repeated broad suites.
+
+Every PR requires a human diff read before merging, including whether an
+extraction left parallel implementations behind. Design reviews belong at their
+agreed contract gate; subsequent verification reviews the implementation.
+Neither a passing primitive test nor an accepted design establishes a complete
+analyst journey.
+
+When using Roborev, freeze the head and review the coherent base-to-tip range:
+
+```bash
+roborev review --repo <absolute-worktree> --branch <branch> --base <base-sha> --wait
+```
+
+Confirm the job's actual base/head and that the branch did not move.
+`--sha` does not replace a branch range's base. Review changed integration
+resolutions and substantive fixes; do not skip all merge commits or suppress
+finding classes. Run `roborev fix --list --branch <branch>` from the assigned
+worktree before closing tracked work and after integration commits. Close each
+review only with code/test evidence for every finding; another clean review
+does not resolve an older finding.
+
+The repository's installed post-commit hook currently dispatches automatic
+reviews. Ready-range commands do not change that shared hook. Changing automatic
+dispatch or hook installation requires an explicit owner checkpoint, an inventory
+of live worktree consumers, a tested rollback and verified supported controls.
+Keep current hooks and the before-push `make check` obligation until the
+replacement hosted gate is actually required and its failure behavior is observed.
+
+For an owner-authorized manual-ready transition, back up the common Git
+`post-commit`, `post-rewrite` and `pre-push` files with their permissions and
+record their custom/legacy ownership before running `roborev uninstall-hook`
+from the prepared worktree. This command removes Roborev from all three hooks,
+not just commit dispatch; verify each remaining hook before relying on it.
+Use the pinned range command above for reviews. Do not remove mandatory
+pre-push checks. Rollback restores the recorded files and permissions;
+`roborev install-hook --binary <stable-roborev-executable>` is the supported
+reinstallation command, without `--force`. Reverify actual custom/legacy
+behavior and prepared worktree consumers before activation.
+
+Handoffs name exact commits, dirty/untracked files, executed commands and evidence,
+unresolved decisions, remaining acceptance and next action. Distinguish
+implemented, verified, integrated and issue-closed state. Update the ledger at
+each state change. Ignored plans and temporary probes stay local; do not force-add
+them to obtain commit-based reviews or replace product documentation.
