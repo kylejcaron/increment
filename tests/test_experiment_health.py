@@ -88,7 +88,23 @@ def test_untriggered_summary_has_explicit_unavailable_triggered_rows() -> None:
 def test_balanced_trigger_rates_do_not_clear_assumption_risk(tmp_path) -> None:
     from tests.test_analysis_trigger import _analysis, _events
 
-    analysis = _analysis(tmp_path, _events(n_per_arm=100, trigger_rate=0.5))
+    events = _events(n_per_arm=100, trigger_rate=0.5)
+    event_rows = events.to_pylist()
+    expected_rates = {}
+    for arm in ("C", "T"):
+        assigned_units = {
+            row["user_id"]
+            for row in event_rows
+            if row["group_id"] == arm and row["event"] == "enrolled"
+        }
+        triggered_units = {
+            row["user_id"]
+            for row in event_rows
+            if row["group_id"] == arm and row["event"] == "saw_surface"
+        }
+        expected_rates[arm] = len(triggered_units) / len(assigned_units)
+
+    analysis = _analysis(tmp_path, events)
     try:
         report = analysis.health_check(expected_allocation={"C": 0.5, "T": 0.5})
     finally:
@@ -96,7 +112,7 @@ def test_balanced_trigger_rates_do_not_clear_assumption_risk(tmp_path) -> None:
     rates = next(check for check in report.checks if check.check == "trigger_rates")
     assumptions = next(check for check in report.checks if check.check == "trigger_assumptions")
     assert rates.availability == "available"
-    assert rates.rates["C"] == pytest.approx(rates.rates["T"])
+    assert dict(rates.rates) == pytest.approx(expected_rates)
     assert assumptions.context["counterfactual_trigger_invariance"].startswith("assumed")
     assert assumptions.context["trigger_order_stationarity"].startswith("assumed")
     assert assumptions.context["family_guarantee"] is None
