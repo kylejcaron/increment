@@ -29,6 +29,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from increment import Analysis, MetricSpec
+from increment.breakout.estimates import LiftEstimates
 from increment.errors import IncrementWarning
 from increment.estimation.results import LiftEstimate
 from increment.results import NotApplicable, SRMResult
@@ -244,30 +245,63 @@ def test_daily_and_asof_lift_cover_all_metrics(analysis):
 
 @pytest.mark.integration
 def test_realistic_warehouse_artifact_replay_matches_native(analysis, con):
+    from increment.estimation.readout_types import CellKey
     from increment.query.session import WarehouseArtifactStore
+    from tests.readout_journeys import assert_prior_free_sampling_family
 
     store = WarehouseArtifactStore(con, schema_name="m3_realistic")
     reference = analysis.publish_unit_day_artifact(store)
     adopted = Analysis.from_unit_day_artifact(
         store, reference, expected_context=analysis.artifact_context
     )
-    expected = {
-        (row.metric, row.group_id): row.require_lift() for row in _lift_rows(analysis.run())
-    }
-    observed = {(row.metric, row.group_id): row.require_lift() for row in _lift_rows(adopted.run())}
+    expected_result = analysis.run()
+    observed_result = adopted.run()
+    assert isinstance(expected_result, LiftEstimates)
+    assert isinstance(observed_result, LiftEstimates)
+    expected_metadata = expected_result.metadata
+    observed_metadata = observed_result.metadata
+    assert expected_metadata is not None and observed_metadata is not None
+    expected_rows = _lift_rows(expected_result)
+    observed_rows = _lift_rows(observed_result)
+    expected = {CellKey.from_row(row): row for row in expected_rows}
+    observed = {CellKey.from_row(row): row for row in observed_rows}
     assert expected.keys() == observed.keys()
-    for cell, expected_lift in expected.items():
-        observed_lift = observed[cell]
-        assert observed_lift.value == pytest.approx(expected_lift.value, abs=1e-9)
-        for actual, expected_endpoint in (
-            (observed_lift.lb, expected_lift.lb),
-            (observed_lift.ub, expected_lift.ub),
-        ):
-            if expected_endpoint is None:
-                assert actual is None
-            else:
-                assert actual == pytest.approx(expected_endpoint, abs=1e-9)
+    assert_prior_free_sampling_family(expected_result)
+    assert_prior_free_sampling_family(observed_result)
+    for cell, expected_row in expected.items():
+        observed_row = observed[cell]
+        # The independently sourced snapshots/families have source-bound IDs;
+        # compare their semantic contents and linkage, not their hashes.
+        _assert_nested_approx_equal(
+            observed_row.model_dump(mode="json", exclude={"source_snapshot_id", "family_id"}),
+            expected_row.model_dump(mode="json", exclude={"source_snapshot_id", "family_id"}),
+        )
+        assert observed_row.source_snapshot_id is not None
+        assert expected_row.source_snapshot_id is not None
+        assert observed_row.family_id is not None
+        assert expected_row.family_id is not None
+        assert observed_row.family_procedure == expected_row.family_procedure
+        assert observed_row.family_size == expected_row.family_size
+        assert observed_metadata.record(observed_row.source_snapshot_id, cell) is not None
+        assert expected_metadata.record(expected_row.source_snapshot_id, cell) is not None
     adopted.close()
+
+
+def _assert_nested_approx_equal(actual, expected):
+    if isinstance(expected, dict):
+        assert isinstance(actual, dict)
+        assert actual.keys() == expected.keys()
+        for key in expected:
+            _assert_nested_approx_equal(actual[key], expected[key])
+    elif isinstance(expected, list):
+        assert isinstance(actual, list)
+        assert len(actual) == len(expected)
+        for actual_item, expected_item in zip(actual, expected, strict=True):
+            _assert_nested_approx_equal(actual_item, expected_item)
+    elif isinstance(expected, float):
+        assert actual == pytest.approx(expected, rel=1e-12, abs=1e-12)
+    else:
+        assert actual == expected
 
 
 @pytest.mark.integration
