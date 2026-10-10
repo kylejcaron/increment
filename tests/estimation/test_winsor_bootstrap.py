@@ -1093,6 +1093,20 @@ def test_exact_point_summary_matches_legacy_fraction_identity():
     assert copied._exact_point_summary() != summary
 
 
+def test_bootstrap_observed_log_point_matches_reference_validation_when_ratio_rounds_to_minus_one():
+    from fractions import Fraction
+
+    from increment.estimation._winsor_bootstrap import _bootstrap_observed_points
+    from increment.winsor import _log_relative_exact_means
+
+    control = Fraction(sum((Fraction(value) for value in (1, 2, 3, 9)), Fraction()), 4)
+    treatment = control * Fraction(1, 2**61)
+    point, _ = _bootstrap_observed_points(control, (treatment,))[0]
+
+    assert float((treatment - control) / control) == -1.0
+    assert point == _log_relative_exact_means(control, treatment)
+
+
 @pytest.mark.slow
 def test_full_reference_stream_centering_wire_and_reinversion():
     from increment.estimation.winsor import estimate_winsor_lift

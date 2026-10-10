@@ -182,23 +182,27 @@ def _as_collection(rows: list[LiftEstimate]) -> LiftEstimates:
     return rows if isinstance(rows, LiftEstimates) else LiftEstimates(rows)
 
 
-def _observational_adjustment_identity(src, selected, configs, design):
+def _observational_adjustment_identity(src, selected, configs, design, rows):
     from increment._analysis_config import effective_methods
 
-    adjusted = {
-        config.metric.name
+    adjusted_methods = {
+        (config.metric.name, method.name)
         for config in configs
-        if any(
-            method.name in {"iptw", "dml", "aipw"}
-            for method in effective_methods(config, design=design)
-        )
+        for method in effective_methods(config, design=design)
+        if method.name in {"iptw", "dml", "aipw"}
     }
+    used = {
+        (row.metric, row.method)
+        for row in rows
+        if row.failure_code is None and (row.metric, row.method) in adjusted_methods
+    }
+    adjusted = {metric for metric, _method in used}
     if not adjusted:
         return None
 
     import narwhals as nw
 
-    from increment.readouts._metric_rows import _rows_digest
+    from increment.estimation.readout_types import StreamingDigest
 
     identity = {}
     for metric in selected:
@@ -208,14 +212,17 @@ def _observational_adjustment_identity(src, selected, configs, design):
             src.unit_frame(metric, covariates=design.adjustment.covariates),
             eager_only=True,
         )
+        digest = StreamingDigest()
         rows = sorted(
             frame.iter_rows(named=True),
             key=lambda row: (str(row.get("group_id")), str(row.get("unit_id"))),
         )
+        for row in rows:
+            digest.update(row)
         identity[metric.name] = {
             "columns": tuple(frame.columns),
-            "sha256": _rows_digest(rows)[0],
-            "n_rows": len(rows),
+            "sha256": digest.hexdigest(),
+            "n_rows": digest.count,
         }
     return identity
 
@@ -455,8 +462,9 @@ def _run_prepared(
                     _config_snapshot(config, design)
                     for config in sorted(configs, key=lambda c: c.metric.name)
                 ],
+                "value_scale": value_scale,
                 "adjustment_input_identity": _observational_adjustment_identity(
-                    src, selected, configs, design
+                    src, selected, configs, design, rows
                 ),
             },
         )

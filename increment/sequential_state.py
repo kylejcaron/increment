@@ -916,6 +916,17 @@ def _capture_sequential_diagnostic_snapshot(  # noqa: PLR0915
     )
     previous_cursor = previous.reveal_cursor if previous is not None else None
     if (
+        isinstance(reveal_cursor, datetime)
+        and isinstance(previous_cursor, datetime)
+        and (reveal_cursor.utcoffset() is None) != (previous_cursor.utcoffset() is None)
+    ):
+        sequential_refuse(
+            "continuation.rewrite",
+            "reveal cursor cannot mix timezone-aware and naive datetimes",
+            previous_cursor=str(previous_cursor),
+            requested_cursor=str(reveal_cursor),
+        )
+    if (
         reveal_cursor is not None
         and previous_cursor is not None
         and _reveal_cursor_moved_backward(reveal_cursor, previous_cursor)

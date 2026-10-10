@@ -25,6 +25,7 @@ from increment.winsor import (
     PositiveLogPilot,
     WinsorConfidenceSet,
     WinsorRawState,
+    _log_relative_exact_means,
     _reference_context,
     bootstrap_point,
     bootstrap_root_interval,
@@ -637,22 +638,13 @@ def full_procedure_statistics_many(
 def _bootstrap_observed_points(
     control_mean: Fraction, treatment_means: tuple[Fraction, ...]
 ) -> tuple[tuple[float, float], ...]:
-    points = []
-    for mean in treatment_means:
-        try:
-            relative_point = float((mean - control_mean) / control_mean)
-        except OverflowError:
-            relative_point = math.inf
-        ell = (
-            math.log1p(relative_point)
-            if math.isfinite(relative_point) and relative_point > -1
-            else math.log(mean.numerator)
-            - math.log(mean.denominator)
-            - math.log(control_mean.numerator)
-            + math.log(control_mean.denominator)
+    return tuple(
+        (
+            _log_relative_exact_means(control_mean, mean),
+            float(mean - control_mean),
         )
-        points.append((ell, float(mean - control_mean)))
-    return tuple(points)
+        for mean in treatment_means
+    )
 
 
 def _append_pivot_block(

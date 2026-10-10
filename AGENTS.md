@@ -128,9 +128,12 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   ty, prose audit) and pre-push (`make lint`) hooks; prek chains an existing
   roborev pre-push hook as `pre-push.legacy`. Do not bypass them with
   `--no-verify`.
-- Test tiers run in CI on every pushed commit; locally, run the focused and
-  affected selections for what you changed. Reserve `make test-all` for final
-  integration or release candidates that change estimation or a wire format.
+- The fast test tier runs in CI on every push and pull request. Slow tests run
+  nightly, on pushes to `main`, and on demand; the full locked-dependency/floor
+  suite and Monte Carlo tier run weekly or on manual dispatch. Locally, run
+  focused and affected selections for what changed. Reserve `make test-all` for
+  final integration or release candidates that change estimation or a wire
+  format.
 - Use `make fmt` for formatting. Build documentation with `nox -s docs`, not
   bare MkDocs; the Nox session exports the notebook-backed pages first.
 

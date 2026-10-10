@@ -86,7 +86,9 @@ def _obs_analysis(n=200, seed=11, design=None):
 def test_observational_adjustment_covariates_change_source_snapshot_identity():
     def table(*, reverse_covariate: bool) -> pa.Table:
         values = list(range(12))
-        covariates = list(reversed(values)) if reverse_covariate else values
+        covariates = [float(value) + 0.25 for value in values]
+        if reverse_covariate:
+            covariates.reverse()
         return pa.table(
             {
                 "user_id": [f"{arm}-{index}" for arm in ("C", "T") for index in values],
@@ -881,6 +883,7 @@ def test_run_value_scale_rescues_a_near_zero_metric_end_to_end():
 
     (est,) = ro.run(src, value_scale={"revenue": "absolute"})
     assert est.value_scale == "absolute"
+    assert est.source_snapshot_id != unrescued.source_snapshot_id
     assert est.require_lift().value == pytest.approx(0.3, abs=0.15)
 
 

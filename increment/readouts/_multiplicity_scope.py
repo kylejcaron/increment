@@ -100,11 +100,15 @@ def attach_multiplicity_scope(
         if role is None or (role == "secondary" and family is None):
             cell_family[cell] = None
             continue
+        scope_metric = cell.metric if view in ("daily", "asof") else None
+        scope_look = cell.ds if view in ("daily", "asof") else None
         key = (
             cell.analysis_population,
             "view" if view_member else role,
             family.name if family is not None else role,
             family,
+            scope_metric,
+            scope_look,
         )
         family_cells.setdefault(key, []).append(cell)
         family_by_key[key] = family
@@ -113,8 +117,17 @@ def attach_multiplicity_scope(
     family_scopes = []
     family_ids = {}
     for key, members in family_cells.items():
-        cell_population, _, name, family = key
-        family_id = family_identity(snapshot_id, cell_population, view, dimension, source, name)
+        cell_population, _, name, family, metric, look = key
+        family_id = family_identity(
+            snapshot_id,
+            cell_population,
+            view,
+            dimension,
+            source,
+            name,
+            identity_metric=metric,
+            identity_look=look,
+        )
         family_ids[key] = family_id
         family_scopes.append(
             FamilyScope(
@@ -125,6 +138,8 @@ def attach_multiplicity_scope(
                 dimension=dimension,
                 source=source,
                 name=name,
+                identity_metric=metric,
+                identity_look=look,
                 family=family,
                 members=tuple(sorted(set(members), key=cell_order)),
                 complete=True,

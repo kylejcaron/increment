@@ -77,6 +77,36 @@ def test_unchanged_prefix_advances_reveal_cursor():
     assert later.records == first.records
 
 
+def test_reveal_cursor_refuses_mixed_datetime_timezone_awareness():
+    from datetime import UTC, datetime
+
+    from increment import capture_sequential_snapshot
+    from tests.sequential_cases import records, registration
+
+    reg = registration()
+    rows = records([0], [1])
+    first = capture_sequential_snapshot(
+        reg,
+        rows,
+        source_id=reg.source_id,
+        definitions_id=reg.definitions_id,
+        finalized=True,
+        reveal_cursor=datetime(2025, 1, 1, tzinfo=UTC),
+    )
+
+    with pytest.raises(CapabilityError) as raised:
+        capture_sequential_snapshot(
+            reg,
+            rows,
+            source_id=reg.source_id,
+            definitions_id=reg.definitions_id,
+            finalized=True,
+            previous=first,
+            reveal_cursor=datetime(2025, 1, 2),
+        )
+    assert raised.value.code == "sequential.continuation.rewrite"
+
+
 def test_reveal_cursor_cannot_move_backward_on_an_unchanged_prefix():
     from datetime import date
 
