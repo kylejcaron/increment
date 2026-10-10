@@ -665,8 +665,11 @@ analyst journey.
 When using Roborev, freeze the head and review the coherent base-to-tip range:
 
 ```bash
-roborev review --repo <absolute-worktree> --branch <branch> --base <base-sha> --wait
+roborev review --repo <absolute-worktree> --branch=<branch> --base <base-sha> --wait
 ```
+
+`--branch` has an optional value: use `=` for a named branch; a separate
+word is parsed as a positional commit, not the branch name.
 
 Confirm the job's actual base/head and that the branch did not move.
 `--sha` does not replace a branch range's base. Review changed integration
