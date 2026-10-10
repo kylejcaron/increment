@@ -100,7 +100,11 @@ def attach_multiplicity_scope(
         if role is None or (role == "secondary" and family is None):
             cell_family[cell] = None
             continue
-        scope_metric = cell.metric if view in ("daily", "asof") else None
+        registered_asof = (
+            view == "asof"
+            and getattr(getattr(plan, "inference", None), "registration", None) is not None
+        )
+        scope_metric = cell.metric if view in ("daily", "asof") and not registered_asof else None
         scope_look = cell.ds if view in ("daily", "asof") else None
         key = (
             cell.analysis_population,

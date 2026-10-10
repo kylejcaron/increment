@@ -714,6 +714,66 @@ def test_panel_common_window_only_reveals_finalized_units_and_current_asof(axis,
 
 
 @pytest.mark.slow
+def test_registered_asof_secondary_family_is_joint_per_look():
+    specs = [
+        MetricSpec(name=name, type="conversion", window_days=2)
+        for name in ("outcome", "other", "third")
+    ]
+    from increment import SequentialCell
+
+    cells = (
+        SequentialCell(metric="outcome", group_id="treatment", family=False, alpha=Fraction(1, 20)),
+        SequentialCell(metric="other", group_id="treatment", family=True, alpha=Fraction(1, 40)),
+        SequentialCell(metric="third", group_id="treatment", family=True, alpha=Fraction(1, 40)),
+    )
+    plan = gaussian_plan(
+        specs,
+        cells=cells,
+        law="bernoulli",
+        secondaries=["other", "third"],
+        source_id="experiment",
+        unit="unit",
+        group="arm",
+        date="day",
+        exposure_date="exposed",
+    ).model_copy(update={"primary": "outcome"})
+    frame = _frame([0, 0, 0, 1] * 24, [0, 1, 1, 1] * 24)
+    frame["other"] = frame["outcome"]
+    frame["third"] = frame["outcome"]
+    start = date(2025, 1, 1)
+    frame["day"] = start
+    frame["exposed"] = start
+    analysis = Analysis.from_unit_panel(
+        frame,
+        unit="unit",
+        group="arm",
+        date="day",
+        exposure_date="exposed",
+        control="control",
+        metrics=specs,
+        experiment_id="experiment",
+        plan=plan,
+        observation_end=start + timedelta(days=20),
+    )
+    analysis.capture_sequential(finalized=True, as_of=start + timedelta(days=14))
+
+    results = analysis.run_asof_lift(completed_windows_only=True)
+
+    assert {row.metric for row in results} == {"outcome", "other", "third"}
+    assert results.metadata is not None
+    families = results.metadata.scope.families
+    assert len(families) == 2
+    secondary_family = next(
+        family for family in families if any(member.metric == "other" for member in family.members)
+    )
+    assert secondary_family.complete
+    assert {member.metric for member in secondary_family.members} == {"other", "third"}
+    assert {row.family_id for row in results if row.metric in {"other", "third"}} == {
+        secondary_family.family_id
+    }
+
+
+@pytest.mark.slow
 def test_current_envelope_rejects_relabeling_duplicate_rows_and_legacy(tmp_path):
     import pyarrow.parquet as pq
 

@@ -403,7 +403,9 @@ class FamilyScope(_ReadoutModel):
     name: str
     family: MultiplicityFamily | None = None
     identity_metric: str | None = Field(default=None, exclude_if=lambda value: value is None)
-    identity_look: date | None = Field(default=None, exclude_if=lambda value: value is None)
+    identity_look: date | datetime | str | int | float | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     members: tuple[CellKey, ...]
     complete: bool
 
@@ -440,7 +442,7 @@ def family_identity(
     name,
     *,
     identity_metric: str | None = None,
-    identity_look: date | None = None,
+    identity_look: date | datetime | str | int | float | None = None,
 ):
     payload = {
         "kind": "increment.readout.family",
@@ -455,7 +457,15 @@ def family_identity(
     if identity_metric is not None:
         payload["metric"] = identity_metric
     if identity_look is not None:
-        payload["look"] = identity_look.isoformat()
+        serialized_look = serialize_day_axis(identity_look)
+        payload["look"] = (
+            serialized_look
+            if isinstance(identity_look, date) and not isinstance(identity_look, datetime)
+            else {
+                "type": type(identity_look).__name__,
+                "value": serialized_look,
+            }
+        )
     return "sha256:" + sha256(canonical_json_bytes(payload)).hexdigest()
 
 
