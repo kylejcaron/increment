@@ -1397,6 +1397,10 @@ class DailyLiftEstimate(_RowIdentity):
             parts.append(f"relative_unavailable={self.relative_unavailable_reason!r}")
         if self.failure_code is not None:
             parts.append(f"failure={self.failure_code!r}")
+            if self.failure_context is not None:
+                reason = self.failure_context.get("reason")
+                if reason is not None:
+                    parts.append(f"reason={reason!r}")
         if self.sequential_result is None:
             if self.unavailable is not None:
                 status = "unavailable"
@@ -4018,6 +4022,8 @@ def run_daily_lift(  # noqa: PLR0913
     segment_roster_by_metric : Mapping[str, Sequence[str]] | None
         Optional full dimension-value roster per metric, used when empty cells have
         been removed from ``summary`` before fitting.
+    _policy_by_cell : Mapping[tuple[date, str, str | None], Mapping[str, _DailyCellPolicy]] | None
+        Internal compiled per-day, per-metric cell policy supplied by plan execution.
     Raises
     ------
     ValueError

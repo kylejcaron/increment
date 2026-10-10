@@ -2,6 +2,8 @@
 
 import copy
 import pickle
+import subprocess
+import sys
 
 import narwhals as nw
 import numpy as np
@@ -9,7 +11,7 @@ import pandas as pd
 import pytest
 
 from increment import Analysis, AnalysisPlan, MetricSpec
-from increment.breakout.estimates import LiftEstimates
+from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate, LiftEstimates
 from increment.errors import IncrementWarning, InvalidRequestError, UnsupportedRequestError
 from increment.estimation.readout_types import CellKey, ReadoutResults
 from increment.estimation.results import LiftEstimate
@@ -58,6 +60,24 @@ def _analysis(frame, *, drop_missing_guard=False):
         ],
         plan=AnalysisPlan(primary="rev", guardrails=["guard"]),
     )
+
+
+def test_saved_results_decode_when_only_the_boundary_module_is_imported():
+    analysis = _analysis(_frame())
+    try:
+        payload = analysis.run(metrics=["rev"]).model_dump_json()
+    finally:
+        analysis.close()
+
+    code = (
+        "import sys; "
+        "from increment.estimation.readout_types import ReadoutResults; "
+        "assert 'increment.breakout.estimates' not in sys.modules; "
+        "results = ReadoutResults.model_validate_json(sys.argv[1]); "
+        "assert results[0].metric == 'rev'"
+    )
+    child = subprocess.run([sys.executable, "-c", code, payload], capture_output=True, text=True)
+    assert child.returncode == 0, child.stderr
 
 
 def test_ordinary_run_keeps_each_mixed_family_row_provenance():
@@ -605,6 +625,54 @@ def test_constant_guardrail_failure_survives_collection_views_and_saved_results(
     assert [CellKey.from_row(row) for row in restored] == [CellKey.from_row(row) for row in results]
 
 
+@pytest.mark.parametrize(
+    "estimate_type",
+    [LiftEstimate, DailyLiftEstimate, BreakoutEstimate],
+)
+def test_unavailable_estimate_repr_keeps_identity_and_failure_reason(estimate_type):
+    fields = {
+        "metric": "guard",
+        "group_id": "treatment",
+        "method": "unadjusted",
+        "method_role": "decision",
+        "inference": "fixed",
+        "alternative": "two-sided",
+        "null_lift": 0.0,
+        "lift": None,
+        "failure_code": "readout.cell.missing_metric_observations",
+        "failure_context": {"reason": "missing_metric_observations"},
+        "decision_scope_complete": False,
+    }
+    if estimate_type is DailyLiftEstimate:
+        fields.update(
+            ds="2025-01-01",
+            analysis_population="assigned",
+            estimand="itt",
+            value_scale="relative",
+            dimension=None,
+            dimension_value=None,
+            sequential_result=None,
+            relative_confidence_set=None,
+            binomial_set=None,
+            unavailable=None,
+            relative_unavailable_reason=None,
+            sampling_available=False,
+            low_reliability=False,
+        )
+    elif estimate_type is BreakoutEstimate:
+        fields.update(
+            dimension="country",
+            dimension_value="US",
+            excluded="no_data",
+        )
+    row = estimate_type.model_construct(**fields)
+    rendered = repr(row)
+    assert "guard" in rendered
+    assert "treatment" in rendered
+    assert "readout.cell.missing_metric_observations" in rendered
+    assert "missing_metric_observations" in rendered
+
+
 def test_missing_arm_for_one_metric_is_a_typed_cell_failure_while_another_observes_it():
     with pytest.warns(IncrementWarning) as captured:
         analysis = _analysis(
@@ -617,6 +685,11 @@ def test_missing_arm_for_one_metric_is_a_typed_cell_failure_while_another_observ
     assert failed.metric == "guard"
     assert failed.failure_code == "readout.cell.missing_metric_observations"
     assert failed.failure_context["group_id"] == "treatment"
+    rendered = repr(failed)
+    assert "guard" in rendered
+    assert "treatment" in rendered
+    assert "readout.cell.missing_metric_observations" in rendered
+    assert "reason=" in rendered
     assert failed.lift is None
     (surviving,) = [row for row in results if row.failure_code is None]
     assert surviving.metric == "rev" and surviving.lift is not None
@@ -703,14 +776,14 @@ def test_readout_table_renders_failed_scope_and_partial_collection_view():
     full_html = readout_table(full_rows).gt().as_raw_html()
     assert "estimation.engine.lift_guard" in full_html
     assert "zero_variance" in full_html
-    assert "Incomplete" in full_html
+    assert "Decision scope is incomplete" in full_html
 
     filtered = results.filter(lambda row: row.metric == "rev")
     rows = estimates_to_readout(filtered)
     assert all(row["view_partial"] is True for row in rows)
     partial_html = readout_table(rows).gt().as_raw_html()
     assert "Partial view" in partial_html
-    assert "Incomplete" in partial_html
+    assert "Decision scope is incomplete" in partial_html
 
 
 def test_constant_primary_is_a_failed_decision_cell_beside_a_surviving_guardrail():
@@ -827,7 +900,7 @@ def test_failed_multiarm_secondary_keeps_full_family_and_sensitivity_provenance(
     from increment.tables import readout_table
 
     html = readout_table(readout).gt().as_raw_html()
-    assert "Declared plan" in html
+    assert "Unadjusted for multiplicity" not in html
     restored = ReadoutResults.model_validate_json(results.model_dump_json())
     assert restored.metadata == results.metadata
     restored_rows = []

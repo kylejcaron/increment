@@ -136,6 +136,8 @@ class BreakoutReadouts:
                 method="run_breakout",
                 experiment="<unknown>" if self._experiment is None else self._experiment.name,
                 trigger=None if self._experiment is None else self._experiment.trigger,
+                route=route,
+                supported_sources=("from_definitions", "from_unit_day_artifact"),
             )
         native_src = cast(NativeViewSource, self._src)
         native_src.validate_populations(populations, operation="run_breakout")

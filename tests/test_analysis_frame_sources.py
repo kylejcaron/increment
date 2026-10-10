@@ -720,6 +720,16 @@ def test_from_unit_summary_run_breakout_remains_unsupported(unit_summary_analysi
     assert raised.value.code == "facade.analysis.operation"
 
 
+def test_artifact_context_refuses_unit_summary_source_with_operation_context(
+    unit_summary_analysis,
+):
+    with pytest.raises(CapabilityError) as raised:
+        _ = unit_summary_analysis.artifact_context
+
+    assert raised.value.code == "facade.analysis.operation"
+    assert raised.value.context["operation"] == "materialize"
+
+
 def test_from_unit_panel_encouragement_breakout_retains_estimands():
     import pandas as pd
 
@@ -868,6 +878,54 @@ def test_from_unit_panel_run_asof_lift_encouragement_estimands(encouragement_pan
 
     assert itt and {row.estimand for row in itt} == {"itt"}
     assert late and {row.estimand for row in late} == {"late"}
+
+
+def test_asof_compliance_keeps_estimable_arm_when_another_arm_is_too_small():
+    import pandas as pd
+
+    from increment.semantics.design import Encouragement, ExclusionRestriction, UptakeSpec
+
+    rows = []
+    for group, count, uptake_count in (
+        ("control", 8, 0),
+        ("treatment_a", 8, 4),
+        ("treatment_b", 1, 1),
+    ):
+        for index in range(count):
+            rows.append(
+                {
+                    "unit": f"{group}-{index}",
+                    "variant": group,
+                    "day": date(2026, 1, 1),
+                    "revenue": float(index),
+                    "clicked": float(index < uptake_count),
+                }
+            )
+    analysis = Analysis.from_unit_panel(
+        pd.DataFrame(rows),
+        unit="unit",
+        group="variant",
+        date="day",
+        metrics={"revenue": "mean"},
+        design=Encouragement(
+            control_group="control",
+            uptake=UptakeSpec(fact="clicked"),
+            exclusion_restriction=ExclusionRestriction(
+                acknowledged=True, justification="assignment only affects uptake"
+            ),
+        ),
+        uptake="clicked",
+    )
+    try:
+        result = analysis.run_asof_lift(estimands=("compliance",))
+    finally:
+        analysis.close()
+
+    by_group = {row.group_id: row for row in result}
+    assert set(by_group) == {"treatment_a", "treatment_b"}
+    assert by_group["treatment_a"].failure_code is None
+    assert by_group["treatment_a"].require_lift().value is not None
+    assert by_group["treatment_b"].failure_code == "readout.cell.missing_metric_observations"
 
 
 def test_from_unit_panel_run_asof_late_honors_requested_methods(encouragement_panel_analysis):

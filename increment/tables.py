@@ -621,7 +621,12 @@ def _format_metadata_stat(value: Any, *, percentage: bool) -> str:
     return f"{value:+.2f}"
 
 
-def _failure_disclosure(code: Any, context: Any) -> str:
+_FAILURE_DISPLAY_LIMIT = 72
+
+
+def _failure_disclosure(
+    code: Any, context: Any, *, limit: int | None = _FAILURE_DISPLAY_LIMIT
+) -> str:
     if _is_missing(code):
         return ""
     details = []
@@ -631,7 +636,17 @@ def _failure_disclosure(code: Any, context: Any) -> str:
             details.append(str(reason))
         else:
             details.extend(f"{key}={value!r}" for key, value in sorted(context.items()))
-    return f"{code}: {', '.join(details)}" if details else str(code)
+    code_text = str(code)
+    context_text = ", ".join(details)
+    if not context_text:
+        return code_text
+    if limit is not None:
+        remaining = limit - len(code_text) - 2
+        if remaining <= 0:
+            return code_text
+        if len(context_text) > remaining:
+            context_text = context_text[: remaining - 1] + "…"
+    return f"{code_text}: {context_text}"
 
 
 def _interval_level_note(
@@ -655,6 +670,80 @@ def _interval_level_note(
         return None
     scope = "display intervals" if has_confidence_sets else "all intervals"
     return f"{scope} {_format_level(level)}%"
+
+
+_MULTIPLICITY_STATUS_LABELS = {
+    "declared_plan": "Declared plan",
+    "undeclared_plan": "Unadjusted for multiplicity (no declared plan)",
+    "unassigned_in_plan": "Unadjusted for multiplicity (unassigned in plan)",
+    "exploratory_unadjusted": "Exploratory, unadjusted for multiplicity",
+    "exploratory_family": "Exploratory family",
+}
+_MULTIPLICITY_MARKERS = ("¹", "²", "³", "⁴")
+
+
+def _multiplicity_markers(statuses: Sequence[Any]) -> dict[str, str]:
+    unique = tuple(
+        dict.fromkeys(
+            value
+            for value in statuses
+            if not _is_missing(value)
+            and (value == "declared_plan" or value in _MULTIPLICITY_STATUS_LABELS)
+        )
+    )
+    if not unique:
+        return {}
+    has_unrecognized = any(
+        _is_missing(value)
+        or (value != "declared_plan" and value not in _MULTIPLICITY_STATUS_LABELS)
+        for value in statuses
+    )
+    if len(unique) == 1 and not has_unrecognized:
+        return {}
+    non_declared = tuple(status for status in unique if status != "declared_plan")
+    marked = non_declared or unique
+    return dict(zip(marked, _MULTIPLICITY_MARKERS, strict=False))
+
+
+def _readout_metadata_notes(frame: Any) -> list[str]:
+    """Summarize repeated row metadata once in the table header."""
+    notes: list[str] = []
+    scopes = _column_values(frame, "decision_scope_complete")
+    if scopes is not None and any(not _is_missing(value) and not bool(value) for value in scopes):
+        note = "Decision scope is incomplete"
+        failure_codes = _column_values(frame, "failure_code")
+        if failure_codes is not None and any(not _is_missing(value) for value in failure_codes):
+            note += "; see Failure"
+        notes.append(note + ".")
+
+    statuses = _column_values(frame, "multiplicity_status")
+    if statuses is not None:
+        markers = _multiplicity_markers(statuses)
+        if markers:
+            for status, marker in markers.items():
+                count = sum(value == status for value in statuses)
+                label = _MULTIPLICITY_STATUS_LABELS[status]
+                notes.append(f"{marker} {label} ({count} of {len(statuses)} rows)")
+        else:
+            distinct = tuple(dict.fromkeys(value for value in statuses if not _is_missing(value)))
+            if len(distinct) == 1 and distinct[0] in _MULTIPLICITY_STATUS_LABELS:
+                notes.append(_MULTIPLICITY_STATUS_LABELS[distinct[0]])
+
+    partial = _column_values(frame, "view_partial")
+    if partial is not None and any(not _is_missing(value) and bool(value) for value in partial):
+        notes.append("Partial view.")
+
+    failure_codes = _column_values(frame, "failure_code")
+    if failure_codes is not None:
+        contexts = _column_values(frame, "failure_context") or [None] * len(frame)
+        if any(
+            len(_failure_disclosure(code, context, limit=None)) > _FAILURE_DISPLAY_LIMIT
+            for code, context in zip(failure_codes, contexts, strict=True)
+        ):
+            notes.append(
+                "Failure details are abbreviated; full context remains on the result rows."
+            )
+    return notes
 
 
 def _rendered_metadata_columns(
@@ -685,19 +774,6 @@ def _rendered_metadata_columns(
             for code, context in zip(failure_codes, failure_contexts, strict=True)
         ]
 
-    decision_scope = _column_values(frame, "decision_scope_complete")
-    if decision_scope is not None and any(not _is_missing(value) for value in decision_scope):
-        columns["Decision scope"] = [
-            "" if _is_missing(value) else "Complete" if bool(value) else "Incomplete"
-            for value in decision_scope
-        ]
-
-    partial_view = _column_values(frame, "view_partial")
-    if partial_view is not None and any(not _is_missing(value) for value in partial_view):
-        columns["Readout view"] = [
-            "" if _is_missing(value) else "Partial view" if bool(value) else "Full view"
-            for value in partial_view
-        ]
     null_lift = _column_values(frame, "null_lift") or [None] * n
     null_abs = _column_values(frame, "null_abs") or [None] * n
     row_scales = _column_values(frame, "value_scale") or ["relative"] * n
@@ -723,21 +799,6 @@ def _rendered_metadata_columns(
         if prob is not None and any_shifted_null and any(not _is_missing(v) for v in prob):
             columns["Posterior P(favorable)"] = [
                 "" if _is_missing(v) else f"{v * 100:.1f}%" for v in prob
-            ]
-
-    multiplicity_status = _column_values(frame, "multiplicity_status")
-    if multiplicity_status is not None:
-        labels = {
-            "undeclared_plan": "Unadjusted (no declared plan)",
-            "unassigned_in_plan": "Unadjusted (unassigned in plan)",
-            "declared_plan": "Declared plan",
-            "exploratory_unadjusted": "Exploratory (unadjusted)",
-            "exploratory_family": "Exploratory family",
-        }
-        if any(not _is_missing(value) for value in multiplicity_status):
-            columns["Multiplicity"] = [
-                "" if _is_missing(value) else labels.get(value, str(value))
-                for value in multiplicity_status
             ]
 
     discovery = _column_values(frame, "discovery")
@@ -949,8 +1010,257 @@ def _group_disclosure_column(frame: Any) -> list[str] | None:
     return [_ROLE_GROUP_LABELS.get(role, str(role)) for role in roles]
 
 
+def _readout_labels(
+    frame: Any,
+    nest_column: str,
+    split_column: str,
+    split_columns: str | None,
+) -> tuple[list[Any], list[Any], dict[tuple[object, ...], str]]:
+    """Resolve visible row labels and the equivalent trend identity mapping."""
+    metrics = frame["metric"].to_list()
+    estimands = (
+        frame["estimand"].to_list() if "estimand" in frame.columns else ["itt"] * len(metrics)
+    )
+    scales = (
+        frame["value_scale"].to_list()
+        if "value_scale" in frame.columns
+        else ["relative"] * len(metrics)
+    )
+    labels = [
+        f"{metric} ({estimand})" if isinstance(estimand, str) and estimand != "itt" else metric
+        for metric, estimand in zip(metrics, estimands, strict=True)
+    ]
+    nests = frame[nest_column].to_list()
+    splits = frame[split_column].to_list() if split_columns else [None] * len(labels)
+    keys = list(zip(labels, nests, splits, strict=True))
+    collided = {key for key, count in Counter(keys).items() if count > 1}
+
+    if "value_scale" in frame.columns:
+        for key in collided:
+            indexes = [index for index, candidate in enumerate(keys) if candidate == key]
+            distinct_scales = {
+                scale for scale in (scales[index] for index in indexes) if not _is_missing(scale)
+            }
+            if len(distinct_scales) > 1:
+                for index in indexes:
+                    labels[index] = f"{labels[index]} ({scales[index]})"
+
+    # Assigned and triggered estimates usually collide on every visible axis.
+    # Preserve their identity in the row label; ambiguous collisions are refused.
+    keys = list(zip(labels, nests, splits, strict=True))
+    collided = {key for key, count in Counter(keys).items() if count > 1}
+    populations = (
+        frame["analysis_population"].to_list()
+        if "analysis_population" in frame.columns
+        else [None] * len(labels)
+    )
+    if collided:
+        for key in collided:
+            indexes = [index for index, candidate in enumerate(keys) if candidate == key]
+            values = [populations[index] for index in indexes]
+            distinct = {value for value in values if not _is_missing(value)}
+            if len(distinct) != len(values) or len(distinct) < 2:
+                _raise("tables.readout_table_ambiguous", key=key)
+            for index in indexes:
+                labels[index] = f"{labels[index]} ({populations[index]})"
+
+    final_keys = list(zip(labels, nests, splits, strict=True))
+    if len(set(final_keys)) != len(final_keys):
+        _raise("tables.readout_table_duplicate")
+
+    statuses = _column_values(frame, "multiplicity_status")
+    if statuses is not None:
+        markers = _multiplicity_markers(statuses)
+        if markers:
+            labels = [
+                f"{label}{markers.get(status, '')}"
+                for label, status in zip(labels, statuses, strict=True)
+            ]
+            decorated = list(zip(labels, nests, splits, strict=True))
+            marker_collisions = {key for key, count in Counter(decorated).items() if count > 1}
+            for key in marker_collisions:
+                indexes = [index for index, candidate in enumerate(decorated) if candidate == key]
+                for index in indexes:
+                    suffix = _MULTIPLICITY_STATUS_LABELS.get(
+                        statuses[index], "Unknown multiplicity status"
+                    )
+                    labels[index] = f"{labels[index]} ({suffix})"
+            decorated = list(zip(labels, nests, splits, strict=True))
+            marker_collisions = {key for key, count in Counter(decorated).items() if count > 1}
+            for key in marker_collisions:
+                indexes = [index for index, candidate in enumerate(decorated) if candidate == key]
+                for index in indexes:
+                    labels[index] = f"{labels[index]} [row {index + 1}]"
+            final_keys = list(zip(labels, nests, splits, strict=True))
+            if len(set(final_keys)) != len(final_keys):
+                _raise("tables.readout_table_duplicate")
+
+    identity_labels: dict[tuple[object, ...], str] = {
+        (
+            metric,
+            estimand,
+            "relative" if _is_missing(scale) else scale,
+            nest,
+            split,
+            "assigned" if _is_missing(population) else population,
+        ): label
+        for metric, estimand, scale, nest, split, population, label in zip(
+            metrics,
+            estimands,
+            scales,
+            nests,
+            splits,
+            populations,
+            labels,
+            strict=True,
+        )
+    }
+    return labels, scales, identity_labels
+
+
+def _prepare_readout_frame(
+    frame: Any, labels: list[Any], scales: list[Any]
+) -> tuple[Any, frozenset[int], bool]:
+    """Apply plot labels and route intervals/values to renderable columns."""
+    import narwhals as nw
+
+    frame = frame.with_columns(
+        nw.new_series("metric", labels, backend=nw.get_native_namespace(frame))
+    )
+    unplottable_intervals = frozenset(
+        index
+        for index, (region, relative, scale) in enumerate(
+            zip(
+                frame["confidence_set"].to_list()
+                if "confidence_set" in frame.columns
+                else [None] * len(frame),
+                frame["relative_confidence_set"].to_list()
+                if "relative_confidence_set" in frame.columns
+                else [None] * len(frame),
+                scales,
+                strict=True,
+            )
+        )
+        if (
+            relative is not None
+            and not _is_missing(relative)
+            and relative.geometry == "disconnected"
+        )
+        or (
+            region is not None
+            and not _is_missing(region)
+            and (
+                (region.additive if scale == "absolute" else region.relative).lower.status
+                == "undefined"
+                or (region.additive if scale == "absolute" else region.relative).upper.status
+                == "undefined"
+            )
+        )
+    )
+    if unplottable_intervals:
+        # CoefTable cannot draw undefined or disconnected intervals.
+        # The typed set column retains their endpoints, geometry, and reasons.
+        frame = frame.with_columns(
+            *(
+                nw.new_series(
+                    column,
+                    [
+                        None if index in unplottable_intervals else value
+                        for index, value in enumerate(frame[column].to_list())
+                    ],
+                    backend=nw.get_native_namespace(frame),
+                )
+                for column in ("lower", "higher")
+            )
+        )
+
+    has_absolute_rows = any(scale == "absolute" for scale in scales)
+    if has_absolute_rows:
+        nan = float("nan")
+        is_absolute = [scale == "absolute" for scale in scales]
+        backend = nw.get_native_namespace(frame)
+        routed = []
+        for column in ("lift", "lower", "higher"):
+            values = frame[column].to_list()
+            routed.append(
+                nw.new_series(
+                    column,
+                    [
+                        nan if absolute else value
+                        for value, absolute in zip(values, is_absolute, strict=True)
+                    ],
+                    backend=backend,
+                )
+            )
+            routed.append(
+                nw.new_series(
+                    f"{column}_absolute",
+                    [
+                        value if absolute else nan
+                        for value, absolute in zip(values, is_absolute, strict=True)
+                    ],
+                    backend=backend,
+                )
+            )
+        frame = frame.with_columns(*routed)
+    return frame, unplottable_intervals, has_absolute_rows
+
+
+def _prepare_readout_metadata(
+    frame: Any,
+    scales: list[Any],
+    *,
+    advisory: bool,
+    show_interval_level: bool,
+) -> tuple[Any, dict[str, list[str]], str, list[str] | None]:
+    """Add display-only metadata columns and return their render selectors."""
+    import narwhals as nw
+
+    display_columns = _rendered_metadata_columns(
+        frame,
+        advisory=advisory,
+        show_interval_level=show_interval_level,
+    )
+    if display_columns:
+        display_backend = nw.get_native_namespace(frame)
+        frame = frame.with_columns(
+            *(
+                nw.new_series(f"__display_{index}", values, backend=display_backend)
+                for index, values in enumerate(display_columns.values())
+            )
+        )
+
+    shifted_null_lift = "__shifted_null_lift"
+    null_lifts = (
+        frame["null_lift"].to_list() if "null_lift" in frame.columns else [None] * len(frame)
+    )
+    shifted_null_values: list[float | None] = []
+    for value, row_scale in zip(null_lifts, scales, strict=True):
+        if value is None or _is_missing(value) or row_scale == "absolute":
+            shifted_null_values.append(None)
+            continue
+        null = float(value)
+        shifted_null_values.append(null if math.isfinite(null) and null != 0.0 else None)
+    frame = frame.with_columns(
+        nw.new_series(
+            shifted_null_lift,
+            shifted_null_values,
+            backend=nw.get_native_namespace(frame),
+        )
+    )
+
+    group_column = _group_disclosure_column(frame)
+    if group_column is not None:
+        frame = frame.with_columns(
+            nw.new_series(
+                "__group_disclosure", group_column, backend=nw.get_native_namespace(frame)
+            )
+        )
+    return frame, display_columns, shifted_null_lift, group_column
+
+
 # Keep trend labels aligned with ``_resolve_trend_frame``.
-def readout_table(  # noqa: C901, PLR0915
+def readout_table(
     data: IntoDataFrame | list[dict[str, Any]],
     *,
     title: str = "Experiment Readout",
@@ -1039,210 +1349,17 @@ def readout_table(  # noqa: C901, PLR0915
         nest_column, split_column = "segment", "group_id"
     split_columns = split_column if frame[split_column].n_unique() > 1 else None
 
-    # The estimand joins the row label so itt/compliance/late rows sharing a
-    # metric get unique coeftable keys; scale and population join only on a
-    # visible collision. Check before building CoefTable, which would otherwise
-    # crash or silently overwrite a population's reading.
-    metrics = frame["metric"].to_list()
-    estimands = (
-        frame["estimand"].to_list() if "estimand" in frame.columns else ["itt"] * len(metrics)
+    labels, scales, identity_labels = _readout_labels(
+        frame, nest_column, split_column, split_columns
     )
-    scales = (
-        frame["value_scale"].to_list()
-        if "value_scale" in frame.columns
-        else ["relative"] * len(metrics)
-    )
-    labels = [
-        f"{metric} ({estimand})" if isinstance(estimand, str) and estimand != "itt" else metric
-        for metric, estimand in zip(metrics, estimands, strict=True)
-    ]
-    nests = frame[nest_column].to_list()
-    splits = frame[split_column].to_list() if split_columns else [None] * len(labels)
-    keys = list(zip(labels, nests, splits, strict=True))
-    collided = {key for key, count in Counter(keys).items() if count > 1}
+    frame, unplottable_intervals, has_absolute_rows = _prepare_readout_frame(frame, labels, scales)
 
-    if "value_scale" in frame.columns:
-        for key in collided:
-            indexes = [index for index, candidate in enumerate(keys) if candidate == key]
-            distinct_scales = {
-                scale for scale in (scales[index] for index in indexes) if not _is_missing(scale)
-            }
-            if len(distinct_scales) > 1:
-                for index in indexes:
-                    labels[index] = f"{labels[index]} ({scales[index]})"
-
-    # Assigned and triggered estimates usually collide on every visible axis.
-    # Preserve their identity in the row label. A missing or repeated
-    # population is ambiguous, so reject it rather than rendering a table
-    # whose rows cannot be told apart.
-    keys = list(zip(labels, nests, splits, strict=True))
-    collided = {key for key, count in Counter(keys).items() if count > 1}
-    populations = (
-        frame["analysis_population"].to_list()
-        if "analysis_population" in frame.columns
-        else [None] * len(labels)
-    )
-    if collided:
-        for key in collided:
-            indexes = [index for index, candidate in enumerate(keys) if candidate == key]
-            values = [populations[index] for index in indexes]
-            distinct = {value for value in values if not _is_missing(value)}
-            if len(distinct) != len(values) or len(distinct) < 2:
-                _raise("tables.readout_table_ambiguous", key=key)
-            for index in indexes:
-                labels[index] = f"{labels[index]} ({populations[index]})"
-
-    # Keep one identity-to-label mapping for both headline and trend rows. The
-    # scale suffix is part of the identity even when population labels are not
-    # needed, so absolute and relative series cannot collapse into one trend
-    # group.
-    identity_labels: dict[tuple[object, ...], str] = {
-        (
-            metric,
-            estimand,
-            "relative" if _is_missing(scale) else scale,
-            nest,
-            split,
-            "assigned" if _is_missing(population) else population,
-        ): label
-        for metric, estimand, scale, nest, split, population, label in zip(
-            metrics,
-            estimands,
-            scales,
-            nests,
-            splits,
-            populations,
-            labels,
-            strict=True,
-        )
-    }
-
-    final_keys = list(zip(labels, nests, splits, strict=True))
-    if len(set(final_keys)) != len(final_keys):
-        _raise("tables.readout_table_duplicate")
-    frame = frame.with_columns(
-        nw.new_series("metric", labels, backend=nw.get_native_namespace(frame))
-    )
-
-    unplottable_intervals = frozenset(
-        index
-        for index, (region, relative, scale) in enumerate(
-            zip(
-                frame["confidence_set"].to_list()
-                if "confidence_set" in frame.columns
-                else [None] * len(frame),
-                frame["relative_confidence_set"].to_list()
-                if "relative_confidence_set" in frame.columns
-                else [None] * len(frame),
-                scales,
-                strict=True,
-            )
-        )
-        if (
-            relative is not None
-            and not _is_missing(relative)
-            and relative.geometry == "disconnected"
-        )
-        or (
-            region is not None
-            and not _is_missing(region)
-            and (
-                (region.additive if scale == "absolute" else region.relative).lower.status
-                == "undefined"
-                or (region.additive if scale == "absolute" else region.relative).upper.status
-                == "undefined"
-            )
-        )
-    )
-    if unplottable_intervals:
-        # CoefTable cannot draw undefined or disconnected intervals.
-        # The typed set column retains their endpoints, geometry, and reasons.
-        frame = frame.with_columns(
-            *(
-                nw.new_series(
-                    column,
-                    [
-                        None if index in unplottable_intervals else value
-                        for index, value in enumerate(frame[column].to_list())
-                    ],
-                    backend=nw.get_native_namespace(frame),
-                )
-                for column in ("lower", "higher")
-            )
-        )
-
-    # An "absolute" value_scale row (e.g. a LATE) is in its own units, not a
-    # percent lift, so route it to a separate column and blank the relative one.
-    has_absolute_rows = any(scale == "absolute" for scale in scales)
-    if has_absolute_rows:
-        nan = float("nan")
-        is_absolute = [scale == "absolute" for scale in scales]
-        backend = nw.get_native_namespace(frame)
-        routed = []
-        for column in ("lift", "lower", "higher"):
-            values = frame[column].to_list()
-            routed.append(
-                nw.new_series(
-                    column,
-                    [
-                        nan if absolute else value
-                        for value, absolute in zip(values, is_absolute, strict=True)
-                    ],
-                    backend=backend,
-                )
-            )
-            routed.append(
-                nw.new_series(
-                    f"{column}_absolute",
-                    [
-                        value if absolute else nan
-                        for value, absolute in zip(values, is_absolute, strict=True)
-                    ],
-                    backend=backend,
-                )
-            )
-        frame = frame.with_columns(*routed)
-
-    display_columns = _rendered_metadata_columns(
+    frame, display_columns, shifted_null_lift, group_column = _prepare_readout_metadata(
         frame,
+        scales,
         advisory=advisory,
         show_interval_level=show_interval_level,
     )
-    if display_columns:
-        display_backend = nw.get_native_namespace(frame)
-        frame = frame.with_columns(
-            *(
-                nw.new_series(f"__display_{index}", values, backend=display_backend)
-                for index, values in enumerate(display_columns.values())
-            )
-        )
-
-    shifted_null_lift = "__shifted_null_lift"
-    null_lifts = (
-        frame["null_lift"].to_list() if "null_lift" in frame.columns else [None] * len(frame)
-    )
-    shifted_null_values: list[float | None] = []
-    for value, row_scale in zip(null_lifts, scales, strict=True):
-        if value is None or _is_missing(value) or row_scale == "absolute":
-            shifted_null_values.append(None)
-            continue
-        null = float(value)
-        shifted_null_values.append(null if math.isfinite(null) and null != 0.0 else None)
-    frame = frame.with_columns(
-        nw.new_series(
-            shifted_null_lift,
-            shifted_null_values,
-            backend=nw.get_native_namespace(frame),
-        )
-    )
-
-    group_column = _group_disclosure_column(frame)
-    if group_column is not None:
-        frame = frame.with_columns(
-            nw.new_series(
-                "__group_disclosure", group_column, backend=nw.get_native_namespace(frame)
-            )
-        )
 
     coeftable_kwargs: dict[str, Any] = {}
     if theme is not None:
@@ -1338,13 +1455,16 @@ def readout_table(  # noqa: C901, PLR0915
             axis_fmt=ct.DateAxis(),
         )
 
+    notes = _readout_metadata_notes(frame)
     level_note = _interval_level_note(
         frame,
         show_interval_level=show_interval_level,
         has_confidence_sets="Confidence set" in display_columns,
     )
-    if level_note:
-        subtitle = f"{subtitle} - {level_note}" if subtitle else level_note
+    if level_note is not None:
+        notes.append(level_note)
+    if notes:
+        subtitle = " · ".join(([subtitle] if subtitle else []) + notes)
     return table.header(title, subtitle)
 
 

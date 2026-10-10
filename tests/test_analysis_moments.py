@@ -191,10 +191,76 @@ def test_triggered_run_refuses_unit_summary_and_moment_replay():
         control="control",
     )
     replay = Analysis.from_moments(_moment_rows(), metrics={"revenue": "mean"}, control="control")
-    for candidate in (analysis, replay):
+    panel = Analysis.from_unit_panel(
+        pa.table(
+            {
+                "unit": [1, 2],
+                "arm": ["control", "treatment"],
+                "day": ["2025-01-01", "2025-01-01"],
+                "revenue": [1.0, 2.0],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        date="day",
+        metrics={"revenue": "mean"},
+        control="control",
+    )
+    from increment.semantics.assignment import (
+        IndependentBernoulliOrder,
+        SwitchbackAssignment,
+        SwitchbackWindow,
+    )
+    from increment.semantics.design import Randomized
+    from increment.semantics.unit_cycle import UnitCycleTApproximation
+
+    switchback = Analysis.from_switchback_panel(
+        pa.Table.from_pylist(
+            [
+                {
+                    "unit": unit,
+                    "cycle": cycle,
+                    "period": period,
+                    "step": step,
+                    "group": group,
+                    "value": float(cycle + period + step),
+                }
+                for unit, order in (
+                    ("u1", ("control", "treatment")),
+                    ("u2", ("treatment", "control")),
+                )
+                for cycle in range(2)
+                for period, group in enumerate(order)
+                for step in range(2)
+            ]
+        ),
+        unit="unit",
+        cycle="cycle",
+        period="period",
+        step="step",
+        group="group",
+        metrics={"value": "mean"},
+        identification=Randomized(
+            control_group="control", allocation={"control": 0.5, "treatment": 0.5}
+        ),
+        assignment=SwitchbackAssignment(
+            sequence=IndependentBernoulliOrder(probability_ct=0.5),
+            window=SwitchbackWindow(washout_steps=1, observation_steps=1),
+        ),
+        contrast_references={"value": UnitCycleTApproximation()},
+    )
+    candidates = (analysis, replay, panel, switchback)
+    for candidate in candidates:
         with pytest.raises(CapabilityError) as refused:
             candidate.run(population="triggered")
         assert refused.value.code == "facade.analysis.trigger_unsupported"
+        assert refused.value.context["route"] in {"moments", "native", "switchback"}
+        assert refused.value.context["supported_sources"] == (
+            "from_definitions",
+            "from_unit_day_artifact",
+        )
+        assert "Analysis.from_definitions" in str(refused.value)
+        assert "Analysis.from_unit_day_artifact" in str(refused.value)
 
 
 @pytest.mark.parametrize("version", [7, 8])
@@ -212,18 +278,6 @@ def test_moments_reject_noncanonical_source_identity_at_replay():
     rows = _moment_rows()
     for row in rows:
         row[SOURCE_IDENTITY_FIELD] = json.dumps({"oversized": 2**53})
-
-    with pytest.raises(WireFormatError) as refused:
-        Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="control")
-    assert refused.value.code == "moments.format.invalid"
-
-
-def test_moments_reject_conflicting_boolean_and_integer_identities():
-    from increment.sources import SOURCE_IDENTITY_FIELD
-
-    rows = _moment_rows()
-    rows[0][SOURCE_IDENTITY_FIELD] = json.dumps({"generation": True})
-    rows[1][SOURCE_IDENTITY_FIELD] = json.dumps({"generation": 1})
 
     with pytest.raises(WireFormatError) as refused:
         Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="control")

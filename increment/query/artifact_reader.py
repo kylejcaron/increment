@@ -2010,23 +2010,24 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 ),
                 None,
             )
-            edges = [
+            limits = [
                 candidate
-                for candidate in (edge, declared_edge, extension.certified_edge)
+                for candidate in (declared_edge, extension.certified_edge)
                 if candidate is not None
             ]
             if trigger_extension is not None:
-                pinned_edge, _ = _effective_snapshot_edge(
+                cutoff_edge, _ = _effective_snapshot_edge(
                     trigger_extension.observation_cutoff_ts,
-                    trigger_extension.complete_through_ts,
+                    None,
                     offset,
                     declared_edge,
                 )
-                edges.append(pinned_edge)
-            edge = min(edges) if edges else None
-            if edge is not None and edge < trigger_days[0]:
+                limits.append(cutoff_edge)
+            last = max(candidate for candidate in (edge, trigger_days[-1]) if candidate is not None)
+            if limits:
+                last = min(last, *limits)
+            if last < trigger_days[0]:
                 return []
-            last = edge if edge is not None else trigger_days[-1]
             return [
                 trigger_days[0] + dt.timedelta(days=offset)
                 for offset in range((last - trigger_days[0]).days + 1)

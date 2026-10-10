@@ -1409,6 +1409,22 @@ class LiftEstimate(_RowIdentity):
 
     def __repr__(self) -> str:
         """Compact interactive representation of the published estimate."""
+        if self.lift is None and self.failure_code is not None:
+            context = self.failure_context or {}
+            reason = context.get("reason")
+            if reason is None:
+                reason = {
+                    key: value
+                    for key, value in context.items()
+                    if key not in {"metric", "group_id"}
+                }
+            if not reason:
+                reason = self.failure_code
+            details = [f"metric={self.metric!r}", f"group={self.group_id!r}"]
+            details.append(f"failure={self.failure_code!r}")
+            if reason is not None:
+                details.append(f"reason={reason!r}")
+            return f"LiftEstimate({', '.join(details)})"
         if self.confidence_set is not None:
             region = self.confidence_set
             return (
