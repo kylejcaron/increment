@@ -67,8 +67,14 @@ def test_positive_outcomes_reproduce_the_frozen_bootstrap_reference(case):
         assert reference.additive.se == pytest.approx(expected["additive_se"], rel=1e-12, abs=1e-14)
         assert list(reference.failure_indices) == expected["failure_indices"]
         np.testing.assert_allclose(
-            np.asarray(reference.log_relative.roots[:8], dtype=np.float64),
-            np.asarray(expected["first_log_roots"], dtype=np.float64),
+            np.asarray(reference.log_relative.roots, dtype=np.float64),
+            np.asarray(expected["log_roots"], dtype=np.float64),
+            rtol=1e-12,
+            atol=1e-14,
+        )
+        np.testing.assert_allclose(
+            np.asarray(reference.additive.roots, dtype=np.float64),
+            np.asarray(expected["additive_roots"], dtype=np.float64),
             rtol=1e-12,
             atol=1e-14,
         )

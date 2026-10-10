@@ -226,6 +226,31 @@ def test_first_replicate_resamples_the_atom_and_matches_scalar_recomputation():
     assert reference.additive.roots[0] == pytest.approx(expected_additive_root, rel=1e-9)
 
 
+def test_underflowed_positive_bootstrap_draw_invalidates_its_replicate():
+    from increment.estimation._winsor_bootstrap import (
+        _realized_draw_and_logs,
+        full_procedure_statistics_many,
+    )
+
+    with np.errstate(all="ignore"):
+        control, control_logs = _realized_draw_and_logs(np.array([[-np.inf, 0.0, np.log(2.0)]]))
+        treatment, treatment_logs = _realized_draw_and_logs(
+            np.array([[-np.inf, -800.0, np.log(3.0)]])
+        )
+
+    assert control[0, 0] == treatment[0, 0] == 0.0
+    assert np.isneginf(control_logs[0, 0])
+    assert np.isnan(treatment_logs[0, 1])
+    statistic = full_procedure_statistics_many(
+        (control, treatment),
+        0.9,
+        ((0, 1),),
+        log_samples=(control_logs, treatment_logs),
+        atoms=(True, True),
+    )[0]
+    assert not statistic.valid()[0]
+
+
 def _atom_arms(rng, zeros_c, positives_c, zeros_t, positives_t):
     return {
         "C": np.concatenate([np.zeros(zeros_c), rng.lognormal(0.0, 1.0, positives_c)]),

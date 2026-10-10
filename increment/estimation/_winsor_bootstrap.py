@@ -385,6 +385,9 @@ def _realized_draw_and_logs(
     else:
         np.exp(log_draw, out=draw_output)
         draw = draw_output
+    underflow = np.isfinite(log_draw) & (draw == 0.0)
+    if underflow.any():
+        draw[underflow] = np.nan
     np.log(draw, out=log_draw)
     return draw, log_draw
 
@@ -643,7 +646,10 @@ def _bootstrap_observed_points(
         ell = (
             math.log1p(relative_point)
             if math.isfinite(relative_point) and relative_point > -1
-            else math.log(float(mean)) - math.log(float(control_mean))
+            else math.log(mean.numerator)
+            - math.log(mean.denominator)
+            - math.log(control_mean.numerator)
+            + math.log(control_mean.denominator)
         )
         points.append((ell, float(mean - control_mean)))
     return tuple(points)

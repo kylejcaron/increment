@@ -79,7 +79,8 @@ def main() -> None:
                 "additive_target": reference.additive.pilot_target,
                 "additive_se": reference.additive.se,
                 "failure_indices": list(reference.failure_indices),
-                "first_log_roots": list(reference.log_relative.roots[:8]),
+                "log_roots": list(reference.log_relative.roots),
+                "additive_roots": list(reference.additive.roots),
                 "bandwidths": [p.bandwidth for p in reference.pilots],
             }
         records.append({**case, "results": results})
