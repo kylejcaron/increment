@@ -922,6 +922,8 @@ class TestRunBreakoutBHCorrection:
         assert by_method["unadjusted"].reference_kind == "binomial"
         assert by_method["cuped"].method_role == "sensitivity"
         assert by_method["cuped"].discovery is None
+        assert by_method["unadjusted"].family_procedure == "bh"
+        assert by_method["cuped"].family_procedure is None
         # The sensitivity row keeps its own moment-based reference rather than
         # borrowing the decision row's exact-binomial one; CUPED estimates its
         # variance from the arms, so that reference is Welch t.

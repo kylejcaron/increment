@@ -1624,6 +1624,7 @@ def daily_sequential_projection(
                 family_axes=row.family_axes,
                 family_q=row.family_q,
                 family_threshold=row.family_threshold,
+                family_procedure=row.family_procedure,
                 family_guarantee=row.family_guarantee,
                 family_nominal_alpha=row.family_nominal_alpha,
                 failure_code=row.failure_code,
@@ -2960,6 +2961,7 @@ def _apply_breakout_family_correction(
                     "family_threshold": family_record["family_threshold"]
                     if estimate.method_role == "decision"
                     else None,
+                    "family_procedure": "bh" if estimate.method_role == "decision" else None,
                 }
             )
         return results
@@ -3015,6 +3017,7 @@ def _apply_breakout_family_correction(
                     "family_threshold": family_record["family_threshold"]
                     if estimate.method_role == "decision"
                     else None,
+                    "family_procedure": "bh" if estimate.method_role == "decision" else None,
                 }
             )
             continue
@@ -3025,6 +3028,7 @@ def _apply_breakout_family_correction(
                     "discovery": None,
                     "family_axes": None,
                     "family_q": None,
+                    "family_procedure": None,
                     "family_threshold": None,
                 }
             )
