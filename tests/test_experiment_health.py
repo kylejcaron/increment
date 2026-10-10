@@ -290,36 +290,48 @@ def test_health_artifact_trigger_extensions_are_optional_but_explicit(tmp_path) 
         _close_parity_analysis(artifact)
     native_by_check = {check.check: check for check in native_report.checks}
     artifact_by_check = {check.check: check for check in report.checks}
-    for name in ("assigned_allocation", "triggered_balance"):
-        native_check = native_by_check[name]
-        artifact_check = artifact_by_check[name]
-        assert artifact_check.availability == native_check.availability == "available"
-        assert artifact_check.srm is not None and native_check.srm is not None
-        assert artifact_check.srm.model_dump(mode="json") == native_check.srm.model_dump(
+    for name in (
+        "assigned_allocation",
+        "triggered_balance",
+        "trigger_rates",
+        "trigger_assumptions",
+    ):
+        assert artifact_by_check[name].model_dump(mode="json") == native_by_check[name].model_dump(
             mode="json"
         )
-        assert artifact_check.context == native_check.context
-    assert artifact_by_check["trigger_rates"].model_dump(mode="json") == native_by_check[
-        "trigger_rates"
-    ].model_dump(mode="json")
     native_maturity = {
-        check.metric: (check.availability, check.conclusion, dict(check.context))
+        check.metric: check.model_dump(mode="json")
         for check in native_report.checks
         if check.check == "trigger_maturity"
     }
     artifact_maturity = {
-        check.metric: (check.availability, check.conclusion, dict(check.context))
+        check.metric: check.model_dump(mode="json")
         for check in report.checks
         if check.check == "trigger_maturity"
     }
     assert artifact_maturity == native_maturity
-    native_watermarks = {
-        check.context["watermark"]
+    native_completeness = {
+        (
+            check.availability,
+            check.conclusion,
+            check.code,
+            check.context.get("watermark"),
+            check.context.get("reason"),
+        )
         for check in native_report.checks
         if check.check == "feed_completeness"
     }
     artifact_completeness = [check for check in report.checks if check.check == "feed_completeness"]
-    assert {check.context["watermark"] for check in artifact_completeness} == native_watermarks
+    assert {
+        (
+            check.availability,
+            check.conclusion,
+            check.code,
+            check.context.get("watermark"),
+            check.context.get("reason"),
+        )
+        for check in artifact_completeness
+    } == native_completeness
     assert any(check.feed == "trigger_population" for check in artifact_completeness)
     assert any(check.feed == "trigger_measure_stats:revenue" for check in artifact_completeness)
 
@@ -523,6 +535,29 @@ def test_health_expected_allocation_completes_independent_design_admission() -> 
     assert assigned.availability == "available"
     assert assigned.srm is not None
     assert assigned.srm.expected == {"C": 0.5, "T": 0.5}
+
+
+def test_health_extreme_valid_srm_statistic_does_not_break_snapshot_id() -> None:
+    import math
+
+    analysis = Analysis.from_unit_summary(
+        pa.table(
+            {
+                "unit": ["c1", "c2", "t1", "t2"],
+                "arm": ["C", "C", "T", "T"],
+                "value": [1.0, 2.0, 1.0, 2.0],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        metrics={"value": "mean"},
+        design=Randomized(control_group="C", allocation_scheme="independent"),
+    )
+    report = analysis.health_check(expected_allocation={"C": 5e-324, "T": 1.0})
+    assigned = next(check for check in report.checks if check.check == "assigned_allocation")
+    assert assigned.srm is not None
+    assert math.isinf(assigned.srm.chi2_stat)
+    assert report.source_snapshot_id is not None
 
 
 def test_health_empty_trigger_population_is_unavailable_not_a_report_failure(tmp_path) -> None:

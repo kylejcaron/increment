@@ -770,9 +770,9 @@ def test_srm_result_min_expected_count_is_json_portable():
             ),
         ),
         (
-            "estimation.diagnostics.always_srm_predeclared",
-            lambda: resolve_srm_expected(None, allocation=None, inference="always_valid"),
-        ),  # estimation/diagnostics.py::resolve_srm_expected
+            "estimation.diagnostics.expected_keys_do",
+            lambda: resolve_srm_expected({}, allocation=None, inference="fixed"),
+        ),
         (
             "estimation.diagnostics.alpha",
             lambda: sample_ratio_mismatch({"a": 1, "b": 1}, alpha=0.0),

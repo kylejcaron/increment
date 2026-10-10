@@ -145,6 +145,12 @@ def _normalize_expected_shares(expected: Mapping[str, float] | None) -> dict[str
     _validate_srm_support(expected)
     if expected is None:
         return None
+    if not expected:
+        _raise(
+            "estimation.diagnostics.expected_keys_do",
+            expected_keys=set(),
+            counts_keys=set(),
+        )
     nonfinite = {k: v for k, v in expected.items() if not math.isfinite(v)}
     if nonfinite:
         _raise("estimation.diagnostics.every_expected_share_finite", nonfinite=nonfinite)
