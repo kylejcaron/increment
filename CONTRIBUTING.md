@@ -134,21 +134,24 @@ Jupyter Notebook, JupyterLab, or ipywidgets.
   dependencies/plugins, conftest/shared fixtures, data, public lazy exports, or
   source that dynamically loads arbitrary paths refuse with an explicit broader route.
 
-  Normal tiers record per-test executed code in ignored `.testmondata` without
-  enabling selection. Only unfiltered, fully executed fast/slow/all tiers can
-  publish completeness markers. Focused, sharded, help, collection-only and
-  inherited `PYTEST_ADDOPTS` runs cannot certify a tier. Markers bind the database,
-  exact Python/dependency environment, source inventory, collected node IDs,
-  import-time coverage from a fresh interpreter, module/class AST fingerprints,
-  resolved selection controls and terminal reports. Fast/slow certify only their
-  own tier; all certifies both. A tier marker remains valid only while its node
-  IDs still exist in the database, including scheduler group suffixes.
+  Only certifiable complete fast/slow/all tiers initialize Testmon recording
+  and acquire its database lock. Focused, filtered, sharded and collection-only
+  runs neither read nor update the coverage database. Completeness markers bind
+  the database, exact Python/dependency environment, source inventory, collected
+  node IDs, import-time coverage from a fresh interpreter, module/class AST
+  fingerprints, resolved selection controls and terminal reports. Fast/slow
+  certify only their own tier; all certifies both. A tier marker remains valid
+  only while its node IDs still exist, including scheduler group suffixes.
 
   Affected startup pins and validates the worktree map before Testmon mutates
   it. Missing, unreadable, corrupt, stale or incomplete maps use the graph.
   Affected runs never certify a tier. On the Testmon route, changed test-helper
   consumers remain protected from deselection. Collection restores scheduling
   after plugin hooks without changing final node IDs.
+  Import-graph fallback collects only the conservative retained files; it does
+  not import unrelated tests just to deselect them. The certified Testmon route
+  retains full collection. Collection failures in retained files still fail.
+
 
   Supervised pytest children carry an explicit owner-child role. Nested normal
   runners bypass Testmon reads/writes and certification; without a valid owner
@@ -156,6 +159,13 @@ Jupyter Notebook, JupyterLab, or ipywidgets.
   requires a verified owner token.
   Selector collection and affected subprocesses load conftests only from their
   declared repository root and descendants, including retained temporary repos.
+  Controlled pytest children and certification collection use a private empty
+  bytecode namespace with writes disabled, so rapid same-size edits cannot
+  reuse source-tree or pytest-rewritten bytecode. Shared caches are not deleted.
+  This costs cold Python compilation, not a rebuild of native extensions.
+  It does not refresh already-loaded parent modules, in-memory imports, explicit
+  descendant overrides, or source edited during execution; keep inputs stable.
+
 
   A successful affected run requires finished owner-matched evidence whose exact
   terminal node IDs equal its nonempty selected node IDs. Evidence records
@@ -167,6 +177,11 @@ Jupyter Notebook, JupyterLab, or ipywidgets.
   worker allowance, remaining acceptance and evidence location. Evidence is
   source/worktree/environment/dirty-input specific; changed inputs require a
   new affected run, not reuse of an earlier green receipt.
+  A read-only review does not invalidate matching execution evidence. Reuse
+  receipts only while their recorded source, worktree, environment and dirty
+  inputs still match; run broad gates at the required integration point, not
+  simply because another reviewer looked at unchanged code.
+
 
 
 Before pushing, run:

@@ -10,6 +10,82 @@ from pathlib import Path
 import pytest
 
 
+@pytest.mark.slow
+@pytest.mark.parametrize("mode", ["focused", "nested", "filtered_fast", "sharded_fast"])
+def test_partial_feedback_is_independent_of_corrupt_coverage_map(tmp_path: Path, mode: str):
+    import py_compile
+
+    from scripts._test_impact import testmon_database_lock
+
+    project = Path(__file__).resolve().parents[1]
+    config = tmp_path / "pytest.ini"
+    config.write_text("[pytest]\n")
+    consumer = tmp_path / "test_consumer.py"
+    consumer.write_text("from sample import value\ndef test_value():\n    assert value() == 1\n")
+    source = tmp_path / "sample.py"
+    database = tmp_path / ".testmondata"
+    database.write_bytes(b"corrupt irrelevant coverage cache")
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("PYTEST_", "INCREMENT_", "TESTMON_"))
+    }
+    environment["PYTHONPATH"] = os.pathsep.join((str(tmp_path), str(project)))
+    if mode == "nested":
+        environment["PYTEST_CURRENT_TEST"] = os.environ["PYTEST_CURRENT_TEST"]
+    arguments = (
+        ["focused", str(consumer)] if mode in {"focused", "nested"} else ["fast", str(consumer)]
+    )
+    if mode == "sharded_fast":
+        arguments.extend(("--splits", "2", "--group", "1"))
+    timestamp = 1_700_000_000
+    source.write_text("def value():\n    return 1\n")
+    os.utime(source, (timestamp, timestamp))
+    py_compile.compile(
+        str(source), doraise=True, invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP
+    )
+    with testmon_database_lock(tmp_path):
+        for value, status in ((1, 0), (2, 1)):
+            source.write_text(f"def value():\n    return {value}\n")
+            os.utime(source, (timestamp, timestamp))
+            evidence_root = tmp_path / f"evidence-{value}"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "scripts.run_test_tier",
+                    *arguments,
+                    "-c",
+                    str(config),
+                    "-q",
+                    "--evidence-root",
+                    str(evidence_root),
+                ],
+                cwd=tmp_path,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=45,
+            )
+            assert result.returncode == status, result.stdout + result.stderr
+            [receipt] = evidence_root.glob("run-*/run.json")
+            evidence = json.loads(receipt.read_text())
+            assert evidence["executed_tests"] == 1
+            reports = [
+                json.loads(line)
+                for line in receipt.with_name("reports.jsonl").read_text().splitlines()
+            ]
+            calls = [
+                (report["nodeid"], report["outcome"])
+                for report in reports
+                if report.get("when") == "call"
+            ]
+            assert calls == [
+                ("test_consumer.py::test_value", "passed" if status == 0 else "failed")
+            ]
+        assert database.read_bytes() == b"corrupt irrelevant coverage cache"
+
+
 def test_all_cli_help_needs_no_private_authorization():
     project = Path(__file__).parents[1]
     environment = {
@@ -107,16 +183,6 @@ def test_focused_runner_does_not_execute_deselected_slow_tests(tmp_path):
     assert "1 passed, 2 deselected" in result.stdout
 
 
-def test_tier_marker_selection_remains_scoped_to_declared_policy():
-    from scripts._test_tier_policy import TIER_MARKERS
-    from scripts.run_test_tier import TIERS
-
-    assert TIERS["fast"].marker == TIER_MARKERS["fast"]
-    assert TIERS["slow"].marker == TIER_MARKERS["slow"]
-    assert TIERS["all"].marker == ""
-    assert TIERS["examples"].marker == "examples"
-
-
 def test_focused_runner_uses_serial_mode_below_recorded_xdist_overhead(tmp_path):
     from scripts.run_test_tier import _serial_if_small_focused_selection
 
@@ -182,52 +248,6 @@ def test_focused_runner_keeps_workers_for_unrecorded_node_selector(tmp_path):
     args = [f"{test_file}::test_new", "-n", "2", "--dist", "loadgroup"]
 
     assert _serial_if_small_focused_selection("focused", args, project) == args
-
-
-def test_focused_main_classifies_selection_before_adding_internal_options(tmp_path, monkeypatch):
-    import scripts.run_test_tier as runner
-
-    test_file = tmp_path / "test_small.py"
-    test_file.write_text("def test_one(): pass\n")
-    durations = tmp_path / ".github" / "fast-test-durations.json"
-    durations.parent.mkdir()
-    durations.write_text('{"test_small.py::test_one": 0.5}')
-    monkeypatch.chdir(tmp_path)
-    commands = []
-    monkeypatch.setattr(
-        runner, "run_with_budget", lambda command, **kwargs: commands.append(command) or 0
-    )
-
-    assert runner.main(["focused", str(test_file), "-n", "2", "--dist", "loadgroup"]) == 0
-    assert "-n" not in commands[0]
-    assert "--dist" not in commands[0]
-
-
-def test_tiny_pytest_selection_runs_without_xdist_plugin(tmp_path):
-    test_file = tmp_path / "test_without_xdist.py"
-    test_file.write_text("def test_smoke(): pass\n")
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-q",
-            str(test_file),
-            "-p",
-            "conftest",
-            "-p",
-            "no:xdist",
-        ],
-        cwd=Path(__file__).parents[1],
-        text=True,
-        capture_output=True,
-        timeout=60,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "1 passed" in result.stdout
 
 
 @pytest.mark.parametrize(

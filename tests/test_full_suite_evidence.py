@@ -388,7 +388,8 @@ def test_outer_deadline_retains_failure_and_interrupted_test(tmp_path):
         sys.executable,
         "-c",
         "import sys; from scripts.run_test_tier import TIERS, build_pytest_command, run_with_budget; "
-        "raise SystemExit(run_with_budget(build_pytest_command(TIERS['all'], sys.argv[1:]), "
+        "raise SystemExit(run_with_budget(build_pytest_command(TIERS['all'], sys.argv[1:], "
+        "record_coverage=False), "
         "tier='evidence-interruption', budget_seconds=60))",
         "-c",
         str(config),
@@ -582,7 +583,6 @@ def test_affected_run_evidence_retains_selection_identity(tmp_path):
     assert manifest["affected_base"] == base
     assert manifest["tier"] == "fast"
     assert manifest["selected_tests"] == 2
-    assert manifest["deselected_tests"] == 1
     assert manifest["selection_status"] == "selected"
     assert manifest["outcome"] == "passed"
     assert manifest["dirty_inputs"]
@@ -612,7 +612,6 @@ def test_affected_xdist_run_retains_controller_selection_and_worker_results(tmp_
     manifest_path = next(evidence.glob("run-*/run.json"))
     manifest = json.loads(manifest_path.read_text())
     assert manifest["selected_tests"] == 2
-    assert manifest["deselected_tests"] == 1
     assert manifest["worker_allowance"] == "2"
     assert manifest["resolved_worker_count"] == 2
     assert manifest["selection_route"] == "import_graph"

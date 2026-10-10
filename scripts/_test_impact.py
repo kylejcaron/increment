@@ -95,6 +95,14 @@ def _write_testmon_lock_owner(root: Path, owner_path: Path, owner: Mapping[str, 
     return temporary_path
 
 
+def fresh_bytecode_cache(environment: dict[str, str]) -> tempfile.TemporaryDirectory[str]:
+    """Isolate controlled imports without deleting shared caches."""
+    directory = tempfile.TemporaryDirectory(prefix="increment-bytecode-")
+    environment["PYTHONPYCACHEPREFIX"] = directory.name
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    return directory
+
+
 @contextmanager
 def testmon_database_lock(root: Path) -> Iterator[bool]:
     """Serialize Testmon map access; only a verified owner token permits nesting."""
@@ -370,16 +378,14 @@ coverage = Coverage(
 )
 command = build_pytest_command(
     TIERS[tier],
-    ["--collect-only", "-q", str(root / "tests"), "-p", "no:pytest-testmon"],
+    ["--collect-only", "-q", str(root / "tests")],
+    record_coverage=False,
 )
 tokens = command[3:]
 arguments = []
 index = 0
 while index < len(tokens):
     argument = tokens[index]
-    if argument == "--testmon-noselect":
-        index += 1
-        continue
     if argument == "-c" and index + 1 < len(tokens):
         index += 2
         continue
@@ -446,15 +452,16 @@ print(json.dumps({"lines": result, "nodes": collector.nodeids}, sort_keys=True))
 
     def run_coverage(script: str, *arguments: str) -> object | None:
         try:
-            result = subprocess.run(
-                [sys.executable, "-c", script, *arguments],
-                cwd=root,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=240,
-                env=clean_environment,
-            )
+            with fresh_bytecode_cache(clean_environment):
+                result = subprocess.run(
+                    [sys.executable, "-c", script, *arguments],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=240,
+                    env=clean_environment,
+                )
             return json.loads(result.stdout)
         except (OSError, subprocess.SubprocessError, ValueError):
             return None

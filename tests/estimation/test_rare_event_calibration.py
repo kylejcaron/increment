@@ -50,6 +50,7 @@ import ibis
 import numpy as np
 import pandas as pd
 import pytest
+from scipy.special import gammaln, xlog1py, xlogy
 from scipy.stats import beta as _beta
 from scipy.stats import binom as _binom
 
@@ -215,8 +216,10 @@ def test_rare_event_large_arm_matches_full_support_grid_oracle_in_both_tails():
     best_plus = dict.fromkeys(cells, 0.0)
     best_minus = dict.fromkeys(cells, 0.0)
     counts = np.arange(n_c + 1)
+    # The support and grid stay exhaustive; only the fixed binomial coefficient is reused.
+    log_choose = gammaln(n_c + 1) - gammaln(counts + 1) - gammaln(n_c - counts + 1)
     for q in np.linspace(a, b, 2001):
-        full_pmf = _binom.pmf(counts, n_c, q)
+        full_pmf = np.exp(log_choose + xlogy(counts, q) + xlog1py(n_c - counts, -q))
         reachable = np.flatnonzero(full_pmf > 0.0)
         pmf = full_pmf[reachable]
         for x_t, r in cells:

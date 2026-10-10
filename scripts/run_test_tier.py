@@ -12,6 +12,7 @@ import platform
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -25,13 +26,13 @@ from typing import NoReturn, TextIO
 from scripts._test_impact import (
     _source_snapshots,
     affected_test_paths,
+    fresh_bytecode_cache,
     mark_testmon_nested_context,
     record_testmon_full_run,
     subprocess_consumer_test_paths,
     testmon_database_lock,
     testmon_environment_fingerprint,
     testmon_full_tiers,
-    testmon_nested_context,
     write_testmon_coverage,
 )
 from scripts._test_tier_policy import TIER_MARKERS
@@ -529,7 +530,9 @@ def _full_run_certification_dist(path: Path) -> str | None:
     return None
 
 
-def build_pytest_command(tier: Tier, extra_args: Sequence[str]) -> list[str]:
+def build_pytest_command(
+    tier: Tier, extra_args: Sequence[str], *, record_coverage: bool
+) -> list[str]:
     # External evidence directories must not change configuration or test selection.
     config = Path(__file__).resolve().parents[1] / "pyproject.toml"
     command = [
@@ -542,14 +545,13 @@ def build_pytest_command(tier: Tier, extra_args: Sequence[str]) -> list[str]:
         "tests._evidence",
     ]
     nested_test_run = "PYTEST_CURRENT_TEST" in os.environ
-    if nested_test_run:
-        # Nested subprocesses must not inherit affected selection or certification hooks.
+    if nested_test_run or not record_coverage:
         command.extend(("-p", "no:pytest-testmon"))
-    else:
+    if not nested_test_run:
         command.extend(("-p", "scripts.run_test_tier_plugin"))
     if tier.marker is not None:
         command.extend(("-m", tier.marker))
-    if not nested_test_run:
+    if not nested_test_run and record_coverage:
         command.append("--testmon-noselect")
     command.extend(extra_args)
     return command
@@ -828,13 +830,17 @@ def _supervise_process(
                 next_heartbeat = now + heartbeat_seconds
 
 
-def _supervised_child_environment(extra_env: Mapping[str, str | None] | None) -> dict[str, str]:
+def _supervised_child_environment(
+    extra_env: Mapping[str, str | None] | None, owner_token: str
+) -> dict[str, str]:
     environment = os.environ.copy()
     for name, value in (extra_env or {}).items():
         if value is None:
             environment.pop(name, None)
         else:
             environment[name] = value
+    _mark_supervised_testmon_child(environment)
+    environment["INCREMENT_EVIDENCE_OWNER"] = owner_token
     return environment
 
 
@@ -885,10 +891,10 @@ def run_with_budget(
     windows_job: int | None = None
     startup_gate: int | None = None
     timed_out = False
+    bytecode_cache: tempfile.TemporaryDirectory[str] | None = None
     try:
-        child_environment = _supervised_child_environment(extra_env)
-        _mark_supervised_testmon_child(child_environment)
-        child_environment["INCREMENT_EVIDENCE_OWNER"] = owner_token
+        child_environment = _supervised_child_environment(extra_env, owner_token)
+        bytecode_cache = fresh_bytecode_cache(child_environment)
         process, windows_job, startup_gate = _start_process(command, env=child_environment)
         _raise_pending()
         if startup_gate is not None:
@@ -932,6 +938,8 @@ def run_with_budget(
                 )
         for signum, handler in original_handlers.items():
             signal.signal(signum, handler)
+        if bytecode_cache is not None:
+            bytecode_cache.cleanup()
     if pending_signal is not None:
         status = 128 + pending_signal
     termination = (
@@ -1280,7 +1288,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     mark_testmon_nested_context(root)
     os.environ["TESTMON_DATAFILE"] = str(root / ".testmondata")
     certification_report = None
-    if can_certify_testmon_full_run(args.tier, args.pytest_args):
+    if "PYTEST_CURRENT_TEST" not in os.environ and can_certify_testmon_full_run(
+        args.tier, args.pytest_args
+    ):
         certification_report = root / f".testmondata.full-report-{uuid.uuid4().hex}.json"
         expected_config = Path(__file__).resolve().parents[1] / "pyproject.toml"
         extra_env.update(
@@ -1291,9 +1301,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
         )
     lock_context = (
-        nullcontext(False)
-        if "PYTEST_CURRENT_TEST" in os.environ and not testmon_nested_context(root)
-        else testmon_database_lock(root)
+        nullcontext(False) if certification_report is None else testmon_database_lock(root)
     )
     with lock_context:
         source_snapshot = None
@@ -1303,7 +1311,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             except (OSError, UnicodeDecodeError):
                 pass
         result = run_with_budget(
-            build_pytest_command(tier, args.pytest_args),
+            build_pytest_command(
+                tier, args.pytest_args, record_coverage=certification_report is not None
+            ),
             tier=args.tier,
             budget_seconds=(
                 None if os.environ.get("GITHUB_ACTIONS") == "true" else tier.budget_seconds

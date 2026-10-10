@@ -67,6 +67,8 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   execution evidence. They do not waive slow, parity, fixtures, public smokes,
   docs, scientific or full-suite gates. See
   [selection controls and evidence](CONTRIBUTING.md#tests-and-quality-checks).
+- Reuse matching source/worktree/environment-bound evidence across read-only
+  reviews; changed inputs invalidate it. Required integration gates remain.
 - Run `make install` for explicit hook setup; do not bypass hooks with
   `--no-verify`. Do not activate shared hooks while live consumers are unprepared.
 - Run `make check` before pushing. Reserve `make test-all` for final integration
