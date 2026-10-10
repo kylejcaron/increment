@@ -37,8 +37,8 @@ WeekStart = Literal["monday", "sunday"]
 
 _ONE_DAY = _days_literal(1).as_interval("D")
 
-# Spine capacity: an explicit range beyond _MAX_REPORT_DAYS raises
-# CapabilityError rather than silently truncating.
+# Explicit ranges above the fixed calendar capacity refuse; scalar edges are
+# unchecked here and must be admitted by Report before they reach this builder.
 _MAX_REPORT_DAYS = 3653  # 10 years
 
 
@@ -75,6 +75,42 @@ _REFUSALS = refusals(
     },
 )
 _raise = raiser(_REFUSALS)
+
+
+def validate_report_population(population: ir.Table | None) -> None:
+    """Admit the population key before a report performs any data query."""
+    if population is not None and "unit_id" not in population.columns:
+        _raise("query.calendar.population_unit_id", columns=list(population.columns))
+
+
+def report_horizon_relation(
+    facts: Sequence[tuple[ir.Table, str]],
+    *,
+    day_boundary_offset: dt.timedelta,
+    no_data_sentinel: dt.date,
+) -> ir.Table:
+    """Build a one-row bound aggregate query for selected fact horizons.
+
+    Each fact's localized maximum is reduced independently, then the tiny
+    aggregate relations are cross-joined. This supports ratio metrics whose
+    components come from different warehouse relations without registering
+    client-side rows or fetching fact data.
+    """
+    horizons = []
+    for index, (fact_table, fact_name) in enumerate(facts):
+        scoped = fact_table.filter(fact_table.event == fact_name)
+        horizon = _local_date_at_offset(scoped.ts, day_boundary_offset).max()
+        metric = cast(ir.Scalar, ibis.coalesce(horizon, ibis.literal(no_data_sentinel))).name(
+            f"_horizon_{index}"
+        )
+        horizons.append(scoped.aggregate([metric]))
+    relation = horizons[0]
+    for next_horizon in horizons[1:]:
+        relation = relation.cross_join(next_horizon)
+    names = [f"_horizon_{index}" for index in range(len(horizons))]
+    if len(names) == 1:
+        return relation.select(end_edge=relation[names[0]])
+    return relation.select(end_edge=ibis.least(*(relation[name] for name in names)))
 
 
 def period_start_expr(ds: ir.DateValue, grain: PeriodGrain, week_start: WeekStart) -> ir.DateValue:
@@ -137,9 +173,10 @@ def calendar_periods(
     end (``period_end <= data_horizon``) - a trailing period during
     warehouse lag is incomplete even if the calendar has moved on.
 
-    Raises :class:`CapabilityError` when an explicit ``end_edge`` date lies
-    more than ``_MAX_REPORT_DAYS`` days after ``start``. A horizon-bounded
-    spine (``end_edge`` as an ibis scalar) is capped at the same capacity.
+    Raises :class:`CapabilityError` when the inclusive ``[start, end_edge]``
+    span exceeds ``_MAX_REPORT_DAYS``. Scalar edges are bounded by the same
+    fixed spine without range admission; the Report facade resolves its
+    default scalar horizon to a date and validates it before query construction.
     """
     if isinstance(end_edge, dt.date):
         span = (end_edge - start).days + 1
@@ -233,9 +270,8 @@ def period_population(
     row that can never resolve.
     """
     if population is not None:
+        validate_report_population(population)
         cols = population.columns
-        if "unit_id" not in cols:
-            _raise("query.calendar.population_unit_id", columns=list(cols))
         population = population.filter(population.unit_id.notnull())
         if "ds" in cols:
             scoped = population.filter(

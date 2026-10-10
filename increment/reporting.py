@@ -43,9 +43,11 @@ from increment.query.calendar import (
     period_population,
     period_unit_values,
     ratio_period_values,
+    report_horizon_relation,
     rolling_active_values,
     rolling_total_values,
     total_period_values,
+    validate_report_population,
 )
 
 # Shared column-normalization contract with the Analysis facade: both
@@ -113,6 +115,11 @@ def _validate_report_options(alpha: float, week_start: str) -> None:
 class MetricTrend:
     """One metric's calendar trend: a lazy ibis query plus metadata.
 
+    When ``Report.metric`` omits ``end``, it resolves the selected metric's
+    fact horizon through a bounded aggregate over the bound warehouse
+    relation at construction; no in-memory row is registered. The returned
+    trend remains lazy and its default edge is a snapshot.
+
     Columns (order not guaranteed, only names): `metric`, `grain`, `window`,
     `period`, `[dims...]`, `period_complete`, `n`, `value`, `ci_lb`, `ci_ub`.
     `n` is the per-period unit denominator for entity-scoped metrics and
@@ -175,6 +182,13 @@ class MetricTrend:
 
 class Report:
     """Evaluate governed metrics over calendar time - no experiment.
+
+    An omitted end date resolves the selected metric's own fact horizon
+    through a bounded aggregate when the trend is constructed.
+    ``Report.metrics`` resolves each selected metric independently. The
+    default edge is therefore a snapshot, and ranges beyond the ten-year
+    calendar capacity refuse before a trend is returned. Population SQL and
+    the required ``unit_id`` key are admitted before this data query.
 
     Usage::
 
@@ -415,6 +429,9 @@ class Report:
         assert m is not None  # _validate ran
         by = list(by or [])
         z = two_sided_critical_value(norm.isf, alpha, what="report metric confidence interval")
+        # Admit and validate the caller population before any data query.
+        pop_tbl = self._resolve_population(population)
+        validate_report_population(pop_tbl)
         # Report/calendar path carries only Definitions.day_boundary (a raw
         # string), never an Experiment -- see builders.day_boundary_offset.
         offset = day_boundary_offset(self._defs.day_boundary)
@@ -423,7 +440,8 @@ class Report:
 
         # A no-data fact's max(ts) is NULL, so its sentinel is one day
         # before `start`, keeping every period incomplete honestly.
-        no_data_sentinel = ibis.literal(start - dt.timedelta(days=1))
+        no_data_date = start - dt.timedelta(days=1)
+        no_data_sentinel = ibis.literal(no_data_date)
         if isinstance(m, RatioMetric):
             num_fs, num_fact = _find_fact_source(self._defs, m.numerator.fact)
             den_fs, den_fact = _find_fact_source(self._defs, m.denominator.fact)
@@ -444,11 +462,12 @@ class Report:
                 no_data_sentinel,
             )
             horizon = cast("ir.Scalar", ibis.least(num_horizon, den_horizon))
+            horizon_facts = [(num_tbl, m.numerator.fact), (den_tbl, m.denominator.fact)]
         else:
             fs, fact_def = _find_fact_source(self._defs, m.fact)
             unit = fs.entities[0] if isinstance(m, TotalMetric) else m.entity
             tbl = self._session.fact_table(fs, unit)
-            # Horizon scoped to the metric's own fact, not the whole source.
+            # Horizon scoped to the metric's own fact.
             horizon = cast(
                 "ir.Scalar",
                 ibis.coalesce(
@@ -456,10 +475,23 @@ class Report:
                     no_data_sentinel,
                 ),
             )
+            horizon_facts = [(tbl, m.fact)]
 
-        # Left unwrapped: calendar_periods's capacity refusal keys on
-        # isinstance(end_edge, dt.date); wrapping here would silently defeat it.
-        edge = end if end is not None else horizon
+        if end is None:
+            # Execute only a bounded aggregate over the already-bound fact
+            # relations; no client-side one-row table is registered.
+            resolved_horizon = self._con.execute(
+                report_horizon_relation(
+                    horizon_facts,
+                    day_boundary_offset=offset,
+                    no_data_sentinel=no_data_date,
+                )
+            ).iloc[0, 0]
+            if isinstance(resolved_horizon, dt.datetime):
+                resolved_horizon = resolved_horizon.date()
+            edge = cast("dt.date", resolved_horizon)
+        else:
+            edge = end
         periods = calendar_periods(
             start,
             end_edge=edge,
@@ -552,7 +584,6 @@ class Report:
                 alpha=alpha,
             )
 
-        pop_tbl = self._resolve_population(population)
         denominator: Literal["active", "population"] = (
             "population" if pop_tbl is not None else "active"
         )
