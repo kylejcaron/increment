@@ -2000,24 +2000,163 @@ def _adjusted_ratio_anchor_case(*, separated: bool = False) -> ParityCase:
     )
 
 
+def _m3_export_and_consume_checkpoint(
+    analysis: Analysis, path: Path, metrics: list[MetricSpec], design: Randomized, expected: Any
+) -> int:
+    analysis.export(path)
+    size = path.stat().st_size
+    assert size > 0
+    replay = Analysis.from_moments(pq.read_table(path).to_pylist(), metrics=metrics, design=design)
+    assert replay.sequential_snapshot() == expected
+    assert replay.run()
+    return size
+
+
+def _m3_assert_switchback_refusal(summary: pd.DataFrame, design: Randomized) -> None:
+    from increment.semantics.assignment import (
+        IndependentBernoulliOrder,
+        SwitchbackAssignment,
+        SwitchbackWindow,
+    )
+
+    with pytest.raises(CodedError) as refused:
+        Analysis.from_switchback_panel(
+            summary,
+            unit="user_id",
+            cycle="cycle",
+            period="period",
+            step="step",
+            group="variant",
+            metrics=[MetricSpec(name="revenue", type="mean", window_days=1)],
+            identification=design,
+            assignment=SwitchbackAssignment(
+                sequence=IndependentBernoulliOrder(probability_ct=0.5),
+                window=SwitchbackWindow(washout_steps=0, observation_steps=1),
+            ),
+        )
+    assert refused.value.code == "source.frame.switchback.identification"
+    assert refused.value.context
+
+
+def _m3_print_measurements(sql: list[str], first: Any, second: Any, sizes: list[int]) -> None:
+    query_kinds = [
+        "assignment_integrity" if "mixed_count" in query else "arm_assignment_counts"
+        for query in sql
+    ]
+    assert sql and first.records and second.records
+    print(
+        "M3 messy replay measurements",
+        {
+            "query_count_two_looks": len(sql),
+            "query_shape_counts_two_looks": {
+                kind: query_kinds.count(kind) for kind in sorted(set(query_kinds))
+            },
+            "checkpoint_bytes": sizes,
+            "per_cell_alpha": [
+                [str(cell.alpha) for cell in first.registration.roster],
+                [str(cell.alpha) for cell in second.registration.roster],
+            ],
+        },
+    )
+
+
+def _m3_messy_event_rows() -> list[dict[str, Any]]:
+    rows = ds.event_rows(n_per_arm=36)
+    rows = [
+        row
+        for row in rows
+        if not (
+            row["user_id"].startswith("t")
+            and int(row["user_id"][1:]) >= 24
+            or row["user_id"] in {"c0", "c1", "t0", "t1"}
+            and row["event"] in {"purchase", "session_end"}
+            and row["event_at"] == ds._PURCHASE_AT
+        )
+    ]
+    late_at = dt.datetime(2025, 1, 11, 10)
+    for uid in ("c0", "c1", "t0", "t1"):
+        template = next(row for row in rows if row["user_id"] == uid and row["event"] == "purchase")
+        rows.extend(
+            [
+                {**template, "event_at": late_at, "revenue": 8.0},
+                {
+                    **template,
+                    "event_at": late_at,
+                    "event": "session_end",
+                    "revenue": None,
+                    "sess": 1,
+                },
+            ]
+        )
+    return rows
+
+
+def _m3_unit_summary(rows: list[dict[str, Any]], secondary: str, messy: bool) -> pd.DataFrame:
+    con = ds.duckdb_connection(rows)
+    summary = ds.unit_summary_frame(con)
+    con.disconnect()
+    frame = pd.DataFrame(summary.to_pylist())
+    if messy:
+        frame[secondary] = frame["converted"]
+    missing = frame.index[frame["revenue"].isna()].tolist()
+    assert len(missing) >= 2
+    frame["revenue"] = frame["revenue"].astype(object)
+    frame.loc[missing[0], "revenue"] = float("nan")
+    frame.loc[missing[1], "revenue"] = None
+    return frame
+
+
+def _m3_unit_panel(
+    summary: pd.DataFrame, design: Randomized, plan: AnalysisPlan, secondary: MetricSpec
+) -> Analysis:
+    columns = ["user_id", "variant", "exposure_date", "revenue", "sessions"]
+    if secondary.type == "conversion":
+        columns.append(secondary.name)
+    panel = summary[columns].copy()
+    panel["date"] = ds._EXPOSURE_AT.date()
+    analysis = Analysis.from_unit_panel(
+        panel,
+        unit="user_id",
+        group="variant",
+        date="date",
+        design=design,
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                type="mean",
+                missing="zero",
+                window_days=1,
+                preferred_direction="increase",
+            ),
+            secondary.model_copy(update={"window_days": 1}),
+        ],
+        plan=plan,
+        experiment_id="exp",
+        exposure_date="exposure_date",
+    )
+    analysis._sequential_as_of = ds._EXPOSURE_AT.date() + dt.timedelta(days=1)  # ty: ignore[unresolved-attribute]
+    return analysis
+
+
 def _sequential_missing_zero_mean_ratio_case(
     *,
     warehouse_connection: Callable[[list[dict[str, Any]]], Any] = ds.duckdb_connection,
     dialect: str = "duckdb",
+    messy: bool = False,
 ) -> ParityCase:
-    """Same mean/ratio reveals from absent facts and zero-filled null/NaN outcomes."""
-    rows = ds.event_rows()
+    """Sequential mean/ratio parity, or the related messy mean/conversion journey."""
+    rows = _m3_messy_event_rows() if messy else ds.event_rows(n_per_arm=60)
+    allocation = {"control": 0.6, "treatment": 0.4} if messy else {"control": 0.5, "treatment": 0.5}
+    secondary = "purchase_rate" if messy else "rps"
     sequential_plan = AnalysisPlan(
         primary="revenue",
-        secondaries=("rps",),
+        secondaries=(secondary,),
         inference={"kind": "asymptotic_mean", "expected_decision_sample_size": 100},
     )
-    defs_dict = ds.definitions_dict(
-        plan=sequential_plan, allocation={"control": 0.5, "treatment": 0.5}
-    )
+    defs_dict = ds.definitions_dict(plan=sequential_plan, allocation=allocation)
     defs_dict["dialect"] = dialect
     defs = Definitions.model_validate(defs_dict)
-    design = Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5})
+    design = Randomized(control_group="control", allocation=allocation)
     as_of = ds._EXPERIMENT_END - dt.timedelta(days=1)
 
     def _native_bound_plan() -> AnalysisPlan:
@@ -2047,31 +2186,30 @@ def _sequential_missing_zero_mean_ratio_case(
         adopted._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
         return adopted
 
-    summary_metrics = [
-        MetricSpec(name="revenue", type="mean", missing="zero", preferred_direction="increase"),
+    secondary_spec = (
         MetricSpec(
-            name="rps",
+            name=secondary,
+            type="conversion",
+            missing="zero",
+            preferred_direction="increase",
+        )
+        if messy
+        else MetricSpec(
+            name=secondary,
             type="ratio",
             numerator="revenue",
             denominator="sessions",
             missing="zero",
             preferred_direction="increase",
-        ),
+        )
+    )
+    summary_metrics = [
+        MetricSpec(name="revenue", type="mean", missing="zero", preferred_direction="increase"),
+        secondary_spec,
     ]
 
     def _summary_frame() -> pd.DataFrame:
-        con = ds.duckdb_connection(rows)
-        summary = ds.unit_summary_frame(con)
-        con.disconnect()
-        frame = pd.DataFrame(summary.to_pylist())
-        missing = frame.index[frame["revenue"].isna()].tolist()
-        assert len(missing) >= 2
-        frame["revenue"] = frame["revenue"].astype(object)
-        frame.loc[missing[0], "revenue"] = float("nan")
-        # Keep the next missing unit as an actual null; both feed the same
-        # zero-equivalent absent-purchase cohort used by warehouse routes.
-        frame.loc[missing[1], "revenue"] = None
-        return frame
+        return _m3_unit_summary(rows, secondary, messy)
 
     def build_unit_summary() -> Analysis:
         return Analysis.from_unit_summary(
@@ -2086,51 +2224,73 @@ def _sequential_missing_zero_mean_ratio_case(
         )
 
     def build_unit_panel() -> Analysis:
-        summary = _summary_frame()
-        panel = summary[["user_id", "variant", "exposure_date", "revenue", "sessions"]].copy()
-        panel["date"] = ds._EXPOSURE_AT.date()
-        analysis = Analysis.from_unit_panel(
-            panel,
-            unit="user_id",
-            group="variant",
-            date="date",
-            design=design,
-            metrics=[
-                MetricSpec(
-                    name="revenue",
-                    type="mean",
-                    missing="zero",
-                    window_days=1,
-                    preferred_direction="increase",
-                ),
-                MetricSpec(
-                    name="rps",
-                    type="ratio",
-                    numerator="revenue",
-                    denominator="sessions",
-                    missing="zero",
-                    window_days=1,
-                    preferred_direction="increase",
-                ),
-            ],
-            plan=sequential_plan,
-            experiment_id="exp",
-            exposure_date="exposure_date",
-        )
-        analysis._sequential_as_of = ds._EXPOSURE_AT.date() + dt.timedelta(days=1)  # ty: ignore[unresolved-attribute]
-        return analysis
+        return _m3_unit_panel(_summary_frame(), design, sequential_plan, secondary_spec)
 
     def build_moments() -> Analysis:
         return _export_and_replay(
             build_unit_summary(),
             [
                 MetricSpec(name="revenue", type="mean"),
-                MetricSpec(name="rps", type="ratio", numerator="revenue", denominator="sessions"),
+                secondary_spec.model_copy(update={"window_days": None}),
             ],
         )
 
+    def measure_two_looks() -> None:
+        assert messy
+        import ibis
+
+        con = warehouse_connection(rows)
+        native = _track_connection(
+            make_analysis(con, defs, experiment="exp", plan=_native_bound_plan()), con
+        )
+        sql: list[str] = []
+        execute = con.to_pyarrow
+
+        def capture_query(expr: Any, *args: Any, **kwargs: Any) -> Any:
+            sql.append(ibis.to_sql(expr, dialect="duckdb"))
+            return execute(expr, *args, **kwargs)
+
+        con.to_pyarrow = capture_query
+        from increment.errors import CodedError
+
+        with pytest.raises(CodedError) as immature:
+            native.capture_sequential(finalized=False, as_of=dt.date(2025, 1, 10))
+        assert immature.value.code == "sequential.source.invalid"
+        first = native.capture_sequential(finalized=True, as_of=dt.date(2025, 1, 10))
+        with tempfile.TemporaryDirectory() as td:
+            first_path = Path(td) / "first.parquet"
+            first_bytes = _m3_export_and_consume_checkpoint(
+                native,
+                first_path,
+                [
+                    MetricSpec(name="revenue", type="mean"),
+                    MetricSpec(name="purchase_rate", type="conversion"),
+                ],
+                design,
+                first,
+            )
+            _m3_assert_switchback_refusal(_summary_frame(), design)
+            second = native.capture_sequential(
+                finalized=True, previous=first, as_of=dt.date(2025, 1, 11)
+            )
+            second_path = Path(td) / "second.parquet"
+            second_bytes = _m3_export_and_consume_checkpoint(
+                native,
+                second_path,
+                [
+                    MetricSpec(name="revenue", type="mean"),
+                    secondary_spec.model_copy(update={"window_days": None}),
+                ],
+                design,
+                second,
+            )
+            assert first != second
+        assert all(cell.alpha > 0 for cell in second.registration.roster)
+        _m3_print_measurements(sql, first, second, [first_bytes, second_bytes])
+        _close_parity_analysis(native)
+
     return ParityCase(
-        id="audit-sequential-missing-zero",
+        id="audit-sequential-messy-mean-conversion" if messy else "audit-sequential-missing-zero",
         build={
             "from_definitions": build_definitions,
             "from_unit_day_artifact": build_artifact,
@@ -2140,6 +2300,7 @@ def _sequential_missing_zero_mean_ratio_case(
         },
         sequential=True,
         slow=True,
+        sequential_probe=measure_two_looks if messy else None,
     )
 
 
@@ -8747,6 +8908,7 @@ PARITY_CASES: tuple[ParityCase, ...] = (
     _window_spelling_case(native_spelling="zulu"),
     _window_spelling_case(native_spelling="offset"),
     _sequential_missing_zero_mean_ratio_case(),
+    _sequential_missing_zero_mean_ratio_case(messy=True),
     _sequential_asymptotic_mean_case(),
     _source_horizon_case(),
     _source_horizon_case(pinned_dimension=True),
