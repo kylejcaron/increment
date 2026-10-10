@@ -176,7 +176,7 @@ class TestPreferredDirectionReachesTheLiftEstimate:
         )
         # A moments cube needs its format stamp and the plan it was reduced under.
         stamp = {
-            "moments_format": 10,
+            "moments_format": 11,
             "winsor_lower_percentile": None,
             "winsor_upper_percentile": None,
             "winsor_lower_bound": None,

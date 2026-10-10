@@ -938,7 +938,7 @@ def _current_moment_rows(metric_type: str, native) -> list[dict[str, Any]]:
 
 def test_current_moment_rows_come_from_current_writer(native):
     rows = _current_moment_rows("mean", native)
-    assert {row["moments_format"] for row in rows} == {11}
+    assert {row["moments_format"] for row in rows} == {12}
 
 
 def _moment_spec(metric_type: str, name: str) -> MetricSpec:

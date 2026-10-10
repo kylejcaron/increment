@@ -318,6 +318,50 @@ def assert_cauchy_schwarz(cross: float, var_a: float, var_b: float, n: int, *, w
     )
 
 
+def sample_skewness_bound(n: int) -> float:
+    """Largest standardized skewness ``|g1|`` any sample of *n* values attains:
+    ``(n - 2) / sqrt(n - 1)``, reached by ``n - 1`` equal values and one
+    outlier (Kirby, 1974). Two values are symmetric about their mean, so
+    the bound is 0 at ``n = 2``."""
+    return (n - 2) / math.sqrt(n - 1)
+
+
+def third_moment_feasible(c3: float, c2: float, c1: float, n: int) -> bool:
+    """Whether a centered third moment could come from a sample of *n* values.
+
+    With ``S2`` and ``S3`` the second and third sums of deviations from the
+    exact mean (the stored sums re-centered by the residual mean ``c1 /
+    n``), ``|S3| * sqrt(n) / S2**1.5 <= (n - 2) / sqrt(n - 1)`` holds before
+    any rounding, so a violation beyond rounding means the moments were not
+    reduced from the same values. The comparison is formed as ``|S3| / S2``
+    against ``bound * sqrt(S2 / n)`` so a legitimately huge ``S2`` is never
+    cubed. The rounding allowance scales with what the producer cancelled:
+    the cubed residuals sum to at most ``S2**1.5`` in magnitude, so on the
+    ratio scale their roundoff is ``O(eps * sqrt(S2))`` whatever ``S3``
+    came out to, and the re-centering terms add their own magnitudes. A
+    zero ``S2`` makes the exact bound zero and the tolerance absolute. One
+    unit has no spread and nothing to check. A non-finite or inconsistent
+    third moment is a diagnostic gap, never grounds to refuse the arm whose
+    second moments are sound; callers report it as unavailable.
+    """
+    if n < 2 or c2 < 0.0:
+        return True
+    if not math.isfinite(c3):
+        return False
+    e = c1 / n
+    second = max(c2 - scaled_cross_over_n(c1, c1, n), 0.0)
+    terms = (c3, -3.0 * e * c2, 2.0 * n * e * e * e)
+    third = sum(terms)
+    magnitude = sum(abs(term) for term in terms)
+    if second == 0.0:
+        return abs(third) <= variance_slack(max(magnitude, abs(c2)), n)
+    root = math.sqrt(second)
+    bound = sample_skewness_bound(n) * root / math.sqrt(n)
+    ratio = abs(third) / second
+    slack = 2.0 * variance_slack(max(bound, ratio, root, magnitude / second), n)
+    return ratio - bound <= slack
+
+
 def welch_satterthwaite_df(var_a: float, dof_a: float, var_b: float, dof_b: float) -> float:
     """Welch-Satterthwaite effective degrees of freedom for the sum of two
     INDEPENDENT variance components: ``var_a`` (estimated with ``dof_a``
@@ -363,7 +407,9 @@ class CenteredMoments:
     ``sum(m * (v - ref_v))`` -- ``m=None`` is the all-ones mask, so the
     unmasked ``c1`` is the "~0 but exact" residual and ``sum(v) == n*ref_v
     + c1`` recovers exactly. ``c2[(a, b, m)]`` is ``sum(m * (a - ref_a) *
-    (b - ref_b))``, keyed with ``(a, b)`` in declaration order.
+    (b - ref_b))``, keyed with ``(a, b)`` in declaration order. ``c3[(v,
+    m)]`` is ``sum(m * (v - ref_v)**3)``, carried only for the variables a
+    plan cubes (the ratio denominator) and only unmasked.
     ``count[m]`` is ``sum(m)``, with ``count[None] == n``. A masked moment
     stays centered on the PARENT reference, never on the masked subgroup's
     own mean: the between-subgroup mean difference is then a per-row exact
@@ -375,10 +421,12 @@ class CenteredMoments:
         c1     += c1_p   + count_p * delta
         c2(v,v) += c2_p  + 2.0 * delta * c1_p(v) + count_p * delta * delta
         c2(a,b) += c2_p  + delta_a * c1_p(b) + delta_b * c1_p(a) + count_p * delta_a * delta_b
+        c3(v)   += c3_p  + 3.0 * delta * c2_p(v,v) + 3.0 * delta * delta * c1_p(v)
+                         + count_p * delta ** 3
 
-    Every term is ``O(delta**2)`` in the between-partition spread. The
-    diagonal is written ``2.0 * delta * c1``, never ``delta * c1`` added
-    twice: the two round differently.
+    Every term is ``O(delta**k)`` in the between-partition spread for a
+    ``k``-th moment. The diagonal is written ``2.0 * delta * c1``, never
+    ``delta * c1`` added twice: the two round differently.
 
     ``successes`` is the exact number of units whose binary outcome ``y`` is 1, an integer kept
     apart from the floating slots: ``None`` unless a producer declared ``y`` a 0/1 outcome of
@@ -395,6 +443,7 @@ class CenteredMoments:
     c2: Mapping[tuple[Var, Var, Mask], float]
     count: Mapping[Mask, float]
     successes: int | None = None
+    c3: Mapping[tuple[Var, Mask], float] = MappingProxyType({})
 
     def __post_init__(self) -> None:
         order = {variable: index for index, variable in enumerate(self.variables)}
@@ -406,6 +455,7 @@ class CenteredMoments:
         object.__setattr__(self, "ref", MappingProxyType(dict(self.ref)))
         object.__setattr__(self, "c1", MappingProxyType(dict(self.c1)))
         object.__setattr__(self, "c2", MappingProxyType(c2))
+        object.__setattr__(self, "c3", MappingProxyType(dict(self.c3)))
         object.__setattr__(self, "count", MappingProxyType(count))
 
     def pair(self, a: Var, b: Var) -> tuple[Var, Var]:
@@ -455,6 +505,36 @@ class CenteredMoments:
         return (cross - scaled_cross_over_n(self.c1[(a, None)], self.c1[(b, None)], self.n)) / (
             self.n - 1
         )
+
+    def skewness(self, variable: Var, *, what: str) -> float:
+        """Standardized sample skewness ``g1 = m3 / m2**1.5`` of *variable*
+        (``m_k`` the ``1/n`` central moments), from the sums re-centered on
+        the exact mean ``ref + c1/n``::
+
+            S2 = c2 - c1**2 / n
+            S3 = c3 - 3 * (c1 / n) * c2 + 2 * n * (c1 / n)**3
+
+        ``g1 = S3 * sqrt(n) / S2**1.5`` is formed as ``(S3 / S2) / sqrt(S2 /
+        n)`` so no intermediate cubes a large magnitude. A constant variable
+        (``S2 == 0``) has no spread to standardize by and no skew in its
+        mean's sampling law; it reads as 0.
+        """
+        second, third = self._mean_centered_sums(variable, what=what)
+        if second == 0.0:
+            return 0.0
+        return (third / second) / math.sqrt(second / self.n)
+
+    def _mean_centered_sums(self, variable: Var, *, what: str) -> tuple[float, float]:
+        """``(S2, S3)``: the second and third sums of deviations from the exact mean."""
+        c3 = self.c3[(variable, None)]
+        c2 = self.c2[(variable, variable, None)]
+        c1 = self.c1[(variable, None)]
+        if c2 < 0.0:
+            _raise("estimation.armstats.arm_stats.centered_sum_squares", what=what, c2=c2)
+        second = max(c2 - scaled_cross_over_n(c1, c1, self.n), 0.0)
+        e = c1 / self.n
+        third = c3 - 3.0 * e * c2 + 2.0 * self.n * e * e * e
+        return second, third
 
     def mask_var(self, mask: str) -> float:
         """Binary mask variance ``k*(n-k)/n/(n-1)``: exact integer products, no rounding."""
@@ -512,6 +592,7 @@ class CenteredMoments:
             ref={new(v): value for v, value in self.ref.items()},
             c1={(new(v), mask): value for (v, mask), value in self.c1.items()},
             c2={(new(a), new(b), mask): value for (a, b, mask), value in self.c2.items()},
+            c3={(new(v), mask): value for (v, mask), value in self.c3.items()},
             count=self.count,
             successes=self.successes if outcome_kept else None,
         )
@@ -529,12 +610,17 @@ class CenteredMoments:
                     c2[(other, alias, mask)] = value
             if a == of and b == of:
                 c2[(alias, alias, mask)] = value
+        c3 = dict(self.c3)
+        for (variable, mask), value in self.c3.items():
+            if variable == of:
+                c3[(alias, mask)] = value
         return CenteredMoments(
             n=self.n,
             variables=(*self.variables, alias),
             ref={**self.ref, alias: self.ref[of]},
             c1=c1,
             c2=c2,
+            c3=c3,
             count=self.count,
             successes=self.successes if alias != "y" else None,
         )
@@ -547,6 +633,7 @@ class CenteredMoments:
             ref={v: value for v, value in self.ref.items() if v != variable},
             c1={key: value for key, value in self.c1.items() if key[0] != variable},
             c2={key: value for key, value in self.c2.items() if variable not in key[:2]},
+            c3={key: value for key, value in self.c3.items() if key[0] != variable},
             count=self.count,
             successes=self.successes if variable != "y" else None,
         )
@@ -557,10 +644,10 @@ class CenteredMoments:
     def combine(cls, parts: Sequence[CenteredMoments]) -> CenteredMoments:
         """Reduce partitions of one population to one record (the shift law above).
 
-        Every part must declare the same variables and masks; a first or
-        second moment present on only some parts is dropped. The pooled
-        reference is anchored on the first part so no large magnitude is
-        ever summed; the result is associative and order-independent to
+        Every part must declare the same variables and masks; a first,
+        second or third moment present on only some parts is dropped. The
+        pooled reference is anchored on the first part so no large magnitude
+        is ever summed; the result is associative and order-independent to
         floating-point roundoff.
         """
         head = parts[0]
@@ -576,9 +663,11 @@ class CenteredMoments:
         ref = {variable: _pooled_reference(parts, variable, n) for variable in head.variables}
         c1_keys = [key for key in head.c1 if all(key in part.c1 for part in parts)]
         c2_keys = [key for key in head.c2 if all(key in part.c2 for part in parts)]
+        c3_keys = [key for key in head.c3 if all(key in part.c3 for part in parts)]
         masks = [mask for mask in head.count if mask is not None]
         c1 = dict.fromkeys(c1_keys, 0.0)
         c2 = dict.fromkeys(c2_keys, 0.0)
+        c3 = dict.fromkeys(c3_keys, 0.0)
         count: dict[Mask, float] = dict.fromkeys(masks, 0.0)
         for part in parts:
             delta = {variable: part.ref[variable] - ref[variable] for variable in head.variables}
@@ -600,10 +689,25 @@ class CenteredMoments:
                         + delta[b] * part.c1[(a, mask)]
                         + part.count[mask] * delta[a] * delta[b]
                     )
+            for variable, mask in c3_keys:
+                shift = delta[variable]
+                c3[(variable, mask)] += (
+                    part.c3[(variable, mask)]
+                    + 3.0 * shift * part.c2[(variable, variable, mask)]
+                    + 3.0 * shift * shift * part.c1[(variable, mask)]
+                    + part.count[mask] * shift * shift * shift
+                )
             for mask in masks:
                 count[mask] += part.count[mask]
         return cls(
-            n=n, variables=head.variables, ref=ref, c1=c1, c2=c2, count=count, successes=successes
+            n=n,
+            variables=head.variables,
+            ref=ref,
+            c1=c1,
+            c2=c2,
+            c3=c3,
+            count=count,
+            successes=successes,
         )
 
 
@@ -619,7 +723,7 @@ def _slot_operands(by_slot: Mapping[str, Var | None], slot: Slot) -> tuple[Var, 
 
 
 def slot_fields(moments: CenteredMoments) -> dict[str, Any]:
-    """The sixteen format-8 slots plus ``x_role`` for *moments*; an unfilled slot is None."""
+    """The seventeen format-8 slots plus ``x_role`` for *moments*; an unfilled slot is None."""
     x_candidates = [v for v in moments.variables if slot_variable(v) == "x"]
     assert len(x_candidates) <= 1, x_candidates
     x_var = x_candidates[0] if x_candidates else None
@@ -635,6 +739,8 @@ def slot_fields(moments: CenteredMoments) -> dict[str, Any]:
             fields[column] = moments.c1.get((names[0], slot.mask))
         elif slot.kind == "c2":
             fields[column] = moments.c2.get((*moments.pair(names[0], names[1]), slot.mask))
+        elif slot.kind == "c3":
+            fields[column] = moments.c3.get((names[0], slot.mask))
         else:
             fields[column] = moments.count.get(slot.mask)
     fields["x_role"] = X_SLOT_ROLES.get(x_var) if x_var is not None else None
@@ -697,6 +803,10 @@ class ArmStats(CodedModel, BaseModel):
       ~0 but kept exact so ``sum(y) == n*ref_y + cy1`` recovers exactly.
     * ``cy2``/``cx2``/``cxy``/``cden2``/``cyden``: centered second and cross
       moments, e.g. ``cxy = sum((x - ref_x) * (y - ref_y))``.
+    * ``cden3``: the denominator's centered third moment ``sum((den -
+      ref_den)**3)``, which lets the ratio route see the denominator's skew.
+      Optional within the family: a producer that predates it leaves it
+      ``None``, and every reduction that needs it says so.
     * ``cyd``/``cy2d``/``cxd``: the uptake-masked family, centered on the
       OVERALL partition reference, e.g. ``cyd = sum(d * (y - ref_y))``.
 
@@ -751,6 +861,7 @@ class ArmStats(CodedModel, BaseModel):
     ref_den: float | None = None
     cden1: float | None = None
     cden2: float | None = None
+    cden3: float | None = None
     cyden: float | None = None
     cxden: float | None = None  # cov(x, den); the clustered LATE collapse
     # repurposes x to carry each cluster's uptake total, so this carries
@@ -843,6 +954,8 @@ class ArmStats(CodedModel, BaseModel):
         has_uptake = self.sum_d is not None
         if self.cxden is not None and not (has_x and has_den):
             _raise("estimation.armstats.arm_stats.cxden_complete_denominator")
+        if self.cden3 is not None and not has_den:
+            _raise("estimation.armstats.arm_stats.cden3_complete_denominator")
         if self.cxd is not None and not (has_x and has_uptake):
             _raise("estimation.armstats.arm_stats.cxd_complete_uptake")
         if has_uptake:
@@ -956,6 +1069,7 @@ class ArmStats(CodedModel, BaseModel):
         ref: dict[Var, float] = {}
         c1: dict[tuple[Var, Mask], float] = {}
         c2: dict[tuple[Var, Var, Mask], float] = {}
+        c3: dict[tuple[Var, Mask], float] = {}
         count: dict[Mask, float] = {}
         for column, slot in SLOTS.items():
             value = getattr(self, column)
@@ -969,6 +1083,8 @@ class ArmStats(CodedModel, BaseModel):
                 c1[(names[0], slot.mask)] = value
             elif slot.kind == "c2":
                 c2[(names[0], names[1], slot.mask)] = value
+            elif slot.kind == "c3":
+                c3[(names[0], slot.mask)] = value
             else:
                 count[slot.mask] = value
         return CenteredMoments(
@@ -977,6 +1093,7 @@ class ArmStats(CodedModel, BaseModel):
             ref=ref,
             c1=c1,
             c2=c2,
+            c3=c3,
             count=count,
             successes=self.successes,
         )
@@ -1291,6 +1408,38 @@ class ArmStats(CodedModel, BaseModel):
         self._require_two_units("ddof=1 variance")
         return self.moments.var("den", what=f"var_den for {self._label()}")
 
+    def skew_den_unavailable(self) -> str | None:
+        """Why the denominator's standardized skewness cannot be read, or ``None``.
+
+        ``"missing"``: the producer did not carry the third moment.
+        ``"inconsistent"``: it is non-finite or exceeds the largest skewness a
+        sample of ``n`` values attains beyond rounding (overflowed or
+        mis-aggregated upstream); the second moments stay usable.
+        """
+        if self.cden3 is None or self.cden2 is None or self.cden1 is None:
+            return "missing"
+        if not third_moment_feasible(self.cden3, self.cden2, self.cden1, self.n):
+            return "inconsistent"
+        return None
+
+    def skew_den(self) -> float:
+        """Standardized sample skewness ``g1`` of the ratio denominator (see
+        :meth:`CenteredMoments.skewness`); refuses when the third moment was
+        not carried or is inconsistent (:meth:`skew_den_unavailable`)."""
+        reason = self.skew_den_unavailable()
+        if reason == "missing":
+            _raise("estimation.armstats.arm_stats.skew_den_needs_cden3")
+        if reason is not None:
+            _raise(
+                "estimation.armstats.arm_stats.skew_den_inconsistent",
+                group_id=self.group_id,
+                metric=self.metric,
+                n=self.n,
+                cden3=self.cden3,
+            )
+        self._require_two_units("standardized skewness")
+        return self.moments.skewness("den", what=f"skew_den for {self._label()}")
+
     def cov_yx(self) -> float:
         """ddof=1 covariance of *y* and the x slot."""
         if self.cxy is None or self.cx1 is None:
@@ -1569,6 +1718,7 @@ _REFUSALS = refusals(
             ),
         ),
         "estimation.armstats.summary_stats.mean_finite": "mean must be finite, got {mean}",
+        "estimation.armstats.arm_stats.skew_den_inconsistent": "denominator skewness for metric={metric!r} group={group_id!r} is unavailable: the carried third moment cden3={cden3!r} is non-finite or exceeds the largest skewness any sample of n={n} values attains -- it overflowed or was mis-aggregated upstream; the second moments remain usable",
         "estimation.armstats.summary_stats.var_finite": "var must be finite, got {var}",
         "estimation.armstats.arm_stats.obsolete_armstats_fields": "obsolete ArmStats fields are not supported: {obsolete}; weighted estimands must use ScoreStats",
         "estimation.armstats.arm_stats.group_summary_moment": "group_summary moment {name!r} is non-finite ({value!r}) for metric={metric!r} group={group_id!r}; {name} must be finite",
@@ -1578,6 +1728,7 @@ _REFUSALS = refusals(
         "estimation.armstats.arm_stats.x_role_declared": "x_role must be declared when the x family is present",
         "estimation.armstats.arm_stats.x_role_family": "x_role requires the x family to be present",
         "estimation.armstats.arm_stats.cxden_complete_denominator": "cxden requires complete x and denominator prerequisite families",
+        "estimation.armstats.arm_stats.cden3_complete_denominator": "cden3 requires the complete denominator prerequisite family",
         "estimation.armstats.arm_stats.cxd_complete_uptake": "cxd requires complete x and uptake prerequisite families",
         "estimation.armstats.arm_stats.sum_d_outside": "sum_d={sum_d!r} is outside [0, n={n}] for metric={metric!r} group={group_id!r} -- an uptake count cannot be negative or exceed the arm's own unit count",
         "estimation.armstats.arm_stats.sum_d_zero_but_masked_nonzero": "sum_d=0 for metric={metric!r} group={group_id!r} but {nonzero} nonzero -- no unit took up, so every uptake-masked moment must be exactly zero; these moments were not produced from the same mask",
@@ -1600,6 +1751,7 @@ _REFUSALS = refusals(
         "estimation.armstats.arm_stats.centered_sum_squares": "{what}: centered sum of squares is {c2:.6g}, but it is a sum of squares and cannot be negative -- these moments are corrupt or were not produced by a moments builder.",
         "estimation.armstats.arm_stats.needs_covariate_cx2": "needs covariate: cx2/cx1 is None (CUPED not materialised)",
         "estimation.armstats.arm_stats.var_den_needs_cden2": "ratio-family moments require cden2/cden1 (not None)",
+        "estimation.armstats.arm_stats.skew_den_needs_cden3": "denominator skewness requires cden3/cden2/cden1 (not None); this row's producer did not carry the denominator's third moment",
         "estimation.armstats.arm_stats.needs_covariate_cxy": "needs covariate: cxy/cx1 is None (CUPED not materialised)",
         "estimation.armstats.arm_stats.cov_yden_needs_cyden": "ratio-family moments require cyden/cden1 (not None)",
         "estimation.armstats.arm_stats.needs_denominator_cross": "needs x-denominator cross moment: cxden is None",

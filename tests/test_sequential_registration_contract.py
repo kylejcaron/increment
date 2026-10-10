@@ -867,7 +867,7 @@ def test_fixed_moments_sequential_stamp_requires_sequential_envelope(tmp_path):
         path = tmp_path / "fixed.parquet"
         source.export(path)
         payload = pq.read_table(path).to_pylist()
-        assert payload and payload[0]["moments_format"] == 11
+        assert payload and payload[0]["moments_format"] == 12
         supported = Analysis.from_moments(
             payload,
             metrics=[MetricSpec(name="outcome", type="conversion")],
