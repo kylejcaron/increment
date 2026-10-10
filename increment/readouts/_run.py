@@ -182,6 +182,44 @@ def _as_collection(rows: list[LiftEstimate]) -> LiftEstimates:
     return rows if isinstance(rows, LiftEstimates) else LiftEstimates(rows)
 
 
+def _observational_adjustment_identity(src, selected, configs, design):
+    from increment._analysis_config import effective_methods
+
+    adjusted = {
+        config.metric.name
+        for config in configs
+        if any(
+            method.name in {"iptw", "dml", "aipw"}
+            for method in effective_methods(config, design=design)
+        )
+    }
+    if not adjusted:
+        return None
+
+    import narwhals as nw
+
+    from increment.readouts._metric_rows import _rows_digest
+
+    identity = {}
+    for metric in selected:
+        if metric.name not in adjusted:
+            continue
+        frame = nw.from_native(
+            src.unit_frame(metric, covariates=design.adjustment.covariates),
+            eager_only=True,
+        )
+        rows = sorted(
+            frame.iter_rows(named=True),
+            key=lambda row: (str(row.get("group_id")), str(row.get("unit_id"))),
+        )
+        identity[metric.name] = {
+            "columns": tuple(frame.columns),
+            "sha256": _rows_digest(rows)[0],
+            "n_rows": len(rows),
+        }
+    return identity
+
+
 def _preflight_roster(src, design, population, observed_by_metric=None, base_roster=None):
     if design.mechanism == "observational":
         return None
@@ -417,7 +455,9 @@ def _run_prepared(
                     _config_snapshot(config, design)
                     for config in sorted(configs, key=lambda c: c.metric.name)
                 ],
-                "value_scale": dict(value_scale or {}),
+                "adjustment_input_identity": _observational_adjustment_identity(
+                    src, selected, configs, design
+                ),
             },
         )
     if value_scale:

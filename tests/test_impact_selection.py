@@ -847,6 +847,24 @@ def test_testmon_protects_tests_using_cached_fixtures_for_code_changes(
     assert consumer.resolve() in protected
 
 
+def test_cache_fixture_protection_includes_transitive_module_consumers(tmp_path: Path) -> None:
+    from scripts.run_test_tier_plugin import _cache_backed_test_paths
+
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "__init__.py").write_text("")
+    (tests / "_shared_cache.py").write_text("def get_or_build(): pass\n")
+    (tests / "test_dashboard.py").write_text(
+        "from tests._shared_cache import get_or_build\ndef storefront(): return get_or_build()\n"
+    )
+    consumer = tests / "test_dashboard_result_evidence.py"
+    consumer.write_text(
+        "from tests.test_dashboard import storefront\ndef test_evidence(): storefront()\n"
+    )
+
+    assert consumer.resolve() in _cache_backed_test_paths(tmp_path)
+
+
 def test_module_scope_fingerprint_tracks_import_time_state_only(tmp_path: Path) -> None:
     from scripts._test_impact import module_scope_fingerprint
 

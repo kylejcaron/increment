@@ -1431,8 +1431,22 @@ class DailyLiftEstimate(_RowIdentity):
             ("date", self.ds),
             ("estimand", self.estimand),
             ("population", self.analysis_population),
+            ("value_scale", self.value_scale),
             ("estimate", None if self.lift is None else self.lift.value),
         ]
+        if self.dimension is not None:
+            args.append(("dimension", self.dimension))
+        if self.dimension_value is not None:
+            args.append(("dimension_value", self.dimension_value))
+        if self.lift is not None:
+            if self.lift.lb is not None or self.lift.ub is not None:
+                args.append(("interval", (self.lift.lb, self.lift.ub)))
+            if self.lift.level is not None:
+                args.append(("confidence", self.lift.level))
+        if self.unavailable is not None:
+            args.append(("unavailable", self.unavailable))
+        if self.relative_unavailable_reason is not None:
+            args.append(("relative_unavailable", self.relative_unavailable_reason))
         if self.failure_code is not None:
             args.append(("failure", self.failure_code))
         if self.failure_context is not None and self.failure_context.get("reason") is not None:

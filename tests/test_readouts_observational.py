@@ -83,6 +83,38 @@ def _obs_analysis(n=200, seed=11, design=None):
     )
 
 
+def test_observational_adjustment_covariates_change_source_snapshot_identity():
+    def table(*, reverse_covariate: bool) -> pa.Table:
+        values = list(range(12))
+        covariates = list(reversed(values)) if reverse_covariate else values
+        return pa.table(
+            {
+                "user_id": [f"{arm}-{index}" for arm in ("C", "T") for index in values],
+                "variant": ["C"] * 12 + ["T"] * 12,
+                "revenue": values + values,
+                "x": covariates + covariates,
+            }
+        )
+
+    def readout(*, reverse_covariate: bool):
+        analysis = Analysis.from_unit_summary(
+            table(reverse_covariate=reverse_covariate),
+            unit="user_id",
+            group="variant",
+            metrics={"revenue": "mean"},
+            design=Observational(control_group="C", adjustment=AdjustmentSet(covariates=("x",))),
+        )
+        try:
+            return analysis.run()
+        finally:
+            analysis.close()
+
+    aligned = readout(reverse_covariate=False)
+    permuted = readout(reverse_covariate=True)
+
+    assert aligned[0].source_snapshot_id != permuted[0].source_snapshot_id
+
+
 def test_unadjusted_sensitivity_keeps_observational_design_default():
     analysis = _obs_analysis(n=400, seed=11, design=_OBS_TRIM)
     with pytest.warns(IncrementWarning):
