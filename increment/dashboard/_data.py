@@ -50,6 +50,7 @@ from increment.estimation.family import (
     exploratory_family_exclusion,
     select_exploratory_family,
 )
+from increment.estimation.health import ExperimentHealth
 from increment.tables import estimates_to_readout
 
 if TYPE_CHECKING:
@@ -286,6 +287,7 @@ class DashboardSnapshot:
     triggered_allocation_refusal: tuple[str, str] | None = None
     triggered_allocation_history: tuple[Mapping[str, Any], ...] = ()
     triggered_allocation_history_refusal: tuple[str, str] | None = None
+    health: ExperimentHealth | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "metrics", tuple(self.metrics))
@@ -578,7 +580,10 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
             reason=f"metric_units names metrics the dashboard does not read: {sorted(unknown_units)!r}",
         )
 
+    health_report: ExperimentHealth | None = None
+
     def _read(pinned: Analysis) -> DashboardSnapshotPayload:
+        nonlocal health_report
         allocation, allocation_refusal = _allocation_check(pinned, config)
         allocation_history, allocation_history_refusal = _allocation_history(
             pinned, allocation_refusal
@@ -599,6 +604,17 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
                 triggered_allocation_refusal,
                 population="triggered",
             )
+        health_report = pinned._collect_health(
+            config.expected_allocation,
+            allocation_observations={
+                "assigned": (allocation, allocation_refusal),
+                **(
+                    {"triggered": (triggered_allocation, triggered_allocation_refusal)}
+                    if "triggered" in populations
+                    else {}
+                ),
+            },
+        )
         raw_population_results = {
             population: pinned.run(population=population) for population in populations
         }
@@ -704,6 +720,8 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
             q=experiment.plan.q,
         )
     overview = overviews[default_population]
+    if health_report is None:
+        raise AssertionError("the pinned dashboard operation did not capture health evidence")
     return DashboardSnapshot(
         experiment_name=experiment.name,
         binding_fingerprint=_binding_fingerprint(experiment, metrics),
@@ -733,6 +751,7 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
         overviews=overviews,
         exploratory_metrics=shown_models,
         offered_metrics=offered,
+        health=health_report,
         config=config,
         computed_at=dt.datetime.now(dt.UTC),
     )

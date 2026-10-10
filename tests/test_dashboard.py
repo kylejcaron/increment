@@ -511,6 +511,52 @@ def test_renders_expected_shares_from_configuration(pricing: DashboardSnapshot) 
     assert "candidate" in html
 
 
+def test_health_renderer_consumes_restored_health_report(pricing: DashboardSnapshot) -> None:
+    from increment.results import ExperimentHealth, HealthCheck
+
+    report = ExperimentHealth(
+        checks=(
+            HealthCheck(
+                check="trigger_rates",
+                analysis_population="triggered",
+                availability="available",
+                conclusion="descriptive",
+                rates={"baseline": 0.25, "candidate": 0.25},
+                context={"description": "Observed trigger share by assigned arm."},
+            ),
+            HealthCheck(
+                check="feed_completeness",
+                analysis_population="triggered",
+                feed="event_log",
+                availability="unavailable",
+                context={"reason": "No certified completeness watermark is retained."},
+            ),
+            HealthCheck(
+                check="trigger_assumptions",
+                analysis_population="triggered",
+                availability="available",
+                conclusion="descriptive",
+                context={
+                    "counterfactual_trigger_invariance": "assumed, not established",
+                    "trigger_order_stationarity": "assumed, not established",
+                    "triggered_look_policy": "exploratory",
+                    "family_guarantee": None,
+                    "risk": ("Balanced rates do not establish trigger invariance.",),
+                },
+            ),
+        )
+    )
+    restored = ExperimentHealth.model_validate_json(report.model_dump_json())
+    snapshot = dataclasses.replace(pricing, health=restored)
+
+    html = render_health(snapshot).text
+
+    assert "Observed trigger rate" in html
+    assert "No certified completeness watermark is retained." in html
+    assert "exploratory" in html
+    assert "Balanced rates do not establish trigger invariance." in html
+
+
 def test_both_experiments_share_the_same_sections(
     storefront: DashboardSnapshot, pricing: DashboardSnapshot
 ) -> None:

@@ -87,6 +87,7 @@ if TYPE_CHECKING:
     )
     from increment.dashboard._data import ExploreView
     from increment.estimation.diagnostics import SRMResult
+    from increment.estimation.health import ExperimentHealth
 
 __all__ = [
     "dashboard_styles",
@@ -320,9 +321,9 @@ def render_health(snapshot: DashboardSnapshot) -> mo.Html:
             or snapshot.triggered_allocation_refusal is not None
             else ""
         )
+        + _health_checks_block(snapshot.health)
         + _flags_block(snapshot)
         + _caveats_block(snapshot),
-        subtitle="",
     )
 
 
@@ -372,6 +373,68 @@ def _allocation_block(
             + f'<p class="inc-dashboard-note">{allocation_evidence(allocation)}</p>',
         )
     )
+
+
+def _health_checks_block(report: ExperimentHealth | None) -> str:
+    if report is None:
+        return ""
+    blocks: list[str] = ['<h3 class="inc-dashboard-subheading">Additional diagnostics</h3>']
+    for check in report.checks:
+        identity = [check.analysis_population]
+        if check.metric is not None:
+            identity.append(f"metric {check.metric}")
+        if check.feed is not None:
+            identity.append(f"feed {check.feed}")
+        heading = (
+            f"<h4>{esc(check.check.replace('_', ' ').title())} "
+            f'<span class="inc-dashboard-note">({esc(", ".join(identity))})</span></h4>'
+        )
+        if check.availability == "not_applicable":
+            line = "Not applicable; this is not an evaluated check."
+            tone = "warn"
+        elif check.availability == "unavailable":
+            line = "Unavailable; this is not a passing check."
+            tone = "warn"
+        elif check.conclusion == "warning":
+            line = "Warning; inspect the available diagnostic evidence."
+            tone = "bad"
+        elif check.conclusion == "not_rejected":
+            line = "Not rejected by this diagnostic; this is not proof of validity."
+            tone = "ok"
+        else:
+            line = "Descriptive evidence; it does not test the assumption."
+            tone = "neutral"
+        body = heading + _status(tone, line)
+        if check.code is not None:
+            body += f'<p class="inc-dashboard-code">{esc(check.code)}</p>'
+        reason = check.context.get("reason")
+        if reason is not None:
+            body += f'<p class="inc-dashboard-reason">{esc(str(reason))}</p>'
+        if check.rates is not None:
+            body += _table(
+                ["Arm", "Observed trigger rate"],
+                [[esc(arm), f"{rate:.1%}"] for arm, rate in sorted(check.rates.items())],
+            )
+        for key in (
+            "counterfactual_trigger_invariance",
+            "trigger_order_stationarity",
+            "triggered_look_policy",
+            "family_guarantee",
+            "observed_edge",
+            "finalized_edge",
+            "watermark",
+        ):
+            value = check.context.get(key)
+            if value is not None or key in check.context:
+                body += (
+                    f'<p class="inc-dashboard-note"><strong>{esc(key.replace("_", " ").title())}:'
+                    f"</strong> {esc(str(value))}</p>"
+                )
+        risk = check.context.get("risk")
+        if isinstance(risk, (tuple, list)):
+            body += _list([esc(str(item)) for item in risk], css_class="inc-dashboard-caveats")
+        blocks.append(body)
+    return "".join(blocks)
 
 
 def _allocation_history_table(
