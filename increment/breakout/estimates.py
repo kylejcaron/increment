@@ -1517,7 +1517,6 @@ class DailyLiftEstimate(_RowIdentity):
         args.append(("estimate", None if self.lift is None else self.lift.value))
 
         args.append(("interval", ", ".join(self._interval_display_parts())))
-
         if self.unavailable is not None:
             args.append(("unavailable", self.unavailable))
         if self.relative_unavailable_reason is not None:

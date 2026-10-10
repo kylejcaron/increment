@@ -538,6 +538,22 @@ def _check_executed_method(reference, executed: str, label: str) -> None:
         winsor_refuse("pool_mismatch", f"{label} reference contradicts the resolved size route.")
 
 
+def _log_relative_exact_means(control_mean: Fraction, treatment_mean: Fraction) -> float:
+    """Calculate a log ratio from exact pooled means, including ratios rounded to -1."""
+    try:
+        relative_point = float((treatment_mean - control_mean) / control_mean)
+    except OverflowError:
+        relative_point = math.inf
+    if math.isfinite(relative_point) and relative_point > -1:
+        return math.log1p(relative_point)
+    return (
+        math.log(treatment_mean.numerator)
+        - math.log(treatment_mean.denominator)
+        - math.log(control_mean.numerator)
+        + math.log(control_mean.denominator)
+    )
+
+
 def _check_observed_points(reference, info: ValidationInfo, label: str) -> None:
     """Stored cutoff and points must equal the exact type-7 raw procedure."""
     context = info.context
@@ -548,15 +564,7 @@ def _check_observed_points(reference, info: ValidationInfo, label: str) -> None:
         cutoff, exact_means = summary
     means = dict(exact_means)
     mc, mt = means[reference.control], means[reference.treatment]
-    try:
-        point = float((mt - mc) / mc)
-    except OverflowError:
-        point = math.inf
-    log_point = (
-        math.log1p(point)
-        if math.isfinite(point) and point > -1
-        else math.log(float(mt)) - math.log(float(mc))
-    )
+    log_point = _log_relative_exact_means(mc, mt)
     if (
         reference.observed_cutoff != cutoff
         or reference.log_relative.point != log_point

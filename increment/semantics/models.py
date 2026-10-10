@@ -1885,13 +1885,6 @@ class InferenceSpec(_ExplicitOnlyFields, _Base):
     triggered_registration: SequentialRegistration | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
-    # Whether the triggered family's look times are declared independent of every
-    # outcome (calendar schedules fixed in advance): only then does its e-BH
-    # selection claim FDR control; otherwise the selection is reported as
-    # exploratory. Per-cell anytime coverage never depends on this declaration.
-    triggered_look_policy: Literal["outcome_independent", "exploratory"] = Field(
-        default="exploratory", exclude_if=lambda value: value == "exploratory"
-    )
     expected_decision_sample_size: StrictInt | None = Field(default=None, ge=2)
     # A YAML plan carries the rate as a float; a trusted float binds the decimal as typed.
     baseline_rate: DeclaredRational | None = None
@@ -1974,10 +1967,6 @@ class InferenceSpec(_ExplicitOnlyFields, _Base):
             from increment.semantics.sequential import validate_triggered_registration
 
             validate_triggered_registration(self.registration, self.triggered_registration)
-            if self.triggered_registration.look_policy != self.triggered_look_policy:
-                invalid_registration(
-                    "the triggered registration's look policy differs from the declared one"
-                )
         laws = {m.law for m in self.registration.models}
         has_asymptotic = bool(laws & set(ASYMPTOTIC_LAWS))
         if has_asymptotic != (self.kind == "asymptotic_mean"):

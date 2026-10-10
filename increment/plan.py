@@ -556,7 +556,6 @@ def _bind_triggered_plan(plan, metrics, *, design, source_mapping, transformatio
             transformations=transformations,
             population="triggered",
         ),
-        look_policy=spec.triggered_look_policy,
     )
     return AnalysisPlan.model_validate(
         plan.model_copy(
