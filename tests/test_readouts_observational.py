@@ -115,6 +115,36 @@ def test_observational_adjustment_covariates_change_source_snapshot_identity():
     assert aligned[0].source_snapshot_id != permuted[0].source_snapshot_id
 
 
+def test_binary_success_count_changes_readout_snapshot_identity():
+    def readout(treatment_successes: int):
+        units = list(range(10))
+        frame = pa.table(
+            {
+                "unit_id": [f"{arm}-{unit}" for arm in ("C", "T") for unit in units],
+                "arm": ["C"] * 10 + ["T"] * 10,
+                "purchase": (
+                    [unit < 5 for unit in units] + [unit < treatment_successes for unit in units]
+                ),
+            }
+        )
+        analysis = Analysis.from_unit_summary(
+            frame,
+            unit="unit_id",
+            group="arm",
+            control="C",
+            metrics={"purchase": "conversion"},
+        )
+        try:
+            return analysis.run()
+        finally:
+            analysis.close()
+
+    five = readout(5)
+    six = readout(6)
+
+    assert five[0].source_snapshot_id != six[0].source_snapshot_id
+
+
 def test_unadjusted_sensitivity_keeps_observational_design_default():
     analysis = _obs_analysis(n=400, seed=11, design=_OBS_TRIM)
     with pytest.warns(IncrementWarning):
