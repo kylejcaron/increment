@@ -2752,7 +2752,7 @@ def test_run_declared_secondary_family_survives_a_degenerate_cell():
     assert refunds_row.abs_diff is not None
 
 
-def test_asof_whole_retry_bypasses_captured_warning_replay(monkeypatch):
+def test_asof_surfaces_keyed_source_advisories_per_date_on_each_call():
     import warnings
 
     from increment import readouts
@@ -2761,7 +2761,7 @@ def test_asof_whole_retry_bypasses_captured_warning_replay(monkeypatch):
 
     metric = MeanMetric(name="revenue", entity="user_id", fact="orders", aggregation="sum")
     spec = WarningSpec(
-        "test.asof.retry",
+        "test.asof.source_advisory",
         IncrementWarning,
         lambda *, metric_name: f"advisory for {metric_name}",
         dedupe_fields=("metric_name",),
@@ -2784,42 +2784,36 @@ def test_asof_whole_retry_bypasses_captured_warning_replay(monkeypatch):
                     "ds": day,
                 }
             )
-    source = FakeMomentSource(
+
+    class AdvisingMomentSource(FakeMomentSource):
+        def moments(self, metric, **kwargs):
+            result = super().moments(metric, **kwargs)
+            for _day in {row["ds"] for row in result}:
+                warn(spec, context={"metric_name": metric.name})
+            return result
+
+    source = AdvisingMomentSource(
         rows,
         metrics=[metric],
         capabilities={"asof"},
         design=Randomized(control_group="control"),
     )
-    from increment.readouts import _passes
-
-    estimate = _passes._estimate_lift
-
-    def warn_then_estimate(*args, **kwargs):
-        warn(spec, context={"metric_name": "revenue"})
-        return estimate(*args, **kwargs)
-
-    monkeypatch.setattr(_passes, "_estimate_lift", warn_then_estimate)
-    replay_calls = []
-    monkeypatch.setattr(
-        _passes,
-        "_emit_captured_lift_warnings",
-        lambda captured, seen: replay_calls.append((captured, seen)),
-    )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         first_rows = readouts.asof_lift(source)
+        assert len(caught) == 2
         second_rows = readouts.asof_lift(source)
 
-    assert {row.ds for row in first_rows} == {dt.date(2025, 1, 1), dt.date(2025, 1, 2)}
-    assert {row.ds for row in second_rows} == {dt.date(2025, 1, 1), dt.date(2025, 1, 2)}
-    assert replay_calls == []
-    direct = [
+    expected_dates = {dt.date(2025, 1, 1), dt.date(2025, 1, 2)}
+    assert {row.ds for row in first_rows} == expected_dates
+    assert {row.ds for row in second_rows} == expected_dates
+    advisories = [
         item.message
         for item in caught
         if isinstance(item.message, IncrementWarning) and item.message.code == spec.code
     ]
-    assert len(direct) == 4
-    assert all(item.context["metric_name"] == "revenue" for item in direct)
+    assert len(advisories) == 4
+    assert all(item.context["metric_name"] == "revenue" for item in advisories)
 
 
 def test_open_ended_sequential_advisory_is_keyed_per_metric_and_emission():
