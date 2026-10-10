@@ -196,6 +196,7 @@ def _base_liftestimate_to_row(
         "family_axes": getattr(est, "family_axes", None),
         "family_q": getattr(est, "family_q", None),
         "family_threshold": getattr(est, "family_threshold", None),
+        "family_procedure": getattr(est, "family_procedure", None),
         "family_guarantee": getattr(est, "family_guarantee", None),
         "family_nominal_alpha": getattr(est, "family_nominal_alpha", None),
         "family_size": getattr(est, "family_size", None),
@@ -408,6 +409,7 @@ def contrast_results_to_readout(
                 "discovery": None,
                 "family_axes": None,
                 "family_q": None,
+                "family_procedure": None,
                 "family_threshold": None,
                 "family_size": None,
             }

@@ -794,6 +794,10 @@ returned row records `discovery`, `family_axes`, `family_q`, `family_threshold` 
 row's interval is reissued at the Benjamini-Yekutieli level `1 - R*q/m`, capped at
 the row's own nominal level, and equals the interval `run_breakout(correction="bh")`
 returns for the same cell; unselected rows keep their nominal interval.
+The rows also preserve the canonical `family_procedure` value (`"bh"`,
+`"e_bh"`, or `"bonferroni"`). Older serialized rows with no recorded procedure
+remain `None`; presentation reports the procedure as unrecorded instead of
+guessing from interval or guarantee fields.
 
 Rows must be uncorrected fixed-horizon decision rows. Each refusal names every
 offending row in its `rows` context:

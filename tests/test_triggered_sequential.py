@@ -1024,6 +1024,7 @@ def _assert_exploratory_selection_public_surfaces(rows, selected):
     )
     assert restored_selected.discovery is True
     assert restored_selected.family_guarantee is None
+    assert restored_selected.family_procedure == "e_bh"
     assert restored_selected.multiplicity_status == "exploratory_family"
     assert restored_selected.family_id == selected.family_id
     assert restored_selected.family_axes == selected.family_axes
@@ -1037,6 +1038,7 @@ def _assert_exploratory_selection_public_surfaces(rows, selected):
     ].iloc[0]
     assert selected_frame["family_id"] == selected.family_id
     assert selected_frame["multiplicity_status"] == "exploratory_family"
+    assert selected_frame["family_procedure"] == "e_bh"
     assert selected_frame["family_q"] == pytest.approx(selected.family_q)
     assert all(axis in selected_frame["family_axes"] for axis in selected.family_axes)
     assert bool(selected_frame["discovery"])

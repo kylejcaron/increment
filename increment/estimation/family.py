@@ -701,6 +701,7 @@ _FAMILY_FIELDS = (
     "family_axes",
     "family_q",
     "family_threshold",
+    "family_procedure",
     "family_guarantee",
     "family_nominal_alpha",
     "family_size",
@@ -982,6 +983,7 @@ def select_exploratory_family(
     axes = ("metric", "arm", "segment") if any(m.scope for m in tested) else ("metric", "arm")
     family = {
         "family_axes": axes,
+        "family_procedure": "bh",
         "family_q": outcome.q,
         "family_threshold": outcome.realized_threshold,
         "family_size": outcome.n_family,

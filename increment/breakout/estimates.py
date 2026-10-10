@@ -622,6 +622,8 @@ class BreakoutEstimate(_RowIdentity):
     family_axes: tuple[str, ...] | None = None
     family_q: float | None = None
     family_threshold: float | None = None
+    family_procedure: Literal["e_bh", "bonferroni", "bh"] | None = None
+    # Canonical procedure used by the retained family; absent in older payloads.
     # Which family corrected this row, at what FDR level, and that family's
     # own realized cutoff before capping at the nominal alpha. Mirrors
     # LiftEstimate's fields of the same name; see there for the cap.
@@ -867,6 +869,7 @@ def _copy_common_fields(source: LiftEstimate, /, **overrides: Any) -> dict[str, 
         "family_axes": source.family_axes,
         "family_q": source.family_q,
         "family_threshold": source.family_threshold,
+        "family_procedure": source.family_procedure,
         "family_guarantee": source.family_guarantee,
         "family_nominal_alpha": source.family_nominal_alpha,
         "null_abs": source.null_abs,
@@ -1205,6 +1208,7 @@ class DailyLiftEstimate(_RowIdentity):
     discovery: bool | None = None
     family_axes: tuple[str, ...] | None = None
     family_q: float | None = None
+    family_procedure: Literal["e_bh", "bonferroni", "bh"] | None = None
     family_threshold: float | None = None
     family_guarantee: Literal["finite_sample", "asymptotic_sequential"] | None = None
     family_nominal_alpha: float | None = None
@@ -2705,6 +2709,13 @@ def _append_breakout_slice_rows(
             estimate = outcome.estimate
             treatment_n = prepared.arm_n.get((estimate.metric, estimate.group_id))
             control_n = prepared.control_n.get(estimate.metric)
+            estimate = estimate.model_copy(
+                update={
+                    "family_procedure": context.correction
+                    if context.correction in ("bh", "bonferroni")
+                    else None
+                }
+            )
             rows.append(
                 _breakout_estimate_row(
                     estimate,
@@ -2951,7 +2962,7 @@ def _apply_breakout_family_correction(
             family_axes=("metric", "arm", "segment"),
             family_q=outcome.q,
             family_threshold=outcome.realized_threshold,
-        )
+        ).model_copy(update={"family_procedure": "bh"})
     return results
 
 

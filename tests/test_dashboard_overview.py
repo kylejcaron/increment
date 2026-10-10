@@ -115,6 +115,46 @@ def test_one_family_covers_added_metrics_and_every_segment_cell(_saved_added_sna
     assert {cell.metric for cell in segments} >= {ADDED, "checkout_conversion"}
     assert len(tested) == overview.family_size > len(overview.exploratory)
     assert {cell.family_size for cell in tested} == {overview.family_size}
+    selected = next(cell for cell in tested if cell.discovery is True)
+    assert selected.lift is not None
+    restored = type(selected).model_validate_json(selected.model_dump_json())
+    assert restored.lift is not None
+    assert restored.discovery is True
+    assert restored.family_procedure == "bh"
+    assert restored.family_q == pytest.approx(selected.family_q)
+    assert restored.family_size == selected.family_size
+    assert restored.family_axes == selected.family_axes
+    assert restored.lift.level == pytest.approx(selected.lift.level)
+    assert restored.lift.lb == pytest.approx(selected.lift.lb)
+    assert restored.lift.ub == pytest.approx(selected.lift.ub)
+    from increment.breakout.estimates import BreakoutEstimate
+    from increment.dashboard._html import overview_table
+    from increment.estimation.results import LiftEstimate
+
+    if isinstance(selected, BreakoutEstimate):
+        assert isinstance(restored, BreakoutEstimate)
+        segments = dict(overview.segments)
+        segments[COUNTRY] = tuple(
+            restored if row is selected else row for row in segments[COUNTRY]
+        )
+        restored_overview = dataclasses.replace(overview, segments=segments)
+        scope = COUNTRY
+    else:
+        assert isinstance(restored, LiftEstimate)
+        restored_overview = dataclasses.replace(
+            overview,
+            exploratory=tuple(
+                restored if row is selected else row for row in overview.exploratory
+            ),
+        )
+        scope = None
+    restored_snapshot = dataclasses.replace(snapshot, overview=restored_overview)
+    representation = repr(restored)
+    rendered = overview_table(restored_snapshot, scope)
+    assert "Benjamini-Hochberg" in representation
+    assert "FCR-adjusted" in representation
+    assert "independence or positive dependence" in representation
+    assert "Benjamini-Hochberg" in rendered
     assert {cell.family_q for cell in tested} == {overview.family_q}
     # The marker on every exploratory overview row is its family discovery.
     for row in overview_rows(snapshot, COUNTRY):

@@ -830,8 +830,16 @@ def _selection_qualification(row: Any) -> str | None:
     size = getattr(row, "family_size", None)
     family = f"retained family size {size}" if size is not None else "retained family"
     level = f" at q={q:g}" if q is not None else ""
+    procedure = getattr(row, "family_procedure", None)
+    if procedure == "e_bh":
+        procedure_label = "e-BH family selection"
+    elif procedure == "bonferroni":
+        procedure_label = "Bonferroni family selection"
+    elif procedure == "bh":
+        procedure_label = "Benjamini-Hochberg family selection"
+    else:
+        procedure_label = "Family selection; procedure not recorded"
     if getattr(row, "sequential_result", None) is not None:
-        procedure = "e-BH family selection"
         guarantee = getattr(row, "family_guarantee", None)
         if (
             getattr(row, "analysis_population", None) == "triggered"
@@ -839,8 +847,8 @@ def _selection_qualification(row: Any) -> str | None:
             and guarantee is None
         ):
             return (
-                f"{procedure}{level}; exploratory_family; outcome-dependent triggered looks; "
-                f"no controlled guarantee; {family}"
+                f"{procedure_label}{level}; exploratory_family; outcome-dependent triggered "
+                f"looks; no controlled guarantee; {family}"
             )
         qualification = (
             "finite-sample guarantee"
@@ -854,23 +862,31 @@ def _selection_qualification(row: Any) -> str | None:
             if getattr(row, "analysis_population", None) == "triggered" and guarantee is not None
             else ""
         )
-        return (
-            f"{procedure}{level}; arbitrary-dependence selection{look}; {qualification}; {family}"
+        guarantee_kind = (
+            "FWER"
+            if procedure == "bonferroni"
+            else "FDR"
+            if procedure in ("e_bh", "bh")
+            else "family"
         )
-    if status == "exploratory_family" and q is not None:
         return (
-            f"Benjamini-Hochberg exploratory family selection{level}; {family}; "
-            "selected interval is FCR-adjusted; FDR qualification requires independence or "
-            "positive dependence; exploratory, not confirmatory"
+            f"{procedure_label}{level}; arbitrary-dependence {guarantee_kind} selection{look}; "
+            f"{qualification}; {family}"
+        )
+    if status == "exploratory_family" and q is not None and procedure == "bh":
+        return (
+            f"{procedure_label}{level}; {family}; selected interval is FCR-adjusted; "
+            "FDR qualification requires independence or positive dependence; exploratory, "
+            "not confirmatory"
         )
     if status == "exploratory_family":
-        return f"Exploratory Bonferroni family selection; {family}; not confirmatory"
-    if q is not None:
+        return f"{procedure_label}{level}; {family}; exploratory, not confirmatory"
+    if q is not None and procedure == "bh":
         return (
-            f"Benjamini-Hochberg family selection{level}; {family}; FDR qualification requires "
-            "independence or positive dependence"
+            f"{procedure_label}{level}; {family}; FDR qualification requires independence or "
+            "positive dependence"
         )
-    return f"Family selection{level}; {family}"
+    return f"{procedure_label}{level}; {family}"
 
 
 class LiftEstimate(_RowIdentity):
@@ -1009,6 +1025,8 @@ class LiftEstimate(_RowIdentity):
     # Primary Bonferroni allocation is recorded in lift.level and the plan.
     family_q: float | None = None  # FDR level, or qualified asymptotic-mean FWER level.
     family_threshold: float | None = None
+    family_procedure: Literal["e_bh", "bonferroni", "bh"] | None = None
+    # Canonical procedure used by the retained family; absent in older payloads.
     # Family-wide values: family_guarantee is "asymptotic_sequential" if any cell is asymptotic,
     # else "finite_sample"; family_nominal_alpha is the overall test level in
     # fcr_alpha = min(realized_threshold, family_nominal_alpha).

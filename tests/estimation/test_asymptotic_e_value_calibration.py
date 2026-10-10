@@ -268,6 +268,17 @@ def test_registered_breakout_family_keeps_fixed_bonferroni_not_e_bh(law):
     assert not outcome.capped
     assert outcome.guarantee == "asymptotic_sequential"
     assert len(outcome.selected) == 1
+    from increment.estimation.results import _selection_qualification
+    from increment.estimation.sequential_runtime import selected_snapshot_results
+
+    selected_rows = selected_snapshot_results(snapshot, policy, nominal_alpha=0.05)
+    selected_row = next(row for row in selected_rows if row.discovery)
+    assert selected_row.family_procedure == "bonferroni"
+    qualification = _selection_qualification(selected_row)
+    assert qualification is not None
+    assert "Bonferroni" in qualification
+    assert "FWER" in qualification
+    assert "e-BH" not in qualification
 
 
 def test_a_degenerate_cell_abstains_instead_of_aborting_the_family():

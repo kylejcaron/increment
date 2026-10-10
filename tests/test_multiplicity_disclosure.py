@@ -30,6 +30,22 @@ def _analysis(plan=None):
     )
 
 
+def test_old_selection_payload_does_not_infer_family_procedure():
+    from increment.estimation.results import LiftEstimate, _selection_qualification
+
+    restored_old = LiftEstimate.model_construct(
+        discovery=True,
+        family_procedure=None,
+        family_q=0.05,
+        family_size=4,
+    )
+    qualification = _selection_qualification(restored_old)
+    assert qualification is not None
+    assert "procedure not recorded" in qualification
+    assert "Bonferroni" not in qualification
+    assert "Benjamini-Hochberg" not in qualification
+
+
 def test_five_unplanned_metrics_are_visibly_unadjusted():
     from increment.estimation.readout_types import ReadoutResults
     from increment.tables import estimates_to_readout
