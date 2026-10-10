@@ -87,6 +87,11 @@ envelope restamped below the preceding sequential format reaches
 `sequential.continuation.legacy`: a checkpoint resumes only from a supported
 sequential format. Re-export from the raw definitions with the current release,
 or pin the release that wrote the file. Nothing is downgraded or filled in silently.
+
+Historical fixed-horizon format 10 does not synthesize missing
+`assignment_counts`; operations that require those counts refuse with
+`source.moments.assignment_counts`. Its format-10 fixed rows remain distinct
+from the typed sequential format-10 checkpoint envelope.
 Current fixed-horizon format 11 and sequential format 10 exports carry the
 originating source identity. `from_moments` restores that identity instead
 of deriving a new one from the replay object's default study name. The
