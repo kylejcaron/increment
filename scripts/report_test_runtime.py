@@ -441,12 +441,6 @@ def _markdown(report: Mapping[str, Any], json_path: str | None) -> str:
         "| Test | Setup | Call | Teardown | Total | Markers | Suggestion | New | Newly observed | Regression | Priority | Complete |",
         "|---|---:|---:|---:|---:|---|---|---|---|---|---:|---|",
     ]
-    for warning in report["warnings"][:20]:
-        lines.append(f"> **Warning:** {warning}")
-    if len(report["warnings"]) > 20:
-        lines.append(
-            f"> {len(report['warnings']) - 20} additional report warnings are in the full JSON."
-        )
     for case in rows:
         phase_values = [case["phases"].get(name, "—") for name in _PHASES]
         lines.append(
@@ -458,8 +452,16 @@ def _markdown(report: Mapping[str, Any], json_path: str | None) -> str:
             f"{case['regression'] if case['regression'] is not None else 'unknown'} | "
             f"{str(case['priority']).lower()} | {str(case['complete']).lower()} |"
         )
+    lines.append("")
+    for warning in report["warnings"][:20]:
+        lines.append(f"> **Warning:** {warning}")
+    if len(report["warnings"]) > 20:
+        lines.append(
+            f"> {len(report['warnings']) - 20} additional report warnings are in the full JSON."
+        )
+    for case in rows:
         for warning in case["warnings"][:5]:
-            lines.append(f"> **Warning:** {warning}")
+            lines.append(f"> **Warning:** `{case['canonical_nodeid']}`: {warning}")
     if len(relevant) > row_limit:
         lines.append(
             f"> Showing top {row_limit} relevant cases; {len(relevant) - row_limit} additional cases are in the full JSON."

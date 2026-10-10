@@ -308,6 +308,9 @@ pytest-split distributes tests evenly.
 `make test-all` retains failure outputs and JUnit reports under
 `.test-evidence/`. Add `--runtime-diagnostics` through `PYTEST_ARGS` when
 investigating slow tests; retained artifacts are not committed.
+Full Nox sessions retain separate receipts for the functional run and the
+exact-mass checks. Explicit `tests_floor_full` arguments replace the default
+selection and run once.
 
 Ordinary Make/Nox suites disable Tach's unused impact-analysis plugin; direct
 `uv run pytest --tach ...` remains available for impact-selected work. Ordinary

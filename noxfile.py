@@ -176,6 +176,8 @@ def tests_full(session: nox.Session) -> None:
         "numerical-certification",
         "-q",
         *PYTEST_ARGS,
+        "--evidence-root",
+        ".test-evidence",
         f"{selector}[central]",
         f"{selector}[rare]",
     )
@@ -321,6 +323,8 @@ def tests_floor_full(session: nox.Session) -> None:
         ".test-evidence",
         extras=("demo", "tables", "dashboard"),
     )
+    if session.posargs:
+        return
     selector = (
         "tests/estimation/test_conversion_route_calibration.py::"
         "TestEnumerationEnclosesTheExactMass::test_the_interval_holds_the_exact_rational_mass"
@@ -332,6 +336,8 @@ def tests_floor_full(session: nox.Session) -> None:
         f"{selector}[rare]",
         "-q",
         *PYTEST_ARGS,
+        "--evidence-root",
+        ".test-evidence",
         extras=("demo", "tables", "dashboard"),
     )
 

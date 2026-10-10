@@ -579,3 +579,50 @@ def test_malformed_case_inventory_is_incomplete(tmp_path: Path, metadata: dict):
     report = json.loads(output.read_text())
     assert report["complete"] is False
     assert report["warnings"]
+
+
+def test_runtime_table_rows_render_with_run_and_case_warnings(tmp_path: Path):
+    from html.parser import HTMLParser
+
+    from markdown_it import MarkdownIt
+
+    incomplete = "tests/test_consumer.py::test_incomplete"
+    expensive = "tests/test_consumer.py::test_expensive"
+    evidence = tmp_path / "evidence"
+    _write_run(
+        evidence,
+        metadata={"status": "interrupted", "exit_code": 1},
+        events=[
+            _event("call", 1, nodeid=incomplete, canonical_nodeid=incomplete),
+            *[
+                _event(phase, 2, nodeid=expensive, canonical_nodeid=expensive)
+                for phase in ("setup", "call", "teardown")
+            ],
+        ],
+    )
+    markdown_output = tmp_path / "report.md"
+    result = _run_report(evidence, "--markdown", str(markdown_output))
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    class TableCells(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.cells: list[str] = []
+            self.current: list[str] | None = None
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "td":
+                self.current = []
+
+        def handle_data(self, data):
+            if self.current is not None:
+                self.current.append(data)
+
+        def handle_endtag(self, tag):
+            if tag == "td" and self.current is not None:
+                self.cells.append("".join(self.current).strip())
+                self.current = None
+
+    parser = TableCells()
+    parser.feed(MarkdownIt("commonmark").enable("table").render(markdown_output.read_text()))
+    assert {incomplete, expensive} <= set(parser.cells)
