@@ -1781,16 +1781,34 @@ def test_affected_runner_propagates_collection_selector_failures(tmp_path: Path)
     assert "affected runner accepts only typed options" in result.stderr
 
 
+@pytest.mark.parametrize("via_helper", [False, True])
 @pytest.mark.slow
-def test_changed_provider_retains_unchanged_dynamic_import_consumer(tmp_path: Path) -> None:
+def test_changed_provider_retains_unchanged_dynamic_import_consumer(
+    tmp_path: Path, via_helper: bool
+) -> None:
     project = Path(__file__).resolve().parents[1]
     base = _make_affected_fixture(tmp_path)
     consumer = tmp_path / "tests" / "test_dynamic_consumer.py"
-    consumer.write_text(
-        "import importlib as loader\n"
-        "def test_dynamic_consumer():\n"
-        "    assert loader.import_module('pkg.leaf').VALUE == 1\n"
-    )
+    if via_helper:
+        (tmp_path / "tests" / "__init__.py").write_text("")
+        (tmp_path / "tests" / "_evidence.py").write_bytes(
+            (project / "tests" / "_evidence.py").read_bytes()
+        )
+        (tmp_path / "tests" / "dynamic_loader.py").write_text(
+            "import importlib as loader\ndef load():\n    return loader.import_module('pkg.leaf')\n"
+        )
+        (tmp_path / "tests" / "relay.py").write_text("from .dynamic_loader import load\n")
+        consumer.write_text(
+            "from tests.relay import load\n"
+            "def test_dynamic_consumer():\n"
+            "    assert load().VALUE == 1\n"
+        )
+    else:
+        consumer.write_text(
+            "import importlib as loader\n"
+            "def test_dynamic_consumer():\n"
+            "    assert loader.import_module('pkg.leaf').VALUE == 1\n"
+        )
     subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
     subprocess.run(
         [
@@ -2014,10 +2032,3 @@ def test_changed_test_files_respect_user_k_and_marker_selectors(
     assert result.returncode == 0, result.stdout + result.stderr
     assert summary in result.stdout
     assert "test_direct.py::test_direct PASSED" not in result.stdout
-
-
-def test_dynamic_import_scan_includes_real_refusal_consumer() -> None:
-    from scripts.run_test_tier import _dynamic_import_tests
-
-    project = Path(__file__).resolve().parents[1]
-    assert "tests/test_refusal_uniqueness.py" in _dynamic_import_tests(project)

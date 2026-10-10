@@ -220,7 +220,9 @@ def _dynamic_import_tests(cwd: Path) -> list[str]:
             continue
         if _has_dynamic_import(tree):
             consumers.append(path.relative_to(cwd).as_posix())
-    return consumers
+    if not consumers:
+        return []
+    return sorted(set(consumers) | set(affected_test_paths(cwd, consumers)))
 
 
 def _environment_identity(cwd: Path) -> str:
