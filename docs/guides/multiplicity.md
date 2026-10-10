@@ -51,10 +51,10 @@ each source's families; it does not create one jointly controlled
 experiment-wide family. Use `family_id` and the source/population scope,
 not a shared family name, to identify which guarantee applies.
 Under a registered sequential plan the triggered secondary family is selected
-by e-BH on its own chain but reported as `exploratory_family` with
-`guarantee="none"` unless the plan declares
-`triggered_look_policy="outcome_independent"`; see
-[Triggered populations](sequential-inference.md#triggered-populations).
+by e-BH on its own chain with the same guarantee and status labels as the
+assigned family; do not time triggered stops or freezes on other metrics'
+assigned results (see
+[Triggered populations](sequential-inference.md#triggered-populations)).
 
 ## Declaring families: primary, guardrails, secondaries
 

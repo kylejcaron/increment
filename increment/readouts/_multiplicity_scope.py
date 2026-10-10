@@ -90,15 +90,6 @@ def attach_multiplicity_scope(
         registration = getattr(getattr(plan, "inference", None), "registration", None)
         if cell.analysis_population == "triggered":
             registration = getattr(plan.inference, "triggered_registration", None)
-            if family is not None and registration is not None:
-                family = family.model_copy(
-                    update={
-                        "look_policy": registration.look_policy,
-                        "guarantee": "none"
-                        if registration.look_policy == "exploratory"
-                        else family.guarantee,
-                    }
-                )
         if (
             view == "run"
             and family is not None
@@ -163,21 +154,13 @@ def attach_multiplicity_scope(
                     "family_id": None if key is None else family_ids[key],
                     "family_axes": None if family is None else family.axes,
                     "family_q": None if family is None else family.q,
-                    "family_guarantee": (
-                        None
-                        if family is None or family.look_policy == "exploratory"
-                        else family.validity_regime
-                    ),
+                    "family_guarantee": (None if family is None else family.validity_regime),
                     "discovery": None if selection_excluded else row.discovery,
                     "family_threshold": None if selection_excluded else row.family_threshold,
                     "family_nominal_alpha": None
                     if selection_excluded
                     else row.family_nominal_alpha,
-                    "multiplicity_status": (
-                        "exploratory_family"
-                        if family is not None and family.look_policy == "exploratory"
-                        else multiplicity_status(role, family)
-                    ),
+                    "multiplicity_status": multiplicity_status(role, family),
                 }
             )
         )

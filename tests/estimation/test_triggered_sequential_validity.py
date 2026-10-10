@@ -6,8 +6,8 @@ closed. The null sentinel checks that the package's own count-clock set,
 evaluated at every daily look of a growing cohort, keeps its any-look false
 rejection rate below alpha. The stopping-policy test separates the per-cell
 crossing bound, which no look rule can inflate, from the stopped e-value's
-expectation that a family selection needs: a rule that peeks at information
-outside the chain's own filtration inflates the latter while the former holds.
+expectation that a family selection needs: a rule driven by information about
+outcomes not yet revealed on the chain inflates the latter while the former holds.
 """
 
 from __future__ import annotations
@@ -128,9 +128,14 @@ def _log_e(control: tuple[int, int], treatment: tuple[int, int], prior: BetaPrio
 
 @pytest.mark.slow
 def test_leak_informed_stopping_inflates_the_stopped_e_value_but_not_the_crossing_bound():
-    """A look rule using information outside the chain's filtration breaks E[e_tau] <= 1
-    while P(sup e >= 1/alpha) <= alpha stays intact, which is why the family verdict
-    (not the per-cell threshold) carries the outcome-independent look-time condition.
+    """A look rule driven by information about not-yet-revealed outcomes breaks
+    E[e_tau] <= 1 while P(sup e >= 1/alpha) <= alpha stays intact.
+
+    Under correct triggering a same-metric assigned observation carries no arm
+    information about a null triggered outcome, so the triggered family keeps
+    its e-BH guarantee; what this documents is the remaining cross-metric caveat,
+    that stopping or freezing a triggered cell on the strength of other metrics'
+    results is such a rule, and the per-cell confidence sequence is unaffected.
     """
     rng = np.random.default_rng(7)
     prior = BetaPrior(Fraction(3), Fraction(7))

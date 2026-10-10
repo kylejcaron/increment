@@ -585,26 +585,13 @@ def _artifact_source_context(
             "artifact context lists an encouragement uptake extension without a typed design",
         )
     if experiment.plan.inference is not None and experiment.plan.inference.registration is not None:
-        # The stored context binds the assigned registration and, as its own field,
-        # the declared triggered look policy; the triggered registration is their
-        # derivation and is rebuilt here exactly as the native constructor does.
+        # The stored context binds the assigned registration; the triggered one is
+        # its derivation and is rebuilt here exactly as the native constructor does.
         from increment.plan import bind_automatic_sequential_plan
         from increment.query.artifact_contract import artifact_source_mapping
 
-        look_policy = payload.get("triggered_look_policy", "exploratory")
-        if look_policy not in ("exploratory", "outcome_independent"):
-            raise ArtifactContractError(
-                "artifact.context.mismatch", "artifact context carries an unknown look policy"
-            )
-        declared = experiment.plan.model_copy(
-            update={
-                "inference": experiment.plan.inference.model_copy(
-                    update={"triggered_look_policy": look_policy}
-                )
-            }
-        )
         bound = bind_automatic_sequential_plan(
-            declared,
+            experiment.plan,
             metrics,
             design=design,
             source_id=experiment.name,

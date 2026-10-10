@@ -1674,7 +1674,6 @@ class ArtifactMomentSource(SequentialSourceMixin):
         """Capture a finalized common cohort from the pinned immutable generation."""
         from dataclasses import replace
 
-        from increment.query.artifact_contract import observation_recipe_sha256
         from increment.query.builders import _local_date
         from increment.query.sequential_capture import (
             capture_relations,
@@ -1771,7 +1770,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 trigger_outcome,
                 trigger_cohort,
                 self._snapshot.batches,
-                recipe_id=observation_recipe_sha256(self._manifest.context),
+                recipe_id=self._manifest.context.sha256,
                 finalized=finalized,
                 as_of=as_of,
                 previous=None if previous is None else previous.triggered,
@@ -1797,7 +1796,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
             relation_for,
             cohort,
             self._snapshot.batches,
-            recipe_id=observation_recipe_sha256(self._manifest.context),
+            recipe_id=self._manifest.context.sha256,
             finalized=finalized,
             as_of=as_of,
             previous=previous,

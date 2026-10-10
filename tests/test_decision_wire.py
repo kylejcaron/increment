@@ -1054,42 +1054,6 @@ def test_wire_multiplicity_family_rejects_bh_without_q(correction) -> None:
     assert exc.value.code == "wire.multiplicity.validate_policy"
 
 
-@pytest.mark.parametrize("look_policy", ["exploratory", "outcome_independent"])
-def test_wire_family_preserves_look_policy_from_runtime(look_policy):
-    runtime = MultiplicityFamily(
-        name="triggered",
-        correction="none",
-        guarantee="none",
-        validity_regime="asymptotic_sequential",
-        look_policy=look_policy,
-    )
-
-    wire = WireMultiplicityFamily.from_runtime(runtime)
-
-    assert wire.look_policy == look_policy
-    assert WireMultiplicityFamily.model_validate_json(wire.model_dump_json()) == wire
-
-
-@pytest.mark.parametrize("look_policy", ["exploratory", "outcome_independent"])
-def test_wire_family_restores_look_policy_to_runtime(look_policy):
-    from increment.decision_wire import _family_from_wire
-
-    wire = WireFamilyMembership(
-        family=WireMultiplicityFamily(
-            name="triggered",
-            correction="none",
-            guarantee="none",
-            validity_regime="asymptotic_sequential",
-            look_policy=look_policy,
-        ),
-        member=True,
-    )
-
-    restored = _family_from_wire(wire).family
-    assert isinstance(restored, MultiplicityFamily)
-    assert restored.look_policy == look_policy
-
-
 def test_wire_multiplicity_family_rejects_q_outside_bh() -> None:
     with pytest.raises(WireFormatError) as exc:
         WireMultiplicityFamily(name="f", correction="none", q=0.1, guarantee="none")

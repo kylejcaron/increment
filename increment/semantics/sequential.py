@@ -420,9 +420,6 @@ class SequentialRegistration(_Declaration):
     population: Literal["assigned", "triggered"] = Field(
         default="assigned", exclude_if=lambda value: value == "assigned"
     )
-    look_policy: Literal["outcome_independent", "exploratory"] | None = Field(
-        default=None, exclude_if=lambda value: value is None
-    )
 
     @model_validator(mode="before")
     @classmethod
@@ -442,8 +439,6 @@ class SequentialRegistration(_Declaration):
 
     @model_validator(mode="after")
     def _complete(self):
-        if (self.population == "triggered") != (self.look_policy is not None):
-            invalid_registration("triggered registrations require their predeclared look policy")
         if not self.models or not self.roster or not 0 < self.q < 1:
             invalid_registration("registration needs models, a retained roster and q in (0,1)")
         continuous = any(isinstance(m, ScalarMeanModel) for m in self.models)
@@ -501,10 +496,7 @@ class SequentialRegistration(_Declaration):
 
 
 def derive_triggered_registration(
-    registration: SequentialRegistration,
-    *,
-    definitions_id: str,
-    look_policy: Literal["outcome_independent", "exploratory"] = "exploratory",
+    registration: SequentialRegistration, *, definitions_id: str
 ) -> SequentialRegistration | None:
     """The triggered population's registration, derived from the assigned one before data.
 
@@ -539,7 +531,6 @@ def derive_triggered_registration(
         roster=roster,
         q=registration.q,
         population="triggered",
-        look_policy=look_policy,
     )
 
 
@@ -547,15 +538,9 @@ def validate_triggered_registration(
     registration: SequentialRegistration, triggered: SequentialRegistration
 ) -> None:
     """Require ``triggered`` to be exactly the derivation of ``registration``."""
-    if (
-        registration.population != "assigned"
-        or triggered.population != "triggered"
-        or triggered.look_policy is None
-    ):
+    if registration.population != "assigned" or triggered.population != "triggered":
         invalid_registration("population registrations must pair an assigned and a triggered one")
-    expected = derive_triggered_registration(
-        registration, definitions_id=triggered.definitions_id, look_policy=triggered.look_policy
-    )
+    expected = derive_triggered_registration(registration, definitions_id=triggered.definitions_id)
     if expected is None or expected != triggered:
         invalid_registration(
             "triggered registration is not the derivation of the assigned registration"

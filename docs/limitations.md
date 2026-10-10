@@ -1303,16 +1303,19 @@ effect, and no null guarantee is asserted. Assignment-window uptake is
 mechanically tied to trigger timing, so triggered compliance cells stay
 unavailable (`triggered_uptake_unsupported`).
 
-The per-cell guarantee holds for any look schedule; the triggered family's e-BH
-verdict holds only when look times are outcome-independent, because a look rule
-that uses not-yet-finalized information (the assigned chain exposes some)
-inflates the stopped e-value's expectation. The library records the declared
-`triggered_look_policy` and reports the triggered family as exploratory unless
-outcome-independent looks were declared. Both chains need every contributing
-feed certified complete through the capture horizon; a process committed
-without a triggered chain stays assigned-only and is never backfilled. Clustered
-assignment, registered segments and breakouts remain unsupported on the
-triggered chain for the same reasons they are on the assigned one.
+The per-cell guarantee holds for any look schedule. The triggered family keeps
+the assigned family's e-BH guarantee because, under correct triggering (no
+treatment effect before the trigger, arm-independent trigger propensity and
+timing), a same-metric assigned observation carries no arm information about a
+null triggered outcome even though it is revealed first. The remaining caveat
+is second-order and cross-metric: timing a triggered stop or freeze on the
+strength of other metrics' assigned results is a look rule driven by
+not-yet-revealed outcomes and inflates the stopped e-value's expectation; the
+per-metric confidence sequences are valid regardless. Both chains need every
+contributing feed certified complete through the capture horizon; a process
+committed without a triggered chain stays assigned-only and is never backfilled.
+Clustered assignment, registered segments and breakouts remain unsupported on
+the triggered chain for the same reasons they are on the assigned one.
 
 ### Clustered CATE uncertainty is cluster-asymptotic
 

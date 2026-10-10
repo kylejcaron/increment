@@ -41,9 +41,6 @@ class MultiplicityFamily(CodedModel, BaseModel):
     validity_regime: Literal["finite_sample", "asymptotic_sequential"] = Field(
         default="finite_sample", exclude_if=lambda value: value == "finite_sample"
     )
-    look_policy: Literal["outcome_independent", "exploratory"] | None = Field(
-        default=None, exclude_if=lambda value: value is None
-    )
 
     @model_validator(mode="after")
     def _validate_policy(self) -> MultiplicityFamily:
@@ -65,11 +62,7 @@ class MultiplicityFamily(CodedModel, BaseModel):
             _raise("decision.multiplicity.validate_policy", correction=self.correction)
         if not uses_q and self.q is not None:
             _raise("decision.multiplicity.bh", correction=self.correction)
-        expected_guarantee = (
-            "none"
-            if self.look_policy == "exploratory"
-            else guarantee_for_correction(self.correction)
-        )
+        expected_guarantee = guarantee_for_correction(self.correction)
         if self.guarantee != expected_guarantee:
             _raise(
                 "decision.multiplicity.guarantee_mismatch",
