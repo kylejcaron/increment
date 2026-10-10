@@ -100,6 +100,26 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   Stop old writers before transferring ownership. Preserve original scientific
   and human acceptance; a design review is not implementation verification.
 
+### Recommended local verification and review
+
+Keep Roborev per commit. This cadence does not relax the current before-push
+`make check`, required CI, or scientific acceptance; it does not authorize
+shared-hook changes.
+
+| Boundary | Checks and tests | Review |
+| --- | --- | --- |
+| Commit | Existing format/lint/type hooks; relevant regressions while editing, not a broad suite merely because a commit is created. | Roborev per commit; resolve findings with concrete evidence. |
+| Task / AI task | Focused regressions, affected fast and relevant affected slow against the immutable task base, plus the changed public-behavior smoke. Follow broader routes when selection refuses. | One independent high-depth correctness review of the completed task; consume commit findings. |
+| PR | Current `make check` (full fast and functional slow) before pushing; required CI and applicable docs/build, parity and scientific gates. | Human full-diff read and coherent branch-range correctness review; consume task and commit reports. |
+| Stack / final integration | Same baseline on the frozen combined source, plus cross-PR journeys and applicable scientific campaigns or `make test-all`. | High-depth integration review of interactions and unreviewed resolutions; do not re-review every constituent PR from scratch. |
+
+- A standalone PR is the final integration gate. Reuse matching evidence when
+  its validated head is already the final stack head; changed source or inputs
+  require fresh relevant checks.
+- Escalate statistical, numerical, wire-format and selection-certification
+  changes to domain review; add targeted security review for security-sensitive
+  boundaries. A review is not execution evidence.
+
 
 ## Analysis ingress and parity
 
