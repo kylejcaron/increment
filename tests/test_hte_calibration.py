@@ -38,11 +38,11 @@ from increment.estimation.meta import (
     hksj_pooled_mean,
     marginalized_segment_intervals,
 )
+from increment.power import segment_pairwise_required_sample_size
 from increment.power.core import (
     Baseline,
     PowerDesign,
     joint_q_power_fixed,
-    segment_pairwise_required_sample_size,
 )
 from increment.semantics.models import MeanMetric
 from tests.power._procedures import make_procedure
@@ -330,7 +330,7 @@ def test_hksj_coverage_smoke():
 
 
 def _ceil_arm_sizes(q: float, n_total: float, allocation: float) -> tuple[int, int]:
-    """Mirrors ``increment.power.core._segment_arm_sizes``'s per-segment
+    """Mirrors ``increment.power.pairwise._segment_arm_sizes``'s per-segment
     integer ceiling exactly, so the closed-form power computed against it
     matches the solver's achieved power to floating-point precision rather
     than an approximate, MC-noisy estimate."""

@@ -971,6 +971,24 @@ first step; no pair inherits a neighbour's decision, because the runtime's stopp
 need not be monotone in a count. Sizing returns a verified bracket crossing,
 not a proven global minimum.
 
+An effect search bisects from the null toward the far end of the admissible effects. The far
+endpoint of each interval it forms is reserved when the interval is formed (its refusals and
+the cell bound are charged then) and replayed only once something reads it: its power (an
+interval narrow enough that its curvature term is below one reads both endpoint powers
+before it is bounded; a narrow interval at the tolerance; the unattainable report), or an
+interval bound whose value its cells could change. A bound decides of those cells only the
+ones it could depend on: deciding a cell only moves a control row's first plus rejection up
+and its last minus rejection down, so where the row's bound at the two extremes of that box
+agrees it is fixed, and only the other rows' reserved cells inside the bound's frame are
+decided. The far end of the admissible effects and the far endpoints of the wide intervals
+above the answer are never replayed; an endpoint a curvature term reads is, even when the
+answer then lands below it. The intervals formed, the bounds read and the answer are those
+of replaying every endpoint when it is formed. The solves of one design (a supplied effect,
+its companion search, a curve's rows at one size) share the count-pair decisions any of them
+made, each decision the runtime's own; a search's bounds still read only the cells that
+search decided, so its stopping point is the same on a fresh geometry. The last table of
+this section records what that saves.
+
 The internal numerical enclosure accounts for the runtime's SciPy allowance,
 summation error, omitted support and unresolved decisions, conditional on the
 stated SciPy/Boost special-function error model. It is not a uniform proof
@@ -1062,6 +1080,44 @@ Not measured: `required_sample_size` at a 50% baseline or beyond a million units
 planned in closed form, an explicit `finite_sample` one is refused. Before the bound existed a
 call took 574 s and 3.4 GiB at 4,000,000 per arm (39 million cells).
 
+What the effect search's reserved endpoints and the shared decisions save, measured as
+paired runs (the two revisions alternating, three cold processes each, the best of three;
+a shared 12-core Apple arm64 host under a load of 15 to 140, so the absolute times are
+contended and the ratios are the evidence) at commit `e39f3ce` against its parent
+`e51117e`, with the finite-sample replay rows each call ran (the replay kernel is unchanged,
+so the row count is the work). Every decision, route, size, power (to `1e-11`), effect (to
+`1e-9` relative) and refusal is the same at every cell; every call is faster, by 1.0 to 2.8
+times, and peak resident growth stays within 1.4 times:
+
+| Design | Call | Replay rows before -> after | Wall before -> after | Outcome |
+|---|---|---:|---:|---|
+| 10%, 701/arm, `finite_sample` | `achieved_power`, lift 50% / `minimum_detectable_effect` / `required_sample_size` | 96,728 -> 41,132 / 96,954 -> 41,132 / 190,340 -> 121,142 | 5.3 -> 2.2 s / 4.5 -> 1.8 s / 7.3 -> 4.6 s | exact; sized 831 |
+| 10%, 2,600/arm, `finite_sample` | the same three calls | 449,080 -> 152,864 / 449,516 -> 152,864 / 745,142 -> 424,798 | 13.5 -> 6.7 s / 10.6 -> 5.4 s / 21.5 -> 14.4 s | exact; sized 2,926 |
+| 10%, 5,000/arm, `finite_sample` | the same three calls, and a 2x2 `power_curve` | 663,072 -> 249,790 / 663,096 -> 249,790 / 1,080,367 -> 659,139 / 1,430,212 -> 527,340 | 25.1 -> 13.5 s / 23.8 -> 13.9 s / 48.3 -> 35.1 s / 57.4 -> 28.6 s | exact; sized 5,473 |
+| 10%, 7,000/arm, `finite_sample` | the same three calls | 732,830 -> 246,166 / 732,540 -> 246,162 / 1,241,231 -> 750,463 | 50.3 -> 18.2 s / 26.3 -> 16.1 s / 40.3 -> 31.6 s | exact; sized 7,570, companion `numerical_resolution` |
+| 2%, 20,000/arm, `finite_sample` | the same three calls | 738,438 -> 221,306 / 738,612 -> 221,306 / 1,183,354 -> 662,616 | 20.0 -> 11.1 s / 17.1 -> 10.6 s / 31.2 -> 21.0 s | exact; sized 22,384 |
+| 10%, 6,000 treatment at allocation 0.8, `finite_sample` | the same three calls, and a 2x2 curve | 551,282 -> 180,580 / 552,610 -> 180,580 / 1,772,330 -> 1,354,440 / 1,268,806 -> 438,350 | 38.2 -> 19.4 s / 32.8 -> 13.5 s / 81.7 -> 77.9 s / 45.4 -> 23.2 s | exact; sized 7,245 |
+| 10%, 2,000 treatment at allocation 0.2, `finite_sample` | the same three calls | 565,918 -> 206,776 / 565,836 -> 206,776 / 1,308,035 -> 947,653 | 13.0 -> 7.2 s / 13.6 -> 6.6 s / 66.3 -> 39.8 s | exact; sized 2,041 |
+| 10%, 7,000/arm, `greater`, `null_lift=0.2`, `finite_sample` | the same three calls | 645,735 -> 208,348 / 649,673 -> 208,348 / 1,528,176 -> 1,528,176 | 13.3 -> 7.5 s / 13.9 -> 7.0 s / 26.4 -> 26.1 s | exact; sizing refused `power.binomial_probability_unresolved` at its ceiling |
+| 30%, 3,500/arm, `less`, `null_lift=-0.1`, `finite_sample` | the same three calls | 575,856 -> 197,604 / 572,760 -> 197,604 / 1,544,062 -> 1,544,062 | 16.2 -> 8.7 s / 17.6 -> 8.7 s / 37.7 -> 30.7 s | exact; sizing refused likewise |
+| 10%, 20,000 assigned at trigger 0.35, `finite_sample` | the same three calls | 732,830 -> 246,166 / 732,540 -> 246,162 / 1,241,231 -> 750,463 | 33.1 -> 19.7 s / 32.8 -> 21.2 s / 61.8 -> 53.0 s | exact at 7,000 analyzed; sized 21,628, companion `numerical_resolution` |
+| 0.1% at 100,000/arm and 0.01% at 1,000,000/arm, `auto` (sparse) | the same three calls | 384,840 -> 69,102 / 385,692 -> 69,102 / 607,933 -> 251,555 (and 444,308 -> 67,684 / 445,160 -> 67,684 / 676,550 -> 250,146) | 4.2 -> 1.6 s / 3.5 -> 1.9 s / 8.7 -> 5.9 s (and 2.9 -> 1.5 s / 3.2 -> 1.6 s / 7.9 -> 5.6 s) | exact; sized 122,373 and 1,223,792 |
+| 10%, 5,000/arm, `auto` (sparse) | the same three calls | as the explicit `finite_sample` plan | 22.1 -> 12.4 s / 23.0 -> 12.7 s / 42.5 -> 31.1 s | exact; sized 5,473 |
+| 10%, 23,000/arm, `auto` (borderline) | the same three calls | 149,894 -> 149,894 / 718,770 -> 273,622 / 278,591 -> 278,591 | 10.5 -> 10.5 s / 34.6 -> 27.9 s / 17.4 -> 16.8 s | refused `power.binomial_probability_unresolved` (effect: `numerical_resolution`): the budgets leave 4e-3 of the mass undecided |
+
+A supplied effect's own evaluation and a sizing's heuristic probes replay as before; the
+companion search after them now costs a fraction of the evaluation it follows rather than a
+multiple. An explicit `finite_sample` plan at the ticket's dense shapes (10,000 per arm and
+above at a 10% rate, 20,000 at 50%) is not planned at all: its windows hold 190,000 to 2.3
+million cells, more than the per-evaluation budgets decide, so the enclosure stays wider
+than `1e-6` and the call refuses with `power.binomial_probability_unresolved` after one
+evaluation (10 to 50 s here). Under the default `auto` the same refusal reaches the designs
+the count rule does not route to the delta method with near certainty: at a 10% rate 10,000
+per arm is `sparse` and 20,000 to 23,000 `borderline` (the routing floor is 2,140 successes
+and failures per arm at the default two-sided alpha, where those arms expect 1,000 to 2,300),
+so they are enumerated and refused likewise; 35,000 per arm at 10% and 20,000 at 50% are
+`dense` and planned in closed form without a replay.
+
 Bounded-metric baselines and implied null/alternative rates must stay strictly
 positive and at most 1. A requested rate above 1 is refused rather than treated
 as a conservative approximation. At a fixed sample size, the directed
@@ -1090,6 +1146,15 @@ limits refuses with `power.minimum_detectable_effect.numerical_resolution`
 instead of consuming an unresolved midpoint or claiming an effect or
 unattainability. Information fractions remain the analyzed-unit-count
 approximation described above.
+
+The prospective Gaussian boundary evaluator certifies its results within a
+256-look limit, a 300,000,000 kernel-element work limit and a 4,096-node
+ceiling. Larger schedules refuse with `power.boundary_crossing_quadrature`
+and a reason naming the limit, because certifying them takes well over a few
+seconds per public call. Reduce or group planned looks to stay within the
+limits; grouping changes the planned schedule rather than approximating the
+original design. Registered likelihood policies remain unsupported by this
+Gaussian planning route.
 
 ### Switchback planning requires its own model
 
@@ -1342,6 +1407,12 @@ to using \(K-1\), but is not an exact small-sample law. This adds \(K\) full
 evaluations and no random draws; the bootstrap stream and repetition count are
 unchanged. `reference_df` on rank/group/CLAN results describes this jackknife
 component, while `covariance_method` describes the bootstrap response reference.
+
+Cost grows with the number of clusters \(K\): with the default 999 draws,
+`validate_cate` takes about half a second at \(K=400\) and a few seconds at
+\(K=2{,}000\), while `targeting_rule` and `select_targeting_rule` take tens of
+seconds to about a minute at \(K=2{,}000\). The jackknife deletions account for
+most of the extra rule and selection time at large \(K\).
 
 The bootstrap component has a first-order asymptotic justification when the complete
 cluster bootstrap is consistent and \(\sqrt K s\) and \(\sqrt K s^*\) converge

@@ -1702,6 +1702,133 @@ class TestReplayFollowsTheRuntimeStopContract:
                 assert rejected == (p < 0.025)
 
 
+class TestACellsDecisionIsTheSameWhateverRequestDecidesIt:
+    """A count pair's decision is the runtime's own, so it is the same whichever request, in
+    whichever order, and on whichever geometry of the decision it is decided."""
+
+    @pytest.mark.parametrize(("route", "n"), [("exact", 400), ("approximate", 2_800)])
+    def test_cells_do_not_depend_on_the_order_windows_are_requested(self, route, n):
+        """Classifying a window in pieces gives the cells one covering window gives."""
+        beta = binomial_rr.nuisance_beta(0.05)
+        decision = BinomialDecision(n, n, 1.0, beta, 0.025, "two-sided")
+        wc, wt = _binomial._window(n, 0.1), _binomial._window(n, 0.12)
+        mid = (wt.lo + wt.hi) // 2
+        whole = RejectionGeometry(decision, route).cells(wc.lo, wc.hi, wt.lo, wt.hi)
+        pieces = RejectionGeometry(decision, route)
+        pieces.cells(wc.lo, wc.hi, mid, wt.hi)
+        pieces.cells(wc.lo, wc.hi, wt.lo, mid + 10)
+        pieces.cells((wc.lo + wc.hi) // 2, wc.hi, wt.lo + 3, wt.lo + 5)
+        for got, expected in zip(pieces.cells(wc.lo, wc.hi, wt.lo, wt.hi), whole, strict=True):
+            assert np.array_equal(got, expected)
+
+    def test_the_companion_effect_is_the_direct_effect_whatever_the_supplied_lift(self):
+        """The effect search after a supplied effect starts from that effect's decided cells;
+        its answer is the direct search's, below, near and above the effect it finds."""
+        baseline, procedure = Baseline.from_proportion(0.1), _conversion()
+        direct = minimum_detectable_effect(300, baseline, procedure)
+        assert direct.power_basis == "exact" and direct.mde_relative is not None
+        for lift in (0.3, direct.mde_relative, 1.5, 4.0):
+            companion = achieved_power(300, lift, baseline, procedure)
+            assert (companion.mde_relative, companion.mde_unavailable_reason) == (
+                direct.mde_relative,
+                None,
+            )
+        curve = list(
+            power_curve(
+                n_per_arm=[300],
+                relative_lift=[0.3, 4.0],
+                baseline=baseline,
+                procedure=procedure,
+            )
+        )
+        assert [point.mde_relative for point in curve] == [direct.mde_relative] * 2
+
+
+class TestAnIntervalBoundReadsOnlyTheCellsItDependsOn:
+    """An evaluation reserved on a geometry is decided only once something depends on it. The
+    bound over an interval of treatment rates read before the reserved evaluations are decided
+    is the bound read after, and the evaluations decide as a fresh geometry's."""
+
+    @pytest.mark.parametrize(
+        ("alternative", "ratio", "p_c", "rates"),
+        [
+            ("two-sided", 1.0, 0.10, (0.13, 0.19, 0.4)),
+            ("greater", 1.2, 0.10, (0.14, 0.2, 0.45)),
+            ("less", 0.9, 0.30, (0.26, 0.2, 0.05)),
+        ],
+    )
+    def test_the_bound_before_reserved_evaluations_is_the_bound_after(
+        self, alternative, ratio, p_c, rates
+    ):
+        n = 300
+        tail = 0.025 if alternative == "two-sided" else 0.05
+        decision = BinomialDecision(n, n, ratio, binomial_rr.nuisance_beta(0.05), tail, alternative)
+        fresh = [RejectionGeometry(decision, "exact").evaluate(p_c, rate) for rate in rates]
+        geometry = RejectionGeometry(decision, "exact")
+        geometry.evaluate(p_c, p_c)
+        reserved = [geometry.prepare(p_c, rate) for rate in reversed(rates)]
+        bounds = []
+        for far in rates:
+            low, high = sorted((p_c, far))
+            bounds.append(geometry.closure_bound_before(p_c, low, high))
+        completed = [geometry.complete(evaluation) for evaluation in reversed(reserved)]
+        assert completed == fresh
+        for far, before in zip(rates, bounds, strict=True):
+            low, high = sorted((p_c, far))
+            assert before == geometry.closure_bound(p_c, low, high)
+
+    def test_a_reserved_evaluation_completes_as_a_fresh_one_after_other_requests(self):
+        """Requests decided between reserving and completing an evaluation, overlapping its
+        window, leave its enclosure the one a fresh geometry reports."""
+        decision = BinomialDecision(
+            300, 300, 1.0, binomial_rr.nuisance_beta(0.05), 0.025, "two-sided"
+        )
+        geometry = RejectionGeometry(decision, "exact")
+        reserved = geometry.prepare(0.1, 0.16)
+        geometry.evaluate(0.1, 0.1)
+        geometry.evaluate(0.1, 0.14)
+        geometry.evaluate(0.1, 0.19)
+        assert geometry.complete(reserved) == RejectionGeometry(decision, "exact").evaluate(
+            0.1, 0.16
+        )
+
+
+_SIZING_CASES = [
+    pytest.param(Baseline.from_proportion(0.5), {}, PowerDesign(), 0.16, id="dense-half"),
+    pytest.param(Baseline.from_proportion(0.001), {}, PowerDesign(), 0.5, id="rare"),
+    pytest.param(Baseline.from_proportion(0.1), {}, PowerDesign(allocation=0.8), 0.3, id="unequal"),
+    pytest.param(
+        Baseline.from_proportion(0.1),
+        {"alternative": "greater", "null_lift": 0.2},
+        PowerDesign(),
+        0.45,
+        id="shifted-null",
+    ),
+]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(("baseline", "overrides", "design", "lift"), _SIZING_CASES)
+def test_size_is_a_verified_crossing_with_the_companion_of_its_own_size(
+    baseline, overrides, design, lift
+):
+    """The returned size reaches the target at the power ``achieved_power`` reports for it, its
+    predecessor does not, and its companion effect is the one planned at that size alone."""
+    procedure = _conversion(**overrides)
+    sized = required_sample_size(lift, baseline, procedure, design)
+    assert sized.power_basis == "exact"
+    assert sized.power >= design.power
+    at = achieved_power(sized.n_per_arm, lift, baseline, procedure, design)
+    below = achieved_power(sized.n_per_arm - 1, lift, baseline, procedure, design)
+    assert at.power_basis == sized.power_basis
+    assert at.power == pytest.approx(sized.power, abs=1e-11)
+    assert (at.mde_relative, at.mde_unavailable_reason) == (
+        sized.mde_relative,
+        sized.mde_unavailable_reason,
+    )
+    assert below.power < design.power
+
+
 class TestRouting:
     """(d) The basis is a function of the inputs, and every plan the runtime
     does not decide with the binomial test keeps the log-ratio model."""

@@ -329,7 +329,7 @@ def segment_contrast(
 
     Relative rows (``value_scale="relative"``) return a value on the
     same back-transformed scale as
-    :func:`increment.power.core.segment_pairwise_required_sample_size`'s
+    :func:`increment.power.segment_pairwise_required_sample_size`'s
     contrast: ``value = exp(delta) - 1`` where
     ``delta = log1p(r_A) - log1p(r_B)``. Absolute rows
     (``value_scale="absolute"``, e.g. an encouragement LATE) return the

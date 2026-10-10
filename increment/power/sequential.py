@@ -586,14 +586,16 @@ def _certified_crossing(
             "node floor exceeds the quadrature ceiling",
         )
     n = max(nodes or 0, floor, 4 * NODES_MIN)
-    if len(fr) > MAX_WALK_LOOKS or len(fr) * n * n > MAX_WALK_WORK:
-        return _cheap_enclosure(
-            bounds,
-            fr,
-            drift_z,
-            exit_side,
-            "quadrature work ceiling reached",
+    limit_reason = None
+    if len(fr) > MAX_WALK_LOOKS:
+        limit_reason = f"planned-look limit of {MAX_WALK_LOOKS} reached; use fewer or grouped looks"
+    elif len(fr) * n * n > MAX_WALK_WORK:
+        limit_reason = (
+            f"quadrature work limit of {MAX_WALK_WORK} kernel elements reached; "
+            "use fewer or grouped looks"
         )
+    if limit_reason is not None:
+        return _cheap_enclosure(bounds, fr, drift_z, exit_side, limit_reason)
     walks = (
         _gl_walk(bounds, fr, drift_z, n // 4),
         _gl_walk(bounds, fr, drift_z, n // 2),
@@ -607,12 +609,17 @@ def _certified_crossing(
         if accuracy_reached:
             return enclosure
         if n >= NODES_MAX:
-            return replace(enclosure, resolution_reason="quadrature node ceiling reached")
+            return replace(
+                enclosure,
+                resolution_reason=f"quadrature node limit of {NODES_MAX} reached",
+            )
         next_n = 2 * n
         if len(fr) * next_n * next_n > MAX_WALK_WORK:
             return replace(
                 enclosure,
-                resolution_reason="quadrature work ceiling reached after a valid enclosure",
+                resolution_reason=(
+                    f"quadrature work limit of {MAX_WALK_WORK} kernel elements reached after a valid enclosure"
+                ),
             )
         n = next_n
         walks = (walks[1], walks[2], _gl_walk(bounds, fr, drift_z, n))

@@ -80,6 +80,12 @@ increment/frame.py
     DOC502: Function `from_unit_panel` has a "Raises" section in the docstring, but there are not "raise" statements in the body
 --------------------
 increment/power/core.py
+    DOC105: Function `joint_q_power_fixed`: Argument names match, but type hints in these args do not match: theta, var
+    DOC203: Function `joint_q_power_fixed` return type(s) in docstring not consistent with the return annotation. Return annotation has 1 type(s); docstring return section has 6 type(s).
+    DOC105: Function `joint_q_power_random`: Argument names match, but type hints in these args do not match: var
+    DOC203: Function `joint_q_power_random` return type(s) in docstring not consistent with the return annotation. Return annotation has 1 type(s); docstring return section has 3 type(s).
+--------------------
+increment/power/pairwise.py
     DOC101: Function `segment_pairwise_required_sample_size`: Docstring contains fewer arguments than in function signature.
     DOC103: Function `segment_pairwise_required_sample_size`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [baseline_a: Baseline, baseline_b: Baseline | None, design: PowerDesign | None, procedure: ArmPlanningProcedure, q_a: float, q_b: float, r_a: float, r_b: float].
     DOC201: Function `segment_pairwise_required_sample_size` does not have a return section in docstring
@@ -95,10 +101,6 @@ increment/power/core.py
     DOC201: Function `segment_pairwise_minimum_detectable_effect` does not have a return section in docstring
     DOC203: Function `segment_pairwise_minimum_detectable_effect` return type(s) in docstring not consistent with the return annotation. Return annotation has 1 type(s); docstring return section has 0 type(s).
     DOC502: Function `segment_pairwise_minimum_detectable_effect` has a "Raises" section in the docstring, but there are not "raise" statements in the body
-    DOC105: Function `joint_q_power_fixed`: Argument names match, but type hints in these args do not match: theta, var
-    DOC203: Function `joint_q_power_fixed` return type(s) in docstring not consistent with the return annotation. Return annotation has 1 type(s); docstring return section has 6 type(s).
-    DOC105: Function `joint_q_power_random`: Argument names match, but type hints in these args do not match: var
-    DOC203: Function `joint_q_power_random` return type(s) in docstring not consistent with the return annotation. Return annotation has 1 type(s); docstring return section has 3 type(s).
 --------------------
 increment/query/builders.py
     DOC101: Function `cluster_exposure_counts`: Docstring contains fewer arguments than in function signature.

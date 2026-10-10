@@ -246,10 +246,12 @@ class TestNodeFloor:
         assert raised.value.code == "power.boundary_crossing_quadrature"
 
     def test_large_schedule_is_refused_before_dense_quadrature(self):
-        # Reaching the work ceiling before any walk leaves the cheap union
-        # bound; a dense walk would produce a resolved enclosure instead.
+        # The fixed look-count guard, not the kernel-work estimate, refuses
+        # this schedule before quadrature.
         enclosure = sequential_power_enclosure(GaussianScoreMixture(), 0.05, 0.02, 0.05, 1000)
         assert not enclosure.resolved
+        assert enclosure.resolution_reason is not None
+        assert "256" in enclosure.resolution_reason
         with pytest.raises(InvalidRequestError) as raised:
             sequential_power(GaussianScoreMixture(), 0.05, 0.02, 0.05, 1000)
         assert raised.value.code == "power.boundary_crossing_quadrature"

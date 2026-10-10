@@ -307,16 +307,24 @@ depends_on = [
 path = "increment.power"
 depends_on = [
   "increment.estimation",
-  "increment.power.core", "increment.power.curve", "increment.power.switchback", "increment.power.unit_cycle",
+  "increment.power.core", "increment.power.curve", "increment.power.pairwise", "increment.power.switchback", "increment.power.unit_cycle",
 ]
 
 [[modules]]
 path = "increment.power.core"
 depends_on = [
-  "increment._finite_sample_refusals", "increment._literals", "increment.compatibility", "increment.decision", "increment.errors",
-  "increment.estimation", "increment.estimation.sequential", "increment.semantics",
-  "increment.power._binomial", "increment.power._search",
-  "increment.power._validation", "increment.power.sequential", "increment.power._noncentral_t",
+  "increment._finite_sample_refusals", "increment._literals", "increment.compatibility",
+  "increment.decision", "increment.errors", "increment.estimation",
+  "increment.estimation.sequential", "increment.power._binomial", "increment.power._search",
+  "increment.power._shared", "increment.power._validation", "increment.power.sequential",
+  "increment.semantics",
+]
+
+[[modules]]
+path = "increment.power.pairwise"
+depends_on = [
+  "increment._finite_sample_refusals", "increment.compatibility", "increment.decision",
+  "increment.errors", "increment.estimation", "increment.power._shared", "increment.power.core",
 ]
 
 [[modules]]
@@ -355,6 +363,11 @@ depends_on = ["increment._literals", "increment.errors", "increment.estimation"]
 [[modules]]
 path = "increment.power._validation"
 depends_on = ["increment.errors"]
+
+
+[[modules]]
+path = "increment.power._shared"
+depends_on = ["increment._finite_sample_refusals", "increment.errors", "increment.power._noncentral_t", "increment.power._validation", "increment.semantics"]
 [[modules]]
 path = "increment.power._noncentral_t"
 depends_on = ["increment._literals", "increment.estimation"]
