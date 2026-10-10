@@ -85,6 +85,9 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   execution evidence. They do not waive slow, parity, fixtures, public smokes,
   docs, scientific or full-suite gates. See
   [selection controls and evidence](CONTRIBUTING.md#tests-and-quality-checks).
+- Dependency-map recording is optional: `make test-map TIER=fast|slow`.
+  Ordinary full-tier checks keep all tests without rebuilding the map;
+  affected checks retain their trusted-map or conservative-graph routes.
 - Reuse matching source/worktree/environment-bound evidence across read-only
   reviews; changed inputs invalidate it. Required integration gates remain.
 - Run `make install` for explicit hook setup; do not bypass hooks with

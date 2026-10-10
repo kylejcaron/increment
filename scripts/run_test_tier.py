@@ -33,6 +33,7 @@ from scripts._test_impact import (
     testmon_database_lock,
     testmon_environment_fingerprint,
     testmon_full_tiers,
+    testmon_nested_context,
     write_testmon_coverage,
 )
 from scripts._test_tier_policy import TIER_MARKERS
@@ -1215,6 +1216,31 @@ def _serial_if_small_focused_selection(
     return arguments
 
 
+def _publish_full_run_map(
+    root: Path,
+    tier: str,
+    report: Path,
+    source_snapshot: tuple[dict[str, str], dict[str, str]] | None,
+) -> bool:
+    if source_snapshot is None or not _full_run_certification_complete(report):
+        return False
+    try:
+        if _source_snapshots(root) != source_snapshot:
+            return False
+        record_testmon_full_run(
+            root,
+            tier,
+            test_dist=_full_run_certification_dist(report),
+            expected_source_snapshot=source_snapshot,
+        )
+        requested_tiers = {"fast", "slow"} if tier == "all" else {tier}
+        return _source_snapshots(root) == source_snapshot and requested_tiers.issubset(
+            testmon_full_tiers(root)
+        )
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if any(
@@ -1225,6 +1251,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument(
+        "--record-testmon-map",
+        action="store_true",
+        help="Execute and record a complete fast/slow/all dependency map (before the tier).",
+    )
+    parser.add_argument(
         "--affected-base",
         metavar="GITREF",
         help="Select tests affected since a recorded commit (fast/slow tier only).",
@@ -1232,6 +1263,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("tier", choices=tuple(TIERS))
     parser.add_argument("pytest_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(arguments)
+    if args.record_testmon_map and (
+        "PYTEST_CURRENT_TEST" in os.environ
+        or testmon_nested_context(Path.cwd())
+        or not can_certify_testmon_full_run(args.tier, args.pytest_args)
+    ):
+        print(
+            "pytest: error: dependency-map recording requires a complete, unfiltered "
+            "fast/slow/all tier outside a nested test run",
+            file=sys.stderr,
+        )
+        return 4
     tier = TIERS[args.tier]
     extra_env = {
         "INCREMENT_AFFECTED_EVIDENCE": "",
@@ -1294,9 +1336,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mark_testmon_nested_context(root)
     os.environ["TESTMON_DATAFILE"] = str(root / ".testmondata")
     certification_report = None
-    if "PYTEST_CURRENT_TEST" not in os.environ and can_certify_testmon_full_run(
-        args.tier, args.pytest_args
-    ):
+    if args.record_testmon_map:
         certification_report = root / f".testmondata.full-report-{uuid.uuid4().hex}.json"
         expected_config = Path(__file__).resolve().parents[1] / "pyproject.toml"
         extra_env.update(
@@ -1326,26 +1366,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             extra_env=extra_env,
         )
-        sources_unchanged = False
-        if source_snapshot is not None:
-            try:
-                sources_unchanged = _source_snapshots(root) == source_snapshot
-            except (OSError, UnicodeDecodeError):
-                pass
-        if (
+        recording_succeeded = (
             result == 0
             and certification_report is not None
-            and sources_unchanged
-            and _full_run_certification_complete(certification_report)
-        ):
-            record_testmon_full_run(
-                root,
-                args.tier,
-                test_dist=_full_run_certification_dist(certification_report),
-                expected_source_snapshot=source_snapshot,
-            )
+            and _publish_full_run_map(root, args.tier, certification_report, source_snapshot)
+        )
         if certification_report is not None:
             certification_report.unlink(missing_ok=True)
+            if result == 0 and not recording_succeeded:
+                print(
+                    "pytest: error: dependency-map recording did not publish a complete "
+                    "source-matched map; keep inputs stable and rerun the recording tier",
+                    file=sys.stderr,
+                )
+                return 1
     return result
 
 

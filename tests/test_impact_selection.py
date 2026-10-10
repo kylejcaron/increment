@@ -411,7 +411,7 @@ def test_full_run_does_not_certify_sources_changed_before_marker_write(
         lambda root, tier, test_dist: ({}, ["tests/test_provider.py::test_provider"]),
     )
 
-    assert run_test_tier.main(["fast"]) == 0
+    assert run_test_tier.main(["--record-testmon-map", "fast"]) == 1
     assert not (tmp_path / ".testmondata.full").exists()
 
 
@@ -438,16 +438,18 @@ def test_changed_parent_initializer_affects_submodule_importers(
 def test_full_run_does_not_certify_sources_changed_during_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from scripts import run_test_tier
+    from scripts import _test_impact, run_test_tier
 
+    _initialize_import_coverage_project(
+        tmp_path,
+        {"_state.py": "VALUE = 1\n"},
+        collection_test="from increment._state import VALUE\n\ndef test_state():\n    assert VALUE == 1\n",
+        test_nodes=["tests/test_provider.py::test_provider"],
+    )
     source = tmp_path / "increment" / "_state.py"
-    source.parent.mkdir()
-    (source.parent / "__init__.py").write_text("")
-    source.write_text("VALUE = 1\n")
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("TESTMON_DATAFILE", raising=False)
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
-    certified: list[tuple[Path, str]] = []
 
     def run_with_source_change(*args: object, **kwargs: object) -> int:
         extra_env = kwargs["extra_env"]
@@ -461,13 +463,13 @@ def test_full_run_does_not_certify_sources_changed_during_run(
 
     monkeypatch.setattr(run_test_tier, "run_with_budget", run_with_source_change)
     monkeypatch.setattr(
-        run_test_tier,
-        "record_testmon_full_run",
-        lambda root, tier, *, test_dist=None: certified.append((root, tier)),
+        _test_impact,
+        "_import_time_line_coverage",
+        lambda root, tier, test_dist: ({}, ["tests/test_provider.py::test_provider"]),
     )
 
-    assert run_test_tier.main(["fast"]) == 0
-    assert certified == []
+    assert run_test_tier.main(["--record-testmon-map", "fast"]) == 1
+    assert not (tmp_path / ".testmondata.full").exists()
 
 
 def test_import_coverage_ignores_uninvoked_function_body_change(tmp_path: Path) -> None:

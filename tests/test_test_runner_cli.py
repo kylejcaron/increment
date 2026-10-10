@@ -451,3 +451,203 @@ def test_runner_and_entrypoint_import_without_pytest_installed() -> None:
         timeout=15,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _map_recording_project(root: Path) -> tuple[dict[str, str], str]:
+    project = Path(__file__).resolve().parents[1]
+    (root / "scripts").mkdir()
+    (root / "scripts" / "__init__.py").touch()
+    for name in (
+        "run_test_tier.py",
+        "_test_tier_policy.py",
+        "_test_impact.py",
+        "run_test_tier_plugin.py",
+        "affected_pytest_launcher.py",
+    ):
+        shutil.copyfile(project / "scripts" / name, root / "scripts" / name)
+    (root / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n'
+        'markers = ["slow: expensive functional test"]\n'
+        "filterwarnings = []\n"
+    )
+    (root / "tach.toml").write_text(
+        'source_roots = ["."]\nroot_module = "ignore"\n'
+        '[[modules]]\npath = "increment._state"\ndepends_on = []\n'
+    )
+    shutil.copyfile(project / "conftest.py", root / "conftest.py")
+    package = root / "increment"
+    package.mkdir()
+    (package / "__init__.py").touch()
+    (package / "_state.py").write_text("def compute(value):\n    return 2 * value + 1\n")
+    tests = root / "tests"
+    tests.mkdir()
+    (tests / "test_consumer.py").write_text(
+        "from pathlib import Path\n"
+        "import pytest\n"
+        "from increment._state import compute\n"
+        "def test_fast():\n"
+        "    Path('executed-fast').touch()\n"
+        "    assert compute(1) == 3\n"
+        "@pytest.mark.slow\n"
+        "def test_slow():\n"
+        "    Path('executed-slow').touch()\n"
+        "    assert compute(2) == 5\n"
+    )
+    (root / ".gitignore").write_text(
+        "__pycache__/\n.pytest_cache/\n.testmondata*\n.test_durations\n.evidence/\nexecuted-*\n"
+    )
+    for arguments in (
+        ["init", "-q"],
+        ["config", "user.name", "Runner Tests"],
+        ["config", "user.email", "runner-tests@example.invalid"],
+        ["add", "."],
+        ["commit", "-qm", "baseline"],
+    ):
+        subprocess.run(["git", *arguments], cwd=root, check=True)
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("PYTEST_", "INCREMENT_", "TESTMON_", "COVERAGE_", "COV_CORE_"))
+    }
+    environment["PYTHONPATH"] = str(project)
+    return environment, base
+
+
+def _run_map_project(root: Path, environment: dict[str, str], *arguments: str):
+    return subprocess.run(
+        [sys.executable, "-m", "scripts.run_test_tier", *arguments],
+        cwd=root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.parametrize("tier", ["fast", "slow"])
+def test_full_validation_is_independent_of_dependency_map(tmp_path: Path, tier: str):
+    environment, _ = _map_recording_project(tmp_path)
+    database = tmp_path / ".testmondata"
+    database.write_bytes(b"irrelevant corrupt dependency cache")
+    outcome = _run_map_project(
+        tmp_path,
+        environment,
+        tier,
+        "-n",
+        "0",
+        "-p",
+        "no:tach",
+        "-q",
+        "--evidence-root",
+        ".evidence",
+    )
+    assert outcome.returncode == 0, outcome.stdout + outcome.stderr
+    [receipt] = (tmp_path / ".evidence").glob("run-*/reports.jsonl")
+    calls = [
+        (event["nodeid"], event["outcome"])
+        for line in receipt.read_text().splitlines()
+        if (event := json.loads(line)).get("when") == "call"
+    ]
+    assert calls == [(f"tests/test_consumer.py::test_{tier}", "passed")]
+    assert (tmp_path / f"executed-{tier}").exists()
+    assert not (tmp_path / f"executed-{'slow' if tier == 'fast' else 'fast'}").exists()
+    assert database.read_bytes() == b"irrelevant corrupt dependency cache"
+    assert not (tmp_path / ".testmondata.full").exists()
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.parametrize("tier", ["fast", "slow"])
+def test_explicit_recording_preserves_affected_consumer(tmp_path: Path, tier: str):
+    environment, base = _map_recording_project(tmp_path)
+    outcome = _run_map_project(
+        tmp_path,
+        environment,
+        "--record-testmon-map",
+        tier,
+        "-n",
+        "0",
+        "-p",
+        "no:tach",
+        "-q",
+        "--evidence-root",
+        ".evidence",
+    )
+    assert outcome.returncode == 0, outcome.stdout + outcome.stderr
+    marker = json.loads((tmp_path / ".testmondata.full").read_text())
+    assert marker["tiers"] == [tier]
+    (tmp_path / "increment" / "_state.py").write_text(
+        "def compute(value):\n    return 2 * value + 2\n"
+    )
+    affected = _run_map_project(
+        tmp_path,
+        environment,
+        "--affected-base",
+        base,
+        tier,
+    )
+    assert affected.returncode == 1, affected.stdout + affected.stderr
+    [affected_receipt] = (tmp_path / ".test-evidence" / "affected").glob("run-*/run.json")
+    metadata = json.loads(affected_receipt.read_text())
+    assert metadata["selection_route"] == "testmon"
+    reports = [
+        json.loads(line)
+        for line in affected_receipt.with_name("reports.jsonl").read_text().splitlines()
+    ]
+    assert [
+        (event["nodeid"], event["outcome"]) for event in reports if event.get("when") == "call"
+    ] == [(f"tests/test_consumer.py::test_{tier}", "failed")]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["focused", "tests/test_consumer.py"],
+        ["examples"],
+        ["fast", "-k", "test_fast"],
+        ["fast", "--splits", "2", "--group", "1"],
+        ["fast", "--collect-only"],
+    ],
+)
+def test_explicit_recording_rejects_partial_requests_before_execution(
+    tmp_path: Path, arguments: list[str]
+):
+    environment, _ = _map_recording_project(tmp_path)
+    outcome = _run_map_project(
+        tmp_path,
+        environment,
+        "--record-testmon-map",
+        *arguments,
+    )
+    assert outcome.returncode != 0
+    assert not (tmp_path / "executed-fast").exists()
+    assert not (tmp_path / "executed-slow").exists()
+    assert not (tmp_path / ".testmondata").exists()
+    assert not (tmp_path / ".testmondata.full").exists()
+
+
+@pytest.mark.integration
+def test_explicit_recording_refuses_verified_sanitized_nested_context(tmp_path: Path):
+    from scripts._test_impact import testmon_database_lock
+
+    environment, _ = _map_recording_project(tmp_path)
+    with testmon_database_lock(tmp_path):
+        environment.update(
+            {
+                "INCREMENT_TESTMON_LOCK_OWNER": os.environ["INCREMENT_TESTMON_LOCK_OWNER"],
+                "INCREMENT_TESTMON_LOCK_ROLE": "nested",
+            }
+        )
+        outcome = _run_map_project(
+            tmp_path, environment, "--record-testmon-map", "fast", "-n", "0", "-p", "no:tach"
+        )
+        assert outcome.returncode == 4, outcome.stdout + outcome.stderr
+        assert not (tmp_path / "executed-fast").exists()
+        assert not (tmp_path / ".testmondata").exists()
+        assert not (tmp_path / ".testmondata.full").exists()

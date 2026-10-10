@@ -1,4 +1,4 @@
-.PHONY: install fmt lint audit-verbosity complexity complexity-diff typecheck typecheck-sync test test-fast test-slow test-parameter-recovery test-numerical-certification test-scientific test-all test-versions test-examples test-doc-snippets prek check ci-local sim demo examples test-affected
+.PHONY: install fmt lint audit-verbosity complexity complexity-diff typecheck typecheck-sync test test-fast test-slow test-parameter-recovery test-numerical-certification test-scientific test-all test-versions test-examples test-doc-snippets prek check ci-local sim demo examples test-affected test-map
 
 # Loadgroup keeps modules sharing mutable filesystem paths on one worker.
 TEST_RUNNER = uv run --extra demo --extra tables --extra dashboard python -m scripts.run_test_tier
@@ -72,6 +72,11 @@ else
 	$(MAKE) test-fast
 
 endif
+
+test-map:
+	@case "$(TIER)" in fast|slow) ;; \
+		*) echo 'usage: make test-map TIER=fast|slow' >&2; exit 2 ;; esac
+	$(TEST_RUNNER) --record-testmon-map "$(TIER)" -q $(PYTEST_ARGS) --evidence-root .test-evidence
 
 test-affected: PYTEST_ARGS =
 test-affected:

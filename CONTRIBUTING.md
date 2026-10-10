@@ -222,9 +222,15 @@ checks at meaningful milestones rather than after each decorator edit.
   dependencies/plugins, conftest/shared fixtures, data, public lazy exports, or
   source that dynamically loads arbitrary paths refuse with an explicit broader route.
 
-  Only certifiable complete fast/slow/all tiers initialize Testmon recording
-  and acquire its database lock. Focused, filtered, sharded and collection-only
-  runs neither read nor update the coverage database. Completeness markers bind
+  Ordinary full-tier validation does not record or update Testmon maps.
+  Record one explicitly with `make test-map TIER=fast` or `TIER=slow`; the
+  underlying `--record-testmon-map` option goes before the tier. Recording
+  requires a complete, unfiltered fast/slow/all run and acquires the database
+  lock. Unsafe or partial requests refuse, and a successful pytest run without
+  a usable published map is not a successful recording. Map generation remains
+  expensive and uses the existing tier budgets; it is optional for ordinary
+  validation and affected feedback, which can use the conservative graph.
+  Completeness markers bind
   the database, exact Python/dependency environment, source inventory, collected
   node IDs, import-time coverage from a fresh interpreter, module/class AST
   fingerprints, resolved selection controls and terminal reports. Fast/slow
