@@ -125,10 +125,12 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   is tied to source, worktree/environment, and dirty inputs; changed inputs
   require rerunning it.
 - Run `make install` once per clone. It installs the prek pre-commit (Ruff,
-  ty, prose audit) and pre-push hooks; prek chains an existing roborev
-  pre-push hook as `pre-push.legacy`. Do not bypass them with `--no-verify`.
-- Run `make check` before pushing. Reserve `make test-all` for final integration
-  or release candidates that change estimation or a wire format.
+  ty, prose audit) and pre-push (`make lint`) hooks; prek chains an existing
+  roborev pre-push hook as `pre-push.legacy`. Do not bypass them with
+  `--no-verify`.
+- Test tiers run in CI on every pushed commit; locally, run the focused and
+  affected selections for what you changed. Reserve `make test-all` for final
+  integration or release candidates that change estimation or a wire format.
 - Use `make fmt` for formatting. Build documentation with `nox -s docs`, not
   bare MkDocs; the Nox session exports the notebook-backed pages first.
 

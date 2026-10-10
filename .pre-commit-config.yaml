@@ -52,16 +52,11 @@ repos:
         entry: uv run python scripts/audit_verbosity.py --gate
         language: system
         types: [python]
-      - id: fast-tests
-        name: fast unit tests
-        entry: make test-fast
-        language: system
-        pass_filenames: false
-        stages: [pre-push]
-      # Keep the two test tiers separate; calling `make check` would repeat lint/typecheck.
-      - id: slow-tests
-        name: functional slow tests
-        entry: make test-slow
+      # Pre-push checks the whole repository's lint gate quickly; the test
+      # tiers run in CI against the pushed commits.
+      - id: lint
+        name: repository lint gate
+        entry: make lint
         language: system
         pass_filenames: false
         stages: [pre-push]
