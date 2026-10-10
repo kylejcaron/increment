@@ -1,54 +1,9 @@
 from __future__ import annotations
 
-import importlib
-import pkgutil
-
 import pytest
 
-import increment
 from tests.analysis_factory import _moment_source
-
-
-def _walk_refusal_registries() -> dict[str, list[tuple[str, object]]]:
-    """Collect (module_name.attr, RefusalSpec | WarningSpec) for every code
-    across every module-level spec, whether it lives in a dict registry
-    (any dict attribute, not just the three conventional names --
-    a prior review found modules using other dict variable names too) or
-    as a standalone module-level constant (a prior finding:
-    `query/artifact_publish.py`'s `_ARTIFACT_EXTENSION` and
-    `query/artifact_reader.py`'s `_ARTIFACT_METRIC` are both standalone
-    `RefusalSpec` constants duplicating a registry code -- a dict-only
-    walk misses them entirely). Grouped by `spec.code`, not the dict
-    key: a module's own local `_REFUSALS` dict can use a short internal
-    key distinct from the public code string it registers (e.g.
-    `increment._winsor_errors._REFUSALS` keys its entries by short name
-    but registers `spec.code="estimation.winsor.<name>"`), so keying by
-    the dict key would both miss real duplicates registered under
-    different local key spellings and falsely group unrelated codes that
-    happen to share a local key in two different modules.
-
-    `WarningSpec` (the coded-warning counterpart used by every library
-    `warnings.warn` site) shares this same code namespace: a warning code
-    colliding with a refusal code -- or with another warning's code -- is
-    exactly as much a drift hazard as two refusals sharing one code, and
-    both spec kinds are walked the same way.
-    """
-    from increment.errors import RefusalSpec, WarningSpec
-
-    spec_types = (RefusalSpec, WarningSpec)
-    registrations: dict[str, list[tuple[str, object]]] = {}
-    for _finder, name, _ispkg in pkgutil.walk_packages(increment.__path__, prefix="increment."):
-        module = importlib.import_module(name)
-        for attr, value in vars(module).items():
-            if isinstance(value, spec_types):
-                registrations.setdefault(value.code, []).append((f"{name}.{attr}", value))
-            elif isinstance(value, dict):
-                for key, spec in value.items():
-                    if isinstance(spec, spec_types):
-                        registrations.setdefault(spec.code, []).append(
-                            (f"{name}.{attr}[{key!r}]", spec)
-                        )
-    return registrations
+from tests.refusal_registry import walk_refusal_registries
 
 
 def test_every_refusal_code_resolves_to_exactly_one_spec() -> None:
@@ -61,7 +16,7 @@ def test_every_refusal_code_resolves_to_exactly_one_spec() -> None:
     drifts apart between entry points; a `RefusalSpec` and a `WarningSpec`
     sharing one code string is caught the same way, since they can never
     be the same object."""
-    registrations = _walk_refusal_registries()
+    registrations = walk_refusal_registries()
     violations = {
         code: sorted({loc for loc, _ in entries})
         for code, entries in registrations.items()
