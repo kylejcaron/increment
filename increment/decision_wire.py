@@ -126,9 +126,6 @@ class WireMultiplicityFamily(_WireBase):
     validity_regime: Literal["finite_sample", "asymptotic_sequential"] = Field(
         default="finite_sample", exclude_if=lambda value: value == "finite_sample"
     )
-    look_policy: Literal["outcome_independent", "exploratory"] | None = Field(
-        default=None, exclude_if=lambda value: value is None
-    )
 
     @model_validator(mode="after")
     def _validate_policy(self) -> WireMultiplicityFamily:
@@ -158,11 +155,7 @@ class WireMultiplicityFamily(_WireBase):
                 f"q is only valid for BH multiplicity, got {self.correction!r}",
                 correction=self.correction,
             )
-        expected_guarantee = (
-            "none"
-            if self.look_policy == "exploratory"
-            else guarantee_for_correction(self.correction)
-        )
+        expected_guarantee = guarantee_for_correction(self.correction)
         if self.guarantee != expected_guarantee:
             _raise(
                 "wire.multiplicity.guarantee_mismatch",

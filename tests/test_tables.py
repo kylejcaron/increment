@@ -927,6 +927,25 @@ def test_readout_table_marks_known_multiplicity_when_other_status_is_missing():
     assert "other¹" not in html
 
 
+def test_readout_table_treats_pandas_na_as_missing_multiplicity_status():
+    pytest.importorskip("coeftable")
+    import pandas as pd
+
+    known, missing = estimates_to_readout(
+        [
+            _estimate("m", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
+            _estimate("other", "T", "unadjusted", 0.12, lb=0.02, ub=0.22),
+        ]
+    )
+    known["multiplicity_status"] = "exploratory_unadjusted"
+    missing["multiplicity_status"] = pd.NA
+
+    html = readout_table([known, missing]).gt().as_raw_html()
+
+    assert "m¹" in html
+    assert "other¹" not in html
+
+
 def test_readout_table_shows_disclosures_without_a_title():
     pytest.importorskip("coeftable")
     rows = estimates_to_readout(

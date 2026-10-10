@@ -417,21 +417,12 @@ def selected_snapshot_results(
             row = row.model_copy(
                 update={
                     "discovery": selected,
-                    "multiplicity_status": (
-                        "exploratory_family"
-                        if inference.registration.look_policy == "exploratory"
-                        else row.multiplicity_status
-                    ),
                     "family_axes": ("metric", "arm", "segment")
                     if cell.segment
                     else ("metric", "arm"),
                     "family_q": float(inference.registration.q),
                     "family_threshold": outcome.realized_threshold,
-                    "family_guarantee": (
-                        None
-                        if inference.registration.look_policy == "exploratory"
-                        else outcome.guarantee
-                    ),
+                    "family_guarantee": outcome.guarantee,
                     "family_nominal_alpha": float(nominal_alpha),
                 }
             )

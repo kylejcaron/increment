@@ -3213,7 +3213,6 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
 
     def capture_sequential(self, *, finalized: bool, as_of: dt.date, previous=None):
         """Capture only units finalized through the explicit common horizon."""
-        from increment.query.artifact_contract import observation_recipe_sha256
         from increment.query.artifact_publish import artifact_context
         from increment.query.sequential_capture import (
             capture_relations,
@@ -3222,17 +3221,15 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         from increment.sequential_state import sequential_refuse
 
-        recipe_id = observation_recipe_sha256(
-            artifact_context(
-                self._defs,
-                self._experiment,
-                self._on_mixed_assignment,
-                metrics=self.context.metrics,
-                encouragement_uptake=self.context.design
-                if isinstance(self.context.design, Encouragement)
-                else None,
-            )
-        )
+        recipe_id = artifact_context(
+            self._defs,
+            self._experiment,
+            self._on_mixed_assignment,
+            metrics=self.context.metrics,
+            encouragement_uptake=self.context.design
+            if isinstance(self.context.design, Encouragement)
+            else None,
+        ).sha256
         previous = previous if previous is not None else getattr(self, "_sequential_snapshot", None)
         covariate = self._experiment.n_pre_periods > 0
         registration, _ = validate_relational_capture(

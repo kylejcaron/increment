@@ -585,26 +585,13 @@ def _artifact_source_context(
             "artifact context lists an encouragement uptake extension without a typed design",
         )
     if experiment.plan.inference is not None and experiment.plan.inference.registration is not None:
-        # The stored context binds the assigned registration and, as its own field,
-        # the declared triggered look policy; the triggered registration is their
-        # derivation and is rebuilt here exactly as the native constructor does.
+        # The stored context binds the assigned registration; the triggered one is
+        # its derivation and is rebuilt here exactly as the native constructor does.
         from increment.plan import bind_automatic_sequential_plan
         from increment.query.artifact_contract import artifact_source_mapping
 
-        look_policy = payload.get("triggered_look_policy", "exploratory")
-        if look_policy not in ("exploratory", "outcome_independent"):
-            raise ArtifactContractError(
-                "artifact.context.mismatch", "artifact context carries an unknown look policy"
-            )
-        declared = experiment.plan.model_copy(
-            update={
-                "inference": experiment.plan.inference.model_copy(
-                    update={"triggered_look_policy": look_policy}
-                )
-            }
-        )
         bound = bind_automatic_sequential_plan(
-            declared,
+            experiment.plan,
             metrics,
             design=design,
             source_id=experiment.name,
@@ -1004,55 +991,6 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             finalized_as_of=certified_edge,
             spine_edge=spine_edge,
         )
-
-    def _certify_sequential_extensions(self, registration, as_of: dt.date) -> None:
-        """Refuse a trigger-declared capture unless every published feed is certified.
-
-        The trigger membership and each outcome's trigger-measure extension carry
-        the publishing evidence's cutoff and watermark; the uptake extension
-        carries its certified edge directly. Every certified day must reach
-        ``as_of``.
-        """
-        from increment.query.sequential_capture import certify_capture_feed
-        from increment.semantics.design import Encouragement
-        from increment.sequential_state import sequential_refuse
-
-        trigger_name = self.context.trigger_name
-        requests: list[dict[str, Any]] = [
-            {"kind": "trigger_population", "trigger_name": trigger_name}
-        ]
-        outcomes = {m.metric for m in registration.models if m.observable == "outcome"}
-        requests.extend(
-            {"kind": "trigger_measure_stats", "trigger_name": trigger_name, "metric_names": (name,)}
-            for name in sorted(outcomes)
-        )
-        for request in requests:
-            extension = self._extension(request)
-            certify_capture_feed(
-                feed=f"{request['kind']}:{request.get('metric_names', (trigger_name,))[0]}",
-                cutoff=extension.observation_cutoff_ts,
-                complete_through=extension.complete_through_ts,
-                experiment=self._artifact_experiment,
-                as_of=as_of,
-            )
-        edges: dict[str, dt.date | None] = {}
-        for metric in self.context.metrics:
-            if metric.name in outcomes:
-                edges[metric.name] = self.triggered_observation_edges(metric)[1]
-        if any(model.observable == "uptake" for model in registration.models):
-            design = self.context.design
-            if not isinstance(design, Encouragement):
-                sequential_refuse("source.invalid", "uptake requires encouragement assignment")
-            edges[f"encouragement_uptake:{design.uptake.fact}"] = self._uptake_inputs()[3]
-        for feed, edge in edges.items():
-            if edge is None or edge < as_of:
-                sequential_refuse(
-                    "source.invalid",
-                    f"feed {feed!r} is not certified complete through {as_of}",
-                    feed=feed,
-                    certified_day=None if edge is None else edge.isoformat(),
-                    as_of=as_of.isoformat(),
-                )
 
     def _reduce(
         self,

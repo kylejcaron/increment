@@ -1340,20 +1340,19 @@ class ArtifactMomentSource(SequentialSourceMixin):
             panel, den_panel = panel_for(binding.measure_key), None
 
         uptake_spine = spine
+        uptake_exposures = None
         if trigger_inputs is not None and uptake_events is not None:
-            assignment_exposures = self._ensure("exposures")
+            uptake_exposures = self._ensure("exposures")
             if cluster is not None and cluster_table is not None:
-                assignment_exposures = assignment_exposures.left_join(
-                    cluster_table, "unit_id"
-                ).select(
-                    *[assignment_exposures[column] for column in assignment_exposures.columns],
+                uptake_exposures = uptake_exposures.left_join(cluster_table, "unit_id").select(
+                    *[uptake_exposures[column] for column in uptake_exposures.columns],
                     **{cluster: cluster_table[cluster]},
                 )
-            assignment_exposures = assignment_exposures.semi_join(
+            uptake_exposures = uptake_exposures.semi_join(
                 exposures.select("experiment_id", "unit_id").distinct(),
                 ["experiment_id", "unit_id"],
             )
-            uptake_spine = panel_spine(assignment_exposures, experiment, end_date=end_date_expr)
+            uptake_spine = panel_spine(uptake_exposures, experiment, end_date=end_date_expr)
         uptake_panel = self._uptake_panel(uptake_spine, uptake_events)
 
         by_list = [by] if by else None
@@ -1384,6 +1383,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
                     if grain == "unit" and finalized_as_of is None
                     else False
                 ),
+                uptake_exposures=uptake_exposures,
             )
             totals = winsorize_unit_totals(totals, metric)
             if grain == "unit":
@@ -1586,11 +1586,94 @@ class ArtifactMomentSource(SequentialSourceMixin):
 
         return artifact_source_mapping(self._manifest.context)
 
+    def _certify_sequential_extensions(self, registration, as_of: dt.date) -> None:
+        """Require every triggered feed to be certified through the captured edge."""
+        from increment.query.sequential_capture import certify_capture_feed
+        from increment.query.source import _artifact_source_context
+        from increment.semantics.artifact import (
+            TriggerMeasureStatsExtension,
+            TriggerPopulationExtension,
+        )
+        from increment.semantics.design import Encouragement
+        from increment.sequential_state import sequential_refuse
+
+        experiment, _ = _artifact_source_context(self._manifest.context)
+        self._artifact_experiment = experiment
+
+        trigger_name = self.context.trigger_name
+        if trigger_name is None:
+            sequential_refuse("source.invalid", "triggered capture requires a declared trigger")
+        outcomes = {model.metric for model in registration.models if model.observable == "outcome"}
+        extensions = cast("Sequence[Any]", self._manifest.extensions)
+        requests: list[tuple[str, str | None]] = [("trigger_population", None)]
+        requests.extend(("trigger_measure_stats", name) for name in sorted(outcomes))
+        for kind, metric_name in requests:
+            if kind == "trigger_population":
+                extension = cast(
+                    "TriggerPopulationExtension | TriggerMeasureStatsExtension | None",
+                    next(
+                        (
+                            item
+                            for item in extensions
+                            if isinstance(item, TriggerPopulationExtension)
+                            and item.trigger_name == trigger_name
+                        ),
+                        None,
+                    ),
+                )
+            else:
+                if metric_name is None:
+                    sequential_refuse("source.invalid", "trigger measure feed needs a metric")
+                extension = cast(
+                    "TriggerPopulationExtension | TriggerMeasureStatsExtension | None",
+                    next(
+                        (
+                            item
+                            for item in extensions
+                            if isinstance(item, TriggerMeasureStatsExtension)
+                            and item.trigger_name == trigger_name
+                            and metric_name in item.metric_names
+                        ),
+                        None,
+                    ),
+                )
+            if extension is None:
+                sequential_refuse(
+                    "source.invalid",
+                    f"artifact is missing the {kind} feed for triggered capture",
+                    feed=kind if metric_name is None else f"{kind}:{metric_name}",
+                )
+            certify_capture_feed(
+                feed=kind if metric_name is None else f"{kind}:{metric_name}",
+                cutoff=extension.observation_cutoff_ts,
+                complete_through=extension.complete_through_ts,
+                experiment=self._artifact_experiment,
+                as_of=as_of,
+            )
+        edges = {
+            metric.name: self.triggered_observation_edges(metric)[1]
+            for metric in self.context.metrics
+            if metric.name in outcomes
+        }
+        if any(model.observable == "uptake" for model in registration.models):
+            design = self.context.design
+            if not isinstance(design, Encouragement):
+                sequential_refuse("source.invalid", "uptake requires encouragement assignment")
+            edges[f"encouragement_uptake:{design.uptake.fact}"] = self._uptake_inputs()[3]
+        for feed, edge in edges.items():
+            if edge is None or edge < as_of:
+                sequential_refuse(
+                    "source.invalid",
+                    f"feed {feed!r} is not certified complete through {as_of}",
+                    feed=feed,
+                    certified_day=None if edge is None else edge.isoformat(),
+                    as_of=as_of.isoformat(),
+                )
+
     def capture_sequential(self, *, finalized: bool, as_of: dt.date, previous=None):
         """Capture a finalized common cohort from the pinned immutable generation."""
         from dataclasses import replace
 
-        from increment.query.artifact_contract import observation_recipe_sha256
         from increment.query.builders import _local_date
         from increment.query.sequential_capture import (
             capture_relations,
@@ -1687,7 +1770,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 trigger_outcome,
                 trigger_cohort,
                 self._snapshot.batches,
-                recipe_id=observation_recipe_sha256(self._manifest.context),
+                recipe_id=self._manifest.context.sha256,
                 finalized=finalized,
                 as_of=as_of,
                 previous=None if previous is None else previous.triggered,
@@ -1713,7 +1796,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
             relation_for,
             cohort,
             self._snapshot.batches,
-            recipe_id=observation_recipe_sha256(self._manifest.context),
+            recipe_id=self._manifest.context.sha256,
             finalized=finalized,
             as_of=as_of,
             previous=previous,

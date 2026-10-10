@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import UNSET, _Unset
@@ -180,6 +181,59 @@ def run(
 
 def _as_collection(rows: list[LiftEstimate]) -> LiftEstimates:
     return rows if isinstance(rows, LiftEstimates) else LiftEstimates(rows)
+
+
+def _observational_adjustment_identity(src, selected, configs, design, rows):
+    from increment._analysis_config import effective_methods
+
+    adjusted_methods = {
+        (config.metric.name, method.name)
+        for config in configs
+        for method in effective_methods(config, design=design)
+        if method.name in {"iptw", "dml", "aipw"}
+    }
+    used = {
+        (row.metric, row.method)
+        for row in rows
+        if row.failure_code is None and (row.metric, row.method) in adjusted_methods
+    }
+    adjusted = {metric for metric, _method in used}
+    if not adjusted:
+        return None
+
+    import narwhals as nw
+
+    from increment.estimation.readout_types import StreamingDigest
+
+    identity = {}
+    for metric in selected:
+        if metric.name not in adjusted:
+            continue
+        frame = nw.from_native(
+            src.unit_frame(metric, covariates=design.adjustment.covariates),
+            eager_only=True,
+        )
+        digest = StreamingDigest()
+        rows = sorted(
+            frame.iter_rows(named=True),
+            key=lambda row: (str(row.get("group_id")), str(row.get("unit_id"))),
+        )
+        for row in rows:
+            digest.update({key: _digestable(value) for key, value in row.items()})
+        identity[metric.name] = {
+            "columns": tuple(frame.columns),
+            "sha256": digest.hexdigest(),
+            "n_rows": digest.count,
+        }
+    return identity
+
+
+def _digestable(value):
+    """Missing covariates arrive as NaN; canonical JSON admits only finite
+    numbers, so non-finite floats are encoded as tagged strings."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return "nan" if math.isnan(value) else ("inf" if value > 0 else "-inf")
+    return value
 
 
 def _preflight_roster(src, design, population, observed_by_metric=None, base_roster=None):
@@ -417,7 +471,10 @@ def _run_prepared(
                     _config_snapshot(config, design)
                     for config in sorted(configs, key=lambda c: c.metric.name)
                 ],
-                "value_scale": dict(value_scale or {}),
+                "value_scale": value_scale,
+                "adjustment_input_identity": _observational_adjustment_identity(
+                    src, selected, configs, design, rows
+                ),
             },
         )
     if value_scale:

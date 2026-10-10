@@ -1935,6 +1935,7 @@ def test_registered_sequential_breakout_tests_a_plan_bound_margin_against_its_re
     )
 
     result = readouts.breakout(src, "segment")
+    assert result.sequential_snapshot == src.sequential_snapshot()
     assert {row.dimension_value for row in result} == {"US", "CA"}
     for row in result:
         assert row.inference == "always_valid"

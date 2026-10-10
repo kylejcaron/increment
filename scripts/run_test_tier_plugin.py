@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import json
 import os
 import sys
@@ -54,23 +53,11 @@ def _testmon_protected_paths(
 
 
 def _cache_backed_test_paths(root: Path) -> set[Path]:
-    paths: set[Path] = set()
-    for path in (root / "tests").rglob("test_*.py"):
-        try:
-            tree = ast.parse(path.read_bytes())
-        except (OSError, SyntaxError, UnicodeDecodeError):
-            paths.add(path.resolve())
-            continue
-        if any(
-            (isinstance(node, ast.ImportFrom) and node.module == "tests._shared_cache")
-            or (
-                isinstance(node, ast.Import)
-                and any(alias.name == "tests._shared_cache" for alias in node.names)
-            )
-            for node in ast.walk(tree)
-        ):
-            paths.add(path.resolve())
-    return paths
+    from scripts._test_impact import affected_test_paths
+
+    return {
+        (root / path).resolve() for path in affected_test_paths(root, ["tests/_shared_cache.py"])
+    }
 
 
 _TESTMON_PRIMARY = pytest.StashKey[bool]()
@@ -340,7 +327,7 @@ def _testmon_is_registered(config: pytest.Config) -> bool:
 def _restore_duration_order_after_testmon(
     config: pytest.Config,
     items: list[pytest.Item],
-    markdown_order: dict[str, int] | None = None,
+    markdown_order: dict[int, int] | None = None,
 ) -> None:
     if os.environ.get("INCREMENT_DISABLE_DURATION_ORDER") == "1" or not _testmon_is_registered(
         config
@@ -411,7 +398,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             "worker_selected": None,
         }
     markdown_order = {
-        item.nodeid: index
+        id(item): index
         for index, item in enumerate(items)
         if Path(str(item.location[0])).suffix == ".md"
     }

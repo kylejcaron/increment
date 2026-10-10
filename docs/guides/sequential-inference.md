@@ -776,12 +776,14 @@ An experiment that declares a `trigger` monitors two populations under one
 registered plan. The assigned chain is what the sections above describe. The
 triggered chain is a second, independently identified chain in the same
 checkpoint (`snapshot.triggered`): its members are the units whose first
-eligible trigger has been observed and whose longest trigger-anchored outcome
-window has closed by the capture horizon, revealed in `(first trigger, unit)`
-order, with outcomes measured from each unit's trigger and pre-period covariates
-kept assignment-anchored, exactly as the fixed-horizon triggered readout
-measures them. `capture_sequential(finalized=True, as_of=d)` captures both
-chains in one pinned execution on `from_definitions` and `from_unit_day_artifact`
+eligible trigger has been observed and whose registered joint reveal window has
+closed by the capture horizon. That window can include a longer assignment-
+anchored uptake window even though uptake is not part of the triggered chain.
+Members are revealed in `(first trigger, unit)` order, with outcomes measured
+from each unit's trigger and pre-period covariates kept assignment-anchored,
+exactly as the fixed-horizon triggered readout measures them.
+`capture_sequential(finalized=True, as_of=d)` captures both chains in one pinned
+execution on `from_definitions` and `from_unit_day_artifact`
 (the artifact needs its `trigger_population`, `trigger_measure_stats` and
 triggered `assignment_counts` extensions); `from_moments` replays an exported
 checkpoint carrying both chains and cannot start one; frame sources have no
@@ -823,29 +825,31 @@ compliance cells of an encouragement plan therefore stay unavailable
 (`readout.cell.unsupported_request`, reason `triggered_uptake_unsupported`), and
 a plan that monitors only uptake derives no triggered registration.
 
-### Per-cell coverage versus the family verdict
+### Per-cell coverage and the family verdict
 
 The per-cell guarantee is a statement about the whole path, so it holds for
-any look schedule, including looks chosen with information from outside the
-triggered chain. The family verdict is not: e-BH's FDR control and the
+any look schedule. The family verdict needs more: e-BH's FDR control and the
 selected-interval reinversion need the stopped evidence to be an e-value, which
-optional stopping gives only when look times are stopping times of the chain's
-own reveal filtration. The readout itself exposes information outside it -- a
-unit's assigned-chain outcome can be reported before its triggered outcome has
-finalized -- and a look rule that waits for favourable not-yet-finalized
-observations inflates the stopped e-value's expectation while leaving the
-per-cell threshold intact (`tests/estimation/test_triggered_sequential_validity.py`).
+optional stopping gives when the look and stopping rule depends only on what
+the chain has revealed. The triggered chain's reveal lags the assigned chain's
+for the same unit (a window from the trigger closes after one from assignment),
+so the readout shows a unit's assigned outcome before its triggered one. Under
+correct triggering -- `A2`, no treatment effect before the trigger and
+arm-independent trigger propensity and timing -- a same-metric assigned
+observation carries no arm information about a null triggered outcome, so
+conditioning on it does not change the next triggered observation's null law
+and the triggered family keeps the same e-BH guarantee as the assigned one:
+its `MultiplicityFamily` reports `guarantee="fdr"` and its rows carry the same
+`multiplicity_status` and `family_guarantee` the assigned rows do.
 
-The library cannot observe the analyst's look rule, so the registration records
-the declaration. `InferenceSpec(triggered_look_policy="outcome_independent")`
-asserts that every triggered look happens at a calendar time fixed in advance,
-never chosen from any outcome; the triggered family then claims its FDR
-guarantee like the assigned one. The default, `"exploratory"`, makes no such
-assertion: e-BH selection is still performed and `discovery` is reported, but
-the triggered family's `guarantee` is `none`, each row's `multiplicity_status`
-is `exploratory_family` and `family_guarantee` is empty. The assigned family is
-unaffected either way. No joint error control across the two populations is
-claimed; the families are separate, population-qualified scopes.
+The caveat that remains is second-order and cross-metric: do not time a
+triggered stop or freeze on the strength of other metrics' assigned results.
+A rule that waits for favourable not-yet-revealed observations inflates the
+stopped e-value's expectation while leaving the per-cell threshold intact
+(`tests/estimation/test_triggered_sequential_validity.py`); the per-metric
+confidence sequences are valid regardless. No joint error control across the
+two populations is claimed; the families are separate, population-qualified
+scopes.
 
 ### Certified feeds, not evidence presence
 

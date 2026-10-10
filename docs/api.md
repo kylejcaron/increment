@@ -164,22 +164,18 @@ defend. See [Sequential inference](guides/sequential-inference.md).
 declared trigger carries the triggered population's chain as a nested
 `SequentialSnapshot` (`triggered`), each chain with its own registration,
 records, states and `prefix_id`; `SequentialRegistration.population`,
-`SequentialRegistration.look_policy`, `SequentialCheckpoint.population`,
-`InferenceSpec.triggered_registration`, `InferenceSpec.triggered_look_policy`
-and the compiled plan's wire `triggered_registration` are the optional fields
-that carry it. Every one of them is absent from the dump when unused. The
+`SequentialCheckpoint.population`, `InferenceSpec.triggered_registration` and
+the compiled plan's wire `triggered_registration` are the optional fields that
+carry it. Every one of them is absent from the dump when unused, and the
 derived triggered registration stays out of the hashed artifact context (it is
-a function of content the context already binds), and a non-default
-`triggered_look_policy` travels as the context's own top-level field rather
-than inside the plan every observation recipe hashes; sequential records bind
-the context digest with that field removed. Assigned record, prefix and
+a function of content the context already binds). Assigned record, prefix and
 checkpoint identities are therefore the same with or without a triggered
-commitment and for either look policy, so checkpoints, registrations, moments
-exports and artifact contexts written before this change replay as they did,
-and an artifact published before the derivation existed opens and derives the
-same triggered registration. A checkpoint captured without a triggered chain
-continues assigned-only and never acquires one
-(`sequential.continuation.legacy` on a backfill attempt).
+commitment, so checkpoints, registrations, moments exports and artifact
+contexts written before this change replay as they did, and an artifact
+published before the derivation existed opens and derives the same triggered
+registration. A checkpoint captured without a triggered chain continues
+assigned-only and never acquires one (`sequential.continuation.legacy` on a
+backfill attempt).
 
 **Frame segment labels and degenerate shared schedules.** A frame sequential registration
 whose segment labels were not canonical used to report `missing_arm` on the unit summary;

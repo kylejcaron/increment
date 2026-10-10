@@ -700,6 +700,14 @@ def test_panel_common_window_only_reveals_finalized_units_and_current_asof(axis,
     restored = snapshot_from_json(full.model_dump_json())
     assert restored == full
     assert type(restored.reveal_cursor) is type(label(14))
+    from increment.estimation.readout_types import ReadoutResults
+
+    scoped_daily = type(daily)(daily, metadata=daily.metadata, sequential_snapshot=full)
+    restored_daily = ReadoutResults.model_validate_json(scoped_daily.model_dump_json())
+    assert restored_daily.metadata is not None
+    assert restored_daily.metadata == daily.metadata
+    if axis in ("date", "datetime", "numeric", "numeric_float", "structured"):
+        assert type(restored_daily.metadata.scope.families[0].identity_look) is type(label(14))
     assert DailyLiftEstimate.model_validate_json(daily[0].model_dump_json()) == daily[0]
     path = tmp_path / "panel-checkpoint.parquet"
     analysis.export(path)
@@ -711,6 +719,66 @@ def test_panel_common_window_only_reveals_finalized_units_and_current_asof(axis,
     replayed_daily = replay.run_asof_lift(completed_windows_only=True)
     assert list(replayed_daily) == list(daily)
     assert type(replayed_daily[0].ds) is type(label(14))
+
+
+@pytest.mark.slow
+def test_registered_asof_secondary_family_is_joint_per_look():
+    specs = [
+        MetricSpec(name=name, type="conversion", window_days=2)
+        for name in ("outcome", "other", "third")
+    ]
+    from increment import SequentialCell
+
+    cells = (
+        SequentialCell(metric="outcome", group_id="treatment", family=False, alpha=Fraction(1, 20)),
+        SequentialCell(metric="other", group_id="treatment", family=True, alpha=Fraction(1, 40)),
+        SequentialCell(metric="third", group_id="treatment", family=True, alpha=Fraction(1, 40)),
+    )
+    plan = gaussian_plan(
+        specs,
+        cells=cells,
+        law="bernoulli",
+        secondaries=["other", "third"],
+        source_id="experiment",
+        unit="unit",
+        group="arm",
+        date="day",
+        exposure_date="exposed",
+    ).model_copy(update={"primary": "outcome"})
+    frame = _frame([0, 0, 0, 1] * 24, [0, 1, 1, 1] * 24)
+    frame["other"] = frame["outcome"]
+    frame["third"] = frame["outcome"]
+    start = date(2025, 1, 1)
+    frame["day"] = start
+    frame["exposed"] = start
+    analysis = Analysis.from_unit_panel(
+        frame,
+        unit="unit",
+        group="arm",
+        date="day",
+        exposure_date="exposed",
+        control="control",
+        metrics=specs,
+        experiment_id="experiment",
+        plan=plan,
+        observation_end=start + timedelta(days=20),
+    )
+    analysis.capture_sequential(finalized=True, as_of=start + timedelta(days=14))
+
+    results = analysis.run_asof_lift(completed_windows_only=True)
+
+    assert {row.metric for row in results} == {"outcome", "other", "third"}
+    assert results.metadata is not None
+    families = results.metadata.scope.families
+    assert len(families) == 2
+    secondary_family = next(
+        family for family in families if any(member.metric == "other" for member in family.members)
+    )
+    assert secondary_family.complete
+    assert {member.metric for member in secondary_family.members} == {"other", "third"}
+    assert {row.family_id for row in results if row.metric in {"other", "third"}} == {
+        secondary_family.family_id
+    }
 
 
 @pytest.mark.slow
@@ -881,7 +949,7 @@ def _certified_fixture_evidence():
     from increment import SourceSnapshotEvidence
 
     certified = datetime(2025, 1, 31, tzinfo=UTC)
-    return SourceSnapshotEvidence(certified, {"events": certified})
+    return SourceSnapshotEvidence(certified, {"events": certified, "uptake_events": certified})
 
 
 def _native_fixture(
@@ -1513,6 +1581,63 @@ def test_automatic_metric_free_sequential_compliance(kind, family, baseline_rate
     assert float(row.require_exact_sequential_result().log_e) == pytest.approx(
         expected_log_e, abs=1e-10
     )
+
+
+@pytest.mark.slow
+def test_direct_artifact_source_captures_encouragement_sequential_state():
+    from datetime import UTC, datetime
+
+    import pandas as pd
+
+    from increment.query.artifact_contract import unit_day_artifact_extension_catalog
+    from increment.query.artifact_reader import ArtifactMomentSource
+    from increment.query.session import WarehouseArtifactStore
+
+    connection, defs, native = _native_fixture("bernoulli", uptake_only=True, triggered=True)
+    try:
+        events = []
+        for arm in ("control", "treatment"):
+            for index in range(96):
+                unit_id = f"{index:08d}-{arm}"
+                events.append(
+                    {
+                        "unit_id": unit_id,
+                        "event": "outcome_event",
+                        "value": float(index % 2),
+                        "ts": datetime(2025, 1, 1, 1, tzinfo=UTC),
+                    }
+                )
+                if index < 12:
+                    events.append(
+                        {
+                            "unit_id": unit_id,
+                            "event": "triggered_event",
+                            "value": None,
+                            "ts": datetime(2025, 1, 2, tzinfo=UTC),
+                        }
+                    )
+        connection.create_table("events", pd.DataFrame(events))
+        context = native.artifact_context
+        store = WarehouseArtifactStore(connection, schema_name="direct_sequential")
+        extensions = [
+            entry.request
+            for entry in unit_day_artifact_extension_catalog(context)
+            if entry.request.kind
+            in {"trigger_population", "trigger_measure_stats", "encouragement_uptake"}
+        ]
+        reference = native.publish_unit_day_artifact(store, extensions=extensions)
+        with ArtifactMomentSource.open(
+            store,
+            reference,
+            expected_context=context,
+        ) as source:
+            snapshot = source.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
+
+        assert snapshot.registration.models[0].observable == "uptake"
+        assert snapshot.records
+    finally:
+        native.close()
+        connection.disconnect()
 
 
 @pytest.mark.slow

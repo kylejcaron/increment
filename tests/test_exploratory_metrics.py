@@ -530,6 +530,28 @@ def test_added_segmented_asof_bonferroni_rows_are_disclosed_as_family(warehouse)
     assert set(frame["multiplicity_status"]) == {"exploratory_family"}
 
 
+def test_asof_view_families_are_scoped_by_metric_and_look(warehouse):
+    plan = AnalysisPlan(
+        primary="revenue",
+        view_multiplicity=MultiplicitySpec(correction="bonferroni"),
+    )
+    results = _analysis(warehouse, plan, breakout=True).run_asof_lift(
+        metrics=[],
+        dimension="store",
+        exploratory_metrics=["purchase_rate", "rps"],
+    )
+
+    assert results and results.metadata is not None
+    families = results.metadata.scope.families
+    assert families
+    scopes = []
+    for family in families:
+        family_scopes = {(member.metric, member.ds) for member in family.members}
+        assert len(family_scopes) == 1
+        scopes.extend(family_scopes)
+    assert len(scopes) == len(set(scopes))
+
+
 def test_declared_breakout_rows_are_identical_with_added_metrics(warehouse):
     analysis = _analysis(
         warehouse,
@@ -564,6 +586,19 @@ def test_added_day_axis_rows_equal_the_metric_declared_in_its_own_plan(warehouse
     assert [row.role for row in both if row.metric == "revenue"] == [
         row.role for row in added.run_asof_lift() if row.metric == "revenue"
     ]
+
+
+def test_daily_and_default_asof_views_do_not_claim_whole_window_selection(warehouse):
+    analysis = _analysis(
+        warehouse,
+        AnalysisPlan(primary="revenue", secondaries=["purchase_rate"], q=0.1),
+    )
+
+    for rows in (analysis.run_daily_lift(), analysis.run_asof_lift()):
+        assert rows
+        assert rows.metadata is not None
+        assert all(family.family is None for family in rows.metadata.scope.families)
+        assert all(row.family_q is None for row in rows)
 
 
 @pytest.mark.parametrize("name", ADDED)

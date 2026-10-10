@@ -2387,6 +2387,15 @@ class Analysis:
             if state.family == "arm_moments"
             else None
         )
+        if population == "triggered" and experiment is not None and experiment.trigger is None:
+            _refuse(
+                _TRIGGER_UNSUPPORTED,
+                method="run_breakout",
+                experiment=experiment.name,
+                trigger=None,
+                route="native",
+                supported_sources=("from_definitions", "from_unit_day_artifact"),
+            )
         if experiment is not None and not experiment.breakouts:
             select_metrics(
                 cast("Sequence[Metric]", self._src.context.metrics),

@@ -151,14 +151,16 @@ def test_testmon_restores_markdown_source_order_after_duration_sort(tmp_path, mo
     monkeypatch.delenv("INCREMENT_DISABLE_DURATION_ORDER", raising=False)
     hook = plugin.pytest_collection_modifyitems(cast(pytest.Config, config), items)
     next(hook)
+    for item in (setup, dependent):
+        item.nodeid += "@docs:README.md"
     items[:] = [dependent, ordinary_slow, setup]
 
     with pytest.raises(StopIteration):
         next(hook)
     assert [item.nodeid for item in items] == [
         "ordinary-slow",
-        "README.md::example[1]",
-        "README.md::example[2]",
+        "README.md::example[1]@docs:README.md",
+        "README.md::example[2]@docs:README.md",
     ]
 
 

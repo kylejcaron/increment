@@ -1495,6 +1495,24 @@ def test_run_daily_lift_dimension_returns_per_day_per_segment_estimates(
     assert by_key[(date(2025, 6, 2), "CA")].lift is not None
 
 
+def test_rich_daily_lift_repr_retains_segment_and_unavailable_fields(
+    country_daily_lift_by_segment,
+):
+    from rich.pretty import pretty_repr
+
+    sparse = next(
+        row
+        for row in country_daily_lift_by_segment
+        if row.ds == date(2025, 6, 1) and row.dimension_value == "US"
+    ).model_copy(update={"unavailable": "few_units"})
+    display = pretty_repr(sparse)
+
+    assert "dimension='country'" in display
+    assert "dimension_value='US'" in display
+    assert "value_scale='relative'" in display
+    assert "unavailable='few_units'" in display
+
+
 def test_run_daily_lift_dimension_isolates_segments(country_daily_lift_by_segment):
     """Each (day x segment) lift is attributed to the right segment, not
     cross-contaminated: US treatment (15) beats US control (10) while CA

@@ -5,8 +5,8 @@ prefix of its own fixed reveal order. These tests pin the consumer-visible
 contract: both populations report real checkpoint rows, every contributing
 feed must be certified complete through the capture horizon, a process that
 began without a triggered commitment never acquires one, assignment-anchored
-uptake stays outside the triggered construction, and the family verdict is
-reported as exploratory unless outcome-independent look times were declared.
+uptake stays outside the triggered construction, and each population's family
+is selected and labelled on its own chain with the same guarantee.
 """
 
 from __future__ import annotations
@@ -268,6 +268,27 @@ def test_trigger_declared_capture_reports_both_populations(tmp_path):
         analysis.close()
 
 
+def test_triggered_asof_replays_from_exported_moments(tmp_path):
+    import pyarrow.parquet as pq
+
+    analysis, _ = _analysis(tmp_path, _events())
+    path = tmp_path / "triggered.parquet"
+    try:
+        analysis.capture_sequential(finalized=True, as_of=_LATER)
+        analysis.export(path)
+        replay = Analysis.from_moments(
+            pq.read_table(path).to_pylist(),
+            metrics={"revenue": "mean"},
+            control="C",
+        )
+        history = replay.run_asof_lift(population="triggered")
+        assert history
+        assert {row.analysis_population for row in history} == {"triggered"}
+        assert {row.ds for row in history} == {_LATER}
+    finally:
+        analysis.close()
+
+
 def test_triggered_registration_is_derived_before_data(tmp_path):
     analysis, _ = _analysis(tmp_path, _events(n_per_arm=10))
     try:
@@ -276,7 +297,6 @@ def test_triggered_registration_is_derived_before_data(tmp_path):
         triggered = spec.triggered_registration
         assert triggered is not None
         assert triggered.population == "triggered"
-        assert triggered.look_policy == "exploratory"
         assert triggered.definitions_id != spec.registration.definitions_id
         assert triggered.models == spec.registration.models
         assert triggered.roster == spec.registration.roster
@@ -286,12 +306,12 @@ def test_triggered_registration_is_derived_before_data(tmp_path):
         with pytest.raises(CodedError) as declared:
             InferenceSpec(kind="asymptotic_mean", triggered_registration=triggered)
         assert declared.value.code == "sequential.registration.invalid"
+        foreign = triggered.model_copy(update={"q": Fraction(1, 5)})
         with pytest.raises(CodedError) as mismatched:
             InferenceSpec(
                 kind="asymptotic_mean",
                 registration=spec.registration,
-                triggered_registration=triggered,
-                triggered_look_policy="outcome_independent",
+                triggered_registration=foreign,
             )
         assert mismatched.value.code == "sequential.registration.invalid"
     finally:
@@ -604,41 +624,32 @@ def test_uncertified_uptake_feed_refuses_on_both_routes(tmp_path):
         analysis.close()
 
 
-@pytest.mark.parametrize("look_policy", ["exploratory", "outcome_independent"])
-def test_assigned_identities_are_unchanged_by_the_triggered_commitment(tmp_path, look_policy):
+def test_assigned_identities_are_unchanged_by_the_triggered_commitment(tmp_path):
     """A process captured before triggered monitoring existed continues assigned-only.
 
     The assigned observation recipe, and so every assigned record digest, must
-    depend neither on the derived triggered registration nor on the declared
-    look policy: a plan without either must yield byte-identical assigned
-    chains, and the committed process must continue it.
+    not depend on the derived triggered registration: the same declarations
+    compiled without it must yield byte-identical assigned chains, and the
+    committed process must continue them.
     """
     from increment.plan import bind_automatic_sequential_plan, compile_decision_plan
-    from increment.query.artifact_contract import observation_recipe_sha256
     from increment.sequential_source import native_observation_mapping
     from tests.analysis_factory import make_analysis
 
     table = _events()
-    plan = _PRIMARY_PLAN
-    if look_policy == "outcome_independent":
-        plan += "        triggered_look_policy: outcome_independent\n"
-    analysis, path = _analysis(tmp_path, table, plan=plan)
+    analysis, path = _analysis(tmp_path, table)
     try:
         defs = load(path)
         experiment = defs.experiments[0]
         context = artifact_context(defs, experiment, "error")
         assert "triggered_registration" not in context.canonical_json
-        assert ("triggered_look_policy" in context.canonical_json) == (
-            look_policy == "outcome_independent"
-        )
-        # The pre-change plan: no look policy declared, no triggered derivation bound.
+        # The pre-change plan: the same declarations with no triggered derivation bound.
         earlier_path = tmp_path / "earlier.yml"
         earlier_path.write_text(_definitions(plan=_PRIMARY_PLAN))
         earlier_defs = load(earlier_path)
         earlier_experiment = earlier_defs.experiments[0]
         earlier_context = artifact_context(earlier_defs, earlier_experiment, "error")
-        assert observation_recipe_sha256(context) == observation_recipe_sha256(earlier_context)
-        assert observation_recipe_sha256(earlier_context) == earlier_context.sha256
+        assert context.sha256 == earlier_context.sha256
         metrics = [
             metric
             for metric in earlier_defs.metrics
@@ -673,7 +684,6 @@ def test_assigned_identities_are_unchanged_by_the_triggered_commitment(tmp_path,
         assert legacy.triggered is None
         committed = analysis.capture_sequential(finalized=True, as_of=dt.date(2024, 1, 6))
         assert committed.triggered is not None
-        assert committed.triggered.registration.look_policy == look_policy
         assert committed.records == legacy.records
         assert committed.prefix_id == legacy.prefix_id
         continued = analysis.capture_sequential(finalized=True, as_of=_LATER, previous=legacy)
@@ -719,16 +729,11 @@ def test_metric_freeze_reaches_the_triggered_chain_once_it_is_ready(tmp_path):
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("look_policy", ["exploratory", "outcome_independent"])
-def test_native_and_artifact_capture_identical_chains(tmp_path, look_policy):
-    plan = _PRIMARY_PLAN
-    if look_policy == "outcome_independent":
-        plan += "        triggered_look_policy: outcome_independent\n"
-    analysis, path = _analysis(tmp_path, _events(), plan=plan)
+def test_native_and_artifact_capture_identical_chains(tmp_path):
+    analysis, path = _analysis(tmp_path, _events())
     try:
         native = analysis.capture_sequential(finalized=True, as_of=_LATER, freeze=["revenue"])
         assert native.triggered is not None
-        assert native.triggered.registration.look_policy == look_policy
         assert len(native.frozen) == 1 and len(native.triggered.frozen) == 1
         native_rows = analysis.run()
         store = WarehouseArtifactStore(analysis._con, schema_name="parity")
@@ -798,21 +803,14 @@ def test_final_look_triggered_states_match_the_fixed_horizon_triggered_frame(tmp
         analysis.close()
 
 
-@pytest.mark.parametrize("look_policy", ["exploratory", "outcome_independent"])
-def test_secondary_family_is_selected_per_population_and_labelled_by_look_policy(
-    tmp_path, look_policy
-):
-    plan = _FAMILY_PLAN
-    if look_policy == "outcome_independent":
-        plan += "        triggered_look_policy: outcome_independent\n"
+def test_secondary_family_is_selected_per_population_with_the_same_guarantee(tmp_path):
     secondaries = ("aux_a", "aux_b")
     analysis, _ = _analysis(
-        tmp_path, _events(secondaries=secondaries), plan=plan, secondaries=secondaries
+        tmp_path, _events(secondaries=secondaries), plan=_FAMILY_PLAN, secondaries=secondaries
     )
     try:
         spec = analysis.experiment.plan.inference
         assert spec is not None and spec.triggered_registration is not None
-        assert spec.triggered_registration.look_policy == look_policy
         analysis.capture_sequential(finalized=True, as_of=_LATER)
         rows = analysis.run()
         families = {
@@ -826,9 +824,9 @@ def test_secondary_family_is_selected_per_population_and_labelled_by_look_policy
         assigned_family = families["assigned", "secondary"].family
         triggered_family = families["triggered", "secondary"].family
         assert assigned_family is not None and triggered_family is not None
-        assert assigned_family.guarantee == "fdr"
-        assert assigned_family.look_policy is None
-        assert triggered_family.look_policy == look_policy
+        assert assigned_family == triggered_family
+        assert triggered_family.guarantee == "fdr"
+        assert triggered_family.correction == "e_bh"
         secondary_rows = [
             row for row in rows if row.metric in secondaries and row.method_role == "decision"
         ]
@@ -836,17 +834,17 @@ def test_secondary_family_is_selected_per_population_and_labelled_by_look_policy
         for row in secondary_rows:
             assert row.discovery is not None
             assert row.family_q == pytest.approx(0.1)
-            if row.analysis_population == "assigned":
-                assert row.multiplicity_status == "declared_plan"
-                assert row.family_guarantee == "asymptotic_sequential"
-            elif look_policy == "outcome_independent":
-                assert triggered_family.guarantee == "fdr"
-                assert row.multiplicity_status == "declared_plan"
-                assert row.family_guarantee == "asymptotic_sequential"
-            else:
-                assert triggered_family.guarantee == "none"
-                assert row.multiplicity_status == "exploratory_family"
-                assert row.family_guarantee is None
+            assert row.multiplicity_status == "declared_plan"
+            assert row.family_guarantee == "asymptotic_sequential"
+        by_population = {
+            population: {
+                row.metric: row.discovery
+                for row in secondary_rows
+                if row.analysis_population == population
+            }
+            for population in ("assigned", "triggered")
+        }
+        assert set(by_population["assigned"]) == set(by_population["triggered"]) == set(secondaries)
         restored = ReadoutResults.model_validate_json(rows.model_dump_json())
         assert [row.multiplicity_status for row in restored] == [
             row.multiplicity_status for row in rows
