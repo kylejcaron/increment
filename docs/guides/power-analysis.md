@@ -1,6 +1,21 @@
 # Power analysis and MDE for A/B tests
 
-Increment's arm power solvers calculate required sample size, achieved power, or minimum detectable relative effect from a control-arm baseline and declared alternative-arm assumptions. Mean-like plans use the estimator's log-ratio variance model; eligible fixed-horizon conversion and retention plans follow the runtime's count-based decision route or its dense closed-form planning model.
+Use power analysis to size a planned comparison, estimate power at a proposed
+size, or find its minimum detectable relative effect. The supported parallel-arm
+solvers require a control-arm `Baseline` and an
+`ArmPlanningProcedure` matching the analysis decision; the
+[worked mean-planning example](#procedure-first-api) shows the ordinary flow.
+Read the returned `PowerResult` at its actual integer size and check
+`power_basis` and qualifications before using it as a runtime-power claim.
+See [Reading results](reading-results.md) for row interpretation and
+[Multiplicity](multiplicity.md) for the canonical population/status table.
+Mean-like plans use a log-ratio variance model. Fixed-horizon conversion and
+retention planning instead follows the runtime's count-and-alpha-dependent
+route: each arm's event and non-event counts both matter, so there is no
+universal sample-size cutoff or fixed width premium. See
+[conversion and retention planning](#conversion-and-retention-planning-follows-the-runtimes-route)
+for the route and its numerical limits. Sequential and switchback solvers have
+separate assumptions and should not be inferred from this parallel-arm example.
 
 ## Procedure-first API
 

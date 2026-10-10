@@ -1,13 +1,31 @@
 # Registered sequential inference
 
-`AlwaysValid` consumes finalized raw-observation checkpoints. It requires
-a `SequentialRegistration` committed before any data access. For a
-conversion or retention metric, the source builds that registration from
-the plan alone (see [sequential monitoring of a conversion metric](#sequential-monitoring-of-a-conversion-metric));
-the hand-written form below covers every other exact declaration. A
-posterior effect prior, an estimated log standard error, or a freshness
-timestamp cannot replace this registration.
+Sequential monitoring answers whether a declared treatment effect is supported as
+finalized observations arrive, without treating repeated looks like independent
+tests. Declare the analysis plan, inference regime, metric roles and look policy
+before reading outcomes; the plan determines each role's error budget and what
+the result's guarantee means. For a common conversion workflow, start with
+[sequential monitoring of a conversion metric](#sequential-monitoring-of-a-conversion-metric);
+the [error-control table](#error-control-by-plan-role) explains primary,
+guardrail and secondary claims. See [Reading results](reading-results.md) for
+population and inference disclosures and [Multiplicity](multiplicity.md) for
+the canonical status and family table.
 
+The exact public anytime-valid route is Bernoulli with a proper Beta prior.
+Mean and ratio monitoring use the separate `asymptotic_mean` construction,
+which has asymptotic rather than finite-sample coverage. Every observation must
+be finalized under the declared reveal contract; choosing when to look from
+outcomes can invalidate a stopped family claim. For triggered estimates,
+treatment-independent trigger membership and timing and counterfactual logging
+are substantive assumptions, not consequences of balanced rates. Call
+[`Analysis.health_check()`](../api.md#diagnostics-and-robustness) as a sanity
+check, not proof of causal validity; the [triggered-population workflow](#triggered-populations)
+keeps that risk beside its examples.
+
+The hand-written registration below is the low-level route for declarations
+not covered by plan-derived registration. A posterior effect prior, an
+estimated log standard error, or a freshness timestamp cannot replace this
+registration.
 The exact public anytime-valid observation model is Bernoulli with a proper Beta
 prior. Scalar Gaussian normal–inverse-gamma and paired Gaussian
 normal–inverse-Wishart kernels remain available only through the private
@@ -788,6 +806,18 @@ checkpoint carrying both chains and cannot start one; frame sources have no
 trigger declaration. `run()` returns rows for both populations;
 `run(population="triggered")` and `run_asof_lift(population="triggered")`
 select the triggered checkpoint rows.
+
+Keep three states separate when a triggered row is absent or unavailable. A
+missing or late trigger feed / certified watermark means the source cannot yet
+establish trigger completeness for the capture; an observed trigger whose
+longest outcome window has not matured is not yet eligible for that triggered
+look. A null point after capture is instead a result-level availability state
+with its own reason and may coexist with interval evidence. Wait for feed
+completeness and outcome maturity as applicable, then read the row's persisted
+reason; neither condition establishes treatment-independent triggering. The
+trigger must be counterfactually logged under a rule that would record it
+without regard to treatment, because equal observed trigger rates cannot show
+which units would have triggered in either arm.
 
 The triggered chain is monitored under its own `SequentialRegistration`, derived
 from the assigned one before any observation is read: the same outcome models

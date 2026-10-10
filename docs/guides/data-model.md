@@ -1,6 +1,22 @@
 # Warehouse-native experimentation data model
 
-Increment’s warehouse path turns declared fact sources, dimensions, exposures, metrics, and experiments into a canonical unit-day panel and inspectable Ibis queries. Definitions live in version-controlled YAML and execute against the warehouse backend you configure.
+Use the definitions path when experiment, exposure, dimension, and metric
+logic should be version-controlled and executed in your warehouse; it builds a
+canonical unit-day panel and inspectable Ibis queries. Declare the source and
+data-availability contract before interpreting readouts: missing or late fact
+data can leave outcome windows immature, while a null estimate can have a
+different, result-specific reason. The [warehouse analysis example](../examples/analysis_from_a_warehouse.md)
+walks through a complete source-to-readout flow; the
+[realistic multi-table example](#binding-a-normalized-warehouse) shows the
+dimension-join pattern. The dataframe route accepts a supplied unit-day panel
+through `Analysis.from_unit_panel` rather than executing warehouse definitions.
+See [Reading results](reading-results.md) for estimate availability and
+[Multiplicity](multiplicity.md) for population and status interpretation.
+
+The panel's zero-filling and censoring rules determine who contributes: an
+absent eligible unit/day is a logical zero, but an unfinished metric window is
+censored rather than scored from partial data. Assignment audit buckets are
+not analysis arms; see the detailed [unit-day model](#one-row-per-unit-per-day).
 
 ## One row per unit per day
 
