@@ -820,6 +820,10 @@ def test_testmon_protects_tests_using_cached_fixtures_for_code_changes(
 
     tests = tmp_path / "tests"
     tests.mkdir()
+    (tests / "__init__.py").write_text("")
+    (tests / "_shared_cache.py").write_text(
+        "def fixture_cache_key(): pass\ndef get_or_build(): pass\n"
+    )
     consumer = tests / "test_cached.py"
     consumer.write_text(
         "from tests._shared_cache import fixture_cache_key, get_or_build\ndef test_cached(): pass\n"
