@@ -30,7 +30,7 @@ import pytest
 
 from increment import Analysis, MetricSpec
 from increment.breakout.estimates import LiftEstimates
-from increment.errors import IncrementWarning
+from increment.errors import IncrementWarning, InvalidRequestError
 from increment.estimation.results import LiftEstimate
 from increment.results import NotApplicable, SRMResult
 from increment.semantics.models import RatioMetric, RetentionMetric
@@ -449,3 +449,162 @@ def test_duckdb_sequential_capture_streams_bounded_batches_without_closing_conne
     assert sum(batch.num_rows for batch in batches) == 4097
     assert connection.to_pyarrow(relation).num_rows == 4097
     connection.disconnect()
+
+
+def test_small_late_panel_and_moments_replay_preserve_semantics(tmp_path):  # noqa: PLR0915
+    """Exercise unequal allocation, an immature late cohort, and nullable CUPED input."""
+    import pyarrow as pa
+
+    from increment import AnalysisPlan, Randomized
+    from increment.estimation.readout_types import CellKey
+    from tests.readout_journeys import assert_prior_free_sampling_family
+
+    control_n, treatment_n = 72, 48
+    rows = []
+    for index in range(control_n + treatment_n):
+        group = "control" if index < control_n else "treatment"
+        arm_index = index if group == "control" else index - control_n
+        exposure = (
+            date(2025, 1, 1)
+            if arm_index < int((control_n if group == "control" else treatment_n) * 0.6)
+            else date(2025, 1, 4)
+        )
+        covariate = None if index % 11 == 0 else float(index % 7)
+        for day in range(7):
+            observed_day = date.fromordinal(exposure.toordinal() + day)
+            if observed_day > date(2025, 1, 9):
+                continue
+            rows.append(
+                {
+                    "unit_id": f"u{index:03d}",
+                    "group_id": group,
+                    "ds": observed_day,
+                    "exposure_date": exposure,
+                    "revenue": float((index % 5) + (group == "treatment")) if day == 2 else 0.0,
+                    "converted": int(day == 2 and index % (3 if group == "treatment" else 4) == 0),
+                    "pre_outcome": float(index % 9),
+                    "pre_x": covariate,
+                }
+            )
+    panel = pa.Table.from_pylist(rows)
+    design = Randomized(
+        control_group="control",
+        allocation={"control": 0.6, "treatment": 0.4},
+        allocation_scheme="independent",
+    )
+    plan = AnalysisPlan(primary="revenue", secondaries=("converted", "pre_outcome"))
+    metrics = [
+        MetricSpec(
+            name="revenue",
+            type="mean",
+            value_column="revenue",
+            window_days=7,
+            missing="zero",
+            preferred_direction="increase",
+        ),
+        MetricSpec(
+            name="converted",
+            type="conversion",
+            value_column="converted",
+            window_days=7,
+            missing="zero",
+            preferred_direction="increase",
+        ),
+        MetricSpec(
+            name="pre_outcome",
+            type="mean",
+            value_column="pre_outcome",
+            covariate="pre_x",
+            covariate_missing="impute",
+            preferred_direction="increase",
+        ),
+    ]
+    with pytest.warns(IncrementWarning, match="has 73 null/NaN value\\(s\\)") as warning_record:
+        source = Analysis.from_unit_panel(
+            panel,
+            unit="unit_id",
+            group="group_id",
+            date="ds",
+            exposure_date="exposure_date",
+            observation_end=date(2025, 1, 9),
+            design=design,
+            metrics=metrics,
+            plan=plan,
+            experiment_id="m3-late-panel",
+        )
+    imputation_warning = warning_record[0].message
+    assert isinstance(imputation_warning, IncrementWarning)
+    assert imputation_warning.code == "frame.validation.metric_covariate_missing_imputed"
+    with pytest.warns(IncrementWarning) as censoring_warnings:
+        source_result = source.run()
+    assert censoring_warnings
+    for warning in censoring_warnings:
+        assert isinstance(warning.message, IncrementWarning)
+        assert warning.message.code == "frame.censoring.dropped_units"
+        assert warning.message.context["dropped"] == 49
+    assert isinstance(source_result, LiftEstimates)
+    assert_prior_free_sampling_family(source_result)
+    assert any(row.group_id == "treatment" and row.lift is not None for row in source_result)
+    path = tmp_path / "m3-late-panel.parquet"
+    source.export(path)
+    replay = Analysis.from_moments(
+        pq.read_table(path).to_pylist(),
+        design=design,
+        metrics=metrics,
+        plan=plan,
+        experiment_id="m3-late-panel",
+    )
+    replay_result = replay.run()
+    assert isinstance(replay_result, LiftEstimates)
+    assert_prior_free_sampling_family(replay_result)
+    expected = {CellKey.from_row(row): row for row in source_result}
+    observed = {CellKey.from_row(row): row for row in replay_result}
+    assert expected.keys() == observed.keys()
+    assert source_result.metadata is not None and replay_result.metadata is not None
+    for cell, expected_row in expected.items():
+        observed_row = observed[cell]
+        _assert_nested_approx_equal(
+            observed_row.model_dump(mode="json", exclude={"source_snapshot_id", "family_id"}),
+            expected_row.model_dump(mode="json", exclude={"source_snapshot_id", "family_id"}),
+        )
+        assert expected_row.source_snapshot_id is not None
+        assert observed_row.source_snapshot_id is not None
+        assert source_result.metadata.record(expected_row.source_snapshot_id, cell) is not None
+        assert replay_result.metadata.record(observed_row.source_snapshot_id, cell) is not None
+    source_health = source.health_check()
+    replay_health = replay.health_check()
+    source_srm = next(
+        check for check in source_health.checks if check.check == "assigned_allocation"
+    )
+    replay_srm = next(
+        check for check in replay_health.checks if check.check == "assigned_allocation"
+    )
+    assert source_srm.availability == replay_srm.availability == "available"
+    assert source_srm.srm is not None and replay_srm.srm == source_srm.srm
+    assert source_srm.srm.expected == {"control": 0.6, "treatment": 0.4}
+
+    # This source capability is explicitly refused: panel data has no per-unit
+    # window collapse to which CUPED can attach the pre-period covariate.
+    with pytest.raises(InvalidRequestError) as refused:
+        Analysis.from_unit_panel(
+            panel,
+            unit="unit_id",
+            group="group_id",
+            date="ds",
+            exposure_date="exposure_date",
+            design=design,
+            metrics=[
+                MetricSpec(
+                    name="revenue",
+                    type="mean",
+                    value_column="revenue",
+                    covariate="pre_x",
+                    window_days=7,
+                    preferred_direction="increase",
+                )
+            ],
+            experiment_id="m3-windowed-covariate-refusal",
+        )
+    assert refused.value.code == "frame.validation.from_unit_panel"
+    source.close()
+    replay.close()
