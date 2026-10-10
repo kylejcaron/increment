@@ -662,7 +662,11 @@ import pandas as pd
 from increment import Analysis
 
 units = pd.DataFrame(
-    {"unit": ["c1", "c2", "t1", "t2"], "arm": ["control", "control", "treatment", "treatment"], "value": [1.0, 0.0, 1.5, 1.0]}
+    {
+        "unit": ["c1", "c2", "t1", "t2"],
+        "arm": ["control", "control", "treatment", "treatment"],
+        "value": [1.0, 0.0, 1.5, 1.0],
+    }
 )
 analysis = Analysis.from_unit_summary(
     units, unit="unit", group="arm", control="control", metrics={"value": "mean"}
@@ -673,11 +677,11 @@ for check in report.checks:
 analysis.close()
 ```
 
-:::: increment.Analysis.health_check
+::: increment.Analysis.health_check
 
-:::: increment.results.ExperimentHealth
+::: increment.results.ExperimentHealth
 
-:::: increment.results.HealthCheck
+::: increment.results.HealthCheck
 
 ## Conditional effects and targeting
 
