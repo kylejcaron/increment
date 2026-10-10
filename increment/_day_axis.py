@@ -631,8 +631,12 @@ def _missing_compliance_rows(
         treatment_units = arms[group_id].n_units if group_id in arms else 0
         control_units = arms[control_group].n_units if control_group in arms else 0
         missing_arm = reason == "missing_arm" or treatment_units == 0 or control_units == 0
-        unavailable: Literal["no_control_arm", "few_units"] = (
-            "no_control_arm" if missing_arm else "few_units"
+        unavailable: Literal["no_control_arm", "no_treatment_arm", "few_units"] = (
+            "no_control_arm"
+            if control_units == 0
+            else "no_treatment_arm"
+            if treatment_units == 0
+            else "few_units"
         )
         row = _nan_lift_rows(
             {("uptake", group_id): unavailable},

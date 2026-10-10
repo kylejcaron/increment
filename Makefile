@@ -2,6 +2,7 @@
 
 # Loadgroup keeps modules sharing mutable filesystem paths on one worker.
 TEST_RUNNER = uv run --extra demo --extra tables --extra dashboard python -m scripts.run_test_tier
+AFFECTED_TEST_RUNNER = uv run --no-sync --extra demo --extra tables --extra dashboard python -m scripts.run_test_tier
 PYTEST_ARGS = -n auto --dist loadgroup -p no:tach
 install:
 	uv sync --group dev --extra demo --extra tables --extra dashboard
@@ -64,7 +65,7 @@ endif
 test-affected: PYTEST_ARGS =
 test-affected:
 	@test -n "$(BASE)" || { echo 'usage: make test-affected BASE=<gitref> [TIER=fast|slow] [PYTEST_ARGS=<typed-options>]' >&2; exit 2; }
-	$(TEST_RUNNER) --affected-base "$(BASE)" "$(if $(TIER),$(TIER),fast)" -q $(PYTEST_ARGS)
+	$(AFFECTED_TEST_RUNNER) --affected-base "$(BASE)" "$(if $(TIER),$(TIER),fast)" -q $(PYTEST_ARGS)
 sim:
 	uv run --extra demo python -m increment.simulate --replications 200
 demo:

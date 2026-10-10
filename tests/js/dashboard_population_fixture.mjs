@@ -61,13 +61,22 @@ export function loadDashboardFromFile(path) {
       objectUrls.delete(url);
     },
   };
+  const windowListeners = {};
+  const hostMessages = [];
+  const parent = {
+    postMessage(message) {
+      hostMessages.push(message);
+    },
+  };
   const window = {
-    addEventListener() {},
+    addEventListener(type, handler) {
+      (windowListeners[type] ??= []).push(handler);
+    },
     frameElement: null,
     matchMedia: null,
     print() {},
   };
-  window.parent = window;
+  window.parent = parent;
 
   function createNativeAdapter() {
     return {
@@ -101,9 +110,14 @@ export function loadDashboardFromFile(path) {
     createNativeAdapter,
   });
   vm.runInContext(shellSource(html), context, { filename: "dashboard-shell.js" });
+  function dispatchHostMessage(data) {
+    for (const handler of windowListeners.message ?? []) handler({ source: parent, data });
+  }
 
   return {
     payload,
+    hostMessages,
+    dispatchHostMessage,
     document,
     context,
     objectUrls,

@@ -140,7 +140,9 @@ def test_portable_prior_reset_restores_declared_family(
         )
         inherited = lift_rows(replay.run())[0]
         if bound_prior and named_family:
-            _assert_legacy_prior_roundtrip(replay, tmp_path / "legacy-roundtrip.parquet", prior)
+            _assert_legacy_prior_roundtrip(
+                replay, rows, tmp_path / "legacy-roundtrip.parquet", prior
+            )
 
         expected = lift_rows(oracle.run())[0].require_lift()
         for _ in range(2):
@@ -170,19 +172,25 @@ def test_portable_prior_reset_restores_declared_family(
             replay.close()
 
 
-def _assert_legacy_prior_roundtrip(replay: Any, path: Path, prior: Any) -> None:
+def _assert_legacy_prior_roundtrip(
+    replay: Any, rows: list[dict[str, Any]], path: Path, prior: Any
+) -> None:
     import pyarrow.parquet as pq
 
     from increment import Analysis, MetricSpec
-    from increment.sources import export_source_moments
+    from increment.semantics.design import Randomized
+    from increment.semantics.models import MeanMetric
+    from increment.sources import MomentsSource, export_source_moments
     from tests.analysis_factory import lift_rows
 
     before = lift_rows(replay.run(prior=None))[0]
-    export_source_moments(
-        replay._state.source,
-        path,
-        observational_refusal=lambda _metric: None,
+    source = MomentsSource(
+        rows,
+        metrics=[MeanMetric(name="y", entity="unit", fact="y")],
+        study_id=str(rows[0]["experiment_id"]),
+        design=Randomized(control_group="control"),
     )
+    export_source_moments(source, path, observational_refusal=lambda _metric: None)
     reloaded = Analysis.from_moments(
         pq.read_table(path).to_pylist(),
         control="control",

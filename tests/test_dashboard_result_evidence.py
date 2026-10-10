@@ -150,6 +150,7 @@ def test_point_backed_binomial_qualification_keeps_displayed_interval_endpoints(
 # Complete set text
 
 
+@pytest.mark.slow
 def test_point_backed_one_sided_fieller_set_keeps_its_direction_and_own_coverage(
     storefront: DashboardSnapshot,
 ) -> None:
@@ -197,6 +198,7 @@ def test_point_backed_one_sided_fieller_set_keeps_its_direction_and_own_coverage
     ("a", "c", "cov", "geometry"),
     [(10, 0, 0.0, "disconnected"), (1, 0, 0.0, "all_real"), (1, 1, -0.9, "disconnected")],
 )
+@pytest.mark.slow
 def test_complete_set_text_keeps_every_endpoint_of_point_free_sets(
     storefront: DashboardSnapshot, a: float, c: float, cov: float, geometry: str
 ) -> None:
@@ -218,6 +220,7 @@ def test_complete_set_text_keeps_every_endpoint_of_point_free_sets(
 
 @pytest.mark.parametrize("rejects", [True, False])
 @pytest.mark.parametrize("discovery", [True, False, None])
+@pytest.mark.slow
 def test_verdict_and_selection_are_independent(
     storefront: DashboardSnapshot, rejects: bool, discovery: bool | None
 ) -> None:

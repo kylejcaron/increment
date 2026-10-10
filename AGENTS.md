@@ -53,7 +53,10 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   shared filesystem path MUST use `pytest.mark.xdist_group("<name>")`.
 - Tests slower than the ordinary suite use `@pytest.mark.slow`.
   Simulation-based coverage, bias, or parameter-recovery checks additionally
-  use `@pytest.mark.parameter_recovery` and retain a small fast smoke case.
+  use `@pytest.mark.parameter_recovery`. Full simulation calibration grids live
+  in `calibration/` and run before releases or when the covered inference
+  changes; the slow tier retains representative sentinels plus a small fast
+  smoke.
 - Tests assert consumer-visible behavior: stable codes, numerical contracts,
   tolerances, invariants, and cross-path parity. They MUST NOT pin permitted
   message wording, private structure, internal wiring, or exact bits where a
@@ -72,15 +75,51 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   refused. `PYTEST_XDIST_AUTO_NUM_WORKERS` does not override the numeric policy.
   Resolve and record the task base at dispatch, reuse it across commits/resumes,
   and use `BASE=HEAD` only for a working-tree-only comparison.
-- Affected selection reuses Tach plus filesystem guards; config,
+- Normal test tiers run testmon in selection-disabled mode, recording per-test
+  executed code into the ignored `.testmondata` map. Supervised pytest children
+  carry an explicit owner-child role; nested normal runners bypass Testmon
+  reads/writes and certification. Without a valid owner token, a nested normal
+  runner skips Testmon entirely and does not acquire its database lock; only
+  reusing a live same-worktree lock requires the verified owner token.
+- Only an unfiltered, fully executed fast/slow/full tier writes an ignored
+  completeness marker; file/node selectors, sharding, help, inherited
+  `PYTEST_ADDOPTS`, and collection-only runs cannot certify it. Full runs
+  refresh the `.testmondata` per-test execution map and a companion marker bound
+  to the Testmon database, exact Python/dependency environment, and tracked
+  source snapshots. They record each tier's collected node IDs, with
+  `loadgroup` suffixes when that scheduler is active, import-time executed lines
+  gathered in a fresh interpreter (module imports and full test collection under
+  coverage), plus AST fingerprints for module/class-level state. A fast or slow
+  run certifies
+  only the tier it executes; an `all` run certifies both. Testmon's xdist
+  synchronization may discard tests from the other tier, so a tier's marker
+  is retained only while every recorded node ID remains present in
+  `.testmondata`. Affected runs preserve the marker and never certify a tier.
+  The marker also checks resolved pytest
+  config/selection controls and requires terminal reports for every collected
+  test node ID. Affected startup pins Testmon to the worktree's `.testmondata`
+  and validates the marker before Testmon opens and mutates its database.
+  Testmon is primary only when the map covers the requested tier and changed
+  function bodies. On that primary path, import-graph consumers of changed test
+  modules are protected from Testmon deselection. Changes to import-executed lines
+  or any function containing them fall back to the import graph. Module/class-level
+  changes use the same fallback. Testmon's xdist synchronization is supported;
+  affected collection restores longest-first duration ordering after Testmon's
+  collection hook. Missing, new, unreadable/corrupt, stale, or incomplete maps
+  fall back to the conservative local AST import graph. That graph follows
+  file-level imports transitively through source modules and tests, including
+  consumers of changed test helper modules; it resolves public lazy exports
+  from the package export map and retains the full test set if any graph file
+  is unparseable. Changed test files, dynamic-import consumers, subprocess test
+  files, and filesystem guard tests remain selected in either mode. Config,
   dependency/plugin, conftest/shared-fixture, data, and public lazy-export
-  hazards refuse with a broader route. On source changes it also retains
-  detected dynamic-import consumer files and reports any not run by the
-  current tier/selector; changed files that themselves dynamically load
-  arbitrary paths remain refusals. A zero-selection run is rejected, and
-  successful acceptance requires owned finished evidence whose terminal
-  node IDs exactly match the selected node IDs. Affected-fast does not waive
-  slow, parity, fixture, public-smoke, docs, scientific, or full-suite gates.
+  hazards still refuse with a broader route; changed files that themselves
+  dynamically load arbitrary paths remain refusals. A zero-selection run is
+  rejected, and successful acceptance requires owned finished evidence whose
+  terminal node IDs exactly match the selected node IDs. Affected evidence
+  records the selector route as `testmon` or `import_graph`. Affected-fast
+  does not waive slow, parity, fixture, public-smoke, docs, scientific, or
+  full-suite gates.
 - Dispatch/resume notes record base SHA, commands, numeric/serial worker
   allowance, remaining acceptance, and evidence location. Selection evidence
   is tied to source, worktree/environment, and dirty inputs; changed inputs

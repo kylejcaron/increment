@@ -166,6 +166,7 @@ class TestSparsePlansAreTheReplay:
 
 
 class TestExplicitFiniteSamplePlans:
+    @pytest.mark.slow
     def test_a_dense_plan_pinned_to_finite_sample_is_replayed_not_closed_form(self):
         p = 0.1
         n = 2_000

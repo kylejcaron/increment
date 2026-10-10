@@ -464,6 +464,7 @@ def _purchase_lift(analysis: Analysis) -> float:
     return lift_rows(analysis.run(metrics=["purchase_rate"]))[0].require_lift().value
 
 
+@pytest.mark.slow
 def test_closed_artifact_analysis_reopens_its_pinned_generation_not_a_newer_one() -> None:
     con, native, context, store, ref = _published()
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)

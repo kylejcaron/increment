@@ -587,7 +587,7 @@ def test_sufficient_state_campaign_worker_journals_completed_replication(tmp_pat
         ],
         cwd=campaign.ROOT,
         check=True,
-        timeout=60,
+        timeout=30,
     )
 
     result = json.loads((directory / "result.json").read_text())

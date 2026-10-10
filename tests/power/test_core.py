@@ -4372,6 +4372,7 @@ class TestDeterministicPlanningSE:
         result = required_sample_size(0.50, baseline, procedure, PowerDesign(power=0.8))
         assert result.n_per_arm >= _quantile_n_min(0.99, procedure.compiled_alpha)
 
+    @pytest.mark.slow
     def test_search_refuses_a_target_above_the_recording_grid_ceiling_and_sizes_one_below(self):
         """On rounded data the SE falls to a floor fixed by the recording
         step, so power has a ceiling below one. A target above it is refused

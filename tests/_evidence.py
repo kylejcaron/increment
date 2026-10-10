@@ -180,6 +180,7 @@ def pytest_collection_finish(session: pytest.Session) -> None:
             selected_nodeids=selected_nodeids,
             deselected_tests=counts["deselected"],
             selection_status="selected" if counts["selected"] else "no_affected_tests",
+            selection_route=os.environ.get("INCREMENT_AFFECTED_SELECTION_ROUTE"),
         )
         path.write_text(json.dumps(metadata, indent=2) + "\n")
 
@@ -272,6 +273,8 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         selected_nodeids=counts.get("selected_nodeids", []) if counts is not None else [],
         outcome=outcome,
     )
+    if counts is not None:
+        metadata["selection_route"] = os.environ.get("INCREMENT_AFFECTED_SELECTION_ROUTE")
     if "started_at" in metadata:
         metadata["elapsed_seconds"] = time.time() - metadata["started_at"]
     temporary = run / "run.json.tmp"

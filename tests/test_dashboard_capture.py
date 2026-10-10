@@ -472,6 +472,7 @@ def test_dashboard_payload_ignores_changes_after_preparation_until_reprepared(tm
         assert treatment_count(fresh) == 2 * treatment_count(snapshot)
 
 
+@pytest.mark.slow
 def test_explore_reads_nothing_from_the_warehouse_after_preparation(tmp_path):
     with _workspace(tmp_path) as (con, analysis):
         snapshot = prepare_dashboard(analysis, config=CONFIG)
@@ -580,6 +581,7 @@ def test_a_refused_breakout_never_hides_another_source_of_the_same_property(tmp_
                 assert refused == ("refused", "CapabilityError", _REFUSED_SOURCE)
 
 
+@pytest.mark.slow
 def test_an_omitted_breakout_source_shows_the_source_it_resolves_to(tmp_path):
     with _workspace(tmp_path, breakout_sources=(None,)) as (_, analysis):
         snapshot = prepare_dashboard(analysis, config=CONFIG)
@@ -591,6 +593,7 @@ def test_an_omitted_breakout_source_shows_the_source_it_resolves_to(tmp_path):
             assert shown == _live(analysis, **request, scope=("event_log", "country"))
 
 
+@pytest.mark.slow
 def test_each_state_keeps_its_own_original_refusal(tmp_path):
     retention = "ever_purchased_again"
     with _workspace(tmp_path) as (_, analysis):
@@ -677,6 +680,7 @@ def test_each_metric_series_is_independent_of_the_metric_selection(tmp_path):
         )
 
 
+@pytest.mark.slow
 def test_loaded_collections_are_independent_copies_of_the_capture(tmp_path):
     with _workspace(tmp_path) as (_, analysis):
         snapshot = prepare_dashboard(analysis, config=CONFIG)

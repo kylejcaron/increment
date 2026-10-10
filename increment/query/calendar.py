@@ -104,13 +104,16 @@ def report_horizon_relation(
     client-side rows or fetching fact data.
     """
     horizons = []
+    anchor = ibis.literal(1).name("_one").as_table()
     for index, (fact_table, fact_name) in enumerate(facts):
         scoped = fact_table.filter(fact_table.event == fact_name)
-        horizon = _local_date_at_offset(scoped.ts, day_boundary_offset).max()
-        metric = cast(ir.Scalar, ibis.coalesce(horizon, ibis.literal(no_data_sentinel))).name(
-            f"_horizon_{index}"
+        horizon = _local_date_at_offset(scoped.ts.max(), day_boundary_offset)
+        aggregate_value = (
+            ibis.coalesce(horizon, ibis.literal(no_data_sentinel))
+            .as_scalar()
+            .name(f"_horizon_{index}")
         )
-        horizons.append(scoped.aggregate([metric]))
+        horizons.append(anchor.select(aggregate_value))
     relation = horizons[0]
     for next_horizon in horizons[1:]:
         relation = relation.cross_join(next_horizon)

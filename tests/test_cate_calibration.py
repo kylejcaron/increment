@@ -1897,11 +1897,21 @@ def test_c07_cluster_calibration_smoke(weighting):
 
 @pytest.mark.slow
 @pytest.mark.parameter_recovery
-@pytest.mark.parametrize("k", [10, 40, 200])
-@pytest.mark.parametrize("icc", [0.0, 0.2, 0.5])
-@pytest.mark.parametrize("weighting", ["member_count", "equal"])
-@pytest.mark.parametrize("imbalanced", [False, True], ids=["balanced", "unequal_sizes"])
-@pytest.mark.parametrize("stress", [False, True], ids=["gaussian", "skew_high_leverage"])
+@pytest.mark.parametrize(
+    ("k", "icc", "weighting", "imbalanced", "stress"),
+    [
+        (40, 0.2, "equal", False, False),
+        (40, 0.2, "equal", False, True),
+        (40, 0.2, "equal", True, False),
+        (40, 0.2, "equal", True, True),
+    ],
+    ids=[
+        "balanced-gaussian",
+        "balanced-skew_high_leverage",
+        "unequal_sizes-gaussian",
+        "unequal_sizes-skew_high_leverage",
+    ],
+)
 def test_c07_cluster_null_rejection_and_coverage(
     k,
     icc,

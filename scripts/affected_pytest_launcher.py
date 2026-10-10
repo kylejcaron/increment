@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import sqlite3
 import sys
 import tempfile
 import tomllib
@@ -31,6 +33,8 @@ _ALLOWED_OPTIONS = {
     "runtime_diagnostics",
     "basetemp",
     "xmlpath",
+    "testmon",
+    "testmon_forceselect",
 }
 
 
@@ -95,6 +99,70 @@ def _fixed_pytest_config(root: Path) -> str:
     )
 
 
+def _testmon_database_usable(root: Path) -> bool:
+    database = root / ".testmondata"
+    if not database.exists():
+        return True
+    try:
+        connection = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)
+        try:
+            healthy = connection.execute("PRAGMA quick_check").fetchone() == ("ok",)
+            tables = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            required = {
+                "metadata",
+                "environment",
+                "test_execution",
+                "file_fp",
+                "test_execution_file_fp",
+                "suite_execution_file_fsha",
+            }
+            return healthy and required.issubset(tables)
+        finally:
+            connection.close()
+    except sqlite3.Error:
+        return False
+
+
+def _testmon_map_ready(root: Path, tier: str, changed_paths: list[str]) -> bool:
+    from scripts._test_impact import testmon_full_tiers, testmon_module_scope_changed
+
+    return (
+        _testmon_database_usable(root)
+        and tier in testmon_full_tiers(root)
+        and not testmon_module_scope_changed(root, changed_paths, tier)
+    )
+
+
+def _prepare_testmon_environment(root: Path, tier: str, workers: int | None) -> None:
+    from scripts._test_impact import mark_testmon_nested_context, testmon_nested_context
+
+    mark_testmon_nested_context(root)
+    nested = testmon_nested_context(root)
+    for name in tuple(os.environ):
+        if name.startswith(("PYTEST_", "COV_CORE_", "COVERAGE_")):
+            os.environ.pop(name, None)
+    os.environ.pop("TESTMON_DATAFILE", None)
+    os.environ.pop("INCREMENT_AFFECTED_TESTMON_READY", None)
+    os.environ["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    os.environ["INCREMENT_AFFECTED_WORKER_ALLOWANCE"] = (
+        "serial" if workers is None else str(workers)
+    )
+    if nested:
+        os.environ["INCREMENT_AFFECTED_NESTED_TESTMON"] = "1"
+        return
+    os.environ.pop("INCREMENT_AFFECTED_NESTED_TESTMON", None)
+    os.environ["TESTMON_DATAFILE"] = str(root / ".testmondata")
+    try:
+        changed_paths = json.loads(os.environ.get("INCREMENT_AFFECTED_CHANGED_PATHS", "[]"))
+    except ValueError:
+        changed_paths = []
+    if _testmon_map_ready(root, tier, changed_paths):
+        os.environ["INCREMENT_AFFECTED_TESTMON_READY"] = "1"
+
+
 def _tier_expression(tier: str, additional: str | None) -> str:
     from scripts._test_tier_policy import tier_mark_expression
 
@@ -126,14 +194,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     root = Path.cwd().resolve()
     policy_root = Path(__file__).resolve().parents[1]
-    for name in tuple(os.environ):
-        if name.startswith(("PYTEST_", "COV_CORE_", "COVERAGE_")):
-            os.environ.pop(name, None)
-    os.environ["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
-    os.environ["INCREMENT_AFFECTED_WORKER_ALLOWANCE"] = (
-        "serial" if args.workers is None else str(args.workers)
-    )
+    _prepare_testmon_environment(root, args.tier, args.workers)
     markexpr = _tier_expression(args.tier, args.markexpr)
+    nested_testmon = os.environ.get("INCREMENT_AFFECTED_NESTED_TESTMON") == "1"
     plugins = [
         "tests._evidence",
         "scripts.run_test_tier_plugin",
@@ -141,6 +204,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "xdist.plugin",
         "pytest_timeout",
     ]
+    if not nested_testmon:
+        plugins.append("testmon.pytest_testmon")
     pytest_arguments = [
         "-c",
         "",
@@ -155,6 +220,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         str(Path(args.evidence_root).resolve()),
     ]
     pytest_arguments[:0] = [part for plugin in plugins for part in ("-p", plugin)]
+    if not nested_testmon and _testmon_database_usable(root):
+        pytest_arguments.extend(("--testmon", "--testmon-forceselect"))
+    elif not nested_testmon:
+        print(
+            "testmon: local map is corrupt; using conservative import-graph selection",
+            file=sys.stderr,
+        )
     if args.keyword:
         pytest_arguments.extend(("-k", args.keyword))
     if args.maxfail_one:

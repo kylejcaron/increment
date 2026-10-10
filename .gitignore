@@ -36,6 +36,16 @@ htmlcov/
 *.cover
 .hypothesis/
 /.test-evidence/
+/.testmondata
+/.testmondata.full
+/.testmondata-wal
+/.testmondata-shm
+/.testmondata.full.tmp
+/.testmondata.full.*.tmp
+/.testmondata.lock
+/.testmondata.lock.owner
+/.testmondata.lock.owner.*.tmp
+/.testmondata.full-report-*.json
 /.test_durations
 
 # Documentation and notebook outputs

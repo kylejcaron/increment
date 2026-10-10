@@ -202,11 +202,12 @@ depends_on = ["increment._canonical"]
 [[modules]]
 path = "increment.sources"
 depends_on = [
+  "increment._source_identity",
   "increment.winsor",
   "increment.estimation.decision_types",
   "increment._analysis_config", "increment._labels", "increment._moment_plan", "increment._source_types",
   "increment.decision", "increment.decision_wire", "increment.errors", "increment.plan", "increment.semantics",
-  "increment.sequential_source", "increment.sequential_state", "increment._source_identity",
+  "increment.sequential_source", "increment.sequential_state",
 ]
 
 [[modules]]
@@ -300,7 +301,8 @@ depends_on = [
   "increment.winsor",
   "increment.breakout.estimates",
   "increment._window", "increment.decision", "increment.decision_wire", "increment.errors",
-  "increment.estimation", "increment.plan", "increment.semantics", "increment.sources", "increment.sequential_source", "increment.sequential_state", "increment._source_identity",
+  "increment.estimation", "increment.plan", "increment.semantics", "increment.sources",
+  "increment._source_identity", "increment.sequential_source", "increment.sequential_state",
 ]
 
 [[modules]]
@@ -313,19 +315,15 @@ depends_on = [
 [[modules]]
 path = "increment.power.core"
 depends_on = [
-  "increment._finite_sample_refusals", "increment._literals", "increment.compatibility",
-  "increment.decision", "increment.errors", "increment.estimation",
-  "increment.estimation.sequential", "increment.power._binomial", "increment.power._search",
-  "increment.power._shared", "increment.power._validation", "increment.power.sequential",
-  "increment.semantics",
+  "increment._finite_sample_refusals", "increment._literals", "increment.compatibility", "increment.decision", "increment.errors",
+  "increment.estimation", "increment.estimation.sequential", "increment.semantics",
+  "increment.power._binomial", "increment.power._search", "increment.power._shared",
+  "increment.power._validation", "increment.power.sequential",
 ]
 
 [[modules]]
 path = "increment.power.pairwise"
-depends_on = [
-  "increment._finite_sample_refusals", "increment.compatibility", "increment.decision",
-  "increment.errors", "increment.estimation", "increment.power._shared", "increment.power.core",
-]
+depends_on = ["increment._finite_sample_refusals", "increment.compatibility", "increment.decision", "increment.errors", "increment.estimation", "increment.power._shared", "increment.power.core"]
 
 [[modules]]
 path = "increment.power.sequential"
@@ -411,8 +409,8 @@ depends_on = [
   "increment._analysis_config", "increment._source_operations", "increment._source_types",
   "increment._whole_window", "increment._day_axis",
   "increment.breakout.estimates", "increment.errors", "increment.readouts",
-  "increment.query",
-  "increment.sequential_state", "increment._metric_specs",
+  "increment.query", "increment._metric_specs",
+  "increment.sequential_state",
 ]
 
 [[modules]]
@@ -471,8 +469,9 @@ depends_on = [
   "increment._analysis_config", "increment._lift_options", "increment._readout_request", "increment._source_types",
   "increment._source_operations", "increment.plan",
   "increment.breakout.estimates", "increment.errors", "increment.estimation", "increment.query",
+  "increment._source_identity",
   "increment.readouts", "increment.semantics", "increment.sources",
-  "increment.sequential_state", "increment._source_identity",
+  "increment.sequential_state",
 ]
 
 [[modules]]
@@ -480,8 +479,9 @@ path = "increment._evidence_dispatch"
 depends_on = [
   "increment._literals",
   "increment._analysis_config", "increment._readout_request", "increment.decision",
+  "increment._source_identity",
   "increment.errors", "increment.estimation", "increment.readouts", "increment.semantics", "increment.sources",
-  "increment._unit_cycle", "increment._source_identity",
+  "increment._unit_cycle",
 ]
 
 [[modules]]

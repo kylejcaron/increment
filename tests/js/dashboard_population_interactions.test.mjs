@@ -73,3 +73,26 @@ test("population switching updates visible readouts and downloads without losing
   assertViewSelected(dashboard, "report");
   assert.equal(await dashboard.objectUrls.get(dashboard.reportDownload.href).text(), triggered.readoutCsv);
 });
+
+test("population selection survives a host refresh restore", () => {
+  const dashboard = loadDashboardFromFile(process.env.INCREMENT_DASHBOARD_DOCUMENT);
+  const assigned = population(dashboard, "assigned");
+
+  selectPopulation(dashboard, "assigned");
+  assert.ok(
+    dashboard.hostMessages.some(
+      (message) =>
+        message.type === "set-population" && message.population === "assigned"
+    )
+  );
+
+  const refreshed = loadDashboardFromFile(process.env.INCREMENT_DASHBOARD_DOCUMENT);
+  refreshed.dispatchHostMessage({
+    source: "inc-dashboard-host",
+    type: "restore",
+    population: "assigned",
+  });
+
+  assert.equal(refreshed.populationSelect.value, "assigned");
+  assert.equal(refreshed.heroEffect.textContent, assigned.primary.effect);
+});

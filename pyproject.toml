@@ -97,6 +97,7 @@ dev = [
     "mutmut>=3.8,<3.9",
     "pydoclint>=0.9.1",
     "complexipy==8.0.1",
+"pytest-testmon==2.2.0",
 ]
 warehouse-backends = [
     "ibis-framework[postgres]>=10.1.0",

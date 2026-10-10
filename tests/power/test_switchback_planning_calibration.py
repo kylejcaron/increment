@@ -369,7 +369,20 @@ def test_batched_actual_kernels_equal_separate_public_sources(shared):
 
 @pytest.mark.slow
 @pytest.mark.parameter_recovery
-@pytest.mark.parametrize("cell_index,cell", list(enumerate(CELLS)), ids=[cell.id for cell in CELLS])
+@pytest.mark.parametrize(
+    "cell_index,cell",
+    [
+        pytest.param(CELLS.index(cell), cell, id=cell.id)
+        for cell in CELLS
+        if cell.id
+        in {
+            "shared-p0.75-c5-o4-k0",
+            "shared-p0.75-c5-o4-k1",
+            "unit-p0.75-c20-o4-k0",
+            "unit-p0.75-c20-o4-k1",
+        }
+    ],
+)
 def test_source_estimator_and_planning_variance_calibration(
     cell_index, cell, record_property, runtime_diagnostics
 ):

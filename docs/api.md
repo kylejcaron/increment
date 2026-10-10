@@ -230,6 +230,10 @@ See [Persisting a `TabularPolicy`](guides/logged-policy.md#persisting-a-tabularp
 
 ## Analysis and reporting
 
+`Analysis.artifact_context` returns the trusted context bound to a definitions-backed
+analysis. Pass it as `expected_context` when opening a unit-day artifact published
+from that analysis.
+
 `Analysis.allocation_history(population=...)` returns a PyArrow table with
 `experiment_id`, `analysis_population`, `ds`, `group_id`, `n_daily`, and
 `n_cumulative`, ordered by population, date, and arm. `population="assigned"`

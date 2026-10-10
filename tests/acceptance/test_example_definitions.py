@@ -17,34 +17,31 @@ examples in ``examples/definitions/``.
 import math
 from datetime import datetime, timedelta
 
-import ibis
-import pyarrow as pa
 import pytest
-
-from increment import Analysis
-from increment.results import SRMResult
-from tests.analysis_factory import lift_rows
 
 pytestmark = [pytest.mark.slow, pytest.mark.examples]
 
-
 DEFINITIONS = "examples/definitions/"
 
-_SCHEMA = pa.schema(
-    [
-        ("event_at", pa.timestamp("us")),
-        ("user_id", pa.string()),
-        ("session_id", pa.string()),
-        ("event", pa.string()),
-        ("experiment_id", pa.string()),
-        ("group_id", pa.string()),
-        ("revenue", pa.float64()),
-        ("duration_s", pa.float64()),
-        ("country_code", pa.string()),
-        ("device_type", pa.string()),
-        ("plan", pa.string()),
-    ]
-)
+
+def _schema():
+    import pyarrow as pa
+
+    return pa.schema(
+        [
+            ("event_at", pa.timestamp("us")),
+            ("user_id", pa.string()),
+            ("session_id", pa.string()),
+            ("event", pa.string()),
+            ("experiment_id", pa.string()),
+            ("group_id", pa.string()),
+            ("revenue", pa.float64()),
+            ("duration_s", pa.float64()),
+            ("country_code", pa.string()),
+            ("device_type", pa.string()),
+            ("plan", pa.string()),
+        ]
+    )
 
 
 def _row(event_at, user_id, session_id, event, experiment_id=None, group_id=None, revenue=None):
@@ -166,15 +163,21 @@ def _seed_rows():
 
 @pytest.fixture(scope="module")
 def seeded():
+    import ibis
+    import pyarrow as pa
+
     con = ibis.duckdb.connect()
     rows, expected = _seed_rows()
-    tbl = pa.Table.from_pylist(rows, schema=_SCHEMA)
+    tbl = pa.Table.from_pylist(rows, schema=_schema())
     con.raw_sql("CREATE SCHEMA IF NOT EXISTS analytics")
     con.create_table("event_log", tbl, database="analytics")
     return con, expected
 
 
 def test_aov_mix_shift_decomposition(seeded):
+    from increment import Analysis
+    from tests.analysis_factory import lift_rows
+
     con, expected = seeded
     analysis = Analysis("aov_decomposition", definitions_path=DEFINITIONS, con=con)
     by_name = {est.metric: est for est in lift_rows(analysis.run())}
@@ -198,6 +201,10 @@ def test_aov_mix_shift_decomposition(seeded):
 
 
 def test_session_unit_experiment_runs_end_to_end(seeded):
+    from increment import Analysis
+    from increment.results import SRMResult
+    from tests.analysis_factory import lift_rows
+
     con, expected = seeded
     analysis = Analysis("session_checkout", definitions_path=DEFINITIONS, con=con)
     (est,) = lift_rows(analysis.run())

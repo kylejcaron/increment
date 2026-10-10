@@ -324,7 +324,7 @@ def examples(session: nox.Session) -> None:
 
 @nox.session(python="3.12")
 def docs_snippets(session: nox.Session) -> None:
-    """Execute shipped README/docs Python snippets under one local fast-tier budget."""
+    """Execute shipped README/docs Python snippets concurrently by file."""
     _sync(session, "dev", extras=("demo", "tables", "dashboard"))
     _run_test_tier(
         session,
@@ -332,6 +332,10 @@ def docs_snippets(session: nox.Session) -> None:
         "README.md",
         "docs",
         "-q",
+        "-n",
+        "2",
+        "--dist",
+        "loadgroup",
     )
 
 

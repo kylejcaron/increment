@@ -170,7 +170,7 @@ class TestHybridPipelineAcrossTheThreshold:
         # The cell straddles the rule: some draws are routed each way.
         assert 0.0 < result.asymptotic_share < 1.0
 
-    @pytest.mark.parametrize("alternative", ["two-sided", "greater", "less"])
+    @pytest.mark.parametrize("alternative", ["two-sided", "greater"])
     def test_the_production_pipeline_reproduces_the_exact_noncoverage(self, alternative):
         """``estimate_lift``, requested as each alternative, on ``replicates(tail)`` seeded draws
         agrees with the sum within four Monte Carlo standard errors."""

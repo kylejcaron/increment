@@ -1650,6 +1650,7 @@ def test_cutoff_only_publication_bounds_eventless_measure(tmp_path: Path) -> Non
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
+@pytest.mark.slow
 def test_cutoff_only_avg_calendar_day_parity_keeps_zero_days_to_cutoff(
     tmp_path: Path,
 ) -> None:
@@ -2693,6 +2694,7 @@ def _route_evidence(native: Any, adopted: Any, store: Any, reference: Any, conte
 
 
 @pytest.mark.parametrize("day_boundary", ["UTC", "UTC-05:00"])
+@pytest.mark.slow
 def test_aware_spellings_of_one_instant_agree_on_both_routes(
     tmp_path: Path, day_boundary: str
 ) -> None:
