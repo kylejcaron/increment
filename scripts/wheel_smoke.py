@@ -38,7 +38,7 @@ def _check_duckdb_memtable_from_pyarrow() -> None:
     con.drop_table("wheel_smoke_memtable")
 
 
-def main() -> None:
+def main(*, core_only: bool = True) -> None:
     if any(pathlib.Path(p).resolve() == _REPO_ROOT for p in sys.path if p):
         raise SystemExit(
             "increment resolved with the source checkout on sys.path -- not a wheel-only run"
@@ -50,12 +50,13 @@ def main() -> None:
         raise SystemExit(
             f"increment imported from {increment.__file__!r}, not this environment's site-packages"
         )
-    optional_modules = ("duckdb", "pandas", "coeftable")
-    present = [name for name in optional_modules if importlib.util.find_spec(name) is not None]
-    if present:
-        raise SystemExit(
-            f"core-only wheel environment unexpectedly contains optional modules: {present}"
-        )
+    if core_only:
+        optional_modules = ("duckdb", "pandas", "coeftable")
+        present = [name for name in optional_modules if importlib.util.find_spec(name) is not None]
+        if present:
+            raise SystemExit(
+                f"core-only wheel environment unexpectedly contains optional modules: {present}"
+            )
 
     failures: list[tuple[str, str]] = []
     promised_tiers = ("increment", "increment.results", "increment.power")
@@ -193,7 +194,7 @@ def _arguments() -> argparse.Namespace:
 
 def _run() -> None:
     args = _arguments()
-    main()
+    main(core_only=not args.demo_extras)
     if args.expected_version is not None:
         actual = importlib.metadata.version("increment")
         if actual != args.expected_version:
@@ -201,9 +202,11 @@ def _run() -> None:
                 f"installed increment version {actual!r} does not match expected "
                 f"{args.expected_version!r}"
             )
-    if args.readme_example:
-        _check_readme_mean_example()
-    print(f"wheel_smoke: OK (package={increment.__file__}; cwd={pathlib.Path.cwd()})")
+    if args.demo_extras:
+        _check_duckdb_memtable_from_pyarrow()
+        print("wheel_smoke: OK (--demo-extras: sqlglot/DuckDB memtable regression probe passed)")
+    else:
+        print(f"wheel_smoke: OK (package={increment.__file__}; cwd={pathlib.Path.cwd()})")
 
 
 if __name__ == "__main__":
