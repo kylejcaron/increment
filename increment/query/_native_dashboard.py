@@ -152,6 +152,7 @@ def _retained_dashboard_groups(
                     source_kind="retained_checkpoint",
                     prefix_id=checkpoint.prefix_id,
                     unavailable=unavailable,
+                    analysis_population=checkpoint.population,
                 )
             )
     return tuple(rows)

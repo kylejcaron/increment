@@ -1732,37 +1732,35 @@ def test_registered_sequential_trigger_run_reuses_assigned_integrity(tmp_path, m
                 return _original(*args, **kwargs)
 
             monkeypatch.setattr(con, method, guard_query)
-    analysis = registered_native(Analysis.from_definitions("exp", definitions_path, con))
-    analysis.capture_sequential(finalized=True, as_of=dt.date(2025, 1, 14))
+    certified = dt.datetime(2025, 1, 31, tzinfo=dt.UTC)
+    analysis = registered_native(
+        Analysis.from_definitions(
+            "exp",
+            definitions_path,
+            con,
+            source_snapshot_evidence=SourceSnapshotEvidence(certified, {"events": certified}),
+        )
+    )
+    analysis.capture_sequential(finalized=True, as_of=dt.date(2025, 1, 12))
     snapshot = analysis.sequential_snapshot()
+    assert snapshot.triggered is not None
     triggered_history = analysis.run_asof_lift(population="triggered")
     assert triggered_history
-    assert not any(
+    assert {row.analysis_population for row in triggered_history} == {"triggered"}
+    assert {row.failure_code for row in triggered_history} == {None}
+    assert {row.sequential_result.checkpoint.prefix_id for row in triggered_history} == {
+        snapshot.triggered.prefix_id
+    }
+    assert any(
         family.analysis_population == "triggered"
         for family in triggered_history.metadata.scope.families
     )
-    assert {row.analysis_population for row in triggered_history} == {"triggered"}
-    assert {row.failure_code for row in triggered_history} == {"readout.cell.unsupported_request"}
-    assert {row.failure_context["reason"] for row in triggered_history} == {"triggered_sequential"}
-    selection = [
-        (
-            row.discovery,
-            row.family_id,
-            row.family_axes,
-            row.family_q,
-            row.family_threshold,
-            row.family_guarantee,
-            row.family_nominal_alpha,
-        )
-        for row in triggered_history
-    ]
-    assert selection == [(None,) * 7] * len(triggered_history)
-    assert all(row.sequential_result is None for row in triggered_history)
-    assert {
-        cell.failure.code for cell in triggered_history.metadata.cells if cell.failure is not None
-    } == {"readout.cell.unsupported_request"}
 
     assert snapshot.assignment_counts == {"control": 500, "treatment": 500}
+    assert snapshot.triggered.assignment_counts is not None
+    assert sum(snapshot.triggered.assignment_counts.values()) == sum(
+        unit["triggered"] for unit in units
+    )
     integrity_calls = []
     original_integrity = _sequential_scope.assignment_integrity
 
@@ -1778,17 +1776,19 @@ def test_registered_sequential_trigger_run_reuses_assigned_integrity(tmp_path, m
     (integrity,) = scope.integrity
     assert query_calls == []
     assert len(integrity_calls) == 1
+    # Triggered counts are not assignment-law evidence: integrity stays assigned.
     assert integrity.analysis_population == "assigned"
     assert integrity.observed == snapshot.assignment_counts
     assert integrity.observed == {"control": 500, "treatment": 500}
-    assert any(
-        row.analysis_population == "triggered"
-        and row.failure_code == "readout.cell.unsupported_request"
-        for row in results
+    by_population = {row.analysis_population: row for row in results}
+    assert by_population["triggered"].require_sequential_result().checkpoint.population == (
+        "triggered"
     )
-    assert any(
-        component["kind"] == "assignment_counts" for component in results.source["components"]
-    )
+    components = {
+        (component["kind"], component["population"]) for component in results.source["components"]
+    }
+    assert {("assignment_counts", "assigned"), ("assignment_counts", "triggered")} <= components
+    assert {("sequential_prefix", "assigned"), ("sequential_prefix", "triggered")} <= components
 
 
 def test_srm_population_triggered_refuses_on_a_seam_instance():

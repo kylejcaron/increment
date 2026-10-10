@@ -358,6 +358,106 @@ def _triggered_day_axis_cases() -> tuple[ParityCase, ...]:
     )
 
 
+def _triggered_sequential_case() -> ParityCase:
+    """Registered asymptotic-mean monitoring with a declared trigger: both the
+    assigned and the triggered chain are captured at the same horizon through
+    definitions, a reopened unit-day artifact and a moments replay, and the
+    ``run()`` rows of both populations must agree. The fingerprint the runner
+    compares covers the nested triggered chain (`runner.sequential_fingerprint`).
+    """
+    base_rows = ds.event_rows(n_per_arm=12)
+    rows = [dict(row) for row in base_rows]
+    for prefix in ("c", "t"):
+        for index in range(12):
+            unit = f"{prefix}{index}"
+            assignment = next(
+                row for row in base_rows if row["user_id"] == unit and row["event"] == "exposure"
+            )
+            if index % 3 == 2:
+                continue
+            rows.append(
+                {
+                    **assignment,
+                    "event_at": dt.datetime(2025, 1, 10, 10 + index % 2),
+                    "event": "saw_surface",
+                    "revenue": None,
+                    "sess": None,
+                    "latency": None,
+                }
+            )
+    payload = ds.definitions_dict(
+        plan=AnalysisPlan(
+            primary="revenue",
+            inference={"kind": "asymptotic_mean", "expected_decision_sample_size": 100},
+        ),
+        allocation={"control": 0.5, "treatment": 0.5},
+    )
+    payload["fact_sources"][0]["facts"].append({"name": "saw_surface", "column": None})
+    payload["exposures"].append({"name": "saw_surface", "fact": "saw_surface"})
+    payload["experiments"][0]["trigger"] = "saw_surface"
+    definitions = Definitions.model_validate(payload)
+    cutoff = dt.datetime(2025, 1, 20, tzinfo=dt.UTC)
+    evidence = SourceSnapshotEvidence(
+        observation_cutoff_ts=cutoff,
+        complete_through_by_feed={"events": cutoff},
+    )
+    as_of = ds._EXPERIMENT_END - dt.timedelta(days=1)
+
+    def build_definitions() -> Analysis:
+        con = ds.duckdb_connection(rows)
+        native = make_analysis(
+            con, definitions, experiment="exp", source_snapshot_evidence=evidence
+        )
+        native._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        return _track_connection(native, con)
+
+    def build_artifact() -> Analysis:
+        con = ds.duckdb_connection(rows)
+        native = make_analysis(
+            con, definitions, experiment="exp", source_snapshot_evidence=evidence
+        )
+        adopted = _publish_and_adopt(
+            con, native, kinds=(*_ARTIFACT_EXTENSION_KINDS, "assignment_counts")
+        )
+        adopted._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
+        return adopted
+
+    def build_moments() -> Analysis:
+        native = build_definitions()
+        try:
+            native.capture_sequential(finalized=True, as_of=as_of)
+            return _export_and_replay(native, [MetricSpec(name="revenue", type="mean")])
+        finally:
+            for connection in getattr(native, "_parity_connections", ()):
+                connection.disconnect()
+
+    def probe_both_chains(name: str, analysis: Analysis) -> None:
+        snapshot = analysis.sequential_snapshot()
+        assert snapshot.triggered is not None, f"{name}: the triggered chain was not captured"
+        assert snapshot.triggered.registration.population == "triggered"
+        assert snapshot.triggered.registration_id != snapshot.registration_id
+        assert 0 < len(snapshot.triggered.records) < len(snapshot.records)
+
+    unsupported = {
+        "from_unit_summary": "SOURCE: unit summaries carry no trigger declaration or per-unit trigger anchors.",
+        "from_unit_panel": "SOURCE: unit panels carry no trigger declaration or per-unit trigger anchors.",
+        "from_switchback_panel": "SOURCE: switchback contrasts carry no triggered arm evidence.",
+    }
+    return ParityCase(
+        id="triggered_sequential_asymptotic_mean",
+        build={
+            "from_definitions": build_definitions,
+            "from_unit_day_artifact": build_artifact,
+            "from_moments": build_moments,
+        },
+        waive=unsupported,
+        metrics=("revenue",),
+        sequential=True,
+        source_probe=probe_both_chains,
+        slow=True,
+    )
+
+
 def _triggered_encouragement_compliance_case() -> ParityCase:
     """Trigger-selected compliance parity; uptake still uses its assignment anchor."""
     rows = _encouragement_rows_for_parity()
@@ -8846,6 +8946,7 @@ def _winsor_size_routed_case() -> ParityCase:
 
 PARITY_CASES: tuple[ParityCase, ...] = (
     *_triggered_day_axis_cases(),
+    _triggered_sequential_case(),
     _triggered_encouragement_compliance_case(),
     _exact_conversion_case(export_from="from_definitions"),
     _exact_conversion_case(export_from="from_unit_panel"),

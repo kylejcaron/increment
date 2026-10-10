@@ -617,16 +617,19 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
         estimates = population_estimates["assigned"]
         _require_treatment_arm(estimates, treatment=treatment_group)
         checkpoints = {
-            estimate.metric: estimate.sequential_result.checkpoint
-            for estimate in estimates
-            if estimate.method_role == "decision" and estimate.sequential_result is not None
+            population: {
+                estimate.metric: estimate.sequential_result.checkpoint
+                for estimate in population_estimates[population]
+                if estimate.method_role == "decision" and estimate.sequential_result is not None
+            }
+            for population in populations
         }
         group_data = tuple(
             row
             for population in populations
             for row in pinned.dashboard_group_data(
                 metrics=metrics,
-                checkpoints=(checkpoints or None) if population == "assigned" else None,
+                checkpoints=checkpoints[population] or None,
                 population=population,
             )
         )

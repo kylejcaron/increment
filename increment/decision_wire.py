@@ -93,11 +93,17 @@ class WireFixedInference(_WireBase):
 class WireAlwaysValid(_WireBase):
     kind: Literal["always_valid"] = "always_valid"
     registration: SequentialRegistration
+    triggered_registration: SequentialRegistration | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class WireAsymptoticMean(_WireBase):
     kind: Literal["asymptotic_mean"] = "asymptotic_mean"
     registration: SequentialRegistration
+    triggered_registration: SequentialRegistration | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 WireInference = Annotated[
@@ -119,6 +125,9 @@ class WireMultiplicityFamily(_WireBase):
     guarantee: Literal["none", "fwer", "fdr"] = "none"
     validity_regime: Literal["finite_sample", "asymptotic_sequential"] = Field(
         default="finite_sample", exclude_if=lambda value: value == "finite_sample"
+    )
+    look_policy: Literal["outcome_independent", "exploratory"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
     )
 
     @model_validator(mode="after")
@@ -149,7 +158,11 @@ class WireMultiplicityFamily(_WireBase):
                 f"q is only valid for BH multiplicity, got {self.correction!r}",
                 correction=self.correction,
             )
-        expected_guarantee = guarantee_for_correction(self.correction)
+        expected_guarantee = (
+            "none"
+            if self.look_policy == "exploratory"
+            else guarantee_for_correction(self.correction)
+        )
         if self.guarantee != expected_guarantee:
             _raise(
                 "wire.multiplicity.guarantee_mismatch",
@@ -430,9 +443,15 @@ def _inference_to_wire(inference: object) -> WireInference:
     if isinstance(inference, FixedInference):
         return WireFixedInference()
     if isinstance(inference, ASYMPTOTIC_PROCEDURE_POLICIES):
-        return WireAsymptoticMean(registration=inference.registration)
+        return WireAsymptoticMean(
+            registration=inference.registration,
+            triggered_registration=inference.triggered_registration,
+        )
     if isinstance(inference, AlwaysValid):
-        return WireAlwaysValid(registration=inference.registration)
+        return WireAlwaysValid(
+            registration=inference.registration,
+            triggered_registration=inference.triggered_registration,
+        )
     _raise(
         "wire.procedure.invalid_inference",
         f"unsupported runtime inference {type(inference).__name__}",
@@ -447,9 +466,14 @@ def _inference_from_wire(
         if isinstance(inference, WireFixedInference):
             return FixedInference()
         if isinstance(inference, WireAsymptoticMean):
-            return compose_asymptotic_or_mixed(inference.registration)
+            return compose_asymptotic_or_mixed(
+                inference.registration, triggered_registration=inference.triggered_registration
+            )
         if isinstance(inference, WireAlwaysValid):
-            return AlwaysValid(registration=inference.registration)
+            return AlwaysValid(
+                registration=inference.registration,
+                triggered_registration=inference.triggered_registration,
+            )
     except (TypeError, ValueError) as exc:
         _raise(
             "wire.procedure.invalid_inference",

@@ -459,6 +459,7 @@ def bind_automatic_sequential_plan(
     transformations: Sequence[Any] = (),
     path: Literal["warehouse", "frame", "frame/contrast"] = "warehouse",
     pre_period_covariate: bool = False,
+    trigger: str | None = None,
 ) -> AnalysisPlan | None:
     """Bind automatic declarations from metadata before any observations are read.
 
@@ -471,9 +472,18 @@ def bind_automatic_sequential_plan(
     ``view_multiplicity`` fix the retained segment family; the automatic-only
     metadata is cleared once the immutable roster carries it.
     """
-    if plan is None or plan.inference is None or plan.inference.registration is not None:
+    if plan is None or plan.inference is None:
         return plan
     spec = plan.inference
+    if spec.registration is not None:
+        return _bind_triggered_plan(
+            plan,
+            metrics,
+            design=design,
+            source_mapping=source_mapping,
+            transformations=transformations,
+            trigger=trigger,
+        )
     from increment.sequential_source import auto_register_bernoulli, auto_register_scalar_mean
 
     resolved = _resolve_declaration(plan.model_copy(update={"inference": None}), metrics, path=path)
@@ -520,7 +530,39 @@ def bind_automatic_sequential_plan(
         }
     )
     bound = plan.model_copy(update={"inference": inference})
-    return AnalysisPlan.model_validate(bound)
+    return _bind_triggered_plan(
+        AnalysisPlan.model_validate(bound),
+        metrics,
+        design=design,
+        source_mapping=source_mapping,
+        transformations=transformations,
+        trigger=trigger,
+    )
+
+
+def _bind_triggered_plan(plan, metrics, *, design, source_mapping, transformations, trigger):
+    from increment.semantics.sequential import derive_triggered_registration
+    from increment.sequential_source import sequential_definition_id
+
+    spec = plan.inference
+    if trigger is None or spec.triggered_registration is not None:
+        return plan
+    triggered = derive_triggered_registration(
+        spec.registration,
+        definitions_id=sequential_definition_id(
+            metrics,
+            design,
+            source_mapping=source_mapping,
+            transformations=transformations,
+            population="triggered",
+        ),
+        look_policy=spec.triggered_look_policy,
+    )
+    return AnalysisPlan.model_validate(
+        plan.model_copy(
+            update={"inference": spec.model_copy(update={"triggered_registration": triggered})}
+        )
+    )
 
 
 def compile_decision_plan(

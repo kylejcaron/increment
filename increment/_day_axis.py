@@ -1027,44 +1027,6 @@ def _estimate_day_axis_lift_slice(
     return results
 
 
-def _unsupported_triggered_sequential_rows(
-    rows: Sequence[DailyLiftEstimate],
-) -> list[DailyLiftEstimate]:
-    from increment._immutable import _FrozenMapping
-
-    output = []
-    for row in rows:
-        if row.method_role != "decision":
-            continue
-        context = {"reason": "triggered_sequential", "analysis_population": "triggered"}
-        output.append(
-            row.model_copy(
-                update={
-                    "analysis_population": "triggered",
-                    "lift": None,
-                    "relative_confidence_set": None,
-                    "sequential_result": None,
-                    "discovery": None,
-                    "family_axes": None,
-                    "family_q": None,
-                    "family_threshold": None,
-                    "family_id": None,
-                    "failure_code": "readout.cell.unsupported_request",
-                    "failure_context": _FrozenMapping(context),
-                    "sampling_available": False,
-                    "sampling_reason_code": "readout.cell.unsupported_request",
-                    "sampling_reason_context": _FrozenMapping(context),
-                    "decision_scope_complete": False,
-                    "decision_scope_reason_code": "readout.scope.decision_incomplete",
-                    "decision_scope_reason_context": _FrozenMapping(context),
-                    "n_control": None,
-                    "n_treat": None,
-                }
-            )
-        )
-    return output
-
-
 def _triggered_group_roster(source: MomentSource, experiment: Experiment) -> list[str]:
     assigned_counts = getattr(source, "assignment_counts", None)
     if callable(assigned_counts):
@@ -1545,35 +1507,6 @@ class DayAxisReadouts:
                     "route.unsupported",
                     "segmented as-of history requires retained per-date stopped states; use the registered breakout checkpoint",
                 )
-            if req.population == "triggered":
-                from increment.breakout.estimates import daily_sequential_projection
-
-                policy = self._plan.view_policies.for_view(
-                    "asof", mechanism=getattr(self._design, "mechanism", None), segmented=False
-                )
-                return _scope_day_axis_rows(
-                    _unsupported_triggered_sequential_rows(
-                        daily_sequential_projection(
-                            readouts.asof_lift(
-                                self._src,
-                                metrics=[m.name for m in req.metrics],
-                                estimands=req.estimands,
-                                decision_method=decision_method,
-                                sensitivity_methods=sensitivity_methods,
-                                prior=prior,
-                                completed_windows_only=req.completed_windows_only,
-                            ),
-                            correction=normalize_display_correction(policy.correction),
-                        )
-                    ),
-                    req,
-                    source=self._src,
-                    route=route,
-                    plan=self._plan,
-                    configs=self._src.context.configs,
-                    design=self._design,
-                    family_populations={"assigned"},
-                )
 
             from increment.breakout.estimates import daily_sequential_projection
 
@@ -1589,6 +1522,7 @@ class DayAxisReadouts:
                 sensitivity_methods=sensitivity_methods,
                 prior=prior,
                 completed_windows_only=req.completed_windows_only,
+                _population=req.population,
             )
             return _scope_day_axis_rows(
                 daily_sequential_projection(rows, correction=correction),

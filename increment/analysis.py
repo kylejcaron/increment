@@ -491,6 +491,7 @@ class Analysis:
                 defs, experiment, on_mixed_assignment=on_mixed_assignment
             ),
             pre_period_covariate=experiment.n_pre_periods > 0,
+            trigger=experiment.trigger,
         )
         if experiment_plan is not experiment.plan:
             experiment = Experiment.model_validate(

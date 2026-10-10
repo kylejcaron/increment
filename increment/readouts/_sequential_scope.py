@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from increment._canonical import canonical_digest_bytes, canonical_json_bytes
 from increment._source_identity import source_identity
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from increment.sequential_state import SequentialSnapshot
 
 UNSUPPORTED_CODE = "readout.cell.unsupported_request"
-TRIGGERED_SEQUENTIAL = "triggered_sequential"
+TRIGGERED_UNAVAILABLE = frozenset({"triggered_chain_uncommitted", "triggered_uptake_unsupported"})
 
 
 def _evidence(row: LiftEstimate, cell: CellKey):
@@ -103,6 +103,36 @@ def _snapshot_identity(
                     dimension=dimension,
                 )
             )
+        if snapshot.triggered is not None:
+            chain = snapshot.triggered
+            components.append(
+                component(
+                    kind="sequential_prefix",
+                    metric=None,
+                    population="triggered",
+                    sha256=sha256(
+                        canonical_json_bytes(
+                            {
+                                "registration_id": chain.registration_id,
+                                "prefix_id": chain.prefix_id,
+                            }
+                        )
+                    ).hexdigest(),
+                    source=component_source,
+                    dimension=dimension,
+                )
+            )
+            if chain.assignment_counts is not None:
+                components.append(
+                    component(
+                        kind="assignment_counts",
+                        metric=None,
+                        population="triggered",
+                        sha256=sha256(canonical_digest_bytes(chain.assignment_counts)).hexdigest(),
+                        source=component_source,
+                        dimension=dimension,
+                    )
+                )
         source = composite_source(components)
     request = {
         "view": "run",
@@ -155,6 +185,91 @@ def _checkpoint_roster(src: Any, design: Any, rows, snapshot: SequentialSnapshot
     return resolve_roster(src, design, "assigned", observed_by_metric, base_roster=base_roster)
 
 
+def _unavailable_triggered_cell(
+    cell: Any, assigned_row: LiftEstimate, snapshot_id: str, *, missing: int
+) -> tuple[LiftEstimate, CellRecord]:
+    """An identity-preserving unavailable row for a triggered decision cell.
+
+    Assignment-anchored uptake lies outside the triggered construction; any other
+    cell is missing because the process was committed without a triggered chain.
+    """
+    reason = (
+        "triggered_uptake_unsupported"
+        if cell.estimand == "compliance"
+        else "triggered_chain_uncommitted"
+    )
+    context = {"reason": reason, "analysis_population": "triggered"}
+    failure = CellFailure(hypothesis=cell.hypothesis(), code=UNSUPPORTED_CODE, context=context)
+    row = LiftEstimate(
+        metric=cell.metric,
+        group_id=cell.group_id,
+        method=cell.method,
+        method_role=cell.method_role,
+        estimand=cell.estimand,
+        analysis_population="triggered",
+        value_scale=cell.value_scale,
+        alternative=cell.alternative,
+        reference_kind="sequential",
+        scale="linear",
+        inference=assigned_row.inference,
+        role=assigned_row.role,
+        lift=None,
+        source_snapshot_id=snapshot_id,
+        failure_code=failure.code,
+        failure_context=failure.context,
+        sampling_available=False,
+        sampling_reason_code=failure.code,
+        sampling_reason_context=failure.context,
+        decision_scope_complete=False,
+        decision_scope_reason_code="readout.scope.decision_incomplete",
+        decision_scope_reason_context={"missing_cells": missing},
+    )
+    record = CellRecord(
+        cell=cell,
+        source_snapshot_id=snapshot_id,
+        failure=failure,
+        sampling=SamplingInference(
+            available=False, reason_code=failure.code, reason_context=failure.context
+        ),
+    )
+    return row, record
+
+
+def _population_accounting(
+    snapshot: SequentialSnapshot,
+    trigger_name: str | None,
+    *,
+    arms: tuple[str, ...],
+    roster_source: Literal["declared_allocation", "experiment_counts", "observed_union", "unknown"],
+    assigned_complete: bool,
+    triggered_complete: bool,
+) -> tuple[dict[Population, bool], list[PopulationRoster], tuple[Population, ...]]:
+    """Per-population decision completeness and rosters for the scoped collection."""
+    complete: dict[Population, bool] = {"assigned": assigned_complete}
+    rosters = [
+        PopulationRoster(
+            analysis_population="assigned",
+            arms=arms,
+            source=roster_source,
+            complete=assigned_complete,
+        )
+    ]
+    if trigger_name is None:
+        return complete, rosters, ("assigned",)
+    complete["triggered"] = triggered_complete
+    chain = snapshot.triggered
+    counted = chain is not None and chain.assignment_counts is not None
+    rosters.append(
+        PopulationRoster(
+            analysis_population="triggered",
+            arms=arms,
+            source="experiment_counts" if counted else "unknown",
+            complete=counted,
+        )
+    )
+    return complete, rosters, ("assigned", "triggered")
+
+
 def scope_sequential_results(
     src: Any,
     rows: Sequence[LiftEstimate],
@@ -164,12 +279,9 @@ def scope_sequential_results(
     estimands: Sequence[str] | None,
     base_roster=None,
 ) -> LiftEstimates:
-    """Attach scope to the assigned sequential rows, reporting unsupported triggered cells.
+    """Attach both retained populations and account for every unavailable decision."""
+    from increment._sequential_readouts import sequential_readout
 
-    A registered sequential construction exists only for the assigned population, so a
-    declared trigger yields one explicit unsupported record (with a null row) for each
-    assigned decision cell instead of silently omitting that population.
-    """
     plan = src.context.plan
     design = _require_design(src, "run")
     registration = plan.inference.registration
@@ -192,6 +304,8 @@ def scope_sequential_results(
         integrity_counts = roster.integrity_counts
     else:
         integrity_counts = None
+    if snapshot.triggered is not None:
+        rows = [*rows, *sequential_readout(src, population="triggered", _include_unrequested=True)]
     snapshot_id, source = _snapshot_identity(
         plan,
         snapshot,
@@ -213,12 +327,17 @@ def scope_sequential_results(
         and (estimand_names is None or row.estimand in estimand_names)
     ]
     assigned_rows = {CellKey.from_row(row): row for row in visible_rows}
-    decision_assigned = [cell for cell in assigned_rows if cell.method_role == "decision"]
+    decision_assigned = [
+        cell
+        for cell in assigned_rows
+        if cell.method_role == "decision" and cell.analysis_population == "assigned"
+    ]
     triggered_cells = {}
     if trigger_name is not None:
         for cell in decision_assigned:
-            triggered_cells[cell.model_copy(update={"analysis_population": "triggered"})] = cell
-
+            triggered_cell = cell.model_copy(update={"analysis_population": "triggered"})
+            if triggered_cell not in assigned_rows:
+                triggered_cells[triggered_cell] = cell
     roster_groups = {design.control_group} | {cell.group_id for cell in registration.roster}
     roster_source = (
         "declared_allocation" if getattr(design, "allocation", None) else "observed_union"
@@ -243,70 +362,30 @@ def scope_sequential_results(
             )
         )
 
-    context = {"reason": TRIGGERED_SEQUENTIAL, "analysis_population": "triggered"}
     for cell in sorted(triggered_cells, key=cell_order):
-        failure = CellFailure(hypothesis=cell.hypothesis(), code=UNSUPPORTED_CODE, context=context)
-        assigned_row = assigned_rows[triggered_cells[cell]]
-        output.append(
-            LiftEstimate(
-                metric=cell.metric,
-                group_id=cell.group_id,
-                method=cell.method,
-                method_role=cell.method_role,
-                estimand=cell.estimand,
-                analysis_population="triggered",
-                value_scale=cell.value_scale,
-                alternative=cell.alternative,
-                reference_kind="sequential",
-                scale="linear",
-                inference=assigned_row.inference,
-                role=assigned_row.role,
-                lift=None,
-                source_snapshot_id=snapshot_id,
-                failure_code=failure.code,
-                failure_context=failure.context,
-                sampling_available=False,
-                sampling_reason_code=failure.code,
-                sampling_reason_context=failure.context,
-                decision_scope_complete=False,
-                decision_scope_reason_code="readout.scope.decision_incomplete",
-                decision_scope_reason_context={"missing_cells": len(triggered_cells)},
-            )
+        row, record = _unavailable_triggered_cell(
+            cell, assigned_rows[triggered_cells[cell]], snapshot_id, missing=len(triggered_cells)
         )
-        records.append(
-            CellRecord(
-                cell=cell,
-                source_snapshot_id=snapshot_id,
-                failure=failure,
-                sampling=SamplingInference(
-                    available=False, reason_code=failure.code, reason_context=failure.context
-                ),
-            )
-        )
+        output.append(row)
+        records.append(record)
 
     all_cells = tuple(sorted({*assigned_rows, *triggered_cells}, key=cell_order))
-    decision_cells = tuple(sorted({*decision_assigned, *triggered_cells}, key=cell_order))
-    complete: dict[Population, bool] = {"assigned": bool(decision_assigned)}
-    rosters = [
-        PopulationRoster(
-            analysis_population="assigned",
-            arms=tuple(sorted(roster_groups)),
-            source=roster_source,
-            complete=bool(decision_assigned),
+    decision_cells = tuple(
+        sorted(
+            {cell for cell in assigned_rows if cell.method_role == "decision"}
+            | set(triggered_cells),
+            key=cell_order,
         )
-    ]
-    populations = ("assigned",)
-    if trigger_name is not None:
-        complete["triggered"] = False
-        populations = ("assigned", "triggered")
-        rosters.append(
-            PopulationRoster(
-                analysis_population="triggered",
-                arms=tuple(sorted(roster_groups)),
-                source=roster_source,
-                complete=False,
-            )
-        )
+    )
+    complete, rosters, populations = _population_accounting(
+        snapshot,
+        trigger_name,
+        arms=tuple(sorted(roster_groups)),
+        roster_source=roster_source,
+        assigned_complete=bool(decision_assigned),
+        triggered_complete=not triggered_cells
+        and any(cell.analysis_population == "triggered" for cell in assigned_rows),
+    )
     integrity = (
         existing_integrity
         if existing_integrity is not None
@@ -316,13 +395,33 @@ def scope_sequential_results(
             randomization_grain="cluster" if getattr(src.context, "cluster", None) else "unit",
         )
     )
+    output = [
+        row.model_copy(
+            update={
+                "decision_scope_complete": complete[row.analysis_population],
+                "decision_scope_reason_code": (
+                    None
+                    if complete[row.analysis_population]
+                    else "readout.scope.decision_incomplete"
+                ),
+                "decision_scope_reason_context": (
+                    None
+                    if complete[row.analysis_population]
+                    else {"missing_cells": len(triggered_cells)}
+                ),
+            }
+        )
+        for row in output
+    ]
     output, families = attach_multiplicity_scope(
         output,
         tuple(dict.fromkeys((*family_cells, *all_cells))),
         plan,
         src.context.configs,
         snapshot_id,
-        family_populations={"assigned"},
+        family_populations={"assigned", "triggered"}
+        if snapshot.triggered is not None
+        else {"assigned"},
     )
     source_scope = SourceReadoutScope(
         source_snapshot_id=snapshot_id,

@@ -546,7 +546,11 @@ def test_sequential_trigger_augmentation_reuses_captured_snapshot_integrity(monk
         assigned.value_scale,
         assigned.alternative,
     )
-    assert triggered.failure_code == "readout.cell.unsupported_request"
+    assert triggered.failure_code is None
+    assert triggered.require_sequential_result().checkpoint.population == "triggered"
+    assert triggered.require_sequential_result().checkpoint.prefix_id != (
+        assigned.require_sequential_result().checkpoint.prefix_id
+    )
 
 
 def test_sequential_narrowed_view_keeps_the_registered_family_membership():

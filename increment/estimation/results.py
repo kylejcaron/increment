@@ -1266,7 +1266,8 @@ class LiftEstimate(_RowIdentity):
                 self.analysis_population == "triggered"
                 and self.failure_code == "readout.cell.unsupported_request"
                 and self.failure_context is not None
-                and self.failure_context.get("reason") == "triggered_sequential"
+                and self.failure_context.get("reason")
+                in ("triggered_chain_uncommitted", "triggered_uptake_unsupported")
                 and self.sampling_available is False
                 and self.decision_scope_complete is False
                 and self.lift is None
@@ -1282,6 +1283,8 @@ class LiftEstimate(_RowIdentity):
                 "source.invalid", "displayed validity regime differs from its checkpoint"
             )
         require_public_laws((result.checkpoint.model,), "LiftEstimate replay")
+        if self.analysis_population != result.checkpoint.population:
+            sequential_refuse("source.invalid", "result and checkpoint populations disagree")
         if (
             self.value_scale != "relative"
             or self.scale != "linear"

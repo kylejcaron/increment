@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from increment.errors import (
     CodedModel,
@@ -80,11 +80,22 @@ def sequential_support_refusal(request: SequentialSupportRequest) -> str | None:
     return None
 
 
+def _validate_population_pair(policy) -> None:
+    """A runtime policy may carry only the derivation of its own assigned registration."""
+    if policy.triggered_registration is not None:
+        from increment.semantics.sequential import validate_triggered_registration
+
+        validate_triggered_registration(policy.registration, policy.triggered_registration)
+
+
 class AlwaysValid(CodedModel, BaseModel):
     """Raw likelihood evidence with a committed model, roster and reveal law."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     registration: SequentialRegistration
+    triggered_registration: SequentialRegistration | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @property
     def label(self) -> str:
@@ -105,6 +116,7 @@ class AlwaysValid(CodedModel, BaseModel):
                     ),
                 )
             invalid_registration("asymptotic laws require explicit AsymptoticMean inference")
+        _validate_population_pair(self)
         return self
 
     def allocated_alpha(self, alpha: Fraction, n: int) -> Fraction:
@@ -116,6 +128,9 @@ class AsymptoticMean(CodedModel, BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     registration: SequentialRegistration
+    triggered_registration: SequentialRegistration | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def _policy(self):
@@ -123,6 +138,7 @@ class AsymptoticMean(CodedModel, BaseModel):
 
         if any(m.law not in ASYMPTOTIC_LAWS for m in self.registration.models):
             invalid_registration("AsymptoticMean requires an exclusively asymptotic registration")
+        _validate_population_pair(self)
         return self
 
     @property
@@ -147,6 +163,9 @@ class MixedFamily(CodedModel, BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     registration: SequentialRegistration
+    triggered_registration: SequentialRegistration | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @property
     def label(self) -> str:
@@ -161,6 +180,7 @@ class MixedFamily(CodedModel, BaseModel):
             invalid_registration(
                 "MixedFamily requires both an asymptotic law and a Bernoulli uptake model"
             )
+        _validate_population_pair(self)
         return self
 
     def allocated_alpha(self, alpha: Fraction, n: int) -> Fraction:
@@ -174,14 +194,16 @@ UPTAKE_COMPLETION_POLICIES = (AlwaysValid, MixedFamily)
 
 def compose_asymptotic_or_mixed(
     registration: SequentialRegistration,
+    *,
+    triggered_registration: SequentialRegistration | None = None,
 ) -> AsymptoticMean | MixedFamily:
     """Compose the asymptotic-procedure runtime policy a registration's own
     law content calls for: ``MixedFamily`` when it mixes a Bernoulli uptake
     model into an asymptotic roster, ``AsymptoticMean`` otherwise."""
     laws = {m.law for m in registration.models}
     if "bernoulli" in laws and (laws - {"bernoulli"}):
-        return MixedFamily(registration=registration)
-    return AsymptoticMean(registration=registration)
+        return MixedFamily(registration=registration, triggered_registration=triggered_registration)
+    return AsymptoticMean(registration=registration, triggered_registration=triggered_registration)
 
 
 class GaussianScoreMixture(CodedModel, BaseModel):

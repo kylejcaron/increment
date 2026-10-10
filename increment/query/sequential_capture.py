@@ -25,6 +25,27 @@ if TYPE_CHECKING:
     from ibis.backends.sql import SQLBackend
 
 
+def certify_capture_feed(*, feed, cutoff, complete_through, experiment, as_of):
+    """Require an upstream-certified whole-day edge before releasing a prefix."""
+    from increment.query.artifact_publish import _effective_snapshot_edge
+
+    _, certified = _effective_snapshot_edge(
+        cutoff,
+        complete_through,
+        experiment.day_boundary_offset,
+        experiment.observation_horizon_day,
+    )
+    if certified is None or certified < as_of:
+        sequential_refuse(
+            "source.invalid",
+            f"feed {feed!r} is not certified complete through {as_of}",
+            feed=feed,
+            certified_day=None if certified is None else certified.isoformat(),
+            as_of=as_of.isoformat(),
+        )
+    return certified
+
+
 def record_batches(connection: SQLBackend, relation: Table):
     """Read bounded batches with the backend's current Arrow interface."""
     if connection.name == "duckdb":
@@ -47,9 +68,15 @@ def record_batches(connection: SQLBackend, relation: Table):
         reader.close()
 
 
-def validate_relational_capture(source, *, finalized, as_of, previous=None, covariate=False):
+def validate_relational_capture(
+    source, *, finalized, as_of, previous=None, covariate=False, population="assigned"
+):
     """Reject incompatible registrations before resolving warehouse relations."""
-    registration = getattr(source.context.plan.inference, "registration", None)
+    registration = getattr(
+        source.context.plan.inference,
+        "triggered_registration" if population == "triggered" else "registration",
+        None,
+    )
     if registration is None:
         sequential_refuse("source.invalid", "register the likelihood before capturing source data")
     require_public_laws(registration.models, "relational sequential capture")
@@ -60,6 +87,7 @@ def validate_relational_capture(source, *, finalized, as_of, previous=None, cova
         source.context.metrics,
         source.context.design,
         source_mapping=source._sequential_observation_mapping(),
+        population=population,
     )
     if (
         not finalized
@@ -137,10 +165,9 @@ def validate_relational_capture(source, *, finalized, as_of, previous=None, cova
     return registration, definitions
 
 
-def capture_relations(
+def capture_relations(  # noqa: PLR0913
     source,
     relation_for,
-    uptake_relation,
     cohort,
     batches,
     *,
@@ -150,30 +177,59 @@ def capture_relations(
     previous=None,
     covariate=False,
     assignment_counts=None,
+    population="assigned",
+    triggered=None,
+    final_day=None,
 ):
     """Reveal a common finalized cohort and accumulate one bounded Arrow batch.
 
-    Cohort order is exposure time then unit identity. Every modeled outcome must
-    be present; per-metric deletion cannot silently change the joint filtration.
-    With ``covariate`` the unit relation carries ``x``, the same zero-filled
-    pre-period total fixed-horizon CUPED reads: a retained adjustment appends
-    it to the joint vector and a predeclared one folds it into the scalar
-    exactly as frame capture does.
+    ``relation_for(model)`` resolves each registered model's per-unit relation:
+    ``y`` (and ``y_den``, ``x``) for an outcome model, ``d`` for an uptake one.
+    Cohort order is the anchor time then unit identity: assignment for the
+    assigned population, the first eligible trigger for the triggered one. Every
+    modeled outcome must be present; per-metric deletion cannot silently change
+    the joint filtration. With ``covariate`` the unit relation carries ``x``, the
+    same zero-filled pre-period total fixed-horizon CUPED reads: a retained
+    adjustment appends it to the joint vector and a predeclared one folds it into
+    the scalar exactly as frame capture does. A ``triggered`` chain captured in
+    the same execution rides on the assigned envelope.
+
+    ``final_day(cohort)`` is the day each unit's longest window closes. When the
+    capture is certified (a trigger-declared capture) and continues ``previous``,
+    a unit outside the retained prefix whose window closed by the previous look
+    was finalizable then and is a late arrival inside certified days; it refuses
+    rather than appending to a look that was already reported.
     """
     registration, definitions = validate_relational_capture(
-        source, finalized=finalized, as_of=as_of, previous=previous, covariate=covariate
+        source,
+        finalized=finalized,
+        as_of=as_of,
+        previous=previous,
+        covariate=covariate,
+        population=population,
     )
-    metrics = {m.name: m for m in source.context.metrics}
-    joint = cohort.select(
-        unit_id=cohort.unit_id.cast("string"),
-        group_id=cohort.group_id.cast("string"),
-        reveal_order=cohort.first_exposure_ts.cast("string"),
-    )
+    anchor = "first_trigger" if population == "triggered" else "first_exposure"
+    columns = {
+        "unit_id": cohort.unit_id.cast("string"),
+        "group_id": cohort.group_id.cast("string"),
+        "reveal_order": cohort.first_exposure_ts.cast("string"),
+    }
+    horizon = None
+    cursor = None if previous is None else previous.reveal_cursor
+    if (
+        final_day is not None
+        and isinstance(cursor, dt.date)
+        and not isinstance(cursor, dt.datetime)
+    ):
+        columns["final_day"] = final_day(cohort).cast("date")
+        horizon = cursor
+    retained = 0 if previous is None else len(previous.records)
+    joint = cohort.select(**columns)
     value_columns = {}
     predeclared = {}
     for index, model in enumerate(registration.models):
         compliance = model.observable == "uptake"
-        relation = uptake_relation() if compliance else relation_for(metrics[model.metric])
+        relation = relation_for(model)
         columns = {f"v{index}": relation["d" if compliance else "y"]}
         if model.law in ("gaussian_ratio", *RATIO_LAWS):
             columns[f"d{index}"] = relation["y_den"]
@@ -205,15 +261,20 @@ def capture_relations(
         return observed
 
     def records():
+        position = 0
         for batch in batches(joint.order_by("reveal_order", "unit_id")):
             for row in batch.to_pylist():
+                if horizon is not None and position >= retained and row["final_day"] <= horizon:
+                    sequential_refuse(
+                        "continuation.rewrite",
+                        "a unit whose window closed by the previous look arrived after it; "
+                        "the certified days it falls in were already reported",
+                    )
+                position += 1
                 yield {
                     "unit_id": row["unit_id"],
                     "group_id": row["group_id"],
-                    "source_identity": {
-                        "first_exposure": row["reveal_order"],
-                        "source_recipe": recipe_id,
-                    },
+                    "source_identity": {anchor: row["reveal_order"], "source_recipe": recipe_id},
                     "values": values(row),
                 }
 
@@ -226,6 +287,8 @@ def capture_relations(
         previous=previous,
         reveal_cursor=as_of,
         assignment_counts=assignment_counts,
+        triggered=triggered,
     )
-    source._sequential_snapshot = snapshot
+    if population == "assigned":
+        source._sequential_snapshot = snapshot
     return snapshot

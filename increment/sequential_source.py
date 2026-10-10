@@ -19,6 +19,7 @@ from increment.semantics.sequential import (
     refuse_segmented_family_compliance,
     sequential_family_size,
     validate_predeclared_segments,
+    validate_triggered_registration,
 )
 from increment.sequential_state import (
     SequentialSnapshot,
@@ -102,12 +103,19 @@ def native_observation_mapping(definitions, experiment, *, on_mixed_assignment="
 
 
 def sequential_definition_id(
-    metrics, design, *, source_mapping: Mapping[str, object], transformations=()
+    metrics,
+    design,
+    *,
+    source_mapping: Mapping[str, object],
+    transformations=(),
+    population: Literal["assigned", "triggered"] = "assigned",
 ) -> str:
     """Compute the pre-data metric/window/assignment/population binding.
 
     Frame MetricSpecs belong in transformations so column bindings and missing
-    value policies cannot change while a process continues.
+    value policies cannot change while a process continues. The triggered
+    population binds the same declarations under its own anchor, so the two
+    populations' registrations never share an identity.
     """
     return canonical_id(
         {
@@ -118,10 +126,24 @@ def sequential_definition_id(
             "transformations": sorted(
                 (t.model_dump(mode="json") for t in transformations), key=canonical_id
             ),
-            "population": "assigned",
+            "population": population,
             "source_mapping": dict(source_mapping),
         }
     )
+
+
+def population_policy(inference, population: Literal["assigned", "triggered"]):
+    """The runtime policy evaluating one population's chain, or ``None`` without one."""
+    if population == "assigned":
+        return inference
+    registration = getattr(inference, "triggered_registration", None)
+    if registration is None:
+        return None
+    from increment.estimation.sequential import AlwaysValid, compose_asymptotic_or_mixed
+
+    if any(isinstance(m, ScalarMeanModel) for m in registration.models):
+        return compose_asymptotic_or_mixed(registration)
+    return AlwaysValid(registration=registration)
 
 
 def _automatic_law(metric, *, wants_cuped: bool, covariate: bool, adjustment) -> AsymptoticLaw:
@@ -831,6 +853,9 @@ def validate_sequential_plan(plan, metrics, design):
     if registration is None:
         return
     validate_scalar_mean_design(registration, design)
+    triggered = getattr(plan.inference, "triggered_registration", None)
+    if triggered is not None:
+        validate_triggered_registration(registration, triggered)
     if any(isinstance(m, ScalarMeanModel) for m in registration.models):
         if float(registration.q) != plan.q or registration.q > Fraction(plan.q):
             sequential_refuse(
@@ -1190,10 +1215,38 @@ def validate_source_mapping(context, source_mapping):
         sequential_refuse(
             "source.invalid", "registered source/definitions differ before relation access"
         )
+    triggered = getattr(context.plan.inference, "triggered_registration", None)
+    if triggered is not None and triggered.definitions_id != sequential_definition_id(
+        context.metrics, context.design, source_mapping=source_mapping, population="triggered"
+    ):
+        sequential_refuse(
+            "source.invalid", "triggered observation binding differs before relation access"
+        )
     validate_sequential_plan(context.plan, context.metrics, context.design)
 
 
 def link_snapshot(snapshot, previous):
+    """Link each population independently while retaining the paired envelope."""
+    if previous is None:
+        return snapshot
+    if previous.triggered is None and snapshot.triggered is not None:
+        sequential_refuse(
+            "continuation.legacy",
+            "a triggered decision cannot be backfilled onto an assigned-only process",
+        )
+    triggered = None
+    if previous.triggered is not None:
+        if snapshot.triggered is None:
+            sequential_refuse("continuation.rewrite", "the committed triggered chain was dropped")
+        triggered = link_snapshot(snapshot.triggered, previous.triggered)
+    linked = _link_population_snapshot(
+        snapshot.model_copy(update={"triggered": None}),
+        previous.model_copy(update={"triggered": None}),
+    )
+    return linked.model_copy(update={"triggered": triggered})
+
+
+def _link_population_snapshot(snapshot, previous):
     """Prove extension from retained immutable unit proofs, never a generation hash.
 
     Every freeze either side records survives: ``previous``'s freezes carry
@@ -1364,6 +1417,12 @@ class SequentialSourceMixin:
         require_public_laws(registration.models, "sequential snapshot adoption")
         if snapshot.registration.source_id != self.context.study_id:
             sequential_refuse("source.invalid", "adopted checkpoint belongs to another source")
+        triggered = getattr(inference, "triggered_registration", None)
+        if snapshot.triggered is not None and snapshot.triggered.registration != triggered:
+            sequential_refuse(
+                "source.invalid",
+                "adopted triggered checkpoint has a different registered source plan",
+            )
         previous = getattr(self, "_sequential_snapshot", None)
         linked = link_snapshot(snapshot, previous)
         self._sequential_snapshot = linked

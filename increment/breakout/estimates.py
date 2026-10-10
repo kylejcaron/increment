@@ -1248,7 +1248,8 @@ class DailyLiftEstimate(_RowIdentity):
                 self.sequential_result is None
                 and self.analysis_population == "triggered"
                 and self.failure_code == "readout.cell.unsupported_request"
-                and (self.failure_context or {}).get("reason") == "triggered_sequential"
+                and (self.failure_context or {}).get("reason")
+                in ("triggered_chain_uncommitted", "triggered_uptake_unsupported")
                 and self.sampling_available is False
                 and self.lift is None
                 and self.decision_scope_complete is False
@@ -1262,6 +1263,8 @@ class DailyLiftEstimate(_RowIdentity):
             require_public_laws(
                 (self.sequential_result.checkpoint.model,), "DailyLiftEstimate replay"
             )
+            if self.analysis_population != self.sequential_result.checkpoint.population:
+                sequential_refuse("source.invalid", "view and checkpoint populations disagree")
             from increment.estimation.sequential_runtime import (
                 display_estimate,
                 require_selected_widening,
@@ -1477,11 +1480,14 @@ class DailyLiftEstimates(EstimateList[DailyLiftEstimate]):
 def daily_sequential_projection(
     rows: Sequence[LiftEstimate], *, correction: Correction
 ) -> DailyLiftEstimates:
+    """Project checkpoint rows onto the as-of view, keeping unavailable cells as such."""
     output = []
     for row in rows:
-        result = row.require_sequential_result()
         if row.ds is None:
             sequential_refuse("source.invalid", "as-of checkpoint has no reveal label")
+        result = row.sequential_result
+        if result is None and row.failure_code is None:
+            sequential_refuse("source.invalid", "as-of row lacks its sequential checkpoint")
         output.append(
             DailyLiftEstimate(
                 ds=row.ds,
@@ -1498,15 +1504,24 @@ def daily_sequential_projection(
                 lift=row.lift,
                 sequential_result=result,
                 estimand=row.estimand,
+                analysis_population=row.analysis_population,
                 note=row.note,
-                n_treat=result.checkpoint.treatment.n,
-                n_control=result.checkpoint.control.n,
+                n_treat=None if result is None else result.checkpoint.treatment.n,
+                n_control=None if result is None else result.checkpoint.control.n,
                 discovery=row.discovery,
                 family_axes=row.family_axes,
                 family_q=row.family_q,
                 family_threshold=row.family_threshold,
                 family_guarantee=row.family_guarantee,
                 family_nominal_alpha=row.family_nominal_alpha,
+                failure_code=row.failure_code,
+                failure_context=row.failure_context,
+                sampling_available=row.sampling_available,
+                sampling_reason_code=row.sampling_reason_code,
+                sampling_reason_context=row.sampling_reason_context,
+                decision_scope_complete=row.decision_scope_complete,
+                decision_scope_reason_code=row.decision_scope_reason_code,
+                decision_scope_reason_context=row.decision_scope_reason_context,
             )
         )
     return DailyLiftEstimates(stamp_multiplicity_status(output, correction=correction))

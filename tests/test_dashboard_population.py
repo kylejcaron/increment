@@ -304,61 +304,70 @@ def test_triggered_allocation_history_is_immutable_and_refusal_consistent(tmp_pa
         analysis.close()
 
 
-def test_explicit_triggered_sequential_run_returns_unavailable_triggered_rows(tmp_path):
+def test_explicit_triggered_sequential_run_returns_triggered_checkpoint_rows(tmp_path):
     from increment.estimation.readout_types import ReadoutResults
 
     analysis = _triggered_dashboard(tmp_path, sequential=True)
     try:
-        analysis.capture_sequential(finalized=True, as_of=dt.date(2024, 1, 16))
+        captured = analysis.capture_sequential(finalized=True, as_of=dt.date(2024, 1, 15))
+        assert captured.triggered is not None
         results = analysis.run(population="triggered")
         assert results
         assert {result.analysis_population for result in results} == {"triggered"}
-        assert {result.failure_code for result in results} == {"readout.cell.unsupported_request"}
-        assert {result.failure_context["reason"] for result in results} == {"triggered_sequential"}
-        assert all(result.lift is None for result in results)
-        assigned = analysis.run(population="assigned")
-        assert assigned.metadata is not None
-        assert assigned.sequential_snapshot is not None
-        restored = ReadoutResults.model_validate_json(assigned.model_dump_json())
-        assert restored.metadata is not None
-        assert restored.sequential_snapshot is not None
-        assert {row.analysis_population for row in restored} == {"assigned"}
-        assert all(
-            family.analysis_population == "assigned" for family in restored.metadata.scope.families
-        )
+        assert {result.failure_code for result in results} == {None}
+        for result in results:
+            evaluated = result.require_sequential_result()
+            assert evaluated.checkpoint.population == "triggered"
+            assert evaluated.checkpoint.prefix_id == captured.triggered.prefix_id
+        assert results.metadata is not None
+        assert results.metadata.scope.decision_complete("triggered") is True
+        assert {family.analysis_population for family in results.metadata.scope.families} == {
+            "assigned",
+            "triggered",
+        }
+        restored = ReadoutResults.model_validate_json(results.model_dump_json())
+        assert restored.sequential_snapshot == captured
+        assert {row.analysis_population for row in restored} == {"triggered"}
         snapshot = prepare_dashboard(
             analysis,
             config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
         )
         triggered_row = row_for_metric(snapshot, "revenue", population="triggered")
         assert triggered_row is not None
-        assert triggered_row["failure_code"] == "readout.cell.unsupported_request"
-        assert triggered_row["failure_context"]["reason"] == "triggered_sequential"
-        details = render_metric_details(snapshot, metric="revenue").text
-        assert "readout.cell.unsupported_request" in details
-        assert "population='assigned'" in details
+        assert triggered_row["failure_code"] is None
+        assert triggered_row["lift"] is not None
+        details = render_metric_details(snapshot, metric="revenue", population="triggered").text
+        assert "readout.cell.unsupported_request" not in details
+        assert "triggered" in details
     finally:
         analysis.close()
 
 
 @pytest.mark.slow
-def test_triggered_sequential_group_data_does_not_borrow_assigned_checkpoints(tmp_path):
+def test_triggered_sequential_group_data_decodes_the_triggered_checkpoint(tmp_path):
     analysis = _triggered_dashboard(tmp_path, sequential=True)
     try:
-        analysis.capture_sequential(finalized=True, as_of=dt.date(2024, 1, 16))
+        captured = analysis.capture_sequential(finalized=True, as_of=dt.date(2024, 1, 15))
+        assert captured.triggered is not None
         snapshot = prepare_dashboard(
             analysis,
             config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
         )
-        assert {row.analysis_population for row in snapshot.group_data} == {
-            "assigned",
-            "triggered",
+        by_population = {
+            population: [
+                row for row in snapshot.group_data if row.analysis_population == population
+            ]
+            for population in ("assigned", "triggered")
         }
-        assert {
-            row.source_kind for row in snapshot.group_data if row.analysis_population == "assigned"
-        } == {"retained_checkpoint"}
-        assert {
-            row.source_kind for row in snapshot.group_data if row.analysis_population == "triggered"
-        } == {"pinned_warehouse"}
+        assert all(by_population.values())
+        for population, rows in by_population.items():
+            chain = captured if population == "assigned" else captured.triggered
+            assert {row.source_kind for row in rows} == {"retained_checkpoint"}
+            assert {row.prefix_id for row in rows} == {chain.prefix_id}
+            assert {row.group_id: row.eligible_units for row in rows} == {
+                state.group_id: state.n for state in chain.states
+            }
+        assert captured.triggered.prefix_id != captured.prefix_id
+        assert captured.triggered.assignment_counts != captured.assignment_counts
     finally:
         analysis.close()

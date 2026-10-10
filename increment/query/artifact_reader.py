@@ -1588,6 +1588,9 @@ class ArtifactMomentSource(SequentialSourceMixin):
 
     def capture_sequential(self, *, finalized: bool, as_of: dt.date, previous=None):
         """Capture a finalized common cohort from the pinned immutable generation."""
+        from dataclasses import replace
+
+        from increment.query.artifact_contract import observation_recipe_sha256
         from increment.query.builders import _local_date
         from increment.query.sequential_capture import (
             capture_relations,
@@ -1613,6 +1616,14 @@ class ArtifactMomentSource(SequentialSourceMixin):
         registration, _ = validate_relational_capture(
             self, finalized=finalized, as_of=as_of, previous=previous, covariate=covariate
         )
+        # Trigger extension access is owned by the trusted facade (``query.source``),
+        # the only reader that can capture the triggered chain.
+        facade = cast("Any", self)
+        monitor_triggered = self.context.trigger_name is not None and (
+            previous is None or previous.triggered is not None
+        )
+        if monitor_triggered:
+            facade._certify_sequential_extensions(registration, as_of)
         exposures = self._ensure("exposures")
         experiment = Experiment(
             name=self.context.study_id,
@@ -1623,11 +1634,12 @@ class ArtifactMomentSource(SequentialSourceMixin):
             day_boundary=self._manifest.day_boundary,
             plan=AnalysisPlan(),
         )
-        cohort = exposures.filter(
-            _local_date(exposures.first_exposure_ts, experiment)
-            + ibis.interval(days=max(0, registration.reveal.longest_window_days - 1))
-            <= ibis.literal(as_of)
-        )
+        window = ibis.interval(days=max(0, registration.reveal.longest_window_days - 1))
+
+        def final_day(table):
+            return _local_date(table.first_exposure_ts, experiment) + window
+
+        cohort = exposures.filter(final_day(exposures) <= ibis.literal(as_of))
 
         def uptake():
             design = self.context.design
@@ -1641,23 +1653,74 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 d=relation.uptake.fill_null(False).cast("int32").cast("int64"),
             )
 
-        return capture_relations(
-            self,
-            lambda metric: self._reduction_query(
+        metrics = {metric.name: metric for metric in self.context.metrics}
+        triggered = None
+        triggered_registration = getattr(
+            self.context.plan.inference, "triggered_registration", None
+        )
+        if monitor_triggered and triggered_registration is not None:
+            trigger_source = facade.triggered_source()
+            inputs = trigger_source._triggered_reduction_inputs(
+                metrics[triggered_registration.models[0].metric]
+            )
+            trigger_cohort = inputs.exposures.filter(
+                final_day(inputs.exposures) <= ibis.literal(as_of)
+            )
+
+            def trigger_outcome(model):
+                metric = metrics[model.metric]
+                metric_inputs = replace(
+                    trigger_source._triggered_reduction_inputs(metric),
+                    finalized_as_of=as_of,
+                    spine_edge=ibis.literal(as_of, type="date"),
+                    exposures=trigger_cohort,
+                )
+                return trigger_source._reduction_query(
+                    metric,
+                    "unit",
+                    trigger_inputs=metric_inputs,
+                    pre_stats=self._cuped_pre_stats(metric) if metric.name in adjusted else None,
+                )
+
+            triggered = capture_relations(
+                self,
+                trigger_outcome,
+                trigger_cohort,
+                self._snapshot.batches,
+                recipe_id=observation_recipe_sha256(self._manifest.context),
+                finalized=finalized,
+                as_of=as_of,
+                previous=None if previous is None else previous.triggered,
+                covariate=covariate,
+                population="triggered",
+                assignment_counts=facade.triggered_counts()[1],
+                final_day=final_day,
+            )
+
+        def relation_for(model):
+            if model.observable == "uptake":
+                return uptake()
+            metric = metrics[model.metric]
+            return self._reduction_query(
                 metric,
                 "unit",
                 pre_stats=self._cuped_pre_stats(metric) if metric.name in adjusted else None,
                 finalized_as_of=as_of,
-            ),
-            uptake,
+            )
+
+        return capture_relations(
+            self,
+            relation_for,
             cohort,
             self._snapshot.batches,
-            recipe_id=self._manifest.context.sha256,
+            recipe_id=observation_recipe_sha256(self._manifest.context),
             finalized=finalized,
             as_of=as_of,
             previous=previous,
             covariate=covariate,
             assignment_counts=self.assignment_counts(population="assigned"),
+            triggered=triggered,
+            final_day=final_day if monitor_triggered else None,
         )
 
     def unit_frame(

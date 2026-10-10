@@ -1,5 +1,7 @@
 """Pre-data declarations for raw-observation sequential likelihoods."""
 
+import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from fractions import Fraction
 from typing import Annotated, Literal, NoReturn
@@ -413,6 +415,14 @@ class SequentialRegistration(_Declaration):
     asymptotic_family: Literal["e_bh"] | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+    # The population the retained roster is evaluated on. Absent from the dump when
+    # assigned so every registration stored before triggered monitoring keeps its id.
+    population: Literal["assigned", "triggered"] = Field(
+        default="assigned", exclude_if=lambda value: value == "assigned"
+    )
+    look_policy: Literal["outcome_independent", "exploratory"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -432,6 +442,8 @@ class SequentialRegistration(_Declaration):
 
     @model_validator(mode="after")
     def _complete(self):
+        if (self.population == "triggered") != (self.look_policy is not None):
+            invalid_registration("triggered registrations require their predeclared look policy")
         if not self.models or not self.roster or not 0 < self.q < 1:
             invalid_registration("registration needs models, a retained roster and q in (0,1)")
         continuous = any(isinstance(m, ScalarMeanModel) for m in self.models)
@@ -486,6 +498,68 @@ class SequentialRegistration(_Declaration):
         selected_by_e_bh = continuous and sequential_family_rule(self.models, self.roster) == "e_bh"
         object.__setattr__(self, "asymptotic_family", "e_bh" if selected_by_e_bh else None)
         return self
+
+
+def derive_triggered_registration(
+    registration: SequentialRegistration,
+    *,
+    definitions_id: str,
+    look_policy: Literal["outcome_independent", "exploratory"] = "exploratory",
+) -> SequentialRegistration | None:
+    """The triggered population's registration, derived from the assigned one before data.
+
+    The outcome models and their retained hypotheses are identical, tuning
+    included; only the population, the observation binding and hence the reveal
+    filtration differ. Assignment-anchored uptake is tied to each unit's trigger
+    timing, so the uptake model and every compliance cell are left out; a
+    registration that monitors only uptake derives nothing (``None``).
+    """
+    models = tuple(m for m in registration.models if m.observable == "outcome")
+    roster = tuple(c for c in registration.roster if c.estimand != "compliance")
+    if not models or not roster:
+        return None
+    binding = json.dumps(
+        {"binding": definitions_id, "reveal": "joint_units_v1"},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    reveal = JointReveal.model_validate(
+        {
+            **registration.reveal.model_dump(),
+            "filtration_id": hashlib.sha256(binding.encode()).hexdigest(),
+        }
+    )
+    return SequentialRegistration(
+        source_id=registration.source_id,
+        definitions_id=definitions_id,
+        control_group=registration.control_group,
+        committed_before_data=True,
+        reveal=reveal,
+        models=models,
+        roster=roster,
+        q=registration.q,
+        population="triggered",
+        look_policy=look_policy,
+    )
+
+
+def validate_triggered_registration(
+    registration: SequentialRegistration, triggered: SequentialRegistration
+) -> None:
+    """Require ``triggered`` to be exactly the derivation of ``registration``."""
+    if (
+        registration.population != "assigned"
+        or triggered.population != "triggered"
+        or triggered.look_policy is None
+    ):
+        invalid_registration("population registrations must pair an assigned and a triggered one")
+    expected = derive_triggered_registration(
+        registration, definitions_id=triggered.definitions_id, look_policy=triggered.look_policy
+    )
+    if expected is None or expected != triggered:
+        invalid_registration(
+            "triggered registration is not the derivation of the assigned registration"
+        )
 
 
 def refuse_legacy_asymptotic_family(payload: object) -> None:

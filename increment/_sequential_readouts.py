@@ -2,27 +2,28 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-from increment.sequential_source import source_snapshot
+from increment.sequential_source import population_policy, source_snapshot
 from increment.sequential_state import require_public_laws, sequential_refuse
-
-if TYPE_CHECKING:
-    from increment.estimation.results import LiftEstimate
 
 
 def sequential_readout(
-    source, *, metrics=None, estimands=None, previous=None, _include_unrequested=False
+    source,
+    *,
+    metrics=None,
+    estimands=None,
+    previous=None,
+    _include_unrequested=False,
+    population="assigned",
 ):
     """Run the registered decision and selection path on a source checkpoint."""
     from increment.estimation.sequential_runtime import selected_snapshot_results
 
-    inference = source.context.plan.inference
+    inference = population_policy(source.context.plan.inference, population)
     registration = getattr(inference, "registration", None)
     if registration is None:
         sequential_refuse("source.invalid", "public sequential readout requires registration")
     require_public_laws(registration.models, "sequential readout")
-    snapshot = source_snapshot(source, previous=previous)
+    snapshot = source_snapshot(source, previous=previous).chain(population)
     rows = selected_snapshot_results(
         snapshot,
         inference,
@@ -40,15 +41,3 @@ def sequential_readout(
         ):
             result.append(row)
     return result
-
-
-def sequential_asof_readout(source, *, metrics=None, estimands=None) -> list[LiftEstimate]:
-    snapshot = source_snapshot(source)
-    if snapshot.reveal_cursor is None:
-        sequential_refuse(
-            "route.unsupported", "as-of reporting requires a labeled finalized checkpoint"
-        )
-    return [
-        row.model_copy(update={"ds": snapshot.reveal_cursor})
-        for row in sequential_readout(source, metrics=metrics, estimands=estimands)
-    ]

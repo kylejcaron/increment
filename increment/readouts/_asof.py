@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._analysis_config import (
     UNSET,
@@ -201,6 +201,43 @@ def _estimate_asof_metric_date(
     ]
 
 
+def _sequential_asof_rows(
+    src: MomentSource,
+    *,
+    metrics: Sequence[Metric],
+    estimands: Sequence[str] | None,
+    population: Literal["assigned", "triggered"],
+) -> list[LiftEstimate]:
+    """One population's current checkpoint rows, labelled with that chain's reveal cursor.
+
+    The scoped collection accounts for every cell, so an uncommitted triggered
+    chain or an unsupported triggered uptake cell is reported, not omitted.
+    """
+    from increment._sequential_readouts import sequential_readout
+    from increment.readouts._sequential_scope import scope_sequential_results
+    from increment.sequential_source import source_snapshot
+    from increment.sequential_state import sequential_refuse
+
+    snapshot = source_snapshot(src)
+    if snapshot.reveal_cursor is None:
+        sequential_refuse(
+            "route.unsupported", "as-of reporting requires a labeled finalized checkpoint"
+        )
+    rows = scope_sequential_results(
+        src,
+        sequential_readout(src, _include_unrequested=True),
+        snapshot,
+        metrics=[metric.name for metric in metrics],
+        estimands=estimands,
+    )
+    chain = snapshot.chain(population) if snapshot.triggered is not None else snapshot
+    return [
+        row.model_copy(update={"ds": chain.reveal_cursor})
+        for row in rows
+        if row.analysis_population == population
+    ]
+
+
 def asof_lift(
     src: MomentSource,
     *,
@@ -211,6 +248,7 @@ def asof_lift(
     sensitivity_methods: Sequence[Method] | _Unset = UNSET,
     prior: Prior | None | _Unset = UNSET,
     completed_windows_only: bool = False,
+    _population: Literal["assigned", "triggered"] = "assigned",
 ) -> list[LiftEstimate]:
     """As-of relative lift under the source's declared plan.
 
@@ -267,10 +305,10 @@ def asof_lift(
         method="readouts.asof_lift",
     )
     if isinstance(plan.inference, SEQUENTIAL_POLICIES):
-        from increment._sequential_readouts import sequential_asof_readout
-
         _refuse_segmented_registration(plan.inference)
-        return sequential_asof_readout(src, metrics=selected, estimands=estimands)
+        return _sequential_asof_rows(
+            src, metrics=selected, estimands=estimands, population=_population
+        )
     if design.mechanism == "encouragement":
         declared = _declared_margin_names(selected)
         shifted = [

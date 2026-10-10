@@ -133,12 +133,14 @@ def test_sampling_inference_accepts_zero_likelihood_evidence():
     assert restored.evidence.log_e == -inf
 
 
-def test_triggered_sequential_scope_uses_explicit_unsupported_placeholder(tmp_path):
+def test_triggered_sequential_scope_reports_and_replays_both_chains(tmp_path):
     from datetime import date
 
     import pyarrow.parquet as pq
+    import pytest
 
     from increment import Analysis
+    from increment.errors import CapabilityError
     from increment.estimation.readout_types import ReadoutResults
     from increment.estimation.results import LiftEstimate
     from increment.frame import MetricSpec
@@ -147,7 +149,7 @@ def test_triggered_sequential_scope_uses_explicit_unsupported_placeholder(tmp_pa
 
     _connection, definitions, analysis = _native_fixture("bernoulli", triggered=True)
     try:
-        analysis.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
+        snapshot = analysis.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
         results = analysis.run()
         assert results.metadata is not None
         by_population = {}
@@ -156,17 +158,16 @@ def test_triggered_sequential_scope_uses_explicit_unsupported_placeholder(tmp_pa
             by_population[row.analysis_population] = row
         assert set(by_population) == {"assigned", "triggered"}
         assigned = by_population["assigned"]
-        placeholder = by_population["triggered"]
-        assert placeholder.failure_code == "readout.cell.unsupported_request"
-        assert placeholder.failure_context["reason"] == "triggered_sequential"
-        assert placeholder.inference == "always_valid"
-        assert placeholder.reference_kind == "sequential"
-        assert placeholder.sequential_result is None
-        assert placeholder.sampling_available is False
+        triggered = by_population["triggered"]
+        assert triggered.failure_code is None
+        assert triggered.inference == "always_valid"
+        assert triggered.reference_kind == "sequential"
+        assert triggered.require_sequential_result().checkpoint.population == "triggered"
+        assert triggered.sampling_available is True
         assert (
-            placeholder.estimand,
-            placeholder.value_scale,
-            placeholder.alternative,
+            triggered.estimand,
+            triggered.value_scale,
+            triggered.alternative,
         ) == (assigned.estimand, assigned.value_scale, assigned.alternative)
         restored = ReadoutResults.model_validate_json(results.model_dump_json())
         assert restored.metadata == results.metadata
@@ -175,20 +176,34 @@ def test_triggered_sequential_scope_uses_explicit_unsupported_placeholder(tmp_pa
         analysis.export(path)
         wire_rows = pq.read_table(path).to_pylist()
         assert wire_rows[0]["trigger_name"] == "triggered"
-        replay = Analysis.from_moments(
-            wire_rows,
-            metrics=[MetricSpec(name="outcome", type="conversion", window_days=2)],
-            design=Randomized(control_group="control"),
-            plan=definitions.experiments[0].plan,
-        )
-        replayed = replay.run()
-        replayed_by_population = {}
-        for row in replayed:
-            assert isinstance(row, LiftEstimate)
-            replayed_by_population[row.analysis_population] = row
-        assert set(replayed_by_population) == {"assigned", "triggered"}
-        assert replayed.metadata is not None
-        assert replayed_by_population["triggered"].failure_context == placeholder.failure_context
-        assert replayed.metadata.scope.snapshot_id == results.metadata.scope.snapshot_id
+        specs = [MetricSpec(name="outcome", type="conversion", window_days=2)]
+        design = Randomized(control_group="control")
+        # The stored plan carries the triggered commitment; a caller-supplied plan
+        # without it cannot adopt a checkpoint that holds the triggered chain.
+        with pytest.raises(CapabilityError) as uncommitted:
+            Analysis.from_moments(
+                wire_rows, metrics=specs, design=design, plan=definitions.experiments[0].plan
+            )
+        assert uncommitted.value.code == "sequential.source.invalid"
+        replay = Analysis.from_moments(wire_rows, metrics=specs, design=design)
+        try:
+            assert replay.sequential_snapshot() == snapshot
+            replayed = replay.run()
+            replayed_by_population = {}
+            for row in replayed:
+                assert isinstance(row, LiftEstimate)
+                replayed_by_population[row.analysis_population] = row
+            assert set(replayed_by_population) == {"assigned", "triggered"}
+            assert replayed.metadata is not None
+            for population, row in by_population.items():
+                assert (
+                    replayed_by_population[population].require_sequential_result()
+                    == row.require_sequential_result()
+                )
+            assert {row.analysis_population for row in replay.run(population="triggered")} == {
+                "triggered"
+            }
+        finally:
+            replay.close()
     finally:
         analysis.close()
