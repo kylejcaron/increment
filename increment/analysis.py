@@ -57,6 +57,7 @@ from increment._source_operations import (
     ReadoutSnapshotOperation,
     SummarySqlOperation,
     TriggeredCountsOperation,
+    TriggeredHealthEvidenceOperation,
     TriggeredPopulationOperation,
 )
 from increment._source_types import classify_source
@@ -454,6 +455,8 @@ class Analysis:
         Caller-supplied event-time cutoff and optional certified per-feed
         completeness watermarks; absent certification remains unknown.
     """
+
+    _readout_snapshot_active: bool = False
 
     def __init__(
         self,
@@ -1240,7 +1243,11 @@ class Analysis:
             # The pinned snapshot must never be reopened over: drop any reopen pin
             # the copy would otherwise inherit.
             isolated._artifact_open_spec = None
-            return operation(isolated)
+            isolated._readout_snapshot_active = True
+            try:
+                return operation(isolated)
+            finally:
+                delattr(isolated, "_readout_snapshot_active")
 
     def dashboard_breakout_reads(self, breakout: Breakout) -> DashboardBreakoutReads:
         """The dashboard's Explore reads through one declared breakout alone.
@@ -1346,6 +1353,8 @@ class Analysis:
     ) -> ExperimentHealth:
         from increment.estimation.health import ExperimentHealth
 
+        if getattr(self, "_readout_snapshot_active", False):
+            return self._collect_health(expected_allocation)
         if (
             not isinstance(self._state, ContrastAnalysisState)
             and classify_source(self._src) == "native"
@@ -1569,7 +1578,7 @@ class Analysis:
         )
         return ExperimentHealth(
             checks=tuple(checks),
-            source_snapshot_id=self._health_snapshot_id(),
+            source_snapshot_id=self._health_snapshot_id(checks),
             source_cutoff=self._health_cutoff(),
         )
 
@@ -1628,76 +1637,45 @@ class Analysis:
     def _append_feed_completeness(self, checks: list[HealthCheck]) -> None:
         from increment.estimation.health import HealthCheck
 
-        state = self._state
-        definitions = state.definitions if isinstance(state, DefinitionsArmAnalysisState) else None
-        evidence = self._session.source_snapshot_evidence if self._session is not None else None
-        feeds = sorted({source.name for source in definitions.fact_sources}) if definitions else []
-        manifest = getattr(self._src, "_manifest", None)
-        if definitions is None and manifest is not None:
-            extensions = [
-                extension
-                for extension in manifest.extensions
-                if extension.kind in ("trigger_population", "trigger_measure_stats")
-            ]
-            for extension in extensions:
-                identity = (
-                    "trigger_population"
-                    if extension.kind == "trigger_population"
-                    else f"trigger_measure_stats:{extension.metric_names[0]}"
-                )
-                watermark = extension.complete_through_ts
+        if isinstance(self._src, TriggeredHealthEvidenceOperation):
+            evidence = self._src.triggered_health_evidence()
+            for item in evidence.feeds:
+                feed = item.feed or item.evidence_kind
+                if item.metric is not None:
+                    feed = f"{feed}:{item.metric}"
+                watermark = item.complete_through
                 checks.append(
                     HealthCheck(
                         check="feed_completeness",
                         analysis_population="triggered",
-                        metric=(
-                            extension.metric_names[0]
-                            if extension.kind == "trigger_measure_stats"
-                            else None
-                        ),
-                        feed=identity,
+                        metric=item.metric,
+                        feed=feed,
                         availability="unavailable" if watermark is None else "available",
                         conclusion=None if watermark is None else "descriptive",
                         context={
-                            "evidence_kind": extension.kind,
+                            "evidence_kind": item.evidence_kind,
                             "watermark": None if watermark is None else watermark.isoformat(),
-                            "reason": "The artifact extension has no certified completeness watermark."
-                            if watermark is None
-                            else "Certified watermark retained by the published artifact extension.",
+                            "reason": (
+                                "No certified completeness watermark is retained for this feed."
+                                if watermark is None
+                                else "Certified completeness watermark at the source cutoff."
+                            ),
                         },
                     )
                 )
-            if extensions:
+            if evidence.feeds:
                 return
-        for feed in feeds:
-            watermark = None if evidence is None else evidence.complete_through_by_feed.get(feed)
-            checks.append(
-                HealthCheck(
-                    check="feed_completeness",
-                    analysis_population="triggered",
-                    feed=feed,
-                    availability="unavailable" if watermark is None else "available",
-                    conclusion=None if watermark is None else "descriptive",
-                    context={
-                        "reason": "No certified completeness watermark is retained for this feed."
-                        if watermark is None
-                        else "Certified completeness watermark at the source cutoff.",
-                        "watermark": None if watermark is None else watermark.isoformat(),
-                    },
-                )
+        checks.append(
+            HealthCheck(
+                check="feed_completeness",
+                analysis_population="triggered",
+                availability="unavailable",
+                context={
+                    "reason": "This source retains no per-feed completeness certificates.",
+                    "watermark": None,
+                },
             )
-        if not feeds:
-            checks.append(
-                HealthCheck(
-                    check="feed_completeness",
-                    analysis_population="triggered",
-                    availability="unavailable",
-                    context={
-                        "reason": "This source retains no per-feed completeness certificates.",
-                        "watermark": None,
-                    },
-                )
-            )
+        )
 
     def _trigger_assumptions(self) -> HealthCheck:
         from increment.estimation.health import HealthCheck
@@ -1744,31 +1722,32 @@ class Analysis:
             },
         )
 
-    def _health_snapshot_id(self) -> str | None:
+    def _health_snapshot_id(self, checks: Sequence[HealthCheck]) -> str | None:
         from hashlib import sha256
 
         from increment._canonical import canonical_json_bytes
         from increment._source_identity import source_identity
 
-        return "sha256:" + sha256(canonical_json_bytes(source_identity(self._src))).hexdigest()
+        evidence = [check.model_dump(mode="json") for check in checks]
+        return (
+            "sha256:"
+            + sha256(
+                canonical_json_bytes(
+                    {
+                        "source": source_identity(self._src),
+                        "cutoff": self._health_cutoff(),
+                        "health_evidence": evidence,
+                    }
+                )
+            ).hexdigest()
+        )
 
     def _health_cutoff(self) -> str | None:
+        if isinstance(self._src, TriggeredHealthEvidenceOperation):
+            cutoff = self._src.triggered_health_evidence().observation_cutoff
+            return None if cutoff is None else cutoff.isoformat()
         evidence = self._session.source_snapshot_evidence if self._session is not None else None
-        if evidence is not None:
-            return evidence.observation_cutoff_ts.isoformat()
-        manifest = getattr(self._src, "_manifest", None)
-        if manifest is not None:
-            extension = next(
-                (
-                    extension
-                    for extension in manifest.extensions
-                    if extension.kind == "trigger_population"
-                ),
-                None,
-            )
-            if extension is not None:
-                return extension.observation_cutoff_ts.isoformat()
-        return None
+        return None if evidence is None else evidence.observation_cutoff_ts.isoformat()
 
     def srm(
         self,

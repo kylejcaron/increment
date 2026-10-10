@@ -1536,6 +1536,11 @@ _AUXILIARY_ROWS: tuple[EntryRow, ...] = (
             ),
         },
         table="triggered-auxiliary",
+        notes={
+            D: "matched native definitions health parity test uses explicit source cutoff and feed watermark",
+            A: "matched artifact health parity requires trigger_population, assignment_counts and trigger_measure_stats",
+            OTHER: "unit summary, unit panel, switchback and moments do not retain trigger population evidence",
+        },
     ),
 )
 

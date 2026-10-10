@@ -35,6 +35,29 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
+class TriggeredHealthFeed:
+    """Source-owned completeness observation for one triggered feed or metric."""
+
+    evidence_kind: str
+    feed: str | None
+    metric: str | None
+    complete_through: dt.datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class TriggeredHealthEvidence:
+    """Typed source-owned completeness and cutoff evidence for health reports."""
+
+    observation_cutoff: dt.datetime | None
+    feeds: tuple[TriggeredHealthFeed, ...]
+
+
+@runtime_checkable
+class TriggeredHealthEvidenceOperation(Protocol):
+    def triggered_health_evidence(self) -> TriggeredHealthEvidence: ...
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardGroupData:
     """Immutable observed evidence for one metric/arm dashboard cell."""
 
@@ -392,6 +415,9 @@ __all__ = [
     "SummarySQLOperation",
     "ReadoutSnapshotOperation",
     "SummarySqlOperation",
+    "TriggeredHealthEvidence",
+    "TriggeredHealthEvidenceOperation",
+    "TriggeredHealthFeed",
     "TriggeredCountsOperation",
     "TriggeredPopulationOperation",
 ]

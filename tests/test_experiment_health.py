@@ -241,6 +241,7 @@ def _health_snapshot_scenario(tmp_path, monkeypatch) -> None:
     )
     assert second_rate_values["C"] == pytest.approx((first_rate_values["C"] * 100 + 1) / 101)
     assert first.source_snapshot_id and second.source_snapshot_id
+    assert first.source_snapshot_id != second.source_snapshot_id
     assert first.source_cutoff == second.source_cutoff == cutoff.isoformat()
     restored = ExperimentHealth.model_validate_json(first.model_dump_json())
     assert restored.source_snapshot_id == first.source_snapshot_id
@@ -256,6 +257,7 @@ def test_health_second_call_sees_new_rows(tmp_path, monkeypatch) -> None:
 
 
 def test_health_artifact_trigger_extensions_are_optional_but_explicit(tmp_path) -> None:
+    """Matched native/artifact diagnostics; portable shapes do not retain trigger evidence."""
     import datetime as dt
 
     import ibis
@@ -293,18 +295,33 @@ def test_health_artifact_trigger_extensions_are_optional_but_explicit(tmp_path) 
         artifact_check = artifact_by_check[name]
         assert artifact_check.availability == native_check.availability == "available"
         assert artifact_check.srm is not None and native_check.srm is not None
-        assert artifact_check.srm.observed == native_check.srm.observed
-        assert artifact_check.srm.expected == native_check.srm.expected
-        assert artifact_check.srm.is_srm == native_check.srm.is_srm
-    assert artifact_by_check["trigger_rates"].rates == native_by_check["trigger_rates"].rates
-    assert (
-        next(check for check in report.checks if check.check == "triggered_balance").availability
-        == "available"
-    )
-    assert (
-        next(check for check in report.checks if check.check == "trigger_rates").availability
-        == "available"
-    )
+        assert artifact_check.srm.model_dump(mode="json") == native_check.srm.model_dump(
+            mode="json"
+        )
+        assert artifact_check.context == native_check.context
+    assert artifact_by_check["trigger_rates"].model_dump(mode="json") == native_by_check[
+        "trigger_rates"
+    ].model_dump(mode="json")
+    native_maturity = {
+        check.metric: (check.availability, check.conclusion, dict(check.context))
+        for check in native_report.checks
+        if check.check == "trigger_maturity"
+    }
+    artifact_maturity = {
+        check.metric: (check.availability, check.conclusion, dict(check.context))
+        for check in report.checks
+        if check.check == "trigger_maturity"
+    }
+    assert artifact_maturity == native_maturity
+    native_watermarks = {
+        check.context["watermark"]
+        for check in native_report.checks
+        if check.check == "feed_completeness"
+    }
+    artifact_completeness = [check for check in report.checks if check.check == "feed_completeness"]
+    assert {check.context["watermark"] for check in artifact_completeness} == native_watermarks
+    assert any(check.feed == "trigger_population" for check in artifact_completeness)
+    assert any(check.feed == "trigger_measure_stats:revenue" for check in artifact_completeness)
 
 
 def test_health_models_round_trip_pickle_deepcopy_and_nested_immutability() -> None:
@@ -527,6 +544,21 @@ def test_health_empty_trigger_population_is_unavailable_not_a_report_failure(tmp
     assert triggered.conclusion is None
     assert rates.availability == "available"
     assert rates.rates == {"C": 0.0, "T": 0.0}
+
+
+def test_health_validates_expected_allocation_before_empty_trigger_counts(tmp_path) -> None:
+    from increment.errors import InvalidRequestError
+    from tests.test_analysis_trigger import _analysis, _events
+
+    analysis = _analysis(
+        tmp_path, _events(n_per_arm=20, trigger_rate=0.0), allocation_scheme="blocked"
+    )
+    try:
+        with pytest.raises(InvalidRequestError) as caught:
+            analysis.health_check(expected_allocation={"C": 0.0, "T": 1.0})
+    finally:
+        analysis.close()
+    assert caught.value.code == "estimation.diagnostics.every_expected_share_positive"
 
 
 def test_health_srm_report_supports_pickle_and_deepcopy() -> None:

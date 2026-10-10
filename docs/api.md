@@ -657,9 +657,20 @@ checks separately and treat counterfactual trigger invariance and trigger-order
 stationarity as assumptions even when observed rates are balanced.
 
 ```python
+import pandas as pd
+
+from increment import Analysis
+
+units = pd.DataFrame(
+    {"unit": ["c1", "c2", "t1", "t2"], "arm": ["control", "control", "treatment", "treatment"], "value": [1.0, 0.0, 1.5, 1.0]}
+)
+analysis = Analysis.from_unit_summary(
+    units, unit="unit", group="arm", control="control", metrics={"value": "mean"}
+)
 report = analysis.health_check()
 for check in report.checks:
     print(check.check, check.analysis_population, check.availability, check.conclusion)
+analysis.close()
 ```
 
 :::: increment.Analysis.health_check

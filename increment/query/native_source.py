@@ -1046,6 +1046,23 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         evidence = self._require_source_snapshot_evidence(operation="triggered_observation_edges")
         return self._metric_snapshot_edges(metric, evidence)
 
+    def triggered_health_evidence(self) -> Any:
+        from increment._source_operations import TriggeredHealthEvidence, TriggeredHealthFeed
+
+        snapshot = self._session.source_snapshot_evidence
+        cutoff = None if snapshot is None else snapshot.observation_cutoff_ts
+        watermarks = {} if snapshot is None else snapshot.complete_through_by_feed
+        feeds = tuple(
+            TriggeredHealthFeed(
+                evidence_kind="native_feed",
+                feed=fact_source.name,
+                metric=None,
+                complete_through=watermarks.get(fact_source.name),
+            )
+            for fact_source in self._defs.fact_sources
+        )
+        return TriggeredHealthEvidence(observation_cutoff=cutoff, feeds=feeds)
+
     def _certify_sequential_feeds(self, registration, as_of: dt.date) -> None:
         """Refuse a trigger-declared capture unless every contributing feed is certified.
 
