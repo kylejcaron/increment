@@ -1046,6 +1046,91 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         evidence = self._require_source_snapshot_evidence(operation="triggered_observation_edges")
         return self._metric_snapshot_edges(metric, evidence)
 
+    def _certify_sequential_feeds(self, registration, as_of: dt.date) -> None:
+        """Refuse a trigger-declared capture unless every contributing feed is certified.
+
+        The trigger feed and every registered outcome, denominator and uptake
+        feed must carry a watermark whose certified whole day reaches ``as_of``;
+        an inclusive timestamp cutoff alone certifies nothing. A trigger declared
+        through SQL has no feed to certify and refuses.
+        """
+        from increment.query.sequential_capture import certify_capture_feed
+        from increment.sequential_state import sequential_refuse
+
+        evidence = self._require_source_snapshot_evidence(operation="capture_sequential")
+        trigger_name = self._experiment.trigger
+        if trigger_name is None:
+            return
+        trigger = self._exp_lookup_exposures[trigger_name]
+        if trigger.fact is None:
+            sequential_refuse(
+                "source.invalid",
+                f"trigger {trigger.name!r} is declared through SQL, so no feed watermark can "
+                "certify its completeness; declare the trigger exposure through a fact on a "
+                "fact source and certify that feed",
+                feed=trigger.name,
+                certified_day=None,
+                as_of=as_of.isoformat(),
+            )
+        feeds = [_find_fact_source(self._defs, trigger.fact)[0].name]
+        metrics = {m.name: m for m in self.context.metrics}
+        design = self.context.design
+        for model in registration.models:
+            if model.observable == "uptake":
+                if not isinstance(design, Encouragement):
+                    sequential_refuse("source.invalid", "uptake requires encouragement assignment")
+                facts = (design.uptake.fact,)
+            else:
+                metric = metrics[model.metric]
+                facts = (
+                    (metric.numerator.fact, metric.denominator.fact)
+                    if isinstance(metric, RatioMetric)
+                    else (metric.fact,)
+                )
+            feeds.extend(_find_fact_source(self._defs, fact)[0].name for fact in facts)
+        for feed in dict.fromkeys(feeds):
+            certify_capture_feed(
+                feed=feed,
+                cutoff=evidence.observation_cutoff_ts,
+                complete_through=evidence.complete_through_by_feed.get(feed),
+                experiment=self._experiment,
+                as_of=as_of,
+            )
+
+    def _after_trigger_events(self, events: Table, exposures: Table) -> Table:
+        """Events strictly after each unit's first eligible trigger, up to the pinned cutoff."""
+        evidence = self._require_source_snapshot_evidence(operation="triggered_outcomes")
+        anchors = exposures.select("unit_id", "first_trigger_ts")
+        joined = events.join(anchors, events.unit_id == anchors.unit_id).filter(
+            (events.ts > anchors.first_trigger_ts)
+            & (events.ts <= _utc_timestamp_literal(events.ts, evidence.observation_cutoff_ts))
+        )
+        return joined.select(**{name: events[name] for name in events.columns})
+
+    def _assignment_anchored(self, cohort: Table) -> Table:
+        """The triggered cohort re-anchored at assignment for its pre-period covariate.
+
+        Values observed between assignment and the trigger never become covariates.
+        """
+        exposures = self._get_exposures()
+        assignment = exposures.select("unit_id", assignment_anchor=exposures.first_exposure_ts)
+        joined = cohort.join(assignment, "unit_id")
+        return joined.select(
+            **{
+                name: assignment.assignment_anchor if name == "first_exposure_ts" else cohort[name]
+                for name in cohort.columns
+            }
+        )
+
+    def _window_close_day(self, longest_window_days: int):
+        """The boundary-local day each unit's longest registered window closes."""
+        window = ibis.interval(days=max(0, longest_window_days - 1))
+
+        def final_day(table: Table):
+            return _local_date(table.first_exposure_ts, self._experiment) + window
+
+        return final_day
+
     def _pinned_spine_experiment(
         self, metric: Metric, evidence: SourceSnapshotEvidence
     ) -> Experiment:
@@ -1129,21 +1214,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 den_events = den_events.filter(den_events.ts <= den_cutoff)
 
         if population == "triggered" and evidence is not None:
-            anchors = exposures.select("unit_id", "first_trigger_ts")
-
-            def after_trigger(event_table: Table) -> Table:
-                joined = event_table.join(anchors, event_table.unit_id == anchors.unit_id).filter(
-                    (event_table.ts > anchors.first_trigger_ts)
-                    & (
-                        event_table.ts
-                        <= _utc_timestamp_literal(event_table.ts, evidence.observation_cutoff_ts)
-                    )
-                )
-                return joined.select(**{name: event_table[name] for name in event_table.columns})
-
-            events = after_trigger(events)
+            events = self._after_trigger_events(events, exposures)
             if den_events is not None:
-                den_events = after_trigger(den_events)
+                den_events = self._after_trigger_events(den_events, exposures)
             outcome_exposures = exposures.mutate(first_exposure_ts=exposures.first_trigger_ts)
         spine_experiment = self._experiment
         spine_end: dt.date | None = None
@@ -1438,15 +1511,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         population: Literal["assigned", "triggered"] = "assigned",
     ) -> tuple[DashboardGroupData, ...]:
         """Read group aggregates, or decode the displayed retained checkpoints."""
-        if checkpoints is not None and population != "assigned":
-            _refuse_operation(
-                operation="dashboard_group_data",
-                request={"population": population, "retained_checkpoints": True},
-                offered=("assigned",),
-                route="request the running warehouse group data for the triggered population",
-            )
         if checkpoints is not None:
-            return _retained_dashboard_groups(metrics, checkpoints, self.sequential_snapshot())
+            return _retained_dashboard_groups(
+                metrics, checkpoints, self.sequential_snapshot().chain(population)
+            )
         rows: list[DashboardGroupData] = []
 
         self._validate_mixed_assignments()
@@ -3145,6 +3213,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
 
     def capture_sequential(self, *, finalized: bool, as_of: dt.date, previous=None):
         """Capture only units finalized through the explicit common horizon."""
+        from increment.query.artifact_contract import observation_recipe_sha256
         from increment.query.artifact_publish import artifact_context
         from increment.query.sequential_capture import (
             capture_relations,
@@ -3153,21 +3222,27 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         from increment.sequential_state import sequential_refuse
 
-        recipe = artifact_context(
-            self._defs,
-            self._experiment,
-            self._on_mixed_assignment,
-            metrics=self.context.metrics,
-            encouragement_uptake=self.context.design
-            if isinstance(self.context.design, Encouragement)
-            else None,
+        recipe_id = observation_recipe_sha256(
+            artifact_context(
+                self._defs,
+                self._experiment,
+                self._on_mixed_assignment,
+                metrics=self.context.metrics,
+                encouragement_uptake=self.context.design
+                if isinstance(self.context.design, Encouragement)
+                else None,
+            )
         )
         previous = previous if previous is not None else getattr(self, "_sequential_snapshot", None)
         covariate = self._experiment.n_pre_periods > 0
         registration, _ = validate_relational_capture(
             self, finalized=finalized, as_of=as_of, previous=previous, covariate=covariate
         )
-        modeled = {model.metric for model in registration.models if model.observable == "outcome"}
+        monitor_triggered = self.context.trigger_name is not None and (
+            previous is None or previous.triggered is not None
+        )
+        if monitor_triggered:
+            self._certify_sequential_feeds(registration, as_of)
         uptake_facts = (
             (self.context.design.uptake.fact,)
             if isinstance(self.context.design, Encouragement)
@@ -3175,19 +3250,64 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             else ()
         )
         with self._pinned_source_execution(
-            metrics=[metric for metric in self.context.metrics if metric.name in modeled],
+            metrics=[
+                metric
+                for metric in self.context.metrics
+                if any(
+                    model.metric == metric.name and model.observable == "outcome"
+                    for model in registration.models
+                )
+            ],
             uptake_facts=uptake_facts,
         ) as pinned:
             pinned._validate_mixed_assignments()
             assignment_counts = pinned.assignment_counts(population="assigned")
-            exposures = pinned._get_exposures()
-            cohort = exposures.filter(
-                _local_date(exposures.first_exposure_ts, pinned._experiment)
-                + ibis.interval(days=max(0, registration.reveal.longest_window_days - 1))
-                <= ibis.literal(as_of)
-            )
 
-            def outcome(metric):
+            def capture_population(population, parent, triggered=None):
+                selected_registration = (
+                    registration
+                    if population == "assigned"
+                    else pinned.context.plan.inference.triggered_registration
+                )
+                anchors = (
+                    pinned._get_exposures()
+                    if population == "assigned"
+                    else pinned._get_trigger_population(operation="capture_sequential")
+                )
+                if population == "triggered":
+                    anchors = anchors.mutate(first_exposure_ts=anchors.first_trigger_ts)
+                final_day = pinned._window_close_day(
+                    selected_registration.reveal.longest_window_days
+                )
+                cohort = anchors.filter(final_day(anchors) <= ibis.literal(as_of))
+                metrics = {metric.name: metric for metric in pinned.context.metrics}
+
+                def relation_for(model):
+                    if model.observable == "uptake":
+                        return uptake(cohort)
+                    return outcome(metrics[model.metric], cohort, population)
+
+                return capture_relations(
+                    pinned,
+                    relation_for,
+                    cohort,
+                    lambda relation: record_batches(pinned._con, relation),
+                    recipe_id=recipe_id,
+                    finalized=finalized,
+                    as_of=as_of,
+                    previous=parent,
+                    covariate=covariate,
+                    assignment_counts=(
+                        assignment_counts
+                        if population == "assigned"
+                        else pinned.assignment_counts(population="triggered")
+                    ),
+                    population=population,
+                    triggered=triggered,
+                    final_day=final_day if monitor_triggered else None,
+                )
+
+            def outcome(metric, cohort, population):
                 if isinstance(metric, RatioMetric):
                     fs, fact = _find_fact_source(pinned._defs, metric.numerator.fact)
                     table = pinned._get_fact_table(fs)
@@ -3204,12 +3324,6 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                         value_column=_resolve_value_column(dfs, dfact),
                         part="denominator",
                     )
-                    den_stats = post_exposure_stats(
-                        den_events,
-                        cohort,
-                        source_key=f"{metric.name}:den",
-                        experiment=pinned._experiment,
-                    )
                 else:
                     fs, fact = _find_fact_source(pinned._defs, metric.fact)
                     events = metric_events(
@@ -3217,14 +3331,31 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                         metric,
                         value_column=_resolve_value_column(fs, fact),
                     )
-                    den_stats = None
+                    den_events = None
+                pre_events = events
+                pre_cohort = cohort
+                if population == "triggered":
+                    events = pinned._after_trigger_events(events, cohort)
+                    if den_events is not None:
+                        den_events = pinned._after_trigger_events(den_events, cohort)
+                    pre_cohort = pinned._assignment_anchored(cohort)
+                den_stats = (
+                    post_exposure_stats(
+                        den_events,
+                        cohort,
+                        source_key=f"{metric.name}:den",
+                        experiment=pinned._experiment,
+                    )
+                    if den_events is not None
+                    else None
+                )
                 spine, stats = unit_day_spine_stats(
                     cohort, events, pinned._experiment, metric.name, end_date=ibis.literal(as_of)
                 )
                 # The same zero-filled pre-period total fixed-horizon CUPED reads.
                 pre_stats = (
                     pre_period_stats(
-                        events, cohort, pinned._experiment, source_key=f"{metric.name}:pre"
+                        pre_events, pre_cohort, pinned._experiment, source_key=f"{metric.name}:pre"
                     )
                     if covariate
                     else None
@@ -3242,7 +3373,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 # A fixed threshold clips each unit's finalized total as it is revealed.
                 return winsorize_unit_totals(totals, metric)
 
-            def uptake():
+            def uptake(cohort):
                 design = pinned.context.design
                 if not isinstance(design, Encouragement):
                     sequential_refuse("source.invalid", "uptake requires encouragement assignment")
@@ -3251,19 +3382,15 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 events = pinned._uptake_source_events(table, design.uptake.fact)
                 return _attach_uptake_flag(cohort, cohort, events, design.uptake.window_days)
 
-            snapshot = capture_relations(
-                pinned,
-                outcome,
-                uptake,
-                cohort,
-                lambda relation: record_batches(pinned._con, relation),
-                recipe_id=recipe.sha256,
-                finalized=finalized,
-                as_of=as_of,
-                previous=previous,
-                covariate=covariate,
-                assignment_counts=assignment_counts,
-            )
+            triggered = None
+            if (
+                monitor_triggered
+                and pinned.context.plan.inference.triggered_registration is not None
+            ):
+                triggered = capture_population(
+                    "triggered", None if previous is None else previous.triggered
+                )
+            snapshot = capture_population("assigned", previous, triggered)
         self._sequential_snapshot = snapshot
         return snapshot
 

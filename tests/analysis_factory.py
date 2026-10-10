@@ -107,16 +107,29 @@ def make_analysis(
     design = design or exp.resolved_design()
     from increment.decision import CompiledDecisionPlan
 
-    compiled_plan = (
-        plan
-        if isinstance(plan, CompiledDecisionPlan)
-        else compile_decision_plan(
+    if isinstance(plan, CompiledDecisionPlan):
+        compiled_plan = plan
+    else:
+        from increment.plan import bind_automatic_sequential_plan
+        from increment.sequential_source import native_observation_mapping
+
+        declared_plan = bind_automatic_sequential_plan(
             exp.plan if plan is None else plan,
+            metric_catalog,
+            design=design,
+            source_id=exp.name,
+            source_mapping=native_observation_mapping(
+                defs, exp, on_mixed_assignment=on_mixed_assignment
+            ),
+            pre_period_covariate=exp.n_pre_periods > 0,
+            trigger=exp.trigger,
+        )
+        compiled_plan = compile_decision_plan(
+            declared_plan,
             metric_catalog,
             path="warehouse",
             design=design,
         )
-    )
     session = WarehouseSession(con, defs, source_snapshot_evidence=source_snapshot_evidence)
     session.drop_materialized()
     src = DefinitionsMomentSource(
@@ -179,6 +192,7 @@ def make_analysis_like(
         ),
         on_mixed_assignment=analysis._on_mixed_assignment,
         metrics=list(analysis.metrics) if metrics is None else metrics,
+        source_snapshot_evidence=getattr(analysis._session, "source_snapshot_evidence", None),
         _design=analysis._design if design is None else design,
     )
 

@@ -856,6 +856,34 @@ def test_exported_checkpoint_replays_exact_rationals_and_refuses_mutated_ones(
     assert "1e50000" not in str(wrapped.value)
 
 
+def _declare_fixture_trigger(definition) -> None:
+    """A fact-based trigger whose feed the fixture's evidence certifies."""
+    definition["fact_sources"][0]["facts"].append({"name": "triggered_event", "column": None})
+    definition["exposures"].append({"name": "triggered", "fact": "triggered_event"})
+    definition["experiments"][0]["trigger"] = "triggered"
+
+
+def _fixture_trigger_event(unit: str) -> dict:
+    """Units below index 12 trigger half an hour after assignment, before any outcome."""
+    from datetime import UTC, datetime
+
+    return {
+        "unit_id": unit,
+        "event": "triggered_event",
+        "value": 0.0,
+        "ts": datetime(2025, 1, 1, 0, 30, tzinfo=UTC),
+    }
+
+
+def _certified_fixture_evidence():
+    from datetime import UTC, datetime
+
+    from increment import SourceSnapshotEvidence
+
+    certified = datetime(2025, 1, 31, tzinfo=UTC)
+    return SourceSnapshotEvidence(certified, {"events": certified})
+
+
 def _native_fixture(
     law, *, uptake_only=False, unbounded_retention=False, triggered=False, registration_q=None
 ):
@@ -923,16 +951,7 @@ def _native_fixture(
             }
         )
     if triggered:
-        definition["exposures"].append(
-            {
-                "name": "triggered",
-                "sql": (
-                    "SELECT unit_id, ts, group_id FROM enrolled "
-                    "WHERE CAST(SUBSTR(unit_id, 1, 8) AS INTEGER) < 12"
-                ),
-            }
-        )
-        definition["experiments"][0]["trigger"] = "triggered"
+        _declare_fixture_trigger(definition)
     from increment import SequentialCell, SequentialModel
     from increment.semantics.design import Encouragement
 
@@ -1046,6 +1065,8 @@ def _native_fixture(
                             "ts": datetime(2025, 1, 1, 1, tzinfo=UTC),
                         }
                     )
+            if triggered and i < 12:
+                events.append(_fixture_trigger_event(unit))
     connection = ibis.duckdb.connect()
     connection.create_table("enrolled", pd.DataFrame(enrolled))
     if uptake_only:
@@ -1061,6 +1082,7 @@ def _native_fixture(
             experiment=experiment,
             _design=design,
             metrics=list(defs.metrics) if unbounded_retention else None,
+            source_snapshot_evidence=_certified_fixture_evidence() if triggered else None,
         )
     except BaseException:
         connection.disconnect()

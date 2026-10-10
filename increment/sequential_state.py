@@ -36,13 +36,14 @@ from increment.semantics.sequential import (
     SequentialSamplingModel,
     refuse_legacy_asymptotic_family,
     retained_dimension,
+    validate_triggered_registration,
 )
 
 if TYPE_CHECKING:
     from increment.estimation._sequential_likelihood import BernoulliState, GaussianState
 
 _REFUSALS = {
-    code: RefusalSpec("sequential." + code, CapabilityError, lambda *, reason: reason)
+    code: RefusalSpec("sequential." + code, CapabilityError, lambda *, reason, **context: reason)
     for code in (
         "source.invalid",
         "continuation.rewrite",
@@ -55,8 +56,8 @@ _REFUSALS = {
 _REFUSALS["continuation.legacy"] = _LEGACY_CONTINUATION
 
 
-def sequential_refuse(code: str, reason: str) -> NoReturn:
-    refuse(_REFUSALS[code], reason=reason)
+def sequential_refuse(code: str, reason: str, **context) -> NoReturn:
+    refuse(_REFUSALS[code], reason=reason, **context)
 
 
 def fixed_horizon_alternative(metrics, supports: str, quantile_limit: str) -> str:
@@ -288,6 +289,9 @@ class SequentialCheckpoint(CodedModel, BaseModel):
     treatment: SequentialArmState
     revealed_units: int = Field(ge=0)
     status: Literal["current", "frozen", "missing"] = "current"
+    population: Literal["assigned", "triggered"] = Field(
+        default="assigned", exclude_if=lambda value: value == "assigned"
+    )
 
     @model_validator(mode="after")
     def _compatible(self):
@@ -314,6 +318,7 @@ class SequentialCheckpoint(CodedModel, BaseModel):
 
     def verify_snapshot(self, snapshot: SequentialSnapshot) -> None:
         """Bind a current or frozen cell to an actual verified source prefix."""
+        snapshot = snapshot.chain(self.population)
         registration = snapshot.registration
         if (
             self.registration_id != snapshot.registration_id
@@ -521,6 +526,12 @@ class SequentialSnapshot(_State):
     assignment_counts: Mapping[str, int] | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+    population: Literal["assigned", "triggered"] = Field(
+        default="assigned", exclude_if=lambda value: value == "assigned"
+    )
+    triggered: SequentialSnapshot | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @field_validator("assignment_counts", mode="before")
     @classmethod
@@ -572,6 +583,14 @@ class SequentialSnapshot(_State):
 
     @model_validator(mode="after")
     def _identities(self):
+        if self.population != self.registration.population:
+            sequential_refuse("source.invalid", "snapshot and registration populations differ")
+        if self.triggered is not None:
+            if self.population != "assigned" or self.triggered.population != "triggered":
+                sequential_refuse(
+                    "source.invalid", "only an assigned envelope holds a triggered chain"
+                )
+            validate_triggered_registration(self.registration, self.triggered.registration)
         if (self.ancestors[-1].prefix_id if self.ancestors else None) != self.parent_id:
             sequential_refuse("source.invalid", "parent-linked ancestry is inconsistent")
         if self.registration_id != registration_id(self.registration):
@@ -687,9 +706,30 @@ class SequentialSnapshot(_State):
                 return state
         sequential_refuse("source.invalid", "requested arm is outside the registered roster")
 
+    def chain(self, population: Literal["assigned", "triggered"]) -> SequentialSnapshot:
+        """Resolve the retained chain for one population without borrowing another."""
+        if self.population == population:
+            return self
+        if population == "triggered" and self.triggered is not None:
+            return self.triggered
+        sequential_refuse("source.invalid", f"snapshot has no {population} chain")
+
     def verify_parent(self, previous: SequentialSnapshot) -> None:
         """Prove this snapshot continues ``previous``: an append of new units or a
         freeze declared at the same look, through any recorded intermediate looks."""
+        if self.population != previous.population:
+            sequential_refuse("continuation.rewrite", "snapshot population changed")
+        if previous.triggered is None and self.triggered is not None:
+            sequential_refuse(
+                "continuation.legacy",
+                "a triggered decision cannot be backfilled onto an assigned-only process",
+            )
+        if previous.triggered is not None:
+            if self.triggered is None:
+                sequential_refuse(
+                    "continuation.rewrite", "the committed triggered chain was dropped"
+                )
+            self.triggered.verify_parent(previous.triggered)
         if self.registration_id != previous.registration_id:
             sequential_refuse(
                 "continuation.rewrite", "source, model, prior, roster or definitions changed"
@@ -803,6 +843,28 @@ def _capture_registration(registration, source_id, definitions_id, finalized, pr
     return rid
 
 
+def _replay_unchanged_prefix(
+    previous: SequentialSnapshot,
+    triggered: SequentialSnapshot | None,
+    reveal_cursor: date | datetime | str | int | float | None,
+) -> SequentialSnapshot:
+    """A recapture of an unchanged prefix is the parent itself.
+
+    Only an advanced triggered chain or a new reveal label makes a distinct
+    object, and that object still has to prove it continues the parent.
+    """
+    update: dict[str, object] = {}
+    if triggered != previous.triggered:
+        update["triggered"] = triggered
+    if reveal_cursor is not None and reveal_cursor != previous.reveal_cursor:
+        update["reveal_cursor"] = reveal_cursor
+    if not update:
+        return previous
+    snapshot = previous.model_copy(update=update)
+    snapshot.verify_parent(previous)
+    return snapshot
+
+
 def _capture_sequential_diagnostic_snapshot(  # noqa: PLR0915
     registration: SequentialRegistration,
     records: Iterable[Mapping[str, object]],
@@ -814,6 +876,7 @@ def _capture_sequential_diagnostic_snapshot(  # noqa: PLR0915
     reveal_cursor: date | datetime | str | int | float | None = None,
     assignment_counts: Mapping[str, int] | None = None,
     append: bool = False,
+    triggered: SequentialSnapshot | None = None,
 ) -> SequentialSnapshot:
     """Capture a full prefix in committed reveal order, checking unchanged records.
 
@@ -960,9 +1023,7 @@ def _capture_sequential_diagnostic_snapshot(  # noqa: PLR0915
         ]
     prefix = canonical_id(content)
     if previous is not None and prefix == previous.prefix_id:
-        if reveal_cursor is None:
-            return previous
-        return previous.model_copy(update={"reveal_cursor": reveal_cursor})
+        return _replay_unchanged_prefix(previous, triggered, reveal_cursor)
     snapshot = SequentialSnapshot(
         registration=registration,
         registration_id=rid,
@@ -986,6 +1047,8 @@ def _capture_sequential_diagnostic_snapshot(  # noqa: PLR0915
         reveal_cursor=reveal_cursor,
         frozen=frozen,
         assignment_counts=assignment_counts,
+        population=registration.population,
+        triggered=triggered,
     )
     if previous is not None:
         snapshot.verify_parent(previous)
@@ -1003,6 +1066,7 @@ def capture_sequential_snapshot(
     reveal_cursor: date | datetime | str | int | float | None = None,
     assignment_counts: Mapping[str, int] | None = None,
     append: bool = False,
+    triggered: SequentialSnapshot | None = None,
 ) -> SequentialSnapshot:
     if isinstance(registration, SequentialRegistration):
         registration = SequentialRegistration.model_validate(registration)
@@ -1017,11 +1081,15 @@ def capture_sequential_snapshot(
         reveal_cursor=reveal_cursor,
         assignment_counts=assignment_counts,
         append=append,
+        triggered=triggered,
     )
 
 
 def declare_sequential_freeze_cells(
-    snapshot: SequentialSnapshot, cells: Sequence[SequentialCell]
+    snapshot: SequentialSnapshot,
+    cells: Sequence[SequentialCell],
+    *,
+    population: Literal["assigned", "triggered"] | None = None,
 ) -> SequentialSnapshot:
     """Freeze exact roster cells at exactly this snapshot's current look.
 
@@ -1033,6 +1101,10 @@ def declare_sequential_freeze_cells(
     current state can ever be frozen. Refuses a cell outside the roster, one
     already frozen, or one with no observations on either arm yet.
     """
+    if population is not None and population != snapshot.population:
+        return snapshot.model_copy(
+            update={"triggered": declare_sequential_freeze_cells(snapshot.chain(population), cells)}
+        )
     if not cells:
         return snapshot
     registration = snapshot.registration
@@ -1068,6 +1140,7 @@ def declare_sequential_freeze_cells(
                 treatment=treatment,
                 revealed_units=len(snapshot.records),
                 status="frozen",
+                population=snapshot.population,
             )
         )
     frozen = tuple(
@@ -1103,19 +1176,10 @@ def declare_sequential_freeze_cells(
     )
 
 
-def declare_sequential_freeze(
+def _ready_freeze_cells(
     snapshot: SequentialSnapshot, metrics: Sequence[str]
-) -> SequentialSnapshot:
-    """Stop monitoring named metrics at exactly this snapshot's current look.
-
-    Every registered cell of a named metric -- each treatment arm and each
-    segment -- that has observations on both arms keeps this look's evidence
-    at every later look. A cell with no observations yet has no evidence to
-    keep and stays monitored; naming the metric at a later capture freezes it
-    then. Only this snapshot's own current state can be frozen, never an
-    earlier look's. A frozen secondary keeps its evidence, while its family's
-    e-BH selection is redone at every look over frozen and current evidence.
-    """
+) -> tuple[list[SequentialCell], list[str]]:
+    """Cells of the named metrics with evidence on both arms, and the metrics with none."""
     registration = snapshot.registration
     by_metric: dict[str, list[SequentialCell]] = {}
     for cell in registration.roster:
@@ -1141,13 +1205,48 @@ def declare_sequential_freeze(
         if not ready:
             idle.append(name)
         cells.extend(ready)
+    return cells, idle
+
+
+def declare_sequential_freeze(
+    snapshot: SequentialSnapshot, metrics: Sequence[str]
+) -> SequentialSnapshot:
+    """Stop monitoring named metrics at exactly this snapshot's current look.
+
+    Every registered cell of a named metric -- each treatment arm and each
+    segment -- that has observations on both arms keeps this look's evidence
+    at every later look. A cell with no observations yet has no evidence to
+    keep and stays monitored; naming the metric at a later capture freezes it
+    then. Only this snapshot's own current state can be frozen, never an
+    earlier look's. A frozen secondary keeps its evidence, while its family's
+    e-BH selection is redone at every look over frozen and current evidence.
+    A triggered chain freezes the same metrics' ready cells at its own look; a
+    triggered cell that has not observed both arms yet stays monitored there,
+    and naming the metric again at a later capture freezes it then. A named
+    metric refuses only when neither chain has a cell left to freeze.
+    """
+    cells, idle = _ready_freeze_cells(snapshot, metrics)
+    triggered_cells: list[SequentialCell] = []
+    if snapshot.triggered is not None:
+        triggered_metrics = {c.metric for c in snapshot.triggered.registration.roster}
+        names = [name for name in metrics if name in triggered_metrics]
+        if names:
+            triggered_cells, triggered_idle = _ready_freeze_cells(snapshot.triggered, names)
+            idle = [name for name in idle if name in triggered_idle or name not in names]
     if idle:
         sequential_refuse(
             "freeze.invalid",
             f"nothing left to freeze for {idle}: every registered cell is already frozen or "
             "has no observations on both arms yet; freeze at a later capture once it has data",
         )
-    return declare_sequential_freeze_cells(snapshot, cells)
+    frozen = declare_sequential_freeze_cells(snapshot, cells)
+    if snapshot.triggered is not None:
+        frozen = frozen.model_copy(
+            update={
+                "triggered": declare_sequential_freeze_cells(snapshot.triggered, triggered_cells)
+            }
+        )
+    return frozen
 
 
 def snapshot_from_json(payload: str) -> SequentialSnapshot:

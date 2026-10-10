@@ -332,9 +332,21 @@ def _model(name: str) -> type[Any]:
 
 
 def _dump_context_plan(plan: Any) -> dict[str, Any]:
-    """Preserve the pre-explicitness q spelling in hashed artifact recipes."""
+    """Preserve the pre-explicitness q spelling in hashed artifact recipes.
+
+    The triggered registration and the triggered look policy stay out of the
+    plan dump, which every observation recipe hashes: the registration is a
+    derivation of content the context already binds, and the look policy shapes
+    only the triggered family's claim and travels as the context's own
+    ``triggered_look_policy`` field instead, so neither changes an assigned
+    record, prefix or checkpoint identity.
+    """
     result = cast("dict[str, Any]", _dump(plan))
     result.setdefault("q", plan.q)
+    inference = result.get("inference")
+    if isinstance(inference, dict):
+        inference.pop("triggered_registration", None)
+        inference.pop("triggered_look_policy", None)
     return result
 
 
@@ -589,6 +601,22 @@ def artifact_source_mapping(context: Any) -> dict[str, Any]:
         )
     _require_sha(mapping["recipe_sha256"], code="artifact.context.mismatch")
     return mapping
+
+
+def observation_recipe_sha256(context: Any) -> str:
+    """The digest sequential records bind as their source recipe.
+
+    It is the context digest without the ``triggered_look_policy`` declaration,
+    which lives in the triggered registration's identity and must not change an
+    assigned record, prefix or checkpoint identity. A context without the
+    declaration digests to its own ``sha256``.
+    """
+    validate_artifact_context(context)
+    payload = json.loads(context.canonical_json)
+    if "triggered_look_policy" not in payload:
+        return context.sha256
+    payload.pop("triggered_look_policy")
+    return _sha256(ARTIFACT_DOMAIN_ROOT + b"context\x00" + _canonical_json(payload).encode())
 
 
 def unit_day_artifact_extension_catalog(context: Any) -> tuple[Any, ...]:
@@ -1264,10 +1292,9 @@ def _compile_context(
         identity, identity_experiment, on_mixed_assignment=on_mixed_assignment
     )
     metrics = tuple(_selected_metric(definitions, name) for name in resolution.metric_names)
-    if (
-        experiment.plan.inference is not None
-        and experiment.plan.inference.kind in ("asymptotic_mean", "always_valid")
-        and experiment.plan.inference.registration is None
+    if experiment.plan.inference is not None and experiment.plan.inference.kind in (
+        "asymptotic_mean",
+        "always_valid",
     ):
         from increment.plan import bind_automatic_sequential_plan
 
@@ -1278,6 +1305,7 @@ def _compile_context(
             source_id=experiment.name,
             source_mapping=source_mapping,
             pre_period_covariate=experiment.n_pre_periods > 0,
+            trigger=experiment.trigger,
         )
         experiment = type(experiment).model_validate(experiment.model_copy(update={"plan": plan}))
         resolution = _ContextResolution(experiment, resolution.metric_names)
@@ -1316,6 +1344,10 @@ def _compile_context(
         and identity_experiment.plan.q == AnalysisPlan().q
     ):
         payload["plan_q_explicit"] = True
+    inference = resolution.experiment.plan.inference
+    look_policy = getattr(inference, "triggered_look_policy", "exploratory")
+    if resolution.experiment.trigger is not None and look_policy != "exploratory":
+        payload["triggered_look_policy"] = look_policy
     canonical = _canonical_json(payload)
     return _model("ArtifactContext").model_validate(
         {
@@ -1337,6 +1369,7 @@ __all__ = [
     "RefusalSpec",
     "REFUSALS",
     "artifact_source_mapping",
+    "observation_recipe_sha256",
     "compile_unit_day_artifact_context",
     "open_trusted_manifest_snapshot",
     "open_trusted_snapshot",

@@ -347,7 +347,11 @@ def sequential_fingerprint(snapshot: Any) -> tuple:
         )
     )
     records = tuple(sorted((r.unit_id, r.group_id) for r in snapshot.records))
-    return (states, records)
+    triggered = getattr(snapshot, "triggered", None)
+    if triggered is None:
+        return (states, records)
+    # A trigger-declared capture retains a second chain; parity holds for both.
+    return (states, records, sequential_fingerprint(triggered))
 
 
 @dataclass(frozen=True)

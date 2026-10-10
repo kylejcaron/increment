@@ -136,13 +136,18 @@ def validate_whole_window(
             estimands=req.estimands,
             value_scale=req.value_scale,
         )
-    if (
-        req.population == "triggered"
-        and getattr(plan.inference, "registration", None) is None
-        and (
+    # A registered plan replays both captured populations wherever the source
+    # context declares the trigger (a moments checkpoint included); a
+    # fixed-horizon triggered read needs the native or artifact trigger evidence.
+    registered = getattr(plan.inference, "registration", None) is not None
+    triggered_unsupported = (
+        src.context.trigger_name is None
+        if registered
+        else (
             route not in ("native", "artifact") or experiment is None or experiment.trigger is None
         )
-    ):
+    )
+    if req.population == "triggered" and triggered_unsupported:
         _refuse(
             _TRIGGER_UNSUPPORTED,
             method="run",

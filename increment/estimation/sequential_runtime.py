@@ -160,6 +160,7 @@ def result_from_sequential(
     return LiftEstimate(
         metric=cell.metric,
         group_id=cell.group_id,
+        analysis_population=result.checkpoint.population,
         estimand=cell.estimand,
         # The retained state already carries the adjustment: a predeclared
         # scalar or the joint moments the asymptotic route fits from.
@@ -273,6 +274,7 @@ def _evaluate_sequential_diagnostic(
             treatment=t,
             revealed_units=len(snapshot.records),
             status="current" if c.n and t.n else "missing",
+            population=snapshot.population,
         )
         alpha = inference.allocated_alpha(cell.alpha, checkpoint.revealed_units)
         evaluated_results.append(evaluate_checkpoint(checkpoint, alpha=alpha))
@@ -415,12 +417,21 @@ def selected_snapshot_results(
             row = row.model_copy(
                 update={
                     "discovery": selected,
+                    "multiplicity_status": (
+                        "exploratory_family"
+                        if inference.registration.look_policy == "exploratory"
+                        else row.multiplicity_status
+                    ),
                     "family_axes": ("metric", "arm", "segment")
                     if cell.segment
                     else ("metric", "arm"),
                     "family_q": float(inference.registration.q),
                     "family_threshold": outcome.realized_threshold,
-                    "family_guarantee": outcome.guarantee,
+                    "family_guarantee": (
+                        None
+                        if inference.registration.look_policy == "exploratory"
+                        else outcome.guarantee
+                    ),
                     "family_nominal_alpha": float(nominal_alpha),
                 }
             )

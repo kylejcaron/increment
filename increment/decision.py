@@ -679,8 +679,12 @@ def _build_inference(plan: AnalysisPlan) -> AsymptoticMean | AlwaysValid | Mixed
         return None
     assert spec.registration is not None
     if spec.kind == "asymptotic_mean":
-        return compose_asymptotic_or_mixed(spec.registration)
-    return AlwaysValid(registration=spec.registration)
+        return compose_asymptotic_or_mixed(
+            spec.registration, triggered_registration=spec.triggered_registration
+        )
+    return AlwaysValid(
+        registration=spec.registration, triggered_registration=spec.triggered_registration
+    )
 
 
 def _declared_alpha(plan: AnalysisPlan, role: Role, *, n_primaries: int) -> float:

@@ -1211,7 +1211,6 @@ def render_metric_details(
                 ("Favorable", esc(row.get("preferred_direction") or "not declared")),
             ]
         )
-        + _sequential_population_route(row)
         + _disclosure(
             "Definition and analysis policy", _kv(_metric_detail_entries(snapshot, model, row))
         )
@@ -1219,27 +1218,6 @@ def render_metric_details(
         + group_body
         + _list(result_caveats([row]), css_class="inc-dashboard-caveats"),
         subtitle=str(getattr(model, "description", "") or ""),
-    )
-
-
-def _sequential_population_route(row: Mapping[str, Any]) -> str:
-    context = row.get("failure_context")
-    if (
-        row.get("analysis_population") != "triggered"
-        or row.get("failure_code") != "readout.cell.unsupported_request"
-        or not isinstance(context, Mapping)
-        or context.get("reason") != "triggered_sequential"
-    ):
-        return ""
-    return _status(
-        "warn",
-        "Triggered sequential inference is unavailable; use the assigned population for "
-        "sequential inference.",
-    ) + _kv(
-        [
-            ("Code", esc(row["failure_code"])),
-            ("Route forward", "Run the sequential readout with population='assigned'."),
-        ]
     )
 
 

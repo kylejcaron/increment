@@ -770,6 +770,111 @@ Power solvers explicitly refuse `AsymptoticMean` with
 are not power for this count boundary. Tests of deterministic stopping and
 replay verify implementation contracts, not empirical calibration or a theorem.
 
+## Triggered populations
+
+An experiment that declares a `trigger` monitors two populations under one
+registered plan. The assigned chain is what the sections above describe. The
+triggered chain is a second, independently identified chain in the same
+checkpoint (`snapshot.triggered`): its members are the units whose first
+eligible trigger has been observed and whose longest trigger-anchored outcome
+window has closed by the capture horizon, revealed in `(first trigger, unit)`
+order, with outcomes measured from each unit's trigger and pre-period covariates
+kept assignment-anchored, exactly as the fixed-horizon triggered readout
+measures them. `capture_sequential(finalized=True, as_of=d)` captures both
+chains in one pinned execution on `from_definitions` and `from_unit_day_artifact`
+(the artifact needs its `trigger_population`, `trigger_measure_stats` and
+triggered `assignment_counts` extensions); `from_moments` replays an exported
+checkpoint carrying both chains and cannot start one; frame sources have no
+trigger declaration. `run()` returns rows for both populations;
+`run(population="triggered")` and `run_asof_lift(population="triggered")`
+select the triggered checkpoint rows.
+
+The triggered chain is monitored under its own `SequentialRegistration`, derived
+from the assigned one before any observation is read: the same outcome models
+and roster (tuning included, so the count boundary is wider than optimal by the
+trigger rate and still valid), a `triggered` population, its own definitions and
+filtration identity, and no uptake model. It is never declared by hand;
+`InferenceSpec.triggered_registration` holds the derivation and refuses anything
+else.
+
+### What the triggered claim assumes
+
+Each triggered cell's confidence sequence (asymptotic laws) or e-process
+threshold (exact Bernoulli) holds uniformly over every look under three
+declared assumptions. `A1`: Bernoulli randomization independent of everything
+else, as on the assigned route. `A2` (causal): neither whether nor when a unit
+triggers depends on its arm, so that the triggered contrast is an intent-to-treat
+effect on the triggered subpopulation. This is stronger than equal trigger rates
+across arms: treatment can change *which* units trigger while leaving both arms'
+trigger rates equal, and no sample-ratio or trigger-rate diagnostic can see
+that. `srm(population="triggered")` and `trigger_rates()` can reject some
+violations; a passing check is not evidence that `A2` holds. `A3`
+(trigger-order stationarity): among triggered units, trigger timing carries no
+information about the complete retained vector -- outcome, ratio numerator and
+denominator, and the pre-period covariate -- so the sequence is identically
+distributed in trigger order. Under `A1`-`A3` the triggered sequence is one
+fixed i.i.d. sequence whose revealed prefix grows with calendar time, like the
+assigned sequence, and every calendar look is a prefix of it.
+
+Assignment-window uptake is not covered by `A3`: a unit that triggers late has
+less of its uptake window after the trigger, so uptake is mechanically tied to
+trigger timing and the single-rate Bernoulli argument does not apply. Triggered
+compliance cells of an encouragement plan therefore stay unavailable
+(`readout.cell.unsupported_request`, reason `triggered_uptake_unsupported`), and
+a plan that monitors only uptake derives no triggered registration.
+
+### Per-cell coverage versus the family verdict
+
+The per-cell guarantee is a statement about the whole path, so it holds for
+any look schedule, including looks chosen with information from outside the
+triggered chain. The family verdict is not: e-BH's FDR control and the
+selected-interval reinversion need the stopped evidence to be an e-value, which
+optional stopping gives only when look times are stopping times of the chain's
+own reveal filtration. The readout itself exposes information outside it -- a
+unit's assigned-chain outcome can be reported before its triggered outcome has
+finalized -- and a look rule that waits for favourable not-yet-finalized
+observations inflates the stopped e-value's expectation while leaving the
+per-cell threshold intact (`tests/estimation/test_triggered_sequential_validity.py`).
+
+The library cannot observe the analyst's look rule, so the registration records
+the declaration. `InferenceSpec(triggered_look_policy="outcome_independent")`
+asserts that every triggered look happens at a calendar time fixed in advance,
+never chosen from any outcome; the triggered family then claims its FDR
+guarantee like the assigned one. The default, `"exploratory"`, makes no such
+assertion: e-BH selection is still performed and `discovery` is reported, but
+the triggered family's `guarantee` is `none`, each row's `multiplicity_status`
+is `exploratory_family` and `family_guarantee` is empty. The assigned family is
+unaffected either way. No joint error control across the two populations is
+claimed; the families are separate, population-qualified scopes.
+
+### Certified feeds, not evidence presence
+
+A trigger-declared capture refuses unless every contributing feed -- the trigger
+feed and every registered outcome, denominator and uptake feed -- carries a
+`SourceSnapshotEvidence` watermark whose certified whole day reaches `as_of`
+(`sequential.source.invalid`, context naming the feed and its certified day). An
+inclusive timestamp cutoff is not a completed day: a cutoff during `as_of`
+certifies only the day before. A trigger declared through SQL has no feed to
+certify and refuses; declare the trigger exposure through a fact. The rule
+exists because a later look must only append: a trigger or outcome that arrives
+inside already-certified days changes an earlier record and refuses continuation
+with `sequential.continuation.rewrite`, which cannot retract a decision already
+reported.
+
+### Processes begun without a triggered commitment
+
+A checkpoint captured before triggered monitoring existed holds no triggered
+chain. Continuing it keeps the process assigned-only and reports its triggered
+cells as `triggered_chain_uncommitted`; attaching a triggered chain to it refuses
+with `sequential.continuation.legacy`, because the decision to monitor the
+triggered family would then be made after assigned outcomes were seen. To
+monitor the triggered population, start a new registered process. The
+triggered registration is a derivation of content the assigned recipe already
+binds and is kept out of it, so the assigned chain's record and checkpoint
+identities are the same with or without a triggered commitment, and a unit-day
+artifact published before the derivation existed opens and derives the same
+triggered registration from its stored context.
+
 ## Explicit research campaign
 
 The retained stopping, family, and numerical stress cases are an explicit

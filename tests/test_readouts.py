@@ -947,14 +947,15 @@ def test_trigger_declared_sequential_readout_preserves_assigned_and_reports_trig
     rows = {(row.analysis_population, row.group_id): row for row in results}
     assigned = rows[("assigned", "treatment")]
     triggered = rows[("triggered", "treatment")]
-    assert assigned.failure_code is None and assigned.lift is not None
-    assert assigned.sequential_result is not None and assigned.sampling_available is True
-    assert triggered.failure_code == "readout.cell.unsupported_request"
-    assert triggered.failure_context["reason"] == "triggered_sequential"
-    assert triggered.lift is None and triggered.sequential_result is None
-    assert triggered.sampling_available is False
+    for row in (assigned, triggered):
+        assert row.failure_code is None and row.lift is not None
+        assert row.sequential_result is not None and row.sampling_available is True
+        assert row.sequential_result.checkpoint.population == row.analysis_population
+    assert snapshot.triggered is not None
+    assert triggered.sequential_result.checkpoint.prefix_id == snapshot.triggered.prefix_id
+    assert assigned.sequential_result.checkpoint.prefix_id == snapshot.prefix_id
     assert results.metadata.scope.decision_complete("assigned") is True
-    assert results.metadata.scope.decision_complete("triggered") is False
+    assert results.metadata.scope.decision_complete("triggered") is True
 
     from increment.estimation.readout_types import ReadoutResults
 
@@ -962,15 +963,14 @@ def test_trigger_declared_sequential_readout_preserves_assigned_and_reports_trig
     assert restored.metadata == results.metadata
     assert restored.source == results.source
     assert restored.sequential_snapshot == snapshot
-    assert [(row.analysis_population, row.failure_code) for row in restored] == [
-        ("assigned", None),
-        ("triggered", "readout.cell.unsupported_request"),
+    assert [(row.analysis_population, row.sequential_result) for row in restored] == [
+        (row.analysis_population, row.sequential_result) for row in results
     ]
     frame = results.to_frame()
     triggered_frame = frame.loc[frame["analysis_population"] == "triggered"]
     assert len(triggered_frame) == 1
-    assert triggered_frame["failure_code"].iloc[0] == "readout.cell.unsupported_request"
-    assert triggered_frame["lift"].isna().all()
+    assert triggered_frame["failure_code"].isna().all()
+    assert triggered_frame["lift"].notna().all()
     assert results.sequential_snapshot == snapshot
 
 
@@ -988,7 +988,7 @@ def test_readouts_run_direct_source_reports_declared_trigger_without_trigger_cou
         assert source.context.trigger_name == "triggered"
 
         def unexpected_trigger_read(*args: Any, **kwargs: Any) -> None:
-            raise AssertionError("unsupported triggered scope must not read triggered evidence")
+            raise AssertionError("a retained triggered chain must not re-read trigger evidence")
 
         monkeypatch.setattr(source, "triggered_counts", unexpected_trigger_read)
         monkeypatch.setattr(source, "triggered_source", unexpected_trigger_read)
@@ -1000,10 +1000,9 @@ def test_readouts_run_direct_source_reports_declared_trigger_without_trigger_cou
 
     assert len(rows) == 2
     by_population = {row.analysis_population: row for row in rows}
-    assert by_population["assigned"].sequential_result is not None
-    assert by_population["triggered"].failure_code == "readout.cell.unsupported_request"
-    assert by_population["triggered"].failure_context is not None
-    assert by_population["triggered"].failure_context["reason"] == "triggered_sequential"
+    for population in ("assigned", "triggered"):
+        result = by_population[population].require_sequential_result()
+        assert result.checkpoint.population == population
 
 
 @pytest.mark.slow
@@ -1017,12 +1016,19 @@ def test_artifact_and_analysis_readouts_preserve_triggered_sequential_scope(monk
 
     connection, definitions, native = _native_fixture("bernoulli", triggered=True)
     try:
-        native.capture_sequential(finalized=True, as_of=date(2025, 1, 20))
+        native_snapshot = native.capture_sequential(finalized=True, as_of=date(2025, 1, 20))
         store = WarehouseArtifactStore(connection, schema_name="triggered_readout_artifacts")
-        reference = native.publish_unit_day_artifact(store)
         expected_context = artifact_context(definitions, definitions.experiments[0], "error")
+        from increment.query.artifact_contract import unit_day_artifact_extension_catalog
         from increment.query.artifact_reader import ArtifactMomentSource
 
+        requests = [
+            entry.request
+            for entry in unit_day_artifact_extension_catalog(expected_context)
+            if entry.request.kind
+            in {"trigger_population", "assignment_counts", "trigger_measure_stats"}
+        ]
+        reference = native.publish_unit_day_artifact(store, extensions=requests)
         reader = ArtifactMomentSource.open(store, reference, expected_context=expected_context)
         try:
             assert reader.context.trigger_name == "triggered"
@@ -1031,29 +1037,29 @@ def test_artifact_and_analysis_readouts_preserve_triggered_sequential_scope(monk
         with Analysis.from_unit_day_artifact(
             store, reference, expected_context=expected_context
         ) as adopted:
-            adopted.capture_sequential(finalized=True, as_of=date(2025, 1, 20))
+            adopted_snapshot = adopted.capture_sequential(finalized=True, as_of=date(2025, 1, 20))
+            assert adopted_snapshot == native_snapshot
             source = adopted._readout_source()
             assert source.context.trigger_name == "triggered"
 
             def unexpected_trigger_read(*args, **kwargs):
-                raise AssertionError("unsupported triggered scope must not read triggered evidence")
+                raise AssertionError("a retained triggered chain must not re-read trigger evidence")
 
             monkeypatch.setattr(source, "triggered_counts", unexpected_trigger_read)
             monkeypatch.setattr(source, "triggered_source", unexpected_trigger_read)
             direct = readouts.run(source)
             through_analysis = adopted.run()
+            native_rows = {
+                row.analysis_population: row.require_sequential_result() for row in native.run()
+            }
             for result in (direct, through_analysis):
                 rows = _lift_rows(_lift_results(result))
                 assert len(rows) == 2
                 by_population = {row.analysis_population: row for row in rows}
-                assert by_population["assigned"].sequential_result is not None
-                assert by_population["triggered"].failure_code == (
-                    "readout.cell.unsupported_request"
-                )
-                assert by_population["triggered"].failure_context is not None
-                assert by_population["triggered"].failure_context["reason"] == (
-                    "triggered_sequential"
-                )
+                for population in ("assigned", "triggered"):
+                    evaluated = by_population[population].require_sequential_result()
+                    assert evaluated.checkpoint.population == population
+                    assert evaluated == native_rows[population]
     finally:
         native.close()
         connection.disconnect()
