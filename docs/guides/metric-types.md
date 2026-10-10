@@ -1,14 +1,19 @@
 # Metric types
 
-Four metric types cover most experiment readouts: **mean**,
-**conversion**, **retention**, and **ratio**. Each reduces a unit's events to
-one number, then compares the arms. This guide explains what each type
-measures, its YAML shape on the definitions path, and its `MetricSpec`
-equivalent on the dataframe path.
+The metric type defines what one unit contributes to an experiment readout:
+mean, conversion, retention, or ratio. Declare it in warehouse YAML or as a
+dataframe `MetricSpec`, choosing the per-unit event, window and denominator
+semantics to match the question. The [mean example](#mean) starts with the
+definitions path; the [dataframe example](#the-dataframe-path-metricspec)
+shows column-backed values. Interpret effects using the metric's outcome scale
+and window; see [Reading results](reading-results.md) and the canonical
+[population/status table](multiplicity.md).
 
-All windowed fields (`window_days`, `threshold_days`) count in day
-offsets from each unit's own first exposure: see
-[The data model](data-model.md).
+Definitions-backed metrics reduce event facts to unit outcomes; dataframe
+inputs already supply per-unit values. These paths do not make every metric
+type interchangeable: retention, ratio, sequential and source-specific
+capabilities have distinct support limits, described in the relevant sections
+and [method compatibility reference](compatibility.md).
 
 ## Mean
 

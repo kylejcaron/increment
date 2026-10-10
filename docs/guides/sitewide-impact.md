@@ -1,10 +1,19 @@
 # Sitewide impact
 
-An experiment measures only the units it enrolled. `Analysis.sitewide()`
-translates that exposed-population lift into one whole-site number: if the
-lift had shipped to every enrolled unit, how much would the metric's total
-have moved during the experiment's actual window? This is the business
-impact that an enrolled per-unit lift alone cannot answer.
+`Analysis.sitewide()` converts a supported per-unit lift into a whole-site
+impact for the experiment's actual enrollment window: the change if that lift
+had shipped to every enrolled unit. It requires a native
+`Analysis.from_definitions` source, which retains the raw event stream needed
+to compute site volume; pre-melted summaries and moments cannot provide it.
+The [worked example](#worked-example) shows mean and ratio metrics. Read the
+output as window-specific absolute and relative impact, not as a new per-unit
+estimate; see [Reading results](reading-results.md) and
+[Multiplicity](multiplicity.md) for row context.
+
+The calculation assumes the observed per-unit effect applies to all enrolled
+units, and it reports only the window actually run—no annualized or longer
+horizon projection. Check [what refuses](#what-refuses) before selecting a
+metric or source.
 
 ## The ship-to-all counterfactual
 
