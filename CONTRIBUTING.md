@@ -644,6 +644,17 @@ uv run --with nox nox -s docs
 Use the Nox documentation session rather than invoking MkDocs directly. It
 exports notebook-backed pages before performing the strict site build.
 
+The PR workflow runs snippets for `README.md`, `docs/`, Python package source,
+and documentation/build inputs. It runs the strict site build for
+documentation/navigation/build/dependency changes, the root public exports and
+results modules, or PRs labelled `breaking` or `docs-required`. This intentionally
+does not build the strict site for every source-only public API change; an
+unlabelled API change can first be caught by the mandatory exact-candidate
+strict-docs check before release publication. `docs-required` is an orthogonal
+review label for public API documentation, not a release-note category; the
+repository owner must create and activate that label. The existing
+`documentation` label remains for documentation-only release notes.
+
 ### Capability composition
 
 Every public capability declares its behavior for every metric type in
