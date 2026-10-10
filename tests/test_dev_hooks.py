@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -66,9 +67,15 @@ def _repository(path: Path, *, prek_version: str) -> Path:
         "for name in sys.argv[1:]) else 0)\n",
         encoding="utf-8",
     )
+    guard = path / "scripts" / "check_push_targets.py"
+    guard.parent.mkdir()
+    guard.write_bytes(
+        (Path(__file__).parents[1] / "scripts" / "check_push_targets.py").read_bytes()
+    )
+    (path / ".gitignore").write_text(".hook-ran\n", encoding="utf-8")
     _run("git", "-C", str(path), "config", "user.name", "Hook Smoke")
     _run("git", "-C", str(path), "config", "user.email", "hook@example.invalid")
-    _run("git", "-C", str(path), "add", "uv.lock", ".pre-commit-config.yaml", ".hook_check.py")
+    _run("git", "-C", str(path), "add", ".")
     _run("git", "-C", str(path), "commit", "--quiet", "-m", "initial")
     return path
 
@@ -96,7 +103,7 @@ def test_locked_prek_version_requires_one_package(tmp_path: Path) -> None:
 
 
 def test_installed_hooks_run_in_linked_worktrees_without_project_environment(
-    tmp_path: Path, stable_tool: tuple[Path, str]
+    tmp_path: Path, stable_tool: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     executable, version = stable_tool
     repo = _repository(tmp_path / "repo", prek_version=version)
@@ -135,12 +142,51 @@ def test_installed_hooks_run_in_linked_worktrees_without_project_environment(
     _run("git", "-C", str(second), "add", "good.py")
     _run("git", "-C", str(second), "commit", "--quiet", "-m", "good")
     assert (second / ".hook-ran").is_file()
-    _run("git", "-C", str(second), "push", "--quiet", str(remote), "HEAD:refs/heads/second")
+    unavailable_python = tmp_path / "without-system-python"
+    unavailable_python.mkdir()
+    python3 = unavailable_python / "python3"
+    python3.write_text("#!/bin/sh\nexit 127\n", encoding="utf-8")
+    python3.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{unavailable_python}{os.pathsep}{os.environ['PATH']}")
+    _run(
+        "git",
+        "-C",
+        str(second),
+        "push",
+        "--quiet",
+        str(remote),
+        "HEAD:refs/heads/second",
+        "HEAD:refs/heads/third",
+    )
     legacy_output = legacy_log.read_text(encoding="utf-8")
     assert "argc=2" in legacy_output
     assert legacy_output.splitlines().count(f"arg={remote}") == 2
     pushed_commit = _run("git", "-C", str(second), "rev-parse", "HEAD").stdout.strip()
-    assert (f"HEAD {pushed_commit} refs/heads/second {'0' * 40}") in legacy_output
+    assert f"HEAD {pushed_commit} refs/heads/second {'0' * 40}" in legacy_output
+    assert f"HEAD {pushed_commit} refs/heads/third {'0' * 40}" in legacy_output
+
+    prior_legacy_log = legacy_log.read_bytes()
+    rejected = _run(
+        "git",
+        "-C",
+        str(second),
+        "push",
+        str(remote),
+        "refs/heads/main:refs/heads/rejected",
+        check=False,
+    )
+    assert rejected.returncode != 0
+    assert legacy_log.read_bytes() == prior_legacy_log
+    absent = _run(
+        "git",
+        "--git-dir",
+        str(remote),
+        "show-ref",
+        "--verify",
+        "refs/heads/rejected",
+        check=False,
+    )
+    assert absent.returncode != 0
 
     (repo / ".venv").mkdir()
     (repo / ".venv" / "unavailable").write_text("", encoding="utf-8")

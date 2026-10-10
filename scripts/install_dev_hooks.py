@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -87,6 +88,66 @@ def _is_managed_hook(path: Path, executable: Path) -> bool:
     return match is not None and Path(match.group(1)).resolve() == executable.resolve()
 
 
+def _is_guarded_pre_push(hook: Path, native: Path, executable: Path) -> bool:
+    try:
+        first_lines = hook.read_text(encoding="utf-8").splitlines()[:2]
+    except (OSError, UnicodeError):
+        return False
+    return first_lines == ["#!/bin/sh", "# increment-managed-pre-push-v1"] and _is_managed_hook(
+        native, executable
+    )
+
+
+def _stable_python(repo: Path) -> Path:
+    executable = Path(getattr(sys, "_base_executable", sys.executable)).resolve()
+    try:
+        executable.relative_to(repo.resolve())
+    except ValueError:
+        pass
+    else:
+        raise HookInstallError(f"refusing project-local guard interpreter: {executable}")
+    if any(part in {".venv", ".worktrees"} for part in executable.parts):
+        raise HookInstallError(f"refusing project-environment guard interpreter: {executable}")
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        raise HookInstallError(f"guard interpreter is missing or not executable: {executable}")
+    return executable
+
+
+def _pre_push_wrapper(native: Path, python: Path) -> str:
+    native_path = shlex.quote(str(native))
+    interpreter = shlex.quote(str(python))
+    return (
+        "#!/bin/sh\n"
+        "# increment-managed-pre-push-v1\n"
+        "set -eu\n"
+        'input=$(mktemp "${TMPDIR:-/tmp}/increment-pre-push.XXXXXX")\n'
+        'cleanup() { rm -f "$input"; }\n'
+        "trap cleanup EXIT\n"
+        "trap 'exit 129' HUP\n"
+        "trap 'exit 130' INT\n"
+        "trap 'exit 143' TERM\n"
+        'cat > "$input"\n'
+        "repo=$(git rev-parse --show-toplevel)\n"
+        f'{interpreter} "$repo/scripts/check_push_targets.py" --repo "$repo" < "$input"\n'
+        "set +e\n"
+        f'{native_path} "$@" < "$input"\n'
+        "status=$?\n"
+        'exit "$status"\n'
+    )
+
+
+def _install_pre_push_guard(hooks: Path, executable: Path, python: Path) -> None:
+    hook = hooks / "pre-push"
+    native = hooks / "pre-push.prek"
+    if _is_guarded_pre_push(hook, native, executable):
+        return
+    if not _is_managed_hook(hook, executable):
+        raise HookInstallError(f"expected prek-generated pre-push hook at {hook}")
+    hook.replace(native)
+    hook.write_text(_pre_push_wrapper(native, python), encoding="utf-8")
+    hook.chmod(0o755)
+
+
 def _check_hook_ownership(repo: Path, executable: Path) -> None:
     try:
         result = subprocess.run(
@@ -107,10 +168,24 @@ def _check_hook_ownership(repo: Path, executable: Path) -> None:
         legacy = hooks / f"{hook_type}.legacy"
         if hook.is_symlink() and not hook.exists():
             raise HookInstallError(f"refusing dangling {hook_type} hook symlink: {hook}")
-        if os.path.lexists(legacy) and not _is_managed_hook(hook, executable):
+        guarded_pre_push = _is_guarded_pre_push(
+            hooks / "pre-push", hooks / "pre-push.prek", executable
+        )
+        managed = _is_managed_hook(hook, executable)
+        if hook_type == "pre-push" and guarded_pre_push:
+            managed = True
+        if os.path.lexists(legacy) and not managed:
             raise HookInstallError(
                 f"refusing to replace existing {hook_type} or {hook_type}.legacy ownership "
                 f"in {hooks}; preserve or resolve those hooks manually"
+            )
+        if (
+            hook_type == "pre-push"
+            and os.path.lexists(hooks / "pre-push.prek")
+            and not guarded_pre_push
+        ):
+            raise HookInstallError(
+                f"refusing existing native pre-push hook: {hooks / 'pre-push.prek'}"
             )
 
 
@@ -135,13 +210,25 @@ def install_hooks(repo: Path, *, prek: Path) -> None:
             f"stable prek version {version_match.group(1)} does not match uv.lock ({locked}); "
             "manage the user-level prek tool explicitly before installing hooks"
         )
-    _check_hook_ownership(repo, executable)
+    python = _stable_python(repo)
     try:
-        subprocess.run(
-            [str(executable), "install", "-t", "pre-commit", "-t", "pre-push"],
+        _check_hook_ownership(repo, executable)
+        hooks_result = subprocess.run(
+            ["git", "rev-parse", "--git-path", "hooks"],
             cwd=repo,
             check=True,
+            capture_output=True,
+            text=True,
         )
+        hooks = Path(hooks_result.stdout.strip())
+        if not hooks.is_absolute():
+            hooks = repo / hooks
+        hooks = hooks.resolve()
+        install_command = [str(executable), "install", "-t", "pre-commit"]
+        if not _is_guarded_pre_push(hooks / "pre-push", hooks / "pre-push.prek", executable):
+            install_command.extend(["-t", "pre-push"])
+        subprocess.run(install_command, cwd=repo, check=True)
+        _install_pre_push_guard(hooks, executable, python)
     except subprocess.CalledProcessError as exc:
         raise HookInstallError(
             f"prek install failed with exit status {exc.returncode}; no overwrite option was used"

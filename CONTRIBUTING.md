@@ -75,6 +75,19 @@ then rerun `make install`. Hook execution must not depend on a disposable
 checkout's `.venv`. Inspect existing custom/legacy ownership before installation;
 never force-replace shared hooks while active worktrees are unprepared.
 
+The candidate-safe pre-push wrapper validates every non-deletion ref against
+the clean checked-out HEAD, then replays Git's complete input to the existing
+native and legacy hooks. Its Python interpreter and `prek` executable are
+resolved during explicit installation, not bootstrapped during pushes.
+Every active worktree must contain `scripts/check_push_targets.py` before
+installing this shared wrapper; unprepared branches are not eligible.
+
+The functional-slow CI job is part of `ci-ok`, with run-attempt-specific test
+evidence retained even on failure. Do not relax `make check` or the full local
+fast/slow hooks until hosted success, failure/cancellation blocking, retained
+evidence, required-check configuration, and owner-approved activation have
+been verified. Workflow preparation alone does not establish those conditions.
+
 Commit `uv.lock` whenever a dependency change updates the resolution.
 
 Notebook examples use Marimo; the development environment does not include
