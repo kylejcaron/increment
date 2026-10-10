@@ -776,12 +776,14 @@ An experiment that declares a `trigger` monitors two populations under one
 registered plan. The assigned chain is what the sections above describe. The
 triggered chain is a second, independently identified chain in the same
 checkpoint (`snapshot.triggered`): its members are the units whose first
-eligible trigger has been observed and whose longest trigger-anchored outcome
-window has closed by the capture horizon, revealed in `(first trigger, unit)`
-order, with outcomes measured from each unit's trigger and pre-period covariates
-kept assignment-anchored, exactly as the fixed-horizon triggered readout
-measures them. `capture_sequential(finalized=True, as_of=d)` captures both
-chains in one pinned execution on `from_definitions` and `from_unit_day_artifact`
+eligible trigger has been observed and whose registered joint reveal window has
+closed by the capture horizon. That window can include a longer assignment-
+anchored uptake window even though uptake is not part of the triggered chain.
+Members are revealed in `(first trigger, unit)` order, with outcomes measured
+from each unit's trigger and pre-period covariates kept assignment-anchored,
+exactly as the fixed-horizon triggered readout measures them.
+`capture_sequential(finalized=True, as_of=d)` captures both chains in one pinned
+execution on `from_definitions` and `from_unit_day_artifact`
 (the artifact needs its `trigger_population`, `trigger_measure_stats` and
 triggered `assignment_counts` extensions); `from_moments` replays an exported
 checkpoint carrying both chains and cannot start one; frame sources have no
@@ -836,16 +838,19 @@ finalized -- and a look rule that waits for favourable not-yet-finalized
 observations inflates the stopped e-value's expectation while leaving the
 per-cell threshold intact (`tests/estimation/test_triggered_sequential_validity.py`).
 
-The library cannot observe the analyst's look rule, so the registration records
-the declaration. `InferenceSpec(triggered_look_policy="outcome_independent")`
-asserts that every triggered look happens at a calendar time fixed in advance,
-never chosen from any outcome; the triggered family then claims its FDR
-guarantee like the assigned one. The default, `"exploratory"`, makes no such
-assertion: e-BH selection is still performed and `discovery` is reported, but
-the triggered family's `guarantee` is `none`, each row's `multiplicity_status`
-is `exploratory_family` and `family_guarantee` is empty. The assigned family is
-unaffected either way. No joint error control across the two populations is
-claimed; the families are separate, population-qualified scopes.
+The library cannot observe the analyst's look or stopping rule, so the
+registration records the declaration. `InferenceSpec(kind="asymptotic_mean",
+triggered_look_policy="outcome_independent")` asserts that triggered look times,
+per-cell freezes and stopping rules are fixed in advance or adapted only to the
+triggered filtration; scheduled capture dates alone are insufficient if a
+freeze or stopping choice depends on assigned outcomes. Under that declaration
+the triggered family claims its FDR guarantee like the assigned one. The
+default, `"exploratory"`, makes no such assertion: e-BH selection is still
+performed and `discovery` is reported, but the triggered family's `guarantee`
+is `none`, each row's `multiplicity_status` is `exploratory_family` and
+`family_guarantee` is empty. The assigned family is unaffected either way. No
+joint error control across the two populations is claimed; the families are
+separate, population-qualified scopes.
 
 ### Certified feeds, not evidence presence
 

@@ -1005,55 +1005,6 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             spine_edge=spine_edge,
         )
 
-    def _certify_sequential_extensions(self, registration, as_of: dt.date) -> None:
-        """Refuse a trigger-declared capture unless every published feed is certified.
-
-        The trigger membership and each outcome's trigger-measure extension carry
-        the publishing evidence's cutoff and watermark; the uptake extension
-        carries its certified edge directly. Every certified day must reach
-        ``as_of``.
-        """
-        from increment.query.sequential_capture import certify_capture_feed
-        from increment.semantics.design import Encouragement
-        from increment.sequential_state import sequential_refuse
-
-        trigger_name = self.context.trigger_name
-        requests: list[dict[str, Any]] = [
-            {"kind": "trigger_population", "trigger_name": trigger_name}
-        ]
-        outcomes = {m.metric for m in registration.models if m.observable == "outcome"}
-        requests.extend(
-            {"kind": "trigger_measure_stats", "trigger_name": trigger_name, "metric_names": (name,)}
-            for name in sorted(outcomes)
-        )
-        for request in requests:
-            extension = self._extension(request)
-            certify_capture_feed(
-                feed=f"{request['kind']}:{request.get('metric_names', (trigger_name,))[0]}",
-                cutoff=extension.observation_cutoff_ts,
-                complete_through=extension.complete_through_ts,
-                experiment=self._artifact_experiment,
-                as_of=as_of,
-            )
-        edges: dict[str, dt.date | None] = {}
-        for metric in self.context.metrics:
-            if metric.name in outcomes:
-                edges[metric.name] = self.triggered_observation_edges(metric)[1]
-        if any(model.observable == "uptake" for model in registration.models):
-            design = self.context.design
-            if not isinstance(design, Encouragement):
-                sequential_refuse("source.invalid", "uptake requires encouragement assignment")
-            edges[f"encouragement_uptake:{design.uptake.fact}"] = self._uptake_inputs()[3]
-        for feed, edge in edges.items():
-            if edge is None or edge < as_of:
-                sequential_refuse(
-                    "source.invalid",
-                    f"feed {feed!r} is not certified complete through {as_of}",
-                    feed=feed,
-                    certified_day=None if edge is None else edge.isoformat(),
-                    as_of=as_of.isoformat(),
-                )
-
     def _reduce(
         self,
         metric: Metric,

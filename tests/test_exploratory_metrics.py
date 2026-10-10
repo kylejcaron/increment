@@ -566,6 +566,19 @@ def test_added_day_axis_rows_equal_the_metric_declared_in_its_own_plan(warehouse
     ]
 
 
+def test_daily_and_default_asof_views_do_not_claim_whole_window_selection(warehouse):
+    analysis = _analysis(
+        warehouse,
+        AnalysisPlan(primary="revenue", secondaries=["purchase_rate"], q=0.1),
+    )
+
+    for rows in (analysis.run_daily_lift(), analysis.run_asof_lift()):
+        assert rows
+        assert rows.metadata is not None
+        assert all(family.family is None for family in rows.metadata.scope.families)
+        assert all(row.family_q is None for row in rows)
+
+
 @pytest.mark.parametrize("name", ADDED)
 @pytest.mark.parametrize("alpha", [0.01, 0.1])
 def test_an_added_metric_keeps_the_plan_alpha_in_every_lift_view(warehouse, name, alpha):

@@ -263,14 +263,19 @@ def validate_day_axis(
         and req.estimands == ("compliance",)
         and req.dimension is None
     )
-    if req.population == "triggered" and (experiment is None or experiment.trigger is None):
+    trigger_name = (
+        experiment.trigger
+        if experiment is not None and experiment.trigger is not None
+        else src.context.trigger_name
+    )
+    if req.population == "triggered" and trigger_name is None:
         refuse(
             _TRIGGER_UNSUPPORTED,
             method=req.caller,
             experiment="<unknown>" if experiment is None else experiment.name,
-            trigger=None if experiment is None else experiment.trigger,
+            trigger=None,
             route=route,
-            supported_sources=("from_definitions", "from_unit_day_artifact"),
+            supported_sources=("from_definitions", "from_unit_day_artifact", "from_moments"),
         )
     if (
         not compliance_only

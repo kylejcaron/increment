@@ -12,7 +12,7 @@ import math
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime
 from fractions import Fraction
-from typing import TYPE_CHECKING, Literal, NoReturn
+from typing import TYPE_CHECKING, Literal, NoReturn, cast
 
 from pydantic import (
     BaseModel,
@@ -865,6 +865,28 @@ def _replay_unchanged_prefix(
     return snapshot
 
 
+def _reveal_cursor_moved_backward(
+    reveal_cursor: date | datetime | str | int | float,
+    previous_cursor: date | datetime | str | int | float,
+) -> bool:
+    comparable_dates = type(reveal_cursor) is type(previous_cursor) and isinstance(
+        reveal_cursor, (date, datetime)
+    )
+    comparable_numbers = (
+        isinstance(reveal_cursor, (int, float))
+        and not isinstance(reveal_cursor, bool)
+        and isinstance(previous_cursor, (int, float))
+        and not isinstance(previous_cursor, bool)
+    )
+    if comparable_dates:
+        if isinstance(reveal_cursor, datetime):
+            return reveal_cursor < cast(datetime, previous_cursor)
+        return cast(date, reveal_cursor) < cast(date, previous_cursor)
+    if comparable_numbers:
+        return float(reveal_cursor) < float(previous_cursor)
+    return False
+
+
 def _capture_sequential_diagnostic_snapshot(  # noqa: PLR0915
     registration: SequentialRegistration,
     records: Iterable[Mapping[str, object]],
@@ -892,6 +914,13 @@ def _capture_sequential_diagnostic_snapshot(  # noqa: PLR0915
     rid = _capture_registration(
         registration, source_id, definitions_id, finalized, previous, append
     )
+    previous_cursor = previous.reveal_cursor if previous is not None else None
+    if (
+        reveal_cursor is not None
+        and previous_cursor is not None
+        and _reveal_cursor_moved_backward(reveal_cursor, previous_cursor)
+    ):
+        sequential_refuse("source.invalid", "reveal cursor cannot move backward")
     models = {m.metric: m for m in registration.models}
     states = (
         {

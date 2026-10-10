@@ -881,7 +881,7 @@ def _certified_fixture_evidence():
     from increment import SourceSnapshotEvidence
 
     certified = datetime(2025, 1, 31, tzinfo=UTC)
-    return SourceSnapshotEvidence(certified, {"events": certified})
+    return SourceSnapshotEvidence(certified, {"events": certified, "uptake_events": certified})
 
 
 def _native_fixture(
@@ -1513,6 +1513,63 @@ def test_automatic_metric_free_sequential_compliance(kind, family, baseline_rate
     assert float(row.require_exact_sequential_result().log_e) == pytest.approx(
         expected_log_e, abs=1e-10
     )
+
+
+@pytest.mark.slow
+def test_direct_artifact_source_captures_encouragement_sequential_state():
+    from datetime import UTC, datetime
+
+    import pandas as pd
+
+    from increment.query.artifact_contract import unit_day_artifact_extension_catalog
+    from increment.query.artifact_reader import ArtifactMomentSource
+    from increment.query.session import WarehouseArtifactStore
+
+    connection, defs, native = _native_fixture("bernoulli", uptake_only=True, triggered=True)
+    try:
+        events = []
+        for arm in ("control", "treatment"):
+            for index in range(96):
+                unit_id = f"{index:08d}-{arm}"
+                events.append(
+                    {
+                        "unit_id": unit_id,
+                        "event": "outcome_event",
+                        "value": float(index % 2),
+                        "ts": datetime(2025, 1, 1, 1, tzinfo=UTC),
+                    }
+                )
+                if index < 12:
+                    events.append(
+                        {
+                            "unit_id": unit_id,
+                            "event": "triggered_event",
+                            "value": None,
+                            "ts": datetime(2025, 1, 2, tzinfo=UTC),
+                        }
+                    )
+        connection.create_table("events", pd.DataFrame(events))
+        context = native.artifact_context
+        store = WarehouseArtifactStore(connection, schema_name="direct_sequential")
+        extensions = [
+            entry.request
+            for entry in unit_day_artifact_extension_catalog(context)
+            if entry.request.kind
+            in {"trigger_population", "trigger_measure_stats", "encouragement_uptake"}
+        ]
+        reference = native.publish_unit_day_artifact(store, extensions=extensions)
+        with ArtifactMomentSource.open(
+            store,
+            reference,
+            expected_context=context,
+        ) as source:
+            snapshot = source.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
+
+        assert snapshot.registration.models[0].observable == "uptake"
+        assert snapshot.records
+    finally:
+        native.close()
+        connection.disconnect()
 
 
 @pytest.mark.slow

@@ -182,6 +182,7 @@ class WireMultiplicityFamily(_WireBase):
             axes=family.axes,
             guarantee=family.guarantee,
             validity_regime=family.validity_regime,
+            look_policy=family.look_policy,
         )
 
 
@@ -506,6 +507,7 @@ def _family_from_wire(family: WireFamilyMembership) -> FamilyMembership:
             axes=family.family.axes,
             guarantee=family.family.guarantee,
             validity_regime=family.family.validity_regime,
+            look_policy=family.family.look_policy,
         ),
         member=family.member,
     )

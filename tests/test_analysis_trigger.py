@@ -1046,6 +1046,18 @@ def test_triggered_artifact_windowed_quantile_refuses_before_evidence_read(tmp_p
             _close_parity_analysis(adopted)
 
 
+def test_triggered_breakout_without_declared_trigger_is_refused_even_without_breakouts(tmp_path):
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=_events(n_per_arm=10))
+    analysis = Analysis.from_definitions("exp", _write_defs(tmp_path, trigger=None), con)
+    try:
+        with pytest.raises(CapabilityError) as raised:
+            analysis.run_breakout(population="triggered")
+        assert raised.value.code == "facade.analysis.trigger_unsupported"
+    finally:
+        analysis.close()
+
+
 def test_triggered_artifact_without_breakouts_returns_empty_estimates(tmp_path):
     from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
 
@@ -2725,8 +2737,11 @@ def test_triggered_empty_dimensioned_slice_retains_assigned_segment_roster(tmp_p
             assert {row.dimension_value for row in rows} == {"US", "CA"}
             assert {row.analysis_population for row in rows} == {"triggered"}
         lifts = analysis.run_daily_lift(dimension="country", population="triggered")
-        assert lifts.metadata.scope.families
-        assert {family.dimension for family in lifts.metadata.scope.families} == {"country"}
+        assert not lifts.metadata.scope.families
+        assert all(
+            row.family_q is None and row.family_axes is None and row.family_guarantee is None
+            for row in lifts
+        )
     finally:
         analysis.close()
         con.disconnect()

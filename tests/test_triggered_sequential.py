@@ -268,6 +268,27 @@ def test_trigger_declared_capture_reports_both_populations(tmp_path):
         analysis.close()
 
 
+def test_triggered_asof_replays_from_exported_moments(tmp_path):
+    import pyarrow.parquet as pq
+
+    analysis, _ = _analysis(tmp_path, _events())
+    path = tmp_path / "triggered.parquet"
+    try:
+        analysis.capture_sequential(finalized=True, as_of=_LATER)
+        analysis.export(path)
+        replay = Analysis.from_moments(
+            pq.read_table(path).to_pylist(),
+            metrics={"revenue": "mean"},
+            control="C",
+        )
+        history = replay.run_asof_lift(population="triggered")
+        assert history
+        assert {row.analysis_population for row in history} == {"triggered"}
+        assert {row.ds for row in history} == {_LATER}
+    finally:
+        analysis.close()
+
+
 def test_triggered_registration_is_derived_before_data(tmp_path):
     analysis, _ = _analysis(tmp_path, _events(n_per_arm=10))
     try:

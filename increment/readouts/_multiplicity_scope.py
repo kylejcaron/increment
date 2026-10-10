@@ -29,6 +29,7 @@ def attach_multiplicity_scope(
     dimension: str | None = None,
     source: str | None = None,
     family_populations: set[str] | None = None,
+    view_policy: MultiplicityFamily | None = None,
 ) -> tuple[list[Any], tuple[FamilyScope, ...]]:
     """Attach row provenance and the unchanged source family membership.
 
@@ -59,8 +60,18 @@ def attach_multiplicity_scope(
         config = configs_by_metric.get(cell.metric)
         # Encouragement selection ranks ITT only; its LATE/compliance
         # diagnostics keep their role but are not family members.
+        view_member = (
+            view_policy is not None
+            and view_policy.correction != "none"
+            and role in ("primary", "secondary", "exploratory")
+            and cell.method_role == "decision"
+            and cell.estimand not in ("late", "compliance")
+        )
         effective_member = (
-            membership is not None
+            view_member
+            if view_policy is not None
+            else view != "daily"
+            and membership is not None
             and membership.member
             and config is not None
             and cell.estimand not in ("late", "compliance")
@@ -69,11 +80,13 @@ def attach_multiplicity_scope(
         if effective_member and cell.method_role != "decision":
             cell_family[cell] = None
             continue
-        family = (
-            membership.family
-            if effective_member and isinstance(membership.family, MultiplicityFamily)
-            else None
-        )
+        family = None
+        if view_member:
+            family = view_policy
+        elif effective_member and membership is not None:
+            candidate = membership.family
+            if isinstance(candidate, MultiplicityFamily):
+                family = candidate
         registration = getattr(getattr(plan, "inference", None), "registration", None)
         if cell.analysis_population == "triggered":
             registration = getattr(plan.inference, "triggered_registration", None)
@@ -98,7 +111,7 @@ def attach_multiplicity_scope(
             continue
         key = (
             cell.analysis_population,
-            role,
+            "view" if view_member else role,
             family.name if family is not None else role,
             family,
         )
@@ -325,6 +338,13 @@ def _attach_family_scope(
             dimension=dimension,
             source=family_source,
         )
+    view_policy = None
+    if view == "asof" and getattr(getattr(plan, "inference", None), "registration", None) is None:
+        view_policy = plan.view_policies.for_view(
+            "asof",
+            mechanism=getattr(design, "mechanism", None),
+            segmented=dimension is not None,
+        )
     return attach_multiplicity_scope(
         stamped,
         cells,
@@ -335,6 +355,7 @@ def _attach_family_scope(
         dimension=dimension,
         source=family_source,
         family_populations=family_populations,
+        view_policy=view_policy,
     )
 
 
@@ -351,6 +372,7 @@ def scoped_collection(
     dimension: str | None = None,
     source: str | None = None,
     family_populations: set[str] | None = None,
+    sequential_snapshot: Any = None,
 ):
     """Return rows with a source snapshot and source-local readout metadata."""
     from hashlib import sha256
@@ -528,4 +550,4 @@ def scoped_collection(
             sorted(records, key=lambda record: cell_order(cast("CellRecord", record).cell))
         ),
     )
-    return collection_type(stamped, metadata=metadata)
+    return collection_type(stamped, metadata=metadata, sequential_snapshot=sequential_snapshot)

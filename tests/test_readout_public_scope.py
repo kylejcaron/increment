@@ -11,7 +11,12 @@ import pandas as pd
 import pytest
 
 from increment import Analysis, AnalysisPlan, MetricSpec
-from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate, LiftEstimates
+from increment.breakout.estimates import (
+    BreakoutEstimate,
+    DailyLiftEstimate,
+    DailyLiftEstimates,
+    LiftEstimates,
+)
 from increment.errors import IncrementWarning, InvalidRequestError, UnsupportedRequestError
 from increment.estimation.readout_types import CellKey, ReadoutResults
 from increment.estimation.results import LiftEstimate
@@ -627,6 +632,26 @@ def test_constant_guardrail_failure_survives_collection_views_and_saved_results(
     assert restored.metadata == results.metadata
     assert [row.failure_code for row in restored] == [row.failure_code for row in results]
     assert [CellKey.from_row(row) for row in restored] == [CellKey.from_row(row) for row in results]
+
+
+def test_readout_results_json_replay_preserves_daily_date_axis():
+    from datetime import date
+
+    row = DailyLiftEstimate(
+        metric="revenue",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        ds=date(2025, 1, 2),
+        lift=None,
+        unavailable="no_treatment_arm",
+    )
+    results = DailyLiftEstimates([row])
+
+    restored = ReadoutResults.model_validate_json(results.model_dump_json())
+
+    assert restored[0].ds == date(2025, 1, 2)
+    assert isinstance(restored[0].ds, date)
 
 
 @pytest.mark.parametrize(
