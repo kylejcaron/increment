@@ -20,6 +20,7 @@ from collections.abc import Callable, Iterable, Mapping
 from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
+from functools import partial
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, NamedTuple, cast
@@ -2039,17 +2040,25 @@ def _m3_assert_switchback_refusal(summary: pd.DataFrame, design: Randomized) -> 
 
 
 def _m3_print_measurements(sql: list[str], first: Any, second: Any, sizes: list[int]) -> None:
-    query_kinds = [
-        "assignment_integrity" if "mixed_count" in query else "arm_assignment_counts"
-        for query in sql
-    ]
+    from sqlglot import exp, parse_one
+
+    query_shapes = []
+    for query in sql:
+        root = parse_one(query, read="duckdb")
+        selects = list(root.find_all(exp.Select))
+        joins = sum(len(select.args.get("joins") or ()) for select in selects)
+        query_shapes.append(
+            f"{type(root).__name__}:selects={len(selects)}:"
+            f"projections={len(root.expressions)}:joins={joins}:"
+            f"group_by={int(bool(root.args.get('group')))}"
+        )
     assert sql and first.records and second.records
     print(
         "M3 messy replay measurements",
         {
             "query_count_two_looks": len(sql),
             "query_shape_counts_two_looks": {
-                kind: query_kinds.count(kind) for kind in sorted(set(query_kinds))
+                shape: query_shapes.count(shape) for shape in sorted(set(query_shapes))
             },
             "checkpoint_bytes": sizes,
             "per_cell_alpha": [
@@ -2062,6 +2071,8 @@ def _m3_print_measurements(sql: list[str], first: Any, second: Any, sizes: list[
 
 def _m3_messy_event_rows() -> list[dict[str, Any]]:
     rows = ds.event_rows(n_per_arm=36)
+    # c2/t2 keep assignment but lose the pre-period purchase, yielding null
+    # pre_revenue values for the declared CUPED missing-value policy.
     rows = [
         row
         for row in rows
@@ -2071,6 +2082,9 @@ def _m3_messy_event_rows() -> list[dict[str, Any]]:
             or row["user_id"] in {"c0", "c1", "t0", "t1"}
             and row["event"] in {"purchase", "session_end"}
             and row["event_at"] == ds._PURCHASE_AT
+            or row["user_id"] in {"c2", "t2"}
+            and row["event"] == "purchase"
+            and row["event_at"] == ds._PRE_PURCHASE_AT
         )
     ]
     late_at = dt.datetime(2025, 1, 11, 10)
@@ -2098,6 +2112,7 @@ def _m3_unit_summary(rows: list[dict[str, Any]], secondary: str, messy: bool) ->
     frame = pd.DataFrame(summary.to_pylist())
     if messy:
         frame[secondary] = frame["converted"]
+        assert frame["pre_revenue"].isna().sum() == 2
     missing = frame.index[frame["revenue"].isna()].tolist()
     assert len(missing) >= 2
     frame["revenue"] = frame["revenue"].astype(object)
@@ -2106,10 +2121,25 @@ def _m3_unit_summary(rows: list[dict[str, Any]], secondary: str, messy: bool) ->
     return frame
 
 
+def _m3_require_covariate_imputation(build: Callable[[], Analysis]) -> Analysis:
+    from tests.warning_codes import warning_codes
+
+    with pytest.warns(IncrementWarning) as caught:
+        analysis = build()
+    assert warning_codes(caught) == ["frame.validation.metric_covariate_missing_imputed"]
+    return analysis
+
+
 def _m3_unit_panel(
-    summary: pd.DataFrame, design: Randomized, plan: AnalysisPlan, secondary: MetricSpec
+    summary: pd.DataFrame,
+    design: Randomized,
+    plan: AnalysisPlan,
+    primary: MetricSpec,
+    secondary: MetricSpec,
 ) -> Analysis:
     columns = ["user_id", "variant", "exposure_date", "revenue", "sessions"]
+    if primary.covariate is not None:
+        columns.append(primary.covariate)
     if secondary.type == "conversion":
         columns.append(secondary.name)
     panel = summary[columns].copy()
@@ -2121,13 +2151,7 @@ def _m3_unit_panel(
         date="date",
         design=design,
         metrics=[
-            MetricSpec(
-                name="revenue",
-                type="mean",
-                missing="zero",
-                window_days=1,
-                preferred_direction="increase",
-            ),
+            primary.model_copy(update={"window_days": 1 if primary.covariate is None else None}),
             secondary.model_copy(update={"window_days": 1}),
         ],
         plan=plan,
@@ -2136,6 +2160,36 @@ def _m3_unit_panel(
     )
     analysis._sequential_as_of = ds._EXPOSURE_AT.date() + dt.timedelta(days=1)  # ty: ignore[unresolved-attribute]
     return analysis
+
+
+def _m3_plan_pair(secondary: str, messy: bool) -> tuple[AnalysisPlan, AnalysisPlan, dict[str, str]]:
+    sequential = AnalysisPlan(
+        primary="revenue",
+        secondaries=(secondary,),
+        inference={"kind": "asymptotic_mean", "expected_decision_sample_size": 100},
+    )
+    cuped = {"name": "cuped", "variance_reduction": "cuped"}
+    native = AnalysisPlan(
+        primary=ExperimentMetric(metric="revenue", decision_method=cuped) if messy else "revenue",
+        secondaries=(secondary,),
+        inference=sequential.inference,
+    )
+    return sequential, native, cuped
+
+
+def _m3_native_bound_plan(defs: Definitions, design: Randomized) -> AnalysisPlan:
+    exp = defs.experiment("exp")
+    assert exp is not None
+    bound = bind_automatic_sequential_plan(
+        exp.plan,
+        [metric for metric in defs.metrics if metric.name in exp.metric_names],
+        design=design,
+        source_id=exp.name,
+        source_mapping=native_observation_mapping(defs, exp, on_mixed_assignment="error"),
+        pre_period_covariate=exp.n_pre_periods > 0,
+    )
+    assert bound is not None
+    return bound
 
 
 def _sequential_missing_zero_mean_ratio_case(
@@ -2148,40 +2202,26 @@ def _sequential_missing_zero_mean_ratio_case(
     rows = _m3_messy_event_rows() if messy else ds.event_rows(n_per_arm=60)
     allocation = {"control": 0.6, "treatment": 0.4} if messy else {"control": 0.5, "treatment": 0.5}
     secondary = "purchase_rate" if messy else "rps"
-    sequential_plan = AnalysisPlan(
-        primary="revenue",
-        secondaries=(secondary,),
-        inference={"kind": "asymptotic_mean", "expected_decision_sample_size": 100},
-    )
-    defs_dict = ds.definitions_dict(plan=sequential_plan, allocation=allocation)
+    sequential_plan, native_plan, cuped = _m3_plan_pair(secondary, messy)
+    defs_dict = ds.definitions_dict(plan=native_plan, allocation=allocation)
     defs_dict["dialect"] = dialect
     defs = Definitions.model_validate(defs_dict)
     design = Randomized(control_group="control", allocation=allocation)
     as_of = ds._EXPERIMENT_END - dt.timedelta(days=1)
 
-    def _native_bound_plan() -> AnalysisPlan:
-        exp = defs.experiment("exp")
-        assert exp is not None
-        bound = bind_automatic_sequential_plan(
-            exp.plan,
-            [m for m in defs.metrics if m.name in exp.metric_names],
-            design=design,
-            source_id=exp.name,
-            source_mapping=native_observation_mapping(defs, exp, on_mixed_assignment="error"),
-            pre_period_covariate=exp.n_pre_periods > 0,
-        )
-        assert bound is not None
-        return bound
-
     def build_definitions() -> Analysis:
         con = warehouse_connection(rows)
-        analysis = make_analysis(con, defs, experiment="exp", plan=_native_bound_plan())
+        analysis = make_analysis(
+            con, defs, experiment="exp", plan=_m3_native_bound_plan(defs, design)
+        )
         analysis._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
         return _track_connection(analysis, con)
 
     def build_artifact() -> Analysis:
         con = warehouse_connection(rows)
-        native = make_analysis(con, defs, experiment="exp", plan=_native_bound_plan())
+        native = make_analysis(
+            con, defs, experiment="exp", plan=_m3_native_bound_plan(defs, design)
+        )
         adopted = _publish_and_adopt(con, native)
         adopted._sequential_as_of = as_of  # ty: ignore[unresolved-attribute]
         return adopted
@@ -2203,16 +2243,23 @@ def _sequential_missing_zero_mean_ratio_case(
             preferred_direction="increase",
         )
     )
-    summary_metrics = [
-        MetricSpec(name="revenue", type="mean", missing="zero", preferred_direction="increase"),
-        secondary_spec,
-    ]
+    revenue_spec = MetricSpec(
+        name="revenue",
+        type="mean",
+        missing="zero",
+        preferred_direction="increase",
+        covariate="pre_revenue" if messy else None,
+        covariate_missing="zero" if messy else "impute",
+        decision_method=cuped if messy else None,
+    )
+    summary_metrics = [revenue_spec, secondary_spec]
 
     def _summary_frame() -> pd.DataFrame:
         return _m3_unit_summary(rows, secondary, messy)
 
     def build_unit_summary() -> Analysis:
-        return Analysis.from_unit_summary(
+        build = partial(
+            Analysis.from_unit_summary,
             _summary_frame(),
             unit="user_id",
             group="variant",
@@ -2222,15 +2269,19 @@ def _sequential_missing_zero_mean_ratio_case(
             experiment_id="exp",
             exposure_date="exposure_date",
         )
+        return _m3_require_covariate_imputation(build) if messy else build()
 
     def build_unit_panel() -> Analysis:
-        return _m3_unit_panel(_summary_frame(), design, sequential_plan, secondary_spec)
+        build = partial(
+            _m3_unit_panel, _summary_frame(), design, sequential_plan, revenue_spec, secondary_spec
+        )
+        return _m3_require_covariate_imputation(build) if messy else build()
 
     def build_moments() -> Analysis:
         return _export_and_replay(
             build_unit_summary(),
             [
-                MetricSpec(name="revenue", type="mean"),
+                revenue_spec.model_copy(update={"window_days": None}),
                 secondary_spec.model_copy(update={"window_days": None}),
             ],
         )
@@ -2240,17 +2291,24 @@ def _sequential_missing_zero_mean_ratio_case(
         import ibis
 
         con = warehouse_connection(rows)
-        native = _track_connection(
-            make_analysis(con, defs, experiment="exp", plan=_native_bound_plan()), con
-        )
         sql: list[str] = []
-        execute = con.to_pyarrow
+        execute_sql = con.raw_sql
+        to_relation = con._to_duckdb_relation
 
-        def capture_query(expr: Any, *args: Any, **kwargs: Any) -> Any:
+        def capture_raw_sql(query: Any, *args: Any, **kwargs: Any) -> Any:
+            sql.append(query if isinstance(query, str) else str(query))
+            return execute_sql(query, *args, **kwargs)
+
+        def capture_relation(expr: Any, *args: Any, **kwargs: Any) -> Any:
             sql.append(ibis.to_sql(expr, dialect="duckdb"))
-            return execute(expr, *args, **kwargs)
+            return to_relation(expr, *args, **kwargs)
 
-        con.to_pyarrow = capture_query
+        con.raw_sql = capture_raw_sql
+        con._to_duckdb_relation = capture_relation
+        native = _track_connection(
+            make_analysis(con, defs, experiment="exp", plan=_m3_native_bound_plan(defs, design)),
+            con,
+        )
         from increment.errors import CodedError
 
         with pytest.raises(CodedError) as immature:
@@ -2263,8 +2321,8 @@ def _sequential_missing_zero_mean_ratio_case(
                 native,
                 first_path,
                 [
-                    MetricSpec(name="revenue", type="mean"),
-                    MetricSpec(name="purchase_rate", type="conversion"),
+                    revenue_spec.model_copy(update={"window_days": None}),
+                    secondary_spec.model_copy(update={"window_days": None}),
                 ],
                 design,
                 first,
@@ -2278,7 +2336,7 @@ def _sequential_missing_zero_mean_ratio_case(
                 native,
                 second_path,
                 [
-                    MetricSpec(name="revenue", type="mean"),
+                    revenue_spec.model_copy(update={"window_days": None}),
                     secondary_spec.model_copy(update={"window_days": None}),
                 ],
                 design,

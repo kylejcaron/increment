@@ -495,7 +495,12 @@ PARITY_DECLARATIONS = MappingProxyType(
                     "from_switchback_panel",
                     "COMBINATION: unequal declared allocation is refused by the switchback constructor with source.frame.switchback.identification.",
                 ),
+                (
+                    "from_unit_panel",
+                    "COMBINATION: window-bounded CUPED panel capture is not supported (`sequential.route.unsupported`).",
+                ),
             ),
+            refusals=(("from_unit_panel", "sequential.route.unsupported"),),
         ),
         "audit-switchback-neighboring-integers": ParityDeclaration(
             attempted=("from_switchback_panel",),
