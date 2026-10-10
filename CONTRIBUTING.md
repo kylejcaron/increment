@@ -665,11 +665,17 @@ analyst journey.
 When using Roborev, freeze the head and review the coherent base-to-tip range:
 
 ```bash
-roborev review --repo <absolute-worktree> --branch=<branch> --base <base-sha> --wait
+roborev review --quiet --repo <absolute-worktree> --branch=<branch> --base <base-sha> --wait
 ```
 
 `--branch` has an optional value: use `=` for a named branch; a separate
 word is parsed as a positional commit, not the branch name.
+
+Use `--quiet` to skip Roborev's automatic shared-hook maintenance; `--local`
+alone does not skip it. Quiet mode suppresses enqueue headers, so inspect
+`roborev list --json` and `roborev show --job <id>` for the resulting job's
+pins and verdict. After a Roborev upgrade, reverify that this invocation leaves
+the common hooks unchanged before using it without activation authority.
 
 Confirm the job's actual base/head and that the branch did not move.
 `--sha` does not replace a branch range's base. Review changed integration
@@ -680,9 +686,9 @@ review only with code/test evidence for every finding; another clean review
 does not resolve an older finding.
 
 The repository's installed post-commit hook currently dispatches automatic
-reviews. Ready-range commands do not change that shared hook. Changing automatic
-dispatch or hook installation requires an explicit owner checkpoint, an inventory
-of live worktree consumers, a tested rollback and verified supported controls.
+reviews. Changing automatic dispatch or hook installation requires an explicit
+owner checkpoint, an inventory of live worktree consumers, a tested rollback
+and verified supported controls.
 Keep current hooks and the before-push `make check` obligation until the
 replacement hosted gate is actually required and its failure behavior is observed.
 
