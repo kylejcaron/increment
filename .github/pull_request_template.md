@@ -13,5 +13,5 @@
 - **Not run / deferred:** What relevant or costly evidence remains, and why?
 
 ## Review
-- **Human review:** Link the existing [contributor review questions](../CONTRIBUTING.md#review-and-handoffs). Request human statistical review separately when the change needs it; automated review does not replace it.
+- **Human review:** Link the existing [contributor review questions](https://github.com/kylejcaron/increment/blob/main/CONTRIBUTING.md#review-and-handoffs). Request human statistical review separately when the change needs it; automated review does not replace it.
 - **Public API docs:** For a nonbreaking public-API change outside automatic strict-docs paths, request the `docs-required` label once available. `documentation` is for docs-only changes.
