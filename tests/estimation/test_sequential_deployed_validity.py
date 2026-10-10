@@ -553,6 +553,8 @@ def test_campaign_detects_changed_shared_registration_source(tmp_path, monkeypat
     assert after[relative] != before[relative]
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 def test_sufficient_state_campaign_worker_journals_completed_replication(tmp_path):
     import subprocess
     import sys
