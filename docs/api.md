@@ -892,9 +892,10 @@ Library advisories are instances of `IncrementWarning` (or
 `DeprecationWarning`), carrying a stable `.code` and immutable `.context`
 alongside the free-text message -- the warning counterpart to `CodedError`.
 Warnings with a declared deduplication scope also carry an immutable
-`.dedupe_key`; readout operations suppress repeat emissions with the same key
-within that operation. Warnings without a declared key are never suppressed.
-Filtering and assertions should use `.code` rather than message text:
+`.dedupe_key`. Randomized lift-cell readouts suppress repeated emissions with
+the same key while replaying captured estimator warnings within one operation;
+warnings without a key are not suppressed by that replay path.
+Filter and assert on `.code` rather than message text:
 
 ```python
 import warnings

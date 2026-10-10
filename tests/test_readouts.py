@@ -2750,3 +2750,100 @@ def test_run_declared_secondary_family_survives_a_degenerate_cell():
     assert refunds_row.lift is None
     assert refunds_row.relative_unavailable_reason == "nonpositive_arm_mean"
     assert refunds_row.abs_diff is not None
+
+
+def test_asof_warning_dedupe_resets_for_each_retry(monkeypatch):
+    import warnings
+
+    from increment import readouts
+    from increment.errors import IncrementWarning, WarningSpec, warn
+    from tests.test_readouts_encouragement import FakeMomentSource
+
+    metric = MeanMetric(name="revenue", entity="user_id", fact="orders", aggregation="sum")
+    spec = WarningSpec(
+        "test.asof.retry",
+        IncrementWarning,
+        lambda *, metric_name: f"advisory for {metric_name}",
+        dedupe_fields=("metric_name",),
+    )
+    rows = []
+    for day in (dt.date(2025, 1, 1), dt.date(2025, 1, 2)):
+        for group, mean in (("control", 10.0), ("treatment_a", 11.0), ("treatment_b", 12.0)):
+            rows.append(
+                {
+                    **centered_row_from_raw_sums(
+                        {
+                            "experiment_id": "fake",
+                            "metric": "revenue",
+                            "group_id": group,
+                            "n": 10,
+                            "sum_y": 10 * mean,
+                            "sum_y2": 10 * (mean**2 + 4),
+                        }
+                    ),
+                    "ds": day,
+                }
+            )
+    source = FakeMomentSource(
+        rows,
+        metrics=[metric],
+        capabilities={"asof"},
+        design=Randomized(control_group="control"),
+    )
+    from increment.readouts import _passes
+
+    estimate = _passes._estimate_lift
+
+    def warn_then_estimate(*args, **kwargs):
+        warn(spec, context={"metric_name": "revenue"})
+        return estimate(*args, **kwargs)
+
+    monkeypatch.setattr(_passes, "_estimate_lift", warn_then_estimate)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        rows = readouts.asof_lift(source)
+
+    assert {row.ds for row in rows} == {dt.date(2025, 1, 1), dt.date(2025, 1, 2)}
+    replayed = [
+        item.message
+        for item in caught
+        if isinstance(item.message, IncrementWarning) and item.message.code == spec.code
+    ]
+    assert len(replayed) == 2
+    assert all(item.context["metric_name"] == "revenue" for item in replayed)
+
+
+def test_open_ended_sequential_advisory_is_keyed_per_metric_and_emission():
+    import warnings
+
+    from increment.errors import IncrementWarning
+    from increment.estimation.engine import _warn_if_open_ended_sequential
+    from increment.semantics.models import ConversionMetric
+
+    metric = ConversionMetric(name="outcome", entity="user_id", fact="outcome")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _warn_if_open_ended_sequential([metric])
+        _warn_if_open_ended_sequential([metric])
+    warnings_for_metric = [
+        item.message
+        for item in caught
+        if isinstance(item.message, IncrementWarning)
+        and item.message.code == "estimation.engine.open_ended_sequential"
+    ]
+    assert len(warnings_for_metric) == 2
+    assert [item.context["metric_name"] for item in warnings_for_metric] == [
+        "outcome",
+        "outcome",
+    ]
+    assert all(
+        item.dedupe_key == ("estimation.engine.open_ended_sequential", "outcome")
+        for item in warnings_for_metric
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", IncrementWarning)
+        with pytest.raises(IncrementWarning) as raised:
+            _warn_if_open_ended_sequential([metric])
+    assert raised.value.code == "estimation.engine.open_ended_sequential"
+    assert raised.value.context["metric_name"] == "outcome"

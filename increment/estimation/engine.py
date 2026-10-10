@@ -219,6 +219,7 @@ _register_warning(
         "values -- is approximate and the estimand drifts with "
         f"the enrollment mix. {fix} to remove the changing-unit "
         "approximation; the plug-in standard error keeps coverage "
+        "asymptotic either way."
     ),
     dedupe_fields=("metric_name",),
 )
