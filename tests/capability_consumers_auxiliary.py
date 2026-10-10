@@ -106,6 +106,8 @@ for _key, _operation, _evidence in _TRIGGER_READS:
                     "supported",
                     "tests.test_analysis_trigger::test_triggered_cate_randomized_artifact_without_covariates_preserves_population"
                     if _key == "cate"
+                    else "tests.test_analysis_trigger::test_run_breakout_returns_distinct_triggered_population_and_families"
+                    if _key == "factor"
                     else _evidence,
                 ),
                 _expectation(

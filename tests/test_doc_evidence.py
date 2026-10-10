@@ -255,3 +255,38 @@ def test_campaign_arguments_are_not_executed(tmp_path: Path) -> None:
     report = check_static(tmp_path, refs)
     assert report.errors
     assert not (tmp_path / "SHOULD_NOT_EXIST").exists()
+
+
+@pytest.mark.parametrize(
+    ("document_name", "target", "expected_exit"),
+    [
+        ("llms.txt", "guides/quickstart.md", 1),
+        (
+            "llms.txt",
+            "https://raw.githubusercontent.com/kylejcaron/increment/main/docs/guides/quickstart.md",
+            0,
+        ),
+        ("limitations.md", "guides/quickstart.md", 0),
+    ],
+)
+def test_curated_links_distinguish_copied_llms_index_from_markdown_pages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    document_name: str,
+    target: str,
+    expected_exit: int,
+) -> None:
+    from scripts import check_doc_references
+
+    guide = tmp_path / "docs/guides/quickstart.md"
+    guide.parent.mkdir(parents=True)
+    guide.write_text("# Quickstart\n")
+    (tmp_path / "docs" / document_name).write_text(f"[Quickstart]({target})\n")
+    monkeypatch.setattr(
+        check_doc_references, "__file__", str(tmp_path / "scripts/check_doc_references.py")
+    )
+
+    assert check_doc_references.main(["--check"]) == expected_exit
+    if expected_exit:
+        assert target in capsys.readouterr().err

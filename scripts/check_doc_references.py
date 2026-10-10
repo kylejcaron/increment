@@ -40,6 +40,12 @@ def _local_links(root: Path, documents: tuple[Path, ...]) -> tuple[str, ...]:
             target = match.group(1).strip().split("#", 1)[0].split("?", 1)[0]
             if not target or re.match(r"[A-Za-z][A-Za-z0-9+.-]*:", target):
                 continue
+            if document.name == "llms.txt" and Path(target).suffix.lower() == ".md":
+                # MkDocs copies this index unchanged; Markdown-page links are not rewritten.
+                errors.append(
+                    f"{document.relative_to(root)}: copied index requires an absolute Markdown URL: {target}"
+                )
+                continue
             candidate = (document.parent / target).resolve()
             if not candidate.is_file():
                 errors.append(
