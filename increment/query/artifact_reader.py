@@ -46,10 +46,12 @@ from increment.query.artifact_contract import (
     _aggregate_sum_within_extrema_sql,
     open_trusted_manifest_snapshot,
 )
+from increment.query.artifact_publish import _effective_snapshot_edge
 from increment.query.builders import (
     _censor_to_observable_window,
     _final_maturity_day,
     _local_date_at_offset,
+    _utc_timestamp_literal,
     asof_group_summary,
     cohort_group_summary,
     compliance_event_horizon,
@@ -805,6 +807,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
         self._snapshot = snapshot
         self._manifest = manifest
         self._population_units: frozenset[str] | None = None
+        self._trigger_anchors: dict[str, dt.datetime] = {}
         self._verified_tables: dict[str, ir.Table] = {}
         self._metrics_arg = metrics
         self._aggregation_by_metric: dict[str, str] = {}
@@ -1962,11 +1965,10 @@ class ArtifactMomentSource(SequentialSourceMixin):
         return relation
 
     def compliance_dates(self) -> Sequence[object]:
-        """Enrollment spine before outcome missingness or completion filters."""
+        """Enrollment dates, or a dense trigger-entry history through uptake."""
+        design = cast(Encouragement, self.context.design)
         exposures = self._ensure("exposures")
-        if self._population_units is not None:
-            exposures = restrict_to_units(exposures, self._population_units)
-        uptake = self._uptake_relation(cast(Encouragement, self.context.design))
+        uptake = self._uptake_relation(design)
         extension = next(
             ext for ext in self._manifest.extensions if ext.kind == "encouragement_uptake"
         )
@@ -1975,10 +1977,60 @@ class ArtifactMomentSource(SequentialSourceMixin):
             exposure="adopted",
             unit="unit_id",
             start=dt.datetime.combine(self._manifest.first_ds, dt.time()),
-            control_group=str(getattr(self.context.design, "control_group", "control")),
+            control_group=str(getattr(design, "control_group", "control")),
             day_boundary=self._manifest.day_boundary,
             plan=AnalysisPlan(),
         )
+        if self._population_units is not None:
+            offset = day_boundary_offset(self._manifest.day_boundary)
+            trigger_days = sorted(
+                {
+                    (timestamp.astimezone(dt.UTC) + offset).date()
+                    if timestamp.tzinfo is not None
+                    else (timestamp + offset).date()
+                    for timestamp in self._trigger_anchors.values()
+                }
+            )
+            if not trigger_days:
+                return []
+            declared_edge = self._declared_observation_end()
+            edge = extension.observation_edge
+            if edge is None and "observation_edge" not in extension.model_fields_set:
+                horizon = compliance_event_horizon(
+                    exposures, uptake.select("unit_id", ts=uptake.first_uptake_ts), experiment
+                )
+                coverage = ibis.literal(1).name("_one").as_table().select(edge=horizon)
+                edge = _scalar_date(_rows(self._snapshot.execute(coverage))[0]["edge"])
+            trigger_extension = next(
+                (
+                    item
+                    for item in self._manifest.extensions
+                    if item.kind == "trigger_population"
+                    and item.trigger_name == self.context.trigger_name
+                ),
+                None,
+            )
+            edges = [
+                candidate
+                for candidate in (edge, declared_edge, extension.certified_edge)
+                if candidate is not None
+            ]
+            if trigger_extension is not None:
+                pinned_edge, _ = _effective_snapshot_edge(
+                    trigger_extension.observation_cutoff_ts,
+                    trigger_extension.complete_through_ts,
+                    offset,
+                    declared_edge,
+                )
+                edges.append(pinned_edge)
+            edge = min(edges) if edges else None
+            if edge is not None and edge < trigger_days[0]:
+                return []
+            last = edge if edge is not None else trigger_days[-1]
+            return [
+                trigger_days[0] + dt.timedelta(days=offset)
+                for offset in range((last - trigger_days[0]).days + 1)
+            ]
         edge = self._declared_observation_end() or extension.observation_edge
         if edge is not None:
             end_date = ibis.literal(edge)
@@ -2009,16 +2061,45 @@ class ArtifactMomentSource(SequentialSourceMixin):
         if self._population_units is not None:
             exposures = restrict_to_units(exposures, self._population_units)
         if as_of is not None:
-            exposures = exposures.filter(exposures.first_exposure_date <= ibis.literal(as_of))
             offset = day_boundary_offset(self._manifest.day_boundary)
+            as_of_date = cast(dt.date, as_of)
+            if self._population_units is not None:
+                trigger_units = {
+                    unit_id
+                    for unit_id, timestamp in self._trigger_anchors.items()
+                    if (
+                        timestamp.astimezone(dt.UTC) + offset
+                        if timestamp.tzinfo is not None
+                        else timestamp + offset
+                    ).date()
+                    <= as_of_date
+                }
+                exposures = restrict_to_units(exposures, frozenset(trigger_units))
+            else:
+                exposures = exposures.filter(exposures.first_exposure_date <= ibis.literal(as_of))
             uptake = uptake.filter(
                 _local_date_at_offset(uptake.first_uptake_ts, offset) <= ibis.literal(as_of)
             )
         if completed_windows_only:
+            uptake_completion_ts = exposures.first_exposure_ts + ibis.interval(
+                days=design.uptake.window_days
+            )
             exposures = exposures.filter(
                 exposures.first_exposure_date + ibis.interval(days=design.uptake.window_days)
                 <= ibis.literal(as_of)
             )
+            extension = next(
+                ext for ext in self._manifest.extensions if ext.kind == "encouragement_uptake"
+            )
+            if extension.certified_edge is not None:
+                certified_edge_exclusive = (
+                    dt.datetime.combine(extension.certified_edge + dt.timedelta(days=1), dt.time())
+                    - day_boundary_offset(self._manifest.day_boundary)
+                ).replace(tzinfo=dt.UTC)
+                exposures = exposures.filter(
+                    uptake_completion_ts
+                    <= _utc_timestamp_literal(exposures.first_exposure_ts, certified_edge_exclusive)
+                )
         cluster = self.context.cluster
         if cluster is not None:
             from increment.query.schemas import ARTIFACT_RELATION_SCHEMAS
@@ -2131,8 +2212,14 @@ class ArtifactMomentSource(SequentialSourceMixin):
         import pyarrow as pa
         import pyarrow.parquet as pq
 
+        from increment._source_identity import source_identity
         from increment.decision_wire import compiled_plan_to_json
-        from increment.sources import DECISION_PLAN_FIELD, MOMENTS_FORMAT, _validate_moment_counts
+        from increment.sources import (
+            DECISION_PLAN_FIELD,
+            MOMENTS_FORMAT,
+            SOURCE_IDENTITY_FIELD,
+            _validate_moment_counts,
+        )
 
         compliance = (
             self.compliance_summary(self.context.design)
@@ -2152,6 +2239,11 @@ class ArtifactMomentSource(SequentialSourceMixin):
         table = table.append_column(
             DECISION_PLAN_FIELD,
             pa.array([plan_payload] * table.num_rows, type=pa.string()),
+        )
+        identity_payload = json.dumps(source_identity(self), sort_keys=True, separators=(",", ":"))
+        table = table.append_column(
+            SOURCE_IDENTITY_FIELD,
+            pa.array([identity_payload] * table.num_rows, type=pa.string()),
         )
         from increment.sources import ASSIGNMENT_COUNTS_FIELD, COMPLIANCE_SUMMARY_FIELD
 

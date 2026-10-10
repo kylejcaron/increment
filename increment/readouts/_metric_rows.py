@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from increment.readouts._common import _refuse_unsupported_by
+from increment.readouts._source_digest import input_evidence
 from increment.sources import MomentSource
 
 if TYPE_CHECKING:
@@ -45,7 +46,7 @@ def _rows_digest_and_arms(rows):
     digest = StreamingDigest()
     arms = set()
     for row in rows:
-        digest.update(row)
+        digest.update(input_evidence(row))
         group_id = row.get("group_id")
         if group_id is not None:
             arms.add(str(group_id))
@@ -57,7 +58,7 @@ def _rows_digest(rows):
 
     digest = StreamingDigest()
     for row in rows:
-        digest.update(row)
+        digest.update(input_evidence(row))
     return digest.hexdigest(), digest.count
 
 

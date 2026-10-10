@@ -36,13 +36,14 @@ import math
 import zlib
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from fractions import Fraction
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypedDict, cast, overload
+from typing import TYPE_CHECKING, Literal, NamedTuple, TypedDict, cast, overload
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from scipy.stats import norm
 from scipy.stats import t as student_t
 
+from increment._display import format_interval
 from increment._identity import canonical_id_strings
 from increment.errors import (
     CodedModel,
@@ -97,87 +98,8 @@ if TYPE_CHECKING:
     from increment.estimation._adjust.learners import Learner
     from increment.semantics.design import IdentificationGate
 
-# Built-in scores also accept the unencoded, plain-array nuisance design.
-_ArrayPsiFn = Callable[
-    [np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None],
-    tuple[np.ndarray, np.ndarray],
-]
-
-
-class ScoreDesign(np.ndarray):
-    """The float design a caller-supplied score reads, with its column names.
-
-    Numeric adjustment columns pass through as they are; each categorical
-    column is replaced by the 0/1 level indicators of one basis fitted on
-    the workflow's training rows alone -- the modal training level is the
-    reference, every other training level gets one column in descending
-    training frequency, and a scored level the training rows never carried
-    reads as the reference. One workflow hands every call the same basis,
-    so a level means the same columns in each of them. ``columns`` names
-    the columns (``name`` for a numeric column, ``name=level`` for an
-    indicator) and ``sources`` the adjustment covariate each derives from.
-    Row-only indexing and copies retain the names. Other views clear them,
-    since a changed axis cannot inherit the original column meanings.
-    """
-
-    columns: tuple[str, ...]
-    sources: tuple[str, ...]
-
-    def __new__(
-        cls, matrix: np.ndarray, columns: tuple[str, ...], sources: tuple[str, ...]
-    ) -> ScoreDesign:
-        design = np.asarray(matrix, dtype=float).view(type=cls)
-        design.columns = columns
-        design.sources = sources
-        return design
-
-    def __array_finalize__(self, _obj: object) -> None:
-        self.columns, self.sources = (), ()
-
-    def __getitem__(self, key: Any) -> Any:
-        result = super().__getitem__(key)
-        parts = key if isinstance(key, tuple) else (key,)
-        rows_only = self.ndim == 2 and (
-            len(parts) == 1
-            or (
-                len(parts) == 2
-                and (
-                    parts[1] is Ellipsis
-                    or (
-                        isinstance(parts[1], slice)
-                        and parts[1].indices(self.shape[1]) == (0, self.shape[1], 1)
-                    )
-                )
-            )
-        )
-        if isinstance(result, ScoreDesign) and result.ndim == 2 and rows_only:
-            result.columns, result.sources = self.columns, self.sources
-        return result
-
-    def copy(self, order: Any = "C") -> ScoreDesign:
-        return ScoreDesign(self.view(np.ndarray).copy(order=order), self.columns, self.sources)
-
-    def __array_ufunc__(
-        self,
-        ufunc: np.ufunc,
-        method: str,
-        *inputs: object,
-        out: tuple[object, ...] | None = None,
-        **kwargs: object,
-    ) -> object:
-        plain = [x.view(np.ndarray) if isinstance(x, ScoreDesign) else x for x in inputs]
-        if out is not None:
-            kwargs["out"] = tuple(
-                x.view(np.ndarray) if isinstance(x, ScoreDesign) else x for x in out
-            )
-        return getattr(ufunc, method)(*plain, **kwargs)
-
-
-PsiFn = Callable[
-    [np.ndarray, np.ndarray, ScoreDesign, np.ndarray, np.ndarray | None],
-    tuple[np.ndarray, np.ndarray],
-]
-
+from increment.estimation._score_design import ArrayPsiFn as _ArrayPsiFn
+from increment.estimation._score_design import PsiFn, ScoreDesign
 
 # CDDF (2018) medians GATES/CLAN/rank-test numbers over many train/holdout
 # splits for stability; this module reads every number off one deterministic
@@ -198,6 +120,36 @@ _SEEDED_STRATIFIED_SPLIT_CAVEAT = (
     "seed can move the group effects, CLAN profile, and rank tests, though not "
     "the honest-split guarantee itself."
 )
+
+
+def _display_number(value: float | None) -> str:
+    return "unavailable" if value is None else f"{value:+.4g}"
+
+
+def _display_interval(lower: float | None, upper: float | None) -> str:
+    if lower is None and upper is None:
+        return "unavailable"
+    return format_interval(lower, upper, digits=4)
+
+
+def _display_estimate(estimate: Estimate | None) -> str:
+    if estimate is None:
+        return "unavailable"
+    point = _display_number(estimate.value)
+    if estimate.lb is None and estimate.ub is None:
+        return f"{point} (point only)"
+    return f"{point} {_display_interval(estimate.lb, estimate.ub)}"
+
+
+def _display_rank_test(name: str, test: RankTest) -> str:
+    estimate = "unavailable" if test.estimate is None else _display_number(test.estimate)
+    p_value = "unavailable" if test.p_value is None else f"{test.p_value:.3g}"
+    reason = (
+        ""
+        if test.unavailable_reason is None
+        else f", unavailable_reason={test.unavailable_reason!r}"
+    )
+    return f"{name}={estimate}, p={p_value}{reason}"
 
 
 class ClusterSupportFailure(BaseModel):
@@ -247,6 +199,36 @@ class GroupEffect(BaseModel):
     bootstrap_repetitions: int | None = None
     bootstrap_valid_repetitions: int | None = None
     support_failures: tuple[ClusterSupportFailure, ...] = ()
+
+    def __repr__(self) -> str:
+        reason = (
+            ""
+            if self.unavailable_reason is None
+            else f", unavailable_reason={self.unavailable_reason!r}"
+        )
+        cluster = "" if self.n_clusters is None else f", n_clusters={self.n_clusters}"
+        return (
+            f"GroupEffect(group={self.group}, n={self.n}, "
+            f"effect={_display_number(self.effect)}, "
+            f"interval={_display_interval(self.lb, self.ub)}, "
+            f"mean_score={_display_number(self.mean_score)}{cluster}{reason})"
+        )
+
+    __str__ = __repr__
+
+    def __repr_args__(self) -> list[tuple[str, object]]:
+        args = [
+            ("group", self.group),
+            ("n", self.n),
+            ("effect", _display_number(self.effect)),
+            ("interval", _display_interval(self.lb, self.ub)),
+            ("mean_score", _display_number(self.mean_score)),
+        ]
+        if self.n_clusters is not None:
+            args.append(("n_clusters", self.n_clusters))
+        if self.unavailable_reason is not None:
+            args.append(("unavailable_reason", self.unavailable_reason))
+        return args
 
 
 class RankTest(BaseModel):
@@ -304,6 +286,37 @@ class ClanRow(BaseModel):
     bootstrap_repetitions: int | None = None
     bootstrap_valid_repetitions: int | None = None
     support_failures: tuple[ClusterSupportFailure, ...] = ()
+
+    def __repr__(self) -> str:
+        reason = (
+            ""
+            if self.unavailable_reason is None
+            else f", unavailable_reason={self.unavailable_reason!r}"
+        )
+        clusters = "" if self.n_clusters is None else f", n_clusters={self.n_clusters}"
+        return (
+            f"ClanRow(covariate={self.covariate!r}, "
+            f"difference={_display_number(self.diff)}, "
+            f"interval={_display_interval(self.lb, self.ub)}, "
+            f"most={_display_number(self.mean_most)}, "
+            f"least={_display_number(self.mean_least)}{clusters}{reason})"
+        )
+
+    __str__ = __repr__
+
+    def __repr_args__(self) -> list[tuple[str, object]]:
+        args = [
+            ("covariate", self.covariate),
+            ("difference", _display_number(self.diff)),
+            ("interval", _display_interval(self.lb, self.ub)),
+            ("most", _display_number(self.mean_most)),
+            ("least", _display_number(self.mean_least)),
+        ]
+        if self.n_clusters is not None:
+            args.append(("n_clusters", self.n_clusters))
+        if self.unavailable_reason is not None:
+            args.append(("unavailable_reason", self.unavailable_reason))
+        return args
 
 
 class CateEvaluationPopulation(CodedModel, BaseModel):
@@ -504,6 +517,50 @@ class CateValidation(CodedModel, BaseModel):
                 )
         return self
 
+    def __repr__(self) -> str:
+        gate = "passed" if self.passed else "failed"
+        population = "" if self.population is None else f", population={self.population!r}"
+        clusters = "" if self.n_clusters is None else f", n_clusters={self.n_clusters}"
+        unavailable = (
+            ""
+            if self.unavailable_reason is None
+            else f", unavailable_reason={self.unavailable_reason!r}"
+        )
+        return (
+            f"CateValidation(gate={gate}, alpha={self.alpha:g}, "
+            f"holdout_ate={_display_estimate(self.holdout_ate)}, "
+            f"n_train={self.n_train}, n_holdout={self.n_holdout}, "
+            f"{_display_rank_test('AUTOC', self.autoc)}, "
+            f"{_display_rank_test('Qini', self.qini)}, "
+            f"groups={len(self.groups)}, clan_rows={len(self.clan)}, "
+            "intervals=Bonferroni-corrected per family; single honest split"
+            f"{population}{clusters}{unavailable})"
+        )
+
+    __str__ = __repr__
+
+    def __repr_args__(self) -> list[tuple[str, object]]:
+        gate = "passed" if self.passed else "failed"
+        args: list[tuple[str, object]] = [
+            ("gate", gate),
+            ("alpha", self.alpha),
+            ("holdout_ate", _display_estimate(self.holdout_ate)),
+            ("n_train", self.n_train),
+            ("n_holdout", self.n_holdout),
+            ("AUTOC", _display_rank_test("AUTOC", self.autoc)),
+            ("Qini", _display_rank_test("Qini", self.qini)),
+            ("groups", len(self.groups)),
+            ("clan_rows", len(self.clan)),
+            ("intervals", "Bonferroni-corrected per family; single honest split"),
+        ]
+        if self.population is not None:
+            args.append(("population", self.population))
+        if self.n_clusters is not None:
+            args.append(("n_clusters", self.n_clusters))
+        if self.unavailable_reason is not None:
+            args.append(("unavailable_reason", self.unavailable_reason))
+        return args
+
 
 class TargetingRule(CodedModel, BaseModel):
     """A frozen deployment candidate and its honest-split evidence gate.
@@ -554,6 +611,72 @@ class TargetingRule(CodedModel, BaseModel):
     score_cutoff: float | None = Field(allow_inf_nan=False)
     #: Declared model/adjustment columns; deployment identity is separate metadata.
     required_columns: tuple[str, ...] = ()
+
+    def __repr__(self) -> str:
+        validation = self.validation
+        if validation.autoc.p_value is None:
+            reason = validation.autoc.unavailable_reason
+            gate_detail = "AUTOC unavailable" if reason is None else f"AUTOC unavailable ({reason})"
+        else:
+            gate_detail = f"AUTOC p={validation.autoc.p_value:.3g} vs alpha={validation.alpha:g}"
+        gate = "passed" if validation.passed else "failed"
+        threshold = _display_number(self.threshold)
+        if self.threshold is None and self.unavailable_reason is not None:
+            threshold = f"unavailable ({self.unavailable_reason})"
+        policy_value = _display_estimate(self.policy_value)
+        uplift = _display_estimate(self.uplift_vs_average)
+        if self.unavailable_reason is not None:
+            if self.policy_value is None:
+                policy_value = f"unavailable ({self.unavailable_reason})"
+            if self.uplift_vs_average is None:
+                uplift = f"unavailable ({self.unavailable_reason})"
+        cluster = "" if self.n_clusters is None else f", n_clusters={self.n_clusters}"
+        population = self.population or "full target population"
+        return (
+            f"TargetingRule(recommendation={self.recommendation!r}, "
+            f"gate={gate} ({gate_detail}), "
+            f"fraction={self.fraction:g} requested/{self.achieved_fraction:g} achieved, "
+            f"threshold={threshold}, policy_value={policy_value}, uplift_vs_average={uplift}, "
+            f"population={population!r}, weighting={self.cluster_weight!r}, "
+            f"budget_rule={self.budget_rule!r}, deploy_grain={self.deploy_grain!r}, "
+            f"policy intervals=not reported after same-holdout selection{cluster})"
+        )
+
+    __str__ = __repr__
+
+    def __repr_args__(self) -> list[tuple[str, object]]:
+        validation = self.validation
+        if validation.autoc.p_value is None:
+            reason = validation.autoc.unavailable_reason
+            gate_detail = "AUTOC unavailable" if reason is None else f"AUTOC unavailable ({reason})"
+        else:
+            gate_detail = f"AUTOC p={validation.autoc.p_value:.3g} vs alpha={validation.alpha:g}"
+        policy_value = _display_estimate(self.policy_value)
+        uplift = _display_estimate(self.uplift_vs_average)
+        if self.unavailable_reason is not None:
+            if self.policy_value is None:
+                policy_value = f"unavailable ({self.unavailable_reason})"
+            if self.uplift_vs_average is None:
+                uplift = f"unavailable ({self.unavailable_reason})"
+        args: list[tuple[str, object]] = [
+            ("recommendation", self.recommendation),
+            ("gate", "passed" if validation.passed else "failed"),
+            ("evidence", gate_detail),
+            ("fraction", f"{self.fraction:g} requested/{self.achieved_fraction:g} achieved"),
+            ("threshold", _display_number(self.threshold)),
+            ("policy_value", policy_value),
+            ("uplift_vs_average", uplift),
+            ("population", self.population or "full target population"),
+            ("weighting", self.cluster_weight),
+            ("budget_rule", self.budget_rule),
+            ("deploy_grain", self.deploy_grain),
+            ("policy_intervals", "not reported after same-holdout selection"),
+        ]
+        if self.n_clusters is not None:
+            args.append(("n_clusters", self.n_clusters))
+        if self.unavailable_reason is not None:
+            args.append(("unavailable_reason", self.unavailable_reason))
+        return args
 
     @model_validator(mode="after")
     def _validate_cluster_metadata(self) -> TargetingRule:

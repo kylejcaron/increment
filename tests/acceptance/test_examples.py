@@ -261,8 +261,8 @@ def test_power_export_renders_expected_figures(tmp_path):
     # mean=12.40, var=430.0, alpha=0.05, power=0.80): pinning is safe.
     # Values reflect Task 1's own-arm H1 variance model (evaluates the
     # treatment arm's variance at its own mean instead of the null's).
-    assert "n_per_arm=48803" in html
-    assert "n_total=97606" in html
+    assert "Treatment arm: 48,803 assigned users" in html
+    assert "Total planned sample: 97,606 assigned users" in html
     assert "Estimating a Power Curve" in html
     assert "Sequential planning with asymptotic_mean inference" in html
 

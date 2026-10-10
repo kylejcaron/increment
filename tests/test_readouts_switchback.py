@@ -493,7 +493,7 @@ def test_switchback_default_q_survives_plan_round_trip():
     assert len(analysis.run()) == 1
 
 
-def _switchback_analysis(reference=None):
+def _switchback_analysis(reference=None, *, probability_ct=0.5, value_shift=0.0):
     import pandas as pd
 
     from increment.analysis import Analysis
@@ -516,7 +516,13 @@ def _switchback_analysis(reference=None):
                             "period": period,
                             "step": step,
                             "group": group,
-                            "value": float(cycle + period + step + (group == "treatment")),
+                            "value": float(
+                                cycle
+                                + period
+                                + step
+                                + (group == "treatment")
+                                + (value_shift if group == "control" else 0.0)
+                            ),
                         }
                     )
     return Analysis.from_switchback_panel(
@@ -532,10 +538,25 @@ def _switchback_analysis(reference=None):
         ),
         contrast_references={"value": reference or UnitCycleTApproximation()},
         assignment=SwitchbackAssignment(
-            sequence=IndependentBernoulliOrder(probability_ct=0.5),
+            sequence=IndependentBernoulliOrder(probability_ct=probability_ct),
             window=SwitchbackWindow(washout_steps=1, observation_steps=1),
         ),
     )
+
+
+def test_snapshot_identity_distinguishes_switchback_construction_inputs():
+    first = _switchback_analysis(probability_ct=0.5).run()
+    changed = _switchback_analysis(probability_ct=0.6).run()
+
+    assert first[0].source_snapshot_id != changed[0].source_snapshot_id
+
+
+def test_snapshot_identity_excludes_float_only_contrast_statistics():
+    first = _switchback_analysis().run()
+    changed = _switchback_analysis(value_shift=0.25).run()
+
+    assert first[0].estimate.value != changed[0].estimate.value
+    assert first[0].source_snapshot_id == changed[0].source_snapshot_id
 
 
 def test_sum_contrast_saved_collection_replay_preserves_identity_and_consumers():

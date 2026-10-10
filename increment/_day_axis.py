@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Callable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from increment import readouts
@@ -82,7 +82,17 @@ _CLUSTERED_DAY_AXIS = RefusalSpec(
 _TRIGGER_UNSUPPORTED = RefusalSpec(
     "facade.analysis.trigger_unsupported",
     CapabilityError,
-    template="{method}: experiment {experiment!r} declares trigger {trigger!r}, which this readout does not apply. Use run() for the triggered readout, or analyze an experiment with no declared trigger.",
+    lambda *, method, experiment, trigger, **_: (
+        (
+            f"{method}: experiment {experiment!r} declares no trigger on this source, "
+            "so it has no triggered population."
+            if trigger is None
+            else f"{method}: experiment {experiment!r} declares trigger {trigger!r}, "
+            "which this readout does not apply."
+        )
+        + " To analyze triggered populations, use Analysis.from_definitions or an "
+        "Analysis.from_unit_day_artifact carrying trigger-population evidence."
+    ),
 )
 _UNKNOWN_DIMENSION = RefusalSpec(
     "facade.analysis.unknown_dimension",
@@ -105,16 +115,15 @@ _OBSERVATIONAL_DAY_AXIS = RefusalSpec(
     UnsupportedRequestError,
     template="{method} is not supported for an observational design: confounded day-axis contrasts are refused, not silently emitted",
 )
+_DAILY_COMPLIANCE_DIMENSION = RefusalSpec(
+    "facade.analysis.daily_compliance_dimension_unsupported",
+    UnsupportedRequestError,
+    template="{method}: dimensioned daily compliance readouts are not supported; use an unsegmented daily compliance readout or an as-of readout",
+)
 _BH_SEGMENTED_ASOF = RefusalSpec(
     "facade.analysis.bh_segmented_asof",
     UnsupportedRequestError,
     template="{method}: BH multiplicity is supported for breakout families, not segmented as-of series; use bonferroni or none",
-)
-_TRIGGERED_COMPLIANCE_UNSUPPORTED = RefusalSpec(
-    "facade.analysis.triggered_compliance_unsupported",
-    UnsupportedRequestError,
-    template='{method} does not support triggered compliance estimates; use population="assigned".',
-    keys=frozenset({"method"}),
 )
 
 
@@ -150,6 +159,26 @@ def _resolve_lift_estimands(
     return is_encouragement, requested, design if is_encouragement else None
 
 
+def _validate_lift_request(
+    req: DayAxisRequest,
+    *,
+    src: MomentSource,
+    design: Randomized | Encouragement | Observational | None,
+    plan: CompiledDecisionPlan,
+    route: Literal["artifact", "moments", "native"],
+    experiment: Experiment | None,
+) -> tuple[bool, tuple[str, ...], Encouragement | None]:
+    validate_day_axis(
+        req,
+        src=src,
+        design=design,
+        plan=plan,
+        route=route,
+        experiment=experiment,
+    )
+    return _resolve_lift_estimands(req.estimands, design)
+
+
 def _day_axis_source_route(src: MomentSource) -> Literal["artifact", "moments", "native"]:
     route = classify_source(src)
     return "moments" if route == "panel" else route
@@ -181,13 +210,6 @@ class DayAxisRequest:
     population: Literal["assigned", "triggered"] = "assigned"
 
 
-def _refuse_triggered_compliance(
-    *, population: str, design: Any, estimands: Sequence[str], method: str
-) -> None:
-    if population == "triggered" and design is not None and "compliance" in estimands:
-        refuse(_TRIGGERED_COMPLIANCE_UNSUPPORTED, method=method)
-
-
 def _compliance_readouts(
     req: DayAxisRequest,
     design: Any,
@@ -195,11 +217,17 @@ def _compliance_readouts(
     extra: dict[str, Any],
     source: MomentSource,
 ) -> tuple[bool, dict[Any, ComplianceSummary]]:
-    if design is None or req.grain != "asof" or req.dimension is not None:
+    if design is None or req.dimension is not None:
         return False, {}
     extra["estimands"] = tuple(name for name in estimands if name != "compliance")
     if "compliance" not in estimands:
         return True, {}
+    if req.population == "triggered":
+        from increment._source_operations import TriggeredPopulationOperation
+
+        source = require_operation(
+            source, "triggered_source", TriggeredPopulationOperation
+        ).triggered_source()
     return True, compliance_summary_series(
         source, design, completed_windows_only=req.completed_windows_only
     )
@@ -230,15 +258,23 @@ def validate_day_axis(
     Branches apply only where routes genuinely differ. If multiple conditions
     fail, callers must not depend on the order in which those refusals surface.
     """
+    compliance_only = (
+        isinstance(design, Encouragement)
+        and req.estimands == ("compliance",)
+        and req.dimension is None
+    )
     if req.population == "triggered" and (experiment is None or experiment.trigger is None):
         refuse(
             _TRIGGER_UNSUPPORTED,
             method=req.caller,
             experiment="<unknown>" if experiment is None else experiment.name,
             trigger=None if experiment is None else experiment.trigger,
+            route=route,
+            supported_sources=("from_definitions", "from_unit_day_artifact"),
         )
     if (
-        route in ("artifact", "native")
+        not compliance_only
+        and route in ("artifact", "native")
         and experiment is not None
         and experiment.cluster is not None
     ):
@@ -251,6 +287,8 @@ def validate_day_axis(
     checkpoint_asof = (
         req.grain == "asof" and getattr(plan.inference, "registration", None) is not None
     )
+    if compliance_only:
+        return
     if route in ("moments", "artifact") and src.shape != "unit_panel" and not checkpoint_asof:
         refuse(_NO_DEFINITIONS, method=req.caller)
     if route == "native" and (
@@ -284,7 +322,11 @@ def validate_day_axis(
         reject_retention_under_encouragement(list(req.metrics), req.caller)
     if reads_outcomes and req.grain == "asof" and req.completed_windows_only:
         reject_completed_windows_on_unbounded_retention(list(req.metrics), req.caller)
-    if req.caller == "run_daily_lift" and isinstance(design, Encouragement):
+    if (
+        req.caller == "run_daily_lift"
+        and isinstance(design, Encouragement)
+        and (req.estimands is None or "late" in req.estimands)
+    ):
         refuse(_ENCOURAGEMENT_DAILY_LATE, experiment=getattr(experiment, "name", None))
     if (
         req.caller in ("run_daily_lift", "run_asof_lift")
@@ -300,6 +342,14 @@ def validate_day_axis(
         correction = normalize_display_correction(policy.correction)
         if correction == "bh":
             refuse(_BH_SEGMENTED_ASOF, method=req.caller)
+    if (
+        req.caller == "run_daily_lift"
+        and isinstance(design, Encouragement)
+        and req.dimension is not None
+        and req.estimands is not None
+        and "compliance" in req.estimands
+    ):
+        refuse(_DAILY_COMPLIANCE_DIMENSION, method=req.caller)
     if req.dimension is None:
         return
     if route == "moments":
@@ -560,6 +610,292 @@ def _missing_triggered_lift_rows(
     return additions
 
 
+def _missing_compliance_rows(
+    summary: ComplianceSummary,
+    ds: dt.date,
+    *,
+    arm_roster: Sequence[str],
+    control_group: str,
+    population: Literal["assigned", "triggered"],
+    inference: Any,
+    reason: Literal["missing_arm", "few_units"],
+) -> list[DailyLiftEstimate]:
+    from increment._immutable import _FrozenMapping
+    from increment.breakout.estimates import _nan_lift_rows
+
+    arms = {arm.group_id: arm for arm in summary.arms}
+    rows = []
+    for group_id in arm_roster:
+        if group_id == control_group:
+            continue
+        treatment_units = arms[group_id].n_units if group_id in arms else 0
+        control_units = arms[control_group].n_units if control_group in arms else 0
+        missing_arm = reason == "missing_arm" or treatment_units == 0 or control_units == 0
+        unavailable: Literal["no_control_arm", "no_treatment_arm", "few_units"] = (
+            "no_control_arm"
+            if control_units == 0
+            else "no_treatment_arm"
+            if treatment_units == 0
+            else "few_units"
+        )
+        row = _nan_lift_rows(
+            {("uptake", group_id): unavailable},
+            methods=None,
+            ds_value=ds,
+            ds_basis="calendar",
+            dimension=None,
+            dim_value=None,
+            source=None,
+            inference="sequential" if inference is not None else "fixed",
+        )[0]
+        context = _FrozenMapping(
+            {
+                "day": ds.isoformat(),
+                "group_id": group_id,
+                "reason": "missing_arm" if missing_arm else "few_units",
+                "control_group": control_group,
+            }
+        )
+        code = (
+            "readout.cell.missing_arm"
+            if missing_arm
+            else "readout.cell.missing_metric_observations"
+        )
+        rows.append(
+            row.model_copy(
+                update={
+                    "analysis_population": population,
+                    "estimand": "compliance",
+                    "value_scale": "absolute",
+                    "failure_code": code,
+                    "failure_context": context,
+                    "sampling_available": False,
+                    "sampling_reason_code": code,
+                    "sampling_reason_context": context,
+                    "decision_scope_complete": False,
+                    "decision_scope_reason_code": "readout.scope.decision_incomplete",
+                    "decision_scope_reason_context": context,
+                    "n_control": control_units,
+                    "n_treat": treatment_units,
+                }
+            )
+        )
+    return rows
+
+
+def _estimate_compliance_lift_rows(
+    summary: ComplianceSummary,
+    design: Encouragement,
+    ds: dt.date,
+    *,
+    alpha: float,
+    inference: Any,
+    compliance_requested: bool,
+    control_group: str,
+    population: Literal["assigned", "triggered"],
+    arm_roster: Sequence[str],
+) -> tuple[list[Any], list[DailyLiftEstimate]]:
+    def estimate(summary: ComplianceSummary) -> list[Any]:
+        return list(
+            estimate_compliance(
+                summary,
+                design,
+                alpha=alpha,
+                inference=inference,
+                compliance_requested=compliance_requested,
+            ).results
+        )
+
+    try:
+        return estimate(summary), []
+    except InvalidRequestError as error:
+        if error.code == "estimation.encouragement.control.missing":
+            return [], _missing_compliance_rows(
+                summary,
+                ds,
+                arm_roster=arm_roster,
+                control_group=control_group,
+                population=population,
+                inference=inference,
+                reason="missing_arm",
+            )
+        if error.code not in (
+            "estimation.armstats.arm_stats.least_compute_metric",
+            "estimation.encouragement.cluster.arm_needs_two",
+        ):
+            raise
+
+    estimates: list[Any] = []
+    unavailable: list[DailyLiftEstimate] = []
+    for group_id in arm_roster:
+        if group_id == control_group:
+            continue
+        arms = tuple(arm for arm in summary.arms if arm.group_id in (control_group, group_id))
+        if not any(arm.group_id == group_id for arm in arms):
+            unavailable.extend(
+                _missing_compliance_rows(
+                    summary,
+                    ds,
+                    arm_roster=(group_id,),
+                    control_group=control_group,
+                    population=population,
+                    inference=inference,
+                    reason="missing_arm",
+                )
+            )
+            continue
+        contrast = replace(summary, arms=arms)
+        try:
+            estimates.extend(estimate(contrast))
+        except InvalidRequestError as contrast_error:
+            if contrast_error.code not in (
+                "estimation.armstats.arm_stats.least_compute_metric",
+                "estimation.encouragement.cluster.arm_needs_two",
+            ):
+                raise
+            unavailable.extend(
+                _missing_compliance_rows(
+                    summary,
+                    ds,
+                    arm_roster=(group_id,),
+                    control_group=control_group,
+                    population=population,
+                    inference=inference,
+                    reason="few_units",
+                )
+            )
+    return estimates, unavailable
+
+
+def _build_compliance_day_rows(
+    compliance_rows: Sequence[Any],
+    summary: ComplianceSummary,
+    ds: dt.date,
+    *,
+    control_group: str,
+    design: Encouragement,
+    inference: Any,
+) -> list[DailyLiftEstimate]:
+    arms = {arm.group_id: arm for arm in summary.arms}
+    return [
+        DailyLiftEstimate(
+            metric="uptake",
+            group_id=row.group_id,
+            method=row.method,
+            method_role=row.method_role,
+            inference=row.inference,
+            alternative=row.alternative,
+            dof=row.dof,
+            reference_kind=_slice_reference_kind(row),
+            reference_df=row.reference_df,
+            ds=ds,
+            lift=row.lift,
+            estimand="compliance",
+            value_scale=row.value_scale,
+            n_control=arms[control_group].n_units,
+            n_treat=arms[row.group_id].n_units,
+            policy_name="compiled_plan",
+            low_reliability=any(
+                arm.n_units < DEFAULT_RELIABILITY_FLOOR
+                for arm in summary.arms
+                if arm.group_id in (row.group_id, control_group)
+            ),
+            note=_asof_monitoring_note(
+                row.note,
+                estimand="compliance",
+                inference=inference,
+                design=design,
+            ),
+        )
+        for row in compliance_rows
+    ]
+
+
+def _append_compliance_rows(
+    results: list[DailyLiftEstimate],
+    compliance_by_date: dict[Any, ComplianceSummary],
+    *,
+    enabled: bool,
+    req: DayAxisRequest,
+    design: Encouragement | None,
+    control_group: str | None,
+    requested_estimands: Sequence[str],
+    plan: CompiledDecisionPlan,
+    arm_roster: Sequence[str],
+) -> None:
+    if not enabled or design is None:
+        return
+    assert control_group is not None
+    if not arm_roster:
+        arm_roster = sorted(
+            {arm.group_id for summary in compliance_by_date.values() for arm in summary.arms}
+            | {control_group}
+        )
+    day_order = _day_axis_label_order([*compliance_by_date, *(row.ds for row in results)])
+    inference = _sequential_inference(plan)
+    for ds in sorted(compliance_by_date, key=day_order.__getitem__):
+        summary = compliance_by_date[ds]
+        compliance_rows, unavailable_rows = _estimate_compliance_lift_rows(
+            summary,
+            design,
+            ds,
+            alpha=plan.alpha,
+            inference=inference,
+            compliance_requested="compliance" in requested_estimands,
+            control_group=control_group,
+            population=req.population,
+            arm_roster=arm_roster,
+        )
+        built_rows = _build_compliance_day_rows(
+            compliance_rows,
+            summary,
+            ds,
+            control_group=control_group,
+            design=design,
+            inference=inference,
+        )
+        if unavailable_rows:
+            scope_reason = unavailable_rows[0]
+            built_rows = [
+                row.model_copy(
+                    update={
+                        "decision_scope_complete": False,
+                        "decision_scope_reason_code": scope_reason.decision_scope_reason_code,
+                        "decision_scope_reason_context": scope_reason.decision_scope_reason_context,
+                    }
+                )
+                for row in built_rows
+            ]
+        results.extend(built_rows)
+        results.extend(unavailable_rows)
+        if "compliance" in requested_estimands:
+            present = {row.group_id for row in (*built_rows, *unavailable_rows)}
+            absent = [
+                group_id
+                for group_id in arm_roster
+                if group_id != control_group and group_id not in present
+            ]
+            results.extend(
+                _missing_compliance_rows(
+                    summary,
+                    ds,
+                    arm_roster=absent,
+                    control_group=control_group,
+                    population=req.population,
+                    inference=inference,
+                    reason="missing_arm",
+                )
+            )
+    order = {metric.name: index for index, metric in enumerate(req.metrics)}
+    results.sort(
+        key=lambda row: (
+            day_order[row.ds],
+            -1 if row.estimand == "compliance" else order[row.metric],
+            row.group_id,
+        )
+    )
+
+
 def _prepare_triggered_lift_slice(
     rows, evidence_slice, req, kwargs, control_group, requested_estimands, plan, design
 ):
@@ -668,6 +1004,7 @@ def _estimate_day_axis_lift_slice(
                 source=evidence_slice.source_name,
                 view=evidence_slice.view,
                 segment_roster_by_metric=segment_roster_by_metric,
+                _policy_by_cell=policy_by_cell,
                 **kwargs,
                 **extra,
             )
@@ -1022,12 +1359,14 @@ def _scope_day_axis_rows(
     plan: Any,
     configs: Sequence[Any] = (),
     design: Any = None,
+    source: Any,
     family_populations: set[str] | None = None,
 ):
     """Attach source-local scope to day-axis rows before returning them."""
+    from increment._source_identity import source_identity
     from increment.breakout.estimates import DailyLiftEstimates, DailyMetricValues
+    from increment.readouts._design_scope import _config_snapshot
     from increment.readouts._multiplicity_scope import scoped_collection
-    from increment.readouts._run import _config_snapshot
 
     collection = (
         DailyLiftEstimates
@@ -1042,6 +1381,7 @@ def _scope_day_axis_rows(
         "completed_windows_only": req.completed_windows_only,
         "estimands": req.estimands,
         "population": req.population,
+        "source_identity": source_identity(source),
         "metrics": [
             metric.model_dump(mode="json") for metric in sorted(req.metrics, key=lambda m: m.name)
         ],
@@ -1174,6 +1514,7 @@ class DayAxisReadouts:
         return _scope_day_axis_rows(
             results,
             req,
+            source=self._src,
             route=route,
             plan=self._plan,
             design=self._design,
@@ -1188,22 +1529,13 @@ class DayAxisReadouts:
         prior: Prior | None | _Unset,
     ) -> DailyLiftEstimates:
         route = self._route()
-        validate_day_axis(
+        _, requested_estimands, encouragement_design = _validate_lift_request(
             req,
             src=self._src,
             design=self._design,
             plan=self._plan,
             route=route,
             experiment=self._experiment,
-        )
-        _, requested_estimands, encouragement_design = _resolve_lift_estimands(
-            req.estimands, self._design
-        )
-        _refuse_triggered_compliance(
-            population=req.population,
-            design=encouragement_design,
-            estimands=requested_estimands,
-            method=req.caller,
         )
         if req.grain == "asof" and getattr(self._plan.inference, "registration", None) is not None:
             if req.dimension is not None:
@@ -1235,6 +1567,7 @@ class DayAxisReadouts:
                         )
                     ),
                     req,
+                    source=self._src,
                     route=route,
                     plan=self._plan,
                     configs=self._src.context.configs,
@@ -1260,6 +1593,7 @@ class DayAxisReadouts:
             return _scope_day_axis_rows(
                 daily_sequential_projection(rows, correction=correction),
                 req,
+                source=self._src,
                 route=route,
                 plan=self._plan,
                 configs=self._src.context.configs,
@@ -1286,7 +1620,14 @@ class DayAxisReadouts:
                 )
             )
         correction: str | None = None
-        extra: dict[str, Any] = {}
+        extra: dict[str, Any] = {
+            "design": encouragement_design if req.grain == "asof" else None,
+            "estimands": (
+                tuple(name for name in requested_estimands if name not in ("compliance", "late"))
+                if req.grain == "daily"
+                else requested_estimands
+            ),
+        }
         if req.grain == "asof":
             policy = self._plan.view_policies.for_view(
                 "asof",
@@ -1313,7 +1654,12 @@ class DayAxisReadouts:
         design_compliance, compliance_by_date = _compliance_readouts(
             req, encouragement_design, requested_estimands, extra, self._src
         )
-        evidence = self._evidence(req, route)
+        compliance_only = (
+            encouragement_design is not None
+            and requested_estimands == ("compliance",)
+            and req.dimension is None
+        )
+        evidence = None if compliance_only else self._evidence(req, route)
         control_group = getattr(self._design, "control_group", None)
         results: list[DailyLiftEstimate] = []
         failure_rows: list[dict[str, Any]] = []
@@ -1324,14 +1670,17 @@ class DayAxisReadouts:
             effective_plan = with_unassigned_procedures(
                 self._plan, req.metrics, design=self._design
             )
-        for evidence_slice in evidence.slices(req, needs_covariate=opts.needs_covariate):
+        evidence_slices = (
+            () if evidence is None else evidence.slices(req, needs_covariate=opts.needs_covariate)
+        )
+        for evidence_slice in evidence_slices:
             raw_rows = _fill_triggered_early_look_rows(
                 evidence_slice.rows,
                 req=req,
                 metrics=evidence_slice.metrics,
                 experiment=self._experiment,
                 source=self._src,
-                edge_source=evidence.src,
+                edge_source=cast("DayAxisEvidence", evidence).src,
                 source_name=evidence_slice.source_name,
             )
             names = {m.name for m in evidence_slice.metrics}
@@ -1345,70 +1694,38 @@ class DayAxisReadouts:
             kwargs["method_roles_by_metric"] = {
                 n: v for n, v in kwargs["method_roles_by_metric"].items() if n in names
             }
-            results.extend(
-                _estimate_day_axis_lift_slice(
-                    self._daily_lift,
-                    raw_rows,
-                    evidence_slice,
-                    req,
-                    kwargs,
-                    extra,
-                    control_group,
-                    requested_estimands,
-                    effective_plan,
-                    self._design,
-                )
-            )
-            failure_rows.extend(raw_rows)
-        if design_compliance:
-            assert encouragement_design is not None
-            day_order = _day_axis_label_order([*compliance_by_date, *(row.ds for row in results)])
-            for ds in sorted(compliance_by_date, key=day_order.__getitem__):
-                summary = compliance_by_date[ds]
-                for row in estimate_compliance(
-                    summary,
-                    encouragement_design,
-                    alpha=self._plan.alpha,
-                    inference=_sequential_inference(self._plan),
-                    compliance_requested="compliance" in requested_estimands,
-                ).results:
-                    results.append(
-                        DailyLiftEstimate(
-                            metric="uptake",
-                            group_id=row.group_id,
-                            method=row.method,
-                            method_role=row.method_role,
-                            inference=row.inference,
-                            alternative=row.alternative,
-                            dof=row.dof,
-                            reference_kind=_slice_reference_kind(row),
-                            reference_df=row.reference_df,
-                            ds=ds,
-                            lift=row.lift,
-                            estimand="compliance",
-                            value_scale=row.value_scale,
-                            policy_name="compiled_plan",
-                            low_reliability=any(
-                                arm.n_units < DEFAULT_RELIABILITY_FLOOR
-                                for arm in summary.arms
-                                if arm.group_id in (row.group_id, control_group)
-                            ),
-                            note=_asof_monitoring_note(
-                                row.note,
-                                estimand="compliance",
-                                inference=_sequential_inference(self._plan),
-                                design=encouragement_design,
-                            ),
-                        )
+            if not (req.grain == "daily" and requested_estimands == ("compliance",)):
+                results.extend(
+                    _estimate_day_axis_lift_slice(
+                        self._daily_lift,
+                        raw_rows,
+                        evidence_slice,
+                        req,
+                        kwargs,
+                        extra,
+                        control_group,
+                        requested_estimands,
+                        effective_plan,
+                        self._design,
                     )
-            order = {metric.name: index for index, metric in enumerate(req.metrics)}
-            results.sort(
-                key=lambda row: (
-                    day_order[row.ds],
-                    -1 if row.estimand == "compliance" else order[row.metric],
-                    row.group_id,
                 )
-            )
+            failure_rows.extend(raw_rows)
+        arm_roster = (
+            _triggered_group_roster(self._src, self._experiment)
+            if self._experiment is not None
+            else []
+        )
+        _append_compliance_rows(
+            results,
+            compliance_by_date,
+            enabled=design_compliance,
+            req=req,
+            design=encouragement_design,
+            control_group=control_group,
+            requested_estimands=requested_estimands,
+            plan=self._plan,
+            arm_roster=arm_roster,
+        )
         from increment.estimation.multiplicity import stamp_multiplicity_status
 
         results = _stamp_triggered_cell_failures(
@@ -1422,6 +1739,7 @@ class DayAxisReadouts:
         return _scope_day_axis_rows(
             stamp_multiplicity_status(results, correction=correction),
             req,
+            source=self._src,
             route=route,
             plan=self._plan,
             configs=opts.configs,

@@ -8,8 +8,8 @@ if TYPE_CHECKING:
     from increment._study import ParallelStudyEnvelope, StudyEnvelope, SwitchbackStudyEnvelope
     from increment.absorption import absorb_factor
     from increment.analysis import Analysis, fit_predeclared_adjustment
-    from increment.breakout.estimates import to_frame
     from increment.breakout.heterogeneity import segment_contrast, segment_heterogeneity
+    from increment.breakout.projection import to_frame
     from increment.breakout.rollout import segment_rollout_recommendation
     from increment.cate import estimate_cate, select_targeting_rule, targeting_rule, validate_cate
     from increment.errors import (
@@ -412,7 +412,7 @@ _LAZY_IMPORTS = {
     "snapshot_from_json": ("increment.sequential_state", "snapshot_from_json"),
     "estimate_sequential": ("increment.estimation.sequential_runtime", "estimate_sequential"),
     "sequential_definition_id": ("increment.sequential_source", "sequential_definition_id"),
-    "to_frame": ("increment.breakout.estimates", "to_frame"),
+    "to_frame": ("increment.breakout.projection", "to_frame"),
     "segment_heterogeneity": ("increment.breakout.heterogeneity", "segment_heterogeneity"),
     "segment_contrast": ("increment.breakout.heterogeneity", "segment_contrast"),
     "segment_rollout_recommendation": (

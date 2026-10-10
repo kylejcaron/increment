@@ -19,6 +19,11 @@ class _FrozenMapping[Key, Value](Mapping[Key, Value]):
     def __len__(self) -> int:
         return len(self._value)
 
+    def __repr__(self) -> str:
+        from increment._display import format_mapping
+
+        return format_mapping(self._value)
+
     def __eq__(self, other: object) -> bool:
         return isinstance(other, Mapping) and self._value == other
 

@@ -136,6 +136,12 @@ table for the measured row-by-row evidence.
 - **LATE** is ITT divided by the compliance first stage: the effect among
   compliers whose treatment receipt changed because of encouragement.
 
+
+The notebook's registered uptake confidence sequence is shown in **ratio
+coordinates**, not as a lift interval. Its default display keeps the bounds,
+confidence level, and geometry status concise; exact rational endpoints and
+the endpoint certificates remain available from the result's
+`sequential_result.bounds` when detailed numerical evidence is needed.
 Discovery and the BH/e-BH-corrected interval level are ITT-based: a
 selected secondary's LATE row is re-estimated at the same corrected level
 as its ITT row (both test the same null), but `discovery` itself is
@@ -196,10 +202,27 @@ still refuse the retention metric. The empty-catalog path above does not
 exercise a nonempty catalog.
 The existing unit-panel refusal of `missing="drop"` remains; do not replace
 undefined outcomes with zeros to bypass it. Mixed ITT/LATE requests still
-require their outcome data. Each metric's LATE uses the first stage on that
-metric's matching outcome cohort. As-of compliance includes enrollment and
-qualifying uptake through the requested day; uptake windows are half-open from
-exposure.
+require their outcome data. Each metric's LATE uses the first stage on its
+matching outcome cohort. As-of compliance includes units assigned by the
+requested day and qualifying uptake through that day; a triggered-population
+compliance series instead admits units by their first eligible trigger day
+while retaining assignment-anchored uptake windows.
+
+Daily encouragement uptake is meaningful as a first-stage rate, but per-day
+LATE is not. Request only the supported estimand explicitly:
+
+```python
+analysis.run_daily_lift(
+    estimands=("compliance",),
+    population="triggered",
+)
+```
+
+This reads trigger membership by day and counts each selected unit's uptake
+from its original assignment anchor. Clustered compliance uses the declared
+cluster grain; clustered daily outcome histories remain unavailable. Registered
+triggered sequential histories still return explicit unsupported-population
+cells because no growing-membership sequential construction is defined.
 
 In fixed-horizon `run()`, a weak first stage for one metric's outcome cohort
 suppresses that cohort's LATE estimate but retains its planned LATE row as a

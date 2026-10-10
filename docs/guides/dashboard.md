@@ -94,8 +94,8 @@ that condition. A triggered view that the source cannot provide stays unavailabl
 with its refusal code and reason. For a triggered daily/as-of refusal, choose
 **Assigned** to view the assignment-level trajectory; this does not replace or
 reinterpret the unavailable triggered series. Registered sequential checkpoints
-remain assignment-scoped, so triggered group evidence is reported as unavailable
-rather than borrowing an assigned checkpoint.
+remain assignment-scoped; triggered group evidence is read separately from its
+pinned warehouse summary rather than borrowing an assigned checkpoint.
 
 `render_dashboard` embeds the captured evidence without querying the warehouse.
 

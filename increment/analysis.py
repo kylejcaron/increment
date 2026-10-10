@@ -36,6 +36,7 @@ from increment._analysis_config import (
 from increment._breakout_readouts import BreakoutReadouts, BreakoutRequest
 from increment._day_axis import (
     _CLUSTERED_DAY_AXIS,
+    _TRIGGER_UNSUPPORTED,
     DayAxisReadouts,
     DayAxisRequest,
     _day_axis_source_route,
@@ -589,8 +590,17 @@ class Analysis:
         """Release this analysis's resources without closing caller connections."""
         cast("MomentSource", self._state.source).close()
 
-    def _require_arm_state(self, method: str) -> ArmAnalysisState:
+    def _require_arm_state(
+        self, method: str, *, population: Literal["assigned", "triggered"] = "assigned"
+    ) -> ArmAnalysisState:
         if self._state.family != "arm_moments":
+            if population == "triggered":
+                _refuse(
+                    _TRIGGER_UNSUPPORTED,
+                    method=method,
+                    experiment="<unknown>",
+                    trigger=None,
+                )
             _refuse(_CONTRAST_UNAVAILABLE, method=method)
         return self._state
 
@@ -1050,21 +1060,22 @@ class Analysis:
         ``sql()`` and every method the other seam constructors already refuse
         (day axis, ``panel_sql``, ``run_breakout``, ``materialize``).
 
-        *rows* must carry centered ``group_summary`` columns, a mandatory
-        ``moments_format=10`` stamp, integer ``n``, nullable integer ``successes``,
-        and a complete embedded ``decision_plan`` on every fixed-horizon row.
-        Declared binary outcomes require exact success counts. Sequential exports use
-        ``moments_format=9`` checkpoint envelopes and a version-3 sequential
-        wire plan; their version-2 registration and exact snapshot are required
-        for replay. The payload is validated and stripped before readouts;
+        *rows* must carry centered ``group_summary`` columns, a fixed-horizon
+        ``moments_format=11`` stamp, integer ``n``, nullable integer
+        ``successes``, a source identity record, and a complete embedded
+        ``decision_plan`` on every fixed-horizon row. The preceding fixed
+        format 10 remains readable. Declared binary outcomes require exact
+        success counts. Sequential exports use ``moments_format=10``
+        checkpoint envelopes and a version-3 sequential wire plan; the
+        preceding sequential format 9 remains readable.
         Encouragement exports additionally carry cluster identity, member
         counts, and full bivariate uptake/size moments on every row. Supply
         the same Encouragement design when reloading; an omitted experiment_id
         is recovered from the cube for this design. An explicit identity must
         match the exported cohort. A
         cube without that state cannot provide design-level compliance.
-        An empty-metric fixed-horizon Encouragement export instead carries one
-        complete format-10 ``design_summary`` envelope. Reload it with
+        An empty-metric fixed-horizon Encouragement export carries one
+        complete format-11 ``design_summary`` envelope. Reload it with
         ``metrics=[]``; both its embedded and effective plans must remain
         fixed-horizon and metric-free, even when *plan* is supplied.
 
@@ -1927,6 +1938,13 @@ class Analysis:
             (``assigned`` or ``triggered``); the two populations are distinct
             result identities.
         """
+        if isinstance(self._state, ContrastAnalysisState) and population == "triggered":
+            _refuse(
+                _TRIGGER_UNSUPPORTED,
+                method="run",
+                experiment="<unknown>",
+                trigger=None,
+            )
         added = self._exploratory_metrics(exploratory_metrics, caller="run")
         if isinstance(self._state, ContrastAnalysisState):
             return self._run_contrast(
@@ -2339,6 +2357,15 @@ class Analysis:
             if state.family == "arm_moments"
             else None
         )
+        if experiment is not None and not experiment.breakouts:
+            select_metrics(
+                cast("Sequence[Metric]", self._src.context.metrics),
+                metrics,
+                caller="run_breakout",
+            )
+            if exploratory_metrics:
+                self._exploratory_metrics(exploratory_metrics, caller="run_breakout")
+            return BreakoutEstimates([])
         populations = (
             (population,)
             if population is not None
@@ -2348,6 +2375,58 @@ class Analysis:
                 else ("assigned",)
             )
         )
+        if "triggered" in populations:
+            if isinstance(self._state, ContrastAnalysisState):
+                _refuse(
+                    _TRIGGER_UNSUPPORTED,
+                    method="run_breakout",
+                    experiment="<unknown>",
+                    trigger=None,
+                )
+            reader = BreakoutReadouts(src=self._src, experiment=experiment)
+            registration = getattr(self._plan.inference, "registration", None)
+            if registration is None:
+
+                def validate_candidate(candidate, selected_metrics):
+                    if not selected_metrics:
+                        return
+                    breakout_policy = candidate._plan.view_policies.for_view(
+                        "breakout",
+                        mechanism=getattr(getattr(candidate, "_design", None), "mechanism", None),
+                        segmented=True,
+                    )
+                    candidate_reader = BreakoutReadouts(
+                        src=candidate._src,
+                        experiment=getattr(candidate, "_experiment", None),
+                    )
+                    candidate_reader.validate_request(
+                        BreakoutRequest(
+                            metrics=tuple(selected_metrics),
+                            decision_method=decision_method,
+                            sensitivity_methods=sensitivity_methods,
+                            prior=prior,
+                            correction=correction
+                            or normalize_display_correction(breakout_policy.correction),
+                            q=(
+                                breakout_policy.q
+                                if breakout_policy.q is not None
+                                else candidate._plan.q
+                            ),
+                            population="triggered",
+                        )
+                    )
+
+                selected = select_metrics(
+                    cast("Sequence[Metric]", self._src.context.metrics),
+                    metrics,
+                    caller="run_breakout",
+                )
+                validate_candidate(self, selected)
+                added = self._exploratory_metrics(exploratory_metrics, caller="run_breakout")
+                if added:
+                    exploratory = self._exploratory_analysis(added, caller="run_breakout")
+                    validate_candidate(exploratory, added)
+            reader.validate_populations(populations)
         combined: BreakoutEstimates | None = None
         for population in populations:
             rows = self._run_breakout_population(
@@ -2618,6 +2697,7 @@ class Analysis:
         sensitivity_methods: Sequence[Method] | _Unset = UNSET,
         prior: Prior | None | _Unset = UNSET,
         metrics: Sequence[str | Metric] | None = None,
+        estimands: Sequence[str] | None = None,
         dimension: str | None = None,
         population: Literal["assigned", "triggered"] = "assigned",
     ) -> DailyLiftEstimates:
@@ -2644,14 +2724,19 @@ class Analysis:
             Override the declared metrics + guardrails. A bounded-band
             :class:`RetentionMetric` is accepted; an
             unbounded one always raises (see ``Raises``).
+        estimands : Sequence[str] | None
+            Requested encouragement estimands. Per-day LATE is refused because
+            each daily first stage is weakly identified; ``("compliance",)``
+            is supported as an assignment-anchored uptake estimate.
         dimension : str | None
             Break each day's lift out by one declared breakout's
             dimension. Must match a declared breakout ``property``.
         population : Literal["assigned", "triggered"]
             ``"assigned"`` (default) retains the enrolled population.
-            ``"triggered"`` admits each unit on its first eligible trigger day;
-            outcomes are strictly after that unit's trigger and require explicit
-            source evidence. Supported on definitions and unit-day artifacts only.
+            ``"triggered"`` selects a unit on its first eligible trigger day;
+            outcomes anchor at trigger, while compliance uptake stays anchored
+            at assignment. Both require explicit source evidence and are
+            supported on definitions and unit-day artifacts.
 
         Returns
         -------
@@ -2667,19 +2752,20 @@ class Analysis:
             The effective metric list contains a `RetentionMetric` with
             an unbounded band, *dimension* matches no declared breakout
             property, (dimensioned only) an undeclared *metrics* entry,
-            or an :class:`Encouragement` design (per-day LATE is
-            meaningless under a weak daily first stage).
+            an Encouragement request that includes per-day LATE, which is
+            unsupported because each daily first stage is weakly identified.
         UnsupportedRequestError
             A daily or cohort sequential-inference plan is refused because
             those disjoint slices cannot support sequential monitoring.
         """
-        self._require_arm_state("run_daily_lift")
+        self._require_arm_state("run_daily_lift", population=population)
         selected = self._select_day_axis_metrics(metrics, caller="run_daily_lift")
         req = DayAxisRequest(
             caller="run_daily_lift",
             grain="daily",
             metrics=tuple(selected),
             dimension=dimension,
+            estimands=tuple(estimands) if estimands is not None else None,
             population=population,
         )
         return self._day_axis().lift(
@@ -2877,7 +2963,7 @@ class Analysis:
             Segmented as-of BH or observational designs.
         """
         added = self._exploratory_metrics(exploratory_metrics, caller="run_asof_lift")
-        self._require_arm_state("run_asof_lift")
+        self._require_arm_state("run_asof_lift", population=population)
         selected = self._select_day_axis_metrics(metrics, caller="run_asof_lift", added=added)
         req = DayAxisRequest(
             caller="run_asof_lift",

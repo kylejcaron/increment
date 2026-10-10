@@ -487,6 +487,47 @@ def _two_metric_rows(*, second_metric_has_treatment: bool) -> tuple[list[dict], 
     return rows, metric_a, metric_b
 
 
+def test_input_evidence_keeps_float_counts_and_day_coordinates():
+    from increment.readouts._source_digest import input_evidence
+
+    assert input_evidence(
+        {
+            "ds": 0.5,
+            "n_treat": 12.0,
+            "segment": (0.25,),
+            "lift": 1.5,
+            "discovery": True,
+            "sampling_available": True,
+            "family_id": "derived",
+        }
+    ) == {
+        "ds": 0.5,
+        "n_treat": 12.0,
+        "segment": [0.25],
+        "lift": None,
+    }
+
+
+def test_moment_count_changes_snapshot_identity():
+    from increment import readouts
+    from increment.sources import MomentsSource
+
+    rows, _metric_a, metric_b = _two_metric_rows(second_metric_has_treatment=True)
+    changed_rows = [dict(row) for row in rows]
+    changed_rows[1]["n"] += 1
+    first_source = MomentsSource(
+        rows, metrics=[metric_b], study_id="e", design=Randomized(control_group="control")
+    )
+    changed_source = MomentsSource(
+        changed_rows, metrics=[metric_b], study_id="e", design=Randomized(control_group="control")
+    )
+
+    first = _lift_results(readouts.run(first_source))
+    changed = _lift_results(readouts.run(changed_source))
+
+    assert first[0].source_snapshot_id != changed[0].source_snapshot_id
+
+
 def test_assignment_count_digest_preserves_full_width_integer_identity(monkeypatch):
     from increment import readouts
     from increment.sources import MomentsSource

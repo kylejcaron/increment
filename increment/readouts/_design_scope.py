@@ -12,8 +12,9 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from increment._canonical import canonical_digest_bytes, canonical_json_bytes
 from increment._labels import MIXED_ASSIGNMENT_LABEL, UNASSIGNED_LABEL
+from increment._source_identity import source_identity
 from increment.breakout.estimates import LiftEstimates
-from increment.errors import CapabilityError
+from increment.errors import CapabilityError, CodedError
 from increment.estimation.adjust import weight_diagnostics_projection
 from increment.estimation.assignment_integrity import assignment_integrity
 from increment.estimation.decision_types import PValueEvidence
@@ -415,6 +416,33 @@ def _request_snapshot(value: Any, *, field: str = "request") -> Any:
     return value
 
 
+def _config_snapshot(config, design):
+    from increment._analysis_config import effective_methods
+    from increment.estimation.readout_types import refuse_readout
+
+    try:
+        return {
+            "metric": config.metric.model_dump(mode="json"),
+            "methods": [
+                _request_snapshot(
+                    method.model_dump(mode="python"),
+                    field=(
+                        "configs.decision_method"
+                        if index == 0
+                        else f"configs.sensitivity_methods[{index - 1}]"
+                    ),
+                )
+                for index, method in enumerate(effective_methods(config, design=design))
+            ],
+            "prior": None if config.prior is None else config.prior.model_dump(mode="json"),
+            "prior_is_global": config.prior_is_global,
+        }
+    except CodedError:
+        raise
+    except (TypeError, ValueError):
+        refuse_readout("readout.scope.request_not_canonical", fields=["configs"])
+
+
 def scope_design_results(  # noqa: PLR0913
     src: Any,
     design: Any,
@@ -507,6 +535,7 @@ def scope_design_results(  # noqa: PLR0913
                     "kind": "increment.readout.snapshot",
                     "version": 2,
                     "collection": "LiftEstimates",
+                    "source_identity": source_identity(src),
                     "source": source,
                     "request": request,
                 }

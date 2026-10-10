@@ -82,12 +82,7 @@ class TriggeredPopulationSource:
         return counts
 
     def compliance_dates(self) -> Sequence[object]:
-        _refuse_operation(
-            operation="compliance_dates",
-            request={"population": self._population, "grain": "asof"},
-            offered=tuple(sorted(self.capabilities)),
-            route="read as-of compliance from the assigned-population source",
-        )
+        return self._source.triggered_compliance_dates()
 
     def compliance_summary(
         self,

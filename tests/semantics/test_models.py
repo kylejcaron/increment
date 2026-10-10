@@ -3493,6 +3493,28 @@ def test_adjustment_snapshot_survives_caller_mutation_and_json_replay():
             )
 
 
+def test_inference_spec_repr_shows_mapping_contents():
+    from fractions import Fraction
+
+    from increment.semantics.models import InferenceSpec
+    from increment.semantics.sequential import PredeclaredAdjustment
+
+    empty = InferenceSpec(kind="asymptotic_mean")
+    populated = InferenceSpec(
+        kind="asymptotic_mean",
+        adjustments={"outcome": PredeclaredAdjustment(coefficient=Fraction(1, 3), center=2)},
+        segments={"country": ("US", "GB")},
+    )
+
+    assert "segments={}" in repr(empty)
+    rendered = repr(populated)
+    assert "outcome" in rendered and "coefficient" in rendered
+    assert "Fraction(1, 3)" in rendered
+    assert "country" in rendered and "US" in rendered and "GB" in rendered
+    assert "_FrozenMapping" not in rendered
+    assert "object at 0x" not in rendered
+
+
 def test_invalid_adjustments_remain_refused_after_json_replay():
     import json
 

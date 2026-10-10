@@ -7,7 +7,6 @@ app = marimo.App(width="medium")
 @app.cell
 def _():
     import marimo as mo
-    from rich.pretty import pprint
 
     from increment import (
         Baseline,
@@ -47,7 +46,6 @@ def _():
         minimum_detectable_effect,
         mo,
         power_curve,
-        pprint,
         required_sample_size,
     )
 
@@ -171,9 +169,25 @@ def _(mo):
 
 
 @app.cell
-def _(TARGET_LIFT, baseline, design, pprint, procedure, required_sample_size):
+def _(TARGET_LIFT, baseline, design, mo, procedure, required_sample_size):
     rss = required_sample_size(TARGET_LIFT, baseline, procedure, design)
-    pprint(rss)
+    mde_display = (
+        f"{rss.mde_relative:+.2%} relative to the null"
+        if rss.mde_relative is not None
+        else f"unavailable ({rss.mde_unavailable_reason})"
+    )
+    mo.md(
+        f"""
+    **Required sample size for a {TARGET_LIFT:+.0%} relative lift**
+
+    - Treatment arm: {rss.n_per_arm:,} assigned users
+    - Total planned sample: {rss.n_total:,} assigned users
+    - Planned power: {rss.power:.1%} ({rss.power_basis};
+      `{rss.numerical_qualification}`)
+    - Minimum detectable effect: {mde_display}
+    - Effective variance used for asymptotic planning: {rss.effective_var:.4g}
+    """
+    )
     return (rss,)
 
 
@@ -508,7 +522,7 @@ def _(
     achieved_power,
     baseline,
     minimum_detectable_effect,
-    pprint,
+    mo,
     required_sample_size,
 ):
     sequential_procedure = ArmPlanningProcedure.standard(
@@ -521,7 +535,6 @@ def _(
         procedure=sequential_procedure,
         planned_looks=14,
     )
-
     power = achieved_power(
         n_per_arm=25_000,
         relative_lift=TARGET_LIFT,
@@ -529,7 +542,6 @@ def _(
         procedure=sequential_procedure,
         planned_looks=14,
     )
-
     mde = minimum_detectable_effect(
         n_per_arm=25_000,
         baseline=baseline,
@@ -537,12 +549,31 @@ def _(
         planned_looks=14,
     )
 
-    pprint(
-        {
-            "required_sample_size": sample_size,
-            "achieved_power": power,
-            "minimum_detectable_effect": mde,
-        }
+    def _sample_size(result):
+        return f"{result.n_per_arm:,}/arm; {result.n_total:,} planned"
+
+    def _expected_size(result):
+        return (
+            "not sequential"
+            if result.expected_n_total is None
+            else f"{result.expected_n_total:,} expected"
+        )
+
+    def _effect(result):
+        if result.mde_relative is None:
+            return f"unavailable ({result.mde_unavailable_reason})"
+        return f"{result.mde_relative:+.2%} relative to null"
+
+    mo.md(
+        f"""
+    **Sequential planning uses the 14-look asymptotic mean procedure.**
+
+    | Result | Planned size | Expected total size | Power | MDE | Basis / numerical qualification |
+    |---|---:|---:|---:|---:|---|
+    | Required size for {TARGET_LIFT:+.0%} | {_sample_size(sample_size)} | {_expected_size(sample_size)} | {sample_size.power:.1%} | {_effect(sample_size)} | {sample_size.power_basis} / `{sample_size.numerical_qualification}` |
+    | Power at 25,000/arm | {_sample_size(power)} | {_expected_size(power)} | {power.power:.1%} | {_effect(power)} | {power.power_basis} / `{power.numerical_qualification}` |
+    | MDE at 25,000/arm | {_sample_size(mde)} | {_expected_size(mde)} | {mde.power:.1%} | {_effect(mde)} | {mde.power_basis} / `{mde.numerical_qualification}` |
+    """
     )
     return
 

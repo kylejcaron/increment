@@ -187,9 +187,11 @@ def breakout(
         q=q,
     )
     validate_request(request)
-    from increment.readouts._run import _config_snapshot
+    from increment._source_identity import source_identity
+    from increment.readouts._design_scope import _config_snapshot
 
     scope_request = {
+        "source_identity": source_identity(src),
         "metrics": [
             metric.model_dump(mode="json") for metric in sorted(selected, key=lambda m: m.name)
         ],

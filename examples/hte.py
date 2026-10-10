@@ -383,13 +383,6 @@ def _(ADJUST, INTERACT, hetero_src, validate_cate):
 
 
 @app.cell
-def _(validation):
-    # looking at an example output
-    validation.groups
-    return
-
-
-@app.cell
 def _():
     def display_number(value, spec="+.4f"):
         return "unavailable" if value is None else format(value, spec)
@@ -397,10 +390,10 @@ def _():
     def display_estimate(estimate):
         if estimate is None:
             return "unavailable"
-        return (
-            f"{display_number(estimate.value)} "
-            f"[{display_number(estimate.lb)}, {display_number(estimate.ub)}]"
-        )
+        point = display_number(estimate.value)
+        if estimate.lb is None and estimate.ub is None:
+            return f"{point} (point only; interval unavailable)"
+        return f"{point} [{display_number(estimate.lb)}, {display_number(estimate.ub)}]"
 
     return display_estimate, display_number
 
@@ -519,13 +512,6 @@ def _(mo):
     It does not estimate another treatment effect. It profiles the covariates associated
     with the model’s ranking, using held-out users.
     """)
-    return
-
-
-@app.cell
-def _(validation):
-    # looking at example output
-    validation.clan
     return
 
 
@@ -865,18 +851,34 @@ def _(CANDIDATES, null_src, targeting_rule):
 
 
 @app.cell(hide_code=True)
-def _(display_number, mo, null_rule):
+def _(display_estimate, display_number, mo, null_rule):
+    _validation = null_rule.validation
+    _autoc = _validation.autoc
+    gate_detail = (
+        f"AUTOC p={display_number(_autoc.p_value, '.2f')} vs alpha={_validation.alpha:.2f}"
+        if _autoc.p_value is not None
+        else f"AUTOC unavailable ({_autoc.unavailable_reason})"
+    )
+    if _validation.passed:
+        threshold = display_number(null_rule.threshold)
+        policy_value = display_estimate(null_rule.policy_value)
+        uplift = display_estimate(null_rule.uplift_vs_average)
+    else:
+        threshold = "unavailable (validation gate did not authorize targeting)"
+        policy_value = "unavailable (validation gate did not pass)"
+        uplift = "unavailable (validation gate did not pass)"
     mo.md(
         f"""
     ### The same rule on Cohort B
 
     - **Recommendation:** `{null_rule.recommendation}`
-    - `threshold={null_rule.threshold}`
-    - `policy_value={null_rule.policy_value}`
-    - `uplift_vs_average={null_rule.uplift_vs_average}`
+    - **Validation:** {gate_detail}
+    - **Targeting threshold:** {threshold}
+    - **Conditional policy value:** {policy_value}
+    - **Uplift versus average:** {uplift}
 
-    A failed gate returns no targeting numbers; the attached validation explains why
-    (AUTOC p={display_number(null_rule.validation.autoc.p_value, ".2f")}).
+    Conditional policy values are points only when the gate passes; the same holdout
+    both selects and reports them, so no interval is claimed.
     """
     )
     return

@@ -247,3 +247,42 @@ def test_zero_control_binomial_set_contributes_rejection_without_finite_width():
     width, rejected = _production_outcome(row)
     assert width is None
     assert rejected is True
+
+
+def test_ols_relative_interval_matches_independent_raw_denominator_delta_method():
+    from scipy.stats import t as student_t
+
+    from calibration.comparative_cuped import _ols_relative_interval
+
+    n = 6
+    covariate = np.array([-2.0, -1.1, -0.3, 0.4, 1.2, 2.1] * 2)
+    treatment = np.repeat([0.0, 1.0], n)
+    control_noise = np.array([-0.12, 0.04, 0.08, -0.03, 0.10, -0.05])
+    treatment_noise = np.array([0.03, -0.08, 0.02, 0.11, -0.04, -0.01])
+    control = 100.0 + 12.0 * covariate[:n] + control_noise
+    treated = 102.0 + 12.0 * covariate[n:] + treatment_noise
+    outcomes = np.concatenate((control, treated))
+    design = np.column_stack((np.ones(2 * n), treatment, covariate))
+    coefficients, _, _, _ = np.linalg.lstsq(design, outcomes, rcond=None)
+    residuals = outcomes - design @ coefficients
+    degrees_of_freedom = 2 * n - design.shape[1]
+    residual_variance = float(residuals @ residuals / degrees_of_freedom)
+    coefficient_covariance = residual_variance * np.linalg.inv(design.T @ design)
+
+    control_mean = float(control.mean())
+    control_weights = np.concatenate((np.full(n, 1.0 / n), np.zeros(n)))
+    numerator_denominator_covariance = float(
+        residual_variance * np.linalg.solve(design.T @ design, design.T @ control_weights)[1]
+    )
+    raw_denominator_variance = float(control.var(ddof=1) / n)
+    lift = float(coefficients[1] / control_mean)
+    variance = (
+        coefficient_covariance[1, 1] / control_mean**2
+        + coefficients[1] ** 2 * raw_denominator_variance / control_mean**4
+        - 2 * coefficients[1] * numerator_denominator_covariance / control_mean**3
+    )
+    critical = float(student_t.isf(0.025, degrees_of_freedom))
+    expected = (lift - critical * np.sqrt(variance), lift + critical * np.sqrt(variance))
+
+    assert raw_denominator_variance > 100 * residual_variance / n
+    assert _ols_relative_interval(outcomes, covariate, n) == pytest.approx(expected, rel=1e-12)

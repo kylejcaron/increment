@@ -24,7 +24,6 @@ increment/analysis.py
     DOC502: Method `Analysis.run_asof_lift` has a "Raises" section in the docstring, but there are not "raise" statements in the body
 --------------------
 increment/breakout/estimates.py
-    DOC105: Function `to_frame`: Argument names match, but type hints in these args do not match: backend
     DOC101: Function `_estimate_encouragement_or_reason`: Docstring contains fewer arguments than in function signature.
     DOC103: Function `_estimate_encouragement_or_reason`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [alpha: float, alternative: str, design: Encouragement, estimands: Sequence[str], inference: AsymptoticMean | AlwaysValid | MixedFamily | None, method_roles: Mapping[str, Literal['decision', 'sensitivity']] | None, methods: list[Method] | None, metrics: Sequence[Metric], prior: Prior | None, summary: list[Mapping[str, Any]]].
     DOC501: Function `_estimate_encouragement_or_reason` has raise statements, but the docstring does not have a "Raises" section
@@ -36,7 +35,7 @@ increment/breakout/estimates.py
     DOC105: Function `run_daily`: Argument names match, but type hints in these args do not match: view
     DOC101: Function `run_daily_lift`: Docstring contains fewer arguments than in function signature.
     DOC110: Function `run_daily_lift`: The option `--arg-type-hints-in-docstring` is `True` but not all args in the docstring arg list have type hints
-    DOC103: Function `run_daily_lift`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [alpha: float, alternative: Alternative, control_group: str, correction: Literal['none', 'bonferroni'], dimension: str | None, method_roles: Mapping[str, Literal['decision', 'sensitivity']] | None, method_roles_by_metric: Mapping[str, Mapping[str, Literal['decision', 'sensitivity']]] | None, methods: list[Method] | None, methods_by_metric: Mapping[str, list[Method]] | None, metrics: Sequence[Metric], prior: Prior | None, prior_by_metric: Mapping[str, Prior | None] | None, source: str | None]. Arguments in the docstring but not in the function signature: [alpha, alternative, correction: , metrics, control_group, methods, prior: ].
+    DOC103: Function `run_daily_lift`: Docstring arguments are different from function arguments. (Or could be other formatting issues: https://jsh9.github.io/pydoclint/violation_codes.html#notes-on-doc103 ). Arguments in the function signature but not in the docstring: [_policy_by_cell: Mapping[tuple[date, str, str | None], Mapping[str, _DailyCellPolicy]] | None, alpha: float, alternative: Alternative, control_group: str, correction: Literal['none', 'bonferroni'], dimension: str | None, method_roles: Mapping[str, Literal['decision', 'sensitivity']] | None, method_roles_by_metric: Mapping[str, Mapping[str, Literal['decision', 'sensitivity']]] | None, methods: list[Method] | None, methods_by_metric: Mapping[str, list[Method]] | None, metrics: Sequence[Metric], prior: Prior | None, prior_by_metric: Mapping[str, Prior | None] | None, source: str | None]. Arguments in the docstring but not in the function signature: [alpha, alternative, correction: , metrics, control_group, methods, prior: ].
     DOC502: Function `run_daily_lift` has a "Raises" section in the docstring, but there are not "raise" statements in the body
 --------------------
 increment/breakout/heterogeneity.py
@@ -45,6 +44,9 @@ increment/breakout/heterogeneity.py
     DOC201: Function `segment_contrast` does not have a return section in docstring
     DOC203: Function `segment_contrast` return type(s) in docstring not consistent with the return annotation. Return annotation has 1 type(s); docstring return section has 0 type(s).
     DOC502: Function `segment_contrast` has a "Raises" section in the docstring, but there are not "raise" statements in the body
+--------------------
+increment/breakout/projection.py
+    DOC105: Function `to_frame`: Argument names match, but type hints in these args do not match: backend
 --------------------
 increment/breakout/rollout.py
     DOC105: Function `segment_rollout_recommendation`: Argument names match, but type hints in these args do not match: metrics, rollout_cost

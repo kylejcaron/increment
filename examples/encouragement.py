@@ -474,17 +474,24 @@ def _(
 
 @app.cell(hide_code=True)
 def _(uptake_trend, pd):
-    pd.DataFrame(
+    from increment._display import format_interval
+
+    uptake_table = pd.DataFrame(
         {
             "ds": r.ds,
-            "uptake_lift": None if r.lift is None else r.lift.value,
-            "lb": r.sequential_result.bounds.lower,
-            "ub": r.sequential_result.bounds.upper,
+            "uptake_lift": None if r.lift is None else f"{r.lift.value:.4g}",
+            "ratio_interval": format_interval(
+                r.sequential_result.bounds.lower,
+                r.sequential_result.bounds.upper,
+                empty=r.sequential_result.bounds.empty,
+            ),
+            "status": r.sequential_result.bounds.status,
             "inference": r.inference,
         }
         for r in uptake_trend
     )
-    return
+    uptake_table
+    return (uptake_table,)
 
 
 @app.cell(hide_code=True)

@@ -869,6 +869,66 @@ class PowerResult(CodedModel, BaseModel):
         name, q = self.planned_metric_name, self.planned_quantile
         return f"planned for metric {name!r} at quantile {q}"
 
+    def __repr__(self) -> str:
+        size = f"n_per_arm={self.n_per_arm}, n_total={self.n_total}"
+        if self.expected_n_total is not None:
+            size += f", expected_n_total={self.expected_n_total} (sequential)"
+        if self.n_triggered_total is not None:
+            size += f", n_triggered_total={self.n_triggered_total}"
+        if self.n_clusters_total is not None:
+            size += f", n_clusters_total={self.n_clusters_total}"
+        mde = (
+            f"{self.mde_relative:+.4g} relative to null"
+            if self.mde_relative is not None
+            else f"unavailable ({self.mde_unavailable_reason})"
+        )
+        sequential = (
+            "fixed-horizon"
+            if self.inference_to_declare is None
+            else f"sequential ({self.inference_to_declare.kind})"
+        )
+        planned = "" if self.planned_for is None else f", {self.planned_for}"
+        return (
+            f"PowerResult({size}, power={self.power:.4g}, "
+            f"power_basis={self.power_basis!r}, "
+            f"numerical_qualification={self.numerical_qualification!r}, "
+            f"mde_relative={mde}, effective_var={self.effective_var:.4g}, "
+            f"plan={sequential}{planned})"
+        )
+
+    __str__ = __repr__
+
+    def __repr_args__(self) -> list[tuple[str, object]]:
+        size = f"n_per_arm={self.n_per_arm}, n_total={self.n_total}"
+        if self.expected_n_total is not None:
+            size += f", expected_n_total={self.expected_n_total} (sequential)"
+        if self.n_triggered_total is not None:
+            size += f", n_triggered_total={self.n_triggered_total}"
+        if self.n_clusters_total is not None:
+            size += f", n_clusters_total={self.n_clusters_total}"
+        mde = (
+            f"{self.mde_relative:+.4g} relative to null"
+            if self.mde_relative is not None
+            else f"unavailable ({self.mde_unavailable_reason})"
+        )
+        sequential = (
+            "fixed-horizon"
+            if self.inference_to_declare is None
+            else f"sequential ({self.inference_to_declare.kind})"
+        )
+        args: list[tuple[str, object]] = [
+            ("size", size),
+            ("power", self.power),
+            ("power_basis", self.power_basis),
+            ("numerical_qualification", self.numerical_qualification),
+            ("mde_relative", mde),
+            ("effective_var", self.effective_var),
+            ("plan", sequential),
+        ]
+        if self.planned_for is not None:
+            args.append(("planned_for", self.planned_for))
+        return args
+
     @model_validator(mode="after")
     def _check(self) -> PowerResult:
         """Closing invariant every solver's result satisfies regardless

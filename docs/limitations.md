@@ -223,13 +223,17 @@ variance. Neither a large total row count nor crossing the 40-cluster warning
 threshold establishes that condition. Concentrated cluster masses can bias the
 disjoint-arm variance estimate downward; a t reference alone does not correct it.
 
-Triggered daily and as-of values/lift are available for definitions and
-unit-day artifacts with explicit trigger evidence. Each unit enters on its own
-first eligible trigger day, and maturity is evaluated from that same unit
-anchor. Clustered day-axis readouts remain refused with
-`facade.analysis.clustered_day_axis`: the available daily/as-of construction
-has no day-level cluster-robust uncertainty estimator. The supported route for
-a clustered triggered question is a whole-window clustered triggered readout.
+Triggered daily/as-of values and outcome lifts are available for definitions
+and unit-day artifacts with explicit trigger evidence. Each unit enters on its
+first eligible trigger day, and outcome maturity is evaluated from that anchor.
+Triggered encouragement compliance is also available through
+`run_daily_lift(estimands=("compliance",), population="triggered")` and
+`run_asof_lift(...)`: the cohort grows at each unit's trigger date, while
+uptake windows remain anchored at assignment and obey their declared half-open
+window and completion rules. The compliance-only request reads trigger and
+uptake evidence without reducing outcomes. Clustered outcome histories still
+refuse with `facade.analysis.clustered_day_axis`; cluster-grain compliance
+histories use the declared cluster uptake sufficient state.
 
 The clustered encouragement LATE cuts its additive interval at a Welch–Satterthwaite t
 reference over the two arms' own cluster-ratio variance components. Measured by
@@ -404,7 +408,7 @@ design's uptake (first-stage compliance) moments are a
 different random variable over the same units and do not change the
 ITT's own sufficient statistics, so they are stripped before either route
 reads the arm rather than disqualifying it.
-Day-axis compliance requests for `population="triggered"` are refused before snapshot access; use `population="assigned"` instead. Triggered compliance support is tracked by kata issue `d119`.
+Triggered compliance is supported on the daily and as-of lift axes for definitions and unit-day artifacts when explicit trigger evidence is present. Each day includes units whose first eligible trigger is observed by that date; uptake windows and completion remain anchored at assignment. Other ingresses are source-limited because they cannot reconstruct trigger membership.
 
 | Observations | Point estimate | Confidence set |
 |---|---:|---|

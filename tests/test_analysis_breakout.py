@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from increment import Analysis
+from increment import Analysis, SourceSnapshotEvidence
 from increment.breakout.estimates import BreakoutEstimate
 from increment.errors import (
     CapabilityError,
@@ -28,7 +28,9 @@ from tests.sequential_cases import registration
 from tests.warning_codes import warning_codes
 
 
-def _analysis_with_country_breakout(con, *, unbounded_retention: bool = False):
+def _analysis_with_country_breakout(
+    con, *, unbounded_retention: bool = False, source_snapshot_evidence=None
+):
     """Two countries with opposite revenue lifts and an optional open retention band."""
     if "breakout_run_events" not in con.list_tables():
         # Exposure: 2 control + 2 treatment units per country.
@@ -141,7 +143,7 @@ def _analysis_with_country_breakout(con, *, unbounded_retention: bool = False):
         }
     )
 
-    analysis = make_analysis(con, defs)
+    analysis = make_analysis(con, defs, source_snapshot_evidence=source_snapshot_evidence)
     return analysis
 
 
@@ -157,6 +159,36 @@ def country_daily_lift_by_segment(con):
     """Plain ``run_daily_lift(dimension="country")`` on the country fixture,
     computed once and shared the same way."""
     return _analysis_with_country_breakout(con).run_daily_lift(dimension="country")
+
+
+def test_run_breakout_snapshot_identity_includes_pinned_source_evidence(con):
+    first = _analysis_with_country_breakout(
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            datetime.fromisoformat("2025-06-30T00:00:00+00:00"),
+            {"events": datetime.fromisoformat("2025-06-30T00:00:00+00:00")},
+        ),
+    )
+    changed = _analysis_with_country_breakout(
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            datetime.fromisoformat("2025-07-01T00:00:00+00:00"),
+            {"events": datetime.fromisoformat("2025-06-30T00:00:00+00:00")},
+        ),
+    )
+    try:
+        first_rows = first.run_breakout()
+        changed_rows = changed.run_breakout()
+        assert first_rows and changed_rows
+        assert [row.require_lift().value for row in first_rows] == pytest.approx(
+            [row.require_lift().value for row in changed_rows]
+        )
+        assert {row.source_snapshot_id for row in first_rows}.isdisjoint(
+            {row.source_snapshot_id for row in changed_rows}
+        )
+    finally:
+        first.close()
+        changed.close()
 
 
 def test_run_breakout_returns_per_segment_estimates(country_breakout_estimates):
@@ -537,6 +569,29 @@ def test_run_breakout_bh_family_survives_a_degenerate_segment_cell():
     assert all(
         row["excluded"] == "nonpositive_mean" and row["lift"] is None for row in failed_readout
     )
+
+
+def test_unit_panel_breakout_refuses_triggered_population_before_relabeling():
+    analysis = Analysis.from_unit_panel(
+        pd.DataFrame(
+            {
+                "unit": ["c1", "c2", "t1", "t2"],
+                "arm": ["control", "control", "treatment", "treatment"],
+                "date": [date(2025, 1, 1)] * 4,
+                "country": ["US", "CA", "US", "CA"],
+                "revenue": [1.0, 2.0, 3.0, 4.0],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        date="date",
+        control="control",
+        metrics={"revenue": "mean"},
+        breakouts=["country"],
+    )
+    with pytest.raises(CapabilityError) as refused:
+        analysis.run_breakout(population="triggered")
+    assert refused.value.code == "facade.analysis.trigger_unsupported"
 
 
 def test_run_breakout_bh_family_survives_a_tiny_segment_extreme_ratio_cell():

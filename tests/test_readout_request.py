@@ -65,7 +65,7 @@ def test_component_identity_includes_optional_source_and_dimension_coordinates()
     )
     assert composite_source([first]) == composite_source([same])
     assert composite_source([first]) != composite_source([other_dimension])
-    from increment.readouts._run import _randomized_snapshot_id
+    from increment.readouts._randomized_scope import _randomized_snapshot_id
 
     request = {"view": "breakout"}
     first_id = _randomized_snapshot_id(composite_source([first]), request)
@@ -75,7 +75,7 @@ def test_component_identity_includes_optional_source_and_dimension_coordinates()
     assert first_id != other_dimension_id
     from types import SimpleNamespace
 
-    from increment.readouts._run import _randomized_source
+    from increment.readouts._randomized_scope import _randomized_source
 
     selected = [SimpleNamespace(name="revenue")]
     evidence = {"revenue": ("moments_rows", digest, 1)}

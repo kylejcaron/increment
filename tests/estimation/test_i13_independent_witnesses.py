@@ -296,7 +296,7 @@ def test_absolute_t_tail_does_not_inherit_normal_primary_reference():
 def test_absolute_reference_survives_frame_conversion_with_numeric_null(backend):
     import narwhals as nw
 
-    from increment.breakout.estimates import to_frame
+    from increment.breakout.projection import to_frame
     from increment.estimation.inference import infer_lift
 
     known = infer_lift(

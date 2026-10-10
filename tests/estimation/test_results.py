@@ -24,7 +24,7 @@ import pytest
 from scipy.stats import norm as _norm
 from scipy.stats import t as _t
 
-from increment.breakout.estimates import to_frame
+from increment.breakout.projection import to_frame
 from increment.errors import CodedError, InvalidRequestError
 from increment.estimation.results import (
     BINOMIAL_METHOD,

@@ -35,8 +35,8 @@ from increment.breakout.estimates import (
     DailyMetricValues,
     run_daily,
     run_daily_lift,
-    to_frame,
 )
+from increment.breakout.projection import to_frame
 from increment.errors import IncrementWarning, InvalidRequestError, UnsupportedRequestError
 from increment.estimation.armstats import ArmStats, centered_row_from_raw_sums
 from increment.estimation.encouragement import estimate_encouragement
@@ -1468,6 +1468,82 @@ class TestDailyLiftEstimate:
         assert est.ds == date(2025, 1, 1)
         assert est.lift is lift
 
+    def test_repr_is_concise_and_exposes_daily_estimate_identity(self):
+        est = DailyLiftEstimate(
+            metric="rev",
+            group_id="treatment",
+            method="unadjusted",
+            method_role="decision",
+            ds=date(2025, 1, 1),
+            lift=Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
+        )
+
+        rendered = repr(est)
+        assert "rev" in rendered and "treatment" in rendered
+        assert "2025-01-01" in rendered and "0.2" in rendered
+        assert "0.1" in rendered and "0.3" in rendered
+        assert "sequential_result" not in rendered
+
+    def test_repr_preserves_unavailable_relative_confidence_reason(self):
+        from increment.estimation.results import JointContrastReference, RelativeConfidenceSet
+
+        confidence_set = RelativeConfidenceSet(
+            reference=JointContrastReference(a=1.0, c=1e-320, var_a=0.0, var_c=0.0, cov_ac=0.0),
+            alpha=0.05,
+        )
+        est = DailyLiftEstimate(
+            metric="rev",
+            group_id="treatment",
+            method="unadjusted",
+            method_role="decision",
+            ds=date(2025, 1, 1),
+            lift=None,
+            relative_confidence_set=confidence_set,
+            abs_diff=1.0,
+        )
+
+        rendered = repr(est)
+
+        assert confidence_set.geometry == "unavailable"
+        assert "interval=unavailable relative" in rendered
+        assert "endpoint_unrepresentable" in rendered
+        assert "∅" not in rendered
+
+    def test_print_and_rich_repr_are_compact_and_keep_point_unavailability_reason(self):
+        from rich.pretty import pretty_repr
+
+        from increment.estimation.inference import _joint_additive_bounds
+        from increment.estimation.results import JointContrastReference, RelativeConfidenceSet
+
+        confidence_set = RelativeConfidenceSet(
+            reference=JointContrastReference(a=0.0, c=0.0, var_a=1.0, var_c=1.0, cov_ac=0.0),
+            alpha=0.05,
+        )
+        abs_lb, abs_ub = _joint_additive_bounds(0.0, 1.0, 0.05, "two-sided", None)
+        est = DailyLiftEstimate(
+            metric="rev",
+            group_id="treatment",
+            method="unadjusted",
+            method_role="decision",
+            ds=date(2025, 1, 1),
+            lift=None,
+            relative_confidence_set=confidence_set,
+            abs_diff=0.0,
+            abs_se=1.0,
+            abs_reference_kind="normal",
+            abs_lb=abs_lb,
+            abs_ub=abs_ub,
+        )
+
+        assert confidence_set.geometry == "all_real"
+        assert confidence_set.point_unavailable_reason == "zero_denominator"
+        assert str(est) == repr(est)
+        assert "confidence=95.0%" in str(est)
+        assert "zero_denominator" in str(est)
+        rich_display = pretty_repr(est)
+        assert "zero_denominator" in rich_display
+        assert "sequential_result" not in rich_display
+
     @pytest.mark.parametrize("field", ["null_lift", "null_abs", "abs_diff", "abs_se"])
     def test_nonfinite_scalar_fields_are_rejected(self, field: str) -> None:
         kwargs: dict[str, Any] = {field: -math.inf}
@@ -1524,6 +1600,9 @@ class TestDailyLiftEstimate:
         results = run_daily_lift(rows, [_mean_metric("rev")], control_group="control")
         assert len(results) == 1
         est = results[0]
+        rendered = repr(results)
+        assert "DailyLiftEstimate" in rendered and "2025-01-01" in rendered
+        assert "sequential_result" not in rendered
         round_tripped = DailyLiftEstimate.model_validate_json(est.model_dump_json())
         assert round_tripped == est
 
@@ -1571,6 +1650,10 @@ class TestDailyLiftEstimate:
             sequential_result=result.sequential_result,
         )
         if not relabel:
+            rendered = repr([row])
+            assert "ratio_interval" in rendered
+            assert "EndpointCertificate" not in rendered
+            assert "status=" in rendered
             assert DailyLiftEstimate.model_validate_json(row.model_dump_json()) == row
             return
         payload = row.model_dump()

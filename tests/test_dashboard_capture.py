@@ -648,6 +648,9 @@ def test_each_state_keeps_its_own_original_refusal(tmp_path):
 def test_each_metric_series_is_independent_of_the_metric_selection(tmp_path):
     with _workspace(tmp_path, breakout_sources=()) as (_, analysis):
         snapshot = prepare_dashboard(analysis, config=CONFIG)
+        first_run = analysis.run(metrics=["session_seconds"])
+        second_run = analysis.run(metrics=["session_seconds"])
+        assert _snapshot_ids(first_run) == _snapshot_ids(second_run)
         everyone = load_explore(analysis, snapshot=snapshot, metric=None, view="cumulative_lift")
         assert isinstance(everyone, DailyLiftEstimates)
         one = load_explore(
@@ -655,16 +658,19 @@ def test_each_metric_series_is_independent_of_the_metric_selection(tmp_path):
         )
         expected = analysis.run_asof_lift(metrics=["session_seconds"])
         assert _fingerprint(one, semantic=True) == _fingerprint(expected, semantic=True)
-        assert _fingerprint(everyone, semantic=True) == _fingerprint(
-            analysis.run_asof_lift(metrics=list(_NAMES)), semantic=True
-        )
+        assert _snapshot_ids(one) == _snapshot_ids(expected)
+        repeat = analysis.run_asof_lift(metrics=["session_seconds"])
+        assert _snapshot_ids(expected) == _snapshot_ids(repeat)
+        full = analysis.run_asof_lift(metrics=list(_NAMES))
+        assert _fingerprint(everyone, semantic=True) == _fingerprint(full, semantic=True)
+        assert _snapshot_ids(everyone) == _snapshot_ids(full)
         values = load_explore(
             analysis, snapshot=snapshot, metric="session_seconds", view="daily_values"
         )
         assert isinstance(values, DailyMetricValues)
-        assert _fingerprint(values, semantic=True) == _fingerprint(
-            analysis.run_daily(metrics=["session_seconds"]), semantic=True
-        )
+        values_expected = analysis.run_daily(metrics=["session_seconds"])
+        assert _fingerprint(values, semantic=True) == _fingerprint(values_expected, semantic=True)
+        assert _snapshot_ids(values) == _snapshot_ids(values_expected)
         assert (
             load_explore(analysis, snapshot=snapshot, metric="checkout_conversion", view="segments")
             == BreakoutEstimates()

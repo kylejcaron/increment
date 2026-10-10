@@ -6,7 +6,7 @@ imported from ``increment.analysis``.
 ``readout_table`` accepts a narwhals-supported native frame (pandas,
 polars, pyarrow, ...), a list of row dicts, or - via ``trend=`` - a raw
 ``Sequence[DailyLiftEstimate]``, converted internally via
-``increment.breakout.estimates.to_frame`` and renamed to the main
+``increment.breakout.projection.to_frame`` and renamed to the main
 table's ``segment`` column convention (``dimension_value`` -> ``segment``;
 ``method`` already matches). Other per-day result lists convert via that
 same function directly instead.
@@ -19,7 +19,8 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate, to_frame
+from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate
+from increment.breakout.projection import to_frame
 from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
 from increment.estimation.contrast import contrast_evidence_available
 from increment.estimation.contrast_results import ContrastResult

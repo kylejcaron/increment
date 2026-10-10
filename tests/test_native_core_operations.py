@@ -287,10 +287,10 @@ def test_export_moments_is_source_owned_and_portable(con, tmp_path):
         analysis.close()
 
     table = pq.read_table(path)
-    assert table.schema.metadata[b"increment.moments_format"] == b"10"
+    assert table.schema.metadata[b"increment.moments_format"] == b"11"
     rows = table.to_pylist()
     assert rows
-    assert {row["moments_format"] for row in rows} == {10}
+    assert {row["moments_format"] for row in rows} == {11}
     metrics = {row["metric"] for row in rows}
     by_metric = {metric: [r for r in rows if r["metric"] == metric] for metric in metrics}
     for metric in ("purchase_rate", "d7_retention"):

@@ -854,6 +854,9 @@ def test_run_asof_lift_returns_the_registered_checkpoint(con):
     assert results[0].sequential_result is not None
     assert results[0].sequential_result.checkpoint.prefix_id == checkpoint.prefix_id
     assert results[0].ds == date(2025, 7, 1)
+    rendered = repr(results)
+    assert "ratio_interval" in rendered and "status=" in rendered
+    assert "EndpointCertificate" not in rendered
     assert {row.inference for row in original.run_asof_lift()} == {"fixed"}
 
 

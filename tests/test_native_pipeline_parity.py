@@ -22,6 +22,7 @@ from increment.sources import (
     ASSIGNMENT_COUNTS_FIELD,
     COMPLIANCE_SUMMARY_FIELD,
     DECISION_PLAN_FIELD,
+    SOURCE_IDENTITY_FIELD,
 )
 from tests.analysis_factory import make_analysis
 
@@ -152,12 +153,14 @@ def _table_rows(tbl: pa.Table) -> list[dict[str, Any]]:
 
 
 # `Analysis.export` stamps these transport columns onto the exported moment
-# rows; the pinned fixture holds the bare rows, so strip them back off.
+# rows; the pinned fixture holds bare rows, so strip them back off.
+# `source_identity` is transport metadata, not metric-summary output.
 _EXPORT_TRANSPORT_FIELDS = (
     "moments_format",
     ASSIGNMENT_COUNTS_FIELD,
     DECISION_PLAN_FIELD,
     COMPLIANCE_SUMMARY_FIELD,
+    SOURCE_IDENTITY_FIELD,
 )
 
 

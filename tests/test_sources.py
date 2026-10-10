@@ -476,7 +476,7 @@ def test_legacy_moments_format_is_refused_with_stable_context(received):
         )
     assert raised.value.code == "moments.format.unsupported_legacy"
     assert raised.value.context["received"] == received
-    assert raised.value.context["required"] == 10
+    assert raised.value.context["required"] == 11
 
 
 def test_future_moments_format_is_refused():
@@ -486,7 +486,7 @@ def test_future_moments_format_is_refused():
 
     with pytest.raises(WireFormatError) as raised:
         MomentsSource(
-            [_format3_row(moments_format=11)],
+            [_format3_row(moments_format=12)],
             metrics=[MeanMetric(name="revenue", entity="user", fact="revenue")],
             study_id="exp",
         )

@@ -12,7 +12,8 @@ from typing import Any
 import narwhals as nw
 import pytest
 
-from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate, to_frame
+from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate
+from increment.breakout.projection import to_frame
 from increment.errors import CodedError, InvalidRequestError
 from increment.estimation.armstats import ScoreStats, centered_row_from_raw_sums
 from increment.estimation.engine import estimate_lift

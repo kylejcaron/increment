@@ -33,6 +33,7 @@ from increment.errors import (
     refusals,
     refuse,
 )
+from increment.estimation import PsiFn
 from increment.estimation._adjust.learners import LogisticPropensity, RidgeOutcome
 from increment.estimation._deployment import resolve_deploy_grain
 from increment.estimation.cate import (
@@ -44,7 +45,6 @@ from increment.estimation.cate import (
 from increment.estimation.targeting import (
     CateValidation,
     ClusterBootstrap,
-    PsiFn,
     TargetingRule,
     TargetingSelection,
     _dr_psi,
