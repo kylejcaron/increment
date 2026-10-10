@@ -218,12 +218,42 @@ jobs:
     uses: ./.github/workflows/warehouse-backends.yml
     with: {backend_mode: postgres}
 
+  wheel-smoke-macos:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - run: uv build --wheel --out-dir dist
+      - run: uv run --with nox nox -s wheel_smoke wheel_smoke_demo
+
+  wheel-smoke-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - run: uv build --wheel --out-dir dist
+      - run: uv run --with nox nox -s wheel_smoke wheel_smoke_demo
+
   # Single check to require in the main-review ruleset. A matrix job reports
   # one check per entry ("test (3.12)", ...), so requiring them individually
   # means editing the ruleset every time the matrix changes.
   ci-ok:
     runs-on: ubuntu-latest
-    needs: [lint, test, slow, build, postgres-changes, warehouse-postgres, certification-changes, numerical-certification]
+    needs: [lint, test, slow, build, postgres-changes, warehouse-postgres, certification-changes, numerical-certification, wheel-smoke-macos, wheel-smoke-windows]
     if: always()
     steps:
       - name: Check required jobs and gate decisions
@@ -232,10 +262,12 @@ jobs:
           POSTGRES_RESULT: ${{ needs.warehouse-postgres.result }}
           CERTIFICATION_REQUIRED: ${{ needs.certification-changes.outputs.required }}
           CERTIFICATION_RESULT: ${{ needs.numerical-certification.result }}
+          WHEEL_SMOKE_MACOS_RESULT: ${{ needs.wheel-smoke-macos.result }}
+          WHEEL_SMOKE_WINDOWS_RESULT: ${{ needs.wheel-smoke-windows.result }}
         run: |
           set -euo pipefail
-          results="${{ needs.lint.result }} ${{ needs.test.result }} ${{ needs.slow.result }} ${{ needs.build.result }} ${{ needs.postgres-changes.result }} ${{ needs.certification-changes.result }}"
-          echo "lint/test/slow/build/decision jobs -> $results"
+          results="${{ needs.lint.result }} ${{ needs.test.result }} ${{ needs.slow.result }} ${{ needs.build.result }} ${{ needs.postgres-changes.result }} ${{ needs.certification-changes.result }} $WHEEL_SMOKE_MACOS_RESULT $WHEEL_SMOKE_WINDOWS_RESULT"
+          echo "lint/test/slow/build/decision/wheel-smoke jobs -> $results"
           for r in $results; do
             [ "$r" = "success" ] || { echo "::error::a required job reported '$r'"; exit 1; }
           done
