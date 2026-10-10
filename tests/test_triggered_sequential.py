@@ -20,6 +20,7 @@ from typing import cast
 import ibis
 import numpy as np
 import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from increment import Analysis, SourceSnapshotEvidence
@@ -32,6 +33,7 @@ from increment.query.session import WarehouseArtifactStore
 from increment.semantics import load
 from increment.semantics.models import InferenceSpec
 from increment.sequential_state import SequentialSnapshot
+from tests.capability_consumers_auxiliary import assert_expected, assert_refusal
 
 _UTC_US = pa.timestamp("us", tz="UTC")
 _WINDOW_DAYS = 3
@@ -217,10 +219,12 @@ _AS_OF = dt.date(2024, 1, 10)
 _LATER = dt.date(2024, 1, 14)
 
 
-def _analysis(tmp_path, table, *, plan=_PRIMARY_PLAN, evidence=_CERTIFIED, **definitions):
+def _analysis(
+    tmp_path, table, *, plan=_PRIMARY_PLAN, evidence=_CERTIFIED, connection=None, **definitions
+):
     path = tmp_path / "defs.yml"
     path.write_text(_definitions(plan=plan, **definitions))
-    con = ibis.duckdb.connect()
+    con = ibis.duckdb.connect() if connection is None else connection
     con.create_table("events", obj=table)
     return Analysis.from_definitions("exp", path, con, source_snapshot_evidence=evidence), path
 
@@ -370,6 +374,9 @@ def test_capture_refuses_feeds_not_certified_through_as_of(tmp_path, evidence, f
         with pytest.raises(CapabilityError) as raised:
             analysis.capture_sequential(finalized=True, as_of=_AS_OF)
         assert raised.value.code == "sequential.source.invalid"
+        assert_refusal(
+            "triggered-sequential-certification", "native-feed", raised.value, stage="capture"
+        )
         assert raised.value.context["feed"] == feed
         assert raised.value.context["as_of"] == _AS_OF.isoformat()
         certified = raised.value.context["certified_day"]
@@ -387,6 +394,9 @@ def test_capture_refuses_a_sql_declared_trigger_and_missing_evidence(tmp_path):
         with pytest.raises(CapabilityError) as raised:
             analysis.capture_sequential(finalized=True, as_of=_AS_OF)
         assert raised.value.code == "sequential.source.invalid"
+        assert_refusal(
+            "triggered-sequential-certification", "native-sql", raised.value, stage="capture"
+        )
         assert raised.value.context["feed"] == "saw_surface"
     finally:
         analysis.close()
@@ -399,18 +409,23 @@ def test_capture_refuses_a_sql_declared_trigger_and_missing_evidence(tmp_path):
         with pytest.raises(CapabilityError) as raised:
             unpinned.capture_sequential(finalized=True, as_of=_AS_OF)
         assert raised.value.code == "source.native.trigger_evidence_required"
+        assert_refusal(
+            "triggered-sequential-certification", "native-unpinned", raised.value, stage="capture"
+        )
     finally:
         unpinned.close()
 
 
 def test_artifact_capture_refuses_an_uncertified_trigger_feed(tmp_path):
+    connection = ibis.duckdb.connect()
     analysis, path = _analysis(
         tmp_path,
         _events(n_per_arm=20),
         evidence=_evidence(dt.datetime(2024, 1, 31, tzinfo=dt.UTC), None),
+        connection=connection,
     )
     try:
-        store = WarehouseArtifactStore(analysis._con, schema_name="uncertified")
+        store = WarehouseArtifactStore(connection, schema_name="uncertified")
         defs = load(path)
         context = artifact_context(defs, defs.experiments[0], "error")
         requests = [
@@ -425,6 +440,9 @@ def test_artifact_capture_refuses_an_uncertified_trigger_feed(tmp_path):
                 adopted.capture_sequential(finalized=True, as_of=_AS_OF)
             assert raised.value.code == "sequential.source.invalid"
             assert raised.value.context["certified_day"] is None
+            assert_refusal(
+                "triggered-sequential-certification", "artifact-feed", raised.value, stage="capture"
+            )
     finally:
         analysis.close()
 
@@ -480,13 +498,24 @@ def test_assigned_only_process_continues_assigned_only_and_refuses_backfill(tmp_
         fresh.close()
 
 
-def test_triggered_uptake_cells_stay_unavailable(tmp_path):
-    plan = (
-        "      primary: revenue\n      alternative: greater\n"
-        "      inference:\n        kind: asymptotic_mean\n"
-        "      compliance:\n        alpha: 0.05\n"
+@pytest.mark.parametrize(
+    "ingress",
+    [
+        "from_definitions",
+        pytest.param("from_unit_day_artifact", marks=pytest.mark.slow),
+        "from_moments",
+    ],
+)
+def test_triggered_uptake_cells_stay_unavailable(tmp_path, ingress):
+    connection = ibis.duckdb.connect()
+    native, path = _analysis(
+        tmp_path,
+        _events(uptake=True),
+        plan=_COMPLIANCE_PLAN,
+        encouragement=True,
+        connection=connection,
     )
-    analysis, _ = _analysis(tmp_path, _events(uptake=True), plan=plan, encouragement=True)
+    analysis = native
     try:
         spec = analysis.experiment.plan.inference
         assert spec is not None and spec.registration is not None
@@ -497,7 +526,30 @@ def test_triggered_uptake_cells_stay_unavailable(tmp_path):
         assert all(cell.estimand != "compliance" for cell in triggered.roster)
         snapshot = analysis.capture_sequential(finalized=True, as_of=_LATER)
         assert snapshot.triggered is not None
-        rows = analysis.run(estimands=("itt", "compliance"))
+        if ingress == "from_unit_day_artifact":
+            store, reference, context = _publish_with_trigger_evidence(
+                native,
+                path,
+                connection=connection,
+                schema="uptake_availability",
+                kinds={
+                    "trigger_population",
+                    "assignment_counts",
+                    "trigger_measure_stats",
+                    "encouragement_uptake",
+                },
+            )
+            analysis = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+            analysis.capture_sequential(finalized=True, as_of=_LATER)
+        elif ingress == "from_moments":
+            destination = tmp_path / "uptake.parquet"
+            native.export(destination)
+            analysis = Analysis.from_moments(
+                pq.read_table(destination).to_pylist(),
+                metrics={"revenue": "mean"},
+                design=native.experiment.resolved_design(),
+            )
+        rows = cast("LiftEstimates", analysis.run(estimands=("itt", "compliance")))
         cells = {
             (row.analysis_population, row.metric, row.estimand): row
             for row in rows
@@ -508,10 +560,87 @@ def test_triggered_uptake_cells_stay_unavailable(tmp_path):
         assert uptake.failure_code == "readout.cell.unsupported_request"
         assert uptake.failure_context is not None
         assert uptake.failure_context["reason"] == "triggered_uptake_unsupported"
+        declared = assert_expected(
+            "triggered-sequential-uptake",
+            f"{ingress}-unavailable",
+            kind="unavailable",
+            code=uptake.failure_code,
+            stage="run",
+        )
+        assert declared.expected.reason == uptake.failure_context["reason"]
         assert cells["assigned", "uptake", "compliance"].sequential_result is not None
+        assert rows.metadata is not None
         assert rows.metadata.scope.decision_complete("triggered") is False
     finally:
         analysis.close()
+        if analysis is not native:
+            native.close()
+
+
+@pytest.mark.parametrize(
+    "ingress",
+    [
+        "from_definitions",
+        pytest.param("from_unit_day_artifact", marks=pytest.mark.slow),
+        "from_moments",
+    ],
+)
+def test_assigned_only_state_retains_unavailable_triggered_rows_across_sources(tmp_path, ingress):
+    connection = ibis.duckdb.connect()
+    native, path = _analysis(tmp_path, _events(), connection=connection)
+    analysis = native
+    try:
+        committed = native.capture_sequential(finalized=True, as_of=_AS_OF)
+        legacy = SequentialSnapshot.model_validate(
+            committed.model_copy(update={"triggered": None}).model_dump()
+        )
+        continued = native.capture_sequential(finalized=True, as_of=_LATER, previous=legacy)
+        if ingress == "from_unit_day_artifact":
+            store, reference, context = _publish_with_trigger_evidence(
+                native,
+                path,
+                connection=connection,
+                schema="assigned_only",
+                kinds={"trigger_population", "assignment_counts", "trigger_measure_stats"},
+            )
+            analysis = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+            analysis.capture_sequential(finalized=True, as_of=_LATER, previous=continued)
+        elif ingress == "from_moments":
+            destination = tmp_path / "assigned-only.parquet"
+            native.export(destination)
+            analysis = Analysis.from_moments(
+                pq.read_table(destination).to_pylist(),
+                metrics={"revenue": "mean"},
+                design=native.experiment.resolved_design(),
+            )
+        retained = analysis.sequential_snapshot()
+        assert retained.triggered is None
+        assert retained.records == continued.records
+        rows = _by_population(analysis.run())
+        assert rows["assigned", "revenue"].sequential_result is not None
+        unavailable = rows["triggered", "revenue"]
+        assert unavailable.lift is None and unavailable.sampling_available is False
+        assert unavailable.failure_context is not None
+        declared = assert_expected(
+            "triggered-sequential-continuation",
+            f"{ingress}-unavailable",
+            kind="unavailable",
+            code=unavailable.failure_code,
+            stage="run",
+        )
+        assert declared.expected.reason == unavailable.failure_context["reason"]
+        with pytest.raises(CapabilityError) as backfill:
+            committed.verify_parent(retained)
+        assert_refusal(
+            "triggered-sequential-continuation",
+            f"{ingress}-backfill",
+            backfill.value,
+            stage="verify_parent",
+        )
+    finally:
+        analysis.close()
+        if analysis is not native:
+            native.close()
 
 
 _COMPLIANCE_PLAN = (
@@ -521,8 +650,8 @@ _COMPLIANCE_PLAN = (
 )
 
 
-def _publish_with_trigger_evidence(analysis, path, *, schema: str, kinds: set[str]):
-    store = WarehouseArtifactStore(analysis._con, schema_name=schema)
+def _publish_with_trigger_evidence(analysis, path, *, connection, schema: str, kinds: set[str]):
+    store = WarehouseArtifactStore(connection, schema_name=schema)
     defs = load(path)
     context = artifact_context(defs, defs.experiments[0], "error")
     requests = [
@@ -535,14 +664,20 @@ def _publish_with_trigger_evidence(analysis, path, *, schema: str, kinds: set[st
 
 @pytest.mark.slow
 def test_certified_encouragement_artifact_captures_both_chains(tmp_path):
+    connection = ibis.duckdb.connect()
     analysis, path = _analysis(
-        tmp_path, _events(uptake=True), plan=_COMPLIANCE_PLAN, encouragement=True
+        tmp_path,
+        _events(uptake=True),
+        plan=_COMPLIANCE_PLAN,
+        encouragement=True,
+        connection=connection,
     )
     try:
         native = analysis.capture_sequential(finalized=True, as_of=_LATER)
         store, reference, context = _publish_with_trigger_evidence(
             analysis,
             path,
+            connection=connection,
             schema="encouragement_parity",
             kinds={
                 "trigger_population",
@@ -570,12 +705,14 @@ def test_certified_encouragement_artifact_captures_both_chains(tmp_path):
 
 def test_uncertified_uptake_feed_refuses_on_both_routes(tmp_path):
     # Only the events feed is certified; the separate clicks feed carries no watermark.
+    connection = ibis.duckdb.connect()
     analysis, path = _analysis(
         tmp_path,
         _events(uptake=True),
         plan=_COMPLIANCE_PLAN,
         encouragement=True,
         uptake_source=True,
+        connection=connection,
     )
     try:
         with pytest.raises(CapabilityError) as native:
@@ -586,6 +723,7 @@ def test_uncertified_uptake_feed_refuses_on_both_routes(tmp_path):
         store, reference, context = _publish_with_trigger_evidence(
             analysis,
             path,
+            connection=connection,
             schema="uncertified_uptake",
             kinds={
                 "trigger_population",
@@ -622,7 +760,8 @@ def test_assigned_identities_are_unchanged_by_the_triggered_commitment(tmp_path,
     plan = _PRIMARY_PLAN
     if look_policy == "outcome_independent":
         plan += "        triggered_look_policy: outcome_independent\n"
-    analysis, path = _analysis(tmp_path, table, plan=plan)
+    connection = ibis.duckdb.connect()
+    analysis, path = _analysis(tmp_path, table, plan=plan, connection=connection)
     try:
         defs = load(path)
         experiment = defs.experiments[0]
@@ -660,7 +799,7 @@ def test_assigned_identities_are_unchanged_by_the_triggered_commitment(tmp_path,
         )
         assert getattr(uncommitted.inference, "triggered_registration", None) is None
         earlier = make_analysis(
-            analysis._con,
+            connection,
             earlier_defs,
             experiment=earlier_experiment,
             plan=uncommitted,
@@ -724,14 +863,15 @@ def test_native_and_artifact_capture_identical_chains(tmp_path, look_policy):
     plan = _PRIMARY_PLAN
     if look_policy == "outcome_independent":
         plan += "        triggered_look_policy: outcome_independent\n"
-    analysis, path = _analysis(tmp_path, _events(), plan=plan)
+    connection = ibis.duckdb.connect()
+    analysis, path = _analysis(tmp_path, _events(), plan=plan, connection=connection)
     try:
         native = analysis.capture_sequential(finalized=True, as_of=_LATER, freeze=["revenue"])
         assert native.triggered is not None
         assert native.triggered.registration.look_policy == look_policy
         assert len(native.frozen) == 1 and len(native.triggered.frozen) == 1
         native_rows = analysis.run()
-        store = WarehouseArtifactStore(analysis._con, schema_name="parity")
+        store = WarehouseArtifactStore(connection, schema_name="parity")
         defs = load(path)
         context = artifact_context(defs, defs.experiments[0], "error")
         requests = [

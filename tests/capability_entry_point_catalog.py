@@ -728,6 +728,57 @@ _INGRESS_ROWS: tuple[EntryRow, ...] = (
         },
     ),
     _row(
+        "triggered-sequential-registration",
+        "Registered sequential monitoring of the triggered population "
+        "(Experiment.trigger with InferenceSpec; assigned and triggered chains)",
+        {
+            **{
+                ingress: (_consumer("triggered-sequential-boundary", ingress),)
+                for ingress in (S, P, SB)
+            },
+            D: (
+                _case(
+                    "triggered_sequential_asymptotic_mean", D, "registered plan and certified feeds"
+                ),
+                _consumer("triggered-sequential-certification", "native-feed"),
+                _consumer("triggered-sequential-certification", "native-sql"),
+                _consumer("triggered-sequential-certification", "native-unpinned"),
+            ),
+            A: (
+                _case(
+                    "triggered_sequential_asymptotic_mean",
+                    A,
+                    "trigger extensions and certified feeds",
+                ),
+                _consumer("triggered-sequential-certification", "artifact-feed"),
+            ),
+            M: (
+                _case("triggered_sequential_asymptotic_mean", M, "retained triggered checkpoint"),
+                _consumer("triggered-sequential-boundary", M),
+            ),
+        },
+        notes={
+            A: "capture uses trigger_population, trigger_measure_stats and triggered assignment_counts; "
+            "encouragement also needs encouragement_uptake",
+            M: "replays retained assigned and triggered state; cannot start either process",
+        },
+    ),
+    _row(
+        "triggered-sequential-uptake",
+        "Triggered encouragement compliance under a registered plan",
+        {
+            **{
+                ingress: (_consumer("triggered-sequential-boundary", ingress),)
+                for ingress in (S, P, SB)
+            },
+            **{
+                ingress: (_consumer("triggered-sequential-uptake", f"{ingress}-unavailable"),)
+                for ingress in (D, A, M)
+            },
+        },
+        notes=dict.fromkeys((D, A, M), "assigned compliance remains monitored"),
+    ),
+    _row(
         "impute-pooled-mean-roles",
         "Pooled-mean imputation helper with declared roles; a frame metric declaring "
         "an impute missing policy",
@@ -1480,6 +1531,29 @@ _WINDOW_SPELLING_CONDITIONS = (
 )
 
 _STORED_STATE_ROWS: tuple[EntryRow, ...] = (
+    _row(
+        "triggered-sequential-continuation",
+        "Registered process committed without a triggered chain continued under a declared trigger",
+        {
+            **{
+                ingress: (_consumer("triggered-sequential-boundary", ingress),)
+                for ingress in (S, P, SB)
+            },
+            **{
+                ingress: (
+                    _consumer("triggered-sequential-continuation", f"{ingress}-unavailable"),
+                    _consumer("triggered-sequential-continuation", f"{ingress}-backfill"),
+                )
+                for ingress in (D, A, M)
+            },
+        },
+        table="stored-state",
+        notes={
+            D: "continues the assigned chain only",
+            A: "continues the assigned chain only",
+            M: "replays the retained assigned-only commitment",
+        },
+    ),
     _row(
         "stored-boolean-null-continuation",
         "Continuing a checkpoint recorded under earlier raw Boolean/null spellings with "

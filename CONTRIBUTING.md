@@ -154,6 +154,8 @@ Jupyter Notebook, JupyterLab, or ipywidgets.
   runners bypass Testmon reads/writes and certification; without a valid owner
   token they do not acquire its database lock. Reusing a live same-worktree lock
   requires a verified owner token.
+  Selector collection and affected subprocesses load conftests only from their
+  declared repository root and descendants, including retained temporary repos.
 
   A successful affected run requires finished owner-matched evidence whose exact
   terminal node IDs equal its nonempty selected node IDs. Evidence records

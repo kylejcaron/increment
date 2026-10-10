@@ -1108,7 +1108,6 @@ class DailyMetricValue(CodedModel, BaseModel):
 
 def _sequential_display_parts(result: SequentialResult, *, point_available: bool) -> list[str]:
     from increment._display import format_interval
-    from increment.estimation.sequential_result import AsymptoticSequentialResult
 
     if isinstance(result, AsymptoticSequentialResult):
         bounds = result.bounds
@@ -1335,29 +1334,10 @@ class DailyLiftEstimate(_RowIdentity):
             _refuse("breakout.daily_lift.point_unavailable")
         return self.lift
 
-    def __repr__(self) -> str:
+    def _interval_display_parts(self) -> list[str]:
         from increment._display import format_interval
 
-        parts = [
-            f"metric={self.metric!r}",
-            f"group={self.group_id!r}",
-            f"method={self.method!r}",
-            f"role={self.method_role!r}",
-            f"date={self.ds!s}",
-            f"estimand={self.estimand!r}",
-            f"population={self.analysis_population!r}",
-            f"inference={self.inference!r}",
-            f"alternative={self.alternative!r}",
-            f"scale={self.value_scale!r}",
-            f"decision_scope={self.decision_scope_complete!r}",
-        ]
-        if self.dimension is not None:
-            parts.append(f"{self.dimension}={self.dimension_value!r}")
-        if self.lift is not None:
-            parts.append(f"estimate={self.lift.value:.4g}")
-        else:
-            parts.append("estimate=unavailable")
-
+        parts: list[str] = []
         if self.sequential_result is not None:
             parts.extend(
                 _sequential_display_parts(
@@ -1396,6 +1376,31 @@ class DailyLiftEstimate(_RowIdentity):
                 parts.append(f"confidence={self.lift.level:.1%}")
         else:
             parts.append("interval=unavailable")
+        return parts
+
+    def __repr__(self) -> str:
+
+        parts = [
+            f"metric={self.metric!r}",
+            f"group={self.group_id!r}",
+            f"method={self.method!r}",
+            f"role={self.method_role!r}",
+            f"date={self.ds!s}",
+            f"estimand={self.estimand!r}",
+            f"population={self.analysis_population!r}",
+            f"inference={self.inference!r}",
+            f"alternative={self.alternative!r}",
+            f"scale={self.value_scale!r}",
+            f"decision_scope={self.decision_scope_complete!r}",
+        ]
+        if self.dimension is not None:
+            parts.append(f"{self.dimension}={self.dimension_value!r}")
+        if self.lift is not None:
+            parts.append(f"estimate={self.lift.value:.4g}")
+        else:
+            parts.append("estimate=unavailable")
+
+        parts.extend(self._interval_display_parts())
 
         if self.unavailable is not None:
             parts.append(f"unavailable={self.unavailable!r}")
@@ -1440,54 +1445,12 @@ class DailyLiftEstimate(_RowIdentity):
         args.append(("scale", self.value_scale))
         args.append(("estimate", None if self.lift is None else self.lift.value))
 
-        if self.sequential_result is not None:
-            if isinstance(self.sequential_result, AsymptoticSequentialResult):
-                bounds = self.sequential_result.bounds
-                args.append(
-                    (
-                        "ratio_interval",
-                        tuple(
-                            (component.lower, component.upper) for component in bounds.components
-                        ),
-                    )
-                )
-                args.append(("geometry", bounds.status))
-                if bounds.reason is not None:
-                    args.append(("bounds_reason", bounds.reason))
-            else:
-                bounds = self.sequential_result.bounds
-                args.append(("ratio_interval", (bounds.lower, bounds.upper)))
-            if self.lift is None and self.sequential_result.point_reason is not None:
-                args.append(("point_reason", self.sequential_result.point_reason))
-            args.append(("confidence", float(1 - self.sequential_result.bounds.alpha)))
-            args.append(("status", self.sequential_result.bounds.status))
-        elif self.relative_confidence_set is not None:
-            confidence_set = self.relative_confidence_set
-            args.append(
-                (
-                    "interval",
-                    "unavailable"
-                    if confidence_set.geometry == "unavailable"
-                    else confidence_set.intervals,
-                )
-            )
-            if confidence_set.geometry == "unavailable" and confidence_set.reason is not None:
-                args.append(("interval_reason", confidence_set.reason))
-            if self.lift is None and confidence_set.point_unavailable_reason is not None:
-                args.append(("point_reason", confidence_set.point_unavailable_reason))
-            args.append(("confidence", 1 - confidence_set.alpha))
-        elif self.binomial_set is not None:
-            args.append(("interval", (self.binomial_set.lower, self.binomial_set.upper)))
-            args.append(("confidence", self.binomial_set.level))
-        elif self.lift is not None and (self.lift.lb is not None or self.lift.ub is not None):
-            args.append(("interval", (self.lift.lb, self.lift.ub)))
-            if self.lift.level is not None:
-                args.append(("confidence", self.lift.level))
-        elif self.lift is None:
-            args.append(("interval", "unavailable"))
+        args.append(("interval", ", ".join(self._interval_display_parts())))
 
         if self.unavailable is not None:
             args.append(("unavailable", self.unavailable))
+        if self.relative_unavailable_reason is not None:
+            args.append(("relative_unavailable", self.relative_unavailable_reason))
         if self.failure_code is not None:
             args.append(("failure", self.failure_code))
         if self.failure_context is not None and self.failure_context.get("reason") is not None:

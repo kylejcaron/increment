@@ -1482,8 +1482,30 @@ class TestDailyLiftEstimate:
         rendered = repr(est)
 
         assert est.metric in rendered and est.group_id in rendered
-        assert ds.isoformat() in rendered
-        assert "interval" in rendered and "relative" in rendered
+        assert ds.isoformat() in rendered and "0.2" in rendered
+        assert "0.1" in rendered and "0.3" in rendered
+        assert "relative" in rendered
+        assert "sequential_result" not in rendered
+
+    def test_relative_unavailability_reason_survives_all_representations(self, capsys):
+        from rich.pretty import pretty_repr
+
+        est = DailyLiftEstimate(
+            metric="revenue",
+            group_id="treatment",
+            method="unadjusted",
+            method_role="decision",
+            ds=date(2025, 1, 1),
+            lift=None,
+            abs_diff=1.0,
+            relative_unavailable_reason="joint_covariance_unrepresentable",
+        )
+        print(est)
+        printed = capsys.readouterr().out
+        assert est.relative_unavailable_reason is not None
+        for rendered in (repr(est), str(est), pretty_repr(est), printed):
+            assert est.relative_unavailable_reason in rendered
+            assert "interval" in rendered
 
     def test_unavailable_segment_identity_and_reason_survive_all_representations(self, capsys):
         from rich.pretty import pretty_repr
@@ -1572,8 +1594,6 @@ class TestDailyLiftEstimate:
             and est.sequential_result.point_reason in rendered
         )
         assert "ratio_interval" in rendered and "confidence" in rendered
-
-        assert "unavailable" not in rendered
 
     def test_repr_preserves_unavailable_relative_confidence_reason(self):
         from increment.estimation.results import JointContrastReference, RelativeConfidenceSet

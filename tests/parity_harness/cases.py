@@ -443,11 +443,6 @@ def _triggered_sequential_case() -> ParityCase:
         assert snapshot.triggered.registration_id != snapshot.registration_id
         assert 0 < len(snapshot.triggered.records) < len(snapshot.records)
 
-    unsupported = {
-        "from_unit_summary": "SOURCE: unit summaries carry no trigger declaration or per-unit trigger anchors.",
-        "from_unit_panel": "SOURCE: unit panels carry no trigger declaration or per-unit trigger anchors.",
-        "from_switchback_panel": "SOURCE: switchback contrasts carry no triggered arm evidence.",
-    }
     return ParityCase(
         id="triggered_sequential_asymptotic_mean",
         build={
@@ -455,7 +450,6 @@ def _triggered_sequential_case() -> ParityCase:
             "from_unit_day_artifact": build_artifact,
             "from_moments": build_moments,
         },
-        waive=unsupported,
         metrics=("revenue",),
         sequential=True,
         source_probe=probe_both_chains,

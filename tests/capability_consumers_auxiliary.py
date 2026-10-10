@@ -331,6 +331,136 @@ for _key, _operation, _evidence in _TRIGGER_READS:
 CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
     ConsumerContract("triggered_auxiliary_reads", tuple(_TRIGGER_AUXILIARY_OUTCOMES)),
     ConsumerContract(
+        "triggered-sequential-boundary",
+        tuple(
+            _expectation(
+                ingress,
+                "run(population='triggered')",
+                ingress,
+                "frame source or moments without a retained triggered checkpoint",
+                "refused",
+                "tests.test_analysis_moments::test_triggered_run_refuses_unit_summary_and_moment_replay",
+                codes=("facade.analysis.trigger_unsupported",),
+                reason="This source carries no trigger declaration or trigger membership.",
+                stage="run",
+            )
+            for ingress in (
+                "from_unit_summary",
+                "from_unit_panel",
+                "from_switchback_panel",
+                "from_moments",
+            )
+        ),
+    ),
+    ConsumerContract(
+        "triggered-sequential-certification",
+        tuple(
+            _expectation(
+                key,
+                "capture_sequential(finalized=True, as_of=...)",
+                ingress,
+                condition,
+                "refused",
+                f"tests.test_triggered_sequential::{test}",
+                codes=(code,),
+                reason=reason,
+                stage="capture",
+            )
+            for key, ingress, condition, test, code, reason in (
+                (
+                    "native-feed",
+                    "from_definitions",
+                    "uncertified contributing feed",
+                    "test_capture_refuses_feeds_not_certified_through_as_of",
+                    "sequential.source.invalid",
+                    "Every contributing feed must be certified complete through the capture day.",
+                ),
+                (
+                    "native-sql",
+                    "from_definitions",
+                    "SQL-declared trigger",
+                    "test_capture_refuses_a_sql_declared_trigger_and_missing_evidence",
+                    "sequential.source.invalid",
+                    "A SQL-declared trigger has no feed that can certify its completeness.",
+                ),
+                (
+                    "native-unpinned",
+                    "from_definitions",
+                    "missing pinned source evidence",
+                    "test_capture_refuses_a_sql_declared_trigger_and_missing_evidence",
+                    "source.native.trigger_evidence_required",
+                    "Trigger membership requires pinned source snapshot evidence.",
+                ),
+                (
+                    "artifact-feed",
+                    "from_unit_day_artifact",
+                    "uncertified trigger feed",
+                    "test_artifact_capture_refuses_an_uncertified_trigger_feed",
+                    "sequential.source.invalid",
+                    "Stored trigger evidence must certify completeness through the capture day.",
+                ),
+            )
+        ),
+    ),
+    ConsumerContract(
+        "triggered-sequential-uptake",
+        tuple(
+            _expectation(
+                f"{ingress}-unavailable",
+                "run(estimands=('itt', 'compliance'))",
+                ingress,
+                "registered encouragement plan with a triggered checkpoint",
+                "unavailable",
+                "tests.test_triggered_sequential::test_triggered_uptake_cells_stay_unavailable",
+                codes=("readout.cell.unsupported_request",),
+                reason="triggered_uptake_unsupported",
+                stage="run",
+            )
+            for ingress in ("from_definitions", "from_unit_day_artifact", "from_moments")
+        ),
+    ),
+    ConsumerContract(
+        "triggered-sequential-continuation",
+        tuple(
+            _expectation(
+                f"{ingress}-{suffix}",
+                operation,
+                ingress,
+                "assigned-only commitment: "
+                + (
+                    "read under a declared trigger"
+                    if suffix == "unavailable"
+                    else "retroactive backfill"
+                ),
+                kind,
+                "tests.test_triggered_sequential::"
+                "test_assigned_only_state_retains_unavailable_triggered_rows_across_sources",
+                codes=(code,),
+                reason=reason,
+                stage=stage,
+            )
+            for ingress in ("from_definitions", "from_unit_day_artifact", "from_moments")
+            for suffix, operation, kind, code, reason, stage in (
+                (
+                    "unavailable",
+                    "run()",
+                    "unavailable",
+                    "readout.cell.unsupported_request",
+                    "triggered_chain_uncommitted",
+                    "run",
+                ),
+                (
+                    "backfill",
+                    "SequentialSnapshot.verify_parent()",
+                    "refused",
+                    "sequential.continuation.legacy",
+                    "A committed assigned-only process cannot acquire a triggered chain retroactively.",
+                    "verify_parent",
+                ),
+            )
+        ),
+    ),
+    ConsumerContract(
         "assignment_integrity_source_grain",
         (
             _expectation(

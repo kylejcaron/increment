@@ -227,8 +227,13 @@ def test_collection_loads_configured_plugins_without_executing_cited_or_other_fi
 def test_module_qualified_inherited_selector_is_resolved_by_collection(
     tmp_path: Path, through_local_base: bool
 ) -> None:
-    tests = tmp_path / "tests"
-    tests.mkdir()
+    (tmp_path / "pytest.ini").write_text("[pytest]\n")
+    (tmp_path / "conftest.py").write_text(
+        "raise RuntimeError('an ancestor conftest is outside the cited repository')\n"
+    )
+    root = tmp_path / "cited-repository"
+    tests = root / "tests"
+    tests.mkdir(parents=True)
     (tests / "__init__.py").write_text("")
     (tests / "support.py").write_text(
         "class Base:\n"
@@ -243,9 +248,9 @@ def test_module_qualified_inherited_selector_is_resolved_by_collection(
     (tests / "test_sample.py").write_text("from tests import support\n" + inheritance)
     selector = "tests/test_sample.py::TestChild::test_case"
     refs = extract_references(f"`{selector}`", source="doc.md")
-    report = check_static(tmp_path, refs)
+    report = check_static(root, refs)
     assert report.errors == ()
-    assert check_collected(report, collect_nodeids(tmp_path, selector_files(refs))) == ()
+    assert check_collected(report, collect_nodeids(root, selector_files(refs))) == ()
 
 
 def test_campaign_arguments_are_not_executed(tmp_path: Path) -> None:

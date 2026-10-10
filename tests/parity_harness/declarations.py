@@ -8,6 +8,23 @@ from tests.capability_contracts import ParityDeclaration
 
 PARITY_DECLARATIONS = MappingProxyType(
     {
+        "triggered_sequential_asymptotic_mean": ParityDeclaration(
+            attempted=("from_definitions", "from_unit_day_artifact", "from_moments"),
+            waive=(
+                (
+                    "from_unit_summary",
+                    "SOURCE: unit summaries carry no trigger declaration or per-unit trigger anchors.",
+                ),
+                (
+                    "from_unit_panel",
+                    "SOURCE: unit panels carry no trigger declaration or per-unit trigger anchors.",
+                ),
+                (
+                    "from_switchback_panel",
+                    "SOURCE: switchback contrasts carry no triggered arm evidence.",
+                ),
+            ),
+        ),
         "artifact-breakout-exposure-coverage": ParityDeclaration(
             attempted=(
                 "from_definitions",

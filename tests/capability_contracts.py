@@ -8,6 +8,7 @@ from typing import Literal
 type OutcomeKind = Literal[
     "supported",
     "refused",
+    "unavailable",
     "source_limited",
     "not_expressible",
     "not_comparable",
@@ -25,10 +26,10 @@ class ConsumerOutcome:
     stage: str = "read"
 
     def __post_init__(self) -> None:
-        if self.kind == "refused" and len(self.codes) != 1:
-            raise ValueError("a refused consumer outcome requires one exact code")
-        if self.kind not in {"supported", "refused"} and self.codes:
-            raise ValueError("only supported warnings and refusals carry codes")
+        if self.kind in {"refused", "unavailable"} and len(self.codes) != 1:
+            raise ValueError("a refused or unavailable consumer outcome requires one exact code")
+        if self.kind not in {"supported", "refused", "unavailable"} and self.codes:
+            raise ValueError("only supported warnings, refusals and unavailable rows carry codes")
         if self.kind != "supported" and not self.reason:
             raise ValueError("unavailable consumer outcomes require their reason")
         if not self.stage:

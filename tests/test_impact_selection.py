@@ -1705,6 +1705,11 @@ def test_affected_runner_refuses_configuration_dependency_plugin_and_data_hazard
 @pytest.mark.slow
 def test_make_affected_runs_selected_tests_and_propagates_failure(tmp_path: Path) -> None:
     project = Path(__file__).resolve().parents[1]
+    (tmp_path / "conftest.py").write_text(
+        "raise RuntimeError('an ancestor conftest is outside the affected repository')\n"
+    )
+    tmp_path = tmp_path / "affected-repository"
+    tmp_path.mkdir()
     base = _make_affected_fixture(tmp_path)
     leaf = tmp_path / "pkg" / "leaf.py"
     leaf.write_text("VALUE = 1  # source change\n")
