@@ -248,7 +248,21 @@ def test_export_from_moments_round_trips_run_exactly(analysis, tmp_path):
     declared plan: without it a guardrail comes back unassigned and
     two-sided, widening its interval past what was pre-registered.
     """
-    baseline = {(e.metric, e.group_id): e.require_lift() for e in _lift_rows(analysis.run())}
+    from increment.semantics.models import ConversionMetric, MeanMetric
+    from tests.analysis_factory import make_analysis_like
+
+    unequal_allocation = analysis.experiment.model_copy(
+        update={"allocation": {"control": 0.6, "treatment": 0.4}}
+    )
+    analysis = make_analysis_like(analysis, experiment=unequal_allocation)
+    metrics = {metric.name: metric for metric in analysis.metrics}
+
+    assert isinstance(metrics["conversion_rate"], ConversionMetric)
+    assert metrics["conversion_rate"].window_days == 14
+    assert isinstance(metrics["revenue_per_user"], MeanMetric)
+    assert metrics["revenue_per_user"].window_days == 14
+    source_rows = _lift_rows(analysis.run())
+    baseline = {(e.metric, e.group_id): e.require_lift() for e in source_rows}
 
     path = tmp_path / "moments.parquet"
     analysis.export(path)
@@ -256,18 +270,44 @@ def test_export_from_moments_round_trips_run_exactly(analysis, tmp_path):
     assert {row["moments_format"] for row in rows} == {11}
 
     specs = [_metric_spec(m) for m in analysis.metrics]
-    rehydrated_src = Analysis.from_moments(rows, metrics=specs, control="control")
+    rehydrated_src = Analysis.from_moments(
+        rows, metrics=specs, design=analysis.experiment.resolved_design()
+    )
     rehydrated = _lift_rows(rehydrated_src.run())
 
-    # The declared plan survives, observable through the public result rows.
+    source_health = analysis.health_check()
+    replay_health = rehydrated_src.health_check()
+    source_assigned = next(
+        check for check in source_health.checks if check.check == "assigned_allocation"
+    )
+    replay_assigned = next(
+        check for check in replay_health.checks if check.check == "assigned_allocation"
+    )
+    assert source_assigned.availability == "available"
+    assert source_assigned.srm is not None
+    assert source_assigned.srm.expected == {"control": 0.6, "treatment": 0.4}
+    assert replay_assigned.availability == "available"
+    assert replay_assigned.srm == source_assigned.srm
+    feed_checks = [check for check in source_health.checks if check.check == "feed_completeness"]
+    assert [check.availability for check in feed_checks] == ["not_applicable"]
+    assert feed_checks[0].conclusion is None
+
     declared = next(e for e in _lift_rows(analysis.run()) if e.metric == "d7_retention")
     carried = next(e for e in rehydrated if e.metric == "d7_retention")
     assert declared.role == "guardrail"
     assert carried.role == declared.role
     assert carried.alternative == declared.alternative
 
+    source_by_cell = {(e.metric, e.group_id): e for e in source_rows}
     assert {(e.metric, e.group_id) for e in rehydrated} == set(baseline)
+    assert len({row.source_snapshot_id for row in source_rows}) == 1
+    assert len({row.source_snapshot_id for row in rehydrated}) == 1
+    assert all(row.source_snapshot_id is not None for row in (*source_rows, *rehydrated))
     for e in rehydrated:
+        source = source_by_cell[(e.metric, e.group_id)]
+        assert e.family_id is not None and source.family_id is not None
+        assert e.family_procedure == source.family_procedure
+        assert e.family_size == source.family_size
         base = baseline[(e.metric, e.group_id)]
         lift = e.require_lift()
         assert lift.value is not None and base.value is not None
@@ -305,6 +345,12 @@ def test_export_round_trips_registered_native_actual_state(analysis, con, tmp_pa
     end = analysis.experiment.end
     assert end is not None
     checkpoint = registered.capture_sequential(finalized=True, as_of=end.date())
+    assert checkpoint.records
+    checkpoint_size = len(checkpoint.model_dump_json().encode("utf-8"))
+    assert checkpoint_size > 0
+    look_allocations = [cell.alpha for cell in checkpoint.registration.roster]
+    assert look_allocations
+    assert all(0 < alpha <= checkpoint.registration.q for alpha in look_allocations)
     # The finite schedule must be declared independently of observed sample size.
     # This test transports an anytime checkpoint; finite-look state is tested
     # with fixed counts in test_readouts_plan's registered finite-look witness.
@@ -317,3 +363,27 @@ def test_export_round_trips_registered_native_actual_state(analysis, con, tmp_pa
         _lift_rows(replay.run())[0].require_sequential_result()
         == _lift_rows(registered.run())[0].require_sequential_result()
     )
+
+
+def test_duckdb_sequential_capture_streams_bounded_batches_without_closing_connection(
+    monkeypatch,
+):
+    from increment.query.sequential_capture import record_batches
+
+    connection = ibis.duckdb.connect()
+    relation = ibis.memtable([{"value": index} for index in range(4097)])
+    converted = []
+    to_duckdb_relation = connection._to_duckdb_relation
+
+    def capture(relation, *args, **kwargs):
+        converted.append(relation)
+        return to_duckdb_relation(relation, *args, **kwargs)
+
+    monkeypatch.setattr(connection, "_to_duckdb_relation", capture)
+    batches = list(record_batches(connection, relation))
+    assert len(converted) == 1
+    assert relation.columns == ("value",)
+    assert [batch.num_rows for batch in batches] == [4096, 1]
+    assert sum(batch.num_rows for batch in batches) == 4097
+    assert connection.to_pyarrow(relation).num_rows == 4097
+    connection.disconnect()

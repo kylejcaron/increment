@@ -278,6 +278,7 @@ def test_unit_panel_run_checks_declared_assignment_counts():
 
 
 def test_moments_replay_run_checks_declared_assignment_counts(tmp_path):
+    """Restored analyses retain assignment diagnostics as well as results."""
     import pyarrow.parquet as pq
 
     from increment.semantics.design import Randomized
@@ -297,6 +298,11 @@ def test_moments_replay_run_checks_declared_assignment_counts(tmp_path):
         metrics=[MetricSpec(name="rev", type="mean")],
         design=design,
     )
+    health = replay.health_check()
+    assigned = next(check for check in health.checks if check.check == "assigned_allocation")
+    assert assigned.availability == "available"
+    assert assigned.conclusion == "warning"
+    assert assigned.srm is not None and assigned.srm.is_srm
 
     _assert_failed_assigned_integrity(replay.run())
 
@@ -722,7 +728,9 @@ def test_cell_reason_preserves_persisted_failure():
     assert available.reason is None
 
 
-def test_missing_arm_for_one_metric_is_a_typed_cell_failure_while_another_observes_it():
+def test_missing_arm_for_one_metric_is_a_typed_cell_failure_while_another_observes_it(tmp_path):
+    import pyarrow.parquet as pq
+
     with pytest.warns(IncrementWarning) as captured:
         analysis = _analysis(
             _frame(guard_constant=False, drop_guard_treatment=True), drop_missing_guard=True
@@ -740,6 +748,26 @@ def test_missing_arm_for_one_metric_is_a_typed_cell_failure_while_another_observ
     assert "readout.cell.missing_metric_observations" in rendered
     assert "reason=" in rendered
     assert failed.lift is None
+
+    path = tmp_path / "partial-required-cell.parquet"
+    analysis.export(path)
+    replay = Analysis.from_moments(
+        pq.read_table(path).to_pylist(),
+        metrics=[MetricSpec(name="rev", type="mean"), MetricSpec(name="guard", type="mean")],
+        control="control",
+    )
+    restored = _readouts(replay.run())
+    restored_rows = _lift_rows(restored)
+    assert restored.metadata is not None
+    (restored_failed,) = [row for row in restored_rows if row.failure_code is not None]
+    (restored_surviving,) = [row for row in restored_rows if row.failure_code is None]
+    assert restored_failed.failure_code == failed.failure_code
+    assert restored_failed.failure_context == failed.failure_context
+    assert restored_failed.lift is None
+    assert restored_failed.decision_scope_complete is False
+    assert restored.metadata.scope.decision_complete("assigned") is False
+    assert restored_surviving.metric == "rev" and restored_surviving.lift is not None
+
     (surviving,) = [row for row in results if row.failure_code is None]
     assert surviving.metric == "rev" and surviving.lift is not None
     failed_family = next(
