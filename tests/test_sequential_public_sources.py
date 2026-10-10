@@ -700,6 +700,14 @@ def test_panel_common_window_only_reveals_finalized_units_and_current_asof(axis,
     restored = snapshot_from_json(full.model_dump_json())
     assert restored == full
     assert type(restored.reveal_cursor) is type(label(14))
+    from increment.estimation.readout_types import ReadoutResults
+
+    scoped_daily = type(daily)(daily, metadata=daily.metadata, sequential_snapshot=full)
+    restored_daily = ReadoutResults.model_validate_json(scoped_daily.model_dump_json())
+    assert restored_daily.metadata is not None
+    assert restored_daily.metadata == daily.metadata
+    if axis in ("date", "datetime", "numeric", "numeric_float", "structured"):
+        assert type(restored_daily.metadata.scope.families[0].identity_look) is type(label(14))
     assert DailyLiftEstimate.model_validate_json(daily[0].model_dump_json()) == daily[0]
     path = tmp_path / "panel-checkpoint.parquet"
     analysis.export(path)

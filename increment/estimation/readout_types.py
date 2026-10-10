@@ -409,6 +409,39 @@ class FamilyScope(_ReadoutModel):
     members: tuple[CellKey, ...]
     complete: bool
 
+    @field_validator("identity_look", mode="before")
+    @classmethod
+    def _decode_identity_look(cls, value):
+        if isinstance(value, Mapping) and set(value) == {"type", "value"}:
+            kind = value["type"]
+            encoded = value["value"]
+            if kind == "date":
+                return date.fromisoformat(encoded)
+            if kind == "datetime":
+                return datetime.fromisoformat(encoded["datetime"])
+            if kind == "str" and isinstance(encoded, Mapping) and set(encoded) == {"label"}:
+                return encoded["label"]
+            if kind in ("int", "float"):
+                return encoded
+            return value
+        if isinstance(value, str):
+            if "T" in value or " " in value:
+                try:
+                    return datetime.fromisoformat(value)
+                except ValueError:
+                    return value
+            try:
+                return date.fromisoformat(value)
+            except ValueError:
+                return value
+        return value
+
+    @field_serializer("identity_look", when_used="json")
+    def _encode_identity_look(self, value):
+        if value is None:
+            return None
+        return {"type": type(value).__name__, "value": serialize_day_axis(value)}
+
     @model_validator(mode="after")
     def _canonical_members(self):
         if tuple(sorted(set(self.members), key=cell_order)) != self.members:
