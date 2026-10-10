@@ -68,6 +68,13 @@ create or update the development environment with:
 uv sync --group dev --extra demo --extra tables --extra dashboard
 ```
 
+`make install` synchronizes dependencies and installs hooks using the pinned
+stable `prek` user tool. If it is absent, the installer prints the exact
+`uv tool install prek==<version>` command from `uv.lock`; install it explicitly,
+then rerun `make install`. Hook execution must not depend on a disposable
+checkout's `.venv`. Inspect existing custom/legacy ownership before installation;
+never force-replace shared hooks while active worktrees are unprepared.
+
 Commit `uv.lock` whenever a dependency change updates the resolution.
 
 Notebook examples use Marimo; the development environment does not include

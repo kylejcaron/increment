@@ -6,7 +6,7 @@ AFFECTED_TEST_RUNNER = uv run --no-sync --extra demo --extra tables --extra dash
 PYTEST_ARGS = -n auto --dist loadgroup -p no:tach
 install:
 	uv sync --group dev --extra demo --extra tables --extra dashboard
-	uv run prek install -t pre-commit -t pre-push
+	uv run python -m scripts.install_dev_hooks --repo "$(CURDIR)"
 fmt:
 	uv run ruff format .
 	uv run ruff check --fix .

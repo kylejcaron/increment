@@ -1,22 +1,5 @@
-# Hooks are scoped to an explicit allowlist: source, tests, and the config
-# that gates the build.
-files: |
-  (?x)^(
-    increment/.*
-    |tests/.*
-    |scripts/.*
-    |integration/.*
-    |calibration/.*
-    |conftest\.py
-    |docs/.*\.py
-    |examples/.*\.ya?ml
-    |\.github/.*\.ya?ml
-    |noxfile\.py
-    |pyproject\.toml
-    |\.pre-commit-config\.yaml
-    |Makefile
-    |vulture_whitelist\.py
-  )$
+# Hook scopes are intentionally per-hook: source tooling stays focused while
+# repository-wide artifact checks still see every added file.
 
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
@@ -31,13 +14,34 @@ repos:
     rev: v6.0.0
     hooks:
       - id: trailing-whitespace
+        files: &scoped_files |
+          (?x)^(
+            increment/.*
+            |tests/.*
+            |scripts/.*
+            |integration/.*
+            |calibration/.*
+            |conftest\.py
+            |docs/.*\.py
+            |examples/.*\.ya?ml
+            |\.github/.*\.ya?ml
+            |noxfile\.py
+            |pyproject\.toml
+            |\.pre-commit-config\.yaml
+            |Makefile
+            |vulture_whitelist\.py
+          )$
       - id: end-of-file-fixer
+        files: *scoped_files
       - id: check-toml
+        files: *scoped_files
       - id: check-yaml
+        files: *scoped_files
       - id: debug-statements
-      # Size is worth checking repo-wide, so this one opts out of the allowlist.
+        files: *scoped_files
+      # This hook intentionally has no file scope: every added artifact is
+      # subject to the size limit.
       - id: check-added-large-files
-        files: ""
   # Type-checking uses the Nox session so hooks install every optional
   # integration dependency before checking the complete repository.
   - repo: local
