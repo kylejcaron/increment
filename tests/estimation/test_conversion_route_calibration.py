@@ -107,8 +107,6 @@ class TestSmoke:
 # --- the shipped threshold at the boundary -----------------------------------------------
 
 
-@pytest.mark.slow
-@pytest.mark.parameter_recovery
 class TestShippedThreshold:
     """The exact all-draw criterion: at the shipped count and at 1.25 times it, the delta-method
     interval's noncoverage in the binding boundary cells exceeds its tail by no more than
@@ -120,6 +118,8 @@ class TestShippedThreshold:
         control units (the full table also runs 1e6 and 1e7)."""
         return [cell for cell in cr.cells(m) if cell.n_c <= 100_000]
 
+    @pytest.mark.slow
+    @pytest.mark.numerical_certification
     @pytest.mark.parametrize("tail", cr.TAILS)
     @pytest.mark.parametrize("margin", [1.0, cr.MARGIN])
     def test_noncoverage_excess_is_within_the_tolerance(self, tail, margin):
@@ -135,6 +135,8 @@ class TestShippedThreshold:
         )
         assert worst <= delta
 
+    @pytest.mark.slow
+    @pytest.mark.numerical_certification
     def test_the_threshold_is_not_tighter_than_the_all_draw_requirement_it_was_fit_to(self):
         """A looser threshold fails the same criterion: half the shipped count at the extreme
         tail exceeds the tolerance, so the check above has power."""
@@ -149,14 +151,14 @@ class TestShippedThreshold:
         assert worst > delta
 
 
-@pytest.mark.slow
-@pytest.mark.parameter_recovery
 class TestHybridPipelineAcrossTheThreshold:
     """The pipeline (each count pair routed by its counts, then decided by the delta method or
     the finite-sample inversion) keeps its unconditional per-tail noncoverage within
     ``scientific_delta`` of the tail at counts straddling the threshold. The noncoverage is an
     exact sum over the count lattice, so no draw count limits its resolution."""
 
+    @pytest.mark.slow
+    @pytest.mark.numerical_certification
     @pytest.mark.parametrize("tail", [0.1, 0.05])
     @pytest.mark.parametrize("offset", cr.OFFSETS)
     def test_noncoverage_stays_within_the_tolerance_at_the_threshold(self, tail, offset):
@@ -170,6 +172,8 @@ class TestHybridPipelineAcrossTheThreshold:
         # The cell straddles the rule: some draws are routed each way.
         assert 0.0 < result.asymptotic_share < 1.0
 
+    @pytest.mark.slow
+    @pytest.mark.parameter_recovery
     @pytest.mark.parametrize("alternative", ["two-sided", "greater"])
     @pytest.mark.integration
     def test_the_production_pipeline_reproduces_the_exact_noncoverage(self, alternative):
@@ -177,11 +181,15 @@ class TestHybridPipelineAcrossTheThreshold:
         agrees with the sum within four Monte Carlo standard errors."""
         assert cr.replicate_check(0.1, workers=1, alternative=alternative)
 
+    @pytest.mark.slow
+    @pytest.mark.numerical_certification
     def test_the_replayed_finite_sample_set_is_the_production_set_at_its_edge(self):
         compared, _edge, hard = cr.finite_conformance(per_tail=3, tails=(0.1, 0.05))
         assert compared > 0
         assert hard == 0
 
+    @pytest.mark.slow
+    @pytest.mark.numerical_certification
     def test_every_draw_of_the_hybrid_is_routed_by_its_counts(self):
         """A seeded sweep of the production rows: the label is the count rule's route."""
         rng = np.random.default_rng(20261004)
@@ -282,13 +290,13 @@ class TestLatticeSumsStreamOverBlocks:
         assert not replayed_minus[routed].any()
 
 
-@pytest.mark.slow
-@pytest.mark.parameter_recovery
 class TestPlanningAccuracy:
     """Planned power against the pipeline's exact rejection probability, summed over the count
     lattice: each route meets its own claim (``bound_holds``). A dense plan is within the closed
     form's tolerance, a sparse plan is the replay, and a borderline plan leans conservative."""
 
+    @pytest.mark.slow
+    @pytest.mark.numerical_certification
     @pytest.mark.parametrize("factor", [0.5, 0.9, 1.04, 1.25, 1.5, 3.0])
     @pytest.mark.parametrize(
         ("alpha", "alternative"), [(0.2, "two-sided"), (0.1, "greater")], ids=["two", "greater"]
@@ -710,6 +718,8 @@ class TestEnumerationEnclosesTheExactMass:
         rate = Fraction(p)
         return [math.comb(n, k) * rate**k * (1 - rate) ** (n - k) for k in range(lo, hi + 1)]
 
+    @pytest.mark.slow
+    @pytest.mark.numerical_certification
     @pytest.mark.parametrize(
         "design",
         [

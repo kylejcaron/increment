@@ -381,7 +381,10 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         paths: dict[Path, Path] = {}
         kept, deselected = [], []
         for item in items:
-            if not any(item.get_closest_marker(mark) for mark in ("slow", "parameter_recovery")):
+            if not any(
+                item.get_closest_marker(mark)
+                for mark in ("slow", "parameter_recovery", "numerical_certification")
+            ):
                 kept.append(item)
                 continue
             if item.path not in paths:
@@ -576,7 +579,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if workeroutput is not None and counts is not None:
         workeroutput["increment_affected_selection"] = {
             key: counts[key] for key in ("selected", "deselected")
-        }
+        } | {"selection_route": os.environ.get("INCREMENT_AFFECTED_SELECTION_ROUTE")}
     selection = session.config.stash.get(_DYNAMIC_CONSUMER_SELECTION, None)
     if workeroutput is not None and selection is not None:
         workeroutput["increment_dynamic_selection"] = {

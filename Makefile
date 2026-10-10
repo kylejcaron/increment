@@ -1,4 +1,4 @@
-.PHONY: install fmt lint audit-verbosity complexity complexity-diff typecheck typecheck-sync test test-fast test-slow test-parameter-recovery test-all test-versions test-examples test-doc-snippets prek check ci-local sim demo examples test-affected
+.PHONY: install fmt lint audit-verbosity complexity complexity-diff typecheck typecheck-sync test test-fast test-slow test-parameter-recovery test-numerical-certification test-scientific test-all test-versions test-examples test-doc-snippets prek check ci-local sim demo examples test-affected
 
 # Loadgroup keeps modules sharing mutable filesystem paths on one worker.
 TEST_RUNNER = uv run --extra demo --extra tables --extra dashboard python -m scripts.run_test_tier
@@ -44,6 +44,17 @@ test-parameter-recovery:
 		exit 1; \
 	fi
 	$(TEST_RUNNER) parameter-recovery -q $(PYTEST_ARGS) --splits $(SPLITS) --group $(GROUP)
+
+# Required deterministic numerical certification; not a Monte-Carlo campaign.
+test-numerical-certification:
+	$(TEST_RUNNER) numerical-certification -q $(PYTEST_ARGS) --evidence-root .test-evidence
+# Union selector for weekly scientific coverage; split shards retain both purposes.
+test-scientific:
+	@if [ -z "$(SPLITS)" ] || [ -z "$(GROUP)" ]; then \
+		echo "usage: make test-scientific SPLITS=<n> GROUP=<1..n>" >&2; \
+		exit 1; \
+	fi
+	$(TEST_RUNNER) scientific -q $(PYTEST_ARGS) --evidence-root .test-evidence --splits $(SPLITS) --group $(GROUP)
 test-all:
 	$(TEST_RUNNER) all -q $(PYTEST_ARGS) --evidence-root .test-evidence
 test-versions:

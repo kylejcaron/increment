@@ -143,8 +143,9 @@ testpaths = ["tests"]
 markers = [
     "integration: exercises cooperating components, local query engines, UI or subprocess boundaries; purpose only, included in fast unless slow",
     "stress: large-scale or exhaustive deterministic validation; also requires slow and remains in functional-slow until an equivalent required gate is activated",
-    "slow: expensive functional test; excluded from fast, included in functional-slow and current pre-push unless parameter_recovery or examples; local individual deadline 180 seconds",
+    "slow: expensive functional test; excluded from fast, included in functional-slow unless parameter_recovery, numerical_certification or examples; local individual deadline 180 seconds",
     "parameter_recovery: Monte Carlo coverage, bias or recovery study; also requires slow; excluded from fast and functional-slow, run by scientific gates; local individual deadline 300 seconds",
+    "numerical_certification: deterministic inferential-certification family; also requires slow; excluded from fast and functional-slow, included in scientific certification gates; local individual deadline 300 seconds",
     "examples: exercises runnable notebooks end-to-end via real marimo/duckdb subprocesses; always slow-marked too; local individual deadline 300 seconds",
     "creates_tables: intentionally leaves new tables on the shared query-test `con` connection; exempts a test from the no-stray-tables guard",
     "compatibility(id): links a test to one exact compatibility scenario rendered in the reference",
@@ -152,7 +153,7 @@ markers = [
     "warehouse_snowflake: executes real query builders against a live Snowflake connection under integration/warehouse_execution/ -- selected only by the tests_warehouse_snowflake nox session, never collected from testpaths",
     "warehouse_bigquery: executes real query builders against a live BigQuery connection under integration/warehouse_execution/ -- selected only by the tests_warehouse_bigquery nox session, never collected from testpaths",
 ]
-addopts = "-m 'not slow and not parameter_recovery'"
+addopts = "-m 'not slow and not parameter_recovery and not numerical_certification'"
 filterwarnings = [
     "error",
     # Ibis 12.0.0 calls DuckDB's deprecated fetch method; upstream main uses to_arrow_table().

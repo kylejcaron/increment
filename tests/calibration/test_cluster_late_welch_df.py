@@ -343,20 +343,10 @@ def _assert_pinned(result: dict[str, float], pinned: tuple[float, float, int], r
 def test_encouragement_late_welch_coverage_is_pinned(cell: Cell):
     result = late_study(cell, REPS, cell_seed(*cell))
     _assert_pinned(result, PINNED[cell], REPS, cell)
-
-
-@pytest.mark.slow
-@pytest.mark.parameter_recovery
-def test_unbalanced_arms_with_unequal_variance_undercover_under_pooled_df():
-    """The directional finding, independent of the exact pinned values: at
-    ``(K_t, K_c) = (5, 25)`` with 16x the between-cluster variance in the
-    small arm, a pooled-df interval undercovers by more than 3 MCSE while
-    the production Welch interval stays within 3 MCSE of nominal."""
-    cell: Cell = (5, 25, 16.0, "equal")
-    result = late_study(cell, REPS, cell_seed(*cell))
-    emitted = int(result["emitted"])
-    assert result["pooled"] < 0.95 - 3 * mcse(0.95, emitted), result
-    assert abs(result["welch"] - 0.95) <= 3 * mcse(0.95, emitted), result
+    if cell == (5, 25, 16.0, "equal"):
+        emitted = int(result["emitted"])
+        assert result["pooled"] < 0.95 - 3 * mcse(0.95, emitted), result
+        assert abs(result["welch"] - 0.95) <= 3 * mcse(0.95, emitted), result
 
 
 def test_late_welch_df_study_smoke():

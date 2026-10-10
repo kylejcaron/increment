@@ -139,7 +139,10 @@ def test_focused_cli_refuses_any_missing_selector_among_options(tmp_path):
 def test_focused_runner_does_not_execute_deselected_slow_tests(tmp_path):
     project = Path(__file__).parents[1]
     config = tmp_path / "pytest.ini"
-    config.write_text("[pytest]\nmarkers = slow: slow tier\n parameter_recovery: recovery tier\n")
+    config.write_text(
+        "[pytest]\nmarkers = slow: slow tier\n parameter_recovery: recovery tier\n"
+        " numerical_certification: deterministic certification tier\n"
+    )
     test_file = tmp_path / "test_mixed.py"
     test_file.write_text(
         "import pytest\n"
@@ -148,6 +151,9 @@ def test_focused_runner_does_not_execute_deselected_slow_tests(tmp_path):
         "def test_slow():\n    print('SLOW_EXECUTED')\n"
         "@pytest.mark.parameter_recovery\n"
         "def test_recovery():\n    print('RECOVERY_EXECUTED')\n"
+        "@pytest.mark.slow\n"
+        "@pytest.mark.numerical_certification\n"
+        "def test_certification():\n    print('CERTIFICATION_EXECUTED')\n"
     )
     environment = {
         **os.environ,
@@ -179,8 +185,8 @@ def test_focused_runner_does_not_execute_deselected_slow_tests(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert "FAST_EXECUTED" in result.stdout
     assert "SLOW_EXECUTED" not in result.stdout
-    assert "RECOVERY_EXECUTED" not in result.stdout
-    assert "1 passed, 2 deselected" in result.stdout
+    assert "CERTIFICATION_EXECUTED" not in result.stdout
+    assert "1 passed, 3 deselected" in result.stdout
 
 
 def test_focused_runner_uses_serial_mode_below_recorded_xdist_overhead(tmp_path):
@@ -255,9 +261,18 @@ def test_focused_runner_keeps_workers_for_unrecorded_node_selector(tmp_path):
     [
         ("fast", {"FAST_EXECUTED"}),
         ("slow", {"SLOW_EXECUTED"}),
+        ("scientific", {"RECOVERY_EXECUTED", "CERTIFICATION_EXECUTED"}),
+        ("parameter-recovery", {"RECOVERY_EXECUTED"}),
+        ("numerical-certification", {"CERTIFICATION_EXECUTED"}),
         (
             "all",
-            {"FAST_EXECUTED", "SLOW_EXECUTED", "RECOVERY_EXECUTED", "EXAMPLE_EXECUTED"},
+            {
+                "FAST_EXECUTED",
+                "SLOW_EXECUTED",
+                "RECOVERY_EXECUTED",
+                "CERTIFICATION_EXECUTED",
+                "EXAMPLE_EXECUTED",
+            },
         ),
         ("examples", {"EXAMPLE_EXECUTED"}),
     ],
@@ -270,8 +285,12 @@ def test_tier_markers_execute_only_their_declared_selection(tmp_path, tier, expe
         "def test_fast():\n    print('FAST_EXECUTED')\n"
         "@pytest.mark.slow\n"
         "def test_slow():\n    print('SLOW_EXECUTED')\n"
+        "@pytest.mark.slow\n"
         "@pytest.mark.parameter_recovery\n"
         "def test_recovery():\n    print('RECOVERY_EXECUTED')\n"
+        "@pytest.mark.slow\n"
+        "@pytest.mark.numerical_certification\n"
+        "def test_certification():\n    print('CERTIFICATION_EXECUTED')\n"
         "@pytest.mark.slow\n"
         "@pytest.mark.examples\n"
         "def test_example():\n    print('EXAMPLE_EXECUTED')\n"
@@ -291,6 +310,7 @@ def test_tier_markers_execute_only_their_declared_selection(tmp_path, tier, expe
             "FAST_EXECUTED",
             "SLOW_EXECUTED",
             "RECOVERY_EXECUTED",
+            "CERTIFICATION_EXECUTED",
             "EXAMPLE_EXECUTED",
         )
         if marker in result.stdout

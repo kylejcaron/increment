@@ -53,8 +53,10 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   for expensive work and `stress` plus `slow` for large deterministic grids.
   Legacy unmarked tests require source inspection, not an assumed unit label.
 - Recovery, coverage and bias studies use `parameter_recovery` plus `slow`;
-  notebook exports use `examples` plus `slow`. Collection enforces the cost
-  mark, including inherited marks. Integration alone does not exclude a test.
+  deterministic inferential-certification families use
+  `numerical_certification` plus `slow`. Notebook exports use `examples` plus
+  `slow`. Collection enforces the cost mark, including inherited marks.
+  Integration alone does not exclude a test.
 - Review recorded setup/body/teardown costs above five seconds; prioritize
   above ten. Thresholds trigger investigation, not flaky timing failures.
   Keep assertions and scientific settings when splitting smoke/campaigns;
@@ -64,9 +66,13 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
   `pytest.mark.xdist_group("<name>")`; dependent Markdown snippets retain source
   order within their file.
 - Slow tests use `@pytest.mark.slow`; simulation coverage, bias and recovery
-  checks also use `@pytest.mark.parameter_recovery`. Full calibration grids
-  live in `calibration/` and run before releases or covered-inference
-  changes; retain representative slow sentinels and a fast smoke.
+  checks also use `@pytest.mark.parameter_recovery`, while deterministic
+  inferential certification uses `@pytest.mark.numerical_certification`.
+  Keep exact designs, seeds, repetitions, thresholds and tolerances in both
+  classes; the required certification gate covers relevant changes, while
+  weekly scientific shards retain the union. Full calibration grids live in
+  `calibration/` and run before releases or covered-inference changes; retain
+  representative slow sentinels and a fast smoke.
 - Assert consumer-visible behavior: codes, numerical tolerances, boundaries,
   invariants and parity. Do not pin permitted wording, private wiring or exact
   bits where a tolerance defines the contract. Replay tests exercise the

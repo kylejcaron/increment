@@ -659,7 +659,10 @@ def test_affected_evidence_fails_when_selected_tests_are_incompletely_reported(t
         + "\n"
     )
     session = SimpleNamespace(
-        config=SimpleNamespace(stash={_RUN: run, _SELECTION: counts}),
+        config=SimpleNamespace(
+            stash={_RUN: run, _SELECTION: counts},
+            getoption=lambda _name, default=None: default,
+        ),
         exitstatus=0,
     )
     pytest_sessionfinish(cast(Any, session), 0)
@@ -690,7 +693,10 @@ def test_affected_evidence_counts_setup_skip_as_terminal_outcome(tmp_path):
         + "\n"
     )
     session = SimpleNamespace(
-        config=SimpleNamespace(stash={_RUN: run, _SELECTION: counts}),
+        config=SimpleNamespace(
+            stash={_RUN: run, _SELECTION: counts},
+            getoption=lambda _name, default=None: default,
+        ),
         exitstatus=0,
     )
     pytest_sessionfinish(cast(Any, session), 0)

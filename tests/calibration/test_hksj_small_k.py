@@ -57,7 +57,6 @@ PIN_ROUNDING = 5e-5
 Z = float(norm.isf(ALPHA / 2))
 
 Cell = tuple[int, float]
-GRID: tuple[Cell, ...] = tuple((k, ratio) for k in KS for ratio in TAU2_RATIOS)
 
 # Measured on the commit that introduced this study at 10000 reps:
 # (HKSJ coverage, plug-in coverage, HKSJ-narrower fraction, degeneracy rate).
@@ -176,30 +175,38 @@ def _within(measured: float, pinned: float, reps: int, what) -> None:
 
 @pytest.mark.slow
 @pytest.mark.parameter_recovery
-@pytest.mark.parametrize("cell", GRID, ids=lambda c: f"K{c[0]}-r{c[1]}")
-def test_hksj_small_k_calibration_is_pinned(cell: Cell):
-    result = study(cell, REPS, cell_seed(*cell))
-    hksj, plug_in, narrower, degenerate = PINNED[cell]
-    _within(result["hksj"], hksj, REPS, (cell, "hksj"))
-    _within(result["plug_in"], plug_in, REPS, (cell, "plug_in"))
-    _within(result["narrower"], narrower, int(result["compared"]), (cell, "narrower"))
-    _within(result["degenerate"], degenerate, REPS, (cell, "degenerate"))
+@pytest.mark.parametrize("k", KS, ids=lambda k: f"K{k}")
+def test_hksj_small_k_calibration_is_pinned_and_directional(k: int):
+    """Check every pinned ratio and directional invariant using one study per cell."""
+    results = {ratio: study((k, ratio), REPS, cell_seed(k, ratio)) for ratio in TAU2_RATIOS}
 
+    for ratio, result in results.items():
+        cell = (k, ratio)
+        hksj, plug_in, narrower, degenerate = PINNED[cell]
+        _within(result["hksj"], hksj, REPS, (cell, "hksj"))
+        _within(result["plug_in"], plug_in, REPS, (cell, "plug_in"))
+        _within(result["narrower"], narrower, int(result["compared"]), (cell, "narrower"))
+        _within(result["degenerate"], degenerate, REPS, (cell, "degenerate"))
 
-@pytest.mark.slow
-@pytest.mark.parameter_recovery
-@pytest.mark.parametrize("k", KS)
-def test_hksj_holds_nominal_where_plug_in_collapses(k: int):
-    """Directional invariant independent of the pinned values: under real
-    heterogeneity (``tau2 = 2 * mean(v)``) the plug-in interval undercovers
-    by more than 3 MCSE at every K while HKSJ stays within 2.5 points of
-    nominal, and HKSJ is narrower than plug-in in a strictly smaller fraction
-    of replications under heterogeneity than under homogeneity."""
-    heterogeneous = study((k, 2.0), REPS, cell_seed(k, 2.0))
-    homogeneous = study((k, 0.0), REPS, cell_seed(k, 0.0))
-    assert heterogeneous["plug_in"] < 0.95 - 3 * mcse(0.95, REPS), heterogeneous
-    assert abs(heterogeneous["hksj"] - 0.95) <= 0.025, heterogeneous
-    assert heterogeneous["narrower"] < homogeneous["narrower"], (heterogeneous, homogeneous)
+    heterogeneous = results[2.0]
+    homogeneous = results[0.0]
+    assert heterogeneous["plug_in"] < 0.95 - 3 * mcse(0.95, REPS), (
+        k,
+        (k, 2.0),
+        heterogeneous,
+    )
+    assert abs(heterogeneous["hksj"] - 0.95) <= 0.025, (
+        k,
+        (k, 2.0),
+        heterogeneous,
+    )
+    assert heterogeneous["narrower"] < homogeneous["narrower"], (
+        k,
+        (k, 2.0),
+        heterogeneous,
+        (k, 0.0),
+        homogeneous,
+    )
 
 
 def test_degeneracy_fallback_fires_on_exact_ties():

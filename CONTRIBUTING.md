@@ -83,10 +83,12 @@ Every active worktree must contain `scripts/check_push_targets.py` before
 installing this shared wrapper; unprepared branches are not eligible.
 
 The functional-slow CI job is part of `ci-ok`, with run-attempt-specific test
-evidence retained even on failure. Do not relax `make check` or the full local
-fast/slow hooks until hosted success, failure/cancellation blocking, retained
-evidence, required-check configuration, and owner-approved activation have
-been verified. Workflow preparation alone does not establish those conditions.
+evidence retained even on failure. The numerical-certification decision and
+result are also enforced by `ci-ok`; this checked-in logic does not establish
+hosted branch-protection activation. Do not relax `make check` or the full
+local fast/slow hooks until hosted success, failure/cancellation blocking,
+retained evidence, required-check configuration, and owner-approved activation
+have been verified. Workflow preparation alone does not establish those conditions.
 
 Commit `uv.lock` whenever a dependency change updates the resolution.
 
@@ -110,21 +112,27 @@ do not define a test's purpose. Do not add redundant `unit` or `fast` marks.
 | Cooperating components, local query engines, UI or subprocess boundaries | `integration`; add `slow` if expensive | Fast unless slow; relevant task checks and required CI |
 | Expensive functional regression | `slow`, plus its purpose where useful | Relevant affected slow and current functional-slow/pre-push gates |
 | Large-scale/exhaustive deterministic validation | `stress` and `slow` | Currently functional-slow; relevant changes and final integration/release |
-| Monte Carlo coverage, bias or parameter recovery | `parameter_recovery` and `slow` | Scientific gates for relevant inference changes and releases; dedicated weekly shards |
+| Monte Carlo coverage, bias or parameter recovery | `parameter_recovery` and `slow` | Monte Carlo-only target remains available; included in scientific union shards and relevant inference validation |
+| Deterministic inferential certification | `numerical_certification` and `slow` | Dedicated relevant-change CI decision/job; also included in weekly scientific union shards |
 | Runnable notebook exports | `examples` and `slow` | Notebook acceptance/documentation and weekly full-functional jobs |
 
 `slow` describes cost, not purpose. A solver regression at ordinary inputs
 does not become stress merely because it is slow: investigate production
 performance or redundant test work. Category checks refuse recovery,
-examples or stress tests lacking an effective `slow` mark before execution,
+numerical certification, examples or stress tests lacking an effective `slow` mark before execution,
 including CI; module, class and parameter inheritance count.
 
 Integration does not change selection. Stress currently remains in the
 functional-slow tier. Moving it outside routine CI requires an executable,
 required gate for relevant changes and a scheduled/release route, with
 failure evidence retained; a label or proposed workflow is insufficient.
-Monte Carlo is already excluded from both fast and functional-slow. Weekly
-execution does not replace required scientific validation before merging
+Monte Carlo and deterministic numerical certification are excluded from fast
+and functional-slow. The dedicated certification job requires relevant changes;
+weekly scientific-union shards execute both scientific purposes. Full and
+dependency-floor matrices exclude those tiers except for the pre-existing exact
+mass cases `TestEnumerationEnclosesTheExactMass::test_the_interval_holds_the_exact_rational_mass[central]`
+and `[rare]`, which remain in each matrix.
+Weekly execution does not replace required scientific validation before merging
 changes to the covered estimator, numerical construction or guarantee.
 
 For runtime audits, review every recorded test whose summed setup, call and
@@ -135,6 +143,26 @@ until optimized; attribute shared setup before classifying dependent tests.
 The thresholds are not single-run, hardware-sensitive CI failures. Contended,
 partial or older-source runs identify candidates but cannot establish current
 wall-time improvements or complete acceptance.
+
+CI publishes advisory runtime warnings and bounded job summaries after fast,
+functional-slow and numerical-certification runs; the evidence artifact retains
+the complete JSON report. To inspect a local receipt:
+
+```bash
+uv run python -m scripts.report_test_runtime .test-evidence/run-<id> \
+  --base <task-base-sha> --json .test-evidence/runtime.json \
+  --markdown .test-evidence/runtime.md
+```
+
+A parent evidence directory selects its latest receipt; use an exact run path
+to avoid ambiguity. Optional `--baseline <run-path>` compares matching Python,
+platform, worker count, distribution mode and thread limits (including Polars).
+Timing increases are candidates, not demonstrated regressions. Selected
+baseline receipts do not prove that an unobserved test is newly authored, and
+AST family membership cannot establish parameter-level novelty. Partial,
+malformed or legacy evidence remains explicitly uncertain. Warnings never
+retag source or fail a run because a test exceeded five seconds; inspect shared
+fixture/setup costs and repeat under representative conditions before retagging.
 
 Record each family's contract, current source anchor, expensive workload,
 disposition (keep, optimize, split, reclassify or remove genuinely redundant
@@ -257,8 +285,8 @@ tests. Use `make fmt` to apply formatting and safe lint fixes.
 Additional commands:
 
 - `make test-fast` runs the ordinary test tier.
-- `make test-slow` runs functional slow tests, excluding statistical
-  parameter-recovery campaigns and notebook examples.
+- `make test-slow` runs functional slow tests, excluding Monte Carlo recovery,
+  deterministic certification and notebook examples.
 - `make test-versions` runs the supported-Python Nox sessions.
 - `make ci-local` adds documentation, table-extra, build, and installed-wheel
   checks to the normal local gate.
@@ -271,8 +299,10 @@ GitHub Actions (`GITHUB_ACTIONS=true`) skips those performance budgets;
 workflow job timeouts still stop hangs. Explicit timeouts and scientific
 campaign deadlines remain enforced, and runners still clean up subprocess
 groups on interruption. No private authorization or task environment is
-required. For statistical shards, use
-`make test-parameter-recovery SPLITS=4 GROUP=1`; without local timing data,
+required. For Monte Carlo-only shards, use
+`make test-parameter-recovery SPLITS=4 GROUP=1`; the certification-only
+target is `make test-numerical-certification`. The weekly scientific union
+uses `make test-scientific SPLITS=4 GROUP=1`; without local timing data,
 pytest-split distributes tests evenly.
 
 `make test-all` retains failure outputs and JUnit reports under
@@ -337,17 +367,17 @@ Do not run workers against a shared warehouse namespace.
 The
 [weekly workflow](.github/workflows/weekly.yml) runs Sundays at 08:00 UTC or
 on manual dispatch: full slow/examples suites at locked dependencies and
-floors on all three Python versions, four Monte-Carlo shards on Python 3.12,
-and all three warehouse backends. Fast, full and Monte-Carlo jobs retain test
-evidence, including per-test timings, for 30 days. Live warehouse timings stay
+floors on all three Python versions, four scientific-union shards on Python
+3.12, and all three warehouse backends. Fast, full and scientific jobs retain
+test evidence, including per-test timings, for 30 days. Live warehouse timings stay
 in the job logs, where GitHub masks secrets; raw cloud tracebacks are not
 uploaded as artifacts. Weekly failures create or update a GitHub issue
 labelled `weekly-failure`.
 
 Tests run in parallel and must not depend on execution order or state created
 by another test. Mark functional slow tests with `slow`; simulation-based
-coverage, bias, and parameter-recovery checks also use
-`parameter_recovery` and retain a small fast smoke case. See
+coverage and parameter-recovery checks also use `parameter_recovery`, while
+deterministic inferential certification uses `numerical_certification`. See
 [AGENTS.md](AGENTS.md) for the repository's architecture, parity, numerical,
 and test-contract requirements.
 

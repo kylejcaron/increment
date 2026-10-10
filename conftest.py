@@ -139,7 +139,12 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if item.get_closest_marker("slow") is not None:
             continue
-        for category in ("parameter_recovery", "examples", "stress"):
+        for category in (
+            "parameter_recovery",
+            "numerical_certification",
+            "examples",
+            "stress",
+        ):
             if item.get_closest_marker(category) is not None:
                 raise pytest.UsageError(f"{item.nodeid}: {category} requires the slow mark")
     _group_markdown_items(items)
@@ -156,7 +161,10 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             continue
         if any(item.get_closest_marker(marker) for marker in _WAREHOUSE_MARKERS):
             seconds = _WAREHOUSE_TIMEOUT_SECONDS
-        elif item.get_closest_marker("examples") or item.get_closest_marker("parameter_recovery"):
+        elif any(
+            item.get_closest_marker(marker)
+            for marker in ("examples", "parameter_recovery", "numerical_certification")
+        ):
             seconds = _EXPENSIVE_TIMEOUT_SECONDS
         elif item.get_closest_marker("slow"):
             seconds = _SLOW_TIMEOUT_SECONDS

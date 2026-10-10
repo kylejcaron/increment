@@ -16,7 +16,7 @@ def _collect_and_run(tmp_path: Path, source: str) -> subprocess.CompletedProcess
     config = tmp_path / "pytest.ini"
     config.write_text(
         "[pytest]\nmarkers = slow: expensive\n parameter_recovery: calibration\n"
-        " examples: notebook\n stress: exhaustive\n"
+        " examples: notebook\n stress: exhaustive\n numerical_certification: exact inferential certification\n"
     )
     project = Path(__file__).resolve().parents[1]
     (tmp_path / "conftest.py").write_text((project / "conftest.py").read_text())
@@ -45,7 +45,9 @@ def _collect_and_run(tmp_path: Path, source: str) -> subprocess.CompletedProcess
     )
 
 
-@pytest.mark.parametrize("category", ["parameter_recovery", "examples", "stress"])
+@pytest.mark.parametrize(
+    "category", ["parameter_recovery", "numerical_certification", "examples", "stress"]
+)
 def test_expensive_category_refuses_before_running_a_consumer(tmp_path: Path, category: str):
     result = _collect_and_run(
         tmp_path,
@@ -65,6 +67,25 @@ def test_inherited_slow_mark_allows_the_consumer(tmp_path: Path, scope: str):
         "    def test_consumer(self):\n        Path('executed').write_text('5')\n",
         "parameter": "@pytest.mark.stress\n@pytest.mark.parametrize('value', "
         "[pytest.param(5, marks=pytest.mark.slow)])\n"
+        "def test_consumer(value):\n    Path('executed').write_text(str(value))\n",
+    }
+    result = _collect_and_run(
+        tmp_path, "import pytest\nfrom pathlib import Path\n" + sources[scope]
+    )
+    assert result.returncode == pytest.ExitCode.OK, result.stdout + result.stderr
+    assert (tmp_path / "executed").read_text() == "5"
+
+
+@pytest.mark.parametrize("scope", ["module", "class", "parameter"])
+def test_numerical_certification_inherits_slow_cost_mark(tmp_path: Path, scope: str):
+    sources = {
+        "module": "pytestmark = pytest.mark.slow\n@pytest.mark.numerical_certification\n"
+        "def test_consumer():\n    Path('executed').write_text('5')\n",
+        "class": "@pytest.mark.slow\nclass TestConsumer:\n"
+        "    @pytest.mark.numerical_certification\n"
+        "    def test_consumer(self):\n        Path('executed').write_text('5')\n",
+        "parameter": "@pytest.mark.stress\n@pytest.mark.parametrize('value', "
+        "[pytest.param(5, marks=[pytest.mark.slow, pytest.mark.numerical_certification])])\n"
         "def test_consumer(value):\n    Path('executed').write_text(str(value))\n",
     }
     result = _collect_and_run(

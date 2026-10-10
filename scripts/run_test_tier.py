@@ -442,11 +442,17 @@ TIERS = {
     "slow": Tier(marker=TIER_MARKERS["slow"], budget_seconds=480),
     # Supports optional pytest-split shards while retaining a local budget.
     "parameter-recovery": Tier(marker="parameter_recovery", budget_seconds=1350),
+    "numerical-certification": Tier(
+        marker=TIER_MARKERS["numerical-certification"], budget_seconds=1350
+    ),
+    "scientific": Tier(marker=TIER_MARKERS["scientific"], budget_seconds=1350),
     "examples": Tier(marker="examples", budget_seconds=300),
     "all": Tier(marker="", budget_seconds=1800),
-    # Same as `all` minus the Monte-Carlo tier, which runs once (sharded)
-    # instead of once per Python version/dependency-floor cell.
-    "all-except-parameter-recovery": Tier(marker="not parameter_recovery", budget_seconds=1800),
+    # Scientific campaigns run once rather than once per weekly matrix cell.
+    "all-except-scientific": Tier(
+        marker="not parameter_recovery and not numerical_certification",
+        budget_seconds=1800,
+    ),
 }
 
 
