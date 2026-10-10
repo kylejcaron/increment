@@ -187,8 +187,9 @@ def _check_readme_mean_example() -> None:
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expected-version")
-    parser.add_argument("--readme-example", action="store_true")
-    parser.add_argument("--demo-extras", action="store_true")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--readme-example", action="store_true")
+    modes.add_argument("--demo-extras", action="store_true")
     return parser.parse_args()
 
 
@@ -202,7 +203,10 @@ def _run() -> None:
                 f"installed increment version {actual!r} does not match expected "
                 f"{args.expected_version!r}"
             )
-    if args.demo_extras:
+    if args.readme_example:
+        _check_readme_mean_example()
+        print(f"wheel_smoke: OK (package={increment.__file__}; cwd={pathlib.Path.cwd()})")
+    elif args.demo_extras:
         _check_duckdb_memtable_from_pyarrow()
         print("wheel_smoke: OK (--demo-extras: sqlglot/DuckDB memtable regression probe passed)")
     else:

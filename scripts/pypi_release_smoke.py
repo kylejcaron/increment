@@ -16,15 +16,22 @@ from pathlib import Path
 
 _POLL_SECONDS = 10
 _DEADLINE_SECONDS = 300
-_RETRYABLE_INSTALL_ERRORS = (
-    "no matching distribution found",
-    "could not find a version that satisfies",
-    "from versions: none",
-    "not found in the package index",
-    "failed to fetch",
-    "temporary failure in name resolution",
-    "connection refused",
-)
+_RETRYABLE_INSTALL_ERRORS = {
+    "uv": (
+        "because there is no version of",
+        "no matching distribution found",
+        "could not find a version",
+        "from versions: none",
+        "not found in the package index",
+        "failed to fetch",
+        "temporary failure in name resolution",
+        "connection refused",
+    ),
+    "pip": (
+        "no matching distribution found",
+        "could not find a version",
+    ),
+}
 
 
 def _pypi_available(version: str, timeout: float) -> bool:
@@ -69,8 +76,19 @@ def _smoke_installed_package(
 
 
 def _retryable_install_failure(error: subprocess.CalledProcessError) -> bool:
+    command = error.cmd
+    parts = command.split() if isinstance(command, str) else [str(part) for part in command]
+    tools = [Path(part).name for part in parts]
+    if tools and tools[0] == "uv" and "pip" in tools:
+        installer = "uv"
+    elif tools and tools[0] in ("pip", "pip3"):
+        installer = "pip"
+    elif len(tools) >= 3 and tools[1:3] == ["-m", "pip"]:
+        installer = "pip"
+    else:
+        return False
     output = f"{error.stdout or ''}\n{error.stderr or ''}".lower()
-    return any(phrase in output for phrase in _RETRYABLE_INSTALL_ERRORS)
+    return any(phrase in output for phrase in _RETRYABLE_INSTALL_ERRORS[installer])
 
 
 def run_post_publish_smoke(

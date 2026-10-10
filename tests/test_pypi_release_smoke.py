@@ -28,7 +28,7 @@ def test_waits_for_index_then_retries_only_availability_install_failure() -> Non
         install_attempts.append(timeout)
         if len(install_attempts) == 1:
             raise subprocess.CalledProcessError(
-                1, "uv pip install", stderr="No matching distribution found"
+                1, "uv pip install", stderr="Because there is no version of increment"
             )
 
     smoke_calls: list[str] = []
@@ -48,6 +48,7 @@ def test_waits_for_index_then_retries_only_availability_install_failure() -> Non
 
     assert clock.now == 2
     assert len(install_attempts) == 2
+    assert install_attempts == [4, 3]
     assert smoke_calls == ["1.2.3"]
 
 
