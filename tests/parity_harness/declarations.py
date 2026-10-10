@@ -497,7 +497,7 @@ PARITY_DECLARATIONS = MappingProxyType(
                 ),
                 (
                     "from_unit_panel",
-                    "COMBINATION: window-bounded CUPED panel capture is not supported (`sequential.route.unsupported`).",
+                    "COMBINATION: sequential panel capture refuses the CUPED metric with `window_days=None`; panel metrics require bounded windows (`sequential.route.unsupported`).",
                 ),
             ),
             refusals=(("from_unit_panel", "sequential.route.unsupported"),),

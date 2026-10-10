@@ -519,7 +519,7 @@ def test_small_late_panel_and_moments_replay_preserve_semantics(tmp_path):  # no
             preferred_direction="increase",
         ),
     ]
-    with pytest.warns(IncrementWarning, match="has 73 null/NaN value\\(s\\)") as warning_record:
+    with pytest.warns(IncrementWarning) as warning_record:
         source = Analysis.from_unit_panel(
             panel,
             unit="unit_id",
@@ -535,6 +535,7 @@ def test_small_late_panel_and_moments_replay_preserve_semantics(tmp_path):  # no
     imputation_warning = warning_record[0].message
     assert isinstance(imputation_warning, IncrementWarning)
     assert imputation_warning.code == "frame.validation.metric_covariate_missing_imputed"
+    assert imputation_warning.context["n_missing"] == 73
     with pytest.warns(IncrementWarning) as censoring_warnings:
         source_result = source.run()
     assert censoring_warnings
