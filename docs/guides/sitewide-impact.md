@@ -1,10 +1,13 @@
 # Sitewide impact
 
-`Analysis.sitewide()` converts a supported per-unit lift into a whole-site
+`Analysis.sitewide()` converts a supported per-unit lift into whole-site
 impact for the experiment's actual enrollment window: the change if that lift
-had shipped to every enrolled unit. It requires a native
-`Analysis.from_definitions` source, which retains the raw event stream needed
-to compute site volume; pre-melted summaries and moments cannot provide it.
+had shipped to every enrolled unit. Native `Analysis.from_definitions` sources
+can compute site volume from the raw event stream. An adopted
+`Analysis.from_unit_day_artifact` can also provide it when the artifact was
+published with a `site_volume` extension for the requested metric; see the
+[artifact operation and extension matrix](data-model.md#operation-and-extension-matrix).
+Pre-melted summaries and moments do not retain the required whole-site evidence.
 The [worked example](#worked-example) shows mean and ratio metrics. Read the
 output as window-specific absolute and relative impact, not as a new per-unit
 estimate; see [Reading results](reading-results.md) and
@@ -270,26 +273,29 @@ precision; adding units inside each cluster adds little.
   regardless of `cluster`. `mean`, `conversion`, and `ratio` are
   therefore the metric types that actually produce a clustered sitewide
   reading.
-- **A `MomentSource`-backed `Analysis`.** `from_unit_summary`,
-`from_unit_panel`, and `from_moments` all start from a pre-melted unit
-summary or a precomputed moments cube -- none retains the raw event stream
-`sitewide()` needs to sum a whole-site total over. Only a native instance
-(`Analysis(experiment_name, definitions_path, con)` /
-`Analysis.from_definitions(...)`) supports it; the others raise
-`CapabilityError` naming `from_definitions` as the fix.
+- **Summary and moments sources.** `from_unit_summary`,
+  `from_unit_panel`, and `from_moments` start from pre-melted outcomes or
+  moments and cannot provide the whole-site raw-event total required by
+  `sitewide()`. Use `from_definitions` for a native source, or adopt a
+  unit-day artifact published with the `site_volume` extension for the
+  requested metric; see the [artifact operation and extension
+  matrix](data-model.md#operation-and-extension-matrix). An artifact without
+  this extension cannot supply site-volume evidence.
 - **An ambiguous arm.** With several non-control arms enrolled and no
   `arm=` given, `sitewide()` raises `ValueError` naming the candidates
   rather than silently picking one for you.
 
 ## Worked example
 
-`sitewide()` needs the native (`from_definitions`) path: a definitions
-directory plus a DuckDB connection, same as
-[The data model](data-model.md#running-it). The event log below carries
-two kinds of "off-experiment" activity on purpose -- a `page_view`
-marks enrollment, `purchase` is the revenue metric, `session_end` backs
-a ratio metric's denominator, and a block of background purchases from
-users who were never exposed at all still count toward the site total:
+This worked example uses the native `from_definitions` path: a definitions
+directory plus a DuckDB connection, as in
+[The data model](data-model.md#running-it). The alternative artifact path
+requires publishing the `site_volume` extension for the metric as described
+in the [operation and extension matrix](data-model.md#operation-and-extension-matrix).
+The event log below carries two kinds of "off-experiment" activity on
+purpose -- a `page_view` marks enrollment, `purchase` is the revenue metric,
+`session_end` backs a ratio metric's denominator, and background purchases
+from users who were never exposed still count toward the site total:
 
 <!-- invisible-code-block: python
 from pathlib import Path
