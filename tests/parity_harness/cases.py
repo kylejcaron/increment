@@ -2288,23 +2288,11 @@ def _sequential_missing_zero_mean_ratio_case(
 
     def measure_two_looks() -> None:
         assert messy
-        import ibis
-
         con = warehouse_connection(rows)
-        sql: list[str] = []
-        execute_sql = con.raw_sql
-        to_relation = con._to_duckdb_relation
 
-        def capture_raw_sql(query: Any, *args: Any, **kwargs: Any) -> Any:
-            sql.append(query if isinstance(query, str) else str(query))
-            return execute_sql(query, *args, **kwargs)
+        from .query_log import enable_query_log, query_log
 
-        def capture_relation(expr: Any, *args: Any, **kwargs: Any) -> Any:
-            sql.append(ibis.to_sql(expr, dialect="duckdb"))
-            return to_relation(expr, *args, **kwargs)
-
-        con.raw_sql = capture_raw_sql
-        con._to_duckdb_relation = capture_relation
+        enable_query_log(con)
         native = _track_connection(
             make_analysis(con, defs, experiment="exp", plan=_m3_native_bound_plan(defs, design)),
             con,
@@ -2344,7 +2332,7 @@ def _sequential_missing_zero_mean_ratio_case(
             )
             assert first != second
         assert all(cell.alpha > 0 for cell in second.registration.roster)
-        _m3_print_measurements(sql, first, second, [first_bytes, second_bytes])
+        _m3_print_measurements(query_log(con), first, second, [first_bytes, second_bytes])
         _close_parity_analysis(native)
 
     return ParityCase(
