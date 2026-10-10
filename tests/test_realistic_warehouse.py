@@ -243,6 +243,34 @@ def test_daily_and_asof_lift_cover_all_metrics(analysis):
 
 
 @pytest.mark.integration
+def test_realistic_warehouse_artifact_replay_matches_native(analysis, con):
+    from increment.query.session import WarehouseArtifactStore
+
+    store = WarehouseArtifactStore(con, schema_name="m3_realistic")
+    reference = analysis.publish_unit_day_artifact(store)
+    adopted = Analysis.from_unit_day_artifact(
+        store, reference, expected_context=analysis.artifact_context
+    )
+    expected = {
+        (row.metric, row.group_id): row.require_lift() for row in _lift_rows(analysis.run())
+    }
+    observed = {(row.metric, row.group_id): row.require_lift() for row in _lift_rows(adopted.run())}
+    assert expected.keys() == observed.keys()
+    for cell, expected_lift in expected.items():
+        observed_lift = observed[cell]
+        assert observed_lift.value == pytest.approx(expected_lift.value, abs=1e-9)
+        for actual, expected_endpoint in (
+            (observed_lift.lb, expected_lift.lb),
+            (observed_lift.ub, expected_lift.ub),
+        ):
+            if expected_endpoint is None:
+                assert actual is None
+            else:
+                assert actual == pytest.approx(expected_endpoint, abs=1e-9)
+    adopted.close()
+
+
+@pytest.mark.integration
 def test_export_from_moments_round_trips_run_exactly(analysis, tmp_path):
     """A real export/rehydrate must reproduce run() exactly, including the
     declared plan: without it a guardrail comes back unassigned and
