@@ -5,7 +5,8 @@ This module intentionally has no query-layer dependencies.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import json
+from collections.abc import Iterable, Mapping
 from datetime import date, datetime
 from enum import StrEnum
 from hashlib import sha256
@@ -13,7 +14,7 @@ from typing import Any, Literal, NoReturn
 
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator, model_validator
 
-from increment._canonical import canonical_digest_bytes, canonical_json_bytes
+from increment._canonical import _jcs_float, canonical_digest_bytes, canonical_json_bytes
 from increment._immutable import _FrozenMapping
 from increment._multiplicity import MultiplicityFamily
 from increment.errors import (
@@ -642,6 +643,43 @@ class StreamingDigest:
         ) % (1 << 256)
         self.count += 1
 
+    def update_rows(self, rows: Iterable[Mapping[str, object]]) -> None:
+        """Digest many rows, equal to one ``update`` call per row.
+
+        A dict row of plain scalars is encoded directly in the digest's
+        canonical layout; any other row goes through the generic encoder.
+        """
+        layouts: dict[tuple[str, ...], tuple[tuple[str, ...], tuple[bytes, ...]]] = {}
+        total = 0
+        count = 0
+        for row in rows:
+            payload = None
+            if type(row) is dict:
+                order = tuple(row)
+                layout = layouts.get(order)
+                if layout is None:
+                    keys = tuple(sorted(order, key=lambda key: canonical_json_bytes(key)))
+                    prefixes = tuple(
+                        b"[" + json.dumps(key, ensure_ascii=False).encode("utf-8") + b","
+                        for key in keys
+                    )
+                    layout = layouts[order] = (keys, prefixes)
+                keys, prefixes = layout
+                parts = []
+                for key, prefix in zip(keys, prefixes, strict=True):
+                    scalar = _digest_scalar_bytes(row[key])
+                    if scalar is None:
+                        break
+                    parts.append(prefix + scalar + b"]")
+                else:
+                    payload = b'["mapping",[' + b",".join(parts) + b"]]"
+            if payload is None:
+                payload = _digest_json_bytes(row)
+            total += int.from_bytes(sha256(payload).digest(), "big")
+            count += 1
+        self.accumulator = (self.accumulator + total) % (1 << 256)
+        self.count += count
+
     def hexdigest(self):
         return sha256(
             canonical_json_bytes(
@@ -691,6 +729,35 @@ def _restore_collection(collection_type, rows, metadata, source, sequential_snap
 
 def _digest_json_bytes(value):
     return canonical_digest_bytes(value)
+
+
+def _digest_scalar_bytes(value: object) -> bytes | None:
+    """Canonical digest bytes of a plain scalar, or None when it is not one.
+
+    Mirrors ``canonical_digest_bytes`` for ``None``, ``bool``, ``int``, ``float``
+    and ``str`` exactly: integers are typed full-width, a zero float renders as
+    ``0``, strings are UTF-8 JSON. Subclasses and other types defer to the
+    generic encoder.
+    """
+    if value is None:
+        return b"null"
+    kind = type(value)
+    if kind is str and isinstance(value, str):
+        # JSON escapes only quotes, backslashes and control characters; a string
+        # that cannot be encoded takes the generic path and its canonical refusal.
+        try:
+            if value.isprintable() and '"' not in value and "\\" not in value:
+                return b'"' + value.encode("utf-8") + b'"'
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        except UnicodeEncodeError:
+            return None
+    if kind is bool:
+        return b"true" if value else b"false"
+    if kind is int:
+        return b'["integer","' + str(value).encode() + b'"]'
+    if kind is float and isinstance(value, float):
+        return b"0" if value == 0.0 else _jcs_float(value)
+    return None
 
 
 def cell_order(cell):

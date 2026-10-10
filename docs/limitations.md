@@ -288,6 +288,41 @@ coefficient substituted, not exact finite-sample inference, so the width ratio m
 residual-variance shrinkage from fitting theta and does not isolate the added sampling
 variance of the estimate. Unequal allocation and arm-specific slopes are outside that design.
 
+### Percentile winsorization needs the cutoff above the zero atom, and its size route is provisional
+
+The pooled upper-percentile winsorized mean is defined for nonnegative outcomes with a mass
+at zero: a zero is an ordinary pool member for the cutoff, the clipped means and the
+cutoff indicator, and the arm-wise log-kernel pilot resamples each arm's zeros with the
+same probability as any positive value. Two limits are inherent to that estimand, and one
+is a construction restriction. First, the percentile must sit strictly above the pooled
+zero share: at or below it the population cutoff is zero, every winsorized mean is
+identically zero and the relative contrast is undefined. The implemented guard is the
+empirical type-7 rule "the cutoff's lower neighbour is a zero", which also refuses the
+straddle case where the cutoff interpolates between zero and the smallest positive
+outcome: there the capped means are positive (each arm's cutoff times its positive share),
+but the cutoff is an interpolation artefact below every positive outcome that no
+smooth-cutoff construction describes, so the request refuses
+(`estimation.winsor.cutoff_in_zero_atom`) rather than reporting such a contrast. Second,
+just above that boundary the sampling law of the
+cutoff has an atom at zero; the bootstrap reproduces it, each replicate whose resampled
+cutoff lands on a zero is a failed root, and the interval is reported unavailable
+(`bootstrap_replicate_failure`). The probability of such a replicate is the probability
+that the pooled zero count of the resample exceeds the cutoff rank, which falls below
+`1e-5` once `(q - pi) N` exceeds roughly `4.5 sqrt(N pi (1 - pi))` for pooled zero share `pi`.
+
+The default `pooled-size-route-v1` chooses between two constructions of the same
+estimand: the full-procedure bootstrap-t below 20,000 pooled units or fewer than 100
+expected units above the cutoff, the analytic normal influence interval otherwise. The
+thresholds are a provisional engineering choice; the campaign that would calibrate both
+constructions on zero-inflated designs across that boundary (tracked as `1e0h`) has not been executed, and the
+positive-only calibration record (12 alternative rows with clipped-variance failures,
+contamination width failures) carries over to both. Prototype evidence only (300
+repetitions per design, zero-inflated lognormal arms): at 1,000 and 10,000 units per arm the
+two constructions produce intervals of the same width within 1% and the same coverage within
+Monte-Carlo resolution; at 200 units per arm neither is at nominal. The influence interval is
+a first-order normal approximation and omits the bootstrap-t refinement, which is why small
+pools keep the bootstrap. Both methods remain `experimental` and withhold decision evidence.
+
 ## Metric types with no supported estimand
 
 ### Conversion and retention arms: dense counts use the delta method, sparse counts are estimated exactly, not refused

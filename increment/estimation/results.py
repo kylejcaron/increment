@@ -54,7 +54,12 @@ from increment.estimation.sequential_result import (
     SequentialInferenceResult,
     SequentialResult,
 )
-from increment.winsor import BootstrapReference, WinsorConfidenceSet, winsor_refuse
+from increment.winsor import (
+    BootstrapReference,
+    InfluenceReference,
+    WinsorConfidenceSet,
+    winsor_refuse,
+)
 
 RelativeUnavailableReason = Literal[
     "joint_covariance_indefinite",
@@ -839,11 +844,13 @@ class LiftEstimate(_RowIdentity):
     "binomial", or "confidence_set". Winsor confidence sets persist raw
     construction state and endpoint statuses, expose no posterior, and
     reinvert through ``reintervalize(alpha)``. Their public
-    ``confidence_set.qualification`` is either
-    ``pointwise_asymptotic_model_conditioned_v1`` (bootstrap candidate) or
-    ``uniform_support_conditioned_v1`` (rank method); neither is an
-    unqualified finite-sample promise. Bootstrap p-values invert stored roots;
-    rank p-values are alpha when the set excludes the null, else one.
+    ``confidence_set.qualification`` names the construction that ran:
+    ``pointwise_asymptotic_model_conditioned_v1`` (bootstrap candidate),
+    ``pointwise_asymptotic_influence_v1`` (analytic influence interval) or
+    ``uniform_support_conditioned_v1`` (rank method); none is an unqualified
+    finite-sample promise. Bootstrap p-values invert stored roots; analytic
+    p-values are the two-sided normal tail of the stored pivot; rank p-values
+    are alpha when the set excludes the null, else one.
     ``dof`` retains cluster degrees of freedom, so ``dof=None`` does not
     imply Normal inference: a Welch reference has its own ``reference_df``.
     Relative t p-values use this reference; posterior-derived stats refuse it.
@@ -1387,7 +1394,7 @@ class LiftEstimate(_RowIdentity):
             null_abs=self.null_abs,
             preferred_direction=self.preferred_direction,
             reference=region.reference
-            if isinstance(region.reference, BootstrapReference)
+            if isinstance(region.reference, BootstrapReference | InfluenceReference)
             else None,
         )
         return self.model_copy(
@@ -1732,14 +1739,16 @@ class LiftEstimate(_RowIdentity):
         if self._sampling_availability() is False:
             return None
         if self.confidence_set is not None:
-            if isinstance(self.confidence_set.reference, BootstrapReference):
+            reference = self.confidence_set.reference
+            null = self.null_abs if self.null_abs is not None else self.null_lift
+            if isinstance(reference, BootstrapReference):
                 from increment.estimation._winsor_bootstrap import bootstrap_p_value
 
-                return bootstrap_p_value(
-                    self.confidence_set.reference,
-                    self.null_abs if self.null_abs is not None else self.null_lift,
-                    relative=self.null_abs is None,
-                )
+                return bootstrap_p_value(reference, null, relative=self.null_abs is None)
+            if isinstance(reference, InfluenceReference):
+                from increment.winsor import influence_p_value
+
+                return influence_p_value(reference, null, relative=self.null_abs is None)
             return self.confidence_set.alpha if self.stat_sig() else 1.0
         if self.null_abs is not None:
             return self._null_abs_p_value()

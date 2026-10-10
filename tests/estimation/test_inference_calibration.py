@@ -328,6 +328,7 @@ def _winsor_shared_quantile_regions(control, treatment, quantiles, *, stream=0):
     from increment.errors import CodedError
     from increment.estimation._winsor_bootstrap import (
         _CHUNK,
+        _realized_draw_and_logs,
         bootstrap_confidence_set,
         fit_positive_log_pilot,
         full_procedure_statistics,
@@ -413,17 +414,25 @@ def _winsor_shared_quantile_regions(control, treatment, quantiles, *, stream=0):
     for start in range(0, spec.replicates, _CHUNK):
         size = min(_CHUNK, spec.replicates - start)
         draws = []
+        draw_logs = []
         with np.errstate(all="ignore"):
             for z, pilot, (index_stream, noise) in zip(centers, pilots, generators, strict=True):
                 indices = index_stream.integers(len(z), size=(size, len(z)))
-                draws.append(
-                    np.exp(z[indices] + pilot.bandwidth * noise.standard_normal((size, len(z))))
-                )
+                log_draw = z[indices] + pilot.bandwidth * noise.standard_normal((size, len(z)))
+                draw, realized_log = _realized_draw_and_logs(log_draw)
+                draw_logs.append(realized_log)
+                draws.append(draw)
             draws = tuple(draws)
+            draw_logs = tuple(draw_logs)
             pooled = np.quantile(np.concatenate(draws, axis=1), wanted, axis=1, method="linear")
             for order, entry in enumerate(ready):
                 statistics = full_procedure_statistics(
-                    draws, wanted[order], ci, ti, cutoff=pooled[order]
+                    draws,
+                    wanted[order],
+                    ci,
+                    ti,
+                    cutoff=pooled[order],
+                    log_samples=draw_logs,
                 )
                 lr = (statistics.log_relative - entry.center_log) / statistics.log_se
                 ar = (statistics.additive - entry.center_delta) / statistics.additive_se

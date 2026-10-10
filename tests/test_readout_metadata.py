@@ -20,6 +20,60 @@ def test_streaming_digest_is_order_independent_but_counts_duplicates():
     assert forward.hexdigest() != reverse.hexdigest()
 
 
+def test_batched_digest_equals_row_wise_updates_on_every_scalar_shape():
+    """The direct scalar encoder and the generic encoder must agree byte for byte."""
+    import datetime as dt
+
+    import numpy as np
+    import pytest
+
+    from increment._canonical import CanonicalJSONError
+
+    rows = [
+        {"unit_id": str(index), "group_id": "control" if index % 2 else "treatment", "y": value}
+        for index, value in enumerate(np.random.default_rng(3).lognormal(size=500).tolist())
+    ]
+    rows += [
+        {"unit_id": f"s{index}", "group_id": "t", "y": value}
+        for index, value in enumerate(
+            (0.0, -0.0, 1.0, 2.5, 1e21, 9.99e20, 1e-6, 9.9e-7, 123456789.123456789, -3.25)
+        )
+    ]
+    rows += [
+        {"unit_id": "tiny", "group_id": "t", "y": 5e-324},
+        {"unit_id": "huge", "group_id": "t", "y": 1.7e308},
+        {
+            "b": True,
+            "n": None,
+            "i": 2**70,
+            "neg": -17,
+            "s": 'ü " \\ \n \u2028 \U0001f600',
+            "f": 7.0,
+        },
+        {"z": [1, 2, {"a": 1}], "d": dt.datetime(2024, 1, 2, tzinfo=dt.UTC), "k": 3},
+        {"unit_id": "1", "group_id": "control", "y": 0.0, "extra": {"nested": [1.5, "x"]}},
+        {"x": np.float64(2.5), "i": 4},
+        {"b_key": 1, "a_key": 2, "ä": 3, "Z": 4, "z": 5},
+        {"only_other_order": 1, "a": 2},
+    ]
+    row_wise = StreamingDigest()
+    for row in rows:
+        row_wise.update(row)
+    batched = StreamingDigest()
+    batched.update_rows(iter(rows))
+    assert (batched.accumulator, batched.count) == (row_wise.accumulator, row_wise.count)
+    assert batched.hexdigest() == row_wise.hexdigest()
+    with pytest.raises(CanonicalJSONError) as refusal:
+        StreamingDigest().update_rows([{"y": float("nan")}])
+    assert refusal.value.code == "artifact.digest.nonfinite"
+    for surrogate_row in ({"s": "\ud800"}, {"s": "ok\udfff"}, {"\udc00": 1}):
+        with pytest.raises(CanonicalJSONError) as generic:
+            StreamingDigest().update(surrogate_row)
+        with pytest.raises(CanonicalJSONError) as direct:
+            StreamingDigest().update_rows([surrogate_row])
+        assert direct.value.code == generic.value.code == "artifact.digest.json"
+
+
 def test_metadata_context_is_deeply_immutable_and_portable():
     result = IntegrityResult(
         status="not_applicable",

@@ -8614,6 +8614,242 @@ def _exact_retention_case(
     )
 
 
+def _winsor_ingress_rows(
+    *, treatment_arms: int, include_zero: bool, copies: int = 1
+) -> list[dict[str, Any]]:
+    """Copy the shared event fixture into a 2/3-arm winsor pool.
+
+    ``copies`` repeats every enrolled unit, with perturbed purchase revenue, so a
+    cell can exceed the pooled size at which the default route turns analytic.
+    """
+    from . import matrix_data as md
+
+    rows = [row for row in md.event_rows(positive=True) if row["user_id"] != "fresh"]
+    arm_by_unit = {
+        row["user_id"]: row["group_id"]
+        for row in rows
+        if row.get("group_id") in ("control", "treatment")
+    }
+    if treatment_arms == 2:
+        treatment_units = {unit for unit, arm in arm_by_unit.items() if arm == "treatment"}
+        clones = []
+        for row in rows:
+            if row["user_id"] in treatment_units:
+                cloned = {**row, "user_id": f"treatment_2_{row['user_id']}"}
+                if row.get("group_id") == "treatment":
+                    cloned["group_id"] = "treatment_2"
+                clones.append(cloned)
+        rows.extend(clones)
+        arm_by_unit.update({f"treatment_2_{unit}": "treatment_2" for unit in treatment_units})
+    if include_zero:
+        zeroed = {
+            next(
+                unit
+                for unit, arm in arm_by_unit.items()
+                if arm == group
+                and any(row["user_id"] == unit and row.get("revenue") is not None for row in rows)
+            )
+            for group in ("control", "treatment", "treatment_2")
+            if group in arm_by_unit.values()
+        }
+        for row in rows:
+            if row["user_id"] in zeroed and row.get("revenue") is not None:
+                row["revenue"] = 0.0
+        for unit in zeroed:
+            assert sum(row["revenue"] or 0.0 for row in rows if row["user_id"] == unit) == 0.0
+    if copies > 1:
+        enrolled = set(arm_by_unit)
+        extra = []
+        for copy_index in range(1, copies):
+            scale = 1 + copy_index / (4 * copies)
+            for row in rows:
+                if row["user_id"] not in enrolled:
+                    continue
+                cloned = {**row, "user_id": f"clone_{copy_index}_{row['user_id']}"}
+                revenue = cloned.get("revenue")
+                if isinstance(revenue, float) and revenue > 0:
+                    cloned["revenue"] = round(revenue * scale, 6)
+                extra.append(cloned)
+        rows.extend(extra)
+    return rows
+
+
+def _winsor_ingress_case(  # noqa: PLR0915
+    *, id: str, treatment_arms: int, include_zero: bool = False, copies: int = 1
+) -> ParityCase:
+    from increment.semantics.models import Winsorization
+    from increment.winsor import WinsorConfidenceSet
+
+    rows = _winsor_ingress_rows(
+        treatment_arms=treatment_arms, include_zero=include_zero, copies=copies
+    )
+    analytic = copies > 1
+    plan = AnalysisPlan(primary="revenue")
+    definitions = ds.definitions_dict(plan=plan)
+    definitions["metrics"] = [
+        {
+            "type": "mean",
+            "name": "revenue",
+            "entity": "user_id",
+            "fact": "purchase",
+            "aggregation": "sum",
+            "window_days": 1,
+            "preferred_direction": "increase",
+            "winsorization": {"upper_percentile": 0.9},
+        }
+    ]
+
+    def native() -> Analysis:
+        con = ds.duckdb_connection(rows)
+        try:
+            analysis = make_analysis(
+                con, Definitions.model_validate(copy.deepcopy(definitions)), experiment="exp"
+            )
+        except BaseException:
+            con.disconnect()
+            raise
+        return _track_connection(analysis, con)
+
+    def build_artifact() -> Analysis:
+        con = ds.duckdb_connection(rows)
+        try:
+            source = make_analysis(
+                con, Definitions.model_validate(copy.deepcopy(definitions)), experiment="exp"
+            )
+        except BaseException:
+            con.disconnect()
+            raise
+        return _publish_and_adopt(con, source)
+
+    def metric() -> MetricSpec:
+        return MetricSpec(
+            name="revenue",
+            type="mean",
+            winsorization=Winsorization(upper_percentile=0.9),
+            preferred_direction="increase",
+        )
+
+    def build_summary() -> Analysis:
+        con = ds.duckdb_connection(rows)
+        try:
+            frame = ds.unit_summary_frame(con)
+        finally:
+            con.disconnect()
+        return Analysis.from_unit_summary(
+            frame, unit="user_id", group="variant", control="control", metrics=[metric()], plan=plan
+        )
+
+    def build_panel() -> Analysis:
+        con = ds.duckdb_connection(rows)
+        try:
+            summary = ds.unit_summary_frame(con)
+        finally:
+            con.disconnect()
+        return Analysis.from_unit_panel(
+            ds.unit_panel_frame(summary),
+            unit="user_id",
+            group="variant",
+            date="date",
+            control="control",
+            metrics=[metric()],
+            plan=plan,
+        )
+
+    def build_moments() -> Analysis:
+        source = build_summary()
+        try:
+            return _export_and_replay(source, [metric()])
+        finally:
+            _close_parity_analysis(source)
+
+    def inspect_retained(results: Any) -> None:
+        found = {row.group_id: row for row in results}
+        treatments = {"treatment"} if treatment_arms == 1 else {"treatment", "treatment_2"}
+        assert set(found) == treatments
+        expected_arms = (
+            ("control", "treatment")
+            if treatment_arms == 1
+            else ("control", "treatment", "treatment_2")
+        )
+        references = []
+        for treatment, row in found.items():
+            assert type(row).model_validate_json(row.model_dump_json()) == row
+            confidence = row.confidence_set
+            assert isinstance(confidence, WinsorConfidenceSet)
+            assert (
+                WinsorConfidenceSet.model_validate_json(confidence.model_dump_json()) == confidence
+            )
+            assert confidence.method == (
+                "influence-normal-v1" if analytic else "positive-log-kernel-bootstrap-t-v1"
+            )
+            assert confidence.raw.inference.method == "pooled-size-route-v1"
+            reference = confidence.reference
+            references.append(reference)
+            assert tuple(arm.group_id for arm in reference.raw.arms) == expected_arms
+            assert (reference.control, reference.treatment) == ("control", treatment)
+            assert reference.observed_cutoff is not None
+            if analytic:
+                assert reference.scaled_density > 0
+                assert reference.log_relative.se > 0 and reference.additive.se > 0
+            else:
+                assert reference.pilot_cutoff is not None
+                assert len(reference.log_relative.roots) == len(reference.additive.roots) == 1999
+                assert reference.failure_indices == ()
+                expected_zero_count = 1 if include_zero else 0
+                assert all(pilot.zero_count == expected_zero_count for pilot in reference.pilots)
+            assert confidence.relative.lower.value is not None
+            assert confidence.relative.upper.value is not None
+            assert confidence.additive.lower.value is not None
+            assert confidence.additive.upper.value is not None
+        if treatment_arms == 2:
+            assert references[0].observed_cutoff == references[1].observed_cutoff
+            if not analytic:
+                assert references[0].pilot_cutoff == references[1].pilot_cutoff
+
+    return ParityCase(
+        id=id,
+        build={
+            "from_definitions": native,
+            "from_unit_day_artifact": build_artifact,
+            "from_unit_summary": build_summary,
+            "from_unit_panel": build_panel,
+            "from_moments": build_moments,
+        },
+        waive={
+            "from_switchback_panel": "switchback aggregation does not provide percentile-winsor independent-unit inference"
+        },
+        waived_refusal_codes={
+            "from_unit_panel": "estimation.winsor.raw_state_required",
+            "from_moments": "estimation.winsor.raw_state_required",
+        },
+        readout_probe=inspect_retained,
+        metrics=("revenue",),
+        slow=True,
+    )
+
+
+def _winsor_three_arm_case() -> ParityCase:
+    return _winsor_ingress_case(id="winsor-percentile-three-arm", treatment_arms=2)
+
+
+def _winsor_zero_inclusive_case(treatment_arms: int) -> ParityCase:
+    return _winsor_ingress_case(
+        id=f"winsor-percentile-zero-inclusive-{treatment_arms + 1}-arm",
+        treatment_arms=treatment_arms,
+        include_zero=True,
+    )
+
+
+def _winsor_size_routed_case() -> ParityCase:
+    """A pooled size past the route threshold, so the analytic interval runs."""
+    return _winsor_ingress_case(
+        id="winsor-percentile-size-routed-analytic",
+        treatment_arms=1,
+        include_zero=True,
+        copies=170,
+    )
+
+
 PARITY_CASES: tuple[ParityCase, ...] = (
     *_triggered_day_axis_cases(),
     _triggered_encouragement_compliance_case(),

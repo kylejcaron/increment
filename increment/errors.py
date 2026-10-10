@@ -853,6 +853,7 @@ RETIRED_CODES: Mapping[str, str | tuple[str, ...] | None] = MappingProxyType(
         "estimation.winsor.bootstrap_replicate_failure": None,
         "estimation.winsor.bootstrap_tail_unresolved": None,
         "estimation.winsor.empty_region": None,
+        "estimation.winsor.pilot_nonpositive_outcome": "estimation.winsor.pilot_negative_outcome",
         "facade.analysis.source_context_design_disagrees_contrast": "facade.analysis.source_context_design_disagrees_arm",
         "frame.frame_panel.metric_was_declared": "frame.frame_totals.metric_was_declared",
         "frame.metric.finite_sample_metric_type": "conversion_inference.finite_sample.metric_type",

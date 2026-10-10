@@ -28,6 +28,7 @@ Reproduce this table with `uv run --extra demo --extra tables --extra dashboard 
 | Ratio denominator-precision advisory, fixed horizon | yes | yes | refused | yes | yes | yes |
 | Informative Normal/Student-t/mixture log-lift priors, fixed-horizon mean/ratio/conversion/mean CUPED | yes | yes | not comparable (SOURCE — matched parallel-arm data has no switchback schedule) | yes | yes | yes |
 | Fixed-threshold winsorization under sequential inference | yes | yes | refused | yes | yes | checkpoint replay |
+| Pooled percentile winsorization, fixed horizon, default size route (`winsor-percentile-three-arm`, `winsor-percentile-zero-inclusive-2-arm`: pools below the route threshold run the zero-aware bootstrap; `winsor-percentile-size-routed-analytic`: a 20,400-unit pool runs the analytic influence interval; the executed method is recorded on the confidence set) | yes, zero outcomes included | refused (SOURCE, `estimation.winsor.raw_state_required` -- the panel collapse does not retain the exact pre-winsor unit outcomes) | refused (SOURCE, `source.frame.switchback.metric`) | yes | yes | refused (SOURCE, `estimation.winsor.raw_state_required`) |
 | Ratio metric under sequential inference | yes | yes | refused | yes | yes | checkpoint replay |
 | CUPED under sequential inference | asymptotic route | refused | refused | asymptotic route | asymptotic route | checkpoint replay |
 | Ratio CUPED under sequential inference | asymptotic route | refused | refused | asymptotic route | asymptotic route | checkpoint replay |

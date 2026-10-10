@@ -179,6 +179,98 @@ def test_sequential_quantile_drop_and_impute_are_refused_before_the_portable_ing
     assert declaration.value.code == "frame.metric.missing_impute"
 
 
+@pytest.mark.slow
+def test_percentile_winsor_three_arm_retained_state_matches_across_supported_ingresses() -> None:
+    """A real three-arm pool retains both treatment contrasts and its common cutoff state."""
+    from tests.parity_harness.cases import _winsor_three_arm_case
+
+    case = _winsor_three_arm_case()
+    result = run_case(case)
+    assert_parity(case, result)
+    assert set(result.rows) == {
+        "from_definitions",
+        "from_unit_day_artifact",
+        "from_unit_summary",
+    }
+    assert result.refusals == {
+        "from_unit_panel": "estimation.winsor.raw_state_required",
+        "from_moments": "estimation.winsor.raw_state_required",
+    }
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("treatment_arms", [1, 2], ids=["two-arm", "three-arm"])
+def test_percentile_winsor_zero_outcomes_match_across_supported_ingresses(
+    treatment_arms: int,
+) -> None:
+    """Zero outcomes are ordinary pool members on every raw-outcome source; source-limited
+    routes stay limited."""
+    from tests.parity_harness.cases import _winsor_zero_inclusive_case
+
+    case = _winsor_zero_inclusive_case(treatment_arms)
+    result = run_case(case)
+    assert_parity(case, result)
+    assert set(result.rows) == {
+        "from_definitions",
+        "from_unit_day_artifact",
+        "from_unit_summary",
+    }
+    assert result.refusals == {
+        "from_unit_panel": "estimation.winsor.raw_state_required",
+        "from_moments": "estimation.winsor.raw_state_required",
+    }
+
+
+@pytest.mark.slow
+def test_percentile_winsor_size_route_runs_the_analytic_interval_on_every_raw_source() -> None:
+    """Past the pooled-size threshold the default route executes the influence interval;
+    every raw-outcome source agrees and records the executed method."""
+    from tests.parity_harness.cases import _winsor_size_routed_case
+
+    case = _winsor_size_routed_case()
+    result = run_case(case)
+    assert_parity(case, result)
+    assert set(result.rows) == {
+        "from_definitions",
+        "from_unit_day_artifact",
+        "from_unit_summary",
+    }
+    for rows in result.rows.values():
+        (methods,) = rows.values()
+        (payload,) = methods.values()
+        confidence = payload["confidence_set"]
+        assert confidence["reference"]["method"] == "influence-normal-v1"
+        assert confidence["raw"]["inference"]["method"] == "pooled-size-route-v1"
+        assert confidence["raw"]["allocation"] == (
+            ("control", 10200, 20400),
+            ("treatment", 10200, 20400),
+        )
+
+
+def test_percentile_winsor_unsupported_ingress_classifications_remain_source_specific() -> None:
+    """Moments lack unit outcomes; switchback is a different design, not a parity route."""
+    for missing in ("error", "zero", "drop"):
+        cell = matrix.Cell("mean", "run", "winsor_percentile", "utc", missing)
+        verdicts = matrix.classify(cell).legs["rows"]
+        assert verdicts["from_moments"].status == "source_limited"
+        assert verdicts["from_moments"].outcome == matrix.Refuses(
+            "estimation.winsor.raw_state_required"
+        )
+        if missing in ("error", "zero"):
+            assert verdicts["from_unit_panel"].status == "source_limited"
+            assert verdicts["from_unit_panel"].outcome == matrix.Refuses(
+                "estimation.winsor.raw_state_required"
+            )
+        else:
+            assert verdicts["from_unit_panel"].outcome == matrix.Refuses(
+                "frame.missing_policy.panel_drop"
+            )
+        assert verdicts["from_switchback_panel"].status == "source_limited"
+        assert verdicts["from_switchback_panel"].outcome == matrix.Refuses(
+            "source.frame.switchback.metric"
+        )
+
+
 @pytest.mark.parametrize("cell", _params(matrix.iter_cells()))
 def test_cell(cell: matrix.Cell) -> None:
     """Each leg of the cell (a day-axis view has a value leg and a lift leg) runs on its own,

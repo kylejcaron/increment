@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     from increment.switchback import SwitchbackAssignmentDiagnostic
     from increment.winsor import (
         BootstrapReference,
+        InfluenceReference,
         RankReference,
         SetEndpoint,
         SetInterval,
@@ -74,6 +75,7 @@ __all__ = [
     "WinsorConfidenceSet",
     "WinsorInferenceSpec",
     "BootstrapReference",
+    "InfluenceReference",
     "RankReference",
     "WinsorPermutationTest",
     "IndependentMeanComponent",
@@ -133,6 +135,7 @@ _LAZY_IMPORTS = {
     "WinsorConfidenceSet": ("increment.winsor", "WinsorConfidenceSet"),
     "WinsorInferenceSpec": ("increment.winsor", "WinsorInferenceSpec"),
     "BootstrapReference": ("increment.winsor", "BootstrapReference"),
+    "InfluenceReference": ("increment.winsor", "InfluenceReference"),
     "RankReference": ("increment.winsor", "RankReference"),
     "WinsorPermutationTest": ("increment.winsor", "WinsorPermutationTest"),
     "IndependentMeanComponent": ("increment.estimation.armstats", "IndependentMeanComponent"),
