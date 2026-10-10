@@ -165,7 +165,7 @@ def _child_scope_table(
     key = (id(parent), node.lineno, name, kind)
     children: list[symtable.SymbolTable] = []
     for child in parent.get_children():
-        if _table_kind(child) == "type parameters":
+        if _table_kind(child) in ("type parameter", "type parameters"):
             children.extend(child.get_children())
         else:
             children.append(child)
