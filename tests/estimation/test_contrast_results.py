@@ -39,6 +39,22 @@ def _result():
     return estimate_contrast(stats, procedure).results[0]
 
 
+def test_print_preserves_additive_contrast_meaning():
+    result = _result()
+
+    rendered = str(result)
+
+    assert "metric='orders'" in rendered
+    assert "control='control'" in rendered and "treatment='treatment'" in rendered
+    assert "population='assigned'" in rendered and "scale='absolute'" in rendered
+    assert f"estimate={result.estimate.value!r}" in rendered
+    assert f"interval=({result.estimate.lb!r}, {result.estimate.ub!r})" in rendered
+
+    assert f"method={result.method!r}" in rendered
+    assert f"estimand={result.estimand!r}" in rendered
+    assert f"carryover_order={result.carryover_order}" in rendered
+
+
 def test_result_models_are_typed_and_immutable():
     result = _result()
     results = ContrastResults([result])

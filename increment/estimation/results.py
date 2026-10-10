@@ -647,6 +647,7 @@ class _RowIdentity(CodedModel, BaseModel):
     failure_context: Mapping[str, object] | None = None
     source_snapshot_id: str | None = None
     decision_scope_complete: bool | None = None
+
     decision_scope_reason_code: str | None = None
     decision_scope_reason_context: Mapping[str, object] | None = None
     family_id: str | None = None
@@ -819,6 +820,15 @@ class _RowIdentity(CodedModel, BaseModel):
         if isinstance(value, Mapping):
             return PosteriorComponents.model_validate(value)
         return value
+
+    @property
+    def reason(self) -> str | None:
+        """Return the concise persisted reason for a coded cell failure."""
+        if self.failure_code is None:
+            return None
+        context = self.failure_context or {}
+        reason = context.get("reason")
+        return reason if isinstance(reason, str) else self.failure_code
 
 
 def _selection_qualification(row: Any) -> str | None:
@@ -1482,6 +1492,12 @@ class LiftEstimate(_RowIdentity):
 
     def __repr__(self) -> str:
         """Compact interactive representation of the published estimate."""
+        identity = (
+            f"metric={self.metric!r}, group={self.group_id!r}, method={self.method!r}, "
+            f"role={self.method_role!r}, estimand={self.estimand!r}, "
+            f"population={self.analysis_population!r}, inference={self.inference!r}, "
+            f"alternative={self.alternative!r}, scale={self.value_scale!r}"
+        )
         if self.lift is None and self.failure_code is not None:
             context = self.failure_context or {}
             reason = context.get("reason")
@@ -1493,7 +1509,7 @@ class LiftEstimate(_RowIdentity):
                 }
             if not reason:
                 reason = self.failure_code
-            details = [f"metric={self.metric!r}", f"group={self.group_id!r}"]
+            details = [identity]
             details.append(f"failure={self.failure_code!r}")
             if reason is not None:
                 details.append(f"reason={reason!r}")
@@ -1505,7 +1521,7 @@ class LiftEstimate(_RowIdentity):
                 f", selection_qualification={qualification!r}" if qualification is not None else ""
             )
             return (
-                f"LiftEstimate(metric={self.metric!r}, group={self.group_id!r}, "
+                f"LiftEstimate({identity}, "
                 f"value={region.point!r}, lower={region.relative.lower!r}, "
                 f"upper={region.relative.upper!r}, reference='confidence_set'{suffix})"
             )
@@ -1516,7 +1532,7 @@ class LiftEstimate(_RowIdentity):
                 f", selection_qualification={qualification!r}" if qualification is not None else ""
             )
             return (
-                f"LiftEstimate(metric={self.metric!r}, group={self.group_id!r}, "
+                f"LiftEstimate({identity}, "
                 f"value={None if self.lift is None else self.lift.value!r}, "
                 f"relative_unavailable={self.relative_unavailable_reason!r}, "
                 f"abs_diff={self.abs_diff!r}{suffix})"
@@ -1528,8 +1544,8 @@ class LiftEstimate(_RowIdentity):
                 f", selection_qualification={qualification!r}" if qualification is not None else ""
             )
             return (
-                f"LiftEstimate(metric={self.metric!r}, group={self.group_id!r}, "
-                f"estimand={self.estimand!r}, value="
+                f"LiftEstimate({identity}, "
+                f"value="
                 f"{None if self.lift is None else self.lift.value!r} ({unit}), "
                 f"relative_set={relative.geometry}:{relative.intervals!r}, "
                 f"stat_sig={self.stat_sig()}, discovery={self.discovery!r}{suffix})"
@@ -1560,10 +1576,22 @@ class LiftEstimate(_RowIdentity):
         qualification = _selection_qualification(self)
         suffix = f", selection_qualification={qualification!r}" if qualification is not None else ""
         return (
-            f"LiftEstimate(metric={self.metric!r}, group={self.group_id!r}, "
-            f"estimand={self.estimand!r}, value={value} ({unit}), "
+            f"LiftEstimate({identity}, "
+            f"value={value} ({unit}), "
             f"{interval}, stat_sig={stat_sig}, discovery={self.discovery!r}{suffix})"
         )
+
+    __str__ = __repr__
+
+    def __repr_args__(self) -> list[tuple[str, object]]:
+        """Give Rich a compact row summary instead of the full persisted model."""
+        return [
+            ("metric", self.metric),
+            ("group", self.group_id),
+            ("population", self.analysis_population),
+            ("scale", self.value_scale),
+            ("summary", self.__repr__()),
+        ]
 
     @property
     def winsor_control_fraction_lower(self) -> float | None:

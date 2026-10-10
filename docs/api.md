@@ -139,6 +139,11 @@ repeat); the `roles=` argument of `increment.impute.pooled_mean`. A
 `pooled_mean` call without `roles=` still fills but now emits the
 `impute.pooled_mean_role_undeclared` warning.
 
+`LiftEstimate`, `BreakoutEstimate`, and `DailyLiftEstimate` expose read-only
+`reason`, derived only from their persisted coded-cell failure fields. It
+returns the persisted context reason when present and otherwise the failure
+code; it does not combine other unavailable sampling or interval reasons.
+
 **Site-volume coverage ends at `end`.** An experiment that declares
 `observation_end` after `end` now publishes site-volume coverage through `end`,
 the window its rows and the estimand use, instead of through `observation_end`.

@@ -813,9 +813,90 @@ class BreakoutEstimate(_RowIdentity):
         _infer_reference_from_legacy_dof
     )
     _check_reference: ClassVar[Any] = model_validator(mode="after")(_validate_reference_fields)
+
     _check_absolute_reference: ClassVar[Any] = model_validator(mode="after")(
         _validate_absolute_reference_fields
     )
+
+    def __repr__(self) -> str:
+        """Compact display for a breakout cell, retaining its segment and interval."""
+        from increment.estimation.results import _selection_qualification
+
+        if self.sequential_result is not None:
+            bounds = self.sequential_result.bounds
+            value = "unavailable" if self.lift is None else f"{self.lift.value:+.4g}"
+            interval = f"ratio_set=({bounds.lower}, {bounds.upper}), empty={bounds.empty}"
+        elif self.relative_confidence_set is not None:
+            region = self.relative_confidence_set
+            value = "unavailable" if self.lift is None else f"{self.lift.value:+.4g}"
+            interval = f"relative_set={region.geometry}:{region.intervals!r}"
+        elif self.binomial_set is not None:
+            bounds = self.binomial_set
+            value = "unavailable" if self.lift is None else f"{self.lift.value:+.4g}"
+            interval = (
+                f"interval=({bounds.lower:+.4g}, "
+                f"{'+inf' if bounds.upper is None else f'{bounds.upper:+.4g}'})"
+            )
+        elif self.lift is None:
+            value = "unavailable"
+            interval = "interval=unavailable"
+        else:
+            value = f"{self.lift.value:+.4g}"
+            lower = (
+                "-inf"
+                if self.lift.open_side == "lower"
+                else ("unavailable" if self.lift.lb is None else f"{self.lift.lb:+.4g}")
+            )
+            upper = (
+                "+inf"
+                if self.lift.open_side == "upper"
+                else ("unavailable" if self.lift.ub is None else f"{self.lift.ub:+.4g}")
+            )
+            interval = f"interval=({lower}, {upper})"
+
+        details = [
+            f"metric={self.metric!r}",
+            f"dimension={self.dimension!r}",
+            f"dimension_value={self.dimension_value!r}",
+            f"group={self.group_id!r}",
+            f"method={self.method!r}",
+            f"role={self.method_role!r}",
+            f"population={self.analysis_population!r}",
+            f"estimand={self.estimand!r}",
+            f"scale={self.value_scale!r}",
+            f"inference={self.inference!r}",
+            f"value={value} ({self.value_scale})",
+            interval,
+        ]
+        if self.failure_code is not None:
+            details.append(f"failure={self.failure_code!r}")
+            if self.reason is not None:
+                details.append(f"reason={self.reason!r}")
+        elif self.excluded is not None:
+            details.append(f"unavailable={self.excluded!r}")
+        if self.discovery is not None:
+            details.append(f"discovery={self.discovery!r}")
+        qualification = _selection_qualification(self)
+        if qualification is not None:
+            details.append(f"selection_qualification={qualification!r}")
+
+        if self.low_reliability:
+            details.append("low_reliability=True")
+        return f"BreakoutEstimate({', '.join(details)})"
+
+    __str__ = __repr__
+
+    def __repr_args__(self) -> list[tuple[str, object]]:
+        """Give Rich a compact row summary instead of the full persisted model."""
+        return [
+            ("metric", self.metric),
+            ("dimension", self.dimension),
+            ("dimension_value", self.dimension_value),
+            ("group", self.group_id),
+            ("population", self.analysis_population),
+            ("scale", self.value_scale),
+            ("summary", self.__repr__()),
+        ]
 
     @property
     def winsor_control_fraction_lower(self) -> float | None:
