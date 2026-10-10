@@ -816,6 +816,19 @@ distributed in trigger order. Under `A1`-`A3` the triggered sequence is one
 fixed i.i.d. sequence whose revealed prefix grows with calendar time, like the
 assigned sequence, and every calendar look is a prefix of it.
 
+### A practical triggered-health review
+
+Before interpreting a triggered result, call `analysis.health_check()` and read
+each entry by population. First review `assigned_allocation` for assignment
+integrity; then inspect `triggered_balance` and descriptive `trigger_rates` as
+separate cohort diagnostics. Check each metric's retained maturity and each
+feed's certified completeness watermark. An unavailable or not-applicable row
+is not a pass, and observed event times do not certify a feed. Finally read
+`trigger_assumptions`: balanced rates do not establish counterfactual trigger
+invariance, and the declared look policy does not prove that the analyst's
+actual look schedule followed it. The report is a sanity check, not a causal
+validity or ship verdict. See the [health-check API](../api.md#diagnostics-and-robustness).
+
 Assignment-window uptake is not covered by `A3`: a unit that triggers late has
 less of its uptake window after the trigger, so uptake is mechanically tied to
 trigger timing and the single-rate Bernoulli argument does not apply. Triggered

@@ -1519,6 +1519,30 @@ _AUXILIARY_ROWS: tuple[EntryRow, ...] = (
         ),
         _other_auxiliary_bindings("cate"),
     ),
+    _row(
+        "callable-experiment-health",
+        "`Analysis.health_check()` source diagnostics",
+        {
+            D: (_consumer("callable_experiment_health", "health_definitions_triggered"),),
+            A: (_unmeasured("No artifact health-report consumer test is registered."),),
+            OTHER: (
+                _consumer("callable_experiment_health", "health_unit_summary"),
+                CellClause(
+                    "unit panel",
+                    UnmeasuredBinding("No unit-panel health-report consumer test is registered."),
+                ),
+                CellClause(
+                    "switchback panel",
+                    UnmeasuredBinding("No switchback health-report consumer test is registered."),
+                ),
+                CellClause(
+                    "moments",
+                    UnmeasuredBinding("No moments health-report consumer test is registered."),
+                ),
+            ),
+        },
+        table="triggered-auxiliary",
+    ),
 )
 
 _BOOLEAN_CONTINUATION_CAPTURE = (

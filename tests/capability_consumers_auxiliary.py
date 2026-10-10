@@ -1252,6 +1252,27 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
             ),
         ),
     ),
+    ConsumerContract(
+        "callable_experiment_health",
+        (
+            _expectation(
+                "health_definitions_triggered",
+                "health_check()",
+                "from_definitions",
+                "declared trigger with retained native source evidence",
+                "supported",
+                "tests.test_experiment_health::test_balanced_trigger_rates_do_not_clear_assumption_risk",
+            ),
+            _expectation(
+                "health_unit_summary",
+                "health_check()",
+                "from_unit_summary",
+                "summary-backed analysis with declared randomized allocation",
+                "supported",
+                "tests.test_experiment_health::test_untriggered_summary_has_explicit_unavailable_triggered_rows",
+            ),
+        ),
+    ),
 )
 
 

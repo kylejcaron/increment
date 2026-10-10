@@ -647,6 +647,27 @@ the package-root and ordinary power-planning exports.
 
 ::: increment.absorb_factor
 
+`Analysis.health_check()` composes assignment balance, triggered-cohort balance,
+descriptive trigger rates, retained maturity/completeness evidence, and the declared
+trigger assumptions. Use it as a diagnostic alongside estimates, not as an overall
+healthy/safe verdict or a causal-validity test. Missing source evidence stays
+unavailable with its identity and reason; a non-rejected SRM does not prove that
+assignment was valid. For a triggered experiment, read the assigned and triggered
+checks separately and treat counterfactual trigger invariance and trigger-order
+stationarity as assumptions even when observed rates are balanced.
+
+```python
+report = analysis.health_check()
+for check in report.checks:
+    print(check.check, check.analysis_population, check.availability, check.conclusion)
+```
+
+:::: increment.Analysis.health_check
+
+:::: increment.results.ExperimentHealth
+
+:::: increment.results.HealthCheck
+
 ## Conditional effects and targeting
 
 `estimate_cate(..., cluster_weight="member_count")` uses every member equally.
