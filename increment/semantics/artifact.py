@@ -6,7 +6,6 @@ every public name here for one release (D6), deleted next release.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
@@ -17,6 +16,11 @@ from uuid import UUID
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
+from increment._artifact_identity import (
+    context_digest,
+    extension_digest,
+    manifest_digest,
+)
 from increment._canonical import canonical_json_bytes
 from increment.errors import InvalidRequestError, raiser, refusals
 from increment.semantics.models import (
@@ -30,7 +34,6 @@ from increment.semantics.models import (
 # Unit-day artifact contract: snapshot and provenance models. The query layer
 # owns relation reads and writes and consumes this vocabulary.
 
-_ARTIFACT_DIGEST_ROOT = b"increment.unit-day-artifact\x00v1\x00"
 _ARTIFACT_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 _ARTIFACT_CATALOG_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$-]*$")
 _ARTIFACT_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -163,15 +166,8 @@ def _artifact_canonical_json_bytes(value: Any) -> bytes:
     return canonical_json_bytes(value)
 
 
-def _artifact_digest(domain: bytes, payload: bytes) -> str:
-    return hashlib.sha256(domain + payload).hexdigest()
-
-
 def _artifact_context_digest(canonical_json: str) -> str:
-    return _artifact_digest(
-        _ARTIFACT_DIGEST_ROOT + b"context\x00",
-        canonical_json.encode("utf-8"),
-    )
+    return context_digest(canonical_json)
 
 
 def _artifact_manifest_body(value: UnitDayArtifactManifest) -> bytes:
@@ -181,10 +177,7 @@ def _artifact_manifest_body(value: UnitDayArtifactManifest) -> bytes:
 
 
 def _artifact_manifest_digest(value: UnitDayArtifactManifest) -> str:
-    return _artifact_digest(
-        _ARTIFACT_DIGEST_ROOT + b"manifest\x00",
-        _artifact_manifest_body(value),
-    )
+    return manifest_digest(_artifact_manifest_body(value))
 
 
 def _validate_json_payload(value: str, field_name: str) -> str:
@@ -982,11 +975,12 @@ ArtifactExtensionRequest = Annotated[
 ]
 
 
-def _extension_definition_digest(kind: str, canonical_json: str, domain: str) -> str:
-    return _artifact_digest(
-        _ARTIFACT_DIGEST_ROOT + domain.encode("ascii") + b"\x00" + kind.encode("utf-8") + b"\x00",
-        canonical_json.encode("utf-8"),
-    )
+def _extension_definition_digest(
+    kind: str,
+    canonical_json: str,
+    domain: Literal["extension-definition", "extension-source"],
+) -> str:
+    return extension_digest(domain, kind, canonical_json)
 
 
 class ArtifactExtensionCatalogEntry(_ArtifactBase):

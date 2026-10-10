@@ -18,13 +18,22 @@ from contextlib import ExitStack, closing
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from enum import IntEnum
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import ibis
 import ibis.expr.datatypes as dt
 import ibis.expr.operations as ops
 import ibis.expr.rules as rlz
 
+from increment._artifact_identity import (
+    ARTIFACT_V1_DOMAIN_ROOT,
+    context_digest,
+    extension_digest,
+    request_digest,
+)
+from increment._artifact_identity import (
+    manifest_digest as _manifest_digest,
+)
 from increment._canonical import CanonicalJSONError, _mapping, canonical_json_loads
 from increment._canonical import canonical_json_bytes as _canonical_json_bytes
 from increment.errors import (
@@ -40,7 +49,7 @@ if TYPE_CHECKING:
 
 _DIGEST_BATCH_ROWS = 4096
 
-DOMAIN_ROOT = b"increment.unit-day-artifact\x00v1\x00"
+DOMAIN_ROOT = ARTIFACT_V1_DOMAIN_ROOT
 
 # `digest_relation_sql_v2` (SQL text tokens) and `digest_relation_bucketed`
 # (`canonical_row_bytes`) share this v2 domain but not format ids: a stored
@@ -1388,25 +1397,27 @@ def _without(value: object, key: str) -> object:
 
 
 def manifest_sha256(manifest: object) -> str:
-    return hashlib.sha256(
-        DOMAIN_ROOT + b"manifest\x00" + canonical_json_bytes(_without(manifest, "manifest_sha256"))
-    ).hexdigest()
+    return _manifest_digest(canonical_json_bytes(_without(manifest, "manifest_sha256")))
 
 
 def context_sha256(context: object) -> str:
     mapping = _mapping(context)
     if mapping is not None and isinstance(mapping.get("canonical_json"), str):
-        payload = cast(str, mapping["canonical_json"]).encode()
+        canonical = cast(str, mapping["canonical_json"])
     else:
-        payload = canonical_json_bytes(_without(context, "sha256"))
-    return hashlib.sha256(DOMAIN_ROOT + b"context\x00" + payload).hexdigest()
+        canonical = canonical_json_bytes(_without(context, "sha256")).decode("utf-8")
+    return context_digest(canonical)
 
 
 def request_sha256(request: object) -> str:
-    return hashlib.sha256(DOMAIN_ROOT + b"request\x00" + canonical_json_bytes(request)).hexdigest()
+    return request_digest(canonical_json_bytes(request))
 
 
-def _extension_hash(kind: str, marker: bytes, payload: str) -> str:
+def _extension_hash(
+    kind: str,
+    domain: Literal["extension-definition", "extension-source"],
+    payload: str,
+) -> str:
     try:
         parsed = canonical_json_loads(payload)
     except CanonicalJSONError as exc:
@@ -1433,17 +1444,15 @@ def _extension_hash(kind: str, marker: bytes, payload: str) -> str:
             value=_safe_error_value(payload),
             route=f"pass canonical_json(...) of the {kind!r} extension payload",
         )
-    return hashlib.sha256(
-        DOMAIN_ROOT + marker + kind.encode() + b"\x00" + payload.encode()
-    ).hexdigest()
+    return extension_digest(domain, kind, payload)
 
 
 def extension_definition_sha256(kind: str, canonical_definition_json: str) -> str:
-    return _extension_hash(kind, b"extension-definition\x00", canonical_definition_json)
+    return _extension_hash(kind, "extension-definition", canonical_definition_json)
 
 
 def extension_source_provenance_sha256(kind: str, canonical_source_recipe_json: str) -> str:
-    return _extension_hash(kind, b"extension-source\x00", canonical_source_recipe_json)
+    return _extension_hash(kind, "extension-source", canonical_source_recipe_json)
 
 
 canonical_schema = canonical_schema_bytes

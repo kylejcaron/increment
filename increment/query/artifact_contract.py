@@ -14,6 +14,11 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast, runtime_checkable
 from uuid import UUID
 
+from increment._artifact_identity import (
+    ARTIFACT_V1_DOMAIN_ROOT,
+    context_digest,
+    extension_digest,
+)
 from increment._canonical import canonical_json_loads
 from increment._canonical import canonical_model_value as _dump
 
@@ -129,7 +134,7 @@ def _aggregate_sum_within_extrema_sql(total: Any, n_events: Any, minimum: Any, m
     )
 
 
-ARTIFACT_DOMAIN_ROOT = b"increment.unit-day-artifact\x00v1\x00"
+ARTIFACT_DOMAIN_ROOT = ARTIFACT_V1_DOMAIN_ROOT
 _EXTENSION_KIND_RANK: Mapping[str, int] = MappingProxyType(
     {
         "breakout_dimension": 0,
@@ -411,7 +416,7 @@ def validate_artifact_context(context: Any) -> Any:
         raise ArtifactContractError(
             "artifact.context.mismatch", "context JSON disagrees with the model context_format"
         )
-    expected = _sha256(ARTIFACT_DOMAIN_ROOT + b"context\x00" + payload.encode())
+    expected = context_digest(payload)
     if expected != supplied:
         raise ArtifactContractError(
             "artifact.context.mismatch", "context hash does not match canonical JSON"
@@ -561,15 +566,12 @@ def _request_key(request: Any) -> tuple[int, bytes]:
     return _EXTENSION_KIND_RANK[kind], _canonical_json(request).encode()
 
 
-def _extension_hash(domain: str, request: Any, canonical: str) -> str:
-    return _sha256(
-        ARTIFACT_DOMAIN_ROOT
-        + domain.encode()
-        + b"\x00"
-        + str(request.kind).encode()
-        + b"\x00"
-        + canonical.encode()
-    )
+def _extension_hash(
+    domain: Literal["extension-definition", "extension-source"],
+    request: Any,
+    canonical: str,
+) -> str:
+    return extension_digest(domain, str(request.kind), canonical)
 
 
 def _require_hashed_recipe(recipe: Any) -> None:
@@ -745,13 +747,7 @@ def _measure_recipe_key(measure: Any) -> str:
 
 def _hashed_source_recipe(request: Any, source_recipe: Any) -> dict[str, Any]:
     """Represent a source recipe by a tagged digest; the recipe itself may hold source SQL."""
-    digest = _sha256(
-        ARTIFACT_DOMAIN_ROOT
-        + b"source-recipe\x00"
-        + str(request.kind).encode()
-        + b"\x00"
-        + _canonical_json(source_recipe).encode()
-    )
+    digest = extension_digest("source-recipe", str(request.kind), _canonical_json(source_recipe))
     return {"source_recipe_format": 2, "recipe_sha256": digest}
 
 
@@ -1353,7 +1349,7 @@ def _compile_context(
         {
             "context_format": 2,
             "canonical_json": canonical,
-            "sha256": _sha256(ARTIFACT_DOMAIN_ROOT + b"context\x00" + canonical.encode()),
+            "sha256": context_digest(canonical),
         }
     )
 

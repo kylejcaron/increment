@@ -32,10 +32,14 @@ depends_on = ["increment.errors"]
 
 [[modules]]
 path = "increment.semantics"
-depends_on = ["increment._finite_sample_refusals", "increment._immutable", "increment._literals", "increment.winsor", "increment.errors", "increment._canonical"]
+depends_on = ["increment._finite_sample_refusals", "increment._immutable", "increment._literals", "increment.winsor", "increment.errors", "increment._canonical", "increment._artifact_identity"]
 
 [[modules]]
 path = "increment._canonical"
+depends_on = []
+
+[[modules]]
+path = "increment._artifact_identity"
 depends_on = []
 
 [[modules]]
@@ -303,6 +307,7 @@ depends_on = [
   "increment._window", "increment.decision", "increment.decision_wire", "increment.errors",
   "increment.estimation", "increment.plan", "increment.semantics", "increment.sources",
   "increment._source_identity", "increment.sequential_source", "increment.sequential_state",
+  "increment._artifact_identity",
 ]
 
 [[modules]]
