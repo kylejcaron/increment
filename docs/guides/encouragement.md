@@ -220,9 +220,11 @@ analysis.run_daily_lift(
 
 This reads trigger membership by day and counts each selected unit's uptake
 from its original assignment anchor. Clustered compliance uses the declared
-cluster grain; clustered daily outcome histories remain unavailable. Registered
-triggered sequential histories still return explicit unsupported-population
-cells because no growing-membership sequential construction is defined.
+cluster grain; clustered daily outcome histories remain unavailable. Under a
+registered sequential plan the triggered outcome cells are monitored on their
+own chain, but triggered compliance cells stay unavailable
+(`triggered_uptake_unsupported`): assignment-window uptake is tied to each
+unit's trigger timing, which the trigger-ordered construction cannot admit.
 
 In fixed-horizon `run()`, a weak first stage for one metric's outcome cohort
 suppresses that cohort's LATE estimate but retains its planned LATE row as a

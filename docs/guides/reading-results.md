@@ -29,8 +29,9 @@ with their full structured context on the result object.
 When a triggered experiment is read without a `population` argument, `Analysis.run()` keeps
 assigned and triggered results as separate rows. Pass `population="assigned"` or
 `population="triggered"` to select one population; a selected result never pools the two.
-Registered sequential inference remains assignment-scoped, so a triggered run preserves an
-unavailable row with its refusal code and reason rather than borrowing assigned checkpoints.
+Under a registered sequential plan each population reads its own retained chain of the
+captured checkpoint; a triggered row never borrows an assigned checkpoint, and a process
+committed without a triggered chain keeps an unavailable row with its refusal code and reason.
 
 Daily and as-of `DailyLiftEstimate` rows have a compact representation for
 ordinary printing: identity/date, estimate and interval geometry, scale,

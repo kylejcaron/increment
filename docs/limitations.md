@@ -1287,6 +1287,33 @@ The union across dates is not controlled. "This metric was flagged at least once
 has inflated FDR and no stated guarantee, and neither does picking the date with the most
 flags. Act on the current date's discovery set; do not accumulate flags across days.
 
+### Triggered sequential monitoring assumes trigger invariance and trigger-order stationarity
+
+A trigger-declared registered plan monitors the triggered population as a
+second chain whose members are revealed in first-trigger order once their
+trigger-anchored windows close. Its per-cell anytime coverage rests on the
+assigned route's assumptions plus two that no diagnostic can establish: that
+neither whether nor when a unit triggers depends on its arm (treatment may
+change which units trigger while leaving both arms' trigger rates equal, which
+`srm(population="triggered")` and `trigger_rates()` cannot see), and that
+trigger timing carries no information about the retained outcome, ratio
+components or pre-period covariate. Outside those assumptions the triggered
+contrast describes arm-selected cohorts, not the triggered intent-to-treat
+effect, and no null guarantee is asserted. Assignment-window uptake is
+mechanically tied to trigger timing, so triggered compliance cells stay
+unavailable (`triggered_uptake_unsupported`).
+
+The per-cell guarantee holds for any look schedule; the triggered family's e-BH
+verdict holds only when look times are outcome-independent, because a look rule
+that uses not-yet-finalized information (the assigned chain exposes some)
+inflates the stopped e-value's expectation. The library records the declared
+`triggered_look_policy` and reports the triggered family as exploratory unless
+outcome-independent looks were declared. Both chains need every contributing
+feed certified complete through the capture horizon; a process committed
+without a triggered chain stays assigned-only and is never backfilled. Clustered
+assignment, registered segments and breakouts remain unsupported on the
+triggered chain for the same reasons they are on the assigned one.
+
 ### Clustered CATE uncertainty is cluster-asymptotic
 
 Clustered `estimate_cate` uses a weighted CR1/HC0 score sandwich and `K-1`

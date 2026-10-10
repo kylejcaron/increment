@@ -93,9 +93,11 @@ unaffected by treatment; filtering to the triggered population does not establis
 that condition. A triggered view that the source cannot provide stays unavailable
 with its refusal code and reason. For a triggered daily/as-of refusal, choose
 **Assigned** to view the assignment-level trajectory; this does not replace or
-reinterpret the unavailable triggered series. Registered sequential checkpoints
-remain assignment-scoped; triggered group evidence is read separately from its
-pinned warehouse summary rather than borrowing an assigned checkpoint.
+reinterpret the unavailable triggered series. Under a registered sequential plan
+each population's group evidence is decoded from its own retained chain of the
+captured checkpoint, so a triggered row carries the triggered chain's prefix and
+never borrows the assigned one; a process committed without a triggered chain
+shows its triggered cells as unavailable (`triggered_chain_uncommitted`).
 
 `render_dashboard` embeds the captured evidence without querying the warehouse.
 
