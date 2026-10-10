@@ -1344,7 +1344,8 @@ class Analysis:
     def health_check(
         self, *, expected_allocation: Mapping[str, float] | None = None
     ) -> ExperimentHealth:
-        """Compose existing diagnostics without estimating outcomes or issuing a ship verdict."""
+        from increment.estimation.health import ExperimentHealth
+
         if (
             not isinstance(self._state, ContrastAnalysisState)
             and classify_source(self._src) == "native"
@@ -1365,6 +1366,7 @@ class Analysis:
         allocation_observations: Mapping[str, tuple[SRMResult | None, tuple[str, str] | None]]
         | None = None,
     ) -> ExperimentHealth:
+        from increment.estimation.assignment_integrity import assignment_integrity
         from increment.estimation.diagnostics import NotApplicable
         from increment.estimation.health import ExperimentHealth, HealthCheck
 
@@ -1377,6 +1379,38 @@ class Analysis:
 
         def srm_check(population: Literal["assigned", "triggered"]) -> HealthCheck:
             check_name = "assigned_allocation" if population == "assigned" else "triggered_balance"
+            if population == "assigned" and isinstance(self._state, ContrastAnalysisState):
+                return HealthCheck(
+                    check=check_name,
+                    analysis_population=population,
+                    availability="unavailable",
+                    code="integrity.switchback_assignment_law",
+                    context={
+                        "reason": "Switchback order randomization is not a unit-arm allocation law."
+                    },
+                )
+            if population == "assigned":
+                integrity = assignment_integrity(self._design, None)
+                if integrity.status == "not_applicable":
+                    return HealthCheck(
+                        check=check_name,
+                        analysis_population=population,
+                        availability="not_applicable",
+                        context={
+                            "reason": "The declared design has no assignment allocation to test."
+                        },
+                    )
+                if integrity.status != "not_checked_missing_counts":
+                    return HealthCheck(
+                        check=check_name,
+                        analysis_population=population,
+                        availability="unavailable",
+                        code=integrity.code,
+                        context={
+                            **dict(integrity.context),
+                            "reason": f"Assignment-law admission is {integrity.status}.",
+                        },
+                    )
             if allocation_observations is not None and population in allocation_observations:
                 result, refusal = allocation_observations[population]
                 if result is None:
@@ -1482,6 +1516,22 @@ class Analysis:
                         context={"reason": "This experiment does not declare a trigger."},
                     )
                 )
+        check_order = (
+            "assigned_allocation",
+            "triggered_balance",
+            "trigger_rates",
+            "trigger_maturity",
+            "feed_completeness",
+            "trigger_assumptions",
+        )
+        checks.sort(
+            key=lambda check: (
+                check_order.index(check.check),
+                check.analysis_population,
+                check.metric or "",
+                check.feed or "",
+            )
+        )
         return ExperimentHealth(
             checks=tuple(checks),
             source_snapshot_id=self._health_snapshot_id(),
@@ -1490,6 +1540,7 @@ class Analysis:
 
     def _append_trigger_maturity(self, checks: list[HealthCheck]) -> None:
         from increment.estimation.health import HealthCheck
+        from increment.query.artifact_contract import ArtifactContractError
 
         edges = getattr(self._src, "triggered_observation_edges", None)
         for metric in sorted(self._metrics, key=lambda item: item.name):
@@ -1510,7 +1561,7 @@ class Analysis:
                 continue
             try:
                 observed, finalized = edges(metric)
-            except CapabilityError as refusal:
+            except (CapabilityError, ArtifactContractError) as refusal:
                 checks.append(
                     HealthCheck(
                         check="trigger_maturity",
@@ -1607,7 +1658,8 @@ class Analysis:
                     analysis_population="triggered",
                     availability="unavailable",
                     context={
-                        "reason": "This source retains no per-feed completeness certificates."
+                        "reason": "This source retains no per-feed completeness certificates.",
+                        "watermark": None,
                     },
                 )
             )

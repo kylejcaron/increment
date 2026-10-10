@@ -1524,21 +1524,15 @@ _AUXILIARY_ROWS: tuple[EntryRow, ...] = (
         "`Analysis.health_check()` source diagnostics",
         {
             D: (_consumer("callable_experiment_health", "health_definitions_triggered"),),
-            A: (_unmeasured("No artifact health-report consumer test is registered."),),
+            A: (
+                _consumer("callable_experiment_health", "health_artifact_triggered"),
+                _consumer("callable_experiment_health", "health_artifact_without_extensions"),
+            ),
             OTHER: (
                 _consumer("callable_experiment_health", "health_unit_summary"),
-                CellClause(
-                    "unit panel",
-                    UnmeasuredBinding("No unit-panel health-report consumer test is registered."),
-                ),
-                CellClause(
-                    "switchback panel",
-                    UnmeasuredBinding("No switchback health-report consumer test is registered."),
-                ),
-                CellClause(
-                    "moments",
-                    UnmeasuredBinding("No moments health-report consumer test is registered."),
-                ),
+                _consumer("callable_experiment_health", "health_unit_panel"),
+                _consumer("callable_experiment_health", "health_switchback"),
+                _consumer("callable_experiment_health", "health_moments"),
             ),
         },
         table="triggered-auxiliary",

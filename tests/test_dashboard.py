@@ -511,7 +511,9 @@ def test_renders_expected_shares_from_configuration(pricing: DashboardSnapshot) 
     assert "candidate" in html
 
 
-def test_health_renderer_consumes_restored_health_report(pricing: DashboardSnapshot) -> None:
+def test_health_renderer_consumes_restored_health_report(
+    pricing: DashboardSnapshot, tmp_path: Path
+) -> None:
     from increment.results import ExperimentHealth, HealthCheck
 
     report = ExperimentHealth(
@@ -548,8 +550,9 @@ def test_health_renderer_consumes_restored_health_report(pricing: DashboardSnaps
     )
     restored = ExperimentHealth.model_validate_json(report.model_dump_json())
     snapshot = dataclasses.replace(pricing, health=restored)
-
-    html = render_health(snapshot).text
+    html_path = tmp_path / "health.html"
+    html_path.write_text(render_health(snapshot).text)
+    html = html_path.read_text()
 
     assert "Observed trigger rate" in html
     assert "No certified completeness watermark is retained." in html
