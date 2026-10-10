@@ -537,7 +537,7 @@ def test_health_expected_allocation_completes_independent_design_admission() -> 
     assert assigned.srm.expected == {"C": 0.5, "T": 0.5}
 
 
-def test_health_extreme_valid_srm_statistic_does_not_break_snapshot_id() -> None:
+def test_health_extreme_valid_srm_statistic_round_trips_through_json() -> None:
     import math
 
     analysis = Analysis.from_unit_summary(
@@ -558,6 +558,10 @@ def test_health_extreme_valid_srm_statistic_does_not_break_snapshot_id() -> None
     assert assigned.srm is not None
     assert math.isinf(assigned.srm.chi2_stat)
     assert report.source_snapshot_id is not None
+
+    restored = ExperimentHealth.model_validate_json(report.model_dump_json())
+    assert restored.checks == report.checks
+    assert restored.source_snapshot_id == report.source_snapshot_id
 
 
 def test_health_empty_trigger_population_is_unavailable_not_a_report_failure(tmp_path) -> None:

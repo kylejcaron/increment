@@ -1678,6 +1678,7 @@ class Analysis:
         )
 
     def _trigger_assumptions(self) -> HealthCheck:
+        from increment.estimation.family import sequential_family_guarantee
         from increment.estimation.health import HealthCheck
 
         runtime_inference = self._plan.inference
@@ -1689,19 +1690,11 @@ class Analysis:
         look_policy = getattr(inference, "triggered_look_policy", None)
         if registration is not None:
             look_policy = getattr(registration, "look_policy", look_policy)
-        family_models = ()
-        if registration is not None:
-            models_by_metric = {model.metric: model for model in registration.models}
-            family_models = tuple(
-                models_by_metric[cell.metric] for cell in registration.roster if cell.family
-            )
-        family_guarantee = None
-        if look_policy == "outcome_independent" and family_models:
-            family_guarantee = (
-                "asymptotic_sequential"
-                if any(model.law != "bernoulli" for model in family_models)
-                else "finite_sample"
-            )
+        family_guarantee = (
+            sequential_family_guarantee(registration, look_policy=look_policy)
+            if registration is not None and look_policy is not None
+            else None
+        )
         return HealthCheck(
             check="trigger_assumptions",
             analysis_population="triggered",

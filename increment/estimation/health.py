@@ -49,6 +49,42 @@ class HealthCheck(BaseModel):
     def _own_rates(cls, value: Mapping[str, float] | None) -> Mapping[str, float] | None:
         return None if value is None else cast(Mapping[str, float], _freeze_health(value))
 
+    @field_validator("srm", mode="before")
+    @classmethod
+    def _restore_nonfinite_srm_statistic(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        statistic = value.get("chi2_stat")
+        if not isinstance(statistic, Mapping):
+            return value
+        marker = statistic.get("$nonfinite_float")
+        if marker not in {"nan", "inf", "-inf"}:
+            return value
+        restored = dict(value)
+        restored["chi2_stat"] = {
+            "nan": float("nan"),
+            "inf": float("inf"),
+            "-inf": float("-inf"),
+        }[cast(str, marker)]
+        return restored
+
+    @field_serializer("srm", mode="wrap", when_used="json")
+    def _serialize_nonfinite_srm_statistic(self, value: SRMResult | None, handler):
+        if value is None:
+            return None
+        serialized = handler(value)
+        statistic = value.chi2_stat
+        if statistic != statistic:
+            marker = "nan"
+        elif statistic == float("inf"):
+            marker = "inf"
+        elif statistic == float("-inf"):
+            marker = "-inf"
+        else:
+            return serialized
+        serialized["chi2_stat"] = {"$nonfinite_float": marker}
+        return serialized
+
     @field_serializer("context", "rates")
     def _serialize_mappings(self, value: Mapping[str, object] | None) -> dict[str, object] | None:
         if value is None:
