@@ -2292,7 +2292,7 @@ def _sequential_missing_zero_mean_ratio_case(
 
         from .query_log import enable_query_log, query_log
 
-        enable_query_log(con)
+        query_log_enabled = enable_query_log(con)
         native = _track_connection(
             make_analysis(con, defs, experiment="exp", plan=_m3_native_bound_plan(defs, design)),
             con,
@@ -2332,7 +2332,8 @@ def _sequential_missing_zero_mean_ratio_case(
             )
             assert first != second
         assert all(cell.alpha > 0 for cell in second.registration.roster)
-        _m3_print_measurements(query_log(con), first, second, [first_bytes, second_bytes])
+        if query_log_enabled:
+            _m3_print_measurements(query_log(con), first, second, [first_bytes, second_bytes])
         _close_parity_analysis(native)
 
     return ParityCase(

@@ -5,9 +5,17 @@ from __future__ import annotations
 from typing import Any
 
 
-def enable_query_log(ibis_connection: Any) -> None:
-    """Capture every executed SQL statement on this connection using DuckDB's QueryLog."""
-    ibis_connection.con.execute("CALL enable_logging(['QueryLog'])")
+def enable_query_log(ibis_connection: Any) -> bool:
+    """Enable DuckDB's QueryLog when the installed DuckDB supports it."""
+    import duckdb
+
+    try:
+        ibis_connection.con.execute("CALL enable_logging(['QueryLog'])")
+    except duckdb.CatalogException as exc:
+        if "enable_logging" not in str(exc) or "does not exist" not in str(exc):
+            raise
+        return False
+    return True
 
 
 def query_log(ibis_connection: Any) -> list[str]:
