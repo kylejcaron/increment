@@ -167,9 +167,13 @@ _WARNINGS: dict[str, WarningSpec] = {}
 
 
 def _register_warning(
-    code: str, warning_type: type[IncrementWarning], render: Callable[..., str]
+    code: str,
+    warning_type: type[IncrementWarning],
+    render: Callable[..., str],
+    *,
+    dedupe_fields: tuple[str, ...] | None = None,
 ) -> WarningSpec:
-    spec = WarningSpec(code, warning_type, render)
+    spec = WarningSpec(code, warning_type, render, dedupe_fields=dedupe_fields)
     _WARNINGS[code] = spec
     return spec
 
@@ -202,6 +206,7 @@ _register_warning(
         f"over-reject; treat borderline "
         f"significance as fragile."
     ),
+    dedupe_fields=("metric_name",),
 )
 
 _register_warning(
@@ -214,8 +219,8 @@ _register_warning(
         "values -- is approximate and the estimand drifts with "
         f"the enrollment mix. {fix} to remove the changing-unit "
         "approximation; the plug-in standard error keeps coverage "
-        "asymptotic either way."
     ),
+    dedupe_fields=("metric_name",),
 )
 
 

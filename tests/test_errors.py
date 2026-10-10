@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import warnings
 from types import MappingProxyType
+from typing import cast
 
 import pytest
 
@@ -311,6 +312,76 @@ def test_coded_warning_survives_pickle_and_deepcopy_round_trip() -> None:
         assert cloned.context == warning.context
         assert cloned is not warning
         assert cloned.context is not warning.context
+        assert cloned.dedupe_key == warning.dedupe_key
+
+
+def test_warning_dedupe_key_is_derived_from_declared_context_and_survives_copy():
+    import copy
+    import pickle
+
+    spec = WarningSpec(
+        "test.scoped",
+        IncrementWarning,
+        lambda *, metric_name, detail: f"first {detail}",
+        dedupe_fields=("metric_name",),
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        warn(spec, context={"metric_name": "revenue", "detail": "wording A"})
+    warning = cast(IncrementWarning, caught[0].message)
+    assert warning.dedupe_key == ("test.scoped", "revenue")
+    with pytest.raises(AttributeError):
+        warning.dedupe_key = ("changed",)  # ty: ignore[invalid-assignment]
+    for restored in (pickle.loads(pickle.dumps(warning)), copy.deepcopy(warning)):
+        assert restored.dedupe_key == warning.dedupe_key
+
+    changed = WarningSpec(
+        "test.scoped",
+        IncrementWarning,
+        lambda *, metric_name, detail: f"changed {detail}",
+        dedupe_fields=("metric_name",),
+    )
+    with warnings.catch_warnings(record=True) as changed_caught:
+        warnings.simplefilter("always")
+        warn(changed, context={"metric_name": "revenue", "detail": "wording B"})
+    changed_warning = cast(IncrementWarning, changed_caught[0].message)
+    assert changed_warning.dedupe_key == warning.dedupe_key
+
+
+def test_warning_dedupe_declaration_requires_present_hashable_context_values():
+    spec = WarningSpec(
+        "test.scoped",
+        IncrementWarning,
+        lambda **_: "warning",
+        dedupe_fields=("metric_name",),
+    )
+    with pytest.raises(AssertionError, match="metric_name"):
+        warn(spec, context={})
+    with pytest.raises(AssertionError, match="hashable"):
+        warn(spec, context={"metric_name": {"nested": "mapping"}})
+    with warnings.catch_warnings(record=True) as normalized:
+        warnings.simplefilter("always")
+        warn(spec, context={"metric_name": ["revenue"]})
+    normalized_warning = cast(IncrementWarning, normalized[0].message)
+    assert normalized_warning.dedupe_key == ("test.scoped", ("revenue",))
+
+
+def test_warning_without_dedupe_declaration_has_no_key():
+    spec = WarningSpec("test.uncoded_scope", IncrementWarning, lambda **_: "warning")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        warn(spec)
+    warning = cast(IncrementWarning, caught[0].message)
+    assert warning.dedupe_key is None
+
+
+def test_warning_as_error_preserves_existing_category_and_code():
+    spec = WarningSpec("test.error_filter", IncrementWarning, lambda **_: "warning")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", IncrementWarning)
+        with pytest.raises(IncrementWarning) as raised:
+            warn(spec)
+    assert raised.value.code == "test.error_filter"
 
 
 def test_definition_error_pickle_round_trip_preserves_derived_attributes() -> None:

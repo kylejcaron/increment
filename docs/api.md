@@ -891,7 +891,10 @@ Library advisories are instances of `IncrementWarning` (or
 `filterwarnings`/`pytest.warns` matched against `RuntimeWarning`/
 `DeprecationWarning`), carrying a stable `.code` and immutable `.context`
 alongside the free-text message -- the warning counterpart to `CodedError`.
-Filter or assert on `.code` rather than message text:
+Warnings with a declared deduplication scope also carry an immutable
+`.dedupe_key`; readout operations suppress repeat emissions with the same key
+within that operation. Warnings without a declared key are never suppressed.
+Filtering and assertions should use `.code` rather than message text:
 
 ```python
 import warnings

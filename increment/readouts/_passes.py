@@ -35,24 +35,16 @@ if TYPE_CHECKING:
 
 
 def _emit_captured_lift_warnings(
-    metric_name: str,
     captured: list[Any],
-    advisory_seen: set[tuple[str, str]],
+    advisory_seen: set[tuple[object, ...]],
 ) -> None:
-    """Replay estimator warnings while deduplicating known per-metric advisories."""
+    """Replay estimator warnings, deduplicating only explicitly keyed warnings."""
     for record in captured:
-        message = str(record.message)
-        if "is open-ended (" in message:
-            advisory_kind = "open-ended-sequential"
-        elif "total clusters across arms" in message:
-            advisory_kind = "clustered-small-k"
-        else:
-            advisory_kind = None
-        if advisory_kind is not None:
-            key = (metric_name, advisory_kind)
-            if key in advisory_seen:
+        dedupe_key = getattr(record.message, "dedupe_key", None)
+        if dedupe_key is not None:
+            if dedupe_key in advisory_seen:
                 continue
-            advisory_seen.add(key)
+            advisory_seen.add(dedupe_key)
         warnings.warn(record.message, record.category, stacklevel=3)
 
 
@@ -73,7 +65,7 @@ def _lift_cells_missing_control(  # noqa: PLR0913
     preferred_direction: PreferredDirection | None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None,
     cluster: str | None,
-    advisory_seen: set[tuple[str, str]],
+    advisory_seen: set[tuple[object, ...]],
 ) -> tuple[list[LiftEstimate], list[tuple[str, str, str, str]], DecisionComputation[LiftEstimate]]:
     if family:
         from increment.decision import ArmHypothesisKey, DecisionComputation, DecisionFailure
@@ -114,10 +106,10 @@ def _lift_cells_missing_control(  # noqa: PLR0913
             )
             fallback = list(computation.results)
     except Exception:
-        _emit_captured_lift_warnings(metric.name, captured, advisory_seen)
+        _emit_captured_lift_warnings(captured, advisory_seen)
         raise
     else:
-        _emit_captured_lift_warnings(metric.name, captured, advisory_seen)
+        _emit_captured_lift_warnings(captured, advisory_seen)
         return fallback, [], computation
 
 
@@ -178,7 +170,7 @@ def _estimate_lift_cells(  # noqa: PLR0913
     null_abs: float | None,
     preferred_direction: PreferredDirection | None,
     cluster: str | None,
-    advisory_seen: set[tuple[str, str]] | None = None,
+    advisory_seen: set[tuple[object, ...]] | None = None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None = None,
     family: bool = False,
     route_alpha: float | None = None,
@@ -264,7 +256,7 @@ def _estimate_lift_cells(  # noqa: PLR0913
                                 stacklevel=3,
                             )
             except LiftGuardError as exc:
-                _emit_captured_lift_warnings(metric.name, captured, advisory_seen)
+                _emit_captured_lift_warnings(captured, advisory_seen)
                 reason = str(exc)
                 refused.append((metric.name, group_id, method.name, reason))
                 _append_lift_cell_failure(
@@ -292,7 +284,7 @@ def _estimate_lift_cells(  # noqa: PLR0913
                     stacklevel=3,
                 )
             except CodedError as exc:
-                _emit_captured_lift_warnings(metric.name, captured, advisory_seen)
+                _emit_captured_lift_warnings(captured, advisory_seen)
                 if exc.code not in _CELL_ESTIMATION_GUARD_CODES:
                     raise
                 reason = str(exc)
@@ -317,10 +309,10 @@ def _estimate_lift_cells(  # noqa: PLR0913
                     stacklevel=3,
                 )
             except Exception:
-                _emit_captured_lift_warnings(metric.name, captured, advisory_seen)
+                _emit_captured_lift_warnings(captured, advisory_seen)
                 raise
             else:
-                _emit_captured_lift_warnings(metric.name, captured, advisory_seen)
+                _emit_captured_lift_warnings(captured, advisory_seen)
                 results.extend(cell_results)
     return results, refused, _merge_decision_computations(computations)
 
@@ -369,7 +361,7 @@ def _estimate_pass(  # noqa: PLR0913
     alpha_for: float,
     role: Role | None,
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
-    advisory_seen: set[tuple[str, str]] | None,
+    advisory_seen: set[tuple[object, ...]] | None,
     retry: Literal["cells", "family", "whole", "whole_asof"] = "cells",
     methods: list[Method],
     route_alpha: float | None = None,

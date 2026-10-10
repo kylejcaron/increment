@@ -54,7 +54,6 @@ from increment.semantics.models import (
 from increment.sources import MomentsSource
 from tests.sequential_cases import registration
 from tests.test_sequential_public_sources import gaussian_plan
-from tests.warning_codes import warning_codes
 
 
 def _normal_column(mean: float, sd: float, n: int, seed: int) -> np.ndarray:
@@ -391,19 +390,16 @@ def test_registered_raw_run_refuses_unproved_sensitivity_method():
 
 
 def test_run_deduplicates_cluster_advisories_per_metric():
-    """Independent methods still emit one small-cluster advisory."""
-    n = 15
+    """Each metric warns once per operation despite multiple methods and contrasts."""
+    n = 13
+    groups = ["control"] * n + ["treatment_a"] * n + ["treatment_b"] * n
     table = pa.table(
         {
-            "user_id": [f"u{i}" for i in range(2 * n)],
-            "store": [f"s{i}" for i in range(2 * n)],
-            "variant": ["control"] * n + ["treatment"] * n,
-            "revenue": np.concatenate(
-                [
-                    np.arange(n, dtype=float) + 10.0,
-                    np.arange(n, dtype=float) + 11.0,
-                ]
-            ),
+            "user_id": [f"u{i}" for i in range(3 * n)],
+            "store": [f"s{i}" for i in range(3 * n)],
+            "variant": groups,
+            "revenue": np.arange(3 * n, dtype=float) + 10.0,
+            "orders": np.arange(3 * n, dtype=float) + 20.0,
         }
     )
     src = FrameTotalsSource.from_frame(
@@ -411,24 +407,97 @@ def test_run_deduplicates_cluster_advisories_per_metric():
         unit="user_id",
         group="variant",
         control="control",
-        metrics=[MetricSpec(name="revenue")],
-        plan=AnalysisPlan(primary="revenue"),
+        metrics=[MetricSpec(name="revenue"), MetricSpec(name="orders")],
+        plan=AnalysisPlan(primary=["revenue", "orders"]),
         cluster="store",
     )
 
-    with pytest.warns(IncrementRuntimeWarning) as captured:
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
         results = readouts.run(
+            src, decision_method=Method(name="unadjusted"), sensitivity_methods=(Method(name="m2"),)
+        )
+        readouts.run(
             src, decision_method=Method(name="unadjusted"), sensitivity_methods=(Method(name="m2"),)
         )
 
     small_k = [
-        code for code in warning_codes(captured) if code == "estimation.engine.small_total_clusters"
+        warning.message
+        for warning in captured
+        if isinstance(warning.message, IncrementRuntimeWarning)
+        and warning.message.code == "estimation.engine.small_total_clusters"
     ]
-    assert len(small_k) == 1
-    assert {(result.group_id, result.method) for result in results} == {
-        ("treatment", "unadjusted"),
-        ("treatment", "m2"),
+    assert [warning.context["metric_name"] for warning in small_k] == [
+        "revenue",
+        "orders",
+        "revenue",
+        "orders",
+    ]
+    assert {(result.metric, result.group_id, result.method) for result in results} == {
+        (metric, group, method)
+        for metric in ("revenue", "orders")
+        for group in ("treatment_a", "treatment_b")
+        for method in ("unadjusted", "m2")
     }
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", IncrementRuntimeWarning)
+        with pytest.raises(IncrementRuntimeWarning) as raised:
+            readouts.run(
+                src,
+                decision_method=Method(name="unadjusted"),
+                sensitivity_methods=(Method(name="m2"),),
+            )
+    assert raised.value.code == "estimation.engine.small_total_clusters"
+    assert raised.value.context["metric_name"] == "revenue"
+
+
+def test_captured_advisories_dedupe_only_by_declared_warning_identity():
+    from increment.errors import WarningSpec, warn
+
+    specs = (
+        WarningSpec(
+            "test.advisory.first",
+            IncrementWarning,
+            lambda **_: "same open-ended (wording)",
+            dedupe_fields=("metric_name",),
+        ),
+        WarningSpec(
+            "test.advisory.second",
+            IncrementWarning,
+            lambda **_: "same open-ended (wording)",
+            dedupe_fields=("metric_name",),
+        ),
+        WarningSpec(
+            "test.advisory.first",
+            IncrementWarning,
+            lambda **_: "changed open-ended wording",
+            dedupe_fields=("metric_name",),
+        ),
+        WarningSpec(
+            "test.advisory.uncoded",
+            IncrementWarning,
+            lambda **_: "same open-ended (wording)",
+        ),
+    )
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        for spec in specs:
+            warn(spec, context={"metric_name": "revenue"})
+
+    with warnings.catch_warnings(record=True) as replayed:
+        warnings.simplefilter("always")
+        _passes._emit_captured_lift_warnings(captured, set())
+    assert [cast(IncrementWarning, item.message).code for item in replayed] == [
+        "test.advisory.first",
+        "test.advisory.second",
+        "test.advisory.uncoded",
+    ]
+
+    with warnings.catch_warnings(record=True) as second_operation:
+        warnings.simplefilter("always")
+        _passes._emit_captured_lift_warnings(captured, set())
+    assert len(second_operation) == 3
 
 
 def test_run_all_guarded_whole_window_cells_have_explicit_outcome():

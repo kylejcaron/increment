@@ -204,7 +204,7 @@ def _new_coded_warning(cls: type[IncrementWarning]) -> IncrementWarning:
 
 
 class IncrementWarning(UserWarning):
-    """A public warning carrying a stable code and immutable call context.
+    """A public warning carrying a stable code, immutable context, and optional key.
 
     Mirrors `CodedError`: `.code` is fixed at construction and `.context`
     is an immutable snapshot. A category that must also match
@@ -220,9 +220,14 @@ class IncrementWarning(UserWarning):
         *,
         code: str,
         context: Mapping[str, object] | None = None,
+        dedupe_key: tuple[object, ...] | None = None,
     ) -> None:
         self._code = code
         self._context = cast("Mapping[str, object]", _freeze(context or {}))
+        self._dedupe_key = cast(
+            "tuple[object, ...] | None",
+            _freeze(dedupe_key) if dedupe_key is not None else None,
+        )
         super().__init__(message)
 
     @property
@@ -234,6 +239,11 @@ class IncrementWarning(UserWarning):
     def context(self) -> Mapping[str, object]:
         """Immutable snapshot of the warning's call context."""
         return self._context
+
+    @property
+    def dedupe_key(self) -> tuple[object, ...] | None:
+        """Immutable declared identity, or None when this warning is not deduplicable."""
+        return self._dedupe_key
 
     def __reduce__(
         self,
@@ -381,11 +391,12 @@ def raiser(registry: Mapping[str, RefusalSpec]) -> Callable[..., NoReturn]:
 
 @dataclass(frozen=True, slots=True)
 class WarningSpec:
-    """Stable code, warning type, and renderer for one coded warning."""
+    """Stable code, warning type, renderer, and optional deduplication scope."""
 
     code: str
     warning_type: type[IncrementWarning]
     render: Renderer
+    dedupe_fields: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         params = inspect.signature(self.render).parameters.values()
@@ -398,6 +409,14 @@ class WarningSpec:
             raise AssertionError(
                 f"WarningSpec {self.code!r} cannot bind required positional-only "
                 f"renderer parameters by keyword: {required_positional_only!r}"
+            )
+        if self.dedupe_fields is not None and (
+            not isinstance(self.dedupe_fields, tuple)
+            or any(not isinstance(field, str) or not field for field in self.dedupe_fields)
+            or len(set(self.dedupe_fields)) != len(self.dedupe_fields)
+        ):
+            raise AssertionError(
+                f"WarningSpec {self.code!r} dedupe_fields must be unique non-empty field names"
             )
 
 
@@ -433,7 +452,21 @@ def warn(
     """
     ctx = context or {}
     message = spec.render(**ctx)
-    instance = spec.warning_type(message, code=spec.code, context=ctx)
+    dedupe_key = None
+    if spec.dedupe_fields is not None:
+        try:
+            dedupe_key = (spec.code, *(_freeze(ctx[field]) for field in spec.dedupe_fields))
+        except KeyError as exc:
+            raise AssertionError(
+                f"WarningSpec {spec.code!r} requires dedupe context field {exc.args[0]!r}"
+            ) from exc
+        try:
+            hash(dedupe_key)
+        except TypeError as exc:
+            raise AssertionError(
+                f"WarningSpec {spec.code!r} dedupe fields must be hashable after normalization"
+            ) from exc
+    instance = spec.warning_type(message, code=spec.code, context=ctx, dedupe_key=dedupe_key)
     if skip_file_prefixes:
         warnings.warn(instance, skip_file_prefixes=(*skip_file_prefixes, __file__))
     else:
