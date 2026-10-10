@@ -3217,25 +3217,88 @@ def test_encouragement_retention_refuses_on_every_reachable_constructor(construc
     -- no per-unit dates to resolve `threshold_days` against), a genuinely
     different hazard the panel does not share."""
     from increment.errors import CodedError
+    from tests.capability_consumers_auxiliary import assert_refusal
     from tests.parity_harness.cases import _encouragement_retention_case
 
+    outcome_id, stage = {
+        "from_definitions": ("itt_late_definitions_refused", "read"),
+        "from_unit_day_artifact": ("itt_late_artifact_refused", "read"),
+        "from_moments": ("itt_late_moments_refused", "read"),
+        "from_unit_panel": ("itt_late_panel_refused", "construction"),
+        "from_unit_summary": ("itt_late_summary_refused", "construction"),
+    }[constructor]
     case = _encouragement_retention_case()
     if constructor == "from_unit_panel":
         with pytest.raises(CodedError) as exc_info:
             case.build[constructor]()
         assert exc_info.value.code == expected_code
+        assert_refusal("encouragement_retention_readouts", outcome_id, exc_info.value, stage=stage)
         return
     if constructor == "from_unit_summary":
         with pytest.raises(CodedError) as exc_info:
             case.build[constructor]()
         assert exc_info.value.code == expected_code
+        assert_refusal("encouragement_retention_readouts", outcome_id, exc_info.value, stage=stage)
         return
     analysis = case.build[constructor]()
     try:
         with pytest.raises(CodedError) as exc_info:
             analysis.run()
         assert exc_info.value.code == expected_code
+        assert_refusal("encouragement_retention_readouts", outcome_id, exc_info.value, stage=stage)
     finally:
         analysis.close()
         for connection in getattr(analysis, "_parity_connections", ()):
             connection.disconnect()
+
+
+def test_encouragement_switchback_identification_is_refused():
+    import polars as pl
+
+    from increment.semantics.assignment import (
+        IndependentBernoulliOrder,
+        SwitchbackAssignment,
+        SwitchbackWindow,
+    )
+    from tests.capability_consumers_auxiliary import assert_refusal
+
+    rows = [
+        {
+            "unit": unit,
+            "cycle": cycle,
+            "period": period,
+            "step": step,
+            "group": group,
+            "value": float(cycle + period + step),
+        }
+        for unit, order in (
+            ("u1", ("control", "treatment")),
+            ("u2", ("treatment", "control")),
+        )
+        for cycle in range(2)
+        for period, group in enumerate(order)
+        for step in range(3)
+    ]
+    assignment = SwitchbackAssignment(
+        sequence=IndependentBernoulliOrder(probability_ct=0.5),
+        window=SwitchbackWindow(washout_steps=1, observation_steps=2),
+    )
+    with pytest.raises(InvalidRequestError) as raised:
+        Analysis.from_switchback_panel(
+            pl.DataFrame(rows),
+            unit="unit",
+            cycle="cycle",
+            period="period",
+            step="step",
+            group="group",
+            metrics={"value": "mean"},
+            identification=_design(),
+            assignment=assignment,
+        )
+    assert raised.value.code == "source.frame.switchback.identification"
+    assert_refusal(
+        "encouragement_switchback_boundary",
+        "switchback_encouragement_identification_refused",
+        raised.value,
+        stage="construction",
+    )

@@ -30,6 +30,7 @@ from increment.estimation.variance import (
 from increment.frame import MetricSpec
 from increment.semantics.models import Measure, RatioMetric
 from tests.analysis_factory import lift_rows
+from tests.capability_consumers_scalar import RATIO_DENOMINATOR_ADVISORY, completed
 
 _METRIC = RatioMetric(
     name="rpo", entity="user", numerator=Measure(fact="num"), denominator=Measure(fact="den")
@@ -282,17 +283,25 @@ def test_advisory_reaches_every_path_that_estimates_a_ratio_metric():
     from increment.query.session import WarehouseArtifactStore
     from increment.semantics import load
 
+    def advisory_row(ingress, analysis):
+        (row,) = lift_rows(
+            completed(RATIO_DENOMINATOR_ADVISORY, f"{ingress}-advisory", analysis.run)
+        )
+        return row
+
     unit_rows = _units()
-    (summary_row,) = lift_rows(
+    summary_row = advisory_row(
+        "from_unit_summary",
         Analysis.from_unit_summary(
             pa.Table.from_pylist(unit_rows),
             unit="unit_id",
             group="group_id",
             control="control",
             metrics=[_SPEC],
-        ).run()
+        ),
     )
-    (panel_row,) = lift_rows(
+    panel_row = advisory_row(
+        "from_unit_panel",
         Analysis.from_unit_panel(
             pa.Table.from_pylist([{**r, "ds": datetime(2025, 1, 2).date()} for r in unit_rows]),
             unit="unit_id",
@@ -300,7 +309,7 @@ def test_advisory_reaches_every_path_that_estimates_a_ratio_metric():
             date="ds",
             control="control",
             metrics=[_SPEC],
-        ).run()
+        ),
     )
 
     con = ibis.duckdb.connect()
@@ -309,25 +318,27 @@ def test_advisory_reaches_every_path_that_estimates_a_ratio_metric():
     defs_path = tmp / "defs.yaml"
     defs_path.write_text(_DEFS)
     native = Analysis("rdp_test", defs_path, con)
-    (native_row,) = lift_rows(native.run())
+    native_row = advisory_row("from_definitions", native)
 
     definitions = load(defs_path)
     experiment = next(item for item in definitions.experiments if item.name == "rdp_test")
     context = artifact_context(definitions, experiment, "error")
     store = WarehouseArtifactStore(con, schema_name="artifacts")
     reference = native.publish_unit_day_artifact(store)
-    (artifact_row,) = lift_rows(
-        Analysis.from_unit_day_artifact(store, reference, expected_context=context).run()
+    artifact_row = advisory_row(
+        "from_unit_day_artifact",
+        Analysis.from_unit_day_artifact(store, reference, expected_context=context),
     )
 
     export_path = tmp / "moments.parquet"
     native.export(export_path)
-    (portable_row,) = lift_rows(
+    portable_row = advisory_row(
+        "from_moments",
         Analysis.from_moments(
             pq.read_table(export_path).to_pylist(),
             metrics=[MetricSpec(name="rps", type="ratio", numerator="n", denominator="d")],
             control="control",
-        ).run()
+        ),
     )
 
     assert summary_row.note is not None

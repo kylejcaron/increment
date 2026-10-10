@@ -12,11 +12,11 @@ separate event store.
 
 ## Documentation
 
-- [README](https://raw.githubusercontent.com/kylejcaron/increment/main/README.md): Project overview and installation.
-- [Quickstart](https://raw.githubusercontent.com/kylejcaron/increment/main/docs/guides/quickstart.md): Analyze A/B tests from Python dataframes.
-- [Method selection](https://raw.githubusercontent.com/kylejcaron/increment/main/docs/guides/choose-a-method.md): Choose a design and estimator from the treatment process and analysis goal.
-- [Data model](https://raw.githubusercontent.com/kylejcaron/increment/main/docs/guides/data-model.md): Declare warehouse sources, exposures, metrics, and experiments.
-- [Observational causal inference](https://raw.githubusercontent.com/kylejcaron/increment/main/docs/guides/observational.md): Use IPTW, DML, and AIPW with explicit causal assumptions.
-- [CUPED](https://raw.githubusercontent.com/kylejcaron/increment/main/docs/guides/cuped.md): Reduce variance with pre-treatment data.
-- [Power analysis](https://raw.githubusercontent.com/kylejcaron/increment/main/docs/guides/power-analysis.md): Calculate sample size, power, and MDE.
-- [API reference](https://raw.githubusercontent.com/kylejcaron/increment/main/docs/api.md): Public Python API.
+- [README](../README.md): Project overview and installation.
+- [Quickstart](guides/quickstart.md): Analyze A/B tests from Python dataframes.
+- [Method selection](guides/choose-a-method.md): Choose a design and estimator from the treatment process and analysis goal.
+- [Data model](guides/data-model.md): Declare warehouse sources, exposures, metrics, and experiments.
+- [Observational causal inference](guides/observational.md): Use IPTW, DML, and AIPW with explicit causal assumptions.
+- [CUPED](guides/cuped.md): Reduce variance with pre-treatment data.
+- [Power analysis](guides/power-analysis.md): Calculate sample size, power, and MDE.
+- [API reference](api.md): Public Python API.

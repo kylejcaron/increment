@@ -2,8 +2,9 @@
 from the analysis's own data and declared design, on every constructor
 that can supply it."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from typing import cast
 
 import ibis
 import numpy as np
@@ -15,12 +16,19 @@ from increment import Analysis, SourceSnapshotEvidence
 from increment.errors import CapabilityError, CodedError, IncrementWarning, UnsupportedRequestError
 from increment.estimation.results import LiftEstimate
 from increment.power import Baseline
+from tests.capability_consumers_scalar import PLANNING_BASELINE, completed, refused
 
 
-def _plan(analysis, metric):
+def _plan(analysis, metric, outcome_id=None):
     """An arm analysis's planning Baseline (a switchback one returns a
-    SwitchbackBaseline instead)."""
-    baseline = analysis.planning_baseline(metric)
+    SwitchbackBaseline instead). ``outcome_id`` holds the read to its declared
+    outcome in ``PLANNING_BASELINE``."""
+    if outcome_id is None:
+        baseline = analysis.planning_baseline(metric)
+    else:
+        baseline = completed(
+            PLANNING_BASELINE, outcome_id, lambda: analysis.planning_baseline(metric)
+        )
     assert isinstance(baseline, Baseline)
     return baseline
 
@@ -88,16 +96,67 @@ class TestPlanningBaselineOnDataframeRoutes:
         assert raised.value.code == "source.frame.grain"
 
     def test_quantile_metric_from_control_arm_values(self):
+        frame = _unit_summary_frame()
         analysis = Analysis.from_unit_summary(
-            _unit_summary_frame(),
+            frame,
             unit="unit_id",
             group="group_id",
             control="control",
             metrics=[{"name": "revenue", "type": "quantile", "quantile": 0.5}],
         )
-        baseline = _plan(analysis, "revenue")
-        assert baseline.mean > 0.0
+        baseline = _plan(analysis, "revenue", "quantile-summary")
+        control = frame.loc[frame["group_id"] == "control", "revenue"].to_numpy()
+        assert baseline.mean == pytest.approx(float(np.quantile(control, 0.5)), rel=1e-12)
         assert baseline.var > 0.0
+
+    def test_quantile_metric_from_unit_panel_values(self):
+        frame = _unit_summary_frame()
+        frame["ds"] = datetime(2025, 1, 1)
+        analysis = Analysis.from_unit_panel(
+            frame,
+            unit="unit_id",
+            group="group_id",
+            date="ds",
+            control="control",
+            metrics=[{"name": "revenue", "type": "quantile", "quantile": 0.5}],
+        )
+        baseline = _plan(analysis, "revenue", "quantile-panel")
+        control = frame.loc[frame["group_id"] == "control", "revenue"].to_numpy()
+        assert baseline.mean == pytest.approx(float(np.quantile(control, 0.5)), rel=1e-12)
+        assert baseline.var > 0.0
+
+    def test_frame_routes_plan_the_assigned_population_without_a_trigger(self):
+        """Neither frame constructor accepts an Experiment declaration, so no trigger
+        resolves: the assigned control arm is planned at trigger_rate=1.0 and the
+        per-unit trigger-evidence operation is absent by name."""
+        frame = _unit_summary_frame()
+        panel = frame.assign(ds=datetime(2025, 1, 1))
+        analyses = {
+            "summary": Analysis.from_unit_summary(
+                frame,
+                unit="unit_id",
+                group="group_id",
+                control="control",
+                metrics=[{"name": "revenue", "type": "mean"}],
+            ),
+            "panel": Analysis.from_unit_panel(
+                panel,
+                unit="unit_id",
+                group="group_id",
+                date="ds",
+                control="control",
+                metrics=[{"name": "revenue", "type": "mean"}],
+            ),
+        }
+        control = frame.loc[frame["group_id"] == "control", "revenue"].to_numpy()
+        for short, analysis in analyses.items():
+            baseline = _plan(analysis, "revenue", f"trigger-{short}-assigned-population")
+            assert baseline.trigger_rate == 1.0
+            assert baseline.mean == pytest.approx(float(control.mean()), rel=1e-12)
+            with pytest.raises(CapabilityError) as raised:
+                analysis.trigger_rates()
+            assert raised.value.code == "facade.analysis.operation"
+            assert raised.value.context["operation"] == "triggered_counts"
 
     def test_cuped_rho_derived_from_a_declared_covariate_on_unit_summary(self):
         """cuped_rho must be derived on the dataframe route the same way
@@ -1039,12 +1098,12 @@ class TestPlanningBaselineOnWarehouseRoutes:
             expected = Baseline.from_summary(
                 SummaryStats(n=triggered.size, mean=triggered.mean(), var=triggered.var(ddof=1))
             )
-            baseline = _plan(analysis, "revenue")
+            baseline = _plan(analysis, "revenue", "trigger-definitions-complete")
             assert (baseline.mean, baseline.var) == pytest.approx(
                 (expected.mean, expected.var), rel=1e-12
             )
             assert baseline.trigger_rate == pytest.approx(0.2, rel=1e-12)
-            quantile = _plan(analysis, "revenue_p50")
+            quantile = _plan(analysis, "revenue_p50", "quantile-triggered-definitions")
             assert quantile.mean == pytest.approx(float(np.quantile(triggered, 0.5)), rel=1e-12)
             assert quantile.trigger_rate == pytest.approx(0.2, rel=1e-12)
         finally:
@@ -1070,9 +1129,9 @@ class TestPlanningBaselineOnWarehouseRoutes:
                     TriggerMeasureStatsRequest(trigger_name="exposure", metric_names=("revenue",)),
                 ],
             )
-            assert _plan(reopened, "revenue").model_dump() == pytest.approx(
-                native.model_dump(), rel=1e-12
-            )
+            assert _plan(
+                reopened, "revenue", "trigger-artifact-complete"
+            ).model_dump() == pytest.approx(native.model_dump(), rel=1e-12)
         finally:
             con.disconnect()
 
@@ -1274,7 +1333,7 @@ class TestPlanningBaselineOnWarehouseRoutes:
             )
             assert native_ratio.trigger_rate == pytest.approx(0.5, rel=1e-12)
             native_quantile = _plan(analysis, "revenue_p50")
-            artifact_quantile = _plan(reopened, "revenue_p50")
+            artifact_quantile = _plan(reopened, "revenue_p50", "quantile-triggered-artifact")
             for baseline in (native_quantile, artifact_quantile):
                 assert baseline.mean == pytest.approx(expected_quantile, rel=1e-12)
                 assert baseline.trigger_rate == pytest.approx(0.5, rel=1e-12)
@@ -1475,11 +1534,14 @@ class TestPlanningBaselineOnWarehouseRoutes:
         con, path, analysis = _triggered_analysis(tmp_path)
         try:
             reopened = _republish(con, path, analysis, [])
-            with pytest.raises(CapabilityError) as raised:
-                reopened.planning_baseline("revenue")
-            assert raised.value.code == "analysis.planning_baseline.trigger_evidence_unavailable"
-            assert raised.value.context["trigger"] == "exposure"
-            assert raised.value.context["missing"] == ("trigger_population", "assignment_counts")
+            raised = refused(
+                PLANNING_BASELINE,
+                "trigger-artifact-missing-evidence",
+                lambda: reopened.planning_baseline("revenue"),
+            )
+            assert isinstance(raised, CapabilityError)
+            assert raised.context["trigger"] == "exposure"
+            assert raised.context["missing"] == ("trigger_population", "assignment_counts")
         finally:
             con.disconnect()
 
@@ -1724,12 +1786,20 @@ class TestPlanningBaselineParity:
 
     def test_every_arm_constructor_matches_the_unit_summary_oracle(self):
         analyses, connections = _parity_analyses(clustered=False)
+        mean_outcomes = {
+            "from_unit_summary": "mean-summary",
+            "from_unit_panel": "mean-panel",
+            "from_definitions": "mean-definitions",
+            "from_unit_day_artifact": "mean-artifact",
+            "from_moments": "mean-moments",
+        }
         try:
             oracle = analyses["from_unit_summary"]
             for metric in ("revenue", "purchase_rate", "rps", "revenue_cuped", "rps_cuped"):
                 expected = _plan(oracle, metric).model_dump()
                 for name, analysis in analyses.items():
-                    actual = _plan(analysis, metric).model_dump()
+                    outcome_id = mean_outcomes[name] if metric == "revenue" else None
+                    actual = _plan(analysis, metric, outcome_id).model_dump()
                     assert actual == pytest.approx(expected, rel=1e-9, abs=1e-12), (name, metric)
             assert _plan(oracle, "revenue_cuped").cuped_rho > 0.2
             assert _plan(oracle, "rps_cuped").cuped_rho > 0.05
@@ -1739,12 +1809,18 @@ class TestPlanningBaselineParity:
 
     def test_clustered_constructors_match_the_unit_summary_oracle(self):
         analyses, connections = _parity_analyses(clustered=True)
+        cluster_outcomes = {
+            "from_definitions": "cluster-definitions",
+            "from_unit_day_artifact": "cluster-artifact",
+        }
         try:
             oracle = analyses["from_unit_summary"]
             for metric in ("revenue", "purchase_rate", "rps"):
-                expected = _plan(oracle, metric)
-                for name in ("from_definitions", "from_unit_day_artifact"):
-                    actual = _plan(analyses[name], metric).model_dump()
+                expected = _plan(oracle, metric, "cluster-summary" if metric == "revenue" else None)
+                for name, outcome_id in cluster_outcomes.items():
+                    actual = _plan(
+                        analyses[name], metric, outcome_id if metric == "revenue" else None
+                    ).model_dump()
                     assert actual == pytest.approx(expected.model_dump(), rel=1e-9), (name, metric)
                 unit_level = _plan(analyses["unclustered"], metric)
                 assert (expected.mean, expected.var) == pytest.approx(
@@ -1755,6 +1831,43 @@ class TestPlanningBaselineParity:
         finally:
             for con in connections:
                 con.disconnect()
+
+    def test_clustered_planning_panel_and_moments_sources_refuse(self, tmp_path):
+        frame = _unit_summary_frame(with_cluster=True)
+        frame["ds"] = datetime(2025, 1, 1)
+        panel_refusal = refused(
+            PLANNING_BASELINE,
+            "cluster-panel-refusal",
+            lambda: Analysis.from_unit_panel(
+                frame,
+                unit="unit_id",
+                group="group_id",
+                date="ds",
+                control="control",
+                cluster="household_id",
+                metrics=[{"name": "revenue", "type": "mean"}],
+            ),
+        )
+        assert isinstance(panel_refusal, CapabilityError)
+        assert panel_refusal.context["cluster"] == "household_id"
+
+        clustered = Analysis.from_unit_summary(
+            _unit_summary_frame(with_cluster=True),
+            unit="unit_id",
+            group="group_id",
+            control="control",
+            cluster="household_id",
+            metrics=[{"name": "revenue", "type": "mean"}],
+        )
+        assert _plan(clustered, "revenue").avg_cluster_size == pytest.approx(4.0)
+        moments_refusal = refused(
+            PLANNING_BASELINE,
+            "cluster-moments-refusal",
+            lambda: clustered.export(tmp_path / "clustered-moments.parquet"),
+        )
+        assert isinstance(moments_refusal, CapabilityError)
+        assert moments_refusal.context["cluster"] == "household_id"
+        assert not (tmp_path / "clustered-moments.parquet").exists()
 
     def test_encouragement_compliance_matches_across_constructors(self):
         from tests.parity_harness.cases import PARITY_CASES
@@ -1806,8 +1919,9 @@ class TestPlanningBaselineOnSwitchback:
     def test_delegates_to_the_switchback_source_and_feeds_its_planner(self):
         """Analysis.from_switchback_panel's planning_baseline is the source's
         own pilot-fitted SwitchbackBaseline, which the switchback planner
-        consumes directly."""
-        from increment.frame import from_switchback_panel
+        consumes directly. The same constructor refuses a quantile metric at
+        its metric-type gate, has no cluster= keyword, and carries no trigger."""
+        from increment.frame import MetricSpec, from_switchback_panel
         from increment.power import switchback_required_blocks_or_units
         from increment.power.switchback import SwitchbackBaseline
         from increment.semantics.assignment import (
@@ -1825,6 +1939,20 @@ class TestPlanningBaselineOnSwitchback:
             window=SwitchbackWindow(washout_steps=1, observation_steps=4, carryover_order=1),
         )
         panel = self._panel()
+
+        def construct(metrics: Mapping[str, str] | list[MetricSpec] | None = None) -> Analysis:
+            return Analysis.from_switchback_panel(
+                panel,
+                unit="unit",
+                cycle="cycle",
+                period="period",
+                step="step",
+                group="group",
+                metrics={"orders": "mean"} if metrics is None else metrics,
+                identification=identification,
+                assignment=assignment,
+            )
+
         source = from_switchback_panel(
             panel,
             unit="unit",
@@ -1836,17 +1964,11 @@ class TestPlanningBaselineOnSwitchback:
             identification=identification,
             assignment=assignment,
         )
-        baseline = Analysis.from_switchback_panel(
-            panel,
-            unit="unit",
-            cycle="cycle",
-            period="period",
-            step="step",
-            group="group",
-            metrics={"orders": "mean"},
-            identification=identification,
-            assignment=assignment,
-        ).planning_baseline("orders")
+        baseline = completed(
+            PLANNING_BASELINE,
+            "mean-switchback-planner",
+            lambda: construct().planning_baseline("orders"),
+        )
         assert isinstance(baseline, SwitchbackBaseline)
         assert baseline == source.planning_baseline(source.metrics[0])
         result = switchback_required_blocks_or_units(
@@ -1855,6 +1977,45 @@ class TestPlanningBaselineOnSwitchback:
         assert result.n is not None and result.n >= 2
         assert result.power is not None and result.power >= 0.8
 
+        quantile_refusal = refused(
+            PLANNING_BASELINE,
+            "quantile-switchback-refused",
+            lambda: construct([MetricSpec(name="orders", type="quantile", quantile=0.5)]),
+        )
+        assert isinstance(quantile_refusal, CapabilityError)
+        assert quantile_refusal.context["reason"] == "unsupported_metric_type"
+        assert quantile_refusal.context["metrics"] == ("orders",)
+
+        # The request a clustered pilot would make has no spelling on this constructor:
+        # the keyword is absent from the signature, so it is sent as an untyped call.
+        unexpressible = cast("Callable[..., Analysis]", Analysis.from_switchback_panel)
+        absence = refused(
+            PLANNING_BASELINE,
+            "cluster-switchback-absence",
+            lambda: unexpressible(
+                panel,
+                unit="unit",
+                cycle="cycle",
+                period="period",
+                step="step",
+                group="group",
+                metrics={"orders": "mean"},
+                identification=identification,
+                assignment=assignment,
+                cluster="unit",
+            ),
+        )
+        assert isinstance(absence, TypeError)
+        assert "cluster" in str(absence)
+
+        no_trigger = completed(
+            PLANNING_BASELINE,
+            "trigger-switchback-no-trigger",
+            lambda: construct().planning_baseline("orders"),
+        )
+        assert no_trigger == baseline
+        assert "trigger_rate" not in SwitchbackBaseline.model_fields
+
 
 class TestPlanningBaselineOnMoments:
     """from_moments declares no trigger and carries no per-unit rows."""
@@ -1862,8 +2023,9 @@ class TestPlanningBaselineOnMoments:
     def test_from_moments_keeps_the_default_trigger_rate(self, tmp_path):
         """A from_moments source declares no trigger, so trigger_rate stays at
         its Baseline default rather than raising or misreading one."""
+        frame = _unit_summary_frame()
         direct = Analysis.from_unit_summary(
-            _unit_summary_frame(),
+            frame,
             unit="unit_id",
             group="group_id",
             control="control",
@@ -1874,8 +2036,13 @@ class TestPlanningBaselineOnMoments:
         adopted = Analysis.from_moments(
             rows, metrics=[{"name": "revenue", "type": "mean"}], control="control"
         )
-        baseline = _plan(adopted, "revenue")  # must not raise
+        baseline = _plan(adopted, "revenue", "trigger-moments-assigned-population")
         assert baseline.trigger_rate == 1.0
+        control = frame.loc[frame["group_id"] == "control", "revenue"].to_numpy()
+        assert baseline.mean == pytest.approx(float(control.mean()), rel=1e-12)
+        with pytest.raises(CapabilityError) as raised:
+            adopted.trigger_rates()
+        assert raised.value.code == "facade.analysis.operation"
 
     def test_from_moments_refuses_a_quantile_metric_by_source(self, tmp_path):
         direct = Analysis.from_unit_summary(
@@ -1892,7 +2059,10 @@ class TestPlanningBaselineOnMoments:
             metrics=[{"name": "revenue", "type": "quantile", "quantile": 0.5}],
             control="control",
         )
-        with pytest.raises(CapabilityError) as raised:
-            adopted.planning_baseline("revenue")
-        assert raised.value.code == "analysis.planning_baseline.quantile_source_unavailable"
-        assert raised.value.context["metric"] == "revenue"
+        raised = refused(
+            PLANNING_BASELINE,
+            "quantile-moments-refusal",
+            lambda: adopted.planning_baseline("revenue"),
+        )
+        assert isinstance(raised, CapabilityError)
+        assert raised.context["metric"] == "revenue"

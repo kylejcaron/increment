@@ -15,6 +15,7 @@ from tests.binary_sequential_cases import (
     event_rows,
     unit_rows,
 )
+from tests.capability_consumers_scalar import BOUNDED_CONVERSION_SEQUENTIAL, completed
 
 
 @pytest.fixture(scope="module")
@@ -448,4 +449,12 @@ def test_end_to_end_binary_always_valid_returns_an_interval_and_a_decision():
 
 
 def test_binary_always_valid_state_and_interval_agree_on_every_path(duck):
-    check_path_parity(duck, "duckdb", "events", "always_valid")
+    check_path_parity(
+        duck,
+        "duckdb",
+        "events",
+        "always_valid",
+        observe=lambda ingress, request: completed(
+            BOUNDED_CONVERSION_SEQUENTIAL, f"always_valid-{ingress}-retained-state", request
+        ),
+    )

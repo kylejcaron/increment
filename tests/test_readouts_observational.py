@@ -339,6 +339,7 @@ def test_run_one_sided_alternative_observational_doubles_alpha_and_labels():
     from increment import readouts as ro
     from increment.frame import from_unit_summary
     from increment.semantics.models import AnalysisPlan
+    from tests.capability_consumers_auxiliary import assert_support
 
     table = _confounded_table(200, seed=11)
     src_two = from_unit_summary(
@@ -361,6 +362,11 @@ def test_run_one_sided_alternative_observational_doubles_alpha_and_labels():
     )
     (two,) = ro.run(src_two)
     (one,) = ro.run(src_one)
+    assert_support(
+        "observational_relative_margin_boundary",
+        "one_sided_observational_alternative_supported",
+        one,
+    )
     assert one.require_lift().lb == pytest.approx(two.require_lift().lb, rel=1e-9)
     assert one.require_lift().ub == pytest.approx(two.require_lift().ub, rel=1e-9)
     assert one.require_lift().level == pytest.approx(0.90)
@@ -378,6 +384,7 @@ def test_run_observational_declared_relative_margin_refused_at_construction():
     guardrail). The refusal must be raised by the constructor call itself."""
     from increment.frame import MetricSpec, from_unit_summary
     from increment.semantics.models import AnalysisPlan, ExperimentMetric
+    from tests.capability_consumers_auxiliary import assert_refusal
 
     with pytest.raises(UnsupportedRequestError) as exc:
         from_unit_summary(
@@ -390,6 +397,12 @@ def test_run_observational_declared_relative_margin_refused_at_construction():
             plan=AnalysisPlan(guardrails=[ExperimentMetric(metric="revenue", margin=0.02)]),
         )
     assert exc.value.code == "plan.observational.relative_margin"
+    assert_refusal(
+        "observational_relative_margin_boundary",
+        "relative_margin_summary_constructor_refused",
+        exc.value,
+        stage="construction",
+    )
 
 
 def test_moments_source_observational_declared_relative_margin_refused_at_construction():
@@ -403,6 +416,7 @@ def test_moments_source_observational_declared_relative_margin_refused_at_constr
     above."""
     from increment.semantics.models import AnalysisPlan, ExperimentMetric, MeanMetric
     from increment.sources import MomentsSource
+    from tests.capability_consumers_auxiliary import assert_refusal
 
     guardrail = MeanMetric(
         name="revenue",
@@ -440,6 +454,12 @@ def test_moments_source_observational_declared_relative_margin_refused_at_constr
             plan=AnalysisPlan(guardrails=[ExperimentMetric(metric="revenue", margin=0.02)]),
         )
     assert exc.value.code == "plan.observational.relative_margin"
+    assert_refusal(
+        "observational_relative_margin_boundary",
+        "relative_margin_moments_constructor_refused",
+        exc.value,
+        stage="construction",
+    )
 
 
 def test_sql_panel_source_observational_declared_relative_margin_refused_at_construction():
@@ -451,6 +471,7 @@ def test_sql_panel_source_observational_declared_relative_margin_refused_at_cons
     from increment.frame import MetricSpec
     from increment.query.source import SqlPanelSource
     from increment.semantics.models import AnalysisPlan, ExperimentMetric
+    from tests.capability_consumers_auxiliary import assert_refusal
 
     con = ibis.duckdb.connect()
     with pytest.raises(UnsupportedRequestError) as exc:
@@ -464,6 +485,12 @@ def test_sql_panel_source_observational_declared_relative_margin_refused_at_cons
             plan=AnalysisPlan(guardrails=[ExperimentMetric(metric="revenue", margin=0.02)]),
         )
     assert exc.value.code == "plan.observational.relative_margin"
+    assert_refusal(
+        "observational_relative_margin_boundary",
+        "relative_margin_sql_panel_constructor_refused",
+        exc.value,
+        stage="construction",
+    )
 
 
 def test_run_observational_declared_absolute_margin_is_no_longer_refused():
@@ -474,6 +501,7 @@ def test_run_observational_declared_absolute_margin_is_no_longer_refused():
     point is that no margin-axis refusal fires.)"""
     from increment import readouts as ro
     from increment.semantics.models import MeanMetric
+    from tests.capability_consumers_auxiliary import assert_refusal
     from tests.test_readouts_encouragement import FakeMomentSource
 
     guardrail = MeanMetric(
@@ -488,6 +516,12 @@ def test_run_observational_declared_absolute_margin_is_no_longer_refused():
     with pytest.raises(InvalidRequestError) as exc:
         ro.run(src)
     assert exc.value.code == "readout.arms.no_treatment"
+    assert_refusal(
+        "observational_relative_margin_boundary",
+        "absolute_margin_passes_relative_gate",
+        exc.value,
+        stage="read",
+    )
 
 
 @pytest.mark.parametrize("declaration", [{}, {"margin_abs": 0.5}])
@@ -2110,7 +2144,19 @@ def test_quantile_over_scalar_moments_refuses_in_the_documented_precedence(
     from increment.errors import CodedError
     from increment.frame import MetricSpec
     from increment.semantics.models import AnalysisPlan, ExperimentMetric
+    from tests.capability_consumers_auxiliary import assert_refusal
 
+    outcome_id = (
+        {
+            "two-sided": "observational_quantile_two_sided_refused",
+            "alternative": "observational_quantile_alternative_refused",
+            "guardrail": "observational_quantile_guardrail_refused",
+            "margin_abs": "observational_quantile_absolute_margin_refused",
+            "margin": "relative_margin_quantile_moments_refused",
+        }[request_kind]
+        if design is not None
+        else None
+    )
     rows = _scalar_mean_cube_rows()
     plan = {
         "two-sided": None,
@@ -2134,6 +2180,71 @@ def test_quantile_over_scalar_moments_refuses_in_the_documented_precedence(
         with pytest.raises(CodedError) as raised:
             analysis.run()
     assert raised.value.code == code
+    if outcome_id is not None:
+        assert_refusal(
+            "observational_relative_margin_boundary",
+            outcome_id,
+            raised.value,
+            stage="construction" if stage == "construct" else "read",
+        )
+
+
+@pytest.mark.parametrize("ingress", ["summary", "panel"])
+@pytest.mark.parametrize("request_kind", ["margin", "margin_abs", "alternative"])
+def test_public_observational_quantile_margin_precedence(ingress, request_kind):
+    from increment.frame import MetricSpec
+    from increment.semantics.models import AnalysisPlan, ExperimentMetric
+    from tests.capability_consumers_auxiliary import assert_refusal
+
+    table = _confounded_table(200, seed=11).append_column("day", pa.array(["2025-01-01"] * 200))
+    plan = {
+        "margin": AnalysisPlan(guardrails=[ExperimentMetric(metric="revenue", margin=0.02)]),
+        "margin_abs": AnalysisPlan(guardrails=[ExperimentMetric(metric="revenue", margin_abs=0.5)]),
+        "alternative": AnalysisPlan(alternative="greater", primary="revenue"),
+    }[request_kind]
+    metrics = [
+        MetricSpec(name="revenue", type="quantile", quantile=0.9, preferred_direction="decrease")
+    ]
+    outcome = {
+        "margin": "summary_relative_margin_quantile_precedence_refused"
+        if ingress == "summary"
+        else "panel_relative_margin_refused",
+        "margin_abs": "summary_absolute_margin_quantile_precedence_refused"
+        if ingress == "summary"
+        else "panel_absolute_margin_precedence_refused",
+        "alternative": "summary_one_sided_quantile_precedence_refused"
+        if ingress == "summary"
+        else "panel_one_sided_precedence_refused",
+    }[request_kind]
+    analysis = None
+    stage = "construction"
+    try:
+        with pytest.raises((UnsupportedRequestError, InvalidRequestError)) as raised:
+            if ingress == "summary":
+                analysis = Analysis.from_unit_summary(
+                    table,
+                    unit="user_id",
+                    group="variant",
+                    metrics=metrics,
+                    design=_OBS_TRIM,
+                    plan=plan,
+                )
+            else:
+                analysis = Analysis.from_unit_panel(
+                    table,
+                    unit="user_id",
+                    group="variant",
+                    date="day",
+                    metrics=metrics,
+                    design=_OBS_TRIM,
+                    plan=plan,
+                )
+            stage = "read"
+            analysis.run()
+        assert_refusal("observational_relative_margin_boundary", outcome, raised.value, stage=stage)
+    finally:
+        if analysis is not None:
+            analysis.close()
 
 
 class _DriftingMoments:
@@ -2161,6 +2272,67 @@ def _drifting_analysis(early, late):
     # Capture both original reductions before substituting the drifting read behavior.
     cast("Any", _moment_source(late)).moments = source.moments
     return late, source
+
+
+def test_public_definitions_relative_margin_refused_during_construction(tmp_path):
+    """A plan-bound relative margin on a real observational Definitions
+    source is rejected by the public constructor, before any warehouse read."""
+    from increment import Analysis
+    from tests.capability_consumers_auxiliary import assert_refusal
+    from tests.covariate_cases import covariate_defs_and_con
+
+    definitions, con, *_ = covariate_defs_and_con(tmp_path, observational=True)
+    contents = definitions.read_text().replace(
+        "    type: mean\n", "    type: mean\n    preferred_direction: decrease\n"
+    )
+    definitions.write_text(
+        contents.replace(
+            "plan: {secondaries: [revenue]}",
+            "plan: {guardrails: [{metric: revenue, margin: 0.02}]}",
+        )
+    )
+    try:
+        with pytest.raises(UnsupportedRequestError) as raised:
+            Analysis.from_definitions("cov_test", definitions, con, store="none")
+        assert raised.value.code == "plan.observational.relative_margin"
+        assert_refusal(
+            "observational_relative_margin_boundary",
+            "relative_margin_public_definitions_constructor_refused",
+            raised.value,
+            stage="construction",
+        )
+    finally:
+        con.disconnect()
+
+
+def test_observational_relative_margin_context_cannot_produce_an_artifact(tmp_path):
+    """A native producer refuses the plan before it can publish an artifact;
+    there is no valid artifact context carrying this observational request."""
+    from increment import Analysis
+    from tests.capability_consumers_auxiliary import assert_expected
+    from tests.covariate_cases import covariate_defs_and_con
+
+    definitions, con, *_ = covariate_defs_and_con(tmp_path, observational=True)
+    definitions.write_text(
+        definitions.read_text()
+        .replace("    type: mean\n", "    type: mean\n    preferred_direction: decrease\n")
+        .replace(
+            "plan: {secondaries: [revenue]}",
+            "plan: {guardrails: [{metric: revenue, margin: 0.02}]}",
+        )
+    )
+    try:
+        with pytest.raises(UnsupportedRequestError) as raised:
+            Analysis.from_definitions("cov_test", definitions, con, store="none")
+        assert raised.value.code == "plan.observational.relative_margin"
+        assert_expected(
+            "observational_relative_margin_boundary",
+            "relative_margin_artifact_context_unexpressible",
+            kind="not_expressible",
+            stage="construction",
+        )
+    finally:
+        con.disconnect()
 
 
 _UNITS_PER_ARM = 12_000
@@ -2435,4 +2607,69 @@ def test_native_observational_empty_selection_touches_no_source(tmp_path, monkey
         assert "moments" in touched
     finally:
         analysis.close()
+        con.disconnect()
+
+
+@pytest.mark.parametrize("ingress", ["from_definitions", "from_unit_day_artifact"])
+@pytest.mark.parametrize("request_kind", ["margin_abs", "alternative"])
+def test_native_and_artifact_observational_quantile_requests_keep_precedence(
+    tmp_path, ingress, request_kind
+):
+    """Quantile is a real Definitions/artifact metric input; absolute-margin
+    and one-sided requests reach the quantile engine gate on both ingresses."""
+    from increment import Analysis
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+    from increment.semantics import load
+    from increment.semantics.artifact import UnitCovariateRequest
+    from tests.capability_consumers_auxiliary import assert_refusal
+    from tests.covariate_cases import covariate_defs_and_con
+
+    definitions, con, *_ = covariate_defs_and_con(tmp_path, observational=True)
+    text = definitions.read_text().replace(
+        "type: mean",
+        "type: quantile\n    quantile: 0.9\n    preferred_direction: decrease",
+    )
+    plan = (
+        "plan: {guardrails: [{metric: revenue, margin_abs: 0.5}]}"
+        if request_kind == "margin_abs"
+        else "plan: {primary: revenue, alternative: greater}"
+    )
+    definitions.write_text(text.replace("plan: {secondaries: [revenue]}", plan))
+    native = adopted = None
+    store = None
+    try:
+        native = Analysis.from_definitions("cov_test", definitions, con, store="none")
+        if ingress == "from_definitions":
+            consumer = native
+        else:
+            loaded = load(definitions)
+            experiment = loaded.experiment("cov_test")
+            assert experiment is not None
+            context = artifact_context(loaded, experiment, "error")
+            store = WarehouseArtifactStore(con, schema_name="observational_quantile")
+            reference = native.publish_unit_day_artifact(
+                store,
+                extensions=[UnitCovariateRequest(property_name="tenure", source_name="events")],
+            )
+            native.close()
+            native = None
+            adopted = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+            consumer = adopted
+
+        with pytest.raises(UnsupportedRequestError) as raised:
+            consumer.run()
+        assert raised.value.code == "readout.metric.quantile_alternative"
+        outcome = f"{ingress}_{'absolute_margin' if request_kind == 'margin_abs' else 'one_sided'}_quantile_precedence_refused"
+        assert_refusal(
+            "observational_relative_margin_boundary",
+            outcome,
+            raised.value,
+            stage="read",
+        )
+    finally:
+        if adopted is not None:
+            adopted.close()
+        if native is not None:
+            native.close()
         con.disconnect()

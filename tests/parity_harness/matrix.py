@@ -58,7 +58,7 @@ from typing import Literal
 
 from pydantic import ValidationError
 
-from .cases import CONSTRUCTORS
+from tests.capability_contracts import CONSTRUCTORS
 
 INGRESSES = CONSTRUCTORS
 

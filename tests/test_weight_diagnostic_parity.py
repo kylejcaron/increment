@@ -127,6 +127,7 @@ def test_cluster_grain_weight_diagnostics_are_retained_on_unit_summary():
     from increment.frame import MetricSpec
     from increment.semantics.design import AdjustmentSet, Observational
     from increment.semantics.models import AnalysisPlan
+    from tests.capability_consumers_auxiliary import assert_support
 
     frame = pd.DataFrame(
         [
@@ -162,8 +163,83 @@ def test_cluster_grain_weight_diagnostics_are_retained_on_unit_summary():
         assert all(row.weight_grain == "cluster" for row in rows)
         assert all(row.control_weight_n == 20 for row in rows)
         assert all(row.treatment_weight_n == 20 for row in rows)
+        assert_support(
+            "observational_cluster_weight_diagnostics",
+            "summary_cluster_weight_grain",
+            rows,
+        )
     finally:
         analysis.close()
+
+
+def test_definitions_cluster_weight_diagnostics_are_retained_at_cluster_grain(tmp_path):
+    """The public Definitions reader projects IPTW diagnostics over the
+    declared store grain, not the underlying user count."""
+    import datetime as dt
+
+    import ibis
+    import pyarrow as pa
+
+    from increment import Analysis
+    from tests.capability_consumers_auxiliary import assert_support
+    from tests.test_analysis_cluster import _DEFS_TEMPLATE, N_STORES, _event_rows
+
+    rows = _event_rows()
+    baselines = []
+    for row in rows:
+        # Same baseline within a unit, with arm-overlapping support.
+        index = int(row["user_id"][1:].split("_")[0])
+        row["tenure"] = float(index % 7)
+        if row["event"] == "exposure":
+            baselines.append(
+                {
+                    **row,
+                    "event_at": dt.datetime(2025, 7, 31, 9),
+                    "event": "baseline",
+                    "experiment_id": None,
+                    "group_id": None,
+                    "store_id": None,
+                    "revenue": None,
+                }
+            )
+    rows.extend(baselines)
+    con = ibis.duckdb.connect()
+    con.create_table("cl_events", obj=pa.Table.from_pylist(rows))
+    definitions = tmp_path / "observational-cluster.yaml"
+    import yaml
+
+    declared = yaml.safe_load(_DEFS_TEMPLATE.format(cluster_line="    cluster: store_id"))
+    experiment = declared["experiments"][0]
+    experiment.pop("allocation", None)
+    experiment.pop("allocation_scheme", None)
+    experiment["design"] = {
+        "mechanism": "observational",
+        "covariates": [{"property": "tenure", "source": "events"}],
+    }
+    declared["fact_sources"][0]["properties"] = [
+        {"name": "tenure", "column": "tenure", "dtype": "float", "as_of": "pre_exposure"}
+    ]
+    definitions.write_text(yaml.safe_dump(declared))
+    analysis = Analysis.from_definitions("store_test", definitions, con, store="none")
+    try:
+        from increment.breakout.estimates import LiftEstimates
+
+        rows = analysis.run()
+        assert isinstance(rows, LiftEstimates)
+        weighted = [row for row in rows if row.method == "iptw"]
+        assert weighted
+        assert all(row.weight_diagnostics_available is True for row in weighted)
+        assert all(row.weight_grain == "cluster" for row in weighted)
+        assert all(row.control_weight_n == N_STORES for row in weighted)
+        assert all(row.treatment_weight_n == N_STORES for row in weighted)
+        assert_support(
+            "observational_cluster_weight_diagnostics",
+            "definitions_cluster_weight_grain",
+            weighted,
+        )
+    finally:
+        analysis.close()
+        con.disconnect()
 
 
 def test_failed_weighted_metric_projects_unavailable_diagnostic_reason():

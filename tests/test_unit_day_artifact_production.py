@@ -390,6 +390,14 @@ def _assert_invalidated(con: Any, ref: Any, exposure_ref: Any, measure_ref: Any)
         with fresh.open_snapshot(ref):
             pass
     assert refusal.value.code == "artifact.generation.dropped"
+    from tests.capability_consumers_auxiliary import assert_refusal
+
+    assert_refusal(
+        "artifact_publication_abort_recovery",
+        "abort_tombstones_generation",
+        refusal.value,
+        stage="read",
+    )
     remaining = set(con.list_tables(database="artifact"))
     assert {exposure_ref.relation.name, measure_ref.relation.name}.isdisjoint(remaining)
     tombstones = con.table("ud_manifest_dropped", database="artifact").execute()
@@ -397,7 +405,21 @@ def _assert_invalidated(con: Any, ref: Any, exposure_ref: Any, measure_ref: Any)
 
 
 def test_abort_after_manifest_publication_invalidates_the_generation() -> None:
+    from tests.capability_consumers_auxiliary import assert_expected
+
+    for ingress in (
+        "from_unit_summary",
+        "from_unit_panel",
+        "from_switchback_panel",
+        "from_moments",
+    ):
+        assert_expected(
+            "artifact_publication_abort_recovery",
+            f"publication_store_not_comparable_{ingress}",
+            kind="not_comparable",
+        )
     con = ibis.duckdb.connect()
+
     store = WarehouseArtifactStore(con, schema_name="artifact")
     refs = _abort_after_manifest(store, RuntimeError("body failed"))
     assert store.visible_manifests == ()
@@ -409,6 +431,8 @@ def test_abort_after_manifest_publication_invalidates_the_generation() -> None:
 def test_abort_cleanup_failure_keeps_original_error_and_is_recoverable(
     monkeypatch, error: BaseException, cleanup_error: BaseException
 ) -> None:
+    from tests.capability_consumers_auxiliary import assert_support
+
     con = ibis.duckdb.connect()
     store = WarehouseArtifactStore(con, schema_name="artifact")
     real_insert = con.insert
@@ -424,6 +448,11 @@ def test_abort_cleanup_failure_keeps_original_error_and_is_recoverable(
 
     fresh = WarehouseArtifactStore(con, schema_name="artifact")
     assert fresh.visible_manifests == (ref,)
+    assert_support(
+        "artifact_publication_abort_recovery",
+        "abort_preserves_original_error",
+        (ref, exposure_ref, measure_ref, fresh.visible_manifests),
+    )
 
     fresh.drop_generation(ref.artifact_id, ref.generation_id)
     _assert_invalidated(con, ref, exposure_ref, measure_ref)
@@ -543,6 +572,8 @@ def test_tombstone_failure_after_committed_insert_preserves_generation(monkeypat
 
 
 def test_tombstone_failure_without_row_preserves_and_names_relations(monkeypatch) -> None:
+    from tests.capability_consumers_auxiliary import assert_support
+
     con = ibis.duckdb.connect()
     store = WarehouseArtifactStore(con, schema_name="artifact")
     error = _tombstone_write_fails(monkeypatch, con, index_commits=False)
@@ -565,6 +596,11 @@ def test_tombstone_failure_without_row_preserves_and_names_relations(monkeypatch
         for token in listing.split(", ")
     }
     assert named == {f"artifact.{name}" for name in preserved}
+    assert_support(
+        "artifact_publication_abort_recovery",
+        "tombstone_failure_keeps_relations",
+        (raised.value, named, preserved),
+    )
 
     fresh = WarehouseArtifactStore(con, schema_name="artifact")
     assert fresh.visible_manifests == ()
@@ -1603,6 +1639,70 @@ def test_abandon_generation_is_idempotent_for_seen_and_unseen_pairs() -> None:
     for _ in range(2):
         store.abandon_generation(*unseen)
     assert _tombstone_count(con, *unseen) == 1
+
+
+def test_fresh_process_abandons_and_erases_a_persisted_generation(tmp_path) -> None:
+    import subprocess
+    import sys
+
+    from tests.capability_consumers_auxiliary import assert_support
+
+    database = tmp_path / "artifact-recovery.duckdb"
+    con = ibis.duckdb.connect(database=str(database))
+    store = WarehouseArtifactStore(con, schema_name="artifact")
+    ref, exposure_ref, measure_ref = _publish(store)
+    con.disconnect()
+
+    script = (
+        "import sys\n"
+        "from uuid import UUID\n"
+        "import ibis\n"
+        "from increment.query.session import WarehouseArtifactStore\n"
+        "connection = ibis.duckdb.connect(database=sys.argv[1])\n"
+        "store = WarehouseArtifactStore(connection, schema_name='artifact')\n"
+        "artifact_id, generation_id = UUID(sys.argv[2]), UUID(sys.argv[3])\n"
+        "exposure_name, measure_name = sys.argv[4], sys.argv[5]\n"
+        "store.abandon_generation(artifact_id, generation_id)\n"
+        "assert store.visible_manifests == ()\n"
+        "relations = set(connection.list_tables(database='artifact'))\n"
+        "assert exposure_name in relations and measure_name in relations\n"
+        "store.drop_generation(artifact_id, generation_id)\n"
+        "assert set(connection.list_tables(database='artifact')).isdisjoint({exposure_name, measure_name})\n"
+        "connection.disconnect()\n"
+    )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(database),
+            str(ref.artifact_id),
+            str(ref.generation_id),
+            exposure_ref.relation.name,
+            measure_ref.relation.name,
+        ],
+        check=True,
+        timeout=30,
+    )
+    assert_support(
+        "artifact_publication_abort_recovery",
+        "fresh_store_recovers_abandoned_generation",
+        completed,
+    )
+
+    reopened_con = ibis.duckdb.connect(database=str(database))
+    try:
+        reopened = WarehouseArtifactStore(reopened_con, schema_name="artifact")
+        assert reopened.visible_manifests == ()
+        assert _publication_relation_names(reopened_con) == set()
+        with pytest.raises(ArtifactContractError) as refused:
+            with reopened.open_snapshot(ref):
+                pass
+        assert refused.value.code == "artifact.generation.dropped"
+        assert exposure_ref.relation.name not in set(reopened_con.list_tables(database="artifact"))
+        assert measure_ref.relation.name not in set(reopened_con.list_tables(database="artifact"))
+    finally:
+        reopened_con.disconnect()
 
 
 @pytest.mark.parametrize(

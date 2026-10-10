@@ -38,6 +38,7 @@ from increment.estimation.arm_contract import (
 )
 from increment.estimation.sequential import AlwaysValid
 from increment.semantics.assignment import ParallelAssignment
+from tests.doc_evidence import resolve_evidence_function
 from tests.sequential_cases import registration
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -674,26 +675,6 @@ SCENARIOS = (
 # Both pytest and the renderer validate evidence before publishing coverage claims.
 
 
-def _find_evidence_function(tree: ast.AST, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
-    """Resolve only a module's direct function or a direct class method."""
-    class_name, sep, method_name = name.partition("::")
-    if sep:
-        for node in ast.iter_child_nodes(tree):
-            if isinstance(node, ast.ClassDef) and node.name == class_name:
-                for child in ast.iter_child_nodes(node):
-                    if (
-                        isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef)
-                        and child.name == method_name
-                    ):
-                        return child
-                raise ValueError(f"class {class_name!r} has no method named {method_name!r}")
-        raise ValueError(f"no class named {class_name!r}")
-    for node in ast.iter_child_nodes(tree):
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == name:
-            return node
-    raise ValueError(f"no top-level function named {name!r}")
-
-
 def _module_dotted_name(path: Path) -> str:
     return ".".join(path.relative_to(ROOT).with_suffix("").parts)
 
@@ -734,7 +715,7 @@ def validate_evidence(scenarios: tuple[Scenario, ...] = SCENARIOS) -> None:
             if not path.is_file():
                 raise ValueError(f"{scenario.id}: {ref.path} does not exist")
             tree = ast.parse(path.read_text(), filename=str(path))
-            _find_evidence_function(tree, ref.test)
+            resolve_evidence_function(tree, ref.test)
             if ref.kind != "parameter_recovery":
                 continue
             module = importlib.import_module(_module_dotted_name(path))

@@ -438,6 +438,8 @@ def docs(session: nox.Session) -> None:
     fails ``nox -s docs`` instead of silently shipping.
     """
     _sync(session, "docs", "dev", extras=("demo", "tables", "dashboard"))
+    session.run("python", "scripts/check_doc_references.py", "--check")
+    session.run("python", "scripts/render_capability_table.py", "--check")
     for name in EXAMPLE_NOTEBOOKS:
         session.run(
             "marimo",

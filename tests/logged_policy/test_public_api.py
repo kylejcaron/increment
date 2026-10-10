@@ -128,8 +128,11 @@ def test_fixture1_passes_trace_and_support_gates_but_hits_the_unit_floor():
 
 
 def test_forty_unit_fixture_yields_the_exact_contrast_through_the_root_export():
+    from tests.capability_consumers_auxiliary import assert_support
+
     trace = LoggedTrace.from_records(FORTY_UNITS, registry=REGISTRY)
     result = estimate_policy_contrast(trace, TARGET_POLICY_V1, REFERENCE_POLICY_V1)
+    assert_support("logged_policy_family_boundary", "logged_trace_contrast_supported", result)
     assert isinstance(result, PolicyValueContrast)
     assert result.estimate == pytest.approx(FORTY_ESTIMATE, abs=1e-12)
     assert result.se == pytest.approx(FORTY_SE, abs=1e-12)
@@ -151,6 +154,26 @@ def test_fixture2_is_refused_as_adaptively_logged_from_the_root_export():
 
 
 def test_root_and_results_exports_resolve_lazily_to_the_family_modules():
+    from tests.capability_consumers_auxiliary import assert_expected
+
+    for ingress in (
+        "from_unit_summary",
+        "from_unit_panel",
+        "from_switchback_panel",
+        "from_definitions",
+        "from_unit_day_artifact",
+        "from_moments",
+    ):
+        assert_expected(
+            "logged_policy_family_boundary",
+            f"analysis_ingress_{ingress}_not_expressible",
+            kind="not_expressible",
+        )
+        assert_expected(
+            "logged_policy_family_boundary",
+            f"policy_persistence_analysis_ingress_{ingress}_not_comparable",
+            kind="not_comparable",
+        )
     from increment import logged_policy
 
     assert increment.estimate_policy_contrast is logged_policy.estimate_policy_contrast
@@ -164,10 +187,27 @@ def test_root_and_results_exports_resolve_lazily_to_the_family_modules():
 
 
 def test_builtin_integer_keyed_policies_persist_in_python_mode_only():
+    from tests.capability_consumers_auxiliary import assert_refusal, assert_support
+
     restored = pickle.loads(pickle.dumps(TARGET_POLICY_V1))
     assert restored.probability("B", {"x": 0}) == TARGET_POLICY_V1.probability("B", {"x": 0})
     assert restored.probability("B", {"x": 1}) == TARGET_POLICY_V1.probability("B", {"x": 1})
+    assert_support(
+        "logged_policy_family_boundary", "tabular_policy_typed_python_supported", restored
+    )
     with pytest.raises(CapabilityError) as raised:
         TARGET_POLICY_V1.model_dump_json()
+    assert_refusal(
+        "logged_policy_family_boundary",
+        "tabular_policy_typed_json_refused",
+        raised.value,
+        stage="read",
+    )
     assert raised.value.code == "logged_policy.policy.json_context_key"
-    json.loads(REFERENCE_POLICY_V1.model_dump_json(warnings="error"))
+    reference_json = REFERENCE_POLICY_V1.model_dump_json(warnings="error")
+    json.loads(reference_json)
+    restored_string = TabularPolicy.model_validate_json(reference_json)
+    assert_support(
+        "logged_policy_family_boundary", "tabular_policy_string_json_supported", restored_string
+    )
+    assert restored_string == REFERENCE_POLICY_V1

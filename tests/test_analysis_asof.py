@@ -31,6 +31,7 @@ from increment.semantics.models import (
     RetentionMetric,
 )
 from tests.analysis_factory import make_analysis, make_analysis_like
+from tests.capability_consumers_scalar import UNBOUNDED_RETENTION_SEQUENTIAL, refused
 from tests.test_sequential_public_sources import gaussian_plan
 
 
@@ -1051,9 +1052,46 @@ def test_run_asof_lift_unbounded_retention_refuses_sequential_capture(con):
         name="d7_retention", entity="user_id", fact="page_view", threshold_days=7
     )
     analysis = registered_native(original, metrics=[metric])
-    with pytest.raises(CapabilityError) as raised:
-        analysis.capture_sequential(finalized=True, as_of=date(2025, 3, 1))
-    assert raised.value.code == "sequential.route.unsupported"
+    refusal = refused(
+        UNBOUNDED_RETENTION_SEQUENTIAL,
+        "definitions-unbounded-observation-refused",
+        lambda: analysis.capture_sequential(finalized=True, as_of=date(2025, 3, 1)),
+    )
+    assert isinstance(refusal, CapabilityError)
+
+
+def test_unbounded_retention_cube_has_no_checkpoint_to_replay(con, tmp_path):
+    """A portable cube only replays a checkpoint captured upstream. The registered
+    definitions route never captures one for an unbounded band, so a cube exported
+    from the fixed-horizon readout finds nothing to continue and starts nothing."""
+    import pyarrow.parquet as pq
+
+    from increment.errors import CapabilityError
+    from increment.frame import MetricSpec
+    from tests.sequential_cases import registered_native
+
+    original = Analysis("new_onboarding_v2", definitions_path="examples/definitions/", con=con)
+    metric = RetentionMetric(
+        name="d7_retention", entity="user_id", fact="page_view", threshold_days=7
+    )
+    registered = registered_native(original, metrics=[metric])
+    with pytest.raises(CapabilityError) as unexportable:
+        registered.export(tmp_path / "registered.parquet")
+    fixed = make_analysis_like(original, [metric], plan=AnalysisPlan(primary="d7_retention"))
+    fixed.export(tmp_path / "moments.parquet")
+    cube = Analysis.from_moments(
+        pq.read_table(tmp_path / "moments.parquet").to_pylist(),
+        control="control",
+        metrics=[MetricSpec(name="d7_retention", type="retention", threshold_days=7)],
+    )
+    assert [row.metric for row in cube.run()] == ["d7_retention"]
+    refusal = refused(
+        UNBOUNDED_RETENTION_SEQUENTIAL,
+        "moments-no-checkpoint-to-replay",
+        lambda: cube.capture_sequential(finalized=True),
+    )
+    assert isinstance(refusal, CapabilityError)
+    assert unexportable.value.code == refusal.code
 
 
 def test_run_asof_lift_bounded_retention_has_raw_bernoulli_checkpoint(con):

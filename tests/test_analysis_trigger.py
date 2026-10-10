@@ -93,6 +93,8 @@ def _write_defs(tmp_path, trigger="saw_surface", *, allocation_scheme=None, end=
 
 
 def test_triggered_request_requires_explicit_snapshot_evidence_but_assigned_does_not(tmp_path):
+    from tests.capability_consumers_auxiliary import assert_refusal
+
     con = ibis.duckdb.connect()
     con.create_table("events", obj=_events(n_per_arm=10))
     analysis = Analysis.from_definitions("exp", _write_defs(tmp_path), con)
@@ -101,6 +103,12 @@ def test_triggered_request_requires_explicit_snapshot_evidence_but_assigned_does
         with pytest.raises(CapabilityError) as raised:
             analysis.trigger_rates()
         assert raised.value.code == "source.native.trigger_evidence_required"
+        assert_refusal(
+            "trigger_source_snapshot_evidence",
+            "triggered_read_requires_source_snapshot",
+            raised.value,
+            stage="read",
+        )
     finally:
         analysis.close()
 
@@ -871,6 +879,8 @@ def _assert_population_scoped_consumers(rows):
 
 
 def test_run_breakout_returns_distinct_triggered_population_and_families(tmp_path):
+    from tests.capability_consumers_auxiliary import assert_support
+
     table = _with_preassignment_region(_events(n_per_arm=300, trigger_rate=0.5, effect=0.6))
     path = tmp_path / "defs.yml"
     path.write_text(_defs_yaml())
@@ -904,6 +914,11 @@ def test_run_breakout_returns_distinct_triggered_population_and_families(tmp_pat
     try:
         native_summaries = analysis.breakout_summaries()
         native_factors = analysis.factor_summaries()
+        assert_support(
+            "triggered_auxiliary_reads",
+            "breakout_definitions_triggered_population",
+            native_summaries,
+        )
         assert {key.rsplit(":", 1)[1] for key in native_summaries} == {"assigned", "triggered"}
         for key, tables in native_summaries.items():
             population = key.rsplit(":", 1)[1]
@@ -953,6 +968,11 @@ def test_run_breakout_returns_distinct_triggered_population_and_families(tmp_pat
             ),
         )
         artifact_factors = adopted.factor_summaries()
+        assert_support(
+            "triggered_auxiliary_reads",
+            "factor_artifact_complete_trigger_evidence",
+            artifact_factors,
+        )
         assert native_factors.keys() == artifact_factors.keys()
         for key, table in native_factors.items():
             _assert_parity_tables_close(
@@ -961,6 +981,11 @@ def test_run_breakout_returns_distinct_triggered_population_and_families(tmp_pat
                 keys=("analysis_population", "group_id", "region"),
             )
         artifact_summaries = adopted.breakout_summaries()
+        assert_support(
+            "triggered_auxiliary_reads",
+            "breakout_artifact_complete_trigger_evidence",
+            artifact_summaries,
+        )
         assert native_summaries.keys() == artifact_summaries.keys()
         for key, tables in native_summaries.items():
             assert tables.keys() == artifact_summaries[key].keys()
@@ -1352,6 +1377,8 @@ def test_triggered_breakout_summary_stops_at_pinned_cutoff(tmp_path):
 
 
 def test_triggered_cate_uses_native_unit_population(tmp_path):
+    from tests.capability_consumers_auxiliary import assert_refusal, assert_support
+
     events = _events(n_per_arm=300, trigger_rate=0.5, effect=0.6).to_pylist()
     for row in events:
         if row["event"] == "saw_surface":
@@ -1385,6 +1412,11 @@ def test_triggered_cate_uses_native_unit_population(tmp_path):
 
         interact = [Covariate(name="region", kind="categorical")]
         estimate = analysis.estimate_cate("revenue", control="C", interact=interact)
+        assert_support(
+            "triggered_auxiliary_reads",
+            "cate_definitions_triggered_population",
+            estimate,
+        )
         validation = analysis.validate_cate("revenue", control="C", interact=interact, n_groups=3)
         targeting = analysis.targeting_rule("revenue", control="C", interact=interact, fraction=0.5)
         selection = analysis.select_targeting_rule(
@@ -1395,17 +1427,236 @@ def test_triggered_cate_uses_native_unit_population(tmp_path):
             seed=7,
             n_folds=3,
         )
-        assert estimate.n < 600
-        assert estimate.n_treated + estimate.n_control == estimate.n
-        assert validation is not None
-        assert targeting is not None
-        assert selection is not None
+        assert 0 < estimate.n < 400
+        assert 0 < estimate.n_treated < 200 and 0 < estimate.n_control < 200
+        # Both revenue events fall in the trigger-anchored window; CATE is absolute.
+        expected_ate = 2 * np.exp(0.4**2 / 2) * 0.6
+        assert estimate.ate == pytest.approx(expected_ate, rel=0.3)
+        assert validation.holdout_ate is not None
+        assert validation.holdout_ate.value == pytest.approx(expected_ate, rel=0.4)
+        assert targeting.fraction == 0.5
+        assert targeting.achieved_fraction > 0
+        actions = targeting.predict({"region": np.asarray(["north", "south"])})
+        assert actions.dtype == np.bool_ and actions.shape == (2,)
+        assert selection.selected_fraction == 0.5
+        assert selection.rule.fraction == selection.selected_fraction
+        assert selection.rule.validation.n_holdout > 0
         adopted = _publish_and_adopt(
             con, analysis, kinds=("trigger_population", "trigger_measure_stats")
         )
         with pytest.raises(ArtifactContractError) as raised:
             adopted.estimate_cate("revenue", control="C", interact=interact)
         assert raised.value.code == "artifact.extension.missing"
+        assert_refusal(
+            "triggered_auxiliary_reads",
+            "cate_artifact_missing_extension",
+            raised.value,
+            stage="read",
+        )
+    finally:
+        if adopted is None:
+            analysis.close()
+            con.disconnect()
+        else:
+            _close_parity_analysis(adopted)
+
+
+def test_triggered_cate_observational_artifact_refuses_even_with_covariate_evidence(tmp_path):
+    from tests.capability_consumers_auxiliary import assert_refusal, assert_support
+
+    events = _events(n_per_arm=300, trigger_rate=0.5, effect=0.6).to_pylist()
+    for row in events:
+        if row["event"] == "saw_surface":
+            row["ts"] = dt.datetime(2024, 1, 3)
+    table = _with_preassignment_region(pa.Table.from_pylist(events))
+    expected_triggered_units = len(
+        {row["user_id"] for row in table.to_pylist() if row["event"] == "saw_surface"}
+    )
+    path = _write_defs(tmp_path)
+    path.write_text(
+        path.read_text()
+        .replace(
+            "    facts:\n",
+            "    properties:\n"
+            "      - {name: region, column: region, dtype: string, as_of: pre_exposure}\n"
+            "    facts:\n",
+        )
+        .replace(
+            "    plan:\n",
+            "    design:\n"
+            "      mechanism: observational\n"
+            "      covariates:\n"
+            "        - {property: region, source: events}\n"
+            "    plan:\n",
+        )
+    )
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=table)
+    analysis = Analysis.from_definitions(
+        "exp",
+        path,
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
+        ),
+    )
+    adopted = None
+    try:
+        from increment.estimation.cate import Covariate
+        from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+
+        adopted = _publish_and_adopt(
+            con,
+            analysis,
+            kinds=("trigger_population", "trigger_measure_stats", "unit_covariate_level"),
+        )
+        with pytest.raises(InvalidRequestError) as native_refused:
+            analysis.estimate_cate(
+                "revenue", control="C", interact=[Covariate(name="region", kind="categorical")]
+            )
+        assert_refusal(
+            "triggered_auxiliary_reads",
+            "cate_definitions_observational_covariates_refused",
+            native_refused.value,
+            stage="read",
+        )
+        with pytest.raises(InvalidRequestError) as raised:
+            adopted.estimate_cate(
+                "revenue", control="C", interact=[Covariate(name="region", kind="categorical")]
+            )
+        assert_refusal(
+            "triggered_auxiliary_reads",
+            "cate_artifact_observational_covariates_refused",
+            raised.value,
+            stage="read",
+        )
+        interact = [Covariate(name="region", kind="categorical")]
+        native_validation = analysis.validate_cate(
+            "revenue", control="C", interact=interact, n_groups=3
+        )
+        assert_support(
+            "triggered_auxiliary_reads",
+            "cate_definitions_observational_validation_supported",
+            native_validation,
+        )
+        validation = adopted.validate_cate("revenue", control="C", interact=interact, n_groups=3)
+        assert_support(
+            "triggered_auxiliary_reads",
+            "cate_artifact_observational_validation_supported",
+            validation,
+        )
+        assert validation.n_train == native_validation.n_train
+        assert validation.n_holdout == native_validation.n_holdout
+        assert validation.holdout_ate is not None and native_validation.holdout_ate is not None
+        for field in ("value", "lb", "ub"):
+            assert getattr(validation.holdout_ate, field) == pytest.approx(
+                getattr(native_validation.holdout_ate, field)
+            )
+        native_targeting = analysis.targeting_rule(
+            "revenue", control="C", interact=interact, fraction=0.5
+        )
+        assert_support(
+            "triggered_auxiliary_reads",
+            "cate_definitions_observational_targeting_supported",
+            native_targeting,
+        )
+        targeting = adopted.targeting_rule("revenue", control="C", interact=interact, fraction=0.5)
+        assert_support(
+            "triggered_auxiliary_reads",
+            "cate_artifact_observational_targeting_supported",
+            targeting,
+        )
+        assert targeting.fraction == native_targeting.fraction
+        assert targeting.achieved_fraction == pytest.approx(native_targeting.achieved_fraction)
+        covariates = {"region": np.asarray(["north", "south"])}
+        np.testing.assert_array_equal(
+            targeting.predict(covariates), native_targeting.predict(covariates)
+        )
+        native_selection = analysis.select_targeting_rule(
+            "revenue", control="C", interact=interact, fractions=[0.5], seed=7, n_folds=3
+        )
+        assert_support(
+            "triggered_auxiliary_reads",
+            "cate_definitions_observational_selection_supported",
+            native_selection,
+        )
+        selection = adopted.select_targeting_rule(
+            "revenue", control="C", interact=interact, fractions=[0.5], seed=7, n_folds=3
+        )
+        assert_support(
+            "triggered_auxiliary_reads",
+            "cate_artifact_observational_selection_supported",
+            selection,
+        )
+        assert selection.selected_fraction == native_selection.selected_fraction
+        assert selection.rule.validation.n_holdout == native_selection.rule.validation.n_holdout
+        np.testing.assert_array_equal(
+            selection.rule.predict(covariates), native_selection.rule.predict(covariates)
+        )
+        for consumer_validation in (
+            native_validation,
+            validation,
+            native_targeting.validation,
+            targeting.validation,
+            native_selection.rule.validation,
+            selection.rule.validation,
+        ):
+            assert consumer_validation is not None
+            assert (
+                consumer_validation.n_train + consumer_validation.n_holdout
+                == expected_triggered_units
+            )
+        expected_triggered_ate = 2 * np.exp(0.4**2 / 2) * 0.6
+        for consumer_validation in (native_validation, validation):
+            assert consumer_validation.holdout_ate is not None
+            assert consumer_validation.holdout_ate.value == pytest.approx(
+                expected_triggered_ate, rel=0.4
+            )
+    finally:
+        if adopted is None:
+            analysis.close()
+            con.disconnect()
+        else:
+            _close_parity_analysis(adopted)
+
+
+def test_triggered_cate_randomized_artifact_without_covariates_preserves_population(tmp_path):
+    from collections import Counter
+
+    from tests.capability_consumers_auxiliary import assert_support
+    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+
+    table = _events(n_per_arm=300, trigger_rate=0.5, effect=0.6)
+    counts = Counter(row["group_id"] for row in table.to_pylist() if row["event"] == "saw_surface")
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=table)
+    analysis = Analysis.from_definitions(
+        "exp",
+        _write_defs(tmp_path),
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
+        ),
+    )
+    adopted = None
+    try:
+        native = analysis.estimate_cate("revenue", control="C", interact=[])
+        adopted = _publish_and_adopt(
+            con, analysis, kinds=("trigger_population", "trigger_measure_stats")
+        )
+        result = adopted.estimate_cate("revenue", control="C", interact=[])
+        assert result.n_control == counts["C"]
+        assert result.n_treated == counts["T"]
+        assert result.n == counts["C"] + counts["T"]
+        assert result.ate == pytest.approx(native.ate)
+        assert result.se == pytest.approx(native.se)
+        assert_support(
+            "triggered_auxiliary_reads",
+            "cate_artifact_complete_trigger_evidence",
+            result,
+        )
     finally:
         if adopted is None:
             analysis.close()
@@ -1505,6 +1756,8 @@ def test_triggered_ratio_breakout_daily_summary_uses_trigger_anchors(tmp_path):
 
 
 def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
+    from tests.capability_consumers_auxiliary import assert_refusal, assert_support
+
     events = _events(n_per_arm=300, trigger_rate=0.5, effect=0.6).to_pylist()
     for row in events:
         if row["event"] == "saw_surface":
@@ -1521,7 +1774,7 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
         )
         .replace(
             "    plan:\n",
-            "    factors: [{property: region}]\n    plan:\n",
+            "    breakouts: [{property: region}]\n    factors: [{property: region}]\n    plan:\n",
         )
     )
     con = ibis.duckdb.connect()
@@ -1535,8 +1788,12 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
             {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
         ),
     )
+    adopted = None
     try:
         factors = analysis.factor_summaries()
+        assert_support(
+            "triggered_auxiliary_reads", "factor_definitions_triggered_population", factors
+        )
         assert {key.rsplit(":", 1)[1] for key in factors} == {"assigned", "triggered"}
         assert all("analysis_population" in table.column_names for table in factors.values())
         assert all(
@@ -1550,6 +1807,7 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
 
         assigned = analysis.dashboard_group_data(metrics=analysis.metrics)
         triggered = analysis.dashboard_group_data(metrics=analysis.metrics, population="triggered")
+        assert_support("triggered_auxiliary_reads", "dashboard_definitions_population", triggered)
         assert assigned and triggered
         assert {row.analysis_population for row in assigned} == {"assigned"}
         assert {row.analysis_population for row in triggered} == {"triggered"}
@@ -1557,6 +1815,9 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
 
         assigned_history = analysis.allocation_history()
         triggered_history = analysis.allocation_history(population="triggered")
+        assert_support(
+            "triggered_auxiliary_reads", "allocation_definitions_population", triggered_history
+        )
         assert "analysis_population" in triggered_history.column_names
         assert set(triggered_history["analysis_population"].to_pylist()) == {"triggered"}
         assert sum(triggered_history["n_daily"].to_pylist()) < sum(
@@ -1564,16 +1825,88 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
         )
         assert set(assigned_history["ds"].to_pylist()) == {dt.date(2024, 1, 2)}
         assert set(triggered_history["ds"].to_pylist()) == {dt.date(2024, 1, 3)}
+        from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+
+        adopted = _publish_and_adopt(
+            con, analysis, kinds=("trigger_population", "trigger_measure_stats")
+        )
+        from increment.query.artifact_contract import ArtifactContractError
+
+        with pytest.raises(ArtifactContractError) as missing:
+            adopted.run_breakout()
+        assert_refusal(
+            "triggered_auxiliary_reads",
+            "breakout_artifact_missing_extension",
+            missing.value,
+            stage="read",
+        )
+        with pytest.raises(CapabilityError) as missing_factor:
+            adopted.factor_summaries()
+        assert_refusal(
+            "triggered_auxiliary_reads",
+            "factor_artifact_missing_extension",
+            missing_factor.value,
+            stage="read",
+        )
+        for operation, outcome_id in (
+            (
+                lambda: adopted.dashboard_group_data(metrics=adopted.metrics),
+                "dashboard_artifact_refused",
+            ),
+            (
+                lambda: adopted.allocation_history(population="triggered"),
+                "allocation_artifact_refused",
+            ),
+        ):
+            with pytest.raises(CapabilityError) as refused:
+                operation()
+            assert refused.value.code == "facade.analysis.operation"
+            assert_refusal("triggered_auxiliary_reads", outcome_id, refused.value, stage="read")
     finally:
-        analysis.close()
-        con.disconnect()
+        if adopted is None:
+            analysis.close()
+            con.disconnect()
+        else:
+            _close_parity_analysis(adopted)
 
 
 def test_triggered_sitewide_refuses_with_source_specific_reason(tmp_path):
+    from tests.capability_consumers_auxiliary import assert_refusal
+
     analysis = _analysis(tmp_path, _events(n_per_arm=100))
-    with pytest.raises(CapabilityError) as raised:
-        analysis.sitewide("revenue")
-    assert raised.value.code == "analysis.sitewide.triggered_population_unsupported"
+    adopted = None
+    try:
+        with pytest.raises(CapabilityError) as raised:
+            analysis.sitewide("revenue")
+        assert raised.value.code == "analysis.sitewide.triggered_population_unsupported"
+        assert_refusal(
+            "triggered_auxiliary_reads",
+            "sitewide_definitions_refused",
+            raised.value,
+            stage="read",
+        )
+        from tests.analysis_factory import _native_source, native_connection
+        from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(analysis)),
+            analysis,
+            kinds=("trigger_population", "trigger_measure_stats"),
+        )
+        with pytest.raises(CapabilityError) as artifact_refused:
+            adopted.sitewide("revenue")
+        assert artifact_refused.value.code == "analysis.sitewide.triggered_population_unsupported"
+        assert_refusal(
+            "triggered_auxiliary_reads",
+            "sitewide_artifact_refused",
+            artifact_refused.value,
+            stage="read",
+        )
+    finally:
+        if adopted is None:
+            analysis.close()
+        else:
+            _close_parity_analysis(adopted)
 
 
 def test_triggered_sitewide_refusal_from_seam_keeps_coded_source_reason():
@@ -1929,6 +2262,8 @@ def _clustered_trigger_events(
     ("run_daily", "run_daily_lift", "run_asof", "run_asof_lift"),
 )
 def test_triggered_clustered_day_axis_keeps_existing_refusal(tmp_path, method_name):
+    from tests.capability_consumers_auxiliary import assert_refusal
+
     con = ibis.duckdb.connect()
     con.create_table(
         "cluster_trigger_events",
@@ -1953,6 +2288,12 @@ def test_triggered_clustered_day_axis_keeps_existing_refusal(tmp_path, method_na
         with pytest.raises(CapabilityError) as raised:
             getattr(analysis, method_name)(population="triggered")
         assert raised.value.code == "facade.analysis.clustered_day_axis"
+        assert_refusal(
+            "triggered_clustered_day_axis",
+            "clustered_outcome_history_refused",
+            raised.value,
+            stage="read",
+        )
     finally:
         analysis.close()
         con.disconnect()
@@ -1961,6 +2302,8 @@ def test_triggered_clustered_day_axis_keeps_existing_refusal(tmp_path, method_na
 def test_clustered_experiment_with_trigger_narrows_to_the_triggered_population(tmp_path):
     """A clustered experiment routes its triggered readout through the
     source-owned triggered-population operation."""
+    from tests.capability_consumers_auxiliary import assert_support
+
     rate, effect = 0.5, 0.5
     con = ibis.duckdb.connect()
     con.create_table(
@@ -1979,6 +2322,11 @@ def test_clustered_experiment_with_trigger_narrows_to_the_triggered_population(t
         ),
     )
     rows = _lift_rows(an.run())
+    assert_support(
+        "triggered_clustered_day_axis",
+        "clustered_triggered_population_supported",
+        rows,
+    )
     by_pop = {r.analysis_population: r for r in rows if r.metric == "revenue"}
     assert set(by_pop) == {"assigned", "triggered"}
     assigned, triggered = by_pop["assigned"], by_pop["triggered"]
@@ -3063,3 +3411,95 @@ def test_quantile_experiment_with_trigger_narrows_to_the_triggered_population(tm
     # reading, undiluted in the triggered one -- equal values would mean
     # both were read off the same (assigned) source.
     assert triggered.require_lift().value > assigned.require_lift().value
+
+
+@pytest.mark.parametrize(
+    "ingress",
+    ("from_unit_summary", "from_unit_panel", "from_switchback_panel", "from_moments"),
+)
+@pytest.mark.parametrize("operation", ("run_daily", "run_asof", "run_daily_lift", "run_asof_lift"))
+def test_triggered_day_axis_refuses_non_native_ingresses(ingress, operation):
+    from increment.semantics.assignment import (
+        IndependentBernoulliOrder,
+        SwitchbackAssignment,
+        SwitchbackWindow,
+    )
+    from increment.semantics.design import Randomized
+    from increment.semantics.unit_cycle import UnitCycleTApproximation
+    from tests.analysis_factory import make_analysis
+    from tests.capability_consumers_auxiliary import assert_refusal
+
+    if ingress == "from_unit_summary":
+        source = Analysis.from_unit_summary(
+            pa.table({"unit": [1, 2], "arm": ["control", "treatment"], "revenue": [1.0, 2.0]}),
+            unit="unit",
+            group="arm",
+            metrics={"revenue": "mean"},
+            control="control",
+        )
+    elif ingress == "from_unit_panel":
+        source = Analysis.from_unit_panel(
+            pa.table(
+                {
+                    "unit": [1, 2],
+                    "arm": ["control", "treatment"],
+                    "day": ["2025-01-01", "2025-01-01"],
+                    "revenue": [1.0, 2.0],
+                }
+            ),
+            unit="unit",
+            group="arm",
+            date="day",
+            metrics={"revenue": "mean"},
+            control="control",
+        )
+    elif ingress == "from_switchback_panel":
+        source = Analysis.from_switchback_panel(
+            pa.Table.from_pylist(
+                [
+                    {
+                        "unit": unit,
+                        "cycle": cycle,
+                        "period": period,
+                        "step": step,
+                        "group": group,
+                        "value": float(cycle + period + step),
+                    }
+                    for unit, order in (
+                        ("u1", ("control", "treatment")),
+                        ("u2", ("treatment", "control")),
+                    )
+                    for cycle in range(2)
+                    for period, group in enumerate(order)
+                    for step in range(2)
+                ]
+            ),
+            unit="unit",
+            cycle="cycle",
+            period="period",
+            step="step",
+            group="group",
+            metrics={"value": "mean"},
+            identification=Randomized(
+                control_group="control", allocation={"control": 0.5, "treatment": 0.5}
+            ),
+            assignment=SwitchbackAssignment(
+                sequence=IndependentBernoulliOrder(probability_ct=0.5),
+                window=SwitchbackWindow(washout_steps=1, observation_steps=1),
+            ),
+            contrast_references={"value": UnitCycleTApproximation()},
+        )
+    else:
+        source = make_analysis()
+
+    try:
+        with pytest.raises(CapabilityError) as refused:
+            getattr(source, operation)(population="triggered")
+        assert_refusal(
+            "triggered_day_axis_boundary",
+            f"day_axis_{ingress}_{operation}_refused",
+            refused.value,
+            stage="read",
+        )
+    finally:
+        source.close()

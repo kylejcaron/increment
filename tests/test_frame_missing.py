@@ -37,6 +37,7 @@ from increment.frame import (
 )
 from increment.semantics.design import Randomized
 from increment.semantics.models import Metric
+from tests.capability_consumers_scalar import IMPUTE_POOLED_MEAN, refused
 from tests.warning_codes import warning_codes
 
 _PLUGIN_TOL = 1e-6
@@ -1750,23 +1751,24 @@ def test_censoring_warning_attributed_to_caller_not_engine_internals() -> None:
 
 def test_missing_impute_is_refused_by_every_frame_constructor_with_one_code() -> None:
     spec = {"name": "revenue", "missing": "impute"}
-    with pytest.raises(InvalidRequestError) as summary:
-        from_unit_summary(
+    constructors = {
+        "from_unit_summary": lambda: from_unit_summary(
             _arrow_table(),
             unit="user_id",
             group="variant",
             control="control",
             metrics=[spec],
-        )
-    with pytest.raises(InvalidRequestError) as panel:
-        from_unit_panel(
+        ),
+        "from_unit_panel": lambda: from_unit_panel(
             _panel_table(),
             unit="user_id",
             group="variant",
             date="day",
             control="control",
             metrics=[spec],
-        )
-    for raised in (summary, panel):
-        assert raised.value.code == "frame.metric.missing_impute"
-        assert raised.value.context["metric"] == "revenue"
+        ),
+    }
+    for ingress, construct in constructors.items():
+        raised = refused(IMPUTE_POOLED_MEAN, f"{ingress}-missing-impute-refused", construct)
+        assert isinstance(raised, InvalidRequestError)
+        assert raised.context["metric"] == "revenue"

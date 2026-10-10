@@ -1692,6 +1692,11 @@ def test_pre_normalization_bool_null_prefix_replays_but_cannot_be_relabelled_for
 
     from increment.semantics.design import Randomized
     from increment.semantics.models import AnalysisPlan, InferenceSpec
+    from tests.capability_consumers_auxiliary import (
+        assert_refusal,
+        assert_replay_only,
+        assert_support,
+    )
 
     rows = json.loads(
         (
@@ -1710,8 +1715,10 @@ def test_pre_normalization_bool_null_prefix_replays_but_cannot_be_relabelled_for
     )
 
     replay = Analysis.from_moments(rows, metrics=specs, control="control")
-    assert replay.sequential_snapshot().model_dump_json() == frozen
-    previous = replay.sequential_snapshot()
+    replayed = replay.sequential_snapshot()
+    assert_replay_only("stored_bool_null_continuation", "raw_bool_null_replay", replayed)
+    assert replayed.model_dump_json() == frozen
+    previous = replayed
 
     spelled = _arm_rows(("control", "treatment"), levels=old)
     captured = _summary(spelled, specs, plan, design).sequential_snapshot()
@@ -1723,6 +1730,7 @@ def test_pre_normalization_bool_null_prefix_replays_but_cannot_be_relabelled_for
         finalized=True, previous=previous
     )
     assert appended.parent_id == previous.prefix_id
+    assert_support("stored_bool_null_continuation", "same_spelling_continuation", appended)
 
     canonical = _arm_rows(("control", "treatment"), levels=("true", "false", "__null__"))
     for kind in _BOOL_KINDS:
@@ -1730,6 +1738,34 @@ def test_pre_normalization_bool_null_prefix_replays_but_cannot_be_relabelled_for
         with pytest.raises(CapabilityError) as refused:
             relabelled.capture_sequential(finalized=True, previous=previous)
         assert refused.value.code == "sequential.continuation.rewrite"
+        assert_refusal(
+            "stored_bool_null_continuation",
+            "canonical_relabel_refused",
+            refused.value,
+            stage="read",
+        )
+    panel_source = Analysis.from_unit_panel(
+        canonical.assign(day=0),
+        unit="unit",
+        group="arm",
+        date="day",
+        exposure_date="day",
+        metrics=specs,
+        design=design,
+        experiment_id="experiment",
+        plan=plan,
+    )
+    try:
+        with pytest.raises(CapabilityError) as panel_refused:
+            panel_source.capture_sequential(finalized=True, as_of=0, previous=previous)
+        assert_refusal(
+            "stored_bool_null_continuation",
+            "panel_legacy_unbounded_prefix_refused",
+            panel_refused.value,
+            stage="read",
+        )
+    finally:
+        panel_source.close()
 
 
 @pytest.mark.slow
@@ -1742,6 +1778,7 @@ def test_registered_native_and_artifact_capture_share_source_identity():
     from increment.semantics.models import AnalysisPlan, Definitions, InferenceSpec
     from increment.sequential_source import native_observation_mapping
     from tests.analysis_factory import make_analysis
+    from tests.capability_consumers_auxiliary import assert_support
     from tests.parity_harness import dataset as ds
 
     plan = AnalysisPlan(primary="purchase_rate", inference=InferenceSpec(kind="always_valid"))
@@ -1767,6 +1804,12 @@ def test_registered_native_and_artifact_capture_share_source_identity():
         adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
         native_snapshot = native.capture_sequential(finalized=True, as_of=as_of)
         artifact_snapshot = adopted.capture_sequential(finalized=True, as_of=as_of)
+        assert_support(
+            "experiment_window_compatibility", "window_native_supported", native_snapshot
+        )
+        assert_support(
+            "experiment_window_compatibility", "window_artifact_supported", artifact_snapshot
+        )
         # prefix_id/records order depends on accumulation order; identity and state do not.
         assert native_snapshot.registration == artifact_snapshot.registration
         assert native_snapshot.states == artifact_snapshot.states
@@ -1793,6 +1836,7 @@ def test_a_registration_from_before_window_days_were_bound_refuses_new_native_ca
     from increment.semantics.models import AnalysisPlan, Definitions
     from increment.sequential_source import native_observation_mapping
     from tests.analysis_factory import make_analysis
+    from tests.capability_consumers_auxiliary import assert_refusal
     from tests.parity_harness import dataset as ds
 
     frozen = json.loads(
@@ -1810,5 +1854,11 @@ def test_a_registration_from_before_window_days_were_bound_refuses_new_native_ca
         with pytest.raises(CodedError) as refused:
             make_analysis(connection, defs, experiment="exp", plan=legacy_plan)
         assert refused.value.code == "sequential.source.invalid"
+        assert_refusal(
+            "experiment_window_compatibility",
+            "window_old_native_refused",
+            refused.value,
+            stage="construction",
+        )
     finally:
         connection.disconnect()

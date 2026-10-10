@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
     from increment import Analysis
 
+from tests.capability_contracts import CONSTRUCTORS
 from tests.parity_harness.cases import PARITY_CASES, Absence
 from tests.parity_harness.runner import assert_parity, run_case
 
@@ -177,7 +178,7 @@ def _no_design_switchback_builder():
 
 def _case(build, *, waive=None, codes=None, absence=None, refusal_only=False):
     """A runner-contract case: every constructor outside *build* is recorded as not attempted."""
-    from tests.parity_harness.cases import CONSTRUCTORS, ParityCase
+    from tests.parity_harness.cases import ParityCase
 
     waive = dict(waive or {})
     for name in CONSTRUCTORS:
@@ -285,7 +286,7 @@ def test_expected_absence_that_never_occurs_fails():
 def test_a_downstream_error_of_the_absent_type_is_not_recorded_as_absence():
     """Absence is the constructor attempt failing; a `TypeError` raised after the
     constructor accepted the request is a defect, not a structural absence."""
-    from tests.parity_harness.cases import CONSTRUCTORS, ParityCase
+    from tests.parity_harness.cases import ParityCase
 
     def failing_probe(_results):
         raise TypeError("raised while reading, after the constructor accepted the request")
@@ -597,7 +598,7 @@ def test_each_day_axis_view_reads_only_its_own_method_and_keeps_its_own_outcome(
 ):
     """`daily` reads `run_daily` and `daily_lift` reads `run_daily_lift` as separate legs,
     so a refusing lift never hides its value sibling's rows and vice versa."""
-    from tests.parity_harness.cases import CONSTRUCTORS, ParityCase
+    from tests.parity_harness.cases import ParityCase
 
     analysis = _SplitDayAxis()
     waive = {n: "SOURCE: not attempted" for n in CONSTRUCTORS if n != "from_unit_summary"}
@@ -755,7 +756,6 @@ def test_the_parity_verdict_does_not_depend_on_which_ingress_is_the_oracle(seed)
     every order, and agreeing ones pass in every order."""
     import itertools
 
-    from tests.parity_harness.cases import CONSTRUCTORS
     from tests.parity_harness.runner import CaseResult, _normalize
 
     names = ("from_definitions", "from_unit_summary", "from_unit_panel")
@@ -821,7 +821,6 @@ def test_schema_absence_fails_when_the_error_is_about_another_field():
 
 
 def test_keyword_absence_must_name_a_keyword_the_signature_does_not_accept():
-    from tests.parity_harness.cases import CONSTRUCTORS
 
     assert "from_switchback_panel" in CONSTRUCTORS
     for field, message in (("cluster", "without naming 'cluster'"), ("unit", "accepts 'unit'")):

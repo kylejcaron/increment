@@ -1150,10 +1150,26 @@ def test_publication_pins_outcome_and_uptake_before_inter_stream_mutation(monkey
         con.disconnect()
 
 
+def _assert_clustered_artifact_outcome_history_refused(adopted) -> None:
+    from tests.capability_consumers_auxiliary import assert_refusal
+
+    with pytest.raises(CapabilityError) as refusal:
+        adopted.run_daily(population="triggered")
+    assert refusal.value.code == "facade.analysis.clustered_day_axis"
+    assert_refusal(
+        "triggered_clustered_day_axis",
+        "clustered_artifact_outcome_history_refused",
+        refusal.value,
+        stage="read",
+    )
+
+
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table.*:DeprecationWarning")
 @pytest.mark.parametrize("clustered", [False, True])
 def test_triggered_compliance_matches_population_across_sources(tmp_path, clustered):
     import pyarrow.parquet as pq
+
+    from tests.capability_consumers_auxiliary import assert_support
 
     con, analysis, context, store, _panel = native_fixture(
         ("full",), clustered=clustered, triggered=True
@@ -1212,14 +1228,28 @@ def test_triggered_compliance_matches_population_across_sources(tmp_path, cluste
                 expected_uptake / expected_units
             )
             with Analysis.from_unit_day_artifact(store, ref, expected_context=context) as adopted:
+                if clustered:
+                    _assert_clustered_artifact_outcome_history_refused(adopted)
                 for method in ("run_daily_lift", "run_asof_lift"):
                     with pytest.warns(IncrementRuntimeWarning) if clustered else nullcontext():
                         native_rows = getattr(analysis, method)(
                             estimands=["compliance"], population="triggered"
                         )
+                    if clustered:
+                        assert_support(
+                            "triggered_clustered_day_axis",
+                            "clustered_compliance_history_supported",
+                            native_rows,
+                        )
                     with pytest.warns(IncrementRuntimeWarning) if clustered else nullcontext():
                         artifact_rows = getattr(adopted, method)(
                             estimands=["compliance"], population="triggered"
+                        )
+                    if clustered:
+                        assert_support(
+                            "triggered_clustered_day_axis",
+                            "clustered_artifact_compliance_history_supported",
+                            artifact_rows,
                         )
                     assert {row.analysis_population for row in native_rows} == {"triggered"}
                     assert {row.analysis_population for row in artifact_rows} == {"triggered"}

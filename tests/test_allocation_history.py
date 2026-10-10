@@ -219,7 +219,107 @@ def test_allocation_history_refuses_a_declared_cluster(tmp_path):
 def test_allocation_history_refuses_a_seam_family_instance():
     """A frame/warehouse/moments-backed analysis retains no raw exposure
     event stream to build a daily enrollment timeline from."""
+    from tests.capability_consumers_auxiliary import assert_refusal
+
     analysis = make_analysis()
     with pytest.raises(CapabilityError) as caught:
         analysis.allocation_history()
     assert caught.value.code == "facade.analysis.operation"
+    assert_refusal(
+        "triggered_auxiliary_reads", "allocation_moments_refused", caught.value, stage="read"
+    )
+
+
+@pytest.mark.parametrize(
+    "ingress",
+    ("from_unit_summary", "from_unit_panel", "from_switchback_panel", "from_moments"),
+)
+def test_allocation_history_refuses_non_native_ingresses(ingress):
+    """Only the native event-backed source retains the allocation timeline."""
+    import pandas as pd
+    import pyarrow as pa
+
+    from increment.semantics.assignment import (
+        IndependentBernoulliOrder,
+        SwitchbackAssignment,
+        SwitchbackWindow,
+    )
+    from increment.semantics.design import Randomized
+    from increment.semantics.unit_cycle import UnitCycleTApproximation
+    from tests.capability_consumers_auxiliary import assert_refusal
+
+    if ingress == "from_unit_summary":
+        source = Analysis.from_unit_summary(
+            pd.DataFrame({"unit": ["c", "t"], "arm": ["control", "treatment"], "value": [0, 1]}),
+            unit="unit",
+            group="arm",
+            metrics={"value": "mean"},
+            control="control",
+        )
+    elif ingress == "from_unit_panel":
+        source = Analysis.from_unit_panel(
+            pa.table(
+                {
+                    "unit": ["c", "t"],
+                    "arm": ["control", "treatment"],
+                    "day": ["2025-01-01", "2025-01-01"],
+                    "value": [0, 1],
+                }
+            ),
+            unit="unit",
+            group="arm",
+            date="day",
+            metrics={"value": "mean"},
+            control="control",
+        )
+    elif ingress == "from_switchback_panel":
+        source = Analysis.from_switchback_panel(
+            pa.Table.from_pylist(
+                [
+                    {
+                        "unit": unit,
+                        "cycle": cycle,
+                        "period": period,
+                        "step": step,
+                        "group": group,
+                        "value": float(cycle + period + step),
+                    }
+                    for unit, order in (
+                        ("u1", ("control", "treatment")),
+                        ("u2", ("treatment", "control")),
+                    )
+                    for cycle in range(2)
+                    for period, group in enumerate(order)
+                    for step in range(2)
+                ]
+            ),
+            unit="unit",
+            cycle="cycle",
+            period="period",
+            step="step",
+            group="group",
+            metrics={"value": "mean"},
+            identification=Randomized(
+                control_group="control", allocation={"control": 0.5, "treatment": 0.5}
+            ),
+            assignment=SwitchbackAssignment(
+                sequence=IndependentBernoulliOrder(probability_ct=0.5),
+                window=SwitchbackWindow(washout_steps=1, observation_steps=1),
+            ),
+            contrast_references={"value": UnitCycleTApproximation()},
+        )
+    else:
+        source = make_analysis()
+
+    outcome_id = (
+        "allocation_moments_refused"
+        if ingress == "from_moments"
+        else f"allocation_{ingress}_refused"
+    )
+    try:
+        with pytest.raises(CapabilityError) as refused:
+            source.allocation_history()
+        assert refused.value.code == "facade.analysis.operation"
+        assert_refusal("triggered_auxiliary_reads", outcome_id, refused.value, stage="read")
+    finally:
+        source.close()

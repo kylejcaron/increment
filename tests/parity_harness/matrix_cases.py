@@ -32,10 +32,10 @@ from increment.semantics.models import (
 )
 from increment.sequential_source import native_observation_mapping
 from tests.analysis_factory import make_analysis
+from tests.capability_contracts import CONSTRUCTORS
 
 from . import matrix_data as md
 from .cases import (
-    CONSTRUCTORS,
     Absence,
     ParityCase,
     _export_and_replay,
