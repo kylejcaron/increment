@@ -47,7 +47,6 @@ def test_quantile_sequential_smoke_case_refuses_before_outcomes():
 
 
 @pytest.mark.compatibility("always-valid-quantile")
-@pytest.mark.parameter_recovery
 def test_quantile_sequential_historical_coverage_case_refuses_before_outcomes():
     _assert_refusal(
         n_trials=400,
@@ -58,7 +57,6 @@ def test_quantile_sequential_historical_coverage_case_refuses_before_outcomes():
 
 
 @pytest.mark.compatibility("always-valid-quantile")
-@pytest.mark.parameter_recovery
 @pytest.mark.parametrize("q", [0.5, 0.9, 0.99])
 @pytest.mark.parametrize("dgp", ["lognorm_0.5", "lognorm_1.5", "pareto_1.5"])
 def test_quantile_sequential_historical_tail_grid_refuses_before_outcomes(q, dgp):

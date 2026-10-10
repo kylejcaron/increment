@@ -474,6 +474,7 @@ def test_outer_deadline_retains_failure_and_interrupted_test(tmp_path):
 
 @pytest.mark.parametrize("wrapped", [False, True])
 @pytest.mark.parametrize("termination", ["budget_timeout", "process_exit"])
+@pytest.mark.integration
 def test_runner_finalizes_owned_unfinished_evidence(tmp_path, wrapped, termination):
     project = Path(__file__).resolve().parents[1]
     evidence = tmp_path / "evidence"

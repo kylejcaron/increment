@@ -42,6 +42,7 @@ def _diagnostics_present(results):
 
 @pytest.mark.slow
 @pytest.mark.parametrize("builder", [_observational_covariate_case, _observational_aipw_dml_case])
+@pytest.mark.integration
 def test_observational_diagnostics_match_on_every_supported_ingress(builder):
     case = replace(builder(), readout_probe=_diagnostics_present)
     result = run_case(case)

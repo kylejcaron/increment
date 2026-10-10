@@ -576,6 +576,7 @@ class TestDeployedRuntimeNulls:
         assert upper <= ALPHA + DELTA, (outcome, upper)
 
 
+@pytest.mark.slow
 @pytest.mark.parameter_recovery
 class TestPowerRecursionMatchesMC:
     def test_always_valid_crossing_power_matches_simulation(self):

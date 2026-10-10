@@ -28,7 +28,10 @@ from tests.test_dashboard import STOREFRONT_WINDOW, _arm_rows
 
 # Small deterministic fixtures legitimately trip estimator reliability warnings; the subject
 # here is which data is read, not estimator reliability.
-pytestmark = pytest.mark.filterwarnings("ignore::increment.errors.IncrementWarning")
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.filterwarnings("ignore::increment.errors.IncrementWarning"),
+]
 
 CONFIG = DashboardConfig(expected_allocation={"control": 0.5, "treatment": 0.5})
 
@@ -648,6 +651,7 @@ def test_each_state_keeps_its_own_original_refusal(tmp_path):
             assert batch.value.code == live.value.code
 
 
+@pytest.mark.slow
 def test_each_metric_series_is_independent_of_the_metric_selection(tmp_path):
     with _workspace(tmp_path, breakout_sources=()) as (_, analysis):
         snapshot = prepare_dashboard(analysis, config=CONFIG)

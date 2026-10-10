@@ -27,6 +27,7 @@ from tests.parity_harness.runner import assert_parity, run_case
         for case in PARITY_CASES
     ],
 )
+@pytest.mark.integration
 def test_parity_case(case):
     result = run_case(case)
     assert_parity(case, result)

@@ -2010,6 +2010,7 @@ def _e6v0_original_cluster_source(members_per_cluster, *, intervention_grain="un
     return table, source
 
 
+@pytest.mark.integration
 @pytest.mark.slow
 @pytest.mark.parametrize("members_per_cluster", [5, 100])
 @pytest.mark.parametrize("intervention_grain", ["unit", "cluster"])

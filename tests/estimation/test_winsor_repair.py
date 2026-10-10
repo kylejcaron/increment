@@ -856,6 +856,7 @@ def test_public_readout_uses_raw_pool(include_plain):
 @pytest.mark.parametrize(
     "inference_method", ["positive-log-kernel-bootstrap-t-v1", "joint-rank-projection-v1"]
 )
+@pytest.mark.integration
 def test_definitions_source_preserves_raw_pool_and_wire(tmp_path, volatile, inference_method):  # noqa: PLR0915
     from datetime import UTC, datetime
 

@@ -1165,6 +1165,8 @@ def test_rollout(metric_type, native):
 # Capability x capability crosses
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 @pytest.mark.parametrize("pair", sorted(PAIRS), ids=lambda p: f"{p[0]}-{p[1]}")
 def test_capability_pairs(pair, native):
     from increment.estimation.inference import Normal

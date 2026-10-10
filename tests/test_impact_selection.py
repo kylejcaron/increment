@@ -928,6 +928,7 @@ def test_import_graph_keeps_changed_test_and_handles_relative_imports(tmp_path: 
 
 
 @pytest.mark.slow
+@pytest.mark.integration
 def test_impact_selection_preserves_filesystem_guards_and_filters(tmp_path: Path) -> None:
     tests = tmp_path / "tests"
     tests.mkdir()
@@ -1148,6 +1149,7 @@ def test_affected_dynamic_consumer_aggregates_xdist_selection_once(tmp_path: Pat
 
 
 @pytest.mark.slow
+@pytest.mark.integration
 def test_affected_dynamic_consumer_keeps_stable_identity_with_xdist_group(tmp_path: Path) -> None:
     project = Path(__file__).resolve().parents[1]
     base = _prepare_dynamic_consumer(tmp_path, xdist_grouped=True)
@@ -1220,6 +1222,7 @@ def test_affected_runner_rejects_untyped_pytest_arguments(
 
 @pytest.mark.slow
 @pytest.mark.parametrize("workers", ["1", "8"])
+@pytest.mark.integration
 def test_affected_runner_accepts_bounded_numeric_workers(tmp_path: Path, workers: str) -> None:
     project = Path(__file__).resolve().parents[1]
     base = _make_affected_fixture(tmp_path)
@@ -1512,6 +1515,7 @@ def test_affected_runner_ignores_inherited_timeout_options(
 
 
 @pytest.mark.slow
+@pytest.mark.integration
 def test_affected_runner_preserves_nested_timeout_harness_environment(tmp_path: Path) -> None:
     project = Path(__file__).resolve().parents[1]
     base = _make_affected_fixture(tmp_path)
@@ -1565,6 +1569,7 @@ def test_private_pytest_parser_adapter_is_exactly_pinned() -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.integration
 def test_affected_runner_preserves_fast_and_slow_marker_separation(tmp_path: Path) -> None:
     project = Path(__file__).resolve().parents[1]
     base = _make_affected_fixture(tmp_path)
@@ -1913,6 +1918,7 @@ def test_affected_runner_rejects_effective_options_from_argfiles_and_config(
 
 
 @pytest.mark.slow
+@pytest.mark.integration
 def test_affected_runner_bounds_xdist_and_requires_loadgroup(tmp_path: Path) -> None:
     project = Path(__file__).resolve().parents[1]
     base = _make_affected_fixture(tmp_path)

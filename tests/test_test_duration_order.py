@@ -169,6 +169,7 @@ def test_testmon_restores_markdown_source_order_after_duration_sort(tmp_path, mo
 
 
 @pytest.mark.parametrize("dist", [None, "loadgroup"])
+@pytest.mark.integration
 def test_focused_runner_executes_grouped_markdown_in_source_order(tmp_path, dist):
     import json
     import os

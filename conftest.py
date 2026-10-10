@@ -135,7 +135,13 @@ def _group_markdown_items(items: list[pytest.Item]) -> None:
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Order tests and assign local performance deadlines."""
+    """Validate categories, order tests and assign local performance deadlines."""
+    for item in items:
+        if item.get_closest_marker("slow") is not None:
+            continue
+        for category in ("parameter_recovery", "examples", "stress"):
+            if item.get_closest_marker(category) is not None:
+                raise pytest.UsageError(f"{item.nodeid}: {category} requires the slow mark")
     _group_markdown_items(items)
     if os.environ.get("INCREMENT_DISABLE_DURATION_ORDER") != "1":
         _order_by_recorded_duration(

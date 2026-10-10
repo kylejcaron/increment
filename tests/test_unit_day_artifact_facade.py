@@ -414,6 +414,7 @@ def test_previous_writer_relations_match_the_saved_digests_and_its_context_is_re
 # Guards the reader from recomputing a stored digest with any codec other than
 # the one its digest_format names: the previous writer's format-1 base
 # relations must verify on a backend that now publishes the fast format.
+@pytest.mark.integration
 def test_previous_writer_base_relations_still_verify(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(session_module, "ARTIFACT_BASE_RELATION_ROLES", ())
     _con, native, context, store, ref = _published()
@@ -433,6 +434,7 @@ def test_previous_writer_base_relations_still_verify(monkeypatch: pytest.MonkeyP
         native.close()
 
 
+@pytest.mark.integration
 def test_publish_open_runs_the_same_arm_operations_and_reopens() -> None:
     _con, native, context, store, ref = _published()
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
@@ -465,6 +467,7 @@ def _purchase_lift(analysis: Analysis) -> float:
 
 
 @pytest.mark.slow
+@pytest.mark.integration
 def test_closed_artifact_analysis_reopens_its_pinned_generation_not_a_newer_one() -> None:
     con, native, context, store, ref = _published()
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
@@ -610,6 +613,7 @@ def test_refresh_preserves_artifact_identity_and_rejects_cross_context() -> None
 
 
 # Guards triggered dispatch from silently returning only the assigned population.
+@pytest.mark.integration
 def test_artifact_run_returns_assigned_and_triggered(tmp_path: Path) -> None:
     definitions = _definitions(tmp_path, trigger="session_start")
     _con, native, context, store = _native(
@@ -692,6 +696,7 @@ def test_non_canonical_stored_rows_refuse() -> None:
 
 
 # Guards CUPED dispatch from dropping pre-period covariate moments on breakout and retention-day paths.
+@pytest.mark.integration
 def test_adopted_breakout_cuped_covariates_present(tmp_path: Path) -> None:
     definitions = _definitions(tmp_path, cuped_metrics=("purchase_rate",))
     _con, native, context, store = _native(definitions=definitions, with_pre_period=True)
@@ -724,6 +729,7 @@ def test_adopted_breakout_cuped_covariates_present(tmp_path: Path) -> None:
 
 
 # Guards bounded-retention daily lift from losing its non-null CUPED covariate moments.
+@pytest.mark.integration
 def test_adopted_retention_cuped_covariates_present(tmp_path: Path) -> None:
     definitions = _definitions(tmp_path, cuped_metrics=("d7_retention",))
     _con, native, context, store = _native(
@@ -887,6 +893,7 @@ def test_refused_open_releases_snapshot(monkeypatch: pytest.MonkeyPatch) -> None
 
 # Guards same-name breakout routing from collapsing dimensions resolved from distinct fact sources.
 @pytest.mark.slow
+@pytest.mark.integration
 def test_multi_source_same_property_breakouts_route_exactly(tmp_path: Path) -> None:
     definitions = _definitions(
         tmp_path,
@@ -935,6 +942,7 @@ def test_open_ended_experiment_omits_site_volume(tmp_path: Path) -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.integration
 def test_triggered_artifact_serves_full_population_extensions(tmp_path: Path) -> None:
     definitions = _definitions(
         tmp_path,
@@ -1357,6 +1365,7 @@ def test_triggered_subset_dimension_and_cuped_extensions_match_native(tmp_path: 
 
 
 @pytest.mark.slow
+@pytest.mark.integration
 def test_artifact_run_breakout_supports_trigger_with_required_evidence(tmp_path: Path) -> None:
     """Trigger breakout parity needs trigger and breakout-dimension evidence.
 

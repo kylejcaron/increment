@@ -513,6 +513,7 @@ def test_published_uptake_respects_certified_local_day_edge():
         con.disconnect()
 
 
+@pytest.mark.integration
 def test_completed_asof_requires_uptake_feed_certification_and_preserves_late_parity():
     uptake_edge = datetime(2025, 1, 4, tzinfo=UTC)
     outcome_edge = datetime(2025, 1, 31, tzinfo=UTC)
@@ -868,6 +869,7 @@ def test_total_and_asof_uptake_share_elapsed_timestamp_boundaries():
 
 @pytest.mark.parametrize("clustered", [False, True])
 @pytest.mark.parametrize("metric_free", [False, True])
+@pytest.mark.integration
 def test_new_native_artifact_export_reload_preserves_available_uncertainty(
     tmp_path, clustered, metric_free
 ):
@@ -1166,6 +1168,7 @@ def _assert_clustered_artifact_outcome_history_refused(adopted) -> None:
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table.*:DeprecationWarning")
 @pytest.mark.parametrize("clustered", [False, True])
+@pytest.mark.integration
 def test_triggered_compliance_matches_population_across_sources(tmp_path, clustered):
     import pyarrow.parquet as pq
 
@@ -1280,6 +1283,7 @@ def test_triggered_compliance_matches_population_across_sources(tmp_path, cluste
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table.*:DeprecationWarning")
+@pytest.mark.integration
 def test_triggered_compliance_history_extends_after_trigger_to_uptake_and_maturity(
     tmp_path,
 ):
@@ -1330,6 +1334,7 @@ def test_triggered_compliance_history_extends_after_trigger_to_uptake_and_maturi
 @pytest.mark.filterwarnings("ignore::increment.errors.IncrementRuntimeWarning")
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table.*:DeprecationWarning")
 @pytest.mark.parametrize("clustered", [False, True])
+@pytest.mark.integration
 def test_sparse_triggered_compliance_keeps_later_estimable_looks(clustered):
     con, analysis, _context, _store, _panel = native_fixture(
         ("full",), clustered=clustered, triggered=True
@@ -1743,6 +1748,7 @@ def test_triggered_compliance_completes_control_only_date_with_missing_treatment
 
 @pytest.mark.parametrize("clustered", [False, True])
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table.*:DeprecationWarning")
+@pytest.mark.integration
 def test_triggered_compliance_insufficient_early_sample_continues(clustered):
     con, analysis, context, store, _panel = native_fixture(
         ("full",), triggered=True, clustered=clustered
@@ -1782,6 +1788,7 @@ def test_triggered_compliance_insufficient_early_sample_continues(clustered):
 
 
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table.*:DeprecationWarning")
+@pytest.mark.integration
 def test_triggered_encouragement_itt_and_late_match_artifact_uptake(tmp_path):
     con, analysis, context, store, _panel = native_fixture(("full",), triggered=True)
     try:

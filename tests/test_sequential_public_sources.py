@@ -1218,6 +1218,7 @@ def test_omitted_plan_q_survives_native_and_artifact_replay():
 
 @pytest.mark.slow
 @pytest.mark.parametrize("law", ["bernoulli", "scalar_mean"])
+@pytest.mark.integration
 def test_native_artifact_and_current_wire_replay_actual_likelihood(tmp_path, law):
     import pyarrow.parquet as pq
 

@@ -187,6 +187,7 @@ def test_triggered_explore_retains_triggered_daily_series(tmp_path):
         analysis.close()
 
 
+@pytest.mark.integration
 def test_overview_exploratory_rows_stay_in_their_population_family(tmp_path):
     analysis = _triggered_dashboard(tmp_path, extra_metric=True)
     try:
@@ -279,6 +280,7 @@ def test_triggered_health_uses_triggered_balance_result(tmp_path):
         analysis.close()
 
 
+@pytest.mark.integration
 def test_triggered_allocation_history_is_immutable_and_refusal_consistent(tmp_path):
     import dataclasses
 

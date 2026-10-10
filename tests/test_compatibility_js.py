@@ -90,6 +90,7 @@ def _node_gate(
     return ("run", "")
 
 
+@pytest.mark.integration
 def test_compatibility_js_filter_behavior():
     node_path, version_output = _resolve_node()
     action, reason = _node_gate(node_path, version_output, _running_in_ci())

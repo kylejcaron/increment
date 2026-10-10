@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from packaging.requirements import Requirement
 
-pytestmark = [pytest.mark.slow]
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 

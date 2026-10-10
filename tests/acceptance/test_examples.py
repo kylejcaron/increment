@@ -39,6 +39,7 @@ _MARIMO_NOTEBOOKS = tuple(
     if "app = marimo.App" in path.read_text(encoding="utf-8")
 )
 
+
 # analysis_from_a_warehouse.py writes this relative to cwd=REPO_ROOT.
 _MOMENTS_PARQUET = REPO_ROOT / "increment_moments.parquet"
 _REALISTIC_DEMO_WAREHOUSE = EXAMPLES_DIR / "realistic_demo" / "warehouse"
@@ -172,6 +173,7 @@ def _rendered_table_title_index(html: str, title: str) -> int:
 # --- breakout.py: needs tables (coeftable) plus altair (dev group) --------
 
 
+@pytest.mark.integration
 def test_breakout_export_renders_expected_figures(tmp_path):
     pytest.importorskip("coeftable")
     html = _export_html("breakout.py", tmp_path)
@@ -246,6 +248,7 @@ def test_ttest_benchmark_preserves_half_point_effects():
     assert format_true_effect(0.045) == "+4.5%"
 
 
+@pytest.mark.integration
 def test_ttest_benchmark_export_renders_comparison(tmp_path):
     pytest.importorskip("coeftable")
     html = _export_html("ttest_benchmark.py", tmp_path)
@@ -255,6 +258,7 @@ def test_ttest_benchmark_export_renders_comparison(tmp_path):
 # --- power.py: closed-form power-analysis math, no extras needed -----------
 
 
+@pytest.mark.integration
 def test_power_export_renders_expected_figures(tmp_path):
     html = _export_html("power.py", tmp_path)
     # Deterministic closed-form solve (required_sample_size at lift=0.03,
@@ -270,6 +274,7 @@ def test_power_export_renders_expected_figures(tmp_path):
 # --- cuped.py: seeded synthetic warehouse (fixed seed=2025), needs tables
 
 
+@pytest.mark.integration
 def test_cuped_export_renders_expected_figures(tmp_path):
     pytest.importorskip("coeftable")
     html = _export_html("cuped.py", tmp_path)
@@ -284,6 +289,7 @@ def test_cuped_export_renders_expected_figures(tmp_path):
 
 
 @_WAREHOUSE_GROUP
+@pytest.mark.integration
 def test_analysis_from_a_warehouse_export_renders_readouts(tmp_path):
     pytest.importorskip("coeftable")
     html = _export_html("analysis_from_a_warehouse.py", tmp_path)
@@ -292,6 +298,7 @@ def test_analysis_from_a_warehouse_export_renders_readouts(tmp_path):
 
 
 @_WAREHOUSE_GROUP
+@pytest.mark.integration
 def test_realistic_data_model_export_renders_expected_figures(tmp_path):
     pytest.importorskip("coeftable")
     warehouse_existed = _REALISTIC_DEMO_WAREHOUSE.exists()
@@ -319,6 +326,7 @@ def test_realistic_data_model_export_renders_expected_figures(tmp_path):
 
 
 @_WAREHOUSE_GROUP
+@pytest.mark.integration
 def test_realistic_data_model_regenerates_stale_generator_manifest(tmp_path):
     pytest.importorskip("coeftable")
     backup = tmp_path / "realistic-demo-warehouse"
@@ -359,6 +367,7 @@ def test_realistic_data_model_regenerates_stale_generator_manifest(tmp_path):
 # --- analysis_from_a_dataframe.py: guided dataframe tutorial ---------------
 
 
+@pytest.mark.integration
 def test_analysis_from_a_dataframe_export_renders_expected_figures(tmp_path):
     pytest.importorskip("coeftable")
     html = _export_html("analysis_from_a_dataframe.py", tmp_path)
@@ -383,6 +392,7 @@ def test_analysis_from_a_dataframe_export_renders_expected_figures(tmp_path):
 # --- observational.py: no warehouse, needs pandas + tables for readout ----
 
 
+@pytest.mark.integration
 def test_observational_export_renders_expected_figures(tmp_path):
     pytest.importorskip("coeftable")
     html = _export_html("observational.py", tmp_path)
@@ -393,6 +403,7 @@ def test_observational_export_renders_expected_figures(tmp_path):
 # --- encouragement.py: no warehouse, needs pandas + tables for readout ----
 
 
+@pytest.mark.integration
 def test_encouragement_export_renders_expected_figures(tmp_path):
     pytest.importorskip("coeftable")
     html = _export_html("encouragement.py", tmp_path)
@@ -436,6 +447,7 @@ def test_encouragement_export_renders_expected_figures(tmp_path):
 # --- hte.py: no warehouse, needs tables (pandas + coeftable) ---------------
 
 
+@pytest.mark.integration
 def test_hte_export_succeeds(tmp_path):
     pytest.importorskip("pandas")
     pytest.importorskip("coeftable")
@@ -445,6 +457,7 @@ def test_hte_export_succeeds(tmp_path):
 # --- late_over_time.py: no warehouse, needs pandas + tables for readout ---
 
 
+@pytest.mark.integration
 def test_late_over_time_export_renders_expected_figures(tmp_path):
     pytest.importorskip("pandas")
     pytest.importorskip("coeftable")

@@ -226,6 +226,7 @@ def test_declared_whole_window_rows_are_identical_with_added_metrics(warehouse):
     )
 
 
+@pytest.mark.integration
 def test_triggered_added_metric_reports_both_populations_without_changing_declared_family(
     triggered_warehouse,
 ):

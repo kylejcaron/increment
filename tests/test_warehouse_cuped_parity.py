@@ -38,6 +38,8 @@ def test_ratio_cuped_fixed_horizon_matches_the_dataframe_oracle(duck, tmp_path):
     )
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 def test_adjusted_sequential_laws_match_frame_capture(duck):
     widths = check_sequential_parity(duck, "duckdb", "events")
     for plain, adjusted in widths.values():

@@ -113,6 +113,7 @@ def test_triggered_request_requires_explicit_snapshot_evidence_but_assigned_does
         analysis.close()
 
 
+@pytest.mark.integration
 def test_snapshot_identity_distinguishes_pinned_source_evidence(tmp_path):
     path = _write_defs(tmp_path)
     cutoff = dt.datetime(2024, 1, 31, tzinfo=dt.UTC)
@@ -228,6 +229,7 @@ def test_native_pinned_identity_survives_moments_export_reload(tmp_path):
         connection.disconnect()
 
 
+@pytest.mark.integration
 def test_triggered_encouragement_uptake_remains_assignment_anchored(tmp_path):
     definitions = _defs_yaml(end='"2024-01-10"', observation_end='"2024-01-31"').replace(
         "window_days: 7", "window_days: 3"
@@ -637,6 +639,8 @@ def test_reports_both_populations_and_the_triggered_effect_is_undiluted(tmp_path
     assert "(triggered)" in html
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 def test_triggered_multiplicity_keeps_failed_cells_in_fixed_roster_across_ingresses(
     tmp_path,
 ):
@@ -878,6 +882,8 @@ def _assert_population_scoped_consumers(rows):
     return by_population
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 def test_run_breakout_returns_distinct_triggered_population_and_families(tmp_path):
     from tests.capability_consumers_auxiliary import assert_support
 
@@ -1665,6 +1671,8 @@ def test_triggered_cate_randomized_artifact_without_covariates_preserves_populat
             _close_parity_analysis(adopted)
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 def test_triggered_ratio_breakout_daily_summary_uses_trigger_anchors(tmp_path):
     events = _events(n_per_arm=2, trigger_rate=1.0).to_pylist()
     for row in events:

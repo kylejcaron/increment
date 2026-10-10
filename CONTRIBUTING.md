@@ -95,6 +95,66 @@ Jupyter Notebook, JupyterLab, or ipywidgets.
 
 ### Tests and quality checks
 
+#### Test categories and runtime expectations
+
+Unmarked categories default to cheap unit or small deterministic regression
+checks. Most unit bodies should be sub-second; the existing local timeout is
+a hang guard, not a target. Legacy unmarked tests are not automatically units:
+inspect their assertions, fixtures and helpers before classifying them.
+Scheduling/metadata marks such as `xdist_group`, `skip` and `compatibility`
+do not define a test's purpose. Do not add redundant `unit` or `fast` marks.
+
+| Purpose | Marks | Execution |
+| --- | --- | --- |
+| Unit/small regression | No category mark | Focused/affected feedback and ordinary fast CI |
+| Cooperating components, local query engines, UI or subprocess boundaries | `integration`; add `slow` if expensive | Fast unless slow; relevant task checks and required CI |
+| Expensive functional regression | `slow`, plus its purpose where useful | Relevant affected slow and current functional-slow/pre-push gates |
+| Large-scale/exhaustive deterministic validation | `stress` and `slow` | Currently functional-slow; relevant changes and final integration/release |
+| Monte Carlo coverage, bias or parameter recovery | `parameter_recovery` and `slow` | Scientific gates for relevant inference changes and releases; dedicated weekly shards |
+| Runnable notebook exports | `examples` and `slow` | Notebook acceptance/documentation and weekly full-functional jobs |
+
+`slow` describes cost, not purpose. A solver regression at ordinary inputs
+does not become stress merely because it is slow: investigate production
+performance or redundant test work. Category checks refuse recovery,
+examples or stress tests lacking an effective `slow` mark before execution,
+including CI; module, class and parameter inheritance count.
+
+Integration does not change selection. Stress currently remains in the
+functional-slow tier. Moving it outside routine CI requires an executable,
+required gate for relevant changes and a scheduled/release route, with
+failure evidence retained; a label or proposed workflow is insufficient.
+Monte Carlo is already excluded from both fast and functional-slow. Weekly
+execution does not replace required scientific validation before merging
+changes to the covered estimator, numerical construction or guarantee.
+
+For runtime audits, review every recorded test whose summed setup, call and
+teardown exceeds five seconds; prioritize those exceeding ten. Also inspect
+aggregate module/fixture costs, collection/startup and interrupted tests.
+Consistently above five seconds under representative conditions means `slow`
+until optimized; attribute shared setup before classifying dependent tests.
+The thresholds are not single-run, hardware-sensitive CI failures. Contended,
+partial or older-source runs identify candidates but cannot establish current
+wall-time improvements or complete acceptance.
+
+Record each family's contract, current source anchor, expensive workload,
+disposition (keep, optimize, split, reclassify or remove genuinely redundant
+coverage), required execution gate and exact parameter identities. Group
+shared causes without overlooking expensive boundary variants. Keep small
+deterministic witnesses in the routine tier; preserve full campaign
+assertions, seeds, repetitions and tolerances separately. A small smoke does
+not establish empirical coverage. Update selectors, campaign runners,
+references and CI consumers together so reclassification cannot lose tests.
+Use the existing `calibration/` directory for full certification campaigns
+when appropriate; it is outside ordinary pytest collection.
+
+Marker-only retags require collection and exact selected/deselected identity
+checks, not rerunning test bodies or statistical campaigns. Collect changed
+files with the marker filter cleared, then verify every affected tier and
+the full inventory so no case disappears. Run focused execution when test
+bodies, fixtures, assertions or selection/guard logic change. Batch those
+checks at meaningful milestones rather than after each decorator edit.
+
+
 - Start with the exact regression:
 
   ```bash

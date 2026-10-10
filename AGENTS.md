@@ -48,6 +48,18 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
 
 - Unit tests MUST NOT use the network or real warehouses. Live checks belong
   under `integration/warehouse_execution/`.
+- Unmarked test categories default to cheap unit/small regression checks.
+  Mark component/query/UI/subprocess boundaries `integration`; use `slow`
+  for expensive work and `stress` plus `slow` for large deterministic grids.
+  Legacy unmarked tests require source inspection, not an assumed unit label.
+- Recovery, coverage and bias studies use `parameter_recovery` plus `slow`;
+  notebook exports use `examples` plus `slow`. Collection enforces the cost
+  mark, including inherited marks. Integration alone does not exclude a test.
+- Review recorded setup/body/teardown costs above five seconds; prioritize
+  above ten. Thresholds trigger investigation, not flaky timing failures.
+  Keep assertions and scientific settings when splitting smoke/campaigns;
+  exclusion requires an equivalent required execution gate. See
+  [test categories and runtime expectations](CONTRIBUTING.md#test-categories-and-runtime-expectations).
 - Tests MUST be independent under xdist. Modules that mutate shared paths use
   `pytest.mark.xdist_group("<name>")`; dependent Markdown snippets retain source
   order within their file.
