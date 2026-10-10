@@ -199,7 +199,7 @@ decision_table = results.to_frame(backend="polars")[
 
 ```text
 revenue / treatment: lift=+6.69% [+0.69%, +13.05%] significant=True
-LiftEstimate(metric='converted', group='treatment', estimand='itt', value=unavailable (relative), interval=(+2.059, +inf), stat_sig=True, discovery=None)
+LiftEstimate(metric='converted', group='treatment', method='unadjusted', role='decision', estimand='itt', population='assigned', inference='fixed', alternative='two-sided', scale='relative', value=unavailable (relative), interval=(+2.059, +inf), discovery=None)
 ```
 
 `r.lift` is `None` when no finite point estimate exists. The causes, and where

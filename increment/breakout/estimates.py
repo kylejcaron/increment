@@ -823,13 +823,20 @@ class BreakoutEstimate(_RowIdentity):
         from increment.estimation.results import _selection_qualification
 
         if self.sequential_result is not None:
-            bounds = self.sequential_result.bounds
             value = "unavailable" if self.lift is None else f"{self.lift.value:+.4g}"
-            interval = f"ratio_set=({bounds.lower}, {bounds.upper}), empty={bounds.empty}"
+            interval = ", ".join(
+                _sequential_display_parts(
+                    self.sequential_result, point_available=self.lift is not None
+                )
+            )
         elif self.relative_confidence_set is not None:
             region = self.relative_confidence_set
             value = "unavailable" if self.lift is None else f"{self.lift.value:+.4g}"
             interval = f"relative_set={region.geometry}:{region.intervals!r}"
+            if region.reason is not None:
+                interval += f", confidence_set_reason={region.reason!r}"
+            if self.lift is None and region.point_unavailable_reason is not None:
+                interval += f", point_unavailable_reason={region.point_unavailable_reason!r}"
         elif self.binomial_set is not None:
             bounds = self.binomial_set
             value = "unavailable" if self.lift is None else f"{self.lift.value:+.4g}"
@@ -868,6 +875,14 @@ class BreakoutEstimate(_RowIdentity):
             f"value={value} ({self.value_scale})",
             interval,
         ]
+        if self.relative_unavailable_reason is not None:
+            details.append(f"relative_unavailable_reason={self.relative_unavailable_reason!r}")
+        if self.abs_diff is not None:
+            details.append(f"abs_diff={self.abs_diff:+.4g}")
+        if self.abs_lb is not None or self.abs_ub is not None:
+            lower = "-inf" if self.abs_lb is None else f"{self.abs_lb:+.4g}"
+            upper = "+inf" if self.abs_ub is None else f"{self.abs_ub:+.4g}"
+            details.append(f"abs_interval=({lower}, {upper})")
         if self.failure_code is not None:
             details.append(f"failure={self.failure_code!r}")
             if self.reason is not None:

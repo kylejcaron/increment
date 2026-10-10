@@ -1548,7 +1548,7 @@ class LiftEstimate(_RowIdentity):
                 f"value="
                 f"{None if self.lift is None else self.lift.value!r} ({unit}), "
                 f"relative_set={relative.geometry}:{relative.intervals!r}, "
-                f"stat_sig={self.stat_sig()}, discovery={self.discovery!r}{suffix})"
+                f"discovery={self.discovery!r}{suffix})"
             )
         if self.sequential_result is not None:
             value = "unavailable" if self.lift is None else f"{self.lift.value:+.4g}"
@@ -1572,13 +1572,12 @@ class LiftEstimate(_RowIdentity):
                 interval = "interval=None"
             else:
                 interval = f"interval=({self.lift.lb:+.4g}, {self.lift.ub:+.4g})"
-        stat_sig = self.stat_sig()
         qualification = _selection_qualification(self)
         suffix = f", selection_qualification={qualification!r}" if qualification is not None else ""
         return (
             f"LiftEstimate({identity}, "
             f"value={value} ({unit}), "
-            f"{interval}, stat_sig={stat_sig}, discovery={self.discovery!r}{suffix})"
+            f"{interval}, discovery={self.discovery!r}{suffix})"
         )
 
     __str__ = __repr__
