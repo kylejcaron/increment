@@ -60,6 +60,8 @@ def combine_shards(shards_root: Path, *, expected_sha: str, expected_attempt: in
             reasons.append(f"shard {shard} is not Python 3.12")
         if metadata.get("outcome") != "success":
             reasons.append(f"shard {shard} did not succeed")
+        if metadata.get("coverage_outcome") != "success":
+            reasons.append(f"shard {shard} coverage collection did not succeed")
         if not (artifact / "coverage.json").is_file():
             reasons.append(f"shard {shard} has no coverage data")
 
@@ -71,16 +73,27 @@ def combine_shards(shards_root: Path, *, expected_sha: str, expected_attempt: in
         for shard in (1, 2):
             _, artifact = shards[shard]
             report = json.loads((artifact / "coverage.json").read_text())
-            for filename, details in report["files"].items():
-                normalized = _package_path(filename)
-                if normalized is None:
-                    continue
-                statements, executed = merged.setdefault(normalized, (set(), set()))
+            package_files = [
+                (_package_path(filename), details) for filename, details in report["files"].items()
+            ]
+            package_files = [
+                (filename, details) for filename, details in package_files if filename is not None
+            ]
+            if not package_files or not any(
+                details["executed_lines"] for _, details in package_files
+            ):
+                reasons.append(f"shard {shard} has no executed increment/ source statements")
+                continue
+            for filename, details in package_files:
+                statements, executed = merged.setdefault(filename, (set(), set()))
                 statements.update(details["executed_lines"])
                 statements.update(details["missing_lines"])
                 executed.update(details["executed_lines"])
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
         return _incomplete([f"invalid coverage data ({error})"])
+
+    if reasons:
+        return _incomplete(reasons)
 
     files: dict[str, dict[str, Any]] = {}
     for filename, (statements, executed) in sorted(merged.items()):

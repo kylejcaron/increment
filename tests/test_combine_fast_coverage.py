@@ -18,15 +18,23 @@ def _shard(
     sha: str = "abc123",
     attempt: int = 2,
     outcome: str = "success",
+    coverage_outcome: str = "success",
+    has_increment_data: bool = True,
 ) -> Path:
     artifact = root / f"shard-{shard}"
     artifact.mkdir(parents=True)
     project = artifact / "project"
-    package = project / "increment"
-    package.mkdir(parents=True)
-    source = package / f"module_{shard}.py"
+    module_dir = project / ("increment" if has_increment_data else "other")
+    module_dir.mkdir(parents=True)
+    source = module_dir / "shared.py"
     source.write_text(
-        f"def called_{shard}():\n    return {shard}\n\ndef untouched_{shard}():\n    return 0\n"
+        "def called(first):\n"
+        "    if first:\n"
+        "        return 1\n"
+        "    return 2\n"
+        "\n"
+        "def untouched():\n"
+        "    return 0\n"
     )
     sys.path.insert(0, str(project))
     try:
@@ -34,8 +42,8 @@ def _shard(
         collector.start()
         namespace: dict[str, object] = {}
         exec(compile(source.read_text(), str(source), "exec"), namespace)
-        called = cast(Callable[[], object], namespace[f"called_{shard}"])
-        called()
+        called = cast(Callable[[bool], object], namespace["called"])
+        called(shard == 1)
         collector.stop()
         collector.json_report(outfile=str(artifact / "coverage.json"))
     finally:
@@ -48,13 +56,14 @@ def _shard(
                 "python": "3.12",
                 "shard": shard,
                 "outcome": outcome,
+                "coverage_outcome": coverage_outcome,
             }
         )
     )
     return artifact
 
 
-def test_combine_fast_coverage_requires_and_unions_both_successful_shards(tmp_path: Path):
+def test_combine_fast_coverage_unions_overlapping_file_lines(tmp_path: Path):
     _shard(tmp_path, shard=1)
     _shard(tmp_path, shard=2)
 
@@ -62,15 +71,27 @@ def test_combine_fast_coverage_requires_and_unions_both_successful_shards(tmp_pa
 
     assert result.complete
     assert result.coverage is not None
+    expected: set[int] = set()
     for shard in (1, 2):
         report = json.loads((tmp_path / f"shard-{shard}" / "coverage.json").read_text())
         source_path = next(path for path in report["files"] if "/increment/" in path)
-        source_report = report["files"][source_path]
-        combined = result.coverage["files"][f"increment/module_{shard}.py"]
-        assert combined["executed_lines"] == source_report["executed_lines"]
-        assert combined["summary"]["covered_lines"] >= 2
-        assert combined["summary"]["missing_lines"] > 0
+        expected.update(report["files"][source_path]["executed_lines"])
+    combined = result.coverage["files"]["increment/shared.py"]
+    assert combined["executed_lines"] == sorted(expected)
+    assert combined["summary"]["covered_lines"] == len(expected)
+    assert combined["summary"]["missing_lines"] > 0
     assert "not whole-package" in result.summary
+
+
+def test_combine_fast_coverage_rejects_empty_increment_shard(tmp_path: Path):
+    _shard(tmp_path, shard=1)
+    _shard(tmp_path, shard=2, has_increment_data=False)
+
+    result = combine_shards(tmp_path, expected_sha="abc123", expected_attempt=2)
+
+    assert not result.complete
+    assert result.coverage is None
+    assert "shard 2 has no executed increment/ source statements" in result.summary
 
 
 def test_combine_fast_coverage_reports_missing_shard_incomplete(tmp_path: Path):
@@ -103,3 +124,14 @@ def test_combine_fast_coverage_rejects_failed_shard(tmp_path: Path):
     assert not result.complete
     assert result.coverage is None
     assert "shard 2 did not succeed" in result.summary
+
+
+def test_combine_fast_coverage_rejects_collection_failure(tmp_path: Path):
+    _shard(tmp_path, shard=1, coverage_outcome="failure")
+    _shard(tmp_path, shard=2)
+
+    result = combine_shards(tmp_path, expected_sha="abc123", expected_attempt=2)
+
+    assert not result.complete
+    assert result.coverage is None
+    assert "shard 1 coverage collection did not succeed" in result.summary
