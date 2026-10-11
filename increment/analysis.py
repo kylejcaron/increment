@@ -458,6 +458,9 @@ class Analysis:
     """
 
     _readout_snapshot_active: bool = False
+    _readout_srm_observations: dict[tuple[Any, ...], tuple[Any, tuple[str, str] | None]] | None = (
+        None
+    )
 
     def __init__(
         self,
@@ -1245,10 +1248,12 @@ class Analysis:
             # the copy would otherwise inherit.
             isolated._artifact_open_spec = None
             isolated._readout_snapshot_active = True
+            isolated._readout_srm_observations = {}
             try:
                 return operation(isolated)
             finally:
                 delattr(isolated, "_readout_snapshot_active")
+                delattr(isolated, "_readout_srm_observations")
 
     def dashboard_breakout_reads(self, breakout: Breakout) -> DashboardBreakoutReads:
         """The dashboard's Explore reads through one declared breakout alone.
@@ -1363,7 +1368,7 @@ class Analysis:
             return cast(
                 ExperimentHealth,
                 self.dashboard_snapshot(
-                    lambda pinned: pinned._collect_health(expected_allocation),
+                    lambda pinned: pinned.health_check(expected_allocation=expected_allocation),
                     metrics=self._metrics,
                 ),
             )
@@ -1373,7 +1378,9 @@ class Analysis:
         self,
         expected_allocation: Mapping[str, float] | None,
         *,
-        allocation_observations: Mapping[str, tuple[SRMResult | None, tuple[str, str] | None]]
+        allocation_observations: Mapping[
+            str, tuple[SRMResult | NotApplicable | None, tuple[str, str] | None]
+        ]
         | None = None,
     ) -> ExperimentHealth:
         from increment.estimation.assignment_integrity import assignment_integrity
@@ -1386,6 +1393,20 @@ class Analysis:
         )
         triggered = trigger_name is not None
         checks: list[HealthCheck] = []
+        # Reuse SRM results already collected on this isolated pinned analysis.
+        if allocation_observations is None:
+            captured = getattr(self, "_readout_srm_observations", None)
+            if captured is not None:
+                expected_key = (
+                    None
+                    if expected_allocation is None
+                    else tuple(sorted(expected_allocation.items()))
+                )
+                allocation_observations = {
+                    population: captured[key]
+                    for population in ("assigned", "triggered")
+                    if (key := (population, expected_key, 0.001, "always_valid")) in captured
+                } or None
 
         def srm_check(population: Literal["assigned", "triggered"]) -> HealthCheck:
             check_name = "assigned_allocation" if population == "assigned" else "triggered_balance"
@@ -1766,6 +1787,11 @@ class Analysis:
             ``"triggered"`` narrows to the declared trigger population
             first; raises ``CapabilityError`` on a seam-family instance.
 
+        Raises
+        ------
+        CapabilityError
+            If the requested population is unavailable from the analysis source.
+
         Returns
         -------
         SRMResult | NotApplicable
@@ -1777,47 +1803,65 @@ class Analysis:
         if population not in ("assigned", "triggered"):
             _refuse(_INVALID_POPULATION, population=population)
         src = self._src
-        if population == "triggered":
-            src = _require_analysis_operation(
-                src,
-                "triggered_counts",
-                TriggeredCountsOperation,
-                message=(
-                    "srm(population='triggered') needs a native "
-                    "Analysis.from_definitions instance -- a frame/warehouse/"
-                    "moments-backed analysis retains no raw event stream to "
-                    "narrow to a triggered population."
-                ),
+        observations = getattr(self, "_readout_srm_observations", None)
+        key = None
+        if observations is not None:
+            key = (
+                population,
+                None if expected is None else tuple(sorted(expected.items())),
+                alpha,
+                inference,
             )
-            from increment.estimation.diagnostics import (
-                complete_srm_support,
-                resolve_srm_expected,
-                sample_ratio_mismatch,
-            )
+        try:
+            if population == "triggered":
+                src = _require_analysis_operation(
+                    src,
+                    "triggered_counts",
+                    TriggeredCountsOperation,
+                    message=(
+                        "srm(population='triggered') needs a native "
+                        "Analysis.from_definitions instance -- a frame/warehouse/"
+                        "moments-backed analysis retains no raw event stream to "
+                        "narrow to a triggered population."
+                    ),
+                )
+                from increment.estimation.diagnostics import (
+                    complete_srm_support,
+                    resolve_srm_expected,
+                    sample_ratio_mismatch,
+                )
 
-            expected = resolve_srm_expected(
-                expected,
-                allocation=getattr(self._design, "allocation", None),
-                inference=inference,
-            )
-            grain, counts, unit_counts = src.triggered_counts()
-            counts = complete_srm_support(counts, expected=expected)
-            if unit_counts:
-                unit_counts = complete_srm_support(unit_counts, expected=expected)
-            return sample_ratio_mismatch(
-                counts,
-                expected=expected,
-                alpha=alpha,
-                inference=inference,
-                grain=grain,
-                unit_counts=unit_counts,
-            )
-        return readouts.srm(
-            src,
-            expected=expected,
-            alpha=alpha,
-            inference=inference,
-        )
+                expected = resolve_srm_expected(
+                    expected,
+                    allocation=getattr(self._design, "allocation", None),
+                    inference=inference,
+                )
+                grain, counts, unit_counts = src.triggered_counts()
+                counts = complete_srm_support(counts, expected=expected)
+                if unit_counts:
+                    unit_counts = complete_srm_support(unit_counts, expected=expected)
+                result = sample_ratio_mismatch(
+                    counts,
+                    expected=expected,
+                    alpha=alpha,
+                    inference=inference,
+                    grain=grain,
+                    unit_counts=unit_counts,
+                )
+            else:
+                result = readouts.srm(
+                    src,
+                    expected=expected,
+                    alpha=alpha,
+                    inference=inference,
+                )
+        except CapabilityError as refusal:
+            if observations is not None and key is not None:
+                observations[key] = (None, (refusal.code, str(refusal)))
+            raise
+        if observations is not None and key is not None:
+            observations[key] = (result, None)
+        return result
 
     def trigger_rates(self) -> dict[str, float]:
         """Observed triggered share per arm.

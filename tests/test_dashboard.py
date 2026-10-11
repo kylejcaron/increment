@@ -430,6 +430,29 @@ def test_preparation_pins_allocation_history_and_estimates_without_rebinding_cal
         con.disconnect()
 
 
+def test_dashboard_preparation_calls_public_health_method(
+    dashboard_con, dashboard_definitions, pricing, monkeypatch
+):
+    from increment import Analysis
+
+    analysis = _analysis(dashboard_con, dashboard_definitions, "pricing_copy")
+    original_health_check = Analysis.health_check
+    observed_analyses = []
+
+    def record_health_check(pinned, **kwargs):
+        observed_analyses.append(pinned)
+        return original_health_check(pinned, **kwargs)
+
+    monkeypatch.setattr(Analysis, "health_check", record_health_check)
+    try:
+        prepare_dashboard(analysis, config=pricing.config)
+    finally:
+        analysis.close()
+
+    assert len(observed_analyses) == 1
+    assert observed_analyses[0] is not analysis
+
+
 @pytest.mark.parametrize("change", ["control", "window", "policy", "breakouts"])
 def test_explore_rejects_same_name_binding_changes_before_query(
     dashboard_con, dashboard_definitions, pricing, tmp_path, monkeypatch, change

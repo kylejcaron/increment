@@ -604,16 +604,7 @@ def prepare_dashboard(analysis: Analysis, *, config: DashboardConfig) -> Dashboa
                 triggered_allocation_refusal,
                 population="triggered",
             )
-        allocation_observations = {"assigned": (allocation, allocation_refusal)}
-        if "triggered" in populations:
-            allocation_observations["triggered"] = (
-                triggered_allocation,
-                triggered_allocation_refusal,
-            )
-        health_report = pinned._collect_health(
-            config.expected_allocation,
-            allocation_observations=allocation_observations,
-        )
+        health_report = pinned.health_check(expected_allocation=config.expected_allocation)
         raw_population_results = {
             population: pinned.run(population=population) for population in populations
         }
