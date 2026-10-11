@@ -1192,7 +1192,8 @@ def test_print_preserves_sequential_ratio_bounds():
     rendered = str(estimate)
 
     assert "metric=" in rendered and "group=" in rendered
-    assert "ratio_set=" in rendered
+    assert "ratio_interval=" in rendered
+    assert "confidence=" in rendered and "status=" in rendered
     assert estimate.sequential_result.bounds.lower is not None
 
 

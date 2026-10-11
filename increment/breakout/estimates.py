@@ -91,6 +91,7 @@ from increment.estimation.results import (
     _fcr_alpha_for,
     _infer_reference_from_legacy_dof,
     _RowIdentity,
+    _sequential_display_parts,
     _validate_absolute_reference_fields,
     _validate_joint_relative_row,
     _validate_reference_fields,
@@ -102,10 +103,7 @@ from increment.estimation.sequential import (
     AsymptoticMean,
     MixedFamily,
 )
-from increment.estimation.sequential_result import (
-    AsymptoticSequentialResult,
-    SequentialResult,
-)
+from increment.estimation.sequential_result import SequentialResult
 from increment.estimation.variance import VARIANCE_MODELS
 from increment.semantics.design import Encouragement, Observational, Randomized
 from increment.semantics.models import Metric, RetentionMetric
@@ -1203,33 +1201,6 @@ class DailyMetricValue(CodedModel, BaseModel):
                 self, "decision_scope_reason_context", freeze(self.decision_scope_reason_context)
             )
         return self
-
-
-def _sequential_display_parts(result: SequentialResult, *, point_available: bool) -> list[str]:
-    from increment._display import format_interval
-
-    if isinstance(result, AsymptoticSequentialResult):
-        bounds = result.bounds
-        geometry = (
-            " ∪ ".join(
-                format_interval(component.lower, component.upper) for component in bounds.components
-            )
-            or "∅"
-        )
-        parts = [f"ratio_interval={geometry}", f"geometry={bounds.status!r}"]
-        if not point_available and result.point_reason is not None:
-            parts.append(f"point_reason={result.point_reason!r}")
-        if bounds.reason is not None:
-            parts.append(f"bounds_reason={bounds.reason!r}")
-    else:
-        bounds = result.bounds
-        parts = [
-            f"ratio_interval={format_interval(bounds.lower, bounds.upper, empty=bounds.empty)}"
-        ]
-        if not point_available and result.point_reason is not None:
-            parts.append(f"point_reason={result.point_reason!r}")
-    parts.extend((f"confidence={float(1 - bounds.alpha):.1%}", f"status={bounds.status!r}"))
-    return parts
 
 
 class DailyLiftEstimate(_RowIdentity):

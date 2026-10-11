@@ -129,7 +129,7 @@ def test_unestimable_prefix_is_vacuous(control, treatment, start, reason):
     assert bounds.lower is None and bounds.upper is None
 
 
-def test_unavailable_point_preserves_available_disconnected_set():
+def test_unavailable_point_preserves_available_disconnected_set(monkeypatch):
     row, _ = _evaluate([-1, 1] * 40, [10, 12] * 40)
     assert row.lift is None
     result = row.require_asymptotic_sequential_result()
@@ -137,7 +137,19 @@ def test_unavailable_point_preserves_available_disconnected_set():
     assert result.bounds.available
     assert result.bounds.status == "disconnected"
     assert len(result.bounds.components) == 2
-    assert LiftEstimate.model_validate_json(row.model_dump_json()) == row
+    restored = LiftEstimate.model_validate_json(row.model_dump_json())
+    assert restored == row
+
+    def no_p_value(*args, **kwargs):
+        pytest.fail("rendering must not recompute p-values")
+
+    monkeypatch.setattr(LiftEstimate, "p_value", no_p_value)
+    for candidate in (row, restored):
+        rendered = f"{candidate!s} {candidate!r} {candidate.__repr_args__()!r}"
+        assert "ratio_interval=" in rendered
+        assert "disconnected" in rendered
+        assert "observed control mean is zero" in rendered
+        assert "ratio_set=(None, None)" not in rendered
 
 
 def test_signed_treatment_has_no_bernoulli_floor():

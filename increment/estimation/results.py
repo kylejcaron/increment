@@ -61,6 +61,45 @@ from increment.winsor import (
     winsor_refuse,
 )
 
+
+def _sequential_display_parts(result: SequentialResult, *, point_available: bool) -> list[str]:
+    """Render persisted confidence geometry and reasons without recomputing inference."""
+
+    def endpoint(value, *, lower: bool) -> str:
+        if value is None:
+            return "-inf" if lower else "+inf"
+        try:
+            return f"{float(value):.4g}"
+        except OverflowError:
+            return str(value)
+
+    if isinstance(result, AsymptoticSequentialResult):
+        bounds = result.bounds
+        intervals = (
+            " ∪ ".join(
+                f"[{endpoint(component.lower, lower=True)}, "
+                f"{endpoint(component.upper, lower=False)}]"
+                for component in bounds.components
+            )
+            or "∅"
+        )
+        parts = [f"ratio_interval={intervals}", f"geometry={bounds.status!r}"]
+        if bounds.reason is not None:
+            parts.append(f"bounds_reason={bounds.reason!r}")
+    else:
+        bounds = result.bounds
+        interval = (
+            "∅"
+            if bounds.empty
+            else f"[{endpoint(bounds.lower, lower=True)}, {endpoint(bounds.upper, lower=False)}]"
+        )
+        parts = [f"ratio_interval={interval}"]
+    if not point_available and result.point_reason is not None:
+        parts.append(f"point_reason={result.point_reason!r}")
+    parts.extend((f"confidence={float(1 - bounds.alpha):.1%}", f"status={bounds.status!r}"))
+    return parts
+
+
 RelativeUnavailableReason = Literal[
     "joint_covariance_indefinite",
     "joint_covariance_unrepresentable",
@@ -1552,8 +1591,11 @@ class LiftEstimate(_RowIdentity):
             )
         if self.sequential_result is not None:
             value = "unavailable" if self.lift is None else f"{self.lift.value:+.4g}"
-            bounds = self.sequential_result.bounds
-            interval = f"ratio_set=({bounds.lower}, {bounds.upper}), empty={bounds.empty}"
+            interval = ", ".join(
+                _sequential_display_parts(
+                    self.sequential_result, point_available=self.lift is not None
+                )
+            )
         elif self.lift is None:
             value = "unavailable"
             bset = self.binomial_set
