@@ -14,7 +14,7 @@ from typing import Any, cast
 
 import pytest
 
-pytestmark = pytest.mark.slow
+pytestmark = [pytest.mark.slow, pytest.mark.xdist_group("test_runner_subprocesses")]
 
 
 @pytest.mark.parametrize("workers", [0, 2])

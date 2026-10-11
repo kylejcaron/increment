@@ -319,12 +319,21 @@ Full Nox sessions retain separate receipts for the functional run and the
 exact-mass checks. Explicit `tests_floor_full` arguments replace the default
 selection and run once.
 
-Ordinary Make/Nox suites disable Tach's unused impact-analysis plugin; direct
-`uv run pytest --tach ...` remains available for impact-selected work. Ordinary
-Make tiers accept their normal `PYTEST_ARGS`; affected mode accepts only the
-typed controls listed above. Notebook checks share one batched Marimo
-invocation while retaining a separate guard for each notebook; export and
-warehouse-regeneration scenarios still execute independently.
+Ordinary tier commands disable Tach's unused impact-analysis plugin at the shared
+runner boundary; direct `uv run pytest --tach ...` remains available for
+impact-selected work.
+Ordinary Make tiers accept standard `PYTEST_ARGS`, including capped auto workers
+with `-n auto --maxprocesses=<allowance>`. Affected mode remains serial by default
+and accepts only the typed controls listed above.
+
+The test bootstrap defaults numerical-library thread pools to one per process,
+matching Nox's controls, while preserving explicit environment overrides.
+Subprocess-heavy runner, selection and evidence guard modules share one native
+xdist loadgroup so their child launches do not multiply across outer workers.
+Their nested parallel scenarios still execute; other functional tests remain
+parallel. Notebook checks share one batched Marimo invocation while retaining a
+separate guard for each notebook; export and warehouse-regeneration scenarios
+still execute independently.
 
 Unit tests do not use the network or real warehouses. Live PostgreSQL,
 Snowflake, and BigQuery checks live under `integration/warehouse_execution/`

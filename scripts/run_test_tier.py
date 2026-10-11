@@ -466,6 +466,7 @@ def can_certify_testmon_full_run(tier: str, arguments: Sequence[str]) -> bool:
     value_options = {
         "-n",
         "--numprocesses",
+        "--maxprocesses",
         "--dist",
         "--durations",
         "--evidence-root",
@@ -494,7 +495,15 @@ def can_certify_testmon_full_run(tier: str, arguments: Sequence[str]) -> bool:
             index += 2
             continue
         if argument in flag_options or argument.startswith(
-            ("-qq", "-vv", "--numprocesses=", "--dist=", "--durations=", "--maxfail=")
+            (
+                "-qq",
+                "-vv",
+                "--numprocesses=",
+                "--maxprocesses=",
+                "--dist=",
+                "--durations=",
+                "--maxfail=",
+            )
         ):
             index += 1
             continue
@@ -550,6 +559,8 @@ def build_pytest_command(
         str(config),
         "-p",
         "tests._evidence",
+        "-p",
+        "no:tach",
     ]
     nested_test_run = "PYTEST_CURRENT_TEST" in os.environ
     if nested_test_run or not record_coverage:
@@ -1099,6 +1110,7 @@ def _focused_missing_selector(pytest_args: Sequence[str], project_root: Path) ->
     options_with_values = {
         "-n",
         "--numprocesses",
+        "--maxprocesses",
         "--dist",
         "-k",
         "--keyword",
@@ -1119,6 +1131,7 @@ def _focused_missing_selector(pytest_args: Sequence[str], project_root: Path) ->
             (
                 "-n",
                 "--numprocesses=",
+                "--maxprocesses=",
                 "--dist=",
                 "--keyword=",
                 "--markexpr=",
@@ -1155,10 +1168,10 @@ def _serial_if_small_focused_selection(
     index = 0
     while index < len(pytest_args):
         argument = pytest_args[index]
-        if argument in {"-n", "--numprocesses", "--dist"}:
+        if argument in {"-n", "--numprocesses", "--maxprocesses", "--dist"}:
             index += 2
             continue
-        if argument.startswith(("-n", "--numprocesses=", "--dist=")):
+        if argument.startswith(("-n", "--numprocesses=", "--maxprocesses=", "--dist=")):
             index += 1
             continue
         if argument == "-q":
@@ -1206,9 +1219,9 @@ def _serial_if_small_focused_selection(
     index = 0
     while index < len(pytest_args):
         argument = pytest_args[index]
-        if argument in {"-n", "--numprocesses", "--dist"}:
+        if argument in {"-n", "--numprocesses", "--maxprocesses", "--dist"}:
             index += 2
-        elif argument.startswith(("-n", "--numprocesses=", "--dist=")):
+        elif argument.startswith(("-n", "--numprocesses=", "--maxprocesses=", "--dist=")):
             index += 1
         else:
             arguments.append(argument)

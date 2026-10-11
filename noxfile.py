@@ -75,7 +75,7 @@ DUCKDB_FLOORS: dict[str, str] = {
 # suites mutate shared paths on disk and would race otherwise. Sessions
 # whose whole selection is one such group stay serial -- splitting them
 # buys nothing and costs worker startup.
-PYTEST_ARGS = ("-n", "auto", "--dist", "loadgroup", "-p", "no:tach")
+PYTEST_ARGS = ("-n", "auto", "--dist", "loadgroup")
 TEST_RUNNER = ("python", "-m", "scripts.run_test_tier")
 
 

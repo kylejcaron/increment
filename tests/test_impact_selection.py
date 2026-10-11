@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.xdist_group("test_runner_subprocesses")
+
 
 def _initialize_import_coverage_project(
     root: Path,

@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.xdist_group("test_runner_subprocesses")
+
 
 @pytest.mark.slow
 @pytest.mark.parametrize("mode", ["focused", "nested", "filtered_fast", "sharded_fast"])
@@ -571,7 +573,10 @@ def test_explicit_recording_preserves_affected_consumer(tmp_path: Path, tier: st
         "--record-testmon-map",
         tier,
         "-n",
-        "0",
+        "auto",
+        *(["--maxprocesses", "1"] if tier == "fast" else ["--maxprocesses=1"]),
+        "--dist",
+        "loadgroup",
         "-p",
         "no:tach",
         "-q",

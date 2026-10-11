@@ -72,55 +72,66 @@ def _config(*added: str) -> DashboardConfig:
     )
 
 
+@pytest.fixture(scope="module")
+def _saved_added_snapshot(tmp_path_factory):
+    # DashboardSnapshot is read-only and holds no connection; build it from a real workspace,
+    # then let that workspace close before presentation-only consumers share the snapshot.
+    with _workspace(tmp_path_factory.mktemp("overview-snapshot"), metrics=_SAVED) as (
+        _,
+        analysis,
+    ):
+        return prepare_dashboard(analysis, config=_config(ADDED))
+
+
 def _identity(row) -> tuple:
     return (row["metric"], row["group_id"], row["lift"], row["lower"], row["higher"])
 
 
+@pytest.mark.xdist_group("dashboard_overview_saved_added_snapshot")
 @pytest.mark.integration
-def test_declared_whole_experiment_rows_are_the_readout_rows(tmp_path):
-    with _workspace(tmp_path, metrics=_SAVED) as (_, analysis):
-        snapshot = prepare_dashboard(analysis, config=_config(ADDED))
-        readout = {_identity(row): row["stat_sig"] for row in decision_rows(snapshot)}
-        for scope in (None, COUNTRY):
-            shown = {
-                _identity(row): row["stat_sig"]
-                for row in overview_rows(snapshot, scope)
-                if row["metric"] != ADDED and row.get("dimension") is None
-            }
-            assert shown == readout
-        assert ADDED not in {row["metric"] for row in snapshot.readout_rows}
+def test_declared_whole_experiment_rows_are_the_readout_rows(_saved_added_snapshot):
+    snapshot = _saved_added_snapshot
+    readout = {_identity(row): row["stat_sig"] for row in decision_rows(snapshot)}
+    for scope in (None, COUNTRY):
+        shown = {
+            _identity(row): row["stat_sig"]
+            for row in overview_rows(snapshot, scope)
+            if row["metric"] != ADDED and row.get("dimension") is None
+        }
+        assert shown == readout
+    assert ADDED not in {row["metric"] for row in snapshot.readout_rows}
 
 
+@pytest.mark.xdist_group("dashboard_overview_saved_added_snapshot")
 @pytest.mark.integration
-def test_one_family_covers_added_metrics_and_every_segment_cell(tmp_path):
-    with _workspace(tmp_path, metrics=_SAVED) as (_, analysis):
-        snapshot = prepare_dashboard(analysis, config=_config(ADDED))
-        overview = snapshot.overview
-        assert overview is not None and overview.family_refusal is None
-        segments = overview.segments[COUNTRY]
-        cells = [*overview.exploratory, *segments]
-        tested = [cell for cell in cells if cell.family_size is not None]
-        assert {cell.metric for cell in overview.exploratory} == {ADDED}
-        assert {cell.metric for cell in segments} >= {ADDED, "checkout_conversion"}
-        assert len(tested) == overview.family_size > len(overview.exploratory)
-        assert {cell.family_size for cell in tested} == {overview.family_size}
-        assert {cell.family_q for cell in tested} == {overview.family_q}
-        # The marker on every exploratory overview row is its family discovery.
-        for row in overview_rows(snapshot, COUNTRY):
-            if row["metric"] == ADDED or row.get("dimension") is not None:
-                assert row["stat_sig"] is bool(row.get("discovery"))
+def test_one_family_covers_added_metrics_and_every_segment_cell(_saved_added_snapshot):
+    snapshot = _saved_added_snapshot
+    overview = snapshot.overview
+    assert overview is not None and overview.family_refusal is None
+    segments = overview.segments[COUNTRY]
+    cells = [*overview.exploratory, *segments]
+    tested = [cell for cell in cells if cell.family_size is not None]
+    assert {cell.metric for cell in overview.exploratory} == {ADDED}
+    assert {cell.metric for cell in segments} >= {ADDED, "checkout_conversion"}
+    assert len(tested) == overview.family_size > len(overview.exploratory)
+    assert {cell.family_size for cell in tested} == {overview.family_size}
+    assert {cell.family_q for cell in tested} == {overview.family_q}
+    # The marker on every exploratory overview row is its family discovery.
+    for row in overview_rows(snapshot, COUNTRY):
+        if row["metric"] == ADDED or row.get("dimension") is not None:
+            assert row["stat_sig"] is bool(row.get("discovery"))
 
 
+@pytest.mark.xdist_group("dashboard_overview_saved_added_snapshot")
 @pytest.mark.integration
-def test_only_a_discovery_is_coloured_as_a_finding(tmp_path):
+def test_only_a_discovery_is_coloured_as_a_finding(_saved_added_snapshot):
     import dataclasses
 
     from increment.dashboard._html import overview_table
     from increment.dashboard._theme import coeftable_theme
     from increment.estimation.results import Estimate
 
-    with _workspace(tmp_path, metrics=_SAVED) as (_, analysis):
-        snapshot = prepare_dashboard(analysis, config=_config(ADDED))
+    snapshot = _saved_added_snapshot
     overview = snapshot.overview
     assert overview is not None
     clear = Estimate(value=0.5, lb=0.3, ub=0.7, level=0.95)
