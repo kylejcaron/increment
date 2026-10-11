@@ -479,7 +479,7 @@ def test_native_health_completeness_omits_unused_catalog_feed(tmp_path) -> None:
     assert "events" in feeds
 
 
-def test_sql_trigger_completeness_is_reported_unavailable(tmp_path) -> None:
+def test_native_health_includes_unwatermarked_separate_uptake_feed(tmp_path) -> None:
     import ibis
 
     from tests.test_analysis_trigger import _defs_yaml, _events
@@ -488,10 +488,26 @@ def test_sql_trigger_completeness_is_reported_unavailable(tmp_path) -> None:
     con.create_table("events", obj=_events(n_per_arm=20, trigger_rate=0.5))
     definitions = tmp_path / "defs.yml"
     definitions.write_text(
-        _defs_yaml().replace(
-            "  - name: saw_surface\n    fact: saw_surface\n",
-            "  - name: saw_surface\n"
-            "    sql: SELECT user_id, ts, group_id FROM events WHERE event = 'saw_surface'\n",
+        _defs_yaml()
+        .replace(
+            "fact_sources:\n",
+            "fact_sources:\n"
+            "  - name: uptake_events\n"
+            "    sql: SELECT * FROM events\n"
+            "    timestamp_column: ts\n"
+            "    entities: [user_id]\n"
+            "    facts:\n"
+            "      - name: clicked\n"
+            "        column: null\n",
+        )
+        .replace(
+            "    control_group: C\n",
+            "    control_group: C\n"
+            "    design:\n"
+            "      mechanism: encouragement\n"
+            "      uptake: {fact: clicked, window_days: 1}\n"
+            "      one_sided: true\n"
+            "      exclusion_restriction: {acknowledged: true, justification: gates outcome}\n",
         )
     )
     analysis = Analysis.from_definitions("exp", definitions, con)
@@ -499,13 +515,63 @@ def test_sql_trigger_completeness_is_reported_unavailable(tmp_path) -> None:
         report = analysis.health_check()
     finally:
         analysis.close()
-    trigger = next(
+    uptake = next(
         check
         for check in report.checks
-        if check.check == "feed_completeness" and check.feed == "saw_surface"
+        if check.check == "feed_completeness" and check.feed == "uptake_events"
     )
-    assert trigger.availability == "unavailable"
-    assert trigger.context["reason"]
+    assert uptake.availability == "unavailable"
+    assert uptake.context["watermark"] is None
+
+
+def test_sql_trigger_completeness_is_reported_unavailable(tmp_path) -> None:
+    import datetime as dt
+
+    import ibis
+
+    from increment import SourceSnapshotEvidence
+    from tests.test_analysis_trigger import _defs_yaml, _events
+
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=_events(n_per_arm=20, trigger_rate=0.5))
+    cutoff = dt.datetime(2024, 1, 16, tzinfo=dt.UTC)
+    definitions = tmp_path / "defs.yml"
+    definitions.write_text(
+        _defs_yaml()
+        .replace(
+            "  - name: saw_surface\n    fact: saw_surface\n",
+            "  - name: events\n"
+            "    sql: SELECT user_id, ts, group_id FROM events WHERE event = 'saw_surface'\n",
+        )
+        .replace("trigger: saw_surface", "trigger: events")
+    )
+    analysis = Analysis.from_definitions(
+        "exp",
+        definitions,
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            observation_cutoff_ts=cutoff,
+            complete_through_by_feed={"events": cutoff},
+        ),
+    )
+    try:
+        report = analysis.health_check()
+    finally:
+        analysis.close()
+    checks = [
+        check
+        for check in report.checks
+        if check.check == "feed_completeness" and check.feed == "events"
+    ]
+    assert len(checks) == 2
+    fact_feed = next(check for check in checks if check.context["evidence_kind"] == "native_feed")
+    sql_trigger = next(
+        check for check in checks if check.context["evidence_kind"] == "native_sql_trigger"
+    )
+    assert fact_feed.availability == "available"
+    assert sql_trigger.availability == "unavailable"
+    assert sql_trigger.context["watermark"] is None
+    assert "SQL-backed" in str(sql_trigger.context["reason"])
 
 
 def test_health_validation_errors_are_coded() -> None:
