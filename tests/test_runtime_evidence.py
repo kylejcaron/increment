@@ -9,6 +9,15 @@ from pathlib import Path
 import pytest
 
 
+def _child_environment() -> dict[str, str]:
+    """The caller's environment without an outer affected run's selection controls."""
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("INCREMENT_AFFECTED_")
+    }
+
+
 def test_worker_selection_route_requires_complete_consistent_evidence():
     from tests._evidence import _worker_selection_route
 
@@ -32,7 +41,7 @@ def test_runtime_receipt_retains_inherited_markers_and_parameter_identity(tmp_pa
         "    @pytest.mark.parametrize('value', [pytest.param(1, marks=pytest.mark.param_mark)], ids=['slow@literal'])\n"
         "    def test_consumer(self, value):\n        assert value == 1\n"
     )
-    environment = dict(os.environ)
+    environment = _child_environment()
     environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     environment["PYTHONPATH"] = str(project)
     for name in (
@@ -126,7 +135,7 @@ def test_loadgroup_receipt_preserves_properties_for_failures_and_skips(tmp_path:
         "    if value == 1: assert False, 'retained failure'\n"
         "    pytest.skip('retained skip')\n"
     )
-    environment = dict(os.environ)
+    environment = _child_environment()
     environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     environment["PYTHONPATH"] = str(project)
     for name in (
