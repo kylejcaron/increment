@@ -134,18 +134,14 @@ def test_one_family_covers_added_metrics_and_every_segment_cell(_saved_added_sna
     if isinstance(selected, BreakoutEstimate):
         assert isinstance(restored, BreakoutEstimate)
         segments = dict(overview.segments)
-        segments[COUNTRY] = tuple(
-            restored if row is selected else row for row in segments[COUNTRY]
-        )
+        segments[COUNTRY] = tuple(restored if row is selected else row for row in segments[COUNTRY])
         restored_overview = dataclasses.replace(overview, segments=segments)
         scope = COUNTRY
     else:
         assert isinstance(restored, LiftEstimate)
         restored_overview = dataclasses.replace(
             overview,
-            exploratory=tuple(
-                restored if row is selected else row for row in overview.exploratory
-            ),
+            exploratory=tuple(restored if row is selected else row for row in overview.exploratory),
         )
         scope = None
     restored_snapshot = dataclasses.replace(snapshot, overview=restored_overview)
