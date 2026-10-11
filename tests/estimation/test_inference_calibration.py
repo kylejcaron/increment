@@ -1042,10 +1042,8 @@ class TestCalibrationSmoke:
         _assert_doubled_alpha()
 
 
-#: Design fields read straight from library beta/binomial tails. Their last
-#: digits are not reproducible across the supported SciPy releases (measured
-#: 1e-12 relative), so regeneration compares them within a numerical
-#: reproducibility budget; every other field must regenerate exactly.
+#: Library-computed tails and quadrature readings can vary across builds.
+#: Reproduce these readings numerically; all other fields remain exact.
 _SPECIAL_FUNCTION_DESIGN_FIELDS = frozenset(
     {"prospective_mc_margin", "margin_at_nominal", "nominal_false_failure_bound"}
 )
@@ -1062,6 +1060,20 @@ def _assert_regenerates(regenerated: Any, committed: Any, path: str) -> None:
                 assert regenerated[key] == pytest.approx(
                     value, rel=_SPECIAL_FUNCTION_REPRODUCIBILITY, abs=0
                 ), child
+            elif path.endswith(".reference") and key == "analytic_noncoverage":
+                reading = regenerated[key]
+                assert math.isfinite(reading) and 0 <= reading <= 1, child
+                assert reading == pytest.approx(
+                    value, rel=_SPECIAL_FUNCTION_REPRODUCIBILITY, abs=0
+                ), child
+            elif path.endswith(".reference") and key == "quadrature_64_128_difference":
+                reading = regenerated[key]
+                assert math.isfinite(reading) and reading >= 0, child
+                # |q64| <= |q128| + |q128-q64|; retain both operand budgets.
+                budget = _SPECIAL_FUNCTION_REPRODUCIBILITY * (
+                    2 * abs(committed["analytic_noncoverage"]) + value
+                )
+                assert abs(reading - value) <= budget, child
             else:
                 _assert_regenerates(regenerated[key], value, child)
     elif isinstance(committed, list):

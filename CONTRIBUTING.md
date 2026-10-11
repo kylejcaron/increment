@@ -180,6 +180,11 @@ references and CI consumers together so reclassification cannot lose tests.
 Use the existing `calibration/` directory for full certification campaigns
 when appropriate; it is outside ordinary pytest collection.
 
+Compare library-computed diagnostic readings within their declared numerical
+reproduction budget, not bitwise. Frozen manifest bytes, scientific settings,
+decisions and benchmark inputs remain exact; reproduction error is not
+statistical tolerance.
+
 Marker-only retags require collection and exact selected/deselected identity
 checks, not rerunning test bodies or statistical campaigns. Collect changed
 files with the marker filter cleared, then verify every affected tier and
