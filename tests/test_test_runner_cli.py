@@ -12,6 +12,91 @@ import pytest
 pytestmark = pytest.mark.xdist_group("test_runner_subprocesses")
 
 
+@pytest.mark.integration
+def test_focused_cli_isolates_git_repositories_from_invoking_hook(tmp_path: Path):
+    project = Path(__file__).resolve().parents[1]
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("GIT_", "PYTEST_", "INCREMENT_", "TESTMON_"))
+    }
+    owner = tmp_path / "owner"
+    subprocess.run(["git", "init", "-q", str(owner)], env=environment, check=True)
+    (owner / "owned").write_text("owner repository\n")
+    for arguments in (
+        ["add", "."],
+        [
+            "-c",
+            "user.name=Owner",
+            "-c",
+            "user.email=owner@example.invalid",
+            "commit",
+            "-qm",
+            "owner",
+        ],
+    ):
+        subprocess.run(["git", *arguments], cwd=owner, env=environment, check=True)
+    original_head = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=owner, env=environment
+    )
+    original_index = (owner / ".git" / "index").read_bytes()
+    original_config = (owner / ".git" / "config").read_bytes()
+    consumer = tmp_path / "test_foreign_repository.py"
+    consumer.write_text(
+        "from pathlib import Path\n"
+        "import subprocess\n"
+        "def test_foreign_repository(tmp_path):\n"
+        "    foreign = tmp_path / 'foreign'\n"
+        "    subprocess.run(['git', 'init', '-q', str(foreign)], check=True)\n"
+        "    assert (foreign / '.git').is_dir()\n"
+        "    (foreign / 'independent').write_text('foreign repository\\n')\n"
+        "    subprocess.run(['git', 'add', '.'], cwd=foreign, check=True)\n"
+        "    subprocess.run(['git', '-c', 'user.name=Foreign', '-c',\n"
+        "                    'user.email=foreign@example.invalid', 'commit', '-qm',\n"
+        "                    'foreign'], cwd=foreign, check=True)\n"
+        "    assert subprocess.check_output(['git', 'show', 'HEAD:independent'],\n"
+        "                                   cwd=foreign) == b'foreign repository\\n'\n"
+    )
+    config = tmp_path / "pytest.ini"
+    config.write_text("[pytest]\n")
+    environment.update(
+        {
+            "PYTHONPATH": str(project),
+            "GIT_DIR": str(owner / ".git"),
+            "GIT_COMMON_DIR": str(owner / ".git"),
+            "GIT_WORK_TREE": str(owner),
+            "GIT_INDEX_FILE": str(owner / ".git" / "index"),
+        }
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.run_test_tier",
+            "focused",
+            str(consumer),
+            "-c",
+            str(config),
+            "-q",
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    for name, original in (("index", original_index), ("config", original_config)):
+        assert (owner / ".git" / name).read_bytes() == original
+    restored_environment = {
+        key: value for key, value in environment.items() if not key.startswith("GIT_")
+    }
+    assert (
+        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=owner, env=restored_environment)
+        == original_head
+    )
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize("mode", ["focused", "nested", "filtered_fast", "sharded_fast"])
 def test_partial_feedback_is_independent_of_corrupt_coverage_map(tmp_path: Path, mode: str):

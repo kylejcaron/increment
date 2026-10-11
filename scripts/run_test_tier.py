@@ -852,6 +852,13 @@ def _supervised_child_environment(
     extra_env: Mapping[str, str | None] | None, owner_token: str
 ) -> dict[str, str]:
     environment = os.environ.copy()
+    if any(name.startswith("GIT_") for name in environment):
+        # Hooks export repository-local state; test fixtures own independent repos.
+        local_names = subprocess.check_output(
+            ["git", "rev-parse", "--local-env-vars"], env=environment, text=True
+        ).splitlines()
+        for name in local_names:
+            environment.pop(name, None)
     for name, value in (extra_env or {}).items():
         if value is None:
             environment.pop(name, None)

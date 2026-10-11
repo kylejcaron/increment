@@ -82,6 +82,10 @@ resolved during explicit installation, not bootstrapped during pushes.
 Every active worktree must contain `scripts/check_push_targets.py` before
 installing this shared wrapper; unprepared branches are not eligible.
 
+Test launchers clear inherited Git repository-local environment before starting
+their supervised commands. Temporary fixture repositories must not reuse a
+calling hook's Git directory or index; this isolation does not disable hooks.
+
 The functional-slow CI job is part of `ci-ok`, with run-attempt-specific test
 evidence retained even on failure. The numerical-certification decision and
 result are also enforced by `ci-ok`; this checked-in logic does not establish
