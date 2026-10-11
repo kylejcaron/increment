@@ -125,6 +125,45 @@ def test_health_missing_certificates_are_unknown(tmp_path) -> None:
     assert all(check.context["watermark"] is None for check in completeness)
 
 
+def test_pinned_health_report_repeats_with_identical_source_evidence(tmp_path) -> None:
+    import ibis
+
+    from increment._source_operations import DashboardSnapshotPayload
+    from tests.test_analysis_trigger import _events, _write_defs
+
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=_events(n_per_arm=20, trigger_rate=0.5))
+    analysis = Analysis.from_definitions("exp", _write_defs(tmp_path), con)
+    reports = []
+
+    def inspect_pinned(pinned: Analysis) -> DashboardSnapshotPayload:
+        reports.extend(
+            (
+                pinned.health_check(expected_allocation={"C": 0.5, "T": 0.5}),
+                pinned.health_check(expected_allocation={"C": 0.5, "T": 0.5}),
+            )
+        )
+        return DashboardSnapshotPayload(
+            allocation=None,
+            allocation_refusal=None,
+            allocation_history=None,
+            allocation_history_refusal=None,
+            estimates=(),
+            group_data=(),
+            explore=(),
+        )
+
+    try:
+        analysis.dashboard_snapshot(inspect_pinned, metrics=analysis.metrics)
+    finally:
+        analysis.close()
+        con.disconnect()
+
+    assert len(reports) == 2
+    assert reports[0] == reports[1]
+    assert reports[0].source_snapshot_id == reports[1].source_snapshot_id
+
+
 def test_health_preserves_assigned_failure_beside_triggered_balance(tmp_path) -> None:
     from tests.test_analysis_trigger import _analysis, _events
 

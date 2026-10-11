@@ -458,9 +458,9 @@ class Analysis:
     """
 
     _readout_snapshot_active: bool = False
-    _readout_srm_observations: dict[tuple[Any, ...], tuple[Any, tuple[str, str] | None]] | None = (
-        None
-    )
+    _readout_srm_observations: (
+        dict[tuple[Any, ...], tuple[Any, tuple[str, Mapping[str, Any], str] | None]] | None
+    ) = None
 
     def __init__(
         self,
@@ -1379,7 +1379,8 @@ class Analysis:
         expected_allocation: Mapping[str, float] | None,
         *,
         allocation_observations: Mapping[
-            str, tuple[SRMResult | NotApplicable | None, tuple[str, str] | None]
+            str,
+            tuple[SRMResult | NotApplicable | None, tuple[str, Mapping[str, Any], str] | None],
         ]
         | None = None,
     ) -> ExperimentHealth:
@@ -1467,7 +1468,11 @@ class Analysis:
             if allocation_observations is not None and population in allocation_observations:
                 result, refusal = allocation_observations[population]
                 if result is None:
-                    code, reason = refusal or ("", "No allocation result was captured.")
+                    code, refusal_context, reason = refusal or (
+                        "",
+                        {},
+                        "No allocation result was captured.",
+                    )
                     availability = (
                         "not_applicable"
                         if code == "dashboard.allocation_not_applicable"
@@ -1478,7 +1483,7 @@ class Analysis:
                         analysis_population=population,
                         availability=availability,
                         code=code or None,
-                        context={"reason": reason},
+                        context={**dict(refusal_context), "reason": reason},
                     )
             else:
                 try:
@@ -1857,7 +1862,10 @@ class Analysis:
                 )
         except CapabilityError as refusal:
             if observations is not None and key is not None:
-                observations[key] = (None, (refusal.code, str(refusal)))
+                observations[key] = (
+                    None,
+                    (refusal.code, dict(refusal.context), str(refusal)),
+                )
             raise
         if observations is not None and key is not None:
             observations[key] = (result, None)
