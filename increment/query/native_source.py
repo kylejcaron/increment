@@ -1052,16 +1052,45 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         snapshot = self._session.source_snapshot_evidence
         cutoff = None if snapshot is None else snapshot.observation_cutoff_ts
         watermarks = {} if snapshot is None else snapshot.complete_through_by_feed
-        feeds = tuple(
-            TriggeredHealthFeed(
-                evidence_kind="native_feed",
-                feed=fact_source.name,
-                metric=None,
-                complete_through=watermarks.get(fact_source.name),
+        feeds: dict[str, str] = {}
+
+        def add_fact(fact: str) -> None:
+            name = _find_fact_source(self._defs, fact)[0].name
+            feeds.setdefault(name, "native_feed")
+
+        assignment = self._exp_lookup_exposures[self._experiment.exposure]
+        if assignment.fact is not None:
+            add_fact(assignment.fact)
+        trigger_name = self._experiment.trigger
+        if trigger_name is not None:
+            trigger = self._exp_lookup_exposures[trigger_name]
+            if trigger.fact is None:
+                feeds.setdefault(trigger_name, "native_sql_trigger")
+            else:
+                add_fact(trigger.fact)
+        for metric in self._metrics:
+            facts = (
+                (metric.numerator.fact, metric.denominator.fact)
+                if isinstance(metric, RatioMetric)
+                else (metric.fact,)
             )
-            for fact_source in self._defs.fact_sources
+            for fact in facts:
+                add_fact(fact)
+        for covariate in getattr(self._experiment.design, "covariates", ()):
+            source = self._resolve_unit_covariate_source(covariate.property)
+            feeds.setdefault(source.name, "native_feed")
+        return TriggeredHealthEvidence(
+            observation_cutoff=cutoff,
+            feeds=tuple(
+                TriggeredHealthFeed(
+                    evidence_kind=evidence_kind,
+                    feed=name,
+                    metric=None,
+                    complete_through=watermarks.get(name),
+                )
+                for name, evidence_kind in feeds.items()
+            ),
         )
-        return TriggeredHealthEvidence(observation_cutoff=cutoff, feeds=feeds)
 
     def _certify_sequential_feeds(self, registration, as_of: dt.date) -> None:
         """Refuse a trigger-declared capture unless every contributing feed is certified.

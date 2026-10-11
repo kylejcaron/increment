@@ -407,6 +407,128 @@ def test_health_artifact_without_trigger_extensions_is_unavailable(tmp_path) -> 
         assert check.code is not None
 
 
+def test_triggered_health_without_declared_allocation_is_unavailable_for_native_and_artifact(
+    tmp_path,
+) -> None:
+    import datetime as dt
+
+    import ibis
+
+    from increment import SourceSnapshotEvidence
+    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+    from tests.test_analysis_trigger import _events, _write_defs
+
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=_events(n_per_arm=20, trigger_rate=0.5))
+    cutoff = dt.datetime(2024, 1, 16, tzinfo=dt.UTC)
+    native = Analysis.from_definitions(
+        "exp",
+        _write_defs(tmp_path),
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            observation_cutoff_ts=cutoff,
+            complete_through_by_feed={"events": cutoff},
+        ),
+    )
+    artifact = _publish_and_adopt(
+        con,
+        native,
+        kinds=("trigger_population", "assignment_counts", "trigger_measure_stats"),
+    )
+    try:
+        reports = (native.health_check(), artifact.health_check())
+    finally:
+        _close_parity_analysis(artifact)
+        native.close()
+    for report in reports:
+        check = next(row for row in report.checks if row.check == "triggered_balance")
+        assert check.availability == "unavailable"
+        assert check.conclusion is None
+        assert check.code == "estimation.diagnostics.always_srm_predeclared"
+        assert "expected_allocation" in str(check.context.get("route"))
+
+
+def test_native_health_completeness_omits_unused_catalog_feed(tmp_path) -> None:
+    import ibis
+
+    from tests.test_analysis_trigger import _defs_yaml, _events
+
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=_events(n_per_arm=20, trigger_rate=0.5))
+    definitions = tmp_path / "defs.yml"
+    definitions.write_text(
+        _defs_yaml().replace(
+            "fact_sources:\n",
+            "fact_sources:\n"
+            "  - name: unused\n"
+            "    sql: SELECT * FROM unused\n"
+            "    timestamp_column: ts\n"
+            "    entities: [user_id]\n"
+            "    facts:\n"
+            "      - name: unused_fact\n"
+            "        column: value\n",
+        )
+    )
+    analysis = Analysis.from_definitions("exp", definitions, con)
+    try:
+        report = analysis.health_check()
+    finally:
+        analysis.close()
+    feeds = {check.feed for check in report.checks if check.check == "feed_completeness"}
+    assert "unused" not in feeds
+    assert "events" in feeds
+
+
+def test_sql_trigger_completeness_is_reported_unavailable(tmp_path) -> None:
+    import ibis
+
+    from tests.test_analysis_trigger import _defs_yaml, _events
+
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=_events(n_per_arm=20, trigger_rate=0.5))
+    definitions = tmp_path / "defs.yml"
+    definitions.write_text(
+        _defs_yaml().replace(
+            "  - name: saw_surface\n    fact: saw_surface\n",
+            "  - name: saw_surface\n"
+            "    sql: SELECT user_id, ts, group_id FROM events WHERE event = 'saw_surface'\n",
+        )
+    )
+    analysis = Analysis.from_definitions("exp", definitions, con)
+    try:
+        report = analysis.health_check()
+    finally:
+        analysis.close()
+    trigger = next(
+        check
+        for check in report.checks
+        if check.check == "feed_completeness" and check.feed == "saw_surface"
+    )
+    assert trigger.availability == "unavailable"
+    assert trigger.context["reason"]
+
+
+def test_health_validation_errors_are_coded() -> None:
+    from increment.errors import InvalidRequestError
+
+    available = HealthCheck(
+        check="assigned_allocation",
+        analysis_population="assigned",
+        availability="available",
+        conclusion="not_rejected",
+        context={},
+    )
+    unavailable = HealthCheck(
+        check="triggered_balance",
+        analysis_population="triggered",
+        availability="unavailable",
+        context={"reason": "unknown"},
+    )
+    with pytest.raises(InvalidRequestError) as raised:
+        ExperimentHealth(checks=(unavailable, available))
+    assert raised.value.code == "estimation.health.experiment.stable_order"
+
+
 def test_health_unit_panel_reports_only_supported_population() -> None:
     panel = Analysis.from_unit_panel(
         pa.table(
@@ -502,7 +624,9 @@ def test_health_unavailable_is_not_nonrejection() -> None:
         context={"reason": "trigger counts were not retained"},
     )
     assert check.conclusion is None
-    with pytest.raises(ValidationError, match="cannot have a conclusion"):
+    from increment.errors import InvalidRequestError
+
+    with pytest.raises(InvalidRequestError) as raised:
         HealthCheck(
             check="triggered_balance",
             analysis_population="triggered",
@@ -511,6 +635,7 @@ def test_health_unavailable_is_not_nonrejection() -> None:
             code="source.native.trigger_evidence_required",
             context={"reason": "trigger counts were not retained"},
         )
+    assert raised.value.code == "estimation.health.check.unavailable_conclusion"
 
 
 def test_health_expected_allocation_completes_independent_design_admission() -> None:

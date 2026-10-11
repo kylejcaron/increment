@@ -7,7 +7,40 @@ from typing import Any, Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, field_serializer, field_validator, model_validator
 
+from increment.errors import (
+    CodedModel,
+    InvalidRequestError,
+    raiser,
+    refusals,
+)
 from increment.estimation.diagnostics import SRMResult
+
+_REFUSALS = refusals(
+    InvalidRequestError,
+    {
+        "estimation.health.check.unavailable_conclusion": (
+            "unavailable and not-applicable checks cannot have a conclusion",
+            (),
+        ),
+        "estimation.health.check.unavailable_reason": (
+            "unavailable and not-applicable checks require a reason in context",
+            (),
+        ),
+        "estimation.health.check.available_conclusion": (
+            "available checks require a diagnostic conclusion",
+            (),
+        ),
+        "estimation.health.experiment.checks_type": (
+            "checks must be a tuple or list, got {received}",
+            ("received",),
+        ),
+        "estimation.health.experiment.stable_order": (
+            "health checks must use stable check/population/metric/feed order",
+            (),
+        ),
+    },
+)
+_raise = raiser(_REFUSALS)
 
 type HealthKind = Literal[
     "assigned_allocation",
@@ -23,7 +56,7 @@ type HealthConclusion = Literal["not_rejected", "warning", "descriptive"]
 type HealthValue = str | int | float | bool | None | tuple[str, ...] | Mapping[str, object]
 
 
-class HealthCheck(BaseModel):
+class HealthCheck(CodedModel, BaseModel):
     """One identity-preserving source-health observation, never a ship verdict."""
 
     model_config = ConfigDict(frozen=True, validate_default=True)
@@ -100,13 +133,11 @@ class HealthCheck(BaseModel):
             object.__setattr__(self, "rates", cast(Mapping[str, float], _freeze_health(self.rates)))
         if self.availability != "available":
             if self.conclusion is not None:
-                raise ValueError("unavailable and not-applicable checks cannot have a conclusion")
+                _raise("estimation.health.check.unavailable_conclusion")
             if not self.context:
-                raise ValueError(
-                    "unavailable and not-applicable checks require a reason in context"
-                )
+                _raise("estimation.health.check.unavailable_reason")
         if self.availability == "available" and self.conclusion is None:
-            raise ValueError("available checks require a diagnostic conclusion")
+            _raise("estimation.health.check.available_conclusion")
         return self
 
 
@@ -128,7 +159,7 @@ def _freeze_health(value: object) -> object:
     return value
 
 
-class ExperimentHealth(BaseModel):
+class ExperimentHealth(CodedModel, BaseModel):
     """Frozen collection of health checks; deliberately has no aggregate verdict."""
 
     model_config = ConfigDict(frozen=True, validate_default=True)
@@ -141,7 +172,10 @@ class ExperimentHealth(BaseModel):
     @classmethod
     def _own_checks(cls, value: object) -> tuple[HealthCheck, ...]:
         if not isinstance(value, (tuple, list)):
-            raise TypeError("checks must be a tuple or list")
+            _raise(
+                "estimation.health.experiment.checks_type",
+                received=type(value).__name__,
+            )
         return tuple(cast(HealthCheck, item) for item in value)
 
     @model_validator(mode="after")
@@ -164,7 +198,7 @@ class ExperimentHealth(BaseModel):
             for check in self.checks
         ]
         if keys != sorted(keys):
-            raise ValueError("health checks must use stable check/population/metric/feed order")
+            _raise("estimation.health.experiment.stable_order")
         return self
 
     def __repr__(self) -> str:

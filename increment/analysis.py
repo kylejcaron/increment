@@ -1474,17 +1474,23 @@ class Analysis:
                         context={**dict(refusal.context), "reason": str(refusal)},
                     )
                 except InvalidRequestError as refusal:
-                    if (
-                        population != "triggered"
-                        or refusal.code != "estimation.diagnostics.total_observed_count"
-                    ):
+                    if population != "triggered" or refusal.code not in {
+                        "estimation.diagnostics.total_observed_count",
+                        "estimation.diagnostics.always_srm_predeclared",
+                    }:
                         raise
+                    context = {**dict(refusal.context), "reason": str(refusal)}
+                    if refusal.code == "estimation.diagnostics.always_srm_predeclared":
+                        context["route"] = (
+                            "Declare allocation on the design or pass expected_allocation "
+                            "to health_check()."
+                        )
                     return HealthCheck(
                         check=check_name,
                         analysis_population=population,
                         availability="unavailable",
                         code=refusal.code,
-                        context={**dict(refusal.context), "reason": str(refusal)},
+                        context=context,
                     )
             if isinstance(result, NotApplicable):
                 return HealthCheck(
@@ -1657,7 +1663,10 @@ class Analysis:
                             "evidence_kind": item.evidence_kind,
                             "watermark": None if watermark is None else watermark.isoformat(),
                             "reason": (
-                                "No certified completeness watermark is retained for this feed."
+                                "A SQL-backed trigger has no fact feed whose completeness "
+                                "can be certified."
+                                if item.evidence_kind == "native_sql_trigger"
+                                else "No certified completeness watermark is retained for this feed."
                                 if watermark is None
                                 else "Certified completeness watermark at the source cutoff."
                             ),
