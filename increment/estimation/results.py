@@ -31,6 +31,7 @@ from pydantic import (
 from scipy.stats import norm as _norm
 from scipy.stats import t as _t
 
+from increment._display import format_interval
 from increment._literals import (
     ALTERNATIVE_VALUES,
     Alternative,
@@ -64,22 +65,11 @@ from increment.winsor import (
 
 def _sequential_display_parts(result: SequentialResult, *, point_available: bool) -> list[str]:
     """Render persisted confidence geometry and reasons without recomputing inference."""
-
-    def endpoint(value, *, lower: bool) -> str:
-        if value is None:
-            return "-inf" if lower else "+inf"
-        try:
-            return f"{float(value):.4g}"
-        except OverflowError:
-            return str(value)
-
     if isinstance(result, AsymptoticSequentialResult):
         bounds = result.bounds
         intervals = (
             " ∪ ".join(
-                f"[{endpoint(component.lower, lower=True)}, "
-                f"{endpoint(component.upper, lower=False)}]"
-                for component in bounds.components
+                format_interval(component.lower, component.upper) for component in bounds.components
             )
             or "∅"
         )
@@ -88,11 +78,7 @@ def _sequential_display_parts(result: SequentialResult, *, point_available: bool
             parts.append(f"bounds_reason={bounds.reason!r}")
     else:
         bounds = result.bounds
-        interval = (
-            "∅"
-            if bounds.empty
-            else f"[{endpoint(bounds.lower, lower=True)}, {endpoint(bounds.upper, lower=False)}]"
-        )
+        interval = format_interval(bounds.lower, bounds.upper, empty=bounds.empty)
         parts = [f"ratio_interval={interval}"]
     if not point_available and result.point_reason is not None:
         parts.append(f"point_reason={result.point_reason!r}")

@@ -152,6 +152,15 @@ def test_unavailable_point_preserves_available_disconnected_set(monkeypatch):
         assert "ratio_set=(None, None)" not in rendered
 
 
+def test_sequential_repr_preserves_subnormal_ratio_endpoints():
+    row, _ = _evaluate([1e200, 1.01e200] * 40, [3e-200, 5e-200] * 40)
+    bounds = row.require_asymptotic_sequential_result().bounds
+    assert bounds.status == "bounded"
+    assert bounds.lower is not None and bounds.lower > 0
+    rendered = str(row)
+    assert "e-400" in rendered
+
+
 def test_signed_treatment_has_no_bernoulli_floor():
     row, _ = _evaluate([9, 11] * 80, [-11, -9] * 80, alternative="less", null=F(-3, 2))
     assert row.require_lift().value == -2
