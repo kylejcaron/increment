@@ -23,7 +23,11 @@ from tests.parity_harness.runner import assert_parity, run_case
 @pytest.mark.parametrize(
     "case",
     [
-        pytest.param(case, id=case.id, marks=pytest.mark.slow if case.slow else ())
+        pytest.param(
+            case,
+            id=case.id,
+            marks=(*case.marks, pytest.mark.slow) if case.slow else case.marks,
+        )
         for case in PARITY_CASES
     ],
 )

@@ -122,16 +122,17 @@ performance or redundant test work. Category checks refuse recovery,
 numerical certification, examples or stress tests lacking an effective `slow` mark before execution,
 including CI; module, class and parameter inheritance count.
 
-Integration does not change selection. Stress currently remains in the
-functional-slow tier. Moving it outside routine CI requires an executable,
+Integration does not change selection. Stress alone remains in the
+functional-slow tier; an inferential capacity campaign also carries numerical
+certification. Moving it outside routine CI requires an executable,
 required gate for relevant changes and a scheduled/release route, with
 failure evidence retained; a label or proposed workflow is insufficient.
 Monte Carlo and deterministic numerical certification are excluded from fast
 and functional-slow. The dedicated certification job requires relevant changes;
 weekly scientific-union shards execute both scientific purposes. Full and
-dependency-floor matrices exclude those tiers except for the pre-existing exact
-mass cases `TestEnumerationEnclosesTheExactMass::test_the_interval_holds_the_exact_rational_mass[central]`
-and `[rare]`, which remain in each matrix.
+dependency-floor matrices retain their previously covered numerical cases:
+`TestEnumerationEnclosesTheExactMass::test_the_interval_holds_the_exact_rational_mass[central]`
+and `[rare]`, plus `test_parity_case[exact_binomial_beyond_the_former_arm_ceiling]`.
 Weekly execution does not replace required scientific validation before merging
 changes to the covered estimator, numerical construction or guarantee.
 

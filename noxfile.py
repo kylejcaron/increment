@@ -154,8 +154,8 @@ def tests(session: nox.Session) -> None:
 def tests_full(session: nox.Session) -> None:
     """Weekly: slow + examples against locked dependencies, across every
     supported Python version. Mirrors ``make test-all`` minus both scientific
-    campaigns, which run once in the scientific shard job below. The exact-mass
-    central/rare variants are explicitly retained in this matrix after it.
+    campaigns, which run once in the scientific shard job below. Previously
+    covered exact-mass and capacity cases remain in this matrix.
     """
     _sync(session, "dev", extras=("demo", "tables", "dashboard"))
     _run_test_tier(
@@ -166,7 +166,7 @@ def tests_full(session: nox.Session) -> None:
         "--evidence-root",
         ".test-evidence",
     )
-    # These exact-mass cases were previously in the matrix; keep both after the cutover.
+    # Retain the numerical cases previously covered by this matrix.
     selector = (
         "tests/estimation/test_conversion_route_calibration.py::"
         "TestEnumerationEnclosesTheExactMass::test_the_interval_holds_the_exact_rational_mass"
@@ -180,6 +180,7 @@ def tests_full(session: nox.Session) -> None:
         ".test-evidence",
         f"{selector}[central]",
         f"{selector}[rare]",
+        "tests/test_parity_harness.py::test_parity_case[exact_binomial_beyond_the_former_arm_ceiling]",
     )
 
 
@@ -307,8 +308,8 @@ def tests_slow_floor(session: nox.Session) -> None:
 @nox.session(python=PYTHON_VERSIONS)
 def tests_floor_full(session: nox.Session) -> None:
     """Weekly: slow + examples against direct dependency floors, across
-    every supported Python version, minus the scientific tiers. The two
-    exact-mass variants below remain here as in the pre-migration full matrix.
+    every supported Python version, minus the scientific tiers. Previously
+    covered exact-mass and capacity cases remain in this matrix.
 
     ``tests_floor`` above is the narrower fast-only floor session.
     This full floor session also exercises coverage checks against core,
@@ -334,6 +335,7 @@ def tests_floor_full(session: nox.Session) -> None:
         "numerical-certification",
         f"{selector}[central]",
         f"{selector}[rare]",
+        "tests/test_parity_harness.py::test_parity_case[exact_binomial_beyond_the_former_arm_ceiling]",
         "-q",
         *PYTEST_ARGS,
         "--evidence-root",

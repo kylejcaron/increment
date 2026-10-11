@@ -13,6 +13,7 @@ import copy
 import datetime as dt
 import math
 import numbers
+import os
 import random
 import tempfile
 from collections.abc import Callable, Iterable, Mapping
@@ -154,6 +155,7 @@ class ParityCase:
     expected_absence: Mapping[str, Absence] = field(default_factory=dict)
     # Explicitly classified synthetic or legacy outputs that intentionally have no source scope.
     unscoped_outputs: Mapping[str, str] = field(default_factory=dict)
+    marks: tuple[pytest.MarkDecorator, ...] = ()
 
     def __post_init__(self) -> None:
         # Registered rows get their legacy expectations exclusively from the
@@ -7380,6 +7382,11 @@ def _exact_binomial_beyond_the_former_arm_ceiling_case() -> ParityCase:
         },
         readout_probe=probe,
         slow=True,
+        marks=(
+            pytest.mark.numerical_certification,
+            pytest.mark.stress,
+            pytest.mark.timeout(0 if os.environ.get("GITHUB_ACTIONS") == "true" else 180),
+        ),
     )
 
 
