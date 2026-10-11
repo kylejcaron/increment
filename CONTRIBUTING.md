@@ -355,7 +355,7 @@ complete hosted Python 3.13 run 36941053401; absent weights do not omit tests.
 Refresh them with the complete fast suite, preserving worker group suffixes:
 
 ```bash
-make test-fast PYTEST_ARGS="-n auto --dist loadgroup -p no:tach --store-durations --durations-path .github/fast-test-durations.json"
+make test-fast PYTEST_ARGS="-n auto --dist loadgroup --store-durations --durations-path .github/fast-test-durations.json"
 ```
 
 The root pytest hook uses the ignored `.test_durations` cache for stable,
@@ -370,11 +370,14 @@ Without `.test_durations`, ordinary tests retain collection order. Markdown
 snippets are still scheduled after ordinary tests and retain their source order
 within each file.
 
-Dashboard and simulation tests reuse expensive prepared fixtures under the
+Dashboard, simulation and artifact tests reuse expensive prepared fixtures under the
 ignored `.cache/increment-fixtures/` directory. Cache entries are keyed by
 source and the installed Python environment. Set
 `INCREMENT_DISABLE_FIXTURE_CACHE=1` to bypass the cache and rebuild fixtures;
 remove `.cache/increment-fixtures/` to clear all cached fixtures.
+Artifact seed caches contain only detached input rows; each consumer retains a
+fresh mutable database. Schema-invalid matrix inputs refuse before seeding
+unused fixture databases.
 
 The complete PostgreSQL suite runs across three isolated PostgreSQL services,
 balanced with `pytest-split` and `.github/postgres-test-durations.json`.

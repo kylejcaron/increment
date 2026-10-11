@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
@@ -33,7 +34,32 @@ from increment.query.source import open_artifact
 from increment.semantics.artifact import ArtifactContext, UnitDayArtifactManifest
 from increment.semantics.loader import load
 from increment.semantics.models import Definitions
+from tests._shared_cache import fixture_cache_key, get_or_build
 from tests.analysis_factory import _native_source, lift_rows
+
+
+def _seed_event_log_input(*, with_pre_period: bool, with_late_returns: bool) -> pa.Table:
+    """Load the real producer's immutable event rows for a fresh consumer DB."""
+    root = Path(__file__).resolve().parents[1]
+    source_key = fixture_cache_key(root, Path(__file__), root / "examples" / "_seed.py")
+    key = f"unit-day-event-log-pre-{with_pre_period}-late-{with_late_returns}-{source_key}"
+
+    def build() -> pa.Table:
+        producer_con = ibis.duckdb.connect()
+        try:
+            seed_event_log(
+                producer_con,
+                with_pre_period=with_pre_period,
+                with_late_returns=with_late_returns,
+            )
+            return producer_con.table("event_log", database="analytics").to_pyarrow()
+        finally:
+            producer_con.disconnect()
+
+    if os.environ.get("INCREMENT_DISABLE_FIXTURE_CACHE") == "1":
+        return build()
+    return get_or_build(root / ".cache" / "increment-fixtures", key, build)
+
 
 _PUBLICATION_GOLDEN = (
     Path(__file__).parent / "fixtures" / "unit_day_artifact_publication_golden.json"
@@ -224,10 +250,15 @@ def _native(
     source_snapshot_evidence: SourceSnapshotEvidence | None = None,
 ):
     con = ibis.duckdb.connect()
-    seed_event_log(
-        con,
-        with_pre_period=with_pre_period,
-        with_late_returns=with_late_returns,
+    con.raw_sql("CREATE SCHEMA IF NOT EXISTS analytics")
+    con.create_table(
+        "event_log",
+        _seed_event_log_input(
+            with_pre_period=with_pre_period,
+            with_late_returns=with_late_returns,
+        ),
+        database="analytics",
+        overwrite=True,
     )
     analysis = Analysis.from_definitions(
         "new_onboarding_v2",

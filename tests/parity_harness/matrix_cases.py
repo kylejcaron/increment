@@ -302,11 +302,13 @@ class _Ingress:
         self.rows = md.event_rows(positive=self.positive)
         self.plan = plan_for(cell, frame=True)
 
+    def _definitions(self) -> Definitions:
+        return Definitions.model_validate(copy.deepcopy(self.payload))
+
     def connection(self) -> Any:
         return md.duckdb_connection(self.rows)
 
-    def _native(self, con: Any) -> Analysis:
-        defs = Definitions.model_validate(copy.deepcopy(self.payload))
+    def _native(self, con: Any, defs: Definitions) -> Analysis:
         if self.cell.option != "sequential":
             return make_analysis(con, defs, experiment="exp")
         exp = defs.experiment("exp")
@@ -326,18 +328,20 @@ class _Ingress:
         return analysis
 
     def definitions(self) -> Analysis:
+        defs = self._definitions()
         con = self.connection()
         try:
-            analysis = self._native(con)
+            analysis = self._native(con, defs)
         except BaseException:
             con.disconnect()
             raise
         return _track_connection(analysis, con)
 
     def artifact(self) -> Analysis:
+        defs = self._definitions()
         con = self.connection()
         try:
-            native = self._native(con)
+            native = self._native(con, defs)
         except BaseException:
             con.disconnect()
             raise
