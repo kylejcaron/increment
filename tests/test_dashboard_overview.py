@@ -102,10 +102,18 @@ def test_declared_whole_experiment_rows_are_the_readout_rows(_saved_added_snapsh
     assert ADDED not in {row["metric"] for row in snapshot.readout_rows}
 
 
-@pytest.mark.xdist_group("dashboard_overview_saved_added_snapshot")
+@pytest.fixture(scope="module")
+def _selected_family_snapshot(tmp_path_factory):
+    # Enough units that the exploratory BH family selects at least one cell.
+    with _workspace(
+        tmp_path_factory.mktemp("overview-selected-snapshot"), units=1000, metrics=_SAVED
+    ) as (_, analysis):
+        return prepare_dashboard(analysis, config=_config(ADDED))
+
+
 @pytest.mark.integration
-def test_one_family_covers_added_metrics_and_every_segment_cell(_saved_added_snapshot):
-    snapshot = _saved_added_snapshot
+def test_one_family_covers_added_metrics_and_every_segment_cell(_selected_family_snapshot):
+    snapshot = _selected_family_snapshot
     overview = snapshot.overview
     assert overview is not None and overview.family_refusal is None
     segments = overview.segments[COUNTRY]
