@@ -358,6 +358,12 @@ Refresh them with the complete fast suite, preserving worker group suffixes:
 make test-fast PYTEST_ARGS="-n auto --dist loadgroup --store-durations --durations-path .github/fast-test-durations.json"
 ```
 
+Functional-slow CI uses four isolated shards with workers inside each shard;
+`ci-ok` requires their aggregate success. Every case remains selected exactly
+once. Until a complete hosted timing baseline is available, the splitter uses
+equal default weights. Each shard retains its own test evidence and
+`slow-test-durations.json`; partial shard timings are not a complete baseline.
+
 The root pytest hook uses the ignored `.test_durations` cache for stable,
 longest-first local scheduling across fast and slow tests. Each run refreshes
 the call durations it executes; to populate the whole map, run the full suite:
