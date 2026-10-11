@@ -1064,6 +1064,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         assignment = self._exp_lookup_exposures[self._experiment.exposure]
         if assignment.fact is not None:
             add_fact(assignment.fact)
+        else:
+            add_feed(assignment.name, "native_sql_assignment")
         trigger_name = self._experiment.trigger
         if trigger_name is not None:
             trigger = self._exp_lookup_exposures[trigger_name]
@@ -1093,7 +1095,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     feed=name,
                     metric=None,
                     complete_through=(
-                        None if evidence_kind == "native_sql_trigger" else watermarks.get(name)
+                        None
+                        if evidence_kind in {"native_sql_assignment", "native_sql_trigger"}
+                        else watermarks.get(name)
                     ),
                 )
                 for name, evidence_kind in feeds

@@ -1500,10 +1500,13 @@ class Analysis:
                         context={**dict(refusal.context), "reason": str(refusal)},
                     )
                 except InvalidRequestError as refusal:
-                    if population != "triggered" or refusal.code not in {
+                    if refusal.code not in {
                         "estimation.diagnostics.total_observed_count",
                         "estimation.diagnostics.always_srm_predeclared",
-                    }:
+                    } or (
+                        refusal.code == "estimation.diagnostics.always_srm_predeclared"
+                        and population != "triggered"
+                    ):
                         raise
                     context = {**dict(refusal.context), "reason": str(refusal)}
                     if refusal.code == "estimation.diagnostics.always_srm_predeclared":
@@ -1689,7 +1692,10 @@ class Analysis:
                             "evidence_kind": item.evidence_kind,
                             "watermark": None if watermark is None else watermark.isoformat(),
                             "reason": (
-                                "A SQL-backed trigger has no fact feed whose completeness "
+                                "A SQL-backed assignment exposure has no fact feed whose "
+                                "completeness can be certified."
+                                if item.evidence_kind == "native_sql_assignment"
+                                else "A SQL-backed trigger has no fact feed whose completeness "
                                 "can be certified."
                                 if item.evidence_kind == "native_sql_trigger"
                                 else "No certified completeness watermark is retained for this feed."

@@ -207,6 +207,34 @@ def test_health_unsupported_assignment_law_is_not_a_unit_arm_pass(tmp_path) -> N
     assert assigned.srm is None
 
 
+def test_empty_native_assignment_returns_a_complete_health_report(tmp_path) -> None:
+    import ibis
+
+    from tests.test_analysis_trigger import _write_defs
+
+    con = ibis.duckdb.connect()
+    con.raw_sql(
+        "CREATE TABLE events (user_id VARCHAR, group_id VARCHAR, ts TIMESTAMP, "
+        "event VARCHAR, value DOUBLE, experiment_id VARCHAR)"
+    )
+    analysis = Analysis.from_definitions(
+        "exp",
+        _write_defs(tmp_path, allocation_scheme="independent"),
+        con,
+    )
+    try:
+        report = analysis.health_check(expected_allocation={"C": 0.5, "T": 0.5})
+    finally:
+        analysis.close()
+        con.disconnect()
+
+    assigned = next(check for check in report.checks if check.check == "assigned_allocation")
+    assert assigned.availability == "unavailable"
+    assert assigned.code == "estimation.diagnostics.total_observed_count"
+    assert any(check.check == "triggered_balance" for check in report.checks)
+    assert any(check.check == "trigger_assumptions" for check in report.checks)
+
+
 def _health_snapshot_scenario(tmp_path, monkeypatch) -> None:
     import datetime as dt
 
@@ -612,6 +640,59 @@ def test_sql_trigger_completeness_is_reported_unavailable(tmp_path) -> None:
     assert sql_trigger.availability == "unavailable"
     assert sql_trigger.context["watermark"] is None
     assert "SQL-backed" in str(sql_trigger.context["reason"])
+
+
+def test_sql_assignment_completeness_does_not_inherit_same_named_feed_watermark(
+    tmp_path,
+) -> None:
+    import datetime as dt
+
+    import ibis
+
+    from increment import SourceSnapshotEvidence
+    from tests.test_analysis_trigger import _defs_yaml, _events
+
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=_events(n_per_arm=20, trigger_rate=0.5))
+    cutoff = dt.datetime(2024, 1, 16, tzinfo=dt.UTC)
+    definitions = tmp_path / "defs.yml"
+    definitions.write_text(
+        _defs_yaml()
+        .replace(
+            "  - name: assignment\n    fact: enrolled\n",
+            "  - name: events\n"
+            "    sql: SELECT user_id AS unit_id, ts, group_id FROM events WHERE event = 'enrolled'\n",
+        )
+        .replace("exposure: assignment", "exposure: events")
+    )
+    analysis = Analysis.from_definitions(
+        "exp",
+        definitions,
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            observation_cutoff_ts=cutoff,
+            complete_through_by_feed={"events": cutoff},
+        ),
+    )
+    try:
+        report = analysis.health_check()
+    finally:
+        analysis.close()
+
+    checks = [
+        check
+        for check in report.checks
+        if check.check == "feed_completeness" and check.feed == "events"
+    ]
+    assert len(checks) == 2
+    fact_feed = next(check for check in checks if check.context["evidence_kind"] == "native_feed")
+    sql_assignment = next(
+        check for check in checks if check.context["evidence_kind"] == "native_sql_assignment"
+    )
+    assert fact_feed.availability == "available"
+    assert sql_assignment.availability == "unavailable"
+    assert sql_assignment.context["watermark"] is None
+    assert "SQL-backed assignment" in str(sql_assignment.context["reason"])
 
 
 def test_health_validation_errors_are_coded() -> None:
