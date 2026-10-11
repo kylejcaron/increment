@@ -94,6 +94,14 @@ local fast/slow hooks until hosted success, failure/cancellation blocking,
 retained evidence, required-check configuration, and owner-approved activation
 have been verified. Workflow preparation alone does not establish those conditions.
 
+The two Python 3.12 fast CI shards also publish an optional combined executed-code
+coverage artifact when both shards succeed for the same commit and run attempt.
+It counts `increment/` source statements executed during the fast tier (including
+pytest-cov's measured test workers); it does not measure the slow or scientific
+tiers, establish whole-suite coverage, or rate test quality. Missing, failed or
+mismatched shard data is reported as incomplete and is not published as an
+aggregate.
+
 Commit `uv.lock` whenever a dependency change updates the resolution.
 
 Notebook examples use Marimo; the development environment does not include

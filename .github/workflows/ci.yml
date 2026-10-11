@@ -47,7 +47,8 @@ jobs:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
-      - run: make test-fast PYTEST_ARGS="-n auto --dist loadgroup --durations=25 --evidence-root .test-evidence --splits 2 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/fast-test-durations.json"
+      - id: fast-tests
+        run: make test-fast PYTEST_ARGS="-n auto --dist loadgroup --durations=25 --evidence-root .test-evidence --splits 2 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/fast-test-durations.json ${{ matrix.python-version == '3.12' && '--cov=increment --cov-report=json:.test-evidence/fast-coverage.json' || '' }}"
       - name: Report fast-suite runtime
         if: always() && hashFiles('.test-evidence/run-*/run.json') != ''
         env:
@@ -58,6 +59,25 @@ jobs:
             args+=(--base "$BASE_SHA")
           fi
           uv run --no-sync python -m scripts.report_test_runtime .test-evidence "${args[@]}" --json .test-evidence/runtime-fast.json --markdown "$GITHUB_STEP_SUMMARY"
+      - name: Record fast coverage shard receipt
+        if: always() && matrix.python-version == '3.12'
+        env:
+          SHA: ${{ github.sha }}
+          ATTEMPT: ${{ github.run_attempt }}
+          SHARD: ${{ matrix.group }}
+          TEST_OUTCOME: ${{ steps.fast-tests.outcome }}
+        run: |
+          mkdir -p .fast-coverage
+          python -c 'import json, os; from pathlib import Path; Path(".fast-coverage/metadata.json").write_text(json.dumps({"sha": os.environ["SHA"], "attempt": int(os.environ["ATTEMPT"]), "python": "3.12", "shard": int(os.environ["SHARD"]), "outcome": os.environ["TEST_OUTCOME"]}) + "\n")'
+          if [ -f .test-evidence/fast-coverage.json ]; then cp .test-evidence/fast-coverage.json .fast-coverage/coverage.json; fi
+      - name: Retain fast coverage shard
+        if: always() && matrix.python-version == '3.12'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fast-coverage-3.12-shard-${{ matrix.group }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: .fast-coverage/
+          include-hidden-files: true
+          retention-days: 30
       - name: Retain fast-suite evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -65,6 +85,45 @@ jobs:
           name: fast-suite-${{ matrix.python-version }}-shard-${{ matrix.group }}-${{ github.run_attempt }}
           path: .test-evidence/
           include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+  fast-coverage:
+    name: fast-tier coverage (3.12, optional)
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {persist-credentials: false}
+      - name: Download Python 3.12 coverage shards
+        uses: actions/download-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          pattern: fast-coverage-3.12-shard-*-${{ github.sha }}-${{ github.run_attempt }}
+          path: .coverage-shards
+          if-no-artifact-found: ignore
+      - id: combine
+        name: Combine only a complete matching pair
+        env:
+          SHA: ${{ github.sha }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          python3 scripts/combine_fast_coverage.py \
+            --shards .coverage-shards \
+            --sha "$SHA" \
+            --attempt "$ATTEMPT" \
+            --output coverage/coverage.json \
+            --summary-file coverage-summary.md \
+            --github-output "$GITHUB_OUTPUT"
+          cat coverage-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload complete fast-tier coverage
+        if: steps.combine.outputs.complete == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fast-tier executed-code coverage (in-process), Python 3.12, ${{ github.sha }}
+          path: coverage/coverage.json
           if-no-files-found: error
           retention-days: 30
 
