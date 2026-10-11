@@ -213,6 +213,7 @@ def _health_snapshot_scenario(tmp_path, monkeypatch) -> None:
     import ibis
 
     from increment import SourceSnapshotEvidence
+    from tests.analysis_factory import _native_source
     from tests.test_analysis_trigger import _events, _write_defs
 
     con = ibis.duckdb.connect()
@@ -228,7 +229,7 @@ def _health_snapshot_scenario(tmp_path, monkeypatch) -> None:
             complete_through_by_feed={"events": cutoff},
         ),
     )
-    source = analysis._src
+    source = _native_source(analysis)
     pin = source._pinned_source
     inserted = False
 
