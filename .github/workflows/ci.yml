@@ -47,15 +47,14 @@ jobs:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
       - run: uv sync --group dev --extra demo --extra tables --extra dashboard
-      # Keep pytest-cov failures optional; the evidence check below still fails on
-      # any failed or incomplete test, and coverage receipts record plugin outcome separately.
       - id: fast-tests
-        continue-on-error: true
-        run: make test-fast PYTEST_ARGS="-n auto --dist loadgroup --durations=25 --evidence-root .test-evidence --splits 2 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/fast-test-durations.json ${{ matrix.python-version == '3.12' && '--cov=increment --cov-report=json:.test-evidence/fast-coverage.json' || '' }}"
-      - id: test-result
-        name: Fail only for test failures or incomplete test evidence
-        if: always()
-        run: uv run --no-sync python scripts/verify_fast_test_evidence.py --evidence-root .test-evidence
+        run: |
+          coverage_args=""
+          if [ "${{ matrix.python-version }}" = "3.12" ]; then
+            export COVERAGE_CORE=sysmon
+            coverage_args="--cov=increment --cov-report=json:.test-evidence/fast-coverage.json"
+          fi
+          make test-fast PYTEST_ARGS="-n auto --dist loadgroup --durations=25 --evidence-root .test-evidence --splits 2 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .github/fast-test-durations.json $coverage_args"
       - name: Report fast-suite runtime
         if: always() && hashFiles('.test-evidence/run-*/run.json') != ''
         env:
@@ -72,11 +71,10 @@ jobs:
           SHA: ${{ github.sha }}
           ATTEMPT: ${{ github.run_attempt }}
           SHARD: ${{ matrix.group }}
-          TEST_OUTCOME: ${{ steps.test-result.outcome }}
-          COVERAGE_OUTCOME: ${{ steps.fast-tests.outcome }}
+          TEST_OUTCOME: ${{ steps.fast-tests.outcome }}
         run: |
           mkdir -p .fast-coverage
-          python -c 'import json, os; from pathlib import Path; Path(".fast-coverage/metadata.json").write_text(json.dumps({"sha": os.environ["SHA"], "attempt": int(os.environ["ATTEMPT"]), "python": "3.12", "shard": int(os.environ["SHARD"]), "outcome": os.environ["TEST_OUTCOME"], "coverage_outcome": os.environ["COVERAGE_OUTCOME"]}) + "\n")'
+          python -c 'import json, os; from pathlib import Path; Path(".fast-coverage/metadata.json").write_text(json.dumps({"sha": os.environ["SHA"], "attempt": int(os.environ["ATTEMPT"]), "python": "3.12", "shard": int(os.environ["SHARD"]), "outcome": os.environ["TEST_OUTCOME"]}) + "\n")'
           if [ -f .test-evidence/fast-coverage.json ]; then cp .test-evidence/fast-coverage.json .fast-coverage/coverage.json; fi
       - name: Retain fast coverage shard
         if: always() && matrix.python-version == '3.12'

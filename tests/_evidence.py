@@ -165,8 +165,6 @@ def pytest_configure(config: pytest.Config) -> None:
         "command": list(config.invocation_params.args),
         "resolved_worker_count": 0,
         "dist": config.getoption("dist", default="no"),
-        "collected_tests": 0,
-        "collected_nodeids": [],
         "thread_limits": {
             name: os.environ[name]
             for name in (
@@ -209,26 +207,23 @@ def pytest_deselected(items: list[pytest.Item]) -> None:
 
 
 def pytest_collection_finish(session: pytest.Session) -> None:
+    counts = session.config.stash.get(_SELECTION, None)
+    if counts is None:
+        return
     selected_nodeids = sorted(item.nodeid for item in session.items)
+    counts["selected_nodeids"] = selected_nodeids
+    counts["selected"] = len(selected_nodeids)
     run = session.config.stash.get(_RUN, None)
     if run is not None:
         path = run / "run.json"
         metadata = json.loads(path.read_text())
         metadata.update(
-            collected_tests=len(selected_nodeids),
-            collected_nodeids=selected_nodeids,
+            selected_tests=counts["selected"],
+            selected_nodeids=selected_nodeids,
+            deselected_tests=counts["deselected"],
+            selection_status="selected" if counts["selected"] else "no_affected_tests",
+            selection_route=os.environ.get("INCREMENT_AFFECTED_SELECTION_ROUTE"),
         )
-        counts = session.config.stash.get(_SELECTION, None)
-        if counts is not None:
-            counts["selected_nodeids"] = selected_nodeids
-            counts["selected"] = len(selected_nodeids)
-            metadata.update(
-                selected_tests=counts["selected"],
-                selected_nodeids=selected_nodeids,
-                deselected_tests=counts["deselected"],
-                selection_status="selected" if counts["selected"] else "no_affected_tests",
-                selection_route=os.environ.get("INCREMENT_AFFECTED_SELECTION_ROUTE"),
-            )
         path.write_text(json.dumps(metadata, indent=2) + "\n")
 
 

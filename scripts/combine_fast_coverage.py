@@ -60,8 +60,6 @@ def combine_shards(shards_root: Path, *, expected_sha: str, expected_attempt: in
             reasons.append(f"shard {shard} is not Python 3.12")
         if metadata.get("outcome") != "success":
             reasons.append(f"shard {shard} did not succeed")
-        if metadata.get("coverage_outcome") != "success":
-            reasons.append(f"shard {shard} coverage collection did not succeed")
         if not (artifact / "coverage.json").is_file():
             reasons.append(f"shard {shard} has no coverage data")
 

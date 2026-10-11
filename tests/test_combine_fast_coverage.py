@@ -18,7 +18,6 @@ def _shard(
     sha: str = "abc123",
     attempt: int = 2,
     outcome: str = "success",
-    coverage_outcome: str = "success",
     has_increment_data: bool = True,
 ) -> Path:
     artifact = root / f"shard-{shard}"
@@ -56,7 +55,6 @@ def _shard(
                 "python": "3.12",
                 "shard": shard,
                 "outcome": outcome,
-                "coverage_outcome": coverage_outcome,
             }
         )
     )
@@ -124,14 +122,3 @@ def test_combine_fast_coverage_rejects_failed_shard(tmp_path: Path):
     assert not result.complete
     assert result.coverage is None
     assert "shard 2 did not succeed" in result.summary
-
-
-def test_combine_fast_coverage_rejects_collection_failure(tmp_path: Path):
-    _shard(tmp_path, shard=1, coverage_outcome="failure")
-    _shard(tmp_path, shard=2)
-
-    result = combine_shards(tmp_path, expected_sha="abc123", expected_attempt=2)
-
-    assert not result.complete
-    assert result.coverage is None
-    assert "shard 1 coverage collection did not succeed" in result.summary
