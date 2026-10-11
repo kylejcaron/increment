@@ -100,7 +100,10 @@ It counts `increment/` source statements executed during the fast tier (includin
 pytest-cov's measured test workers); it does not measure the slow or scientific
 tiers, establish whole-suite coverage, or rate test quality. Missing, failed or
 mismatched shard data is reported as incomplete and is not published as an
-aggregate.
+aggregate. Collection runs inside the required shards to avoid a second fast-tier
+run, so a coverage save or combine error after the tests pass fails that shard. If
+that happens, remove the coverage arguments from the 3.12 shards rather than
+relaxing the test result.
 
 Commit `uv.lock` whenever a dependency change updates the resolution.
 
