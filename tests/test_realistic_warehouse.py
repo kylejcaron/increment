@@ -224,6 +224,7 @@ def test_breakout_plan_segments_are_pre_exposure_free_only(analysis):
     assert plan_segments == {"free"}
 
 
+@pytest.mark.integration
 def test_daily_and_asof_lift_cover_all_metrics(analysis):
     """The day-axis / dense-panel code paths, distinct from the
     whole-window run() path exercised above."""
@@ -241,6 +242,7 @@ def test_daily_and_asof_lift_cover_all_metrics(analysis):
     assert {e.metric for e in asof} == METRIC_NAMES
 
 
+@pytest.mark.integration
 def test_export_from_moments_round_trips_run_exactly(analysis, tmp_path):
     """A real export/rehydrate must reproduce run() exactly, including the
     declared plan: without it a guardrail comes back unassigned and

@@ -243,6 +243,8 @@ def _warehouse_compliance_analysis(
 def test_compliance_only_ignores_outcome_configuration(outcome, outcome_refusal):
     from tests.analysis_factory import lift_rows
 
+    if outcome == "retention":
+        from tests.capability_consumers_auxiliary import assert_refusal, assert_support
     clustered = outcome == "ratio"
     analysis, con = _warehouse_compliance_analysis(outcome, clustered=clustered)
     oracle, oracle_con = _warehouse_compliance_analysis("mean", clustered=clustered)
@@ -251,6 +253,12 @@ def test_compliance_only_ignores_outcome_configuration(outcome, outcome_refusal)
         expected = lift_rows(oracle.run(estimands=("compliance",)))[0].require_lift()
         assert [(row.metric, row.estimand) for row in observed] == [("uptake", "compliance")]
         actual = observed[0].require_lift()
+        if outcome == "retention":
+            assert_support(
+                "encouragement_retention_readouts",
+                "compliance_only_definitions_supported",
+                observed,
+            )
         assert actual.value == pytest.approx(0.5)
         assert (actual.value, actual.lb, actual.ub) == pytest.approx(
             (expected.value, expected.lb, expected.ub)
@@ -258,6 +266,13 @@ def test_compliance_only_ignores_outcome_configuration(outcome, outcome_refusal)
         with pytest.raises(CodedError) as error:
             analysis.run(estimands=("itt",))
         assert error.value.code == outcome_refusal
+        if outcome == "retention":
+            assert_refusal(
+                "encouragement_retention_readouts",
+                "compliance_only_itt_still_refused",
+                error.value,
+                stage="read",
+            )
     finally:
         analysis.close()
         oracle.close()

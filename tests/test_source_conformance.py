@@ -39,6 +39,7 @@ _EXPECTED_ADAPTER_NAMES = frozenset(
 )
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("adapter_index", range(len(_ADAPTER_NAMES)), ids=_ADAPTER_NAMES)
 def test_each_adapter_advertises_a_complete_moment_source_contract(
     tmp_path: Path, adapter_index: int
@@ -255,6 +256,7 @@ def test_definitions_absent_trigger_operations_refuse(tmp_path: Path) -> None:
         source.close()
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize(
     "name",
     [
@@ -288,6 +290,7 @@ def test_every_arm_evidence_result_round_trips_and_has_a_frame(tmp_path: Path, n
 _DIGEST_ADAPTER_NAMES = tuple(name for name in _ADAPTER_NAMES if name != "breakout_moments")
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("adapter_name", _DIGEST_ADAPTER_NAMES)
 def test_readout_snapshot_replays_and_tracks_changed_ingress_arms(
     tmp_path: Path, adapter_name: str, monkeypatch

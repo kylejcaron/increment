@@ -14,6 +14,11 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, Protocol, cast, runtime_checkable
 from uuid import UUID
 
+from increment._artifact_identity import (
+    ARTIFACT_V1_DOMAIN_ROOT,
+    context_digest,
+    extension_digest,
+)
 from increment._canonical import canonical_json_loads
 from increment._canonical import canonical_model_value as _dump
 
@@ -49,11 +54,16 @@ def _scalar_choice(condition: Any, yes: Any, no: Any) -> Any:
     return yes if condition else no
 
 
+def _unshared(value: Any) -> Any:
+    return value
+
+
 def _aggregate_mean_error_bound(
     n_events: Any,
     magnitude: Any,
     *,
     choose: Callable[[Any, Any, Any], Any] = _scalar_choice,
+    share: Callable[[Any], Any] = _unshared,
 ) -> Any:
     """Outward binary64 mean-error bound for counts from 1 through 2**53."""
     # prose: allow-long Derivation of the shared floating-point enclosure.
@@ -62,16 +72,16 @@ def _aggregate_mean_error_bound(
     # Rounded half-scale comparisons require C=(beta+u)/(1-u).
     # F*(1-u)**6 >= 1 covers six normal roundings in evaluating the bound;
     # 4*eta*(1/D+3) also covers subnormal evaluation and comparison errors.
-    denominator = 1.0 - (n_events - 1) * _BINARY64_U
-    coefficient = (n_events * _BINARY64_U / denominator + _BINARY64_U) / (1.0 - _BINARY64_U)
-    large_coefficient = coefficient > 1.0
-    small = magnitude < _BINARY64_ETA / choose(large_coefficient, 1.0, coefficient)
+    denominator = share(1.0 - (n_events - 1) * _BINARY64_U)
+    coefficient = share((n_events * _BINARY64_U / denominator + _BINARY64_U) / (1.0 - _BINARY64_U))
+    large_coefficient = share(coefficient > 1.0)
+    small = share(magnitude < _BINARY64_ETA / choose(large_coefficient, 1.0, coefficient))
     overflow = large_coefficient & (
         magnitude >= _BINARY64_MAX / choose(large_coefficient, coefficient, 1.0)
     )
     product = coefficient * choose(small | overflow, 0.0, magnitude)
-    product = choose(small, _BINARY64_ETA, product)
-    overflow = overflow | (product >= _BINARY64_MAX / _BINARY64_F)
+    product = share(choose(small, _BINARY64_ETA, product))
+    overflow = share(overflow | (product >= _BINARY64_MAX / _BINARY64_F))
     bound = choose(overflow, 0.0, product) * _BINARY64_F + (
         4.0 * _BINARY64_ETA * (1.0 / denominator + 3.0)
     )
@@ -91,17 +101,21 @@ def _aggregate_sum_within_extrema(
     maximum: Any,
     *,
     choose: Callable[[Any, Any, Any], Any] = _scalar_choice,
+    share: Callable[[Any], Any] = _unshared,
 ) -> Any:
-    """Check finite statistics with identical scalar and SQL arithmetic."""
-    valid_count = (n_events >= 1) & (n_events <= 2**53)
-    n = choose(valid_count, n_events, 1)
-    magnitude = choose(maximum > -minimum, maximum, -minimum)
-    bound = _aggregate_mean_error_bound(n, magnitude, choose=choose)
+    """Check finite statistics with identical scalar and SQL arithmetic.
+
+    *share* names a reused intermediate once; SQL callers project it as a column.
+    """
+    valid_count = share((n_events >= 1) & (n_events <= 2**53))
+    n = share(choose(valid_count, n_events, 1))
+    magnitude = share(choose(maximum > -minimum, maximum, -minimum))
+    bound = _aggregate_mean_error_bound(n, magnitude, choose=choose, share=share)
     underflow_threshold = n * _BINARY64_ETA
     tiny_sum = (total > -underflow_threshold) & (total < underflow_threshold)
-    mean = choose(tiny_sum, 0.0, total) / n
-    half_mean = _aggregate_half(mean, choose)
-    half_bound = _aggregate_half(bound, choose)
+    mean = share(choose(tiny_sum, 0.0, total) / n)
+    half_mean = share(_aggregate_half(mean, choose))
+    half_bound = share(_aggregate_half(bound, choose))
     enclosed = (half_mean >= _aggregate_half(minimum, choose) - half_bound) & (
         half_mean <= _aggregate_half(maximum, choose) + half_bound
     )
@@ -116,20 +130,40 @@ def _aggregate_sum_within_extrema(
     )
 
 
-def _aggregate_sum_within_extrema_sql(total: Any, n_events: Any, minimum: Any, maximum: Any) -> Any:
-    """Adapt nullable SQL counts to the shared finite-statistic predicate."""
+def _with_sum_within_extrema_sql(table: ir.Table, name: str) -> ir.Table:
+    """Add boolean *name* checking ``sum_value``/``n_events``/``min_value``/``max_value``.
+
+    Reused intermediates are projected columns: inlining them at each use expands the
+    predicate exponentially, past warehouse statement-length limits.
+    """
     import ibis
 
-    count: Any = ibis.coalesce(n_events, 0)
-    valid_count = (count >= 1) & (count <= 2**53)
+    staged = table
+    intermediates: list[str] = []
+
+    def share(value: Any) -> Any:
+        nonlocal staged
+        column = f"{name}_{len(intermediates)}"
+        intermediates.append(column)
+        staged = staged.mutate(**{column: value})
+        return staged[column]
+
+    count = share(ibis.coalesce(table.n_events, 0))
+    valid_count = share((count >= 1) & (count <= 2**53))
     # Validate integers before conversion; PostgreSQL must evaluate in binary64.
-    floating_count = ibis.ifelse(valid_count, count, 1).cast("float64")
-    return valid_count & _aggregate_sum_within_extrema(
-        total, floating_count, minimum, maximum, choose=ibis.ifelse
+    floating_count = share(ibis.ifelse(valid_count, count, 1).cast("float64"))
+    accepted = valid_count & _aggregate_sum_within_extrema(
+        table.sum_value,
+        floating_count,
+        table.min_value,
+        table.max_value,
+        choose=ibis.ifelse,
+        share=share,
     )
+    return staged.mutate(**{name: accepted}).drop(*intermediates)
 
 
-ARTIFACT_DOMAIN_ROOT = b"increment.unit-day-artifact\x00v1\x00"
+ARTIFACT_DOMAIN_ROOT = ARTIFACT_V1_DOMAIN_ROOT
 _EXTENSION_KIND_RANK: Mapping[str, int] = MappingProxyType(
     {
         "breakout_dimension": 0,
@@ -411,7 +445,7 @@ def validate_artifact_context(context: Any) -> Any:
         raise ArtifactContractError(
             "artifact.context.mismatch", "context JSON disagrees with the model context_format"
         )
-    expected = _sha256(ARTIFACT_DOMAIN_ROOT + b"context\x00" + payload.encode())
+    expected = context_digest(payload)
     if expected != supplied:
         raise ArtifactContractError(
             "artifact.context.mismatch", "context hash does not match canonical JSON"
@@ -561,15 +595,12 @@ def _request_key(request: Any) -> tuple[int, bytes]:
     return _EXTENSION_KIND_RANK[kind], _canonical_json(request).encode()
 
 
-def _extension_hash(domain: str, request: Any, canonical: str) -> str:
-    return _sha256(
-        ARTIFACT_DOMAIN_ROOT
-        + domain.encode()
-        + b"\x00"
-        + str(request.kind).encode()
-        + b"\x00"
-        + canonical.encode()
-    )
+def _extension_hash(
+    domain: Literal["extension-definition", "extension-source"],
+    request: Any,
+    canonical: str,
+) -> str:
+    return extension_digest(domain, str(request.kind), canonical)
 
 
 def _require_hashed_recipe(recipe: Any) -> None:
@@ -745,13 +776,7 @@ def _measure_recipe_key(measure: Any) -> str:
 
 def _hashed_source_recipe(request: Any, source_recipe: Any) -> dict[str, Any]:
     """Represent a source recipe by a tagged digest; the recipe itself may hold source SQL."""
-    digest = _sha256(
-        ARTIFACT_DOMAIN_ROOT
-        + b"source-recipe\x00"
-        + str(request.kind).encode()
-        + b"\x00"
-        + _canonical_json(source_recipe).encode()
-    )
+    digest = extension_digest("source-recipe", str(request.kind), _canonical_json(source_recipe))
     return {"source_recipe_format": 2, "recipe_sha256": digest}
 
 
@@ -1353,7 +1378,7 @@ def _compile_context(
         {
             "context_format": 2,
             "canonical_json": canonical,
-            "sha256": _sha256(ARTIFACT_DOMAIN_ROOT + b"context\x00" + canonical.encode()),
+            "sha256": context_digest(canonical),
         }
     )
 

@@ -90,9 +90,10 @@ from pydantic import ValidationError
 from increment import Analysis
 from increment._analysis_config import UNSET
 from increment.errors import CodedError, IncrementWarning
+from tests.capability_contracts import CONSTRUCTORS
 from tests.warning_codes import warning_codes
 
-from .cases import CONSTRUCTORS, Absence, ParityCase, _close_parity_analysis
+from .cases import Absence, ParityCase, _close_parity_analysis
 from .comparison import nested_close
 
 # Dropped from the compared payload only after source identity is checked against the retained
@@ -548,10 +549,16 @@ def _assert_payload_equal(
 
 def _assert_no_silent_skip(case: ParityCase) -> None:
     """Every constructor is built, or waived with a reason, or both (a
-    coded waiver): never neither. A name in `waive` without a matching
-    `waived_refusal_codes` entry must be ABSENT from `build` (not
-    attempted, reason recorded); a name WITH a coded entry must be PRESENT
-    in `build` (attempted, expected to raise that code)."""
+    coded waiver): never neither. Also check registered rows against their
+    authoritative attempted-ingress declaration."""
+    from .declarations import PARITY_DECLARATIONS
+
+    declaration = PARITY_DECLARATIONS.get(case.id)
+    if declaration is not None:
+        assert set(case.build) == set(declaration.attempted), (
+            f"{case.id}: actual attempted constructors {sorted(case.build)} do not match "
+            f"declared inventory {sorted(declaration.attempted)}"
+        )
     covered = set(case.build) | set(case.waive)
     missing = set(CONSTRUCTORS) - covered
     assert not missing, (

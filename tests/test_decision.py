@@ -173,6 +173,7 @@ def test_decision_computation_overlap_is_an_assertion_not_a_value_error():
 
 
 @pytest.mark.slow
+@pytest.mark.integration
 def test_constructor_invariants_survive_optimized_python():
     import subprocess
     import sys

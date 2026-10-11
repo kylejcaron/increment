@@ -1042,34 +1042,138 @@ class TestCalibrationSmoke:
         _assert_doubled_alpha()
 
 
-#: Design fields read straight from library beta/binomial tails. Their last
-#: digits are not reproducible across the supported SciPy releases (measured
-#: 1e-12 relative), so regeneration compares them within a numerical
-#: reproducibility budget; every other field must regenerate exactly.
+#: Library-computed readings (special functions, Brent roots, quadrature) can
+#: differ by a few ULPs across builds. Worst-case Brent-tolerance and 8-ULP
+#: perturbations move them by at most ~1e-12 relative; inputs, decisions and
+#: structural zeros (identical arm computations) remain exact.
 _SPECIAL_FUNCTION_DESIGN_FIELDS = frozenset(
     {"prospective_mc_margin", "margin_at_nominal", "nominal_false_failure_bound"}
 )
+_DGP_MOMENT_FIELDS = frozenset({"mean", "second_moment", "variance"})
 _SPECIAL_FUNCTION_REPRODUCIBILITY = 1e-9
 
 
-def _assert_regenerates(regenerated: Any, committed: Any, path: str) -> None:
+def _is_numerical_reading(path: str, key: str) -> bool:
+    if path.endswith(".design"):
+        return key in _SPECIAL_FUNCTION_DESIGN_FIELDS
+    if path.endswith((".dgp.control", ".dgp.treatment")):
+        return key in _DGP_MOMENT_FIELDS
+    return path.endswith(".reference")
+
+
+def _assert_regenerates(
+    regenerated: Any, committed: Any, path: str, *, numerical: bool = False
+) -> None:
     if isinstance(committed, dict):
         assert isinstance(regenerated, dict), path
         assert list(regenerated) == list(committed), path
+        reference = committed.get("reference")
         for key, value in committed.items():
             child = f"{path}.{key}"
-            if key in _SPECIAL_FUNCTION_DESIGN_FIELDS and path.endswith(".design"):
-                assert regenerated[key] == pytest.approx(
-                    value, rel=_SPECIAL_FUNCTION_REPRODUCIBILITY, abs=0
-                ), child
+            if path.endswith(".reference") and key == "analytic_noncoverage":
+                reading = regenerated[key]
+                assert math.isfinite(reading) and 0 <= reading <= 1, child
+                _assert_regenerates(reading, value, child, numerical=True)
+            elif path.endswith(".reference") and key == "quadrature_64_128_difference":
+                reading = regenerated[key]
+                assert math.isfinite(reading) and reading >= 0, child
+                # |q64| <= |q128| + |q128-q64|; retain both operand budgets.
+                budget = _SPECIAL_FUNCTION_REPRODUCIBILITY * (
+                    2 * abs(committed["analytic_noncoverage"]) + value
+                )
+                assert abs(reading - value) <= budget, child
+            elif path.endswith(".reference") and key == "mixture_cdf_residual":
+                # H(c)-p: both operands are probabilities, so the budget is absolute.
+                reading = regenerated[key]
+                assert math.isfinite(reading), child
+                assert abs(reading - value) <= 2 * _SPECIAL_FUNCTION_REPRODUCIBILITY, child
+            elif (
+                key == "truth"
+                and isinstance(reference, dict)
+                and value == reference.get("relative_lift")
+            ):
+                # A reference-derived truth must stay that reference's reading.
+                assert regenerated[key] == regenerated["reference"]["relative_lift"], child
+                _assert_regenerates(regenerated[key], value, child, numerical=True)
             else:
-                _assert_regenerates(regenerated[key], value, child)
+                _assert_regenerates(
+                    regenerated[key],
+                    value,
+                    child,
+                    numerical=numerical or _is_numerical_reading(path, key),
+                )
     elif isinstance(committed, list):
         assert isinstance(regenerated, list) and len(regenerated) == len(committed), path
         for index, (left, right) in enumerate(zip(regenerated, committed, strict=True)):
-            _assert_regenerates(left, right, f"{path}[{index}]")
+            _assert_regenerates(left, right, f"{path}[{index}]", numerical=numerical)
+    elif numerical and isinstance(committed, float):
+        assert isinstance(regenerated, float) and math.isfinite(regenerated), path
+        assert regenerated == pytest.approx(
+            committed, rel=_SPECIAL_FUNCTION_REPRODUCIBILITY, abs=0
+        ), path
     else:
         assert regenerated == committed, path
+
+
+def _nudged(value: float) -> float:
+    return math.nextafter(value, math.inf)
+
+
+_FIXED_CUTOFF = ("cases", 8, "reference", "difference_variance", "fixed_cutoff")
+_RESIDUAL = ("cases", 8, "reference", "mixture_cdf_residual")
+_ALTERNATIVE_LIFT = ("cases", 128, "reference", "relative_lift")
+_ALTERNATIVE_TRUTH = ("cases", 128, "truth")
+
+
+@pytest.mark.parametrize(
+    ("edits", "accepted"),
+    [
+        pytest.param(((_FIXED_CUTOFF, lambda _: 0.07714557856364677),), True, id="linux-variance"),
+        pytest.param(
+            ((("cases", 3, "reference", "analytic_noncoverage"), lambda _: 0.05320454217274708),),
+            True,
+            id="linux-quadrature",
+        ),
+        pytest.param(
+            ((("cases", 8, "dgp", "control", "second_moment"), _nudged),), True, id="dgp-moment"
+        ),
+        pytest.param(
+            ((_ALTERNATIVE_LIFT, _nudged), (_ALTERNATIVE_TRUTH, _nudged)), True, id="derived-truth"
+        ),
+        pytest.param(((_RESIDUAL, lambda v: v + 1e-15),), True, id="root-residual"),
+        pytest.param(((_FIXED_CUTOFF, lambda v: v * (1 + 1e-6)),), False, id="reference-drift"),
+        pytest.param(
+            ((("cases", 8, "reference", "difference"), lambda _: 5e-324),),
+            False,
+            id="structural-zero",
+        ),
+        pytest.param(
+            ((("cases", 8, "design", "repetitions"), lambda v: v + 1),), False, id="decision-count"
+        ),
+        pytest.param(
+            ((("cases", 8, "design", "coverage_lower_min"), _nudged),),
+            False,
+            id="decision-threshold",
+        ),
+        pytest.param(((("cases", 8, "dgp", "quantile"), _nudged),), False, id="design-input"),
+        pytest.param(((_ALTERNATIVE_TRUTH, _nudged),), False, id="detached-truth"),
+        pytest.param(((_RESIDUAL, lambda v: v + 1e-6),), False, id="root-residual-drift"),
+    ],
+)
+def test_regeneration_tolerates_only_numerical_reproduction_error(edits, accepted):
+    committed = load_manifest()
+    regenerated = load_manifest()
+    for path, transform in edits:
+        *parents, key = path
+        container = regenerated
+        for part in parents:
+            container = container[part]
+        container[key] = transform(container[key])
+    if accepted:
+        _assert_regenerates(regenerated, committed, "manifest")
+    else:
+        with pytest.raises(AssertionError):
+            _assert_regenerates(regenerated, committed, "manifest")
 
 
 @pytest.mark.slow

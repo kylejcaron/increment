@@ -604,59 +604,86 @@ def test_supported_switchback_carryover_decays_during_washout_only():
     assert observed
 
 
+@pytest.mark.parametrize("entrypoint", ["source", "analysis"])
 @pytest.mark.parametrize(
-    ("allocation", "expected_context"),
+    ("allocation", "expected_context", "metric_type"),
     [
         (
             {"control": 0.4, "treatment": 0.5},
             {
-                "message": "switchback allocation weights must sum to one",
                 "allocation": {"control": 0.4, "treatment": 0.5},
                 "reason": "invalid_allocation",
             },
+            "mean",
         ),
         (
             {"control": 0.4, "treatment": 0.6},
             {
-                "message": "switchback allocation requires exact 0.5/0.5 control/treatment weights",
                 "allocation": {"control": 0.4, "treatment": 0.6},
                 "control_group": "control",
                 "treatment_group": "treatment",
                 "reason": "unequal_allocation",
             },
+            "mean",
+        ),
+        *(
+            (
+                {"control": 0.5, "treatment": 0.25, "other": 0.25},
+                {
+                    "allocation": {"control": 0.5, "treatment": 0.25, "other": 0.25},
+                    "control_group": "control",
+                    "reason": "invalid_allocation",
+                },
+                metric_type,
+            )
+            for metric_type in ("conversion", "retention")
         ),
     ],
 )
 def test_switchback_invalid_allocation_refuses_before_frame_access(
-    monkeypatch, allocation, expected_context
+    monkeypatch, allocation, expected_context, metric_type, entrypoint
 ):
+    from increment import Analysis, MetricSpec
     from increment.errors import InvalidRequestError
     from increment.switchback import from_switchback_panel
+    from tests.capability_consumers_auxiliary import assert_refusal
 
     def fail(*_args, **_kwargs):
         raise AssertionError("frame access occurred before allocation validation")
 
     monkeypatch.setattr("increment.switchback.nw.from_native", fail)
+    constructor = (
+        Analysis.from_switchback_panel if entrypoint == "analysis" else from_switchback_panel
+    )
+    metric = MetricSpec(
+        name="outcome", type=metric_type, threshold_days=1 if metric_type == "retention" else None
+    )
     with pytest.raises(InvalidRequestError) as exc:
-        from_switchback_panel(
+        constructor(
             object(),  # ty: ignore[invalid-argument-type]
             unit="unit",
             cycle="cycle",
             period="period",
             step="step",
             group="group",
-            metrics={"outcome": "mean"},
-            identification=Randomized(
-                control_group="control",
-                allocation=allocation,
-            ),
+            metrics=[metric],
+            identification=Randomized(control_group="control", allocation=allocation),
             assignment=SwitchbackAssignment(
                 sequence=IndependentBernoulliOrder(probability_ct=0.5),
                 window=SwitchbackWindow(washout_steps=1, observation_steps=1),
             ),
         )
     assert exc.value.code == "source.frame.switchback.identification"
-    assert exc.value.context == expected_context
+    assert {
+        key: value for key, value in exc.value.context.items() if key != "message"
+    } == expected_context
+    if entrypoint == "analysis" and len(allocation) == 3:
+        assert_refusal(
+            "switchback_multi_arm_identification",
+            f"{metric_type}_multi_arm_refused",
+            exc.value,
+            stage="construction",
+        )
 
 
 def test_switchback_sequence_probability_does_not_change_arm_allocation():

@@ -16,6 +16,7 @@ from tests.binary_sequential_cases import (
     frame_analysis,
     unit_rows,
 )
+from tests.capability_consumers_scalar import BOUNDED_CONVERSION_SEQUENTIAL, completed
 
 SPEC = InferenceSpec(kind="asymptotic_mean", expected_decision_sample_size=400)
 
@@ -148,4 +149,12 @@ def test_binary_secondary_family_uses_e_bh_selection_at_q():
 
 
 def test_conversion_state_and_interval_agree_on_every_path(duck):
-    check_path_parity(duck, "duckdb", "events", "asymptotic_mean")
+    check_path_parity(
+        duck,
+        "duckdb",
+        "events",
+        "asymptotic_mean",
+        observe=lambda ingress, request: completed(
+            BOUNDED_CONVERSION_SEQUENTIAL, f"asymptotic_mean-{ingress}-retained-state", request
+        ),
+    )

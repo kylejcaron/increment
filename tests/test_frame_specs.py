@@ -34,7 +34,19 @@ from increment.frame import (
     synthesise_metric,
 )
 from increment.semantics.design import Randomized
-from increment.semantics.models import MeanMetric, Metric, RatioMetric, RetentionMetric
+from increment.semantics.models import (
+    ConversionMetric,
+    MeanMetric,
+    Metric,
+    RatioMetric,
+    RetentionMetric,
+)
+from tests.capability_consumers_scalar import (
+    IMPUTE_POOLED_MEAN,
+    UNBOUNDED_RETENTION_SEQUENTIAL,
+    observe,
+    refused,
+)
 
 _DESIGN = Randomized(
     control_group="control",
@@ -432,19 +444,24 @@ def test_window_days_rejected_on_retention_and_quantile() -> None:
 
 def test_summary_constructor_refuses_windowed_and_retention_specs(arrow_frame: pa.Table) -> None:
     # a one-row-per-unit summary has no dates: nothing to window
-    for spec in (
-        MetricSpec(name="revenue", window_days=7),
-        MetricSpec(name="d7", type="retention", threshold_days=7),
-    ):
-        with pytest.raises(CapabilityError) as exc:
-            from_unit_summary(
-                arrow_frame,
-                unit="user_id",
-                group="variant",
-                control="control",
-                metrics=[spec],
-            )
-        assert exc.value.code == "source.frame.constructor"
+    def construct(spec):
+        return from_unit_summary(
+            arrow_frame,
+            unit="user_id",
+            group="variant",
+            control="control",
+            metrics=[spec],
+        )
+
+    with pytest.raises(CapabilityError) as exc:
+        construct(MetricSpec(name="revenue", window_days=7))
+    assert exc.value.code == "source.frame.constructor"
+    unbounded = MetricSpec(name="d7", type="retention", threshold_days=7)
+    refusal = refused(
+        UNBOUNDED_RETENTION_SEQUENTIAL, "summary-no-dates-refused", lambda: construct(unbounded)
+    )
+    assert isinstance(refusal, CapabilityError)
+    assert refusal.context["metric"] == "d7"
 
 
 def test_capability_errors_never_silently_change_a_number(panel_frame: pa.Table) -> None:
@@ -1634,8 +1651,50 @@ def test_frame_reexports_metric_specs_identity() -> None:
 
 
 def test_metric_spec_impute_missing_is_a_named_refusal_with_a_route() -> None:
-    with pytest.raises(InvalidRequestError) as raised:
-        MetricSpec(name="revenue", missing="impute")
-    assert raised.value.code == "frame.metric.missing_impute"
-    assert raised.value.context["metric"] == "revenue"
-    assert "route" in raised.value.context
+    raised = refused(
+        IMPUTE_POOLED_MEAN,
+        "metric-missing-impute-refused",
+        lambda: MetricSpec(name="revenue", missing="impute"),
+    )
+    assert isinstance(raised, InvalidRequestError)
+    assert raised.context["metric"] == "revenue"
+    assert "route" in raised.context
+
+
+@pytest.mark.parametrize(
+    ("model", "payload"),
+    [
+        (MeanMetric, {"name": "revenue", "entity": "user_id", "fact": "purchase"}),
+        (ConversionMetric, {"name": "bought", "entity": "user_id", "fact": "purchase"}),
+        (
+            RatioMetric,
+            {
+                "name": "rps",
+                "entity": "user_id",
+                "numerator": {"fact": "purchase"},
+                "denominator": {"fact": "session"},
+            },
+        ),
+        (
+            RetentionMetric,
+            {"name": "d7", "entity": "user_id", "fact": "page_view", "threshold_days": 7},
+        ),
+    ],
+    ids=["mean", "conversion", "ratio", "retention"],
+)
+def test_warehouse_metrics_cannot_declare_a_missing_policy(model, payload) -> None:
+    """A warehouse metric is declared over event facts, where an absent event is zero by
+    construction; the schema has no missing field for a frame-only impute policy."""
+    from pydantic import ValidationError
+
+    assert model.model_validate(payload).name == payload["name"]
+    declared = {**payload, "missing": "impute"}
+    for ingress in ("from_definitions", "from_unit_day_artifact"):
+        with pytest.raises(ValidationError) as raised:
+            observe(
+                IMPUTE_POOLED_MEAN,
+                f"{ingress}-missing-policy-not-declarable",
+                lambda: model.model_validate(declared),
+            )
+        assert [error["loc"] for error in raised.value.errors()] == [("missing",)]
+        assert {error["type"] for error in raised.value.errors()} == {"extra_forbidden"}

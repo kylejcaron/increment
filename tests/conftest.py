@@ -6,9 +6,15 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 
-# Polars' thread pool defaults to one per core; under xdist that multiplies
-# into far more threads than cores and dominates CPU on tiny per-test frames.
-os.environ.setdefault("POLARS_MAX_THREADS", "1")
+# Bound per-process pools under xdist and inherit these defaults in nested subprocesses.
+for _thread_limit in (
+    "OPENBLAS_NUM_THREADS",
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "POLARS_MAX_THREADS",
+):
+    os.environ.setdefault(_thread_limit, "1")
 
 if TYPE_CHECKING:
     from tach.extension import TachPytestPluginHandler

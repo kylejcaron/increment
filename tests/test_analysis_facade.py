@@ -1630,10 +1630,13 @@ def test_observational_estimand_guardrail_row_survives_native_run(
 
 def test_observational_relative_margin_refused_at_constructor(seeded_con, seeded_defs):
     """A source constructor refuses observational relative margins."""
+    from tests.capability_consumers_auxiliary import assert_refusal
+
     a = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
     observational = Observational(
         control_group="control", adjustment=AdjustmentSet(covariates=("x",))
     )
+
     relative_guardrail = MeanMetric(
         name="revenue_relative_guardrail",
         entity="user_id",
@@ -1647,6 +1650,12 @@ def test_observational_relative_margin_refused_at_constructor(seeded_con, seeded
         make_analysis_like(a, metrics=[*a.metrics, relative_guardrail], design=observational)
     assert exc.value.code == "plan.observational.relative_margin"
     assert exc.value.context["metrics"] == ("revenue_relative_guardrail",)
+    assert_refusal(
+        "observational_relative_margin_boundary",
+        "relative_margin_definitions_facade_refused",
+        exc.value,
+        stage="construction",
+    )
 
     # The same refusal when the relative margin is already present and only
     # the design changes on the rebuilt source.
@@ -2246,10 +2255,15 @@ def test_public_artifact_adoption_handles_snapshot_generation_race():
 
 @pytest.mark.slow
 def test_public_artifact_adoption_matches_native_results(published_artifact):
+    from tests.capability_consumers_auxiliary import assert_support
+
     _con, native, context, store, ref = published_artifact
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
     native_rows = _lift_rows(native.run(metrics=["purchase_rate"]))
     adopted_rows = _lift_rows(adopted.run(metrics=["purchase_rate"]))
+    assert_support(
+        "artifact_publication_abort_recovery", "publication_from_definitions_supported", ref
+    )
     assert [(row.metric, row.group_id) for row in adopted_rows] == [
         (row.metric, row.group_id) for row in native_rows
     ]
@@ -2258,12 +2272,42 @@ def test_public_artifact_adoption_matches_native_results(published_artifact):
     )
 
 
+def test_public_artifact_adoption_refuses_a_dropped_generation():
+    from tests.capability_consumers_auxiliary import assert_refusal
+
+    con, native, context, store, ref = _published()
+    adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
+    try:
+        store.drop_generation(ref.artifact_id, ref.generation_id)
+        with pytest.raises(ArtifactContractError) as refused:
+            adopted.run(metrics=["purchase_rate"])
+        assert refused.value.code == "artifact.generation.dropped"
+        assert_refusal(
+            "artifact_publication_abort_recovery",
+            "dropped_artifact_read_refused",
+            refused.value,
+            stage="read",
+        )
+    finally:
+        adopted.close()
+        native.close()
+        con.disconnect()
+
+
 def test_public_artifact_adoption_refuses_missing_extension(published_artifact):
+    from tests.capability_consumers_auxiliary import assert_refusal
+
     _con, native, context, store, ref = published_artifact
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
     with pytest.raises(ArtifactContractError) as raised:
         adopted.run_breakout(metrics=["purchase_rate"])
     assert raised.value.code == "artifact.extension.missing"
+    assert_refusal(
+        "triggered_auxiliary_reads",
+        "breakout_artifact_missing_extension",
+        raised.value,
+        stage="read",
+    )
 
 
 @pytest.mark.slow
@@ -2464,3 +2508,110 @@ def test_only_a_declared_observational_design_routes_readouts_through_the_unit_f
     with pytest.raises(DefinitionError) as raised:
         load(defs_path)
     assert raised.value.code == "definition.validation"
+
+
+def test_assignment_integrity_uses_each_source_declared_grain(tmp_path):
+    import pandas as pd
+    import pyarrow.parquet as pq
+
+    from increment.semantics.design import Randomized
+    from tests.capability_consumers_auxiliary import assert_support
+
+    design = Randomized(control_group="control", allocation_scheme="independent")
+    metrics = [MetricSpec(name="revenue", type="mean")]
+    rows = [
+        {
+            "unit": f"{arm}-{index}",
+            "arm": arm,
+            "date": date,
+            "revenue": float(index + (arm == "treatment")),
+        }
+        for arm, n_units in (("control", 3), ("treatment", 2))
+        for index in range(n_units)
+        for date in ("2025-01-01", "2025-01-02")
+    ]
+    panel = Analysis.from_unit_panel(
+        pd.DataFrame(rows),
+        unit="unit",
+        group="arm",
+        date="date",
+        design=design,
+        metrics=metrics,
+    )
+    panel_result = panel.srm(expected={"control": 0.5, "treatment": 0.5})
+    assert_support("assignment_integrity_source_grain", "panel_unit_grain_supported", panel_result)
+    assert isinstance(panel_result, SRMResult)
+    assert panel_result.grain == "unit"
+    assert panel_result.observed == {"control": 3, "treatment": 2}
+
+    path = tmp_path / "unit-grain-assignment-counts.parquet"
+    panel.export(path)
+    replay = Analysis.from_moments(
+        pq.read_table(path).to_pylist(),
+        metrics=metrics,
+        design=design,
+    )
+    replay_result = replay.srm(expected={"control": 0.5, "treatment": 0.5})
+    assert_support(
+        "assignment_integrity_source_grain", "moments_unit_grain_supported", replay_result
+    )
+    assert isinstance(replay_result, SRMResult)
+    assert replay_result.grain == "unit"
+    assert replay_result.observed == {"control": 3, "treatment": 2}
+
+    clustered_rows = [
+        {
+            "unit": f"{arm}-{cluster}-{member}",
+            "arm": arm,
+            "store": f"{arm}-{cluster}",
+            "revenue": float(member),
+        }
+        for arm in ("control", "treatment")
+        for cluster in range(2)
+        for member in range(2)
+    ]
+    summary = Analysis.from_unit_summary(
+        pd.DataFrame(clustered_rows),
+        unit="unit",
+        group="arm",
+        cluster="store",
+        design=design,
+        metrics=metrics,
+    )
+    summary_result = summary.srm(expected={"control": 0.5, "treatment": 0.5})
+    assert_support(
+        "assignment_integrity_source_grain", "summary_cluster_grain_supported", summary_result
+    )
+    assert isinstance(summary_result, SRMResult)
+    assert summary_result.grain == "cluster"
+    assert summary_result.observed == {"control": 2, "treatment": 2}
+
+
+def test_moments_checkpoint_reexport_refused(tmp_path):
+    import json
+    from pathlib import Path
+
+    from tests.capability_consumers_auxiliary import assert_refusal
+
+    rows = json.loads(
+        (
+            Path(__file__).parent / "fixtures" / "sequential_bool_null_prefix_prerelease.json"
+        ).read_text()
+    )
+    analysis = Analysis.from_moments(
+        rows,
+        metrics=[MetricSpec(name="outcome", type="conversion")],
+        control="control",
+    )
+    target = tmp_path / "reexport.parquet"
+    with pytest.raises(CapabilityError) as refused:
+        analysis.export(target)
+    assert refused.value.code == "facade.analysis.operation"
+    assert refused.value.context["operation"] == "export_moments"
+    assert_refusal(
+        "moments_checkpoint_reexport_boundary",
+        "moments_checkpoint_reexport_refused",
+        refused.value,
+        stage="read",
+    )
+    assert not target.exists()

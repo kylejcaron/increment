@@ -281,6 +281,7 @@ def _unit_frame_peak_bytes(reader, metric) -> int:
     return peak
 
 
+@pytest.mark.stress
 def test_plain_reader_unit_frame_memory_does_not_grow_with_the_day_axis(tmp_path):
     """Serving a per-unit frame must not materialize the unit x day panel in
     Python: four times the days must not add more than a bounded amount."""

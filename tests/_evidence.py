@@ -21,6 +21,19 @@ _RESOLVED_WORKER_COUNT = pytest.StashKey[int]()
 _ROOT = pytest.StashKey[Path]()
 
 
+def _worker_selection_route(routes: Sequence[object], expected_worker_count: int) -> str | None:
+    if expected_worker_count <= 0 or len(routes) != expected_worker_count:
+        return None
+    route = routes[0]
+    if not isinstance(route, str) or not route:
+        return None
+    return (
+        route
+        if all(isinstance(candidate, str) and candidate == route for candidate in routes)
+        else None
+    )
+
+
 class _ReportJournal:
     """Write controller events before an outer deadline can terminate pytest."""
 
@@ -37,6 +50,7 @@ class _ReportJournal:
         self._append({"event": "start", "nodeid": nodeid})
 
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        properties = dict(report.user_properties)
         event: dict[str, object] = {
             "event": "report",
             "nodeid": report.nodeid,
@@ -44,6 +58,12 @@ class _ReportJournal:
             "outcome": report.outcome,
             "duration": report.duration,
         }
+        canonical_nodeid = properties.get("canonical_nodeid")
+        markers = properties.get("markers")
+        if isinstance(canonical_nodeid, str):
+            event["canonical_nodeid"] = canonical_nodeid
+        if isinstance(markers, list) and all(isinstance(marker, str) for marker in markers):
+            event["markers"] = markers
         if report.failed:
             event["longrepr"] = report.longreprtext
         self._append(event)
@@ -74,12 +94,19 @@ class _XdistSelectionEvidence:
         if counts is not None and worker_counts is not None:
             counts["selected"] = max(counts["selected"], worker_counts["selected"])
             counts["deselected"] = max(counts["deselected"], worker_counts["deselected"])
+            counts["selection_routes"].append(worker_counts.get("selection_route"))
 
 
 @pytest.hookimpl(optionalhook=True)
 def pytest_xdist_setupnodes(config: pytest.Config, specs: Sequence[object]) -> None:
-    if config.stash.get(_AFFECTED, None) is not None:
-        config.stash[_RESOLVED_WORKER_COUNT] = len(specs)
+    run = config.stash.get(_RUN, None)
+    if run is not None:
+        worker_count = len(specs)
+        config.stash[_RESOLVED_WORKER_COUNT] = worker_count
+        manifest = run / "run.json"
+        metadata = json.loads(manifest.read_text())
+        metadata["resolved_worker_count"] = worker_count
+        manifest.write_text(json.dumps(metadata, indent=2) + "\n")
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -136,6 +163,20 @@ def pytest_configure(config: pytest.Config) -> None:
         "python": platform.python_version(),
         "platform": platform.platform(),
         "command": list(config.invocation_params.args),
+        "resolved_worker_count": 0,
+        "dist": config.getoption("dist", default="no"),
+        "thread_limits": {
+            name: os.environ[name]
+            for name in (
+                "OMP_NUM_THREADS",
+                "OPENBLAS_NUM_THREADS",
+                "MKL_NUM_THREADS",
+                "NUMEXPR_NUM_THREADS",
+                "VECLIB_MAXIMUM_THREADS",
+                "POLARS_MAX_THREADS",
+            )
+            if name in os.environ
+        },
     }
     (run / "run.json").write_text(json.dumps(metadata, indent=2) + "\n")
     affected = os.environ.get("INCREMENT_AFFECTED_EVIDENCE")
@@ -146,6 +187,7 @@ def pytest_configure(config: pytest.Config) -> None:
             "selected": 0,
             "deselected": 0,
             "selected_nodeids": [],
+            "selection_routes": [],
         }
         metadata.update(
             identity,
@@ -212,6 +254,13 @@ def pytest_runtest_makereport(
     report = yield
     root = item.config.stash.get(_ROOT, None)
     if root is not None:
+        if item.parent is not None:
+            report.user_properties.append(
+                ("canonical_nodeid", f"{item.parent.nodeid}::{item.name}")
+            )
+        report.user_properties.append(
+            ("markers", sorted({mark.name for mark in item.iter_markers()}))
+        )
         for index, (name, value) in enumerate(report.user_properties):
             if name == "evidence_path" and isinstance(value, str):
                 path = Path(value)
@@ -227,9 +276,6 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     no_selection = counts is not None and counts["selected"] == 0
     if no_selection and exitstatus == pytest.ExitCode.NO_TESTS_COLLECTED:
         session.exitstatus = pytest.ExitCode.OK
-    workeroutput = getattr(config, "workeroutput", None)
-    if workeroutput is not None and counts is not None:
-        workeroutput["increment_affected_selection"] = dict(counts)
     if run is None:
         return
 
@@ -266,15 +312,38 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         if final_status == 0
         else "failed"
     )
+    if counts is not None:
+        worker_count = config.stash.get(_RESOLVED_WORKER_COUNT, 0)
+        selection_route = (
+            _worker_selection_route(counts["selection_routes"], worker_count)
+            if worker_count
+            else os.environ.get("INCREMENT_AFFECTED_SELECTION_ROUTE")
+        )
+        metadata.update(
+            selection_route=selection_route,
+            selection_route_status="known" if selection_route else "unknown",
+        )
     metadata.update(
         status="finished",
         exit_code=final_status,
         executed_tests=executed_tests,
         selected_nodeids=counts.get("selected_nodeids", []) if counts is not None else [],
         outcome=outcome,
+        resolved_worker_count=config.stash.get(_RESOLVED_WORKER_COUNT, 0),
+        dist=config.getoption("dist", default="no"),
+        thread_limits={
+            name: os.environ[name]
+            for name in (
+                "OMP_NUM_THREADS",
+                "OPENBLAS_NUM_THREADS",
+                "MKL_NUM_THREADS",
+                "NUMEXPR_NUM_THREADS",
+                "VECLIB_MAXIMUM_THREADS",
+                "POLARS_MAX_THREADS",
+            )
+            if name in os.environ
+        },
     )
-    if counts is not None:
-        metadata["selection_route"] = os.environ.get("INCREMENT_AFFECTED_SELECTION_ROUTE")
     if "started_at" in metadata:
         metadata["elapsed_seconds"] = time.time() - metadata["started_at"]
     temporary = run / "run.json.tmp"

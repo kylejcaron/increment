@@ -43,7 +43,7 @@ from increment.query.artifact_contract import (
     REFUSALS,
     ArtifactSnapshot,
     ArtifactStore,
-    _aggregate_sum_within_extrema_sql,
+    _with_sum_within_extrema_sql,
     open_trusted_manifest_snapshot,
 )
 from increment.query.artifact_publish import _effective_snapshot_edge
@@ -407,10 +407,13 @@ def _validate_stats_sql(
     """
     pk_cols = list(UNIT_DAY_ARTIFACT_PRIMARY_KEYS["measure_stats"])
     declared = [m.measure_key for m in manifest.measures]
-    joined = relation.left_join(
-        exposures.select("experiment_id", "unit_id", "first_exposure_date"),
-        ["experiment_id", "unit_id"],
-        rname="{name}_exposure",
+    joined = _with_sum_within_extrema_sql(
+        relation.left_join(
+            exposures.select("experiment_id", "unit_id", "first_exposure_date"),
+            ["experiment_id", "unit_id"],
+            rname="{name}_exposure",
+        ),
+        "sum_within_extrema",
     )
     lower_bound = ibis.greatest(ibis.literal(manifest.first_ds), joined.first_exposure_date)
     checks = joined.aggregate(
@@ -436,14 +439,7 @@ def _validate_stats_sql(
             joined.max_value.isnull() | joined.max_value.isnan() | joined.max_value.isinf()
         ).any(),
         bad_min_max_order=(joined.min_value > joined.max_value).any(),
-        bad_sum_extrema=(
-            ~_aggregate_sum_within_extrema_sql(
-                joined.sum_value,
-                joined.n_events,
-                joined.min_value,
-                joined.max_value,
-            )
-        ).any(),
+        bad_sum_extrema=(~joined.sum_within_extrema).any(),
         bad_single_event_identity=(
             (joined.n_events == 1)
             & ((joined.sum_value != joined.min_value) | (joined.sum_value != joined.max_value))

@@ -68,12 +68,130 @@ create or update the development environment with:
 uv sync --group dev --extra demo --extra tables --extra dashboard
 ```
 
+`make install` synchronizes dependencies and installs hooks using the pinned
+stable `prek` user tool. If it is absent, the installer prints the exact
+`uv tool install prek==<version>` command from `uv.lock`; install it explicitly,
+then rerun `make install`. Hook execution must not depend on a disposable
+checkout's `.venv`. Inspect existing custom/legacy ownership before installation;
+never force-replace shared hooks while active worktrees are unprepared.
+
+The candidate-safe pre-push wrapper validates every non-deletion ref against
+the clean checked-out HEAD, then replays Git's complete input to the existing
+native and legacy hooks. Its Python interpreter and `prek` executable are
+resolved during explicit installation, not bootstrapped during pushes.
+Every active worktree must contain `scripts/check_push_targets.py` before
+installing this shared wrapper; unprepared branches are not eligible.
+
+Test launchers clear inherited Git repository-local environment before starting
+their supervised commands. Temporary fixture repositories must not reuse a
+calling hook's Git directory or index; this isolation does not disable hooks.
+
+The functional-slow CI job is part of `ci-ok`, with run-attempt-specific test
+evidence retained even on failure. The numerical-certification decision and
+result are also enforced by `ci-ok`; this checked-in logic does not establish
+hosted branch-protection activation. Do not relax `make check` or the full
+local fast/slow hooks until hosted success, failure/cancellation blocking,
+retained evidence, required-check configuration, and owner-approved activation
+have been verified. Workflow preparation alone does not establish those conditions.
+
 Commit `uv.lock` whenever a dependency change updates the resolution.
 
 Notebook examples use Marimo; the development environment does not include
 Jupyter Notebook, JupyterLab, or ipywidgets.
 
 ### Tests and quality checks
+
+#### Test categories and runtime expectations
+
+Unmarked categories default to cheap unit or small deterministic regression
+checks. Most unit bodies should be sub-second; the existing local timeout is
+a hang guard, not a target. Legacy unmarked tests are not automatically units:
+inspect their assertions, fixtures and helpers before classifying them.
+Scheduling/metadata marks such as `xdist_group`, `skip` and `compatibility`
+do not define a test's purpose. Do not add redundant `unit` or `fast` marks.
+
+| Purpose | Marks | Execution |
+| --- | --- | --- |
+| Unit/small regression | No category mark | Focused/affected feedback and ordinary fast CI |
+| Cooperating components, local query engines, UI or subprocess boundaries | `integration`; add `slow` if expensive | Fast unless slow; relevant task checks and required CI |
+| Expensive functional regression | `slow`, plus its purpose where useful | Relevant affected slow and current functional-slow/pre-push gates |
+| Large-scale/exhaustive deterministic validation | `stress` and `slow` | Currently functional-slow; relevant changes and final integration/release |
+| Monte Carlo coverage, bias or parameter recovery | `parameter_recovery` and `slow` | Monte Carlo-only target remains available; included in scientific union shards and relevant inference validation |
+| Deterministic inferential certification | `numerical_certification` and `slow` | Dedicated relevant-change CI decision/job; also included in weekly scientific union shards |
+| Runnable notebook exports | `examples` and `slow` | Notebook acceptance/documentation and weekly full-functional jobs |
+
+`slow` describes cost, not purpose. A solver regression at ordinary inputs
+does not become stress merely because it is slow: investigate production
+performance or redundant test work. Category checks refuse recovery,
+numerical certification, examples or stress tests lacking an effective `slow` mark before execution,
+including CI; module, class and parameter inheritance count.
+
+Integration does not change selection. Stress alone remains in the
+functional-slow tier; an inferential capacity campaign also carries numerical
+certification. Moving it outside routine CI requires an executable,
+required gate for relevant changes and a scheduled/release route, with
+failure evidence retained; a label or proposed workflow is insufficient.
+Monte Carlo and deterministic numerical certification are excluded from fast
+and functional-slow. The dedicated certification job requires relevant changes;
+weekly scientific-union shards execute both scientific purposes. Full and
+dependency-floor matrices retain their previously covered numerical cases:
+`TestEnumerationEnclosesTheExactMass::test_the_interval_holds_the_exact_rational_mass[central]`
+and `[rare]`, plus `test_parity_case[exact_binomial_beyond_the_former_arm_ceiling]`.
+Weekly execution does not replace required scientific validation before merging
+changes to the covered estimator, numerical construction or guarantee.
+
+For runtime audits, review every recorded test whose summed setup, call and
+teardown exceeds five seconds; prioritize those exceeding ten. Also inspect
+aggregate module/fixture costs, collection/startup and interrupted tests.
+Consistently above five seconds under representative conditions means `slow`
+until optimized; attribute shared setup before classifying dependent tests.
+The thresholds are not single-run, hardware-sensitive CI failures. Contended,
+partial or older-source runs identify candidates but cannot establish current
+wall-time improvements or complete acceptance.
+
+CI publishes advisory runtime warnings and bounded job summaries after fast,
+functional-slow and numerical-certification runs; the evidence artifact retains
+the complete JSON report. To inspect a local receipt:
+
+```bash
+uv run python -m scripts.report_test_runtime .test-evidence/run-<id> \
+  --base <task-base-sha> --json .test-evidence/runtime.json \
+  --markdown .test-evidence/runtime.md
+```
+
+A parent evidence directory selects its latest receipt; use an exact run path
+to avoid ambiguity. Optional `--baseline <run-path>` compares matching Python,
+platform, worker count, distribution mode and thread limits (including Polars).
+Timing increases are candidates, not demonstrated regressions. Selected
+baseline receipts do not prove that an unobserved test is newly authored, and
+AST family membership cannot establish parameter-level novelty. Partial,
+malformed or legacy evidence remains explicitly uncertain. Warnings never
+retag source or fail a run because a test exceeded five seconds; inspect shared
+fixture/setup costs and repeat under representative conditions before retagging.
+
+Record each family's contract, current source anchor, expensive workload,
+disposition (keep, optimize, split, reclassify or remove genuinely redundant
+coverage), required execution gate and exact parameter identities. Group
+shared causes without overlooking expensive boundary variants. Keep small
+deterministic witnesses in the routine tier; preserve full campaign
+assertions, seeds, repetitions and tolerances separately. A small smoke does
+not establish empirical coverage. Update selectors, campaign runners,
+references and CI consumers together so reclassification cannot lose tests.
+Use the existing `calibration/` directory for full certification campaigns
+when appropriate; it is outside ordinary pytest collection.
+
+Compare library-computed diagnostic readings within their declared numerical
+reproduction budget, not bitwise. Frozen manifest bytes, scientific settings,
+decisions and benchmark inputs remain exact; reproduction error is not
+statistical tolerance.
+
+Marker-only retags require collection and exact selected/deselected identity
+checks, not rerunning test bodies or statistical campaigns. Collect changed
+files with the marker filter cleared, then verify every affected tier and
+the full inventory so no case disappears. Run focused execution when test
+bodies, fixtures, assertions or selection/guard logic change. Batch those
+checks at meaningful milestones rather than after each decorator edit.
+
 
 - Start with the exact regression:
 
@@ -104,23 +222,70 @@ Jupyter Notebook, JupyterLab, or ipywidgets.
   affected mode. The launcher uses a fixed config, sanitized environment,
   explicit plugin set, and a parser-backed effective-option allowlist.
 
-  The Tach selection reuses the dependency graph and filesystem guards. It
-  refuses changes whose impact is not proven (including configuration,
-  dependencies/plugins, conftest/shared fixtures, data, source files that
-  dynamically load arbitrary paths, and public lazy exports). When source
-  changes, it retains every detected dynamic-import consumer test file and
-  reports consumers not selected by the current tier/selector; run the
-  relevant slow/broader validation for those tests. A successful affected run
-  requires finished owner-matched evidence whose exact terminal report node
-  IDs equal its nonempty selected node IDs. A zero-selection run is rejected.
-  Affected-fast is a feedback tool, not a replacement for explicit slow,
-  parity, fixture, public-smoke, documentation, or scientific acceptance.
-  Keep the exact focused regression and required broader gates.
+  The selector uses Testmon only with a complete, matching map for the requested
+  tier and changed function bodies; otherwise it falls back to the conservative
+  local AST import graph. The graph follows transitive source/test-helper
+  imports, resolves public lazy exports, and retains all tests if any graph file
+  is unparseable. Module/class-level or import-executed changes use the graph.
+  Changed tests, dynamic-import helpers and their transitive test consumers,
+  subprocess tests and filesystem guards remain selected. Changes to config,
+  dependencies/plugins, conftest/shared fixtures, data, public lazy exports, or
+  source that dynamically loads arbitrary paths refuse with an explicit broader route.
 
-  Each long-running task's dispatch/resume trail records its base SHA, exact
-  commands, serial/numeric worker allowance, remaining acceptance, and evidence
-  location. Selection evidence is specific to source/worktree/environment and
-  dirty inputs; a changed base or input requires a new run.
+  Ordinary full-tier validation does not record or update Testmon maps.
+  Record one explicitly with `make test-map TIER=fast` or `TIER=slow`; the
+  underlying `--record-testmon-map` option goes before the tier. Recording
+  requires a complete, unfiltered fast/slow/all run and acquires the database
+  lock. Unsafe or partial requests refuse, and a successful pytest run without
+  a usable published map is not a successful recording. Map generation remains
+  expensive and uses the existing tier budgets; it is optional for ordinary
+  validation and affected feedback, which can use the conservative graph.
+  Completeness markers bind
+  the database, exact Python/dependency environment, source inventory, collected
+  node IDs, import-time coverage from a fresh interpreter, module/class AST
+  fingerprints, resolved selection controls and terminal reports. Fast/slow
+  certify only their own tier; all certifies both. A tier marker remains valid
+  only while its node IDs still exist, including scheduler group suffixes.
+
+  Affected startup pins and validates the worktree map before Testmon mutates
+  it. Missing, unreadable, corrupt, stale or incomplete maps use the graph.
+  Affected runs never certify a tier. On the Testmon route, changed test-helper
+  consumers remain protected from deselection. Collection restores scheduling
+  after plugin hooks without changing final node IDs.
+  Import-graph fallback collects only the conservative retained files; it does
+  not import unrelated tests just to deselect them. The certified Testmon route
+  retains full collection. Collection failures in retained files still fail.
+
+
+  Supervised pytest children carry an explicit owner-child role. Nested normal
+  runners bypass Testmon reads/writes and certification; without a valid owner
+  token they do not acquire its database lock. Reusing a live same-worktree lock
+  requires a verified owner token.
+  Selector collection and affected subprocesses load conftests only from their
+  declared repository root and descendants, including retained temporary repos.
+  Controlled pytest children and certification collection use a private empty
+  bytecode namespace with writes disabled, so rapid same-size edits cannot
+  reuse source-tree or pytest-rewritten bytecode. Shared caches are not deleted.
+  This costs cold Python compilation, not a rebuild of native extensions.
+  It does not refresh already-loaded parent modules, in-memory imports, explicit
+  descendant overrides, or source edited during execution; keep inputs stable.
+
+
+  A successful affected run requires finished owner-matched evidence whose exact
+  terminal node IDs equal its nonempty selected node IDs. Evidence records
+  `testmon` or `import_graph` as the selection route. Zero selection is rejected.
+  Affected-fast is feedback, not a replacement for slow, parity, fixtures, public
+  smokes, documentation, scientific or full-suite acceptance.
+
+  Dispatch/resume notes record the immutable base, exact commands, serial/numeric
+  worker allowance, remaining acceptance and evidence location. Evidence is
+  source/worktree/environment/dirty-input specific; changed inputs require a
+  new affected run, not reuse of an earlier green receipt.
+  A read-only review does not invalidate matching execution evidence. Reuse
+  receipts only while their recorded source, worktree, environment and dirty
+  inputs still match; run broad gates at the required integration point, not
+  simply because another reviewer looked at unchanged code.
+
 
 
 Before pushing, run:
@@ -136,8 +301,8 @@ tests. Use `make fmt` to apply formatting and safe lint fixes.
 Additional commands:
 
 - `make test-fast` runs the ordinary test tier.
-- `make test-slow` runs functional slow tests, excluding statistical
-  parameter-recovery campaigns and notebook examples.
+- `make test-slow` runs functional slow tests, excluding Monte Carlo recovery,
+  deterministic certification and notebook examples.
 - `make test-versions` runs the supported-Python Nox sessions.
 - `make ci-local` adds documentation, table-extra, build, and installed-wheel
   checks to the normal local gate.
@@ -150,31 +315,47 @@ GitHub Actions (`GITHUB_ACTIONS=true`) skips those performance budgets;
 workflow job timeouts still stop hangs. Explicit timeouts and scientific
 campaign deadlines remain enforced, and runners still clean up subprocess
 groups on interruption. No private authorization or task environment is
-required. For statistical shards, use
-`make test-parameter-recovery SPLITS=4 GROUP=1`; without local timing data,
+required. For Monte Carlo-only shards, use
+`make test-parameter-recovery SPLITS=4 GROUP=1`; the certification-only
+target is `make test-numerical-certification`. The weekly scientific union
+uses `make test-scientific SPLITS=4 GROUP=1`; without local timing data,
 pytest-split distributes tests evenly.
 
 `make test-all` retains failure outputs and JUnit reports under
 `.test-evidence/`. Add `--runtime-diagnostics` through `PYTEST_ARGS` when
 investigating slow tests; retained artifacts are not committed.
+Full Nox sessions retain separate receipts for the functional run and the
+exact-mass checks. Explicit `tests_floor_full` arguments replace the default
+selection and run once.
 
-Ordinary Make/Nox suites disable Tach's unused impact-analysis plugin; direct
-`uv run pytest --tach ...` remains available for impact-selected work. Ordinary
-Make tiers accept their normal `PYTEST_ARGS`; affected mode accepts only the
-typed controls listed above. Notebook checks share one batched Marimo
-invocation while retaining a separate guard for each notebook; export and
-warehouse-regeneration scenarios still execute independently.
+Ordinary tier commands disable Tach's unused impact-analysis plugin at the shared
+runner boundary; direct `uv run pytest --tach ...` remains available for
+impact-selected work.
+Ordinary Make tiers accept standard `PYTEST_ARGS`, including capped auto workers
+with `-n auto --maxprocesses=<allowance>`. Affected mode remains serial by default
+and accepts only the typed controls listed above.
+
+The test bootstrap defaults numerical-library thread pools to one per process,
+matching Nox's controls, while preserving explicit environment overrides.
+Subprocess-heavy runner, selection and evidence guard modules share one native
+xdist loadgroup so their child launches do not multiply across outer workers.
+Their nested parallel scenarios still execute; other functional tests remain
+parallel. Notebook checks share one batched Marimo invocation while retaining a
+separate guard for each notebook; export and warehouse-regeneration scenarios
+still execute independently.
 
 Unit tests do not use the network or real warehouses. Live PostgreSQL,
 Snowflake, and BigQuery checks live under `integration/warehouse_execution/`
 and require dedicated scratch resources and credentials. Contributors do not
 need those services for ordinary changes.
 
-CI requires lint, fast tests on Python 3.12–3.14, package builds, and live
-PostgreSQL 16 probes through `ci-ok`. PostgreSQL may skip a PR only when all
-changes are known prose or static documentation assets. Library, test,
-fixture, dependency, CI, unknown, deletion, and rename changes require it;
-an unavailable diff also requires it. Main pushes never use this filter.
+The checked-in CI candidate requires lint, fast tests on Python 3.12–3.14,
+functional slow tests, package builds, and live PostgreSQL 16 probes through
+`ci-ok`; hosted enforcement and required-check activation remain owner gates.
+PostgreSQL may skip a PR only when all changes are known prose or static
+documentation assets. Library, test, fixture, dependency, CI, unknown,
+deletion, and rename changes require it; an unavailable diff also requires it.
+Main pushes never use this filter.
 
 Each fast Python-version cell has two duration-balanced `pytest-split` shards,
 with `xdist` workers inside each shard. `ci-ok` requires all six jobs. The
@@ -183,8 +364,14 @@ complete hosted Python 3.13 run 36941053401; absent weights do not omit tests.
 Refresh them with the complete fast suite, preserving worker group suffixes:
 
 ```bash
-make test-fast PYTEST_ARGS="-n auto --dist loadgroup -p no:tach --store-durations --durations-path .github/fast-test-durations.json"
+make test-fast PYTEST_ARGS="-n auto --dist loadgroup --store-durations --durations-path .github/fast-test-durations.json"
 ```
+
+Functional-slow CI uses four isolated shards with workers inside each shard;
+`ci-ok` requires their aggregate success. Every case remains selected exactly
+once. Until a complete hosted timing baseline is available, the splitter uses
+equal default weights. Each shard retains its own test evidence and
+`slow-test-durations.json`; partial shard timings are not a complete baseline.
 
 The root pytest hook uses the ignored `.test_durations` cache for stable,
 longest-first local scheduling across fast and slow tests. Each run refreshes
@@ -198,11 +385,14 @@ Without `.test_durations`, ordinary tests retain collection order. Markdown
 snippets are still scheduled after ordinary tests and retain their source order
 within each file.
 
-Dashboard and simulation tests reuse expensive prepared fixtures under the
+Dashboard, simulation and artifact tests reuse expensive prepared fixtures under the
 ignored `.cache/increment-fixtures/` directory. Cache entries are keyed by
 source and the installed Python environment. Set
 `INCREMENT_DISABLE_FIXTURE_CACHE=1` to bypass the cache and rebuild fixtures;
 remove `.cache/increment-fixtures/` to clear all cached fixtures.
+Artifact seed caches contain only detached input rows; each consumer retains a
+fresh mutable database. Schema-invalid matrix inputs refuse before seeding
+unused fixture databases.
 
 The complete PostgreSQL suite runs across three isolated PostgreSQL services,
 balanced with `pytest-split` and `.github/postgres-test-durations.json`.
@@ -214,19 +404,33 @@ Do not run workers against a shared warehouse namespace.
 The
 [weekly workflow](.github/workflows/weekly.yml) runs Sundays at 08:00 UTC or
 on manual dispatch: full slow/examples suites at locked dependencies and
-floors on all three Python versions, four Monte-Carlo shards on Python 3.12,
-and all three warehouse backends. Fast, full and Monte-Carlo jobs retain test
-evidence, including per-test timings, for 30 days. Live warehouse timings stay
+floors on all three Python versions, four scientific-union shards on Python
+3.12, and all three warehouse backends. Fast, full and scientific jobs retain
+test evidence, including per-test timings, for 30 days. Live warehouse timings stay
 in the job logs, where GitHub masks secrets; raw cloud tracebacks are not
 uploaded as artifacts. Weekly failures create or update a GitHub issue
 labelled `weekly-failure`.
 
 Tests run in parallel and must not depend on execution order or state created
 by another test. Mark functional slow tests with `slow`; simulation-based
-coverage, bias, and parameter-recovery checks also use
-`parameter_recovery` and retain a small fast smoke case. See
+coverage and parameter-recovery checks also use `parameter_recovery`, while
+deterministic inferential certification uses `numerical_certification`. See
 [AGENTS.md](AGENTS.md) for the repository's architecture, parity, numerical,
 and test-contract requirements.
+
+#### Refusal registry gate
+
+Register each refusal lookup key in the registry bound to its caller's
+`raiser(...)`; registration in another module does not satisfy that dispatcher.
+Keep intentional aliases pointing to the canonical spec. The gate checks local
+registration and statically known template keys:
+
+```bash
+make test TESTS='tests/test_refusal_drift.py tests/test_refusal_uniqueness.py tests/test_docs_refusal_guidance.py tests/test_refusal_gate.py'
+```
+
+Dynamic keys are reported as statically unknown and require public
+producer/dispatcher coverage; this gate is not a global refusal catalogue.
 
 ### Backend verification
 
@@ -450,8 +654,11 @@ Every public capability declares its behavior for every metric type in
 2. Classify it as supported, refused, structurally inapplicable, or a known
    gap.
 3. Back the classification with an executable probe.
-4. Update the path-by-capability table in `docs/reference/capabilities-by-entry-point.md`
-   (and re-run `scripts/probe_capability_table.py`).
+4. Update the authoritative bindings in `tests/capability_entry_point_catalog.py`
+   and their consumer/parity evidence; regenerate the path-by-capability page
+   with `uv run python scripts/render_capability_table.py`, then run it with
+   `--check`. Use `scripts/probe_capability_table.py --case <id>` to exercise
+   the named scenario, not to transcribe a second capability table.
 5. Decide where the refusal lives. A rule that does not depend on the data
    source goes in the shared readout gate (`validate_request` and its owners).
    Declare it in `GATE_POLICY` in `tests/test_source_capabilities.py` when it
@@ -575,3 +782,73 @@ duplicate.
 Roborev is optional. The checked-in `.roborev.toml` contains only
 repository-specific review criteria; agent, model, reasoning, timeout, and
 credential settings come from each contributor's global configuration.
+
+### Review and handoffs
+
+Pin the integration branch, absolute worktree and task base before dispatch.
+Assign disjoint files and one writer for shared result schemas, serialization
+boundaries and integration configuration. Consumers need an exercised
+implementation handoff, not an independently invented carrier from a design.
+Keep modules importable after each edit. Preserve partial work and stop the old
+writer before transferring ownership.
+
+Coordinate the host's aggregate CPU/RAM allowance. Scoped correctness checks may
+overlap; one coordinator runs broad integration checks. Reserve an uncontended
+window only for timing measurements, and label measurements under load as
+contended. Integrate a lane after its focused checks and review pass, then run
+the combined focused selection. Include relevant slow tests of each changed test
+file before its integration commit; docs-only clarifications do not justify
+repeated broad suites.
+
+Every PR requires a human diff read before merging, including whether an
+extraction left parallel implementations behind. Design reviews belong at their
+agreed contract gate; subsequent verification reviews the implementation.
+Neither a passing primitive test nor an accepted design establishes a complete
+analyst journey.
+
+When using Roborev, freeze the head and review the coherent base-to-tip range:
+
+```bash
+roborev review --quiet --repo <absolute-worktree> --branch=<branch> --base <base-sha> --wait
+```
+
+`--branch` has an optional value: use `=` for a named branch; a separate
+word is parsed as a positional commit, not the branch name.
+
+Use `--quiet` to skip Roborev's automatic shared-hook maintenance; `--local`
+alone does not skip it. Quiet mode suppresses enqueue headers, so inspect
+`roborev list --json` and `roborev show --job <id>` for the resulting job's
+pins and verdict. After a Roborev upgrade, reverify that this invocation leaves
+the common hooks unchanged before using it without activation authority.
+
+Confirm the job's actual base/head and that the branch did not move.
+`--sha` does not replace a branch range's base. Review changed integration
+resolutions and substantive fixes; do not skip all merge commits or suppress
+finding classes. Run `roborev fix --list --branch <branch>` from the assigned
+worktree before closing tracked work and after integration commits. Close each
+review only with code/test evidence for every finding; another clean review
+does not resolve an older finding.
+
+The repository's installed post-commit hook currently dispatches automatic
+reviews. Changing automatic dispatch or hook installation requires an explicit
+owner checkpoint, an inventory of live worktree consumers, a tested rollback
+and verified supported controls.
+Keep current hooks and the before-push `make check` obligation until the
+replacement hosted gate is actually required and its failure behavior is observed.
+
+For an owner-authorized manual-ready transition, back up the common Git
+`post-commit`, `post-rewrite` and `pre-push` files with their permissions and
+record their custom/legacy ownership before running `roborev uninstall-hook`
+from the prepared worktree. This command removes Roborev from all three hooks,
+not just commit dispatch; verify each remaining hook before relying on it.
+Use the pinned range command above for reviews. Do not remove mandatory
+pre-push checks. Rollback restores the recorded files and permissions;
+`roborev install-hook --binary <stable-roborev-executable>` is the supported
+reinstallation command, without `--force`. Reverify actual custom/legacy
+behavior and prepared worktree consumers before activation.
+
+Handoffs name exact commits, dirty/untracked files, executed commands and evidence,
+unresolved decisions, remaining acceptance and next action. Distinguish
+implemented, verified, integrated and issue-closed state. Update the ledger at
+each state change. Ignored plans and temporary probes stay local; do not force-add
+them to obtain commit-based reviews or replace product documentation.

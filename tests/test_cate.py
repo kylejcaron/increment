@@ -1338,6 +1338,7 @@ class TestClusterTransport:
             estimate_cate(source, "revenue", control="control", interact=["spend"])
         assert exc_info.value.code == "cate.cluster.intervention_grain_unavailable"
 
+    @pytest.mark.integration
     @pytest.mark.slow
     @pytest.mark.parametrize("store_mode", ["none", "always"])
     @pytest.mark.parametrize(
@@ -1895,6 +1896,7 @@ def _assert_c01_public_fit_covariance(data, fit, weighting):
     assert fit.se**2 == pytest.approx(covariance[1, 1])
 
 
+@pytest.mark.integration
 @pytest.mark.slow
 @pytest.mark.parametrize("weighting", ["member_count", "equal"])
 @pytest.mark.parametrize("replication", [1, 5, 20, 100])

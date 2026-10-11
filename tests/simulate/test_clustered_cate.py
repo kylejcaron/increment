@@ -1226,7 +1226,7 @@ def _homogeneous_calibration_cell():
 
 
 @pytest.mark.slow
-@pytest.mark.parameter_recovery
+@pytest.mark.integration
 def test_bounded_public_replications_account_every_statistic_and_cannot_pass_all_null():
     cell = _homogeneous_calibration_cell()
     registration = ClusteredRegistration((cell,), 2, 99, 57, 12)

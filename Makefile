@@ -1,12 +1,12 @@
-.PHONY: install fmt lint audit-verbosity complexity complexity-diff typecheck typecheck-sync test test-fast test-slow test-parameter-recovery test-all test-versions test-examples test-doc-snippets prek check ci-local sim demo examples test-affected
+.PHONY: install fmt lint audit-verbosity complexity complexity-diff typecheck typecheck-sync test test-fast test-slow test-parameter-recovery test-numerical-certification test-scientific test-all test-versions test-examples test-doc-snippets prek check ci-local sim demo examples test-affected test-map
 
 # Loadgroup keeps modules sharing mutable filesystem paths on one worker.
 TEST_RUNNER = uv run --extra demo --extra tables --extra dashboard python -m scripts.run_test_tier
 AFFECTED_TEST_RUNNER = uv run --no-sync --extra demo --extra tables --extra dashboard python -m scripts.run_test_tier
-PYTEST_ARGS = -n auto --dist loadgroup -p no:tach
+PYTEST_ARGS = -n auto --dist loadgroup
 install:
 	uv sync --group dev --extra demo --extra tables --extra dashboard
-	uv run prek install -t pre-commit -t pre-push
+	uv run python -m scripts.install_dev_hooks --repo "$(CURDIR)"
 fmt:
 	uv run ruff format .
 	uv run ruff check --fix .
@@ -44,6 +44,17 @@ test-parameter-recovery:
 		exit 1; \
 	fi
 	$(TEST_RUNNER) parameter-recovery -q $(PYTEST_ARGS) --splits $(SPLITS) --group $(GROUP)
+
+# Required deterministic numerical certification; not a Monte-Carlo campaign.
+test-numerical-certification:
+	$(TEST_RUNNER) numerical-certification -q $(PYTEST_ARGS) --evidence-root .test-evidence
+# Union selector for weekly scientific coverage; split shards retain both purposes.
+test-scientific:
+	@if [ -z "$(SPLITS)" ] || [ -z "$(GROUP)" ]; then \
+		echo "usage: make test-scientific SPLITS=<n> GROUP=<1..n>" >&2; \
+		exit 1; \
+	fi
+	$(TEST_RUNNER) scientific -q $(PYTEST_ARGS) --evidence-root .test-evidence --splits $(SPLITS) --group $(GROUP)
 test-all:
 	$(TEST_RUNNER) all -q $(PYTEST_ARGS) --evidence-root .test-evidence
 test-versions:
@@ -61,6 +72,11 @@ else
 	$(MAKE) test-fast
 
 endif
+
+test-map:
+	@case "$(TIER)" in fast|slow) ;; \
+		*) echo 'usage: make test-map TIER=fast|slow' >&2; exit 2 ;; esac
+	$(TEST_RUNNER) --record-testmon-map "$(TIER)" -q $(PYTEST_ARGS) --evidence-root .test-evidence
 
 test-affected: PYTEST_ARGS =
 test-affected:

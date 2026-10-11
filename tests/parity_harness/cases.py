@@ -13,6 +13,7 @@ import copy
 import datetime as dt
 import math
 import numbers
+import os
 import random
 import tempfile
 from collections.abc import Callable, Iterable, Mapping
@@ -20,7 +21,8 @@ from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, Literal, NamedTuple
+from types import MappingProxyType
+from typing import Any, Literal, NamedTuple, cast
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -36,7 +38,7 @@ from increment.estimation.inference import Normal, Prior
 from increment.estimation.priors import MixturePrior, StudentTPrior
 from increment.frame import MetricSpec
 from increment.plan import bind_automatic_sequential_plan
-from increment.query.artifact_contract import unit_day_artifact_extension_catalog
+from increment.query.artifact_contract import ArtifactStore, unit_day_artifact_extension_catalog
 from increment.query.session import WarehouseArtifactStore
 from increment.semantics.design import (
     AdjustmentSet,
@@ -63,17 +65,9 @@ from tests.analysis_factory import (
     native_connection,
 )
 from tests.estimation._binomial_endpoint_reference import assert_set_contains_finer_reference
+from tests.parity_harness.scalar_capability_cases import capability_cases
 
 from . import dataset as ds
-
-CONSTRUCTORS = (
-    "from_definitions",
-    "from_unit_day_artifact",
-    "from_unit_summary",
-    "from_unit_panel",
-    "from_switchback_panel",
-    "from_moments",
-)
 
 _ARTIFACT_EXTENSION_KINDS = (
     "cuped_preperiod",
@@ -83,16 +77,6 @@ _ARTIFACT_EXTENSION_KINDS = (
     "trigger_population",
     "trigger_measure_stats",
 )
-
-# Every case waives from_switchback_panel, which needs a switchback-shaped
-# Randomized frame no case here builds; `runner.assert_parity` requires the reason.
-_SWITCHBACK_WAIVE = {
-    "from_switchback_panel": (
-        "SOURCE: from_switchback_panel needs a switchback-shaped frame "
-        "(unit/cycle/period/step columns) and only accepts a Randomized "
-        "identification -- no case in this module builds that shape."
-    )
-}
 
 
 @dataclass(frozen=True)
@@ -171,6 +155,36 @@ class ParityCase:
     expected_absence: Mapping[str, Absence] = field(default_factory=dict)
     # Explicitly classified synthetic or legacy outputs that intentionally have no source scope.
     unscoped_outputs: Mapping[str, str] = field(default_factory=dict)
+    marks: tuple[pytest.MarkDecorator, ...] = ()
+
+    def __post_init__(self) -> None:
+        # Registered rows get their legacy expectations exclusively from the
+        # metadata catalog. Unknown IDs remain useful for synthetic runner
+        # contracts and retain their deliberately inline expectations.
+        from pydantic import ValidationError
+
+        from .declarations import PARITY_DECLARATIONS
+
+        declaration = PARITY_DECLARATIONS.get(self.id)
+        if declaration is None:
+            return
+
+        object.__setattr__(self, "waive", MappingProxyType(dict(declaration.waive)))
+        object.__setattr__(
+            self, "waived_refusal_codes", MappingProxyType(dict(declaration.refusals))
+        )
+        error_types = {"TypeError": TypeError, "ValidationError": ValidationError}
+        absences: dict[str, Absence] = {}
+        for ingress, error, field_name in declaration.absences:
+            try:
+                exception_type = error_types[error]
+            except KeyError as exc:
+                raise ValueError(f"{self.id}: unknown declared absence type {error!r}") from exc
+            absences[ingress] = Absence(exception_type, field_name)
+        object.__setattr__(self, "expected_absence", MappingProxyType(absences))
+        object.__setattr__(
+            self, "expected_warning_codes", MappingProxyType(dict(declaration.warnings))
+        )
 
 
 class _Warehouse(NamedTuple):
@@ -336,12 +350,6 @@ def _triggered_day_axis_cases() -> tuple[ParityCase, ...]:
         )
         return _track_connection(native, con)
 
-    unsupported = {
-        "from_unit_summary": "SOURCE: unit summaries carry no trigger declaration or per-unit trigger anchors.",
-        "from_unit_panel": "SOURCE: unit panels carry no trigger declaration or per-unit trigger anchors.",
-        "from_switchback_panel": "SOURCE: switchback contrasts carry no triggered arm day-axis evidence.",
-        "from_moments": "SOURCE: portable moments carry no per-unit trigger anchors.",
-    }
     return tuple(
         ParityCase(
             id=f"triggered_{view}",
@@ -349,7 +357,6 @@ def _triggered_day_axis_cases() -> tuple[ParityCase, ...]:
                 "from_definitions": build_definitions,
                 "from_unit_day_artifact": build_artifact,
             },
-            waive=unsupported,
             view=view,
             population="triggered",
             metrics=("revenue",),
@@ -438,11 +445,6 @@ def _triggered_sequential_case() -> ParityCase:
         assert snapshot.triggered.registration_id != snapshot.registration_id
         assert 0 < len(snapshot.triggered.records) < len(snapshot.records)
 
-    unsupported = {
-        "from_unit_summary": "SOURCE: unit summaries carry no trigger declaration or per-unit trigger anchors.",
-        "from_unit_panel": "SOURCE: unit panels carry no trigger declaration or per-unit trigger anchors.",
-        "from_switchback_panel": "SOURCE: switchback contrasts carry no triggered arm evidence.",
-    }
     return ParityCase(
         id="triggered_sequential_asymptotic_mean",
         build={
@@ -450,7 +452,6 @@ def _triggered_sequential_case() -> ParityCase:
             "from_unit_day_artifact": build_artifact,
             "from_moments": build_moments,
         },
-        waive=unsupported,
         metrics=("revenue",),
         sequential=True,
         source_probe=probe_both_chains,
@@ -526,13 +527,11 @@ def _triggered_encouragement_compliance_case() -> ParityCase:
     def build_switchback() -> Analysis:
         return _neighboring_integer_switchback_analysis()
 
-    unsupported = {
-        "from_unit_summary": "SOURCE: unit summaries have no trigger declaration or trigger anchors.",
-        "from_unit_panel": "SOURCE: unit panels have no trigger declaration or trigger anchors.",
-        "from_moments": "SOURCE: portable moments have no per-unit trigger anchors.",
-        "from_switchback_panel": "SOURCE: switchback contrasts have no triggered assignment population.",
-    }
-    code = "facade.analysis.trigger_unsupported"
+    from .declarations import PARITY_DECLARATIONS
+
+    code = dict(PARITY_DECLARATIONS["triggered_encouragement_compliance_asof"].refusals)[
+        "from_unit_summary"
+    ]
 
     def probe_source(name: str, _analysis: Analysis) -> None:
         if name != "from_definitions":
@@ -577,8 +576,6 @@ def _triggered_encouragement_compliance_case() -> ParityCase:
         estimands=("compliance",),
         view="asof_lift",
         population="triggered",
-        waive=unsupported,
-        waived_refusal_codes=dict.fromkeys(unsupported, code),
         source_probe=probe_source,
     )
 
@@ -820,8 +817,6 @@ def _fixed_horizon_case(
     *,
     id: str,
     breakout: bool,
-    waive: Mapping[str, str],
-    waived_refusal_codes: Mapping[str, str],
     include_cuped: bool = True,
     unselected_winsorized_sibling: bool = False,
     clear_bound_prior: bool = False,
@@ -1005,8 +1000,6 @@ def _fixed_horizon_case(
         },
         metrics=("revenue",) if unselected_winsorized_sibling else None,
         breakout_dimension="store" if breakout else None,
-        waive={**waive, **_SWITCHBACK_WAIVE},
-        waived_refusal_codes=waived_refusal_codes,
         prior=None if clear_bound_prior else prior,
         require_selection=clear_bound_prior,
         readout_probe=_assert_neighboring_ratio_rows if ratio_numerics == "neighboring" else None,
@@ -1020,17 +1013,94 @@ def _mean_ratio_conversion_cuped_case() -> ParityCase:
     return _fixed_horizon_case(
         id="mean_ratio_conversion_cuped_fixed_horizon",
         breakout=False,
-        waive={},
-        waived_refusal_codes={},
+    )
+
+
+def _artifact_context_format_two_case() -> ParityCase:
+    case = _fixed_horizon_case(
+        id="artifact_context_format_two",
+        breakout=False,
+        include_cuped=False,
+    )
+
+    def probe(ingress: str, analysis: Analysis) -> None:
+        if ingress == "from_definitions":
+            context = analysis.artifact_context
+        elif ingress == "from_unit_day_artifact":
+            spec = analysis._artifact_open_spec
+            assert spec is not None
+            context = spec.expected_context
+        else:
+            return
+        assert context.context_format == 2
+
+    return replace(
+        case,
+        build={
+            ingress: case.build[ingress]
+            for ingress in ("from_definitions", "from_unit_day_artifact")
+        },
+        source_probe=probe,
+    )
+
+
+def _artifact_context_format_one_refusal_case() -> ParityCase:
+    case = _fixed_horizon_case(
+        id="artifact_context_format_one_refusal",
+        breakout=False,
+        include_cuped=False,
+    )
+
+    def probe(ingress: str, analysis: Analysis) -> None:
+        if ingress != "from_unit_day_artifact":
+            return
+        spec = analysis._artifact_open_spec
+        assert spec is not None
+        old_context = spec.expected_context.model_copy(update={"context_format": 1})
+
+        class NoStoreAccess:
+            def validate_locator(self, *_args: Any, **_kwargs: Any) -> None:
+                raise AssertionError("format validation accessed the artifact store")
+
+            def open_snapshot(self, *_args: Any, **_kwargs: Any) -> Any:
+                raise AssertionError("format validation accessed the artifact store")
+
+        try:
+            Analysis.from_unit_day_artifact(
+                cast(ArtifactStore, NoStoreAccess()),
+                spec.ref,
+                expected_context=old_context,
+            )
+        except CodedError as exc:
+            assert exc.code == "artifact.format.unsupported"
+            raise
+        raise AssertionError("a format-1 context was accepted")
+
+    return replace(
+        case,
+        build={"from_unit_day_artifact": case.build["from_unit_day_artifact"]},
+        refusal_only=True,
+        source_probe=probe,
     )
 
 
 def _dashboard_group_data_case() -> ParityCase:
     def probe(path: str, analysis: Analysis) -> None:
         if path != "from_definitions":
+            expected_code = "facade.analysis.operation"
+            if path == "from_unit_day_artifact":
+                from tests.capability_consumers_auxiliary import assert_expected
+
+                expected = assert_expected(
+                    "triggered_auxiliary_reads",
+                    "dashboard_artifact_refused",
+                    kind="refused",
+                    code=expected_code,
+                )
+                expected_code = expected.expected.codes[0]
             with pytest.raises(CodedError) as caught:
                 analysis.dashboard_group_data(metrics=analysis.metrics)
-            assert caught.value.code == "facade.analysis.operation"
+            assert caught.value.code == expected_code
             return
         connection = ds.duckdb_connection(ds.event_rows())
         try:
@@ -1072,8 +1142,6 @@ def _prior_reset_case(
     return _fixed_horizon_case(
         id="audit-prior-reset-family",
         breakout=False,
-        waive={},
-        waived_refusal_codes={},
         include_cuped=False,
         clear_bound_prior=True,
         warehouse=_Warehouse(warehouse_connection, dialect),
@@ -1094,8 +1162,6 @@ def _lift_prior_case(
     return _fixed_horizon_case(
         id=f"lift_prior_{kind}_mean_ratio_conversion_cuped",
         breakout=False,
-        waive={},
-        waived_refusal_codes={},
         prior=priors[kind],
         warehouse=_Warehouse(warehouse_connection, dialect),
     )
@@ -1146,22 +1212,6 @@ def _breakout_case(*, boolean: bool = False) -> ParityCase:
         breakout=True,
         include_cuped=False,
         fixture=_Fixture(boolean_store=boolean),
-        waive={
-            "from_unit_summary": (
-                "SOURCE: Analysis.from_unit_summary has no breakouts= constructor "
-                "parameter, so it carries no declared Breakout catalog for "
-                "run_breakout to read; run_breakout raises facade.analysis.operation."
-            ),
-            "from_moments": (
-                "SOURCE: Analysis.from_moments's own docstring names run_breakout "
-                "among the methods it refuses -- a moments cube enters at moment "
-                "grain and carries no per-unit breakout dimension."
-            ),
-        },
-        waived_refusal_codes={
-            "from_unit_summary": "facade.analysis.operation",
-            "from_moments": "facade.analysis.operation",
-        },
     )
     return case
 
@@ -1274,19 +1324,12 @@ def _window_spelling_case(*, native_spelling: str) -> ParityCase:
         id=f"window_spelling_{native_spelling}_vs_offset",
         breakout=False,
         include_cuped=False,
-        waive={},
-        waived_refusal_codes={},
         fixture=_Fixture(
             window_by_route={
                 "from_definitions": spellings[native_spelling],
                 "from_unit_day_artifact": spellings["offset"],
             }
         ),
-    )
-    no_lever = (
-        "SOURCE: {name} has no experiment-window lever -- the day boundary is "
-        "applied by the caller pre-bucketing ds/exposure_date (see "
-        "tests/test_frame_window_parity.py), so the window spelling is not an input."
     )
     edge_units = {
         (edge, arm): {
@@ -1323,15 +1366,6 @@ def _window_spelling_case(*, native_spelling: str) -> ParityCase:
             name: builder
             for name, builder in case.build.items()
             if name in ("from_definitions", "from_unit_day_artifact")
-        },
-        waive={
-            **case.waive,
-            "from_unit_summary": no_lever.format(name="from_unit_summary"),
-            "from_unit_panel": no_lever.format(name="from_unit_panel"),
-            "from_moments": (
-                "SOURCE: from_moments replays an exported moment cube; it carries no "
-                "declared experiment window to spell."
-            ),
         },
     )
 
@@ -1522,9 +1556,7 @@ def _sequential_asymptotic_mean_case() -> ParityCase:
             "from_moments": build_moments,
         },
         sequential=True,
-        sequential_probe=_sequential_structured_order_probe,
-        waive=dict(_SWITCHBACK_WAIVE),
-        # Publishes/adopts a unit-day artifact, exports/replays moments,
+        sequential_probe=_sequential_structured_order_probe,  # Publishes/adopts a unit-day artifact, exports/replays moments,
         # and captures a finalized sequential checkpoint on every
         # constructor -- see _fixed_horizon_case's slow=True for why.
         slow=True,
@@ -1656,7 +1688,6 @@ def _source_horizon_case(*, pinned_dimension: bool = False) -> ParityCase:
             "from_moments": lambda: _export_and_replay(summary(), [spec]),
         },
         readout_probe=probe,
-        waive=dict(_SWITCHBACK_WAIVE),
         slow=True,
     )
 
@@ -1828,13 +1859,6 @@ def _ratio_component_horizon_case(
         },
         readout_probe=probe,
         source_probe=moment_probe,
-        expected_warning_codes={}
-        if complete
-        else dict.fromkeys(
-            ("from_definitions", "from_unit_panel"),
-            ("frame.censoring.dropped_units",),
-        ),
-        waive=dict(_SWITCHBACK_WAIVE),
         slow=True,
     )
 
@@ -1972,14 +1996,6 @@ def _adjusted_ratio_anchor_case(*, separated: bool = False) -> ParityCase:
         },
         sequential=True,
         readout_probe=check_availability,
-        waive={
-            **_SWITCHBACK_WAIVE,
-            "from_unit_panel": (
-                "SOURCE: registered panel capture cannot supply the per-unit pre-period "
-                "covariate for adjusted_ratio_mean; use a unit-summary frame."
-            ),
-        },
-        waived_refusal_codes={"from_unit_panel": "frame.validation.from_unit_panel"},
         slow=True,
     )
 
@@ -2123,7 +2139,6 @@ def _sequential_missing_zero_mean_ratio_case(
             "from_moments": build_moments,
         },
         sequential=True,
-        waive=dict(_SWITCHBACK_WAIVE),
         slow=True,
     )
 
@@ -2279,9 +2294,9 @@ def _sequential_composed_itt_and_uptake_case(
         },
         estimands=("compliance",) if metric_free else ("itt", "compliance"),
         sequential=True,
-        source_probe=_assert_missing_exclusion_precedes_data if not exclusion_declared else None,
-        waive=dict(_SWITCHBACK_WAIVE),
-        # Exports/replays moments and captures a finalized sequential
+        source_probe=_assert_missing_exclusion_precedes_data
+        if not exclusion_declared
+        else None,  # Exports/replays moments and captures a finalized sequential
         # checkpoint on every constructor -- see _fixed_horizon_case's
         # slow=True for why.
         slow=True,
@@ -2294,11 +2309,18 @@ def _retained_catalog_probes() -> tuple[Callable[[str, Analysis], None], Callabl
     checkpoints: dict[str, list[tuple[Any, ...]]] = {}
 
     def probe_retained_catalog(constructor: str, analysis: Analysis) -> None:
+        from tests.capability_consumers_auxiliary import assert_refusal, assert_support
+
         # An empty catalog would make the exemption vacuous, so the retained
         # catalog is asserted, then the compliance-only checkpoint recorded.
         assert [m.name for m in analysis.metrics] == ["returned"], constructor
         checkpoint_rows = analysis.run_asof_lift(
             estimands=("compliance",), completed_windows_only=True
+        )
+        assert_support(
+            "retained_retention_checkpoint_reads",
+            f"{constructor}_compliance_asof_supported",
+            checkpoint_rows,
         )
         # `prefix_id` depends on reveal order, so compare the evidence itself.
         checkpoints[constructor] = []
@@ -2321,10 +2343,20 @@ def _retained_catalog_probes() -> tuple[Callable[[str, Analysis], None], Callabl
                 analysis.run_asof_lift(
                     estimands=("itt",), completed_windows_only=completed_windows_only
                 )
-            assert refused.value.code == "breakout.retention.encouragement", (
-                constructor,
-                completed_windows_only,
+            assert_refusal(
+                "retained_retention_checkpoint_reads",
+                f"{constructor}_itt_asof_refused",
+                refused.value,
+                stage="read",
             )
+        with pytest.raises(CodedError) as itt_run_refused:
+            analysis.run(estimands=("itt",))
+        assert_refusal(
+            "retained_retention_checkpoint_reads",
+            f"{constructor}_itt_run_refused",
+            itt_run_refused.value,
+            stage="read",
+        )
 
     def assert_checkpoints_agree() -> None:
         from .comparison import nested_close
@@ -2494,21 +2526,6 @@ def _sequential_unbounded_retention_catalog_case() -> ParityCase:
         sequential=True,
         source_probe=probe_retained_catalog,
         sequential_probe=assert_checkpoints_agree,
-        waive={
-            **_SWITCHBACK_WAIVE,
-            "from_unit_summary": (
-                "SOURCE: a one-row-per-unit summary has no per-unit dates to resolve "
-                "a retention band against, so the catalog cannot be declared."
-            ),
-            "from_unit_panel": (
-                "COMBINATION: a unit panel refuses a retention metric under an "
-                "Encouragement design at construction, before any request is read."
-            ),
-        },
-        waived_refusal_codes={
-            "from_unit_summary": "source.frame.constructor",
-            "from_unit_panel": "readout.encouragement.retention",
-        },
         slow=True,
     )
 
@@ -2722,9 +2739,7 @@ def _sequential_composed_family_ebh_case() -> ParityCase:
         },
         estimands=("itt", "compliance"),
         sequential=True,
-        require_selection=True,
-        waive=dict(_SWITCHBACK_WAIVE),
-        # Exports/replays moments and captures a finalized sequential
+        require_selection=True,  # Exports/replays moments and captures a finalized sequential
         # checkpoint on every constructor -- see _fixed_horizon_case's
         # slow=True for why.
         slow=True,
@@ -3099,40 +3114,9 @@ def _registered_segmented_breakout_case(
         },
         breakout_dimension="store",
         sequential=True,
-        sequential_probe=typed_summary_probe if boolean_segments else None,
-        waive={
-            "from_definitions": (
-                "SOURCE: given the same segmented registration as from_unit_summary, "
-                "a relational source (validate_relational_capture, shared by "
-                "native_source.py and artifact_reader.py) refuses that segmented "
-                "sequential roster outright -- 'relational segment capture needs a "
-                "registered immutable property relation; use finalized joint records "
-                "or frame segments'."
-            ),
-            "from_unit_day_artifact": (
-                "SOURCE: publish/adopt re-derives the experiment's declared plan's own "
-                "automatic registration -- segmented from the predeclared family, so the "
-                "relational capture check above refuses it for the same reason."
-                if automatic
-                else "SOURCE: publish/adopt always re-derives an automatic (unsegmented) "
-                "registration from the experiment's declared plan -- a caller-built "
-                "segmented registration never reaches it -- and the relational "
-                "capture check above would refuse it regardless."
-            ),
-            "from_moments": (
-                "SOURCE: MomentsSource declares no breakout catalog at all -- a "
-                "replayed checkpoint carries the segmented registration intact "
-                "(export survives it), but run_breakout still refuses because a "
-                "moments cube has no breakout dimension to serve."
-            ),
-            **_SWITCHBACK_WAIVE,
-        },
-        waived_refusal_codes={
-            "from_definitions": "sequential.route.unsupported",
-            "from_unit_day_artifact": "sequential.route.unsupported",
-            "from_moments": "readout.source.dimension",
-        },
-        # Captures a finalized sequential checkpoint twice (once to derive
+        sequential_probe=typed_summary_probe
+        if boolean_segments
+        else None,  # Captures a finalized sequential checkpoint twice (once to derive
         # the automatic registration, once segmented) on the dataframe
         # paths, and publishes/adopts a unit-day artifact plus exports/
         # replays moments -- see _fixed_horizon_case's slow=True for why.
@@ -3430,9 +3414,6 @@ def _sequential_automatic_multi_arm_exact_case(
             for connection in getattr(native, "_parity_connections", ()):
                 connection.disconnect()
 
-    frame_refusal = dict.fromkeys(
-        ("from_unit_summary", "from_unit_panel"), "sequential.source.invalid"
-    )
     return ParityCase(
         id=(
             "sequential_automatic_multi_arm_exact"
@@ -3449,21 +3430,7 @@ def _sequential_automatic_multi_arm_exact_case(
         sequential=True,
         sequential_probe=(
             None if declared_registration is None else _assert_native_and_artifact_share_identity
-        ),
-        waive={
-            **_SWITCHBACK_WAIVE,
-            **(
-                dict.fromkeys(
-                    frame_refusal,
-                    "SOURCE: a registration declared against the native source mapping "
-                    "is bound to that source's identity and is never adopted by a frame source",
-                )
-                if declared_registration is not None
-                else {}
-            ),
-        },
-        waived_refusal_codes=frame_refusal if declared_registration is not None else {},
-        # Publishes/adopts a unit-day artifact, exports/replays moments and
+        ),  # Publishes/adopts a unit-day artifact, exports/replays moments and
         # captures a finalized sequential checkpoint on every constructor.
         slow=True,
     )
@@ -3712,7 +3679,6 @@ def _uptake_timestamp_boundaries_case(
         estimands=("itt", "compliance", "late"),
         readout_probe=probe,
         source_probe=asof_probe,
-        waive=dict(_SWITCHBACK_WAIVE),
         slow=True,
     )
 
@@ -3873,20 +3839,6 @@ def _encouragement_declared_definitions_case(
         if not exclusion_declared
         else ("itt", "compliance", "late"),
         source_probe=_assert_missing_exclusion_precedes_data if not exclusion_declared else None,
-        waive={
-            "from_switchback_panel": "COMBINATION: no switchback schedule in this dataset",
-            **(
-                {
-                    "from_unit_panel": "CONSTRUCTION: panel densification has no complete-case "
-                    "missing='drop' path; zero-filling would change the declared outcome policy"
-                }
-                if missing_treatment_outcomes and not metric_free
-                else {}
-            ),
-        },
-        waived_refusal_codes={"from_unit_panel": "frame.missing_policy.panel_drop"}
-        if missing_treatment_outcomes and not metric_free
-        else {},
         slow=True,
     )
 
@@ -4017,7 +3969,6 @@ def _encouragement_guardrail_case(
             "from_moments": build_moments,
         },
         estimands=estimands,
-        waive={"from_switchback_panel": "COMBINATION: no switchback schedule in this dataset"},
         slow=True,
     )
 
@@ -4035,18 +3986,24 @@ def _encouragement_guardrail_late_only_case() -> ParityCase:
 
 
 def _encouragement_margin_guardrail_case() -> ParityCase:
-    """The margined-guardrail cell the capabilities-by-entry-point table actually claims: `latency`
-    declares `margin_abs=5.0`, and a full-estimands request (itt, compliance,
-    late) succeeds identically on every reachable path, with the margin
-    verdict riding the ITT row. The late-only refusal this margin also
-    produces (`readout.encouragement.margin`) needs a request excluding
-    itt, which leaves nothing left to compare on any path -- covered instead
-    by `test_encouragement_margin_guardrail_refuses_late_only_on_every_constructor`
-    in tests/test_readouts_encouragement.py, not a second ParityCase."""
+    """The margined guardrail with the ITT request included."""
     return _encouragement_guardrail_case(
         id="encouragement_margin_guardrail",
         estimands=("itt", "compliance", "late"),
         margin_abs=5.0,
+    )
+
+
+def _encouragement_margin_guardrail_late_only_case() -> ParityCase:
+    """A margin request excluding ITT refuses on each reachable constructor."""
+    case = _encouragement_guardrail_case(
+        id="encouragement_margin_guardrail_late_only",
+        estimands=("late",),
+        margin_abs=5.0,
+    )
+    return replace(
+        case,
+        refusal_only=True,
     )
 
 
@@ -4238,15 +4195,6 @@ def _retention_breakout_cohorts_case(
             "from_moments": replay,
         },
         breakout_dimension="store",
-        waive={
-            **_SWITCHBACK_WAIVE,
-            "from_unit_summary": "SOURCE: unit summaries cannot supply retention exposure cohorts.",
-            "from_moments": "SOURCE: portable moments retain no breakout operation or cohort identity.",
-        },
-        waived_refusal_codes={
-            "from_unit_summary": "source.frame.constructor",
-            "from_moments": "facade.analysis.operation",
-        },
         readout_probe=probe,
         source_probe=source_probe,
         slow=True,
@@ -4374,7 +4322,6 @@ def _encouragement_retention_case() -> ParityCase:
             "from_unit_panel": build_unit_panel,
             "from_moments": build_moments,
         },
-        waive={"from_switchback_panel": "COMBINATION: no switchback schedule in this dataset"},
         slow=True,
     )
 
@@ -4615,7 +4562,6 @@ def _encouragement_fcr_reestimation_case() -> ParityCase:
             "from_moments": build_moments,
         },
         estimands=("itt", "compliance", "late"),
-        waive={"from_switchback_panel": "COMBINATION: no switchback schedule in this dataset"},
         slow=True,
     )
 
@@ -4735,9 +4681,7 @@ def _multiplicity_roles_case() -> ParityCase:
             "from_unit_summary": build_unit_summary,
             "from_unit_panel": build_unit_panel,
             "from_moments": build_moments,
-        },
-        waive=dict(_SWITCHBACK_WAIVE),
-        # Publishes/adopts a unit-day artifact and exports/replays moments
+        },  # Publishes/adopts a unit-day artifact and exports/replays moments
         # on every run -- see _fixed_horizon_case's slow=True for why.
         slow=True,
     )
@@ -5004,20 +4948,7 @@ def _observational_covariate_case(
             "from_unit_summary": build_unit_summary,
             "from_unit_panel": build_unit_panel,
             "from_moments": build_moments,
-        },
-        waive={
-            "from_moments": (
-                "SOURCE: a moments cube holds no per-unit rows to attach a covariate to."
-            ),
-            "from_switchback_panel": (
-                "SOURCE: a per-unit adjustment set has no analogue on a switchback "
-                "block/period schedule, and this dataset has none."
-            ),
-        },
-        waived_refusal_codes={
-            "from_moments": "source.moments.covariate_unavailable",
-        },
-        # Publishes/adopts a unit-day artifact on every run.
+        },  # Publishes/adopts a unit-day artifact on every run.
         slow=True,
     )
 
@@ -5150,7 +5081,6 @@ def _observational_quantile_case() -> ParityCase:
             replay_rows, metrics=specs, design=design(), plan=_OBSERVATIONAL_QUANTILE_PLAN
         )
 
-    seam = "readout.observational.quantile"
     return ParityCase(
         id="observational_quantile_refused_at_the_readout_seam",
         build={
@@ -5159,27 +5089,6 @@ def _observational_quantile_case() -> ParityCase:
             "from_unit_summary": build_unit_summary,
             "from_unit_panel": build_unit_panel,
             "from_moments": build_moments,
-        },
-        waive={
-            "from_definitions": f"CONSTRUCTION: an observational design has no quantile estimator ({seam})",
-            "from_unit_day_artifact": f"CONSTRUCTION: no quantile estimator under an observational design ({seam})",
-            "from_unit_summary": f"CONSTRUCTION: no quantile estimator under an observational design ({seam})",
-            "from_unit_panel": f"CONSTRUCTION: no quantile estimator under an observational design ({seam})",
-            "from_moments": (
-                f"CONSTRUCTION: the quantile declaration over scalar moments must refuse "
-                f"its absent observational estimator before using those moments ({seam})."
-            ),
-            "from_switchback_panel": (
-                "SOURCE: no design= parameter, and a quantile metric is refused at the "
-                "switchback metric-type gate (source.frame.switchback.metric)."
-            ),
-        },
-        waived_refusal_codes={
-            "from_definitions": seam,
-            "from_unit_day_artifact": seam,
-            "from_unit_summary": seam,
-            "from_unit_panel": seam,
-            "from_moments": seam,
         },
         refusal_only=True,
         # Publishes/adopts a unit-day artifact on every run.
@@ -5334,16 +5243,7 @@ def _observational_multiplicity_case() -> ParityCase:
             "from_unit_summary": build_unit_summary,
             "from_unit_panel": build_unit_panel,
             "from_moments": build_moments,
-        },
-        waive={
-            "from_moments": "SOURCE: a moments cube holds no per-unit rows to attach a covariate to.",
-            "from_switchback_panel": (
-                "SOURCE: a per-unit adjustment set has no analogue on a switchback "
-                "block/period schedule, and this dataset has none."
-            ),
-        },
-        waived_refusal_codes={"from_moments": "source.moments.covariate_unavailable"},
-        # Publishes/adopts a unit-day artifact on every run.
+        },  # Publishes/adopts a unit-day artifact on every run.
         slow=True,
     )
 
@@ -5485,16 +5385,7 @@ def _observational_aipw_dml_case(
             "from_unit_summary": build_unit_summary,
             "from_unit_panel": build_unit_panel,
             "from_moments": build_moments,
-        },
-        waive={
-            "from_moments": "SOURCE: a moments cube holds no per-unit rows to attach a covariate to.",
-            "from_switchback_panel": (
-                "SOURCE: a per-unit adjustment set has no analogue on a switchback "
-                "block/period schedule, and this dataset has none."
-            ),
-        },
-        waived_refusal_codes={"from_moments": "source.moments.covariate_unavailable"},
-        # Publishes/adopts a unit-day artifact on every run.
+        },  # Publishes/adopts a unit-day artifact on every run.
         slow=True,
     )
 
@@ -5751,22 +5642,6 @@ def _observational_categorical_case(
         summary.close()
         return Analysis.from_moments(replay_rows, metrics=specs, design=design(), plan=plan)
 
-    waive = {
-        "from_moments": "SOURCE: a moments cube holds no per-unit rows to attach a covariate to.",
-        "from_switchback_panel": (
-            "SOURCE: a per-unit adjustment set has no analogue on a switchback "
-            "block/period schedule, and this dataset has none."
-        ),
-    }
-    waived_refusal_codes = {"from_moments": "source.moments.covariate_unavailable"}
-    if missing_levels:
-        reason = (
-            "SOURCE: the definitions grammar declares no missing-covariate policy, so "
-            "this path resolves the default missing='refuse' and must name the NULL level."
-        )
-        for name in ("from_definitions", "from_unit_day_artifact"):
-            waive[name] = reason
-            waived_refusal_codes[name] = "adjust.identification.missing_covariates"
     return ParityCase(
         id=(
             "observational_categorical_covariate_missing_levels"
@@ -5779,10 +5654,7 @@ def _observational_categorical_case(
             "from_unit_summary": build_unit_summary,
             "from_unit_panel": build_unit_panel,
             "from_moments": build_moments,
-        },
-        waive=waive,
-        waived_refusal_codes=waived_refusal_codes,
-        # Publishes/adopts a unit-day artifact on every run.
+        },  # Publishes/adopts a unit-day artifact on every run.
         slow=True,
     )
 
@@ -5879,9 +5751,7 @@ def _nonpositive_mean_case() -> ParityCase:
             "from_unit_summary": build_unit_summary,
             "from_unit_panel": build_unit_panel,
             "from_moments": build_moments,
-        },
-        waive=dict(_SWITCHBACK_WAIVE),
-        # Publishes/adopts a unit-day artifact and exports/replays moments
+        },  # Publishes/adopts a unit-day artifact and exports/replays moments
         # on every run -- see _fixed_horizon_case's slow=True for why.
         slow=True,
     )
@@ -5986,34 +5856,7 @@ def _clustered_negative_mean_case(*, zero_treatment: bool = False) -> ParityCase
             "from_unit_day_artifact": build_artifact,
             "from_unit_summary": build_unit_summary,
             "from_moments": build_moments,
-        },
-        waive={
-            "from_moments": (
-                "SOURCE: export_source_moments refuses a clustered, "
-                "non-Encouragement source ('cluster transport requires a "
-                "complete encouragement compliance payload') -- the moments "
-                "wire format carries no cluster marker, so from_moments "
-                "would rehydrate the cluster rows as unit-grain ratio "
-                "moments and silently misread them."
-            ),
-            "from_unit_panel": (
-                "SOURCE cannot supply a clustered arm-lift ratio readout: "
-                "Analysis.from_unit_panel(cluster=...) refuses "
-                "unconditionally with source.frame_panel.cluster_grain -- "
-                "the panel is collapsed to one row per unit before "
-                "clustering could apply, and the collapse is ambiguous on "
-                "this shape (increment/frame.py); build the clustered arm "
-                "totals with from_unit_summary(cluster=...) instead."
-            ),
-            "from_switchback_panel": (
-                "SOURCE cannot supply a clustered arm-lift ratio readout: a "
-                "switchback panel declares a shared-schedule contrast "
-                "(ContrastResults), a structurally different estimand "
-                "shape from the LiftEstimate rows this case compares."
-            ),
-        },
-        waived_refusal_codes={"from_moments": "source.moments.cluster_grain"},
-        # Publishes/adopts a unit-day artifact and exports/replays moments
+        },  # Publishes/adopts a unit-day artifact and exports/replays moments
         # on every run -- see _fixed_horizon_case's slow=True for why.
         slow=True,
     )
@@ -6100,18 +5943,6 @@ def _clustered_assignment_integrity_case() -> ParityCase:
             "from_definitions": build_definitions,
             "from_unit_day_artifact": build_artifact,
             "from_unit_summary": build_summary,
-        },
-        waive={
-            "from_switchback_panel": (
-                "SOURCE: a switchback contrast does not expose parallel-arm assignment counts."
-            ),
-            "from_unit_panel": (
-                "SOURCE: the panel constructor has no cluster key, so it cannot preserve the "
-                "declared randomization grain."
-            ),
-            "from_moments": (
-                "SOURCE: this clustered case has no portable cluster-identity payload."
-            ),
         },
         readout_probe=probe,
     )
@@ -6405,7 +6236,6 @@ def _encouragement_itt_case(*, dense: bool = False) -> ParityCase:
             "from_moments": build_moments,
         },
         estimands=("itt",),
-        waive=dict(_SWITCHBACK_WAIVE),
         readout_probe=itt_probe,
         # Exports/replays moments on every run -- see _fixed_horizon_case's
         # slow=True for why.
@@ -6546,15 +6376,6 @@ def _binary_breakout_ancillary_uptake_case(*, include_fact_only_unit: bool = Fal
         },
         breakout_dimension="store",
         readout_probe=probe,
-        waive={
-            **_SWITCHBACK_WAIVE,
-            "from_unit_summary": "SOURCE: unit summaries declare no breakout dimension",
-            "from_moments": "SOURCE: portable moments retain no per-unit breakout dimension",
-        },
-        waived_refusal_codes={
-            "from_unit_summary": "facade.analysis.operation",
-            "from_moments": "facade.analysis.operation",
-        },
         slow=True,
     )
 
@@ -6890,13 +6711,6 @@ def _sequential_mixed_quantile_catalog_case() -> ParityCase:
         sequential=True,
         readout_probe=check_rows,
         source_probe=probe_checkpoint,
-        waive={
-            "from_switchback_panel": (
-                "SOURCE: switchback accepts only mean/conversion metrics and refuses a "
-                "quantile catalog (source.frame.switchback.metric); it also has no "
-                "registered sequential construction. This dataset has no switchback schedule."
-            )
-        },
         slow=True,
     )
 
@@ -7053,18 +6867,6 @@ def _quantile_ties_case(
         },
         metrics=(metric.name, "mean_latency") if unselected_conversion_sibling else None,
         readout_probe=check_selected_rows if unselected_conversion_sibling else None,
-        waive={
-            "from_moments": (
-                "SOURCE: a quantile has no moments representation -- export() "
-                "itself refuses before a from_moments cube could ever exist."
-            ),
-            "from_switchback_panel": (
-                "SOURCE: switchback metrics must be type='mean' or "
-                "type='conversion'; quantile is refused before any frame is read "
-                "(confirmed live: source.frame.switchback.metric)."
-            ),
-        },
-        waived_refusal_codes={"from_moments": "source.frame.quantile_no_moments"},
         require_selection=family,
         slow=family or unselected_conversion_sibling,
     )
@@ -7150,7 +6952,6 @@ def _inferred_null_metric_case() -> ParityCase:
             "from_unit_panel": lambda: frame(panel=True),
             "from_moments": replay,
         },
-        waive=_SWITCHBACK_WAIVE,
         readout_probe=probe,
         slow=True,
     )
@@ -7211,11 +7012,6 @@ def _switchback_neighboring_integer_case() -> ParityCase:
     return ParityCase(
         id="audit-switchback-neighboring-integers",
         build={"from_switchback_panel": _neighboring_integer_switchback_analysis},
-        waive={
-            name: "SOURCE: parallel-arm and portable-moment constructors carry no switchback schedule"
-            for name in CONSTRUCTORS
-            if name != "from_switchback_panel"
-        },
         readout_probe=probe,
     )
 
@@ -7420,15 +7216,6 @@ def _encouragement_multi_metric_breakout_case() -> ParityCase:
             "from_moments": replay,
         },
         breakout_dimension="store",
-        waive={
-            **_SWITCHBACK_WAIVE,
-            "from_unit_summary": "SOURCE: unit summaries declare no breakout dimension",
-            "from_moments": "SOURCE: portable moments retain no per-unit breakout dimension",
-        },
-        waived_refusal_codes={
-            "from_unit_summary": "facade.analysis.operation",
-            "from_moments": "facade.analysis.operation",
-        },
         readout_probe=probe,
         slow=True,
     )
@@ -7593,9 +7380,13 @@ def _exact_binomial_beyond_the_former_arm_ceiling_case() -> ParityCase:
             "from_unit_panel": build_unit_panel,
             "from_moments": build_moments,
         },
-        waive=_SWITCHBACK_WAIVE,
         readout_probe=probe,
         slow=True,
+        marks=(
+            pytest.mark.numerical_certification,
+            pytest.mark.stress,
+            pytest.mark.timeout(0 if os.environ.get("GITHUB_ACTIONS") == "true" else 180),
+        ),
     )
 
 
@@ -7818,7 +7609,6 @@ def _conversion_route_case() -> ParityCase:
             "from_unit_panel": build_unit_panel,
             "from_moments": build_moments,
         },
-        waive=dict(_SWITCHBACK_WAIVE),
         readout_probe=probe,
         slow=True,
     )
@@ -7944,12 +7734,6 @@ def _conversion_route_breakout_case() -> ParityCase:
         },
         breakout_dimension="store",
         readout_probe=probe,
-        waive={
-            **_SWITCHBACK_WAIVE,
-            "from_unit_summary": "SOURCE: unit summaries declare no breakout dimension",
-            "from_moments": "SOURCE: portable moments retain no per-unit breakout dimension",
-        },
-        waived_refusal_codes={"from_unit_summary": "facade.analysis.operation"},
         slow=True,
     )
 
@@ -8191,7 +7975,6 @@ def _conversion_route_encouragement_case() -> ParityCase:
             "from_moments": build_moments,
         },
         estimands=("itt",),
-        waive=dict(_SWITCHBACK_WAIVE),
         readout_probe=_family_route_probe,
         slow=True,
     )
@@ -8283,26 +8066,10 @@ def _conversion_route_observational_case() -> ParityCase:
             "from_unit_panel": build_unit_panel,
             "from_moments": build_moments,
         },
-        waive={
-            "from_switchback_panel": (
-                "SOURCE: a per-unit adjustment set has no analogue on a switchback "
-                "block/period schedule, and this dataset has none."
-            ),
-        },
         readout_probe=_family_route_probe,
         slow=True,
     )
 
-
-# Exact unit counts must survive every producer seam, format-11 export/replay, and
-# emitted-row comparison. Switchback contrasts block periods rather than parallel arms.
-_EXACT_COUNT_SWITCHBACK_WAIVE = {
-    "from_switchback_panel": (
-        "SOURCE: from_switchback_panel contrasts per-cycle block outcomes of one switching "
-        "population and emits no arm-level unit-grain moments, so it has no exact arm "
-        "`successes`/`n` pair to compare with the parallel-arm ingresses."
-    )
-}
 
 # metric -> group -> (successes, n)
 _ExpectedCounts = Mapping[str, Mapping[str, tuple[int, int]]]
@@ -8611,7 +8378,6 @@ def _exact_conversion_case(
             "from_unit_panel": panel,
             "from_moments": moments,
         },
-        waive=dict(_EXACT_COUNT_SWITCHBACK_WAIVE),
         readout_probe=_binomial_counts_probe(expected),
         source_probe=_source_count_probe(expected),
         slow=True,
@@ -8697,11 +8463,6 @@ def _exact_retention_case(
             "from_unit_panel": panel,
             "from_moments": moments,
         },
-        waive={
-            **_EXACT_COUNT_SWITCHBACK_WAIVE,
-            "from_unit_summary": "SOURCE: unit summaries cannot supply retention exposure cohorts.",
-        },
-        waived_refusal_codes={"from_unit_summary": "source.frame.constructor"},
         readout_probe=_binomial_counts_probe(expected),
         source_probe=_source_count_probe(expected),
         slow=True,
@@ -8909,13 +8670,6 @@ def _winsor_ingress_case(  # noqa: PLR0915
             "from_unit_panel": build_panel,
             "from_moments": build_moments,
         },
-        waive={
-            "from_switchback_panel": "switchback aggregation does not provide percentile-winsor independent-unit inference"
-        },
-        waived_refusal_codes={
-            "from_unit_panel": "estimation.winsor.raw_state_required",
-            "from_moments": "estimation.winsor.raw_state_required",
-        },
         readout_probe=inspect_retained,
         metrics=("revenue",),
         slow=True,
@@ -8956,21 +8710,19 @@ PARITY_CASES: tuple[ParityCase, ...] = (
     _inferred_null_metric_case(),
     _switchback_neighboring_integer_case(),
     _mean_ratio_conversion_cuped_case(),
+    _artifact_context_format_two_case(),
+    _artifact_context_format_one_refusal_case(),
     _dashboard_group_data_case(),
     _prior_reset_case(),
     _fixed_horizon_case(
         id="portable_subset_with_winsorized_sibling",
         breakout=False,
-        waive={},
-        waived_refusal_codes={},
         include_cuped=False,
         unselected_winsorized_sibling=True,
     ),
     _fixed_horizon_case(
         id="audit-artifact-rounded-aggregates",
         breakout=False,
-        waive={},
-        waived_refusal_codes={},
         include_cuped=False,
         rounded_events=True,
     ),
@@ -8978,15 +8730,11 @@ PARITY_CASES: tuple[ParityCase, ...] = (
     _fixed_horizon_case(
         id="audit-cuped-covariate-rescaling",
         breakout=False,
-        waive={},
-        waived_refusal_codes={},
         ratio_numerics="rescaled",
     ),
     _fixed_horizon_case(
         id="audit-ratio-neighboring-means",
         breakout=False,
-        waive={},
-        waived_refusal_codes={},
         ratio_numerics="neighboring",
     ),
     _lift_prior_case("normal"),
@@ -9045,8 +8793,11 @@ PARITY_CASES: tuple[ParityCase, ...] = (
     _encouragement_guardrail_late_rows_case(),
     _encouragement_guardrail_late_only_case(),
     _encouragement_margin_guardrail_case(),
+    _encouragement_margin_guardrail_late_only_case(),
     _encouragement_fcr_reestimation_case(),
     _observational_covariate_case(),
+    _observational_conversion_case(),
+    _observational_aipw_conversion_case(),
     _observational_multiplicity_case(),
     _observational_quantile_case(),
     _observational_aipw_dml_case(),
@@ -9058,4 +8809,7 @@ PARITY_CASES: tuple[ParityCase, ...] = (
     _quantile_ties_case(family=True),
     _quantile_ties_case(unselected_conversion_sibling=True),
     _exact_binomial_beyond_the_former_arm_ceiling_case(),
-)
+    _winsor_three_arm_case(),
+    _winsor_zero_inclusive_case(1),
+    _winsor_size_routed_case(),
+) + capability_cases()

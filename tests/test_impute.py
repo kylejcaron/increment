@@ -16,6 +16,7 @@ import pytest
 
 from increment import impute
 from increment.errors import IncrementWarning
+from tests.capability_consumers_scalar import IMPUTE_POOLED_MEAN, assert_code, completed, refused
 
 
 def _backend_frames() -> list[tuple[str, Any]]:
@@ -185,16 +186,35 @@ def _frame_with_gap() -> Any:
     return pa.table({"a": [1.0, None, 4.0], "b": [None, None, 6.0], "c": [1.0, 2.0, 3.0]})
 
 
+def _frames_by_ingress() -> list[tuple[str, Any]]:
+    """The gap fixture in the native frame type each dataframe constructor reads."""
+    import polars as pl
+
+    table = _frame_with_gap()
+    return [
+        ("from_unit_summary", table),
+        ("from_unit_panel", table.to_pandas()),
+        ("from_switchback_panel", pl.from_arrow(table)),
+    ]
+
+
 def test_pooled_mean_refuses_a_declared_outcome_before_any_fill() -> None:
     from increment.errors import InvalidRequestError
 
-    frame = _frame_with_gap()
-    with pytest.raises(InvalidRequestError) as exc_info:
-        impute.pooled_mean(frame, "a", "b", roles={"a": "covariate", "b": "outcome"})
-    assert exc_info.value.code == "impute.pooled_mean_outcome"
-    assert exc_info.value.context["columns"] == ("b",)
-    assert "route" in exc_info.value.context
-    assert frame.column("a").to_pylist() == [1.0, None, 4.0]
+    for ingress, frame in _frames_by_ingress():
+        refusal = refused(
+            IMPUTE_POOLED_MEAN,
+            f"{ingress}-outcome-role-refused",
+            lambda frame=frame: impute.pooled_mean(
+                frame, "a", "b", roles={"a": "covariate", "b": "outcome"}
+            ),
+        )
+        assert isinstance(refusal, InvalidRequestError)
+        assert refusal.context["columns"] == ("b",)
+        assert "route" in refusal.context
+        untouched = _column(frame, "a")
+        assert untouched[0] == 1.0 and untouched[2] == 4.0
+        assert untouched[1] is None or untouched[1] != untouched[1]  # null or NaN, never filled
 
 
 def test_pooled_mean_outcome_refusal_names_a_clean_outcome_column_too() -> None:
@@ -208,18 +228,60 @@ def test_pooled_mean_outcome_refusal_names_a_clean_outcome_column_too() -> None:
 def test_pooled_mean_warns_per_column_counts_for_undeclared_roles() -> None:
     from increment.errors import IncrementRuntimeWarning
 
-    frame = _frame_with_gap()
-    with pytest.warns(IncrementRuntimeWarning) as record:
-        out, affected = impute.pooled_mean(frame, "a", "b", "c")
-    assert affected == 2
-    assert _column(out, "a") == [1.0, 2.5, 4.0]
-    assert _column(out, "b") == [6.0, 6.0, 6.0]
-    warning = _only_coded_warning(record)
-    assert warning.code == "impute.pooled_mean_role_undeclared"
-    context = warning.context
-    assert context["columns"] == ("a", "b")
-    assert context["affected_counts"] == {"a": 1, "b": 2}
-    assert "route" in context
+    for ingress, frame in _frames_by_ingress():
+        with pytest.warns(IncrementRuntimeWarning) as record:
+            out, affected = completed(
+                IMPUTE_POOLED_MEAN,
+                f"{ingress}-undeclared-role-warning",
+                lambda frame=frame: impute.pooled_mean(frame, "a", "b", "c"),
+            )
+        assert affected == 2
+        assert _column(out, "a") == [1.0, 2.5, 4.0]
+        assert _column(out, "b") == [6.0, 6.0, 6.0]
+        assert type(out) is type(frame)
+        warning = _only_coded_warning(record)
+        assert_code(warning.code, IMPUTE_POOLED_MEAN, f"{ingress}-undeclared-role-warning")
+        context = warning.context
+        assert context["columns"] == ("a", "b")
+        assert context["affected_counts"] == {"a": 1, "b": 2}
+        assert "route" in context
+
+
+def test_pooled_mean_has_no_per_unit_frame_on_a_moments_cube(tmp_path) -> None:
+    """A portable cube holds arm moments, so there is no per-unit column to repair."""
+    import pyarrow.parquet as pq
+
+    from increment import Analysis
+    from increment.errors import CapabilityError
+    from tests.analysis_factory import _native_source
+
+    frame = pa.table(
+        {
+            "unit_id": [f"u{i}" for i in range(8)],
+            "group_id": ["control", "treatment"] * 4,
+            "revenue": [1.0, 2.0, 3.0, 5.0, 2.0, 4.0, 3.0, 6.0],
+        }
+    )
+    direct = Analysis.from_unit_summary(
+        frame,
+        unit="unit_id",
+        group="group_id",
+        control="control",
+        metrics=[{"name": "revenue", "type": "mean"}],
+    )
+    direct.export(tmp_path / "moments.parquet")
+    adopted = completed(
+        IMPUTE_POOLED_MEAN,
+        "from_moments-no-per-unit-rows",
+        lambda: Analysis.from_moments(
+            pq.read_table(tmp_path / "moments.parquet").to_pylist(),
+            metrics=[{"name": "revenue", "type": "mean"}],
+            control="control",
+        ),
+    )
+    with pytest.raises(CapabilityError) as raised:
+        _native_source(adopted).unit_frame(adopted.metrics[0])
+    assert raised.value.code == "source.moments.unit_grain"
 
 
 def test_pooled_mean_warns_only_for_the_undeclared_column_that_was_filled() -> None:

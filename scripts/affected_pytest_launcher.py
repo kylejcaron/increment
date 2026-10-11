@@ -19,6 +19,7 @@ _ALLOWED_OPTIONS = {
     "plugins",
     "inifilename",
     "rootdir",
+    "confcutdir",
     "tach_base",
     "file_or_dir",
     "markexpr",
@@ -196,7 +197,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     policy_root = Path(__file__).resolve().parents[1]
     _prepare_testmon_environment(root, args.tier, args.workers)
     markexpr = _tier_expression(args.tier, args.markexpr)
-    nested_testmon = os.environ.get("INCREMENT_AFFECTED_NESTED_TESTMON") == "1"
+    testmon_ready = os.environ.get("INCREMENT_AFFECTED_TESTMON_READY") == "1"
     plugins = [
         "tests._evidence",
         "scripts.run_test_tier_plugin",
@@ -204,25 +205,40 @@ def main(argv: Sequence[str] | None = None) -> int:
         "xdist.plugin",
         "pytest_timeout",
     ]
-    if not nested_testmon:
+    if testmon_ready:
         plugins.append("testmon.pytest_testmon")
+    else:
+        os.environ.pop("INCREMENT_AFFECTED_USE_TESTMON", None)
+    from scripts.run_test_tier_plugin import _fallback_retained_paths
+
+    collection = (
+        []
+        if testmon_ready
+        else sorted(
+            str(path)
+            for path in _fallback_retained_paths(root)
+            if path.is_relative_to(root) and path.is_file()
+        )
+    )
     pytest_arguments = [
         "-c",
         "",
         "--rootdir",
         str(root),
+        "--confcutdir",
+        str(root),
         "--tach-base",
         args.tach_base,
         "-m",
         markexpr,
-        str(root / "tests"),
+        *(collection or [str(root / "tests")]),
         "--evidence-root",
         str(Path(args.evidence_root).resolve()),
     ]
     pytest_arguments[:0] = [part for plugin in plugins for part in ("-p", plugin)]
-    if not nested_testmon and _testmon_database_usable(root):
+    if testmon_ready:
         pytest_arguments.extend(("--testmon", "--testmon-forceselect"))
-    elif not nested_testmon:
+    elif not _testmon_database_usable(root):
         print(
             "testmon: local map is corrupt; using conservative import-graph selection",
             file=sys.stderr,

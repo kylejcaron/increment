@@ -12,6 +12,7 @@ import platform
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -25,6 +26,7 @@ from typing import NoReturn, TextIO
 from scripts._test_impact import (
     _source_snapshots,
     affected_test_paths,
+    fresh_bytecode_cache,
     mark_testmon_nested_context,
     record_testmon_full_run,
     subprocess_consumer_test_paths,
@@ -220,7 +222,9 @@ def _dynamic_import_tests(cwd: Path) -> list[str]:
             continue
         if _has_dynamic_import(tree):
             consumers.append(path.relative_to(cwd).as_posix())
-    return consumers
+    if not consumers:
+        return []
+    return sorted(set(consumers) | set(affected_test_paths(cwd, consumers)))
 
 
 def _environment_identity(cwd: Path) -> str:
@@ -439,11 +443,17 @@ TIERS = {
     "slow": Tier(marker=TIER_MARKERS["slow"], budget_seconds=480),
     # Supports optional pytest-split shards while retaining a local budget.
     "parameter-recovery": Tier(marker="parameter_recovery", budget_seconds=1350),
+    "numerical-certification": Tier(
+        marker=TIER_MARKERS["numerical-certification"], budget_seconds=1350
+    ),
+    "scientific": Tier(marker=TIER_MARKERS["scientific"], budget_seconds=1350),
     "examples": Tier(marker="examples", budget_seconds=300),
     "all": Tier(marker="", budget_seconds=1800),
-    # Same as `all` minus the Monte-Carlo tier, which runs once (sharded)
-    # instead of once per Python version/dependency-floor cell.
-    "all-except-parameter-recovery": Tier(marker="not parameter_recovery", budget_seconds=1800),
+    # Scientific campaigns run once rather than once per weekly matrix cell.
+    "all-except-scientific": Tier(
+        marker="not parameter_recovery and not numerical_certification",
+        budget_seconds=1800,
+    ),
 }
 
 
@@ -456,6 +466,7 @@ def can_certify_testmon_full_run(tier: str, arguments: Sequence[str]) -> bool:
     value_options = {
         "-n",
         "--numprocesses",
+        "--maxprocesses",
         "--dist",
         "--durations",
         "--evidence-root",
@@ -484,7 +495,15 @@ def can_certify_testmon_full_run(tier: str, arguments: Sequence[str]) -> bool:
             index += 2
             continue
         if argument in flag_options or argument.startswith(
-            ("-qq", "-vv", "--numprocesses=", "--dist=", "--durations=", "--maxfail=")
+            (
+                "-qq",
+                "-vv",
+                "--numprocesses=",
+                "--maxprocesses=",
+                "--dist=",
+                "--durations=",
+                "--maxfail=",
+            )
         ):
             index += 1
             continue
@@ -527,7 +546,9 @@ def _full_run_certification_dist(path: Path) -> str | None:
     return None
 
 
-def build_pytest_command(tier: Tier, extra_args: Sequence[str]) -> list[str]:
+def build_pytest_command(
+    tier: Tier, extra_args: Sequence[str], *, record_coverage: bool
+) -> list[str]:
     # External evidence directories must not change configuration or test selection.
     config = Path(__file__).resolve().parents[1] / "pyproject.toml"
     command = [
@@ -538,16 +559,17 @@ def build_pytest_command(tier: Tier, extra_args: Sequence[str]) -> list[str]:
         str(config),
         "-p",
         "tests._evidence",
+        "-p",
+        "no:tach",
     ]
     nested_test_run = "PYTEST_CURRENT_TEST" in os.environ
-    if nested_test_run:
-        # Nested subprocesses must not inherit affected selection or certification hooks.
+    if nested_test_run or not record_coverage:
         command.extend(("-p", "no:pytest-testmon"))
-    else:
+    if not nested_test_run:
         command.extend(("-p", "scripts.run_test_tier_plugin"))
     if tier.marker is not None:
         command.extend(("-m", tier.marker))
-    if not nested_test_run:
+    if not nested_test_run and record_coverage:
         command.append("--testmon-noselect")
     command.extend(extra_args)
     return command
@@ -826,13 +848,24 @@ def _supervise_process(
                 next_heartbeat = now + heartbeat_seconds
 
 
-def _supervised_child_environment(extra_env: Mapping[str, str | None] | None) -> dict[str, str]:
+def _supervised_child_environment(
+    extra_env: Mapping[str, str | None] | None, owner_token: str
+) -> dict[str, str]:
     environment = os.environ.copy()
+    if any(name.startswith("GIT_") for name in environment):
+        # Hooks export repository-local state; test fixtures own independent repos.
+        local_names = subprocess.check_output(
+            ["git", "rev-parse", "--local-env-vars"], env=environment, text=True
+        ).splitlines()
+        for name in local_names:
+            environment.pop(name, None)
     for name, value in (extra_env or {}).items():
         if value is None:
             environment.pop(name, None)
         else:
             environment[name] = value
+    _mark_supervised_testmon_child(environment)
+    environment["INCREMENT_EVIDENCE_OWNER"] = owner_token
     return environment
 
 
@@ -883,10 +916,10 @@ def run_with_budget(
     windows_job: int | None = None
     startup_gate: int | None = None
     timed_out = False
+    bytecode_cache: tempfile.TemporaryDirectory[str] | None = None
     try:
-        child_environment = _supervised_child_environment(extra_env)
-        _mark_supervised_testmon_child(child_environment)
-        child_environment["INCREMENT_EVIDENCE_OWNER"] = owner_token
+        child_environment = _supervised_child_environment(extra_env, owner_token)
+        bytecode_cache = fresh_bytecode_cache(child_environment)
         process, windows_job, startup_gate = _start_process(command, env=child_environment)
         _raise_pending()
         if startup_gate is not None:
@@ -930,6 +963,8 @@ def run_with_budget(
                 )
         for signum, handler in original_handlers.items():
             signal.signal(signum, handler)
+        if bytecode_cache is not None:
+            bytecode_cache.cleanup()
     if pending_signal is not None:
         status = 128 + pending_signal
     termination = (
@@ -1082,6 +1117,7 @@ def _focused_missing_selector(pytest_args: Sequence[str], project_root: Path) ->
     options_with_values = {
         "-n",
         "--numprocesses",
+        "--maxprocesses",
         "--dist",
         "-k",
         "--keyword",
@@ -1102,6 +1138,7 @@ def _focused_missing_selector(pytest_args: Sequence[str], project_root: Path) ->
             (
                 "-n",
                 "--numprocesses=",
+                "--maxprocesses=",
                 "--dist=",
                 "--keyword=",
                 "--markexpr=",
@@ -1138,10 +1175,10 @@ def _serial_if_small_focused_selection(
     index = 0
     while index < len(pytest_args):
         argument = pytest_args[index]
-        if argument in {"-n", "--numprocesses", "--dist"}:
+        if argument in {"-n", "--numprocesses", "--maxprocesses", "--dist"}:
             index += 2
             continue
-        if argument.startswith(("-n", "--numprocesses=", "--dist=")):
+        if argument.startswith(("-n", "--numprocesses=", "--maxprocesses=", "--dist=")):
             index += 1
             continue
         if argument == "-q":
@@ -1189,14 +1226,39 @@ def _serial_if_small_focused_selection(
     index = 0
     while index < len(pytest_args):
         argument = pytest_args[index]
-        if argument in {"-n", "--numprocesses", "--dist"}:
+        if argument in {"-n", "--numprocesses", "--maxprocesses", "--dist"}:
             index += 2
-        elif argument.startswith(("-n", "--numprocesses=", "--dist=")):
+        elif argument.startswith(("-n", "--numprocesses=", "--maxprocesses=", "--dist=")):
             index += 1
         else:
             arguments.append(argument)
             index += 1
     return arguments
+
+
+def _publish_full_run_map(
+    root: Path,
+    tier: str,
+    report: Path,
+    source_snapshot: tuple[dict[str, str], dict[str, str]] | None,
+) -> bool:
+    if source_snapshot is None or not _full_run_certification_complete(report):
+        return False
+    try:
+        if _source_snapshots(root) != source_snapshot:
+            return False
+        record_testmon_full_run(
+            root,
+            tier,
+            test_dist=_full_run_certification_dist(report),
+            expected_source_snapshot=source_snapshot,
+        )
+        requested_tiers = {"fast", "slow"} if tier == "all" else {tier}
+        return _source_snapshots(root) == source_snapshot and requested_tiers.issubset(
+            testmon_full_tiers(root)
+        )
+    except (OSError, UnicodeDecodeError):
+        return False
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1209,6 +1271,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument(
+        "--record-testmon-map",
+        action="store_true",
+        help="Execute and record a complete fast/slow/all dependency map (before the tier).",
+    )
+    parser.add_argument(
         "--affected-base",
         metavar="GITREF",
         help="Select tests affected since a recorded commit (fast/slow tier only).",
@@ -1216,6 +1283,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("tier", choices=tuple(TIERS))
     parser.add_argument("pytest_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(arguments)
+    if args.record_testmon_map and (
+        "PYTEST_CURRENT_TEST" in os.environ
+        or testmon_nested_context(Path.cwd())
+        or not can_certify_testmon_full_run(args.tier, args.pytest_args)
+    ):
+        print(
+            "pytest: error: dependency-map recording requires a complete, unfiltered "
+            "fast/slow/all tier outside a nested test run",
+            file=sys.stderr,
+        )
+        return 4
     tier = TIERS[args.tier]
     extra_env = {
         "INCREMENT_AFFECTED_EVIDENCE": "",
@@ -1278,7 +1356,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mark_testmon_nested_context(root)
     os.environ["TESTMON_DATAFILE"] = str(root / ".testmondata")
     certification_report = None
-    if can_certify_testmon_full_run(args.tier, args.pytest_args):
+    if args.record_testmon_map:
         certification_report = root / f".testmondata.full-report-{uuid.uuid4().hex}.json"
         expected_config = Path(__file__).resolve().parents[1] / "pyproject.toml"
         extra_env.update(
@@ -1289,9 +1367,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
         )
     lock_context = (
-        nullcontext(False)
-        if "PYTEST_CURRENT_TEST" in os.environ and not testmon_nested_context(root)
-        else testmon_database_lock(root)
+        nullcontext(False) if certification_report is None else testmon_database_lock(root)
     )
     with lock_context:
         source_snapshot = None
@@ -1301,33 +1377,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             except (OSError, UnicodeDecodeError):
                 pass
         result = run_with_budget(
-            build_pytest_command(tier, args.pytest_args),
+            build_pytest_command(
+                tier, args.pytest_args, record_coverage=certification_report is not None
+            ),
             tier=args.tier,
             budget_seconds=(
                 None if os.environ.get("GITHUB_ACTIONS") == "true" else tier.budget_seconds
             ),
             extra_env=extra_env,
         )
-        sources_unchanged = False
-        if source_snapshot is not None:
-            try:
-                sources_unchanged = _source_snapshots(root) == source_snapshot
-            except (OSError, UnicodeDecodeError):
-                pass
-        if (
+        recording_succeeded = (
             result == 0
             and certification_report is not None
-            and sources_unchanged
-            and _full_run_certification_complete(certification_report)
-        ):
-            record_testmon_full_run(
-                root,
-                args.tier,
-                test_dist=_full_run_certification_dist(certification_report),
-                expected_source_snapshot=source_snapshot,
-            )
+            and _publish_full_run_map(root, args.tier, certification_report, source_snapshot)
+        )
         if certification_report is not None:
             certification_report.unlink(missing_ok=True)
+            if result == 0 and not recording_succeeded:
+                print(
+                    "pytest: error: dependency-map recording did not publish a complete "
+                    "source-matched map; keep inputs stable and rerun the recording tier",
+                    file=sys.stderr,
+                )
+                return 1
     return result
 
 

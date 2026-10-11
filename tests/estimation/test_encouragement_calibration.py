@@ -179,6 +179,7 @@ def test_encouragement_pipeline_smoke_duckdb():
 
 @pytest.mark.slow
 @pytest.mark.parameter_recovery
+@pytest.mark.integration
 def test_encouragement_pipeline_late_bias_and_se_calibration_duckdb():
     """Repeated seeded replications of the full DuckDB pipeline: the
     additive LATE is unbiased for the true complier effect, and the

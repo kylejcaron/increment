@@ -23,7 +23,7 @@ import tempfile
 from collections.abc import Callable
 from fractions import Fraction
 from pathlib import Path
-from typing import NamedTuple, cast
+from typing import NamedTuple, Protocol, cast
 
 import numpy as np
 import pyarrow as pa
@@ -377,11 +377,31 @@ def portable_replay(analysis: Analysis) -> Analysis:
     )
 
 
-def check_path_parity(con, dialect: str, source: str, kind: str) -> None:
-    """Every path retains the unit-summary oracle's state, registration and interval."""
+class PathObserver(Protocol):
+    """Runs one path's construction; ``check_path_parity`` hands it the ingress name."""
+
+    def __call__[T](self, ingress: str, request: Callable[[], T], /) -> T: ...
+
+
+def _unobserved[T](_ingress: str, request: Callable[[], T], /) -> T:
+    return request()
+
+
+def check_path_parity(
+    con,
+    dialect: str,
+    source: str,
+    kind: str,
+    observe: PathObserver = _unobserved,
+) -> None:
+    """Every path retains the unit-summary oracle's state, registration and interval.
+
+    ``observe(ingress, request)`` runs each path's construction so the caller can hold
+    it to that path's declared outcome; the oracle itself is ``from_unit_summary``.
+    """
     route = ROUTES[kind]
     units = unit_rows()
-    frame = frame_analysis(units, route.inference)
+    frame = observe("from_unit_summary", lambda: frame_analysis(units, route.inference))
     oracle_snapshot = frame.capture_sequential(finalized=True)
     oracle = frame.run()[0]
     assert oracle_snapshot.registration.models[0].law == route.law
@@ -393,14 +413,19 @@ def check_path_parity(con, dialect: str, source: str, kind: str) -> None:
         assert_same_interval(oracle, analysis.run()[0])
         return snapshot
 
-    assert_same_state(panel_analysis(units, route.inference))
-    definitions = warehouse_analysis(con, dialect, source, route.plan_yaml)
+    assert_same_state(observe("from_unit_panel", lambda: panel_analysis(units, route.inference)))
+    definitions = observe(
+        "from_definitions", lambda: warehouse_analysis(con, dialect, source, route.plan_yaml)
+    )
     definitions_snapshot = assert_same_state(definitions)
-    replay = portable_replay(definitions)
+    replay = observe("from_moments", lambda: portable_replay(definitions))
     assert replay.sequential_snapshot() == definitions_snapshot
     assert_same_interval(oracle, replay.run()[0])
-    artifact, store, ref = adopt(
-        definitions, con, expected_artifact_context(dialect, source, route.plan_yaml)
+    artifact, store, ref = observe(
+        "from_unit_day_artifact",
+        lambda: adopt(
+            definitions, con, expected_artifact_context(dialect, source, route.plan_yaml)
+        ),
     )
     try:
         assert assert_same_state(artifact).prefix_id == definitions_snapshot.prefix_id

@@ -27,6 +27,12 @@ from increment.semantics.design import Randomized
 from increment.semantics.models import AnalysisPlan, InferenceSpec
 from increment.sequential_state import validate_sequential_transform
 from tests.asymptotic_cases import mean_records, mean_registration
+from tests.capability_consumers_scalar import (
+    FIXED_WINSOR_SEQUENTIAL,
+    MEAN_CUPED_ASYMPTOTIC,
+    completed,
+    refused,
+)
 from tests.sequential_cases import registration
 
 _DESIGN = Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5})
@@ -63,7 +69,11 @@ _ASYMPTOTIC = AnalysisPlan(primary="outcome", inference=InferenceSpec(kind="asym
 
 def test_fixed_winsorization_runs_and_retains_clipped_scalars():
     spec = MetricSpec(name="outcome", type="mean", winsorization={"upper_value": 20.0})
-    analysis, row = _run(_frame([1, 2, 3, 40] * 30, [7, 10, 13, 50] * 30), spec, _ASYMPTOTIC)
+    analysis, row = completed(
+        FIXED_WINSOR_SEQUENTIAL,
+        "unit-summary-clipped-scalars",
+        lambda: _run(_frame([1, 2, 3, 40] * 30, [7, 10, 13, 50] * 30), spec, _ASYMPTOTIC),
+    )
     assert row.inference == "asymptotic_mean" and row.lift is not None
     means = {s.group_id: s.mean[0] for s in analysis.sequential_snapshot().states}
     assert means == {"control": F(13, 2), "treatment": F(25, 2)}
@@ -71,25 +81,34 @@ def test_fixed_winsorization_runs_and_retains_clipped_scalars():
 
 def test_percentile_winsorization_refuses_as_unpredictable():
     spec = MetricSpec(name="outcome", type="mean", winsorization={"upper_percentile": 0.9})
-    with pytest.raises(CodedError) as raised:
-        _run(_frame([1, 2, 3, 40] * 30, [7, 10, 13, 50] * 30), spec, _ASYMPTOTIC)
-    assert raised.value.code == "sequential.transform.unpredictable"
+    refused(
+        FIXED_WINSOR_SEQUENTIAL,
+        "unit-summary-percentile-refused",
+        lambda: _run(_frame([1, 2, 3, 40] * 30, [7, 10, 13, 50] * 30), spec, _ASYMPTOTIC),
+    )
 
 
 @pytest.mark.parametrize(
     "bounds", [{"upper_value": 20.0}, {"lower_value": 2.0, "upper_value": 20.0}]
 )
 def test_fixed_threshold_passes_the_shared_gate_every_route_consults(bounds):
-    validate_sequential_transform(MetricSpec(name="outcome", type="mean", winsorization=bounds))
+    spec = MetricSpec(name="outcome", type="mean", winsorization=bounds)
+    completed(
+        FIXED_WINSOR_SEQUENTIAL,
+        "shared-fixed-threshold-gate",
+        lambda: validate_sequential_transform(spec),
+    )
 
 
 def test_percentile_threshold_refused_at_the_shared_gate():
     spec = MetricSpec(
         name="outcome", type="mean", winsorization={"lower_value": 1.0, "upper_percentile": 0.99}
     )
-    with pytest.raises(CodedError) as raised:
-        validate_sequential_transform(spec)
-    assert raised.value.code == "sequential.transform.unpredictable"
+    refused(
+        FIXED_WINSOR_SEQUENTIAL,
+        "shared-percentile-threshold-gate",
+        lambda: validate_sequential_transform(spec),
+    )
 
 
 def _pre_period_frame(rng, n=400):
@@ -136,7 +155,11 @@ def test_predeclared_cuped_narrows_the_asymptotic_interval_and_labels_the_row():
         inference=InferenceSpec(kind="asymptotic_mean", adjustments={"outcome": adjustment}),
     )
     spec = MetricSpec(name="outcome", type="mean", covariate="covariate", decision_method=_CUPED)
-    analysis, adjusted = _run(frame, spec, adjusted_plan)
+    analysis, adjusted = completed(
+        MEAN_CUPED_ASYMPTOTIC,
+        "predeclared-cuped-summary-state",
+        lambda: _run(frame, spec, adjusted_plan),
+    )
     assert plain.method == "unadjusted" and adjusted.method == "cuped"
     assert adjusted.lift.ub - adjusted.lift.lb < plain.lift.ub - plain.lift.lb
     model = analysis.sequential_snapshot().registration.models[0]
@@ -154,7 +177,11 @@ def test_predeclared_cuped_narrows_the_asymptotic_interval_and_labels_the_row():
 def test_in_experiment_coefficient_is_retained_as_joint_moments_on_the_asymptotic_route():
     rng = np.random.default_rng(7)
     spec = MetricSpec(name="outcome", type="mean", covariate="covariate", decision_method=_CUPED)
-    analysis, row = _run(_experiment_frame(rng), spec, _ASYMPTOTIC)
+    analysis, row = completed(
+        MEAN_CUPED_ASYMPTOTIC,
+        "in-experiment-cuped-summary-joint-moments",
+        lambda: _run(_experiment_frame(rng), spec, _ASYMPTOTIC),
+    )
     model = analysis.sequential_snapshot().registration.models[0]
     assert model.law == "adjusted_mean" and model.adjustment is None
     assert row.method == "cuped"
@@ -164,9 +191,11 @@ def test_in_experiment_coefficient_is_retained_as_joint_moments_on_the_asymptoti
 def test_in_experiment_coefficient_still_refuses_on_the_exact_routes():
     from increment.sequential_state import validate_sequential_methods
 
-    with pytest.raises(CodedError) as raised:
-        validate_sequential_methods(registration("bernoulli"), "outcome", (_CUPED,))
-    assert raised.value.code == "sequential.transform.unpredictable"
+    refused(
+        MEAN_CUPED_ASYMPTOTIC,
+        "exact-route-cuped-refused",
+        lambda: validate_sequential_methods(registration("bernoulli"), "outcome", (_CUPED,)),
+    )
 
 
 def test_capture_retains_the_adjusted_scalar_exactly():

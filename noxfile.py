@@ -75,7 +75,7 @@ DUCKDB_FLOORS: dict[str, str] = {
 # suites mutate shared paths on disk and would race otherwise. Sessions
 # whose whole selection is one such group stay serial -- splitting them
 # buys nothing and costs worker startup.
-PYTEST_ARGS = ("-n", "auto", "--dist", "loadgroup", "-p", "no:tach")
+PYTEST_ARGS = ("-n", "auto", "--dist", "loadgroup")
 TEST_RUNNER = ("python", "-m", "scripts.run_test_tier")
 
 
@@ -153,22 +153,64 @@ def tests(session: nox.Session) -> None:
 @nox.session(python=PYTHON_VERSIONS)
 def tests_full(session: nox.Session) -> None:
     """Weekly: slow + examples against locked dependencies, across every
-    supported Python version. Mirrors ``make test-all`` (demo, tables and
-    dashboard extras, marker filter cleared) minus the Monte-Carlo tier --
-    ``tests_parameter_recovery`` runs that once, sharded, instead of once per
-    matrix cell. Pins the interpreter per matrix cell -- ``make test-all``
-    alone resolves whatever ``.python-version``/the caller's default is, so
-    the weekly workflow's 3.13/3.14 matrix legs would otherwise silently
-    re-run 3.12 three times instead of actually exercising each version.
+    supported Python version. Mirrors ``make test-all`` minus both scientific
+    campaigns, which run once in the scientific shard job below. Previously
+    covered exact-mass and capacity cases remain in this matrix.
     """
     _sync(session, "dev", extras=("demo", "tables", "dashboard"))
     _run_test_tier(
         session,
-        "all-except-parameter-recovery",
+        "all-except-scientific",
         "-q",
         *PYTEST_ARGS,
         "--evidence-root",
         ".test-evidence",
+    )
+    # Retain the numerical cases previously covered by this matrix.
+    selector = (
+        "tests/estimation/test_conversion_route_calibration.py::"
+        "TestEnumerationEnclosesTheExactMass::test_the_interval_holds_the_exact_rational_mass"
+    )
+    _run_test_tier(
+        session,
+        "numerical-certification",
+        "-q",
+        *PYTEST_ARGS,
+        "--evidence-root",
+        ".test-evidence",
+        f"{selector}[central]",
+        f"{selector}[rare]",
+        "tests/test_parity_harness.py::test_parity_case[exact_binomial_beyond_the_former_arm_ceiling]",
+    )
+
+
+@nox.session(python="3.12")
+def tests_numerical_certification(session: nox.Session) -> None:
+    """Run the required deterministic numerical-certification tier."""
+    _sync(session, "dev", extras=("demo", "tables", "dashboard"))
+    _run_test_tier(
+        session,
+        "numerical-certification",
+        "-q",
+        *PYTEST_ARGS,
+        "--evidence-root",
+        ".test-evidence",
+        *session.posargs,
+    )
+
+
+@nox.session(python="3.12")
+def tests_scientific(session: nox.Session) -> None:
+    """Run a shard of Monte-Carlo and deterministic scientific tiers."""
+    _sync(session, "dev", extras=("demo", "tables", "dashboard"))
+    _run_test_tier(
+        session,
+        "scientific",
+        "-q",
+        *PYTEST_ARGS,
+        "--evidence-root",
+        ".test-evidence",
+        *session.posargs,
     )
 
 
@@ -266,8 +308,8 @@ def tests_slow_floor(session: nox.Session) -> None:
 @nox.session(python=PYTHON_VERSIONS)
 def tests_floor_full(session: nox.Session) -> None:
     """Weekly: slow + examples against direct dependency floors, across
-    every supported Python version, minus the Monte-Carlo tier (see
-    ``tests_parameter_recovery``).
+    every supported Python version, minus the scientific tiers. Previously
+    covered exact-mass and capacity cases remain in this matrix.
 
     ``tests_floor`` above is the narrower fast-only floor session.
     This full floor session also exercises coverage checks against core,
@@ -275,7 +317,25 @@ def tests_floor_full(session: nox.Session) -> None:
     """
     _run_pytest_at_floor(
         session,
-        "all-except-parameter-recovery",
+        "all-except-scientific",
+        "-q",
+        *PYTEST_ARGS,
+        "--evidence-root",
+        ".test-evidence",
+        extras=("demo", "tables", "dashboard"),
+    )
+    if session.posargs:
+        return
+    selector = (
+        "tests/estimation/test_conversion_route_calibration.py::"
+        "TestEnumerationEnclosesTheExactMass::test_the_interval_holds_the_exact_rational_mass"
+    )
+    _run_pytest_at_floor(
+        session,
+        "numerical-certification",
+        f"{selector}[central]",
+        f"{selector}[rare]",
+        "tests/test_parity_harness.py::test_parity_case[exact_binomial_beyond_the_former_arm_ceiling]",
         "-q",
         *PYTEST_ARGS,
         "--evidence-root",
@@ -364,16 +424,7 @@ def tests_tables(session: nox.Session) -> None:
 
 @nox.session(python="3.12")
 def tests_slow(session: nox.Session) -> None:
-    """Run the functional slow tier: `slow` minus Monte-Carlo and notebooks.
-
-    These are the cross-path tests -- warehouse/frame/moments parity, export
-    round trips, breakout dispatch -- that are too slow for the fast suite
-    but prove nothing statistical, so they do not belong in the nightly
-    Monte-Carlo tier either. Cheap enough to run on every push, and the
-    only tier that sees a disagreement between two code paths over the
-    same data. Without a job here they run once a night, where a red
-    result notifies nobody.
-    """
+    """Run functional-slow tests, excluding scientific tiers and notebooks."""
     _sync(session, "dev", extras=("demo", "tables", "dashboard"))
     _run_test_tier(session, "slow", "-q", *PYTEST_ARGS)
 
@@ -438,6 +489,8 @@ def docs(session: nox.Session) -> None:
     fails ``nox -s docs`` instead of silently shipping.
     """
     _sync(session, "docs", "dev", extras=("demo", "tables", "dashboard"))
+    session.run("python", "scripts/check_doc_references.py", "--check")
+    session.run("python", "scripts/render_capability_table.py", "--check")
     for name in EXAMPLE_NOTEBOOKS:
         session.run(
             "marimo",

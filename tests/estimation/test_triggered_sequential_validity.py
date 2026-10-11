@@ -127,6 +127,7 @@ def _log_e(control: tuple[int, int], treatment: tuple[int, int], prior: BetaPrio
 
 
 @pytest.mark.slow
+@pytest.mark.parameter_recovery
 def test_leak_informed_stopping_inflates_the_stopped_e_value_but_not_the_crossing_bound():
     """A look rule using information outside the chain's filtration breaks E[e_tau] <= 1
     while P(sup e >= 1/alpha) <= alpha stays intact, which is why the family verdict

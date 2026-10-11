@@ -905,14 +905,39 @@ def test_same_kind_catalog_entries_select_exact_request():
 
 @pytest.mark.parametrize(("req", "definition", "rows"), _all_extension_cases())
 def test_every_extension_rejects_missing_operation_and_extension(req, definition, rows):
+    auxiliary = {
+        "breakout_dimension": "breakout",
+        "factor_dimension": "factor",
+        "trigger_population": "cate",
+        "trigger_measure_stats": "cate",
+    }
+    operation = auxiliary.get(req["kind"])
+    if operation is not None:
+        from tests.capability_consumers_auxiliary import assert_refusal
     with pytest.raises(ArtifactContractError) as raised1:
         encode_extension(
             SimpleNamespace(operations=frozenset()), req, _Publication(), context=None, rows=rows
         )
     assert raised1.value.code == "artifact.evidence.unavailable"
+    if operation is not None:
+        assert_refusal(
+            "triggered_auxiliary_reads",
+            f"{operation}_artifact_missing_evidence",
+            raised1.value,
+            stage="publication",
+        )
     with pytest.raises(ArtifactContractError) as raised2:
         read_extension(_Snapshot(None, []), None, request=req)
     assert raised2.value.code == "artifact.extension.missing"
+    if operation is not None:
+        assert_refusal(
+            "triggered_auxiliary_reads",
+            "factor_artifact_extension_decoder_missing_extension"
+            if operation == "factor"
+            else f"{operation}_artifact_missing_extension",
+            raised2.value,
+            stage="read",
+        )
 
 
 @pytest.mark.parametrize(("req", "definition", "rows"), _all_extension_cases())

@@ -2028,6 +2028,7 @@ def test_native_daily_and_asof_lift_inherit_configured_method_for_metric_object(
 # A dimensioned daily sweep over a conversion metric, inverting an exact
 # binomial interval per day, arm and dimension value.
 @pytest.mark.slow
+@pytest.mark.integration
 def test_artifact_dimensioned_daily_lift_preserves_estimator_warning_contract(monkeypatch):
     """Artifact-backed daily lift keeps estimator warnings live and exact."""
     from tests.test_unit_day_artifact_facade import _extensions, _native

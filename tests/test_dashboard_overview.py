@@ -72,52 +72,66 @@ def _config(*added: str) -> DashboardConfig:
     )
 
 
+@pytest.fixture(scope="module")
+def _saved_added_snapshot(tmp_path_factory):
+    # DashboardSnapshot is read-only and holds no connection; build it from a real workspace,
+    # then let that workspace close before presentation-only consumers share the snapshot.
+    with _workspace(tmp_path_factory.mktemp("overview-snapshot"), metrics=_SAVED) as (
+        _,
+        analysis,
+    ):
+        return prepare_dashboard(analysis, config=_config(ADDED))
+
+
 def _identity(row) -> tuple:
     return (row["metric"], row["group_id"], row["lift"], row["lower"], row["higher"])
 
 
-def test_declared_whole_experiment_rows_are_the_readout_rows(tmp_path):
-    with _workspace(tmp_path, metrics=_SAVED) as (_, analysis):
-        snapshot = prepare_dashboard(analysis, config=_config(ADDED))
-        readout = {_identity(row): row["stat_sig"] for row in decision_rows(snapshot)}
-        for scope in (None, COUNTRY):
-            shown = {
-                _identity(row): row["stat_sig"]
-                for row in overview_rows(snapshot, scope)
-                if row["metric"] != ADDED and row.get("dimension") is None
-            }
-            assert shown == readout
-        assert ADDED not in {row["metric"] for row in snapshot.readout_rows}
+@pytest.mark.xdist_group("dashboard_overview_saved_added_snapshot")
+@pytest.mark.integration
+def test_declared_whole_experiment_rows_are_the_readout_rows(_saved_added_snapshot):
+    snapshot = _saved_added_snapshot
+    readout = {_identity(row): row["stat_sig"] for row in decision_rows(snapshot)}
+    for scope in (None, COUNTRY):
+        shown = {
+            _identity(row): row["stat_sig"]
+            for row in overview_rows(snapshot, scope)
+            if row["metric"] != ADDED and row.get("dimension") is None
+        }
+        assert shown == readout
+    assert ADDED not in {row["metric"] for row in snapshot.readout_rows}
 
 
-def test_one_family_covers_added_metrics_and_every_segment_cell(tmp_path):
-    with _workspace(tmp_path, metrics=_SAVED) as (_, analysis):
-        snapshot = prepare_dashboard(analysis, config=_config(ADDED))
-        overview = snapshot.overview
-        assert overview is not None and overview.family_refusal is None
-        segments = overview.segments[COUNTRY]
-        cells = [*overview.exploratory, *segments]
-        tested = [cell for cell in cells if cell.family_size is not None]
-        assert {cell.metric for cell in overview.exploratory} == {ADDED}
-        assert {cell.metric for cell in segments} >= {ADDED, "checkout_conversion"}
-        assert len(tested) == overview.family_size > len(overview.exploratory)
-        assert {cell.family_size for cell in tested} == {overview.family_size}
-        assert {cell.family_q for cell in tested} == {overview.family_q}
-        # The marker on every exploratory overview row is its family discovery.
-        for row in overview_rows(snapshot, COUNTRY):
-            if row["metric"] == ADDED or row.get("dimension") is not None:
-                assert row["stat_sig"] is bool(row.get("discovery"))
+@pytest.mark.xdist_group("dashboard_overview_saved_added_snapshot")
+@pytest.mark.integration
+def test_one_family_covers_added_metrics_and_every_segment_cell(_saved_added_snapshot):
+    snapshot = _saved_added_snapshot
+    overview = snapshot.overview
+    assert overview is not None and overview.family_refusal is None
+    segments = overview.segments[COUNTRY]
+    cells = [*overview.exploratory, *segments]
+    tested = [cell for cell in cells if cell.family_size is not None]
+    assert {cell.metric for cell in overview.exploratory} == {ADDED}
+    assert {cell.metric for cell in segments} >= {ADDED, "checkout_conversion"}
+    assert len(tested) == overview.family_size > len(overview.exploratory)
+    assert {cell.family_size for cell in tested} == {overview.family_size}
+    assert {cell.family_q for cell in tested} == {overview.family_q}
+    # The marker on every exploratory overview row is its family discovery.
+    for row in overview_rows(snapshot, COUNTRY):
+        if row["metric"] == ADDED or row.get("dimension") is not None:
+            assert row["stat_sig"] is bool(row.get("discovery"))
 
 
-def test_only_a_discovery_is_coloured_as_a_finding(tmp_path):
+@pytest.mark.xdist_group("dashboard_overview_saved_added_snapshot")
+@pytest.mark.integration
+def test_only_a_discovery_is_coloured_as_a_finding(_saved_added_snapshot):
     import dataclasses
 
     from increment.dashboard._html import overview_table
     from increment.dashboard._theme import coeftable_theme
     from increment.estimation.results import Estimate
 
-    with _workspace(tmp_path, metrics=_SAVED) as (_, analysis):
-        snapshot = prepare_dashboard(analysis, config=_config(ADDED))
+    snapshot = _saved_added_snapshot
     overview = snapshot.overview
     assert overview is not None
     clear = Estimate(value=0.5, lb=0.3, ub=0.7, level=0.95)
@@ -132,6 +146,7 @@ def test_only_a_discovery_is_coloured_as_a_finding(tmp_path):
     assert shown(False).count(favorable) < shown(True).count(favorable)
 
 
+@pytest.mark.integration
 def test_added_metrics_keep_their_own_absolute_value_series(tmp_path):
     from increment.dashboard._app import build_payload
 
@@ -142,6 +157,7 @@ def test_added_metrics_keep_their_own_absolute_value_series(tmp_path):
             assert explore[view]["pointCount"] > 0
 
 
+@pytest.mark.integration
 def test_a_metric_the_breakout_refuses_keeps_every_other_metrics_segments(tmp_path):
     with _workspace(tmp_path, metrics=_WITH_QUANTILE) as (_, analysis):
         # The quantile metric is offered but not shown; its refusal is still reported.
@@ -157,6 +173,7 @@ def test_a_metric_the_breakout_refuses_keeps_every_other_metrics_segments(tmp_pa
         assert any(QUANTILE in note for note in overview_notes(snapshot, COUNTRY))
 
 
+@pytest.mark.integration
 def test_two_sources_of_one_property_are_separate_comparisons(tmp_path):
     sources = ("event_log", "profiles")
     with _workspace(tmp_path, metrics=_SAVED, breakout_sources=sources) as (_, analysis):
@@ -174,6 +191,7 @@ def test_two_sources_of_one_property_are_separate_comparisons(tmp_path):
         assert len(tested) == overview.family_size
 
 
+@pytest.mark.integration
 def test_choosing_what_to_show_never_changes_the_family(tmp_path):
     with _workspace(tmp_path, metrics=_SAVED) as (_, analysis):
         hidden = prepare_dashboard(analysis, config=_config())
@@ -202,6 +220,7 @@ def test_an_undeclared_exploratory_metric_is_refused_before_preparation(tmp_path
 
 
 @pytest.mark.slow
+@pytest.mark.integration
 def test_added_metrics_come_from_the_pinned_read(tmp_path):
     with _workspace(tmp_path, metrics=_SAVED) as (con, analysis):
         snapshot = prepare_dashboard(analysis, config=_config(ADDED))
@@ -225,6 +244,7 @@ def _page_payload(page: str) -> dict:
 
 
 @pytest.mark.slow
+@pytest.mark.integration
 def test_the_dashboard_widget_shows_added_metrics_without_reading_again(tmp_path):
     from increment.dashboard._app import DashboardWidget
 
@@ -257,6 +277,7 @@ def test_the_dashboard_widget_shows_added_metrics_without_reading_again(tmp_path
         assert ADDED not in {metric["key"] for metric in _page_payload(widget.document)["metrics"]}
 
 
+@pytest.mark.integration
 def test_an_unexpected_update_failure_rolls_the_widget_back(tmp_path, monkeypatch):
     from increment.dashboard import _app
 
@@ -304,6 +325,7 @@ def test_only_estimable_saved_metrics_are_offered(tmp_path):
 
 
 @pytest.mark.slow
+@pytest.mark.integration
 def test_an_added_metric_with_a_display_unit_can_be_removed_and_re_added(tmp_path):
     from increment.dashboard._app import DashboardWidget
 
@@ -361,6 +383,7 @@ def _rows(collection) -> list[dict[str, object]]:
 
 @pytest.mark.slow
 @pytest.mark.parametrize("correction", ["bonferroni", "bh"])
+@pytest.mark.integration
 def test_offered_metrics_read_together_match_each_metric_read_alone(
     tmp_path, monkeypatch, correction
 ):
@@ -406,6 +429,7 @@ def test_offered_metrics_read_together_match_each_metric_read_alone(
         assert discoveries > 0 or correction == "bonferroni"
 
 
+@pytest.mark.integration
 def test_an_added_metric_inspector_shows_its_overview_result(tmp_path):
     from increment.dashboard._app import build_payload
 

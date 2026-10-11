@@ -97,7 +97,7 @@ def _order_by_recorded_duration(
     items: list[pytest.Item],
     durations_path: Path,
     durations: dict[str, float] | None = None,
-    markdown_order: dict[str, int] | None = None,
+    markdown_order: dict[int, int] | None = None,
 ) -> None:
     """Order ordinary tests longest-first and retain Markdown source order."""
     if durations is None:
@@ -113,7 +113,7 @@ def _order_by_recorded_duration(
             key=lambda pair: (
                 _markdown_path(pair[1]) is not None,
                 (
-                    markdown_order.get(pair[1].nodeid, pair[0])
+                    markdown_order.get(id(pair[1]), pair[0])
                     if markdown_order is not None
                     else pair[0]
                 )
@@ -135,7 +135,18 @@ def _group_markdown_items(items: list[pytest.Item]) -> None:
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Order tests and assign local performance deadlines."""
+    """Validate categories, order tests and assign local performance deadlines."""
+    for item in items:
+        if item.get_closest_marker("slow") is not None:
+            continue
+        for category in (
+            "parameter_recovery",
+            "numerical_certification",
+            "examples",
+            "stress",
+        ):
+            if item.get_closest_marker(category) is not None:
+                raise pytest.UsageError(f"{item.nodeid}: {category} requires the slow mark")
     _group_markdown_items(items)
     if os.environ.get("INCREMENT_DISABLE_DURATION_ORDER") != "1":
         _order_by_recorded_duration(
@@ -150,7 +161,10 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             continue
         if any(item.get_closest_marker(marker) for marker in _WAREHOUSE_MARKERS):
             seconds = _WAREHOUSE_TIMEOUT_SECONDS
-        elif item.get_closest_marker("examples") or item.get_closest_marker("parameter_recovery"):
+        elif any(
+            item.get_closest_marker(marker)
+            for marker in ("examples", "parameter_recovery", "numerical_certification")
+        ):
             seconds = _EXPENSIVE_TIMEOUT_SECONDS
         elif item.get_closest_marker("slow"):
             seconds = _SLOW_TIMEOUT_SECONDS

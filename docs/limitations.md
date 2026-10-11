@@ -40,7 +40,7 @@ examples, as is every logged-policy request made through an `Analysis` entry poi
 - **not comparable**: the capability concerns something that entry point lacks, such as an
   artifact store, so there is no result to compare. The cell also names a SOURCE reason.
 
-The parity harness (`tests/parity_harness/matrix.py`) calls SOURCE `source_limited` and
+The parity harness (`helper:tests/parity_harness/matrix.py`) calls SOURCE `source_limited` and
 CONSTRUCTION `construction_limited`; its waiver strings label the "no switchback schedule"
 cells `COMBINATION:` where this page says SOURCE.
 
@@ -172,10 +172,10 @@ A unit-grain ratio row (unadjusted or CUPED, fixed horizon) carries a
 `ratio_denominator_precision` note when either arm's denominator mean is resolved to a
 relative standard error `sqrt(var_d / n) / d_bar` above 0.15. This is an advisory
 qualification, not a refusal or a corrected interval: the interval is emitted unchanged.
-The threshold comes from `calibration/ratio_precision.py`, a seeded coverage
-grid over sample sizes 20-2000 and lognormal, exponential and gamma denominators with an
-independent numerator. Every cell covering below 93% at nominal 95% exceeds it in most
-draws, and no cell covering at least 94.5% does. The note names the arm, the statistic and
+The threshold comes from `helper:calibration/ratio_precision.py`, a seeded coverage grid over
+sample sizes 20-2000 and lognormal, exponential and gamma denominators with an independent
+numerator. Every cell covering below 93% at nominal 95% exceeds it in most draws, and no cell
+covering at least 94.5% does. The note names the arm, the statistic and
 the threshold. The unchanged interval is still anticonservative under a right-skewed
 denominator (85.5% coverage at n=20 and 89.6% at n=50 under lognormal(sigma=1.5)).
 The statistic sees only the denominator's own precision: a numerator that moves with the
@@ -264,6 +264,8 @@ uv run python -m calibration.cluster_diagnostics --output /tmp/cluster-diagnosti
 uv run python -m calibration.cluster_diagnostics --selection full --output /tmp/cluster-stress
 ```
 
+The module entrypoints are `campaign-module:calibration.cluster_diagnostics --output /tmp/cluster-diagnostics --repetitions 4` and `campaign-module:calibration.cluster_diagnostics --selection full --output /tmp/cluster-stress`.
+
 Output directories must be new. Budgets are bounded at one hour; started,
 completed, refused, failed, unfinished, and unstarted work remain distinguishable.
 The full route preserves original seeds, repetition rules, and paired-width
@@ -340,7 +342,7 @@ interval is computed. It never compares an interval or a p-value, and it labels 
   `sqrt(2/9)`), and it carries no finite-sample guarantee.
 * **Finite-sample route** (`reference_kind="binomial"`, `scale="linear"`, a `binomial_set`):
   an exact independent-binomial risk-ratio method (Berger-Boos restricted-nuisance test
-  inversion; see `increment/estimation/binomial_rr.py`) for every other count pair. It
+  inversion; see `helper:increment/estimation/binomial_rr.py`) for every other count pair. It
   handles every event count directly, with no admission rule and no continuity correction,
   and only these rows carry the finite-sample guarantee. The hybrid default is never a
   universally finite-sample route.
@@ -376,7 +378,7 @@ with every step of that candidate's own ladder through 1.25 times it measured; t
 anchored at 10 for the tails from 0.025 up and at 1,637 below (the 0.005 tail's on the
 continuation of an interrupted scan, at 2,489.5). A scan records its ladder with every step.
 The same numeric rung counts regardless of which scan measured it, but a differently numbered
-rung cannot replace a missing candidate rung. `python -m calibration.conversion_route required`
+rung cannot replace a missing candidate rung. The `python -m calibration.conversion_route required` command (`campaign-module:calibration.conversion_route required`)
 reads saved scans, inferring compatible anchors for legacy rows and refusing a legacy scan
 that no single ladder fits:
 
@@ -386,7 +388,7 @@ that no single ladder fits:
 | `dense_min_count` | 17,000 | 13,224 | 6,384 | 4,247 | 2,140 | 1,062 | 412 |
 | Law over requirement | 1.28 | 1.31 | 2.23 | 1.96 | 3.72 | 3.71 | 1.25 |
 
-`python -m calibration.conversion_route select` integrates the interval's noncoverage over
+`python -m calibration.conversion_route select` (`campaign-module:calibration.conversion_route select`) integrates the interval's noncoverage over
 the exact binomial lattice in rare, failure-limited and central boundary cells (control sizes
 1e3 to 1e7 at every 1, 2 and 5 of a decade, allocations 1:1, 1:4 and 4:1, risk ratios 0.5 to 2)
 and reports, per tail, the worst excess over the tail in tolerance units (at most 1 passes); the
@@ -479,7 +481,7 @@ The finite-sample route also has three boundaries, each a refusal rather than si
   a dense cell runs at any size under `auto`)
   rather than running a search whose cost keeps growing with the arm. The cap is the
   largest arm the numerical safeguards were validated at against an independent decimal
-  oracle (`calibration/binomial_oracle.py`, run by `scripts/measure_binomial_ceiling.py`
+  oracle (`helper:calibration/binomial_oracle.py`, run by `helper:scripts/measure_binomial_ceiling.py`
   `ulp` and `recovery` at 4,000,000, 16,000,000, 64,000,000, 100,000,000 and 1,000,000,000
   per arm): the SciPy binomial primitives' error allowance (the worst relative error of a
   pmf, cdf or sf that bears weight, as a share of `n` units of `2^-52`, was 0.198, 0.245,
@@ -928,7 +930,7 @@ integer counts before computing the delta interval. Accepted producer-rounding d
 therefore cannot change the decision for identical counts. Other metrics and adjusted
 conversion rows continue to use their supplied moments.
 
-`python -m calibration.conversion_route bound` compares each route's plan with the pipeline's
+`python -m calibration.conversion_route bound` (`campaign-module:calibration.conversion_route bound`) compares each route's plan with the pipeline's
 exact rejection probability, summed over the count lattice, and judges each by the claim of its
 route. The 534 designs run so far reach every production tail at central and rare-event rates,
 with falls (negative lifts) at the 0.01, 0.025, 0.05 and 0.1 tails; the `tails` and `window`

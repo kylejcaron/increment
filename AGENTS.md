@@ -46,132 +46,101 @@ When working a kata-tracked issue, keep its `work.*` metadata truthful:
 
 ## Tests and validation
 
-- Unit tests MUST NOT use the network or a real warehouse. Live warehouse
-  checks belong under `integration/warehouse_execution/`.
-- Tests MUST be independent under `pytest-xdist`. A test MUST NOT rely on
-  execution order or state created by another test. Modules that mutate a
-  shared filesystem path MUST use `pytest.mark.xdist_group("<name>")`.
-- Tests slower than the ordinary suite use `@pytest.mark.slow`.
-  Simulation-based coverage, bias, or parameter-recovery checks additionally
-  use `@pytest.mark.parameter_recovery`. Full simulation calibration grids live
-  in `calibration/` and run before releases or when the covered inference
-  changes; the slow tier retains representative sentinels plus a small fast
-  smoke.
-- Tests assert consumer-visible behavior: stable codes, numerical contracts,
-  tolerances, invariants, and cross-path parity. They MUST NOT pin permitted
-  message wording, private structure, internal wiring, or exact bits where a
-  tolerance defines the contract.
-- Serialization replay tests MUST run claimed consumers on the restored
-  object, not the original.
-- Start with the exact regression:
-  `make test TESTS=tests/file.py::test_name`.
-- Then run `make test-affected BASE=<task-base-sha>` (default fast, serial);
-  use `TIER=slow` or numeric xdist (`-n 1..8`, with `--dist loadgroup`)
-  when relevant. The affected runner accepts only typed selectors/controls:
-  `-k`, `-m`, `-x`/`--maxfail`, `-q`, `-v`, `--durations`, numeric `-n`,
-  `--dist loadgroup`, `--evidence-root`, and `--runtime-diagnostics`.
-  Arbitrary pytest arguments, alternate configs, addopts/plugins environment,
-  response files, automatic/logical workers, and custom xdist transports are
-  refused. `PYTEST_XDIST_AUTO_NUM_WORKERS` does not override the numeric policy.
-  Resolve and record the task base at dispatch, reuse it across commits/resumes,
-  and use `BASE=HEAD` only for a working-tree-only comparison.
-- Normal test tiers run testmon in selection-disabled mode, recording per-test
-  executed code into the ignored `.testmondata` map. Supervised pytest children
-  carry an explicit owner-child role; nested normal runners bypass Testmon
-  reads/writes and certification. Without a valid owner token, a nested normal
-  runner skips Testmon entirely and does not acquire its database lock; only
-  reusing a live same-worktree lock requires the verified owner token.
-- Only an unfiltered, fully executed fast/slow/full tier writes an ignored
-  completeness marker; file/node selectors, sharding, help, inherited
-  `PYTEST_ADDOPTS`, and collection-only runs cannot certify it. Full runs
-  refresh the `.testmondata` per-test execution map and a companion marker bound
-  to the Testmon database, exact Python/dependency environment, and tracked
-  source snapshots. They record each tier's collected node IDs, with
-  `loadgroup` suffixes when that scheduler is active, import-time executed lines
-  gathered in a fresh interpreter (module imports and full test collection under
-  coverage), plus AST fingerprints for module/class-level state. A fast or slow
-  run certifies
-  only the tier it executes; an `all` run certifies both. Testmon's xdist
-  synchronization may discard tests from the other tier, so a tier's marker
-  is retained only while every recorded node ID remains present in
-  `.testmondata`. Affected runs preserve the marker and never certify a tier.
-  The marker also checks resolved pytest
-  config/selection controls and requires terminal reports for every collected
-  test node ID. Affected startup pins Testmon to the worktree's `.testmondata`
-  and validates the marker before Testmon opens and mutates its database.
-  Testmon is primary only when the map covers the requested tier and changed
-  function bodies. On that primary path, import-graph consumers of changed test
-  modules are protected from Testmon deselection. Changes to import-executed lines
-  or any function containing them fall back to the import graph. Module/class-level
-  changes use the same fallback. Testmon's xdist synchronization is supported;
-  affected collection restores longest-first duration ordering after Testmon's
-  collection hook. Missing, new, unreadable/corrupt, stale, or incomplete maps
-  fall back to the conservative local AST import graph. That graph follows
-  file-level imports transitively through source modules and tests, including
-  consumers of changed test helper modules; it resolves public lazy exports
-  from the package export map and retains the full test set if any graph file
-  is unparseable. Changed test files, dynamic-import consumers, subprocess test
-  files, and filesystem guard tests remain selected in either mode. Config,
-  dependency/plugin, conftest/shared-fixture, data, and public lazy-export
-  hazards still refuse with a broader route; changed files that themselves
-  dynamically load arbitrary paths remain refusals. A zero-selection run is
-  rejected, and successful acceptance requires owned finished evidence whose
-  terminal node IDs exactly match the selected node IDs. Affected evidence
-  records the selector route as `testmon` or `import_graph`. Affected-fast
-  does not waive slow, parity, fixture, public-smoke, docs, scientific, or
-  full-suite gates.
-- Dispatch/resume notes record base SHA, commands, numeric/serial worker
-  allowance, remaining acceptance, and evidence location. Selection evidence
-  is tied to source, worktree/environment, and dirty inputs; changed inputs
-  require rerunning it.
-- Run `make install` once per clone. It installs the prek pre-commit (Ruff,
-  ty, prose audit) and pre-push hooks; prek chains an existing roborev
-  pre-push hook as `pre-push.legacy`. Do not bypass them with `--no-verify`.
+- Unit tests MUST NOT use the network or real warehouses. Live checks belong
+  under `integration/warehouse_execution/`.
+- Unmarked test categories default to cheap unit/small regression checks.
+  Mark component/query/UI/subprocess boundaries `integration`; use `slow`
+  for expensive work and `stress` plus `slow` for large deterministic grids.
+  Legacy unmarked tests require source inspection, not an assumed unit label.
+- Recovery, coverage and bias studies use `parameter_recovery` plus `slow`;
+  deterministic inferential-certification families use
+  `numerical_certification` plus `slow`. Notebook exports use `examples` plus
+  `slow`. Collection enforces the cost mark, including inherited marks.
+  Integration alone does not exclude a test.
+- Review recorded setup/body/teardown costs above five seconds; prioritize
+  above ten. Thresholds trigger investigation, not flaky timing failures.
+  Keep assertions and scientific settings when splitting smoke/campaigns;
+  exclusion requires an equivalent required execution gate. See
+  [test categories and runtime expectations](CONTRIBUTING.md#test-categories-and-runtime-expectations).
+- Tests MUST be independent under xdist. Modules that mutate shared paths use
+  `pytest.mark.xdist_group("<name>")`; dependent Markdown snippets retain source
+  order within their file.
+- Slow tests use `@pytest.mark.slow`; simulation coverage, bias and recovery
+  checks also use `@pytest.mark.parameter_recovery`, while deterministic
+  inferential certification uses `@pytest.mark.numerical_certification`.
+  Keep exact designs, seeds, repetitions, thresholds and tolerances in both
+  classes; the required certification gate covers relevant changes, while
+  weekly scientific shards retain the union. Full calibration grids live in
+  `calibration/` and run before releases or covered-inference changes; retain
+  representative slow sentinels and a fast smoke.
+- Assert consumer-visible behavior: codes, numerical tolerances, boundaries,
+  invariants and parity. Do not pin permitted wording, private wiring or exact
+  bits where a tolerance defines the contract. Replay tests exercise the
+  claimed consumers on the restored object.
+- Start with `make test TESTS=tests/file.py::test_name`, then
+  `make test-affected BASE=<task-base-sha>`; include relevant slow cases.
+  Resolve the base at dispatch and reuse it across commits/resumes.
+  `BASE=HEAD` is only a working-tree comparison.
+- Affected checks require nonempty selection and complete source-bound
+  execution evidence. They do not waive slow, parity, fixtures, public smokes,
+  docs, scientific or full-suite gates. See
+  [selection controls and evidence](CONTRIBUTING.md#tests-and-quality-checks).
+- Dependency-map recording is optional: `make test-map TIER=fast|slow`.
+  Ordinary full-tier checks keep all tests without rebuilding the map;
+  affected checks retain their trusted-map or conservative-graph routes.
+- Reuse matching source/worktree/environment-bound evidence across read-only
+  reviews; changed inputs invalidate it. Required integration gates remain.
+- Run `make install` for explicit hook setup; do not bypass hooks with
+  `--no-verify`. Do not activate shared hooks while live consumers are unprepared.
 - Run `make check` before pushing. Reserve `make test-all` for final integration
-  or release candidates that change estimation or a wire format.
-- Use `make fmt` for formatting. Build documentation with `nox -s docs`, not
-  bare MkDocs; the Nox session exports the notebook-backed pages first.
+  or release candidates changing estimation or a wire format.
+- Use `make fmt`; build docs with `nox -s docs`, not bare MkDocs.
 
-## Parallel work and handoffs
+## Coordination and review
 
-- Record the user-selected integration branch, absolute worktree path, and
-  source SHA before dispatch. Every worker uses its assigned absolute path;
-  a session's working directory is not evidence of the intended branch.
-- Ignored planning notes, contracts, and temporary measurement scripts remain
-  local. Do not force-add them to obtain commit-based reviews. Ship product
-  documentation and behavioral verification, not execution scaffolding.
-- Review a design contract at its agreed gate, resolve remaining decisions,
-  then verify the implementation. Do not restart a design-only review loop
-  for every clarification or treat a contract as an implemented capability.
-- Give shared result schemas and serialization boundaries one integration
-  writer. Consumers use a concrete, exercised implementation handoff, not
-  independently invented carriers based on the same design document.
-- Coordinate aggregate test workers across the host. Use focused checks
-  during implementation; one coordinator owns broad integration checks.
-  Docs-only clarifications do not justify repeated broad suites. Ordinary
-  focused and xdist runs may overlap. Reserve an exclusive window only for
-  CPU/RSS timing measurements; correctness oracles run under load, with any
-  elapsed time labeled contended.
-- Integrate a lane as soon as its focused checks and review pass, then run
-  the combined focused selection on the integration branch. Do not hold
-  verified work on side branches; late merges hide cross-lane failures.
-  The integration gate before each commit includes the `slow`-marked tests
-  of every changed test file, not only the default selection.
-- Where roborev is configured for the checkout, run
-  `roborev fix --list --branch <branch>` before closing a tracked issue and
-  after each integration commit. Resolve or triage open findings before
-  starting the next task. Close a review only with cited code or test
-  evidence for every finding; "a later review found nothing" is not evidence.
-  Contributors without roborev are not required to install it.
-- Update the issue ledger when work state changes (commit, merge,
-  verification, blocker), not in end-of-session batches.
-- When several writers share one worktree, assign disjoint file ownership,
-  route other hunks through the owner, and keep every module importable
-  after each edit.
-- A handoff names exact commits, dirty and untracked files, verification
-  evidence, unresolved decisions, and the next action. Distinguish
-  implemented, verified, integrated, and issue-closed work. Preserve partial
-  edits and stop old workers before a new coordinator takes ownership.
+- Record the integration branch, absolute worktree, immutable base, worker
+  allowance and evidence location. Assign disjoint files; shared schemas and
+  serialization have one writer. Consume exercised handoffs, not design-only
+  carriers. Keep modules importable and preserve other writers' work.
+- One coordinator owns broad checks; focused suites may overlap within the
+  host allowance. Timing measurements require an uncontended window.
+- Integrate reviewed slices promptly. Before each integration commit, include
+  relevant slow tests of changed test files. A changed source/environment
+  invalidates affected evidence.
+- Before any merge, inspect main and the integration worktree's status; do not
+  overwrite unrelated dirty work. Each task's reviewer is independent of its
+  writer and receives the brief, report and diff, not the controller conversation.
+- Every PR requires a human diff read before merging. Where configured, pin
+  Roborev's repo and branch; check its backlog before issue closure and after
+  integration commits. Resolve each finding with concrete code/test evidence,
+  not a later clean review. See [review and handoffs](CONTRIBUTING.md#review-and-handoffs).
+- Ignored plans and temporary probes stay local; never force-add scaffolding.
+  Record decisions, verification and blockers in the issue ledger as they change.
+- Handoffs identify commits, dirty/untracked work, evidence, remaining decisions
+  and next action; distinguish implemented, verified, integrated and closed.
+  Stop old writers before transferring ownership. Preserve original scientific
+  and human acceptance; a design review is not implementation verification.
+
+### Recommended local verification and review
+
+Keep Roborev per commit. This cadence does not relax the current before-push
+`make check`, required CI, or scientific acceptance; it does not authorize
+shared-hook changes.
+
+| Boundary | Checks and tests | Review |
+| --- | --- | --- |
+| Commit | Existing format/lint/type hooks; relevant regressions while editing, not a broad suite merely because a commit is created. | Roborev per commit; resolve findings with concrete evidence. |
+| Task / AI task | Focused regressions, affected fast and relevant affected slow against the immutable task base, plus the changed public-behavior smoke. Follow broader routes when selection refuses. | One independent high-depth correctness review of the completed task; consume commit findings. |
+| PR | Current `make check` (full fast and functional slow) before pushing; required CI and applicable docs/build, parity and scientific gates. | Human full-diff read and coherent branch-range correctness review; consume task and commit reports. |
+| Stack / final integration | Same baseline on the frozen combined source, plus cross-PR journeys and applicable scientific campaigns or `make test-all`. | High-depth integration review of interactions and unreviewed resolutions; do not re-review every constituent PR from scratch. |
+
+- A standalone PR is the final integration gate. Reuse matching evidence when
+  its validated head is already the final stack head; changed source or inputs
+  require fresh relevant checks.
+- Escalate statistical, numerical, wire-format and selection-certification
+  changes to domain review; add targeted security review for security-sensitive
+  boundaries. A review is not execution evidence.
+
 
 ## Analysis ingress and parity
 
@@ -193,34 +162,26 @@ Where a path cannot support a capability, refuse explicitly and distinguish a
 source that cannot supply required input from an estimator or construction
 that is unfinished. Keep the path-by-capability table in
 `docs/reference/capabilities-by-entry-point.md` aligned with measured behavior.
-## Review outcomes, not structure
 
-- Review analysis changes by asking whether an ordinary analyst can reach and
-  correctly interpret the result for the affected user journey. Use the
-  eleven journey contracts and evidence inventory in `docs/validation.md`;
-  structural proxies such as constructor presence, row counts, or a passing
-  primitive test do not establish an outcome contract.
-- For scoped results, check decision completeness: every required cell is
-  present as a result or an identity-preserving unavailable row with its
-  reason. A partial collection MUST NOT look like a complete answer.
-- Keep sampling evidence and posterior summaries distinct. A prior MUST NOT
-  change sampling inference; posterior-dependent decisions require an actually
-  available posterior and its recorded reason when unavailable.
-- Check automatic assignment integrity in `Analysis.run()` at the assigned
-  population and declared assignment grain. `NotApplicable` is not a pass;
-  it means the integrity question could not be evaluated under the source or
-  assignment contract. Triggered counts are not assignment-law evidence.
-- Check multiplicity status and family scope on the result, not only the
-  displayed estimate. In particular, `exploratory_unadjusted` explicitly
-  means no family adjustment, and filtering must not shrink the retained
-  family.
-- Treat `assigned` and `triggered` as distinct populations and family scopes.
-  A triggered estimate is anchored at each unit's first eligible trigger; it
-  does not validate random assignment or establish that conditioning on
-  triggering is causally valid.
-- Reuse `tests/readout_journeys.py` assertions where applicable and verify the
-  public result a user consumes. Do not replace semantic checks with wording,
-  private-wiring, or type/name-count assertions.
+## Consumer outcomes
+
+- Verify the public outcome using the eleven journeys in `docs/validation.md`
+  and `tests/readout_journeys.py`; constructor presence or row counts alone
+  are not acceptance.
+- Every requested cell is a result or identity-preserving unavailable row with
+  its exact reason. A partial collection MUST NOT look complete.
+- Priors MUST NOT change sampling inference. Posterior-dependent decisions
+  require an available posterior or its exact unavailable reason.
+- Automatic assignment integrity is evaluated in `Analysis.run()` on the
+  assigned population and declared grain. `NotApplicable` is not a pass.
+  Unassigned/mixed audit buckets are not arms; triggered counts are not
+  assignment-law evidence.
+- Preserve multiplicity status and retained family through filtering.
+  `exploratory_unadjusted` means no family adjustment.
+- Keep `assigned` and `triggered` populations/families distinct. Triggered
+  outcomes anchor at first eligible trigger; conditioning does not establish
+  causal validity or validate random assignment.
+
 
 ## Import organization and user-facing language
 
@@ -267,6 +228,9 @@ that is unfinished. Keep the path-by-capability table in
 
 ## Numerical and data contracts
 
+- Changes that can move a published number cite the pinned baseline and verify
+  the applicable numerical contract; ownership-only extraction preserves its
+  existing result and identity values.
 - When planning and runtime, or dataframe and query paths, derive the same
   quantity independently, add an equivalence test at matched inputs.
 - For small probabilities, allocate family and tail error conservatively. Use

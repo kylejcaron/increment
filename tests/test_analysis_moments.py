@@ -21,6 +21,7 @@ from increment.semantics.design import AdjustmentSet, Observational
 from increment.semantics.loader import load
 from increment.semantics.models import AnalysisPlan, MeanMetric, Winsorization
 from tests.analysis_factory import make_analysis
+from tests.capability_consumers_auxiliary import assert_refusal
 from tests.sequential_cases import registration
 
 
@@ -249,8 +250,13 @@ def test_triggered_run_refuses_unit_summary_and_moment_replay():
         ),
         contrast_references={"value": UnitCycleTApproximation()},
     )
-    candidates = (analysis, replay, panel, switchback)
-    for candidate in candidates:
+    candidates = (
+        ("from_unit_summary", analysis),
+        ("from_moments", replay),
+        ("from_unit_panel", panel),
+        ("from_switchback_panel", switchback),
+    )
+    for ingress, candidate in candidates:
         with pytest.raises(CapabilityError) as refused:
             candidate.run(population="triggered")
         assert refused.value.code == "facade.analysis.trigger_unsupported"
@@ -259,8 +265,7 @@ def test_triggered_run_refuses_unit_summary_and_moment_replay():
             "from_definitions",
             "from_unit_day_artifact",
         )
-        assert "Analysis.from_definitions" in str(refused.value)
-        assert "Analysis.from_unit_day_artifact" in str(refused.value)
+        assert_refusal("triggered-sequential-boundary", ingress, refused.value, stage="run")
 
 
 @pytest.mark.parametrize("version", [7, 8])

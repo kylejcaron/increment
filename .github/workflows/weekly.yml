@@ -13,7 +13,7 @@ env:
 
 jobs:
   # Slow and notebook examples are outside CI's fast suite. Exercise locked
-  # dependencies and floors on each interpreter; Monte Carlo runs once below.
+  # dependencies and floors on each interpreter; scientific union runs once below.
   test-all:
     name: full suite (locked dependencies, slow + examples, ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -62,10 +62,9 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # One Python/locked-dependency run, split four ways. Without a local durations
-  # file, pytest-split distributes by test count; do not assume balanced runtimes.
-  test-parameter-recovery:
-    name: Monte-Carlo tier, shard ${{ matrix.group }}/4
+  # One Python/locked-dependency run, split four ways across scientific purposes.
+  test-scientific:
+    name: scientific tiers, shard ${{ matrix.group }}/4
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -77,12 +76,12 @@ jobs:
         with: {persist-credentials: false}
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with: {enable-cache: true, python-version: "3.12"}
-      - run: uv run --with nox nox -s tests_parameter_recovery -- --splits 4 --group ${{ matrix.group }}
-      - name: Retain Monte-Carlo evidence
+      - run: uv run --with nox nox -s tests_scientific -- --splits 4 --group ${{ matrix.group }}
+      - name: Retain scientific evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: parameter-recovery-shard-${{ matrix.group }}-${{ github.run_attempt }}
+          name: scientific-shard-${{ matrix.group }}-${{ github.run_attempt }}
           path: .test-evidence/
           include-hidden-files: true
           if-no-files-found: error
@@ -97,7 +96,7 @@ jobs:
   report-failure:
     name: report a failed weekly gate
     runs-on: ubuntu-latest
-    needs: [test-all, test-all-floor, test-parameter-recovery, warehouse-backends]
+    needs: [test-all, test-all-floor, test-scientific, warehouse-backends]
     if: failure()
     timeout-minutes: 10
     permissions:

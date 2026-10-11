@@ -26,6 +26,11 @@ from increment.semantics.assignment import (
 from increment.semantics.design import Randomized
 from increment.semantics.models import Winsorization
 from increment.semantics.unit_cycle import UnitCycleTApproximation
+from tests.capability_consumers_scalar import (
+    IMPUTE_POOLED_MEAN,
+    UNBOUNDED_RETENTION_SEQUENTIAL,
+    refused,
+)
 
 
 def test_prospective_reference_binding_and_sufficient_state_are_preserved():
@@ -1884,7 +1889,22 @@ def test_neighboring_integer_period_levels_preserve_float_contrasts(offset, shar
 
 
 def test_switchback_missing_impute_refuses_with_the_shared_metric_code():
-    with pytest.raises(InvalidRequestError) as raised:
-        _source(metrics=[{"name": "mean", "missing": "impute"}])
-    assert raised.value.code == "frame.metric.missing_impute"
-    assert raised.value.context["metric"] == "mean"
+    raised = refused(
+        IMPUTE_POOLED_MEAN,
+        "from_switchback_panel-missing-impute-refused",
+        lambda: _source(metrics=[{"name": "mean", "missing": "impute"}]),
+    )
+    assert isinstance(raised, InvalidRequestError)
+    assert raised.context["metric"] == "mean"
+
+
+def test_switchback_unbounded_retention_refuses_before_sequential_monitoring():
+    unbounded = MetricSpec(name="d7", type="retention", threshold_days=7)
+    raised = refused(
+        UNBOUNDED_RETENTION_SEQUENTIAL,
+        "switchback-retention-refused",
+        lambda: _source(metrics=[unbounded]),
+    )
+    assert isinstance(raised, CapabilityError)
+    assert raised.context["reason"] == "unsupported_metric_type"
+    assert raised.context["metrics"] == ("d7",)

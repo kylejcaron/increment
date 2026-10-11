@@ -379,6 +379,7 @@ def test_preparation_preserves_registered_sequential_decisions(law):
 
 
 @pytest.mark.slow
+@pytest.mark.integration
 def test_preparation_pins_allocation_history_and_estimates_without_rebinding_caller(
     dashboard_con, dashboard_definitions, pricing, monkeypatch
 ):
@@ -728,6 +729,7 @@ def test_prepared_config_rejects_mutation(pricing: DashboardSnapshot) -> None:
         pricing.primary_metric = "other"  # ty: ignore[invalid-assignment]
 
 
+@pytest.mark.integration
 def test_mutating_caller_allocation_cannot_change_a_prepared_result(
     dashboard_con, dashboard_definitions
 ) -> None:
@@ -1605,6 +1607,7 @@ def test_health_status_is_qualified_and_never_a_ship_recommendation(
 
 
 @pytest.mark.slow
+@pytest.mark.integration
 def test_an_engine_refusal_is_visible_for_its_own_state_only(
     dashboard_con, dashboard_definitions, monkeypatch
 ) -> None:
@@ -1636,6 +1639,7 @@ def test_an_engine_refusal_is_visible_for_its_own_state_only(
     )
 
 
+@pytest.mark.integration
 def test_health_renders_not_applicable_allocation_as_not_checked(
     dashboard_con, dashboard_definitions, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1668,6 +1672,7 @@ def test_health_renders_not_applicable_allocation_as_not_checked(
 
 
 @pytest.mark.slow
+@pytest.mark.integration
 def test_unexpected_engine_failures_are_not_swallowed(
     dashboard_con, dashboard_definitions, monkeypatch
 ) -> None:

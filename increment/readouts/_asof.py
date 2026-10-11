@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from increment._analysis_config import ResolvedMetricConfig
     from increment.decision import CompiledDecisionPlan
     from increment.estimation.inference import Prior
-    from increment.semantics.design import Observational, Randomized
+    from increment.semantics.design import Randomized
     from increment.semantics.models import Metric
 
 
@@ -79,7 +79,7 @@ class _AsofMetricContext:
     source: MomentSource
     config: ResolvedMetricConfig
     procedure: Any
-    design: Randomized | Encouragement | Observational
+    design: Randomized | Encouragement
     plan: CompiledDecisionPlan
     estimands: Sequence[str] | None
     methods: list[Method]
@@ -94,8 +94,6 @@ def _estimate_asof_metric_date(
     """Estimate one fixed-horizon metric/date under the compiled role policy."""
     src, config, test = context.source, context.config, context.procedure
     design, plan, estimands = context.design, context.plan, context.estimands
-    if design.mechanism == "observational":
-        _raise_readout_request("readout.view.observational", view="asof")
     inference = _sequential_inference(plan)
     role_for_row = test.role if plan.declared else None
     if design.mechanism == "encouragement":
@@ -353,7 +351,7 @@ def asof_lift(
             src,
             configs[metric.name],
             plan.procedures[metric.name],
-            design,
+            cast("Randomized | Encouragement", design),
             plan,
             estimands,
             methods_by_metric[metric.name],

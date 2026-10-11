@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.xdist_group("test_runner_subprocesses")
+
 
 def _initialize_import_coverage_project(
     root: Path,
@@ -371,6 +373,7 @@ def test_full_run_does_not_certify_sources_changed_before_marker_write(
     source = tmp_path / "increment" / "_state.py"
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("TESTMON_DATAFILE", raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
 
     def run_with_report(*args: object, **kwargs: object) -> int:
         extra_env = kwargs["extra_env"]
@@ -410,7 +413,7 @@ def test_full_run_does_not_certify_sources_changed_before_marker_write(
         lambda root, tier, test_dist: ({}, ["tests/test_provider.py::test_provider"]),
     )
 
-    assert run_test_tier.main(["fast"]) == 0
+    assert run_test_tier.main(["--record-testmon-map", "fast"]) == 1
     assert not (tmp_path / ".testmondata.full").exists()
 
 
@@ -437,15 +440,18 @@ def test_changed_parent_initializer_affects_submodule_importers(
 def test_full_run_does_not_certify_sources_changed_during_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from scripts import run_test_tier
+    from scripts import _test_impact, run_test_tier
 
+    _initialize_import_coverage_project(
+        tmp_path,
+        {"_state.py": "VALUE = 1\n"},
+        collection_test="from increment._state import VALUE\n\ndef test_state():\n    assert VALUE == 1\n",
+        test_nodes=["tests/test_provider.py::test_provider"],
+    )
     source = tmp_path / "increment" / "_state.py"
-    source.parent.mkdir()
-    (source.parent / "__init__.py").write_text("")
-    source.write_text("VALUE = 1\n")
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("TESTMON_DATAFILE", raising=False)
-    certified: list[tuple[Path, str]] = []
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
 
     def run_with_source_change(*args: object, **kwargs: object) -> int:
         extra_env = kwargs["extra_env"]
@@ -459,13 +465,13 @@ def test_full_run_does_not_certify_sources_changed_during_run(
 
     monkeypatch.setattr(run_test_tier, "run_with_budget", run_with_source_change)
     monkeypatch.setattr(
-        run_test_tier,
-        "record_testmon_full_run",
-        lambda root, tier, *, test_dist=None: certified.append((root, tier)),
+        _test_impact,
+        "_import_time_line_coverage",
+        lambda root, tier, test_dist: ({}, ["tests/test_provider.py::test_provider"]),
     )
 
-    assert run_test_tier.main(["fast"]) == 0
-    assert certified == []
+    assert run_test_tier.main(["--record-testmon-map", "fast"]) == 1
+    assert not (tmp_path / ".testmondata.full").exists()
 
 
 def test_import_coverage_ignores_uninvoked_function_body_change(tmp_path: Path) -> None:
@@ -638,48 +644,6 @@ def test_partial_runs_cannot_certify_testmon_coverage(monkeypatch: pytest.Monkey
     assert not can_certify_testmon_full_run("examples", [])
     monkeypatch.setenv("PYTEST_ADDOPTS", "--lf")
     assert not can_certify_testmon_full_run("fast", ["-q"])
-
-
-def test_nested_pytest_command_disables_runner_selection_plugin(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from scripts.run_test_tier import TIERS, build_pytest_command
-
-    monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/test_runner.py::test_nested (call)")
-    monkeypatch.setenv("INCREMENT_AFFECTED_USE_TESTMON", "1")
-
-    command = build_pytest_command(TIERS["all"], [])
-
-    assert "scripts.run_test_tier_plugin" not in command
-    assert "no:pytest-testmon" in command
-
-
-def test_nested_runner_without_owner_skips_testmon_database(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from scripts import run_test_tier
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/test_runner.py::test_nested (call)")
-    monkeypatch.delenv("INCREMENT_TESTMON_LOCK_OWNER", raising=False)
-    monkeypatch.delenv("INCREMENT_TESTMON_LOCK_ROLE", raising=False)
-    commands: list[list[str]] = []
-
-    def run(command, **kwargs):
-        commands.append(list(command))
-        return 0
-
-    monkeypatch.setattr(run_test_tier, "run_with_budget", run)
-    monkeypatch.setattr(
-        run_test_tier,
-        "testmon_database_lock",
-        lambda root: pytest.fail("unowned nested runner attempted to lock Testmon"),
-    )
-
-    assert run_test_tier.main(["fast", "-q"]) == 0
-    assert commands
-    assert "scripts.run_test_tier_plugin" not in commands[0]
-    assert "no:pytest-testmon" in commands[0]
 
 
 def test_full_run_certification_requires_resolved_full_selection(
@@ -968,6 +932,7 @@ def test_import_graph_keeps_changed_test_and_handles_relative_imports(tmp_path: 
 
 
 @pytest.mark.slow
+@pytest.mark.integration
 def test_impact_selection_preserves_filesystem_guards_and_filters(tmp_path: Path) -> None:
     tests = tmp_path / "tests"
     tests.mkdir()
@@ -1057,7 +1022,7 @@ def test_affected_runner_selects_transitive_consumers_and_excludes_unrelated(
     tmp_path: Path,
 ) -> None:
     project = Path(__file__).resolve().parents[1]
-    base = _make_affected_fixture(tmp_path)
+    base = _make_affected_fixture(tmp_path, unrelated_collection_error=True)
     (tmp_path / "pkg" / "leaf.py").write_text("VALUE = 1  # changed\n")
     result = _run_affected(
         project, tmp_path, base, "fast", "--evidence-root", str(tmp_path / "evidence")
@@ -1065,9 +1030,14 @@ def test_affected_runner_selects_transitive_consumers_and_excludes_unrelated(
     assert result.returncode == 0, result.stdout + result.stderr
     assert "test_direct.py" in result.stdout
     assert "test_transitive.py" in result.stdout
-    assert "[Tach] Skipped 1 test" in result.stdout
-    assert "test_unrelated.py ." not in result.stdout
-    assert "2 passed" in result.stdout
+    [receipt] = (tmp_path / "evidence").glob("run-*/run.json")
+    evidence = json.loads(receipt.read_text())
+    assert evidence["selection_route"] == "import_graph"
+    assert set(evidence["selected_nodeids"]) == {
+        "tests/test_direct.py::test_direct",
+        "tests/test_transitive.py::test_transitive",
+    }
+    assert evidence["executed_tests"] == 2
 
 
 @pytest.mark.slow
@@ -1183,6 +1153,7 @@ def test_affected_dynamic_consumer_aggregates_xdist_selection_once(tmp_path: Pat
 
 
 @pytest.mark.slow
+@pytest.mark.integration
 def test_affected_dynamic_consumer_keeps_stable_identity_with_xdist_group(tmp_path: Path) -> None:
     project = Path(__file__).resolve().parents[1]
     base = _prepare_dynamic_consumer(tmp_path, xdist_grouped=True)
@@ -1255,6 +1226,7 @@ def test_affected_runner_rejects_untyped_pytest_arguments(
 
 @pytest.mark.slow
 @pytest.mark.parametrize("workers", ["1", "8"])
+@pytest.mark.integration
 def test_affected_runner_accepts_bounded_numeric_workers(tmp_path: Path, workers: str) -> None:
     project = Path(__file__).resolve().parents[1]
     base = _make_affected_fixture(tmp_path)
@@ -1302,6 +1274,7 @@ def _make_affected_fixture(
     *,
     pytest_config_name: str = "pytest.ini",
     pytest_config_contents: str | None = None,
+    unrelated_collection_error: bool = False,
 ) -> str:
     package = root / "pkg"
     tests = root / "tests"
@@ -1319,7 +1292,9 @@ def _make_affected_fixture(
         "from pkg.transitive import VALUE\n\ndef test_transitive():\n    assert VALUE == 1\n"
     )
     (tests / "test_unrelated.py").write_text(
-        "from pkg.unrelated import VALUE\n\ndef test_unrelated():\n    assert VALUE == 10\n"
+        "raise RuntimeError('unrelated module must not be imported')\n"
+        if unrelated_collection_error
+        else "from pkg.unrelated import VALUE\n\ndef test_unrelated():\n    assert VALUE == 10\n"
     )
     (root / "tach.toml").write_text(
         'source_roots = ["."]\nroot_module = "ignore"\n'
@@ -1544,6 +1519,7 @@ def test_affected_runner_ignores_inherited_timeout_options(
 
 
 @pytest.mark.slow
+@pytest.mark.integration
 def test_affected_runner_preserves_nested_timeout_harness_environment(tmp_path: Path) -> None:
     project = Path(__file__).resolve().parents[1]
     base = _make_affected_fixture(tmp_path)
@@ -1569,27 +1545,6 @@ def test_affected_runner_keeps_repository_warning_policy(tmp_path: Path) -> None
     result = _run_affected(project, tmp_path, base, "fast")
     assert result.returncode == 1, result.stdout + result.stderr
     assert "UserWarning: unexpected warning" in result.stdout + result.stderr
-
-
-def test_affected_and_normal_tiers_share_marker_expressions() -> None:
-    import shlex
-    import tomllib
-
-    from scripts._test_tier_policy import TIER_MARKERS
-    from scripts.affected_pytest_launcher import _tier_expression
-    from scripts.run_test_tier import TIERS, build_pytest_command
-
-    project = Path(__file__).resolve().parents[1]
-    settings = tomllib.loads((project / "pyproject.toml").read_text())["tool"]["pytest"][
-        "ini_options"
-    ]
-    defaults = shlex.split(settings["addopts"])
-    assert defaults[defaults.index("-m") + 1] == TIER_MARKERS["fast"]
-    for tier, marker in TIER_MARKERS.items():
-        command = build_pytest_command(TIERS[tier], [])
-        pytest_index = command.index("pytest")
-        assert command[command.index("-m", pytest_index + 1) + 1] == marker
-        assert _tier_expression(tier, None) == marker
 
 
 @pytest.mark.slow
@@ -1618,6 +1573,7 @@ def test_private_pytest_parser_adapter_is_exactly_pinned() -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.integration
 def test_affected_runner_preserves_fast_and_slow_marker_separation(tmp_path: Path) -> None:
     project = Path(__file__).resolve().parents[1]
     base = _make_affected_fixture(tmp_path)
@@ -1705,6 +1661,11 @@ def test_affected_runner_refuses_configuration_dependency_plugin_and_data_hazard
 @pytest.mark.slow
 def test_make_affected_runs_selected_tests_and_propagates_failure(tmp_path: Path) -> None:
     project = Path(__file__).resolve().parents[1]
+    (tmp_path / "conftest.py").write_text(
+        "raise RuntimeError('an ancestor conftest is outside the affected repository')\n"
+    )
+    tmp_path = tmp_path / "affected-repository"
+    tmp_path.mkdir()
     base = _make_affected_fixture(tmp_path)
     leaf = tmp_path / "pkg" / "leaf.py"
     leaf.write_text("VALUE = 1  # source change\n")
@@ -1712,13 +1673,11 @@ def test_make_affected_runs_selected_tests_and_propagates_failure(tmp_path: Path
     passed = _run_make_affected(project, tmp_path, base, evidence)
     assert passed.returncode == 0, passed.stdout + passed.stderr
     assert "2 passed" in passed.stdout
-    assert "Affected-test selection: 2 selected, 1 deselected" in passed.stdout
     run_files = list(evidence.glob("run-*/run.json"))
     assert len(run_files) == 1
     manifest = json.loads(run_files[0].read_text())
     assert manifest["affected_base"] == base
     assert manifest["selected_tests"] == 2
-    assert manifest["deselected_tests"] == 1
     assert manifest["outcome"] == "passed"
     assert manifest["worker_allowance"] == "serial"
 
@@ -1781,16 +1740,34 @@ def test_affected_runner_propagates_collection_selector_failures(tmp_path: Path)
     assert "affected runner accepts only typed options" in result.stderr
 
 
+@pytest.mark.parametrize("via_helper", [False, True])
 @pytest.mark.slow
-def test_changed_provider_retains_unchanged_dynamic_import_consumer(tmp_path: Path) -> None:
+def test_changed_provider_retains_unchanged_dynamic_import_consumer(
+    tmp_path: Path, via_helper: bool
+) -> None:
     project = Path(__file__).resolve().parents[1]
     base = _make_affected_fixture(tmp_path)
     consumer = tmp_path / "tests" / "test_dynamic_consumer.py"
-    consumer.write_text(
-        "import importlib as loader\n"
-        "def test_dynamic_consumer():\n"
-        "    assert loader.import_module('pkg.leaf').VALUE == 1\n"
-    )
+    if via_helper:
+        (tmp_path / "tests" / "__init__.py").write_text("")
+        (tmp_path / "tests" / "_evidence.py").write_bytes(
+            (project / "tests" / "_evidence.py").read_bytes()
+        )
+        (tmp_path / "tests" / "dynamic_loader.py").write_text(
+            "import importlib as loader\ndef load():\n    return loader.import_module('pkg.leaf')\n"
+        )
+        (tmp_path / "tests" / "relay.py").write_text("from .dynamic_loader import load\n")
+        consumer.write_text(
+            "from tests.relay import load\n"
+            "def test_dynamic_consumer():\n"
+            "    assert load().VALUE == 1\n"
+        )
+    else:
+        consumer.write_text(
+            "import importlib as loader\n"
+            "def test_dynamic_consumer():\n"
+            "    assert loader.import_module('pkg.leaf').VALUE == 1\n"
+        )
     subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
     subprocess.run(
         [
@@ -1810,9 +1787,17 @@ def test_changed_provider_retains_unchanged_dynamic_import_consumer(tmp_path: Pa
     (tmp_path / "pkg" / "leaf.py").write_text("VALUE = 2\n")
     result = _run_affected(project, tmp_path, base, "fast")
     assert result.returncode == 1
-    assert "test_dynamic_consumer" in result.stdout
-    assert "3 failed, 1 deselected" in result.stdout
-    assert "dynamic-import consumer impact is not proven" not in result.stderr
+    [receipt] = (tmp_path / ".test-evidence" / "affected").glob("run-*/run.json")
+    reports = [
+        json.loads(line) for line in receipt.with_name("reports.jsonl").read_text().splitlines()
+    ]
+    assert {
+        (report["nodeid"], report["outcome"]) for report in reports if report.get("when") == "call"
+    } == {
+        ("tests/test_direct.py::test_direct", "failed"),
+        ("tests/test_transitive.py::test_transitive", "failed"),
+        ("tests/test_dynamic_consumer.py::test_dynamic_consumer", "failed"),
+    }
 
 
 @pytest.mark.parametrize(
@@ -1937,6 +1922,7 @@ def test_affected_runner_rejects_effective_options_from_argfiles_and_config(
 
 
 @pytest.mark.slow
+@pytest.mark.integration
 def test_affected_runner_bounds_xdist_and_requires_loadgroup(tmp_path: Path) -> None:
     project = Path(__file__).resolve().parents[1]
     base = _make_affected_fixture(tmp_path)
@@ -1988,20 +1974,22 @@ def test_changed_source_and_test_keep_transitive_consumer_selection(tmp_path: Pa
     )
     result = _run_affected(project, tmp_path, base, "fast", "-vv")
     assert result.returncode == 1
-    assert "1 failed, 1 passed, 1 deselected" in result.stdout
-    assert "test_transitive.py::test_transitive" in result.stdout
+    [receipt] = (tmp_path / ".test-evidence" / "affected").glob("run-*/run.json")
+    reports = [
+        json.loads(line) for line in receipt.with_name("reports.jsonl").read_text().splitlines()
+    ]
+    assert {
+        (report["nodeid"], report["outcome"]) for report in reports if report.get("when") == "call"
+    } == {
+        ("tests/test_direct.py::test_direct", "passed"),
+        ("tests/test_transitive.py::test_transitive", "failed"),
+    }
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize(
-    ("selector", "summary"),
-    [
-        (("-k", "test_transitive"), "1 passed, 2 deselected"),
-        (("-m", "not slow"), "1 passed, 2 deselected"),
-    ],
-)
+@pytest.mark.parametrize("selector", [("-k", "test_transitive"), ("-m", "not slow")])
 def test_changed_test_files_respect_user_k_and_marker_selectors(
-    tmp_path: Path, selector: tuple[str, str], summary: str
+    tmp_path: Path, selector: tuple[str, str]
 ) -> None:
     project = Path(__file__).resolve().parents[1]
     base = _make_affected_fixture(tmp_path)
@@ -2012,12 +2000,89 @@ def test_changed_test_files_respect_user_k_and_marker_selectors(
     (tmp_path / "pkg" / "leaf.py").write_text("VALUE = 1  # source change\n")
     result = _run_affected(project, tmp_path, base, "fast", *selector, "-vv")
     assert result.returncode == 0, result.stdout + result.stderr
-    assert summary in result.stdout
-    assert "test_direct.py::test_direct PASSED" not in result.stdout
+    [receipt] = (tmp_path / ".test-evidence" / "affected").glob("run-*/run.json")
+    assert json.loads(receipt.read_text())["selected_nodeids"] == [
+        "tests/test_transitive.py::test_transitive"
+    ]
 
 
-def test_dynamic_import_scan_includes_real_refusal_consumer() -> None:
-    from scripts.run_test_tier import _dynamic_import_tests
-
+@pytest.mark.slow
+@pytest.mark.parametrize("changed_target", ["provider", "rewritten_test"])
+def test_affected_feedback_detects_same_size_timestamp_cache_edits(
+    tmp_path: Path, changed_target: str
+) -> None:
     project = Path(__file__).resolve().parents[1]
-    assert "tests/test_refusal_uniqueness.py" in _dynamic_import_tests(project)
+    base = _make_affected_fixture(tmp_path)
+    target = tmp_path / ("pkg/leaf.py" if changed_target == "provider" else "tests/test_direct.py")
+    timestamp = 1_700_000_000
+    os.utime(target, (timestamp, timestamp))
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("INCREMENT_", "PYTEST_", "TESTMON_"))
+        and key not in {"PYTHONPYCACHEPREFIX", "PYTHONDONTWRITEBYTECODE"}
+    }
+    environment.update(
+        PYTHONPATH=os.pathsep.join((str(tmp_path), str(project))),
+        PYTEST_DISABLE_PLUGIN_AUTOLOAD="1",
+    )
+    seed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-c",
+            str(tmp_path / "pytest.ini"),
+            "--confcutdir",
+            str(tmp_path),
+            "tests/test_direct.py",
+            "-q",
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    assert seed.returncode == 0, seed.stdout + seed.stderr
+    target.write_text(target.read_text().replace("1", "2"))
+    os.utime(target, (timestamp, timestamp))
+    result = _run_affected(project, tmp_path, base, "fast")
+    assert result.returncode == 1, result.stdout + result.stderr
+    [receipt] = (tmp_path / ".test-evidence" / "affected").glob("run-*/run.json")
+    reports = [
+        json.loads(line) for line in receipt.with_name("reports.jsonl").read_text().splitlines()
+    ]
+    failed_nodes = {
+        report["nodeid"]
+        for report in reports
+        if report.get("when") == "call" and report["outcome"] == "failed"
+    }
+    expected = {"tests/test_direct.py::test_direct"}
+    if changed_target == "provider":
+        expected.add("tests/test_transitive.py::test_transitive")
+    assert failed_nodes == expected
+
+
+@pytest.mark.slow
+def test_affected_subprocess_consumer_observes_same_size_edits_within_run(tmp_path: Path):
+    project = Path(__file__).resolve().parents[1]
+    base = _make_affected_fixture(tmp_path)
+    (tmp_path / "tests" / "test_nested_edit.py").write_text(
+        "import os, subprocess, sys\n"
+        "from pathlib import Path\n"
+        "def test_nested_edit():\n"
+        "    source = Path('pkg/leaf.py')\n"
+        "    for value in (1, 2):\n"
+        "        source.write_text(f'VALUE = {value}\\n')\n"
+        "        os.utime(source, (1700000000, 1700000000))\n"
+        "        observed = subprocess.check_output(\n"
+        "            [sys.executable, '-c', 'from pkg.leaf import VALUE; print(VALUE)'], text=True)\n"
+        "        assert int(observed) == value\n"
+    )
+    result = _run_affected(project, tmp_path, base, "fast")
+    assert result.returncode == 0, result.stdout + result.stderr
+    [receipt] = (tmp_path / ".test-evidence" / "affected").glob("run-*/run.json")
+    assert json.loads(receipt.read_text())["selected_nodeids"] == [
+        "tests/test_nested_edit.py::test_nested_edit"
+    ]

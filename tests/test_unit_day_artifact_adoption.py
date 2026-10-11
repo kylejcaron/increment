@@ -20,7 +20,7 @@ from increment.query.artifact_contract import (
     ArtifactStore,
     _aggregate_mean_error_bound,
     _aggregate_sum_within_extrema,
-    _aggregate_sum_within_extrema_sql,
+    _with_sum_within_extrema_sql,
     compile_unit_day_artifact_context,
 )
 from increment.query.artifact_digest import digest_relation, manifest_sha256
@@ -1372,11 +1372,41 @@ def test_validate_stats_primary_key_is_coded(reader_snapshot, monkeypatch) -> No
         source.close()
 
 
+def test_validate_stats_impossible_sum_is_coded(reader_snapshot, monkeypatch) -> None:
+    """Two events between 1 and 1 cannot sum to 4; the SQL read check refuses the relation."""
+    manifest, ref, snapshot, store = reader_snapshot
+    verified = snapshot.verify_relation
+
+    def impossible_sum(relation, *, expected_role):
+        table = verified(relation, expected_role=expected_role)
+        if expected_role != "measure_stats":
+            return table
+        first, *rest = snapshot.execute(table).to_pylist()
+        tampered = {**first, "n_events": 2, "sum_value": 4.0, "min_value": 1.0, "max_value": 1.0}
+        return ibis.memtable([tampered, *rest])
+
+    monkeypatch.setattr(snapshot, "verify_relation", impossible_sum)
+    source = ArtifactMomentSource.open(
+        store,
+        ref,
+        expected_context=manifest.context,
+        metrics=(MetricSpec(name="conversion", type="mean", value_column="orders"),),
+    )
+    try:
+        with pytest.raises(CapabilityError) as raised:
+            source.moments(source.context.metrics[0])
+        assert raised.value.code == "artifact.relation.invalid"
+        assert raised.value.context["check"] == "sum_extrema"
+    finally:
+        source.close()
+
+
 @pytest.mark.slow
 def test_streaming_snapshot_isolates_external_mutation():
     from pathlib import Path
 
     from increment.analysis import Analysis
+    from tests.capability_consumers_auxiliary import assert_refusal
     from tests.test_unit_day_artifact_facade import _native
 
     con, native, context, store = _native(
@@ -1402,6 +1432,12 @@ def test_streaming_snapshot_isolates_external_mutation():
             with pytest.raises(ArtifactContractError) as error:
                 fresh.verify_relation(manifest.base.measure_stats, expected_role="measure_stats")
         assert error.value.code == "artifact.snapshot.mixed"
+        assert_refusal(
+            "artifact_immutable_properties",
+            "external_property_mutation_refused",
+            error.value,
+            stage="read",
+        )
     finally:
         if adopted is not None:
             adopted.close()
@@ -1428,6 +1464,7 @@ def test_open_refuses_a_manifest_edited_in_place() -> None:
     the original, untouched database column)."""
 
     from increment.query.session import WarehouseArtifactStore
+    from tests.capability_consumers_auxiliary import assert_refusal
     from tests.semantics.test_unit_day_artifact import _manifest as _bare_manifest
 
     con = ibis.duckdb.connect()
@@ -1475,6 +1512,12 @@ def test_open_refuses_a_manifest_edited_in_place() -> None:
         with fresh_store.open_snapshot(trusted_ref):
             pass
     assert raised.value.code == "artifact.manifest.invalid"
+    assert_refusal(
+        "artifact_immutable_properties",
+        "manifest_in_place_edit_refused",
+        raised.value,
+        stage="read",
+    )
     con.disconnect()
 
 
@@ -1596,13 +1639,30 @@ def test_scaled_binary64_enclosure_python_and_sql_decisions_match() -> None:
     connection = ibis.duckdb.connect()
     try:
         table = connection.create_table("aggregate_cases", ibis.memtable(records))
-        accepted = _aggregate_sum_within_extrema_sql(
-            table.sum_value, table.n_events, table.min_value, table.max_value
-        )
-        actual = table.select("case", accepted=accepted).order_by("case").execute()
+        accepted = _with_sum_within_extrema_sql(table, "accepted")
+        actual = accepted.select("case", "accepted").order_by("case").execute()
         assert actual["accepted"].tolist() == expected
     finally:
         connection.disconnect()
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "postgres", "snowflake", "bigquery"])
+def test_aggregate_integrity_predicate_fits_warehouse_statement_limits(dialect: str) -> None:
+    """Shared floating-point intermediates must not be re-inlined at every use: an
+    exponentially expanded predicate exceeds BigQuery's 1,024K-character and Snowflake's
+    1 MB statement limits, so artifact adoption would fail on those warehouses."""
+    table = ibis.table(
+        {
+            "sum_value": "float64",
+            "n_events": "int64",
+            "min_value": "float64",
+            "max_value": "float64",
+        },
+        name="measure_stats",
+    )
+    staged = _with_sum_within_extrema_sql(table, "accepted")
+    sql = str(ibis.to_sql(staged.aggregate(bad=(~staged.accepted).any()), dialect=dialect))
+    assert len(sql) < 100_000
 
 
 def test_scaled_binary64_enclosure_accepts_reordered_and_partitioned_sums() -> None:
@@ -1733,6 +1793,7 @@ def test_frozen_collision_artifacts_are_refused_at_every_entry_point(
     from increment.query.artifact_publish import artifact_context
     from increment.query.source import open_artifact
     from increment.semantics.loader import load
+    from tests.capability_consumers_auxiliary import assert_refusal
 
     connection, store, ref, original_pin = _restored_legacy_artifact(label)
     end = "2025-01-25T00:00:00Z" if label == "z" else "2025-01-24T19:00:00-05:00"
@@ -1753,12 +1814,24 @@ def test_frozen_collision_artifacts_are_refused_at_every_entry_point(
                     opener(pin)
                 assert refused.value.code == "artifact.context.mismatch", (name, pin_name)
                 assert refused.value.context["missing"] == "window_days", (name, pin_name)
+                assert_refusal(
+                    "experiment_window_compatibility",
+                    "window_artifact_context_refused",
+                    refused.value,
+                    stage="admission",
+                )
         analysis = Analysis.from_definitions("new_onboarding_v2", definitions_path, connection)
         try:
             with pytest.raises(ArtifactContractError) as refreshed:
                 analysis.publish_unit_day_artifact(store, refresh_of=ref)
             assert refreshed.value.code == "artifact.context.mismatch"
             assert refreshed.value.context["missing"] == "window_days"
+            assert_refusal(
+                "experiment_window_compatibility",
+                "window_artifact_context_refused",
+                refreshed.value,
+                stage="admission",
+            )
         finally:
             analysis.close()
     finally:

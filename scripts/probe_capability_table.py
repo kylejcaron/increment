@@ -17,15 +17,16 @@ disagreement), or, for the two probes that call `Analysis.planning_baseline`
 directly rather than `.run()`, one line per constructor naming the value or
 the coded refusal.
 
-Transcribe exactly what this prints into docs/reference/capabilities-by-entry-point.md's
-"What runs where" table -- never a value carried over from a stale draft without
-having been measured on this checkout.
+The capability tables are projections of the case and matrix contracts; this
+probe is a behavioral smoke, not a transcription source. Use `--case <id>` to
+run one named parity case and receive a nonzero exit status when it fails.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 
 import ibis
@@ -51,30 +52,25 @@ from tests.parity_harness.cases import (
 from tests.parity_harness.runner import assert_parity, run_case
 
 
-def report_harness_cells() -> None:
-    """Every `PARITY_CASES` row -- calls `assert_parity`, not just
-    `run_case`, so a printed "ok" means parity, not merely that every
-    constructor produced SOME rows."""
-    for case in PARITY_CASES:
-        result = run_case(case)
-        try:
-            assert_parity(case, result)
-            print(
-                f"{case.id}: parity: ok ({sorted(result.rows)} agree; {sorted(result.refusals)} waived)"
-            )
-        except AssertionError as exc:
-            print(f"{case.id}: parity: FAILED -- {exc}")
+def report_harness_cells(cases: Sequence[ParityCase] = PARITY_CASES) -> int:
+    """Run declared behavioral cases and return nonzero if any one fails."""
+    failures = 0
+    for case in cases:
+        failures += not _report_case(case)
+    return int(bool(failures))
 
 
-def _report_case(case: ParityCase) -> None:
-    result = run_case(case)
+def _report_case(case: ParityCase) -> bool:
     try:
+        result = run_case(case)
         assert_parity(case, result)
         print(
             f"{case.id}: parity: ok ({sorted(result.rows)} agree; {sorted(result.refusals)} waived)"
         )
-    except AssertionError as exc:
+        return True
+    except Exception as exc:
         print(f"{case.id}: parity: FAILED -- {exc}")
+        return False
 
 
 # ``planning_baseline`` works for mean metrics wherever ``arm_moments`` is
@@ -154,7 +150,9 @@ def _row_planning_baseline_mean() -> None:
             f"(mean={baseline5.mean:.6g}, var={baseline5.var:.6g})"
         )
     except CodedError as exc:
-        print(f"planning_baseline_mean: UNEXPECTED refusal {exc.code!r} -- {exc}")
+        raise AssertionError(
+            f"planning_baseline_mean had an unexpected coded refusal {exc.code!r}"
+        ) from exc
     finally:
         con.disconnect()
     from increment.semantics.assignment import (
@@ -204,7 +202,9 @@ def _row_planning_baseline_quantile() -> None:
         baseline = _arm_baseline(native, "p90_latency")
         print(f"planning_baseline_quantile: from_definitions: yes (mean={baseline.mean:.6g})")
     except CodedError as exc:
-        print(f"planning_baseline_quantile: from_definitions: refused ({exc.code})")
+        raise AssertionError(
+            f"planning_baseline_quantile from_definitions unexpectedly refused {exc.code!r}"
+        ) from exc
 
     summary = Analysis.from_unit_summary(
         _per_unit_frame(),
@@ -218,7 +218,9 @@ def _row_planning_baseline_quantile() -> None:
         baseline2 = _arm_baseline(summary, "p90_latency")
         print(f"planning_baseline_quantile: from_unit_summary: yes (mean={baseline2.mean:.6g})")
     except CodedError as exc:
-        print(f"planning_baseline_quantile: from_unit_summary: refused ({exc.code})")
+        raise AssertionError(
+            f"planning_baseline_quantile from_unit_summary unexpectedly refused {exc.code!r}"
+        ) from exc
 
     per_unit = _per_unit_frame().to_pylist()
     panel_rows = []
@@ -252,7 +254,9 @@ def _row_planning_baseline_quantile() -> None:
         baseline3 = _arm_baseline(panel_analysis, "p90_latency")
         print(f"planning_baseline_quantile: from_unit_panel: yes (mean={baseline3.mean:.6g})")
     except CodedError as exc:
-        print(f"planning_baseline_quantile: from_unit_panel: refused ({exc.code})")
+        raise AssertionError(
+            f"planning_baseline_quantile from_unit_panel unexpectedly refused {exc.code!r}"
+        ) from exc
 
     try:
         native2 = Analysis.from_definitions("exp", defs_path, con)
@@ -262,14 +266,21 @@ def _row_planning_baseline_quantile() -> None:
             f"planning_baseline_quantile: from_unit_day_artifact: yes (mean={baseline4.mean:.6g})"
         )
     except CodedError as exc:
-        print(f"planning_baseline_quantile: from_unit_day_artifact: refused ({exc.code})")
+        raise AssertionError(
+            f"planning_baseline_quantile from_unit_day_artifact unexpectedly refused {exc.code!r}"
+        ) from exc
 
     try:
         with tempfile.TemporaryDirectory() as td2:
             path = Path(td2) / "m.parquet"
             summary.export(path)
-        print("planning_baseline_quantile: from_moments: UNEXPECTED export success")
+        raise AssertionError("planning_baseline_quantile from_moments unexpectedly exported a cube")
     except CodedError as exc:
+        if exc.code != "source.frame.quantile_no_moments":
+            raise AssertionError(
+                f"planning_baseline_quantile from_moments expected "
+                f"'source.frame.quantile_no_moments', received {exc.code!r}"
+            ) from exc
         print(
             f"planning_baseline_quantile: from_moments: refused ({exc.code}) -- no cube can be built"
         )
@@ -321,31 +332,32 @@ def _row_logged_policy_contrast() -> None:
         )
 
 
-def _row_percentile_winsor() -> None:
-    """Pooled percentile winsorization: positive, zero-inclusive and size-routed pools."""
-    from tests.parity_harness.cases import (
-        _winsor_size_routed_case,
-        _winsor_three_arm_case,
-        _winsor_zero_inclusive_case,
-    )
+def report_additional_cells() -> int:
+    """Run the measured capabilities not yet represented in ``PARITY_CASES``."""
+    try:
+        _row_planning_baseline_mean()
+        _row_planning_baseline_quantile()
+        _row_logged_policy_contrast()
+    except Exception as exc:
+        print(f"additional capability probe: FAILED -- {exc}")
+        return 1
+    return 0
 
-    _report_case(_winsor_three_arm_case())
-    _report_case(_winsor_zero_inclusive_case(1))
-    _report_case(_winsor_size_routed_case())
 
+def main(argv: Sequence[str] | None = None) -> int:
+    import argparse
 
-def report_additional_cells() -> None:
-    """Cells `PARITY_CASES` does not (yet) carry a row for. Extend this
-    function, not just the printed labels, as each capability grows its
-    own `ParityCase`; once a cell is covered there, delete its probe here
-    and let `report_harness_cells()` report it instead -- two sources of
-    truth for the same cell is itself a parity defect."""
-    _row_planning_baseline_mean()
-    _row_planning_baseline_quantile()
-    _row_logged_policy_contrast()
-    _row_percentile_winsor()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--case", help="run exactly one named PARITY_CASES contract")
+    args = parser.parse_args(argv)
+    if args.case is not None:
+        matches = [case for case in PARITY_CASES if case.id == args.case]
+        if len(matches) != 1:
+            parser.error(f"unknown parity case {args.case!r}")
+        return report_harness_cells(matches)
+    failed = report_harness_cells()
+    return int(bool(failed or report_additional_cells()))
 
 
 if __name__ == "__main__":
-    report_harness_cells()
-    report_additional_cells()
+    raise SystemExit(main())

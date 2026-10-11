@@ -73,6 +73,28 @@ def _cache_backed_test_paths(root: Path) -> set[Path]:
     return paths
 
 
+_GUARD_TESTS = (
+    "test_refusal_gate.py",
+    "test_test_hygiene.py",
+    "test_impact_selection.py",
+    "test_full_suite_evidence.py",
+    "test_test_runner_cli.py",
+)
+
+
+def _fallback_retained_paths(root: Path) -> set[Path]:
+    """Use the same conservative file set for collection and execution."""
+    retained = {
+        Path(path).resolve()
+        for name in ("INCREMENT_AFFECTED_TEST_PATHS", "INCREMENT_AFFECTED_IMPORT_TEST_PATHS")
+        for path in json.loads(os.environ.get(name, "[]"))
+    }
+    changed = json.loads(os.environ.get("INCREMENT_AFFECTED_CHANGED_PATHS", "[]"))
+    if any(isinstance(path, str) and path.endswith(".py") for path in changed):
+        retained.update(root / "tests" / name for name in _GUARD_TESTS)
+    return retained
+
+
 _TESTMON_PRIMARY = pytest.StashKey[bool]()
 _DYNAMIC_CONSUMER_SELECTION = pytest.StashKey[dict[str, Any]]()
 _FULL_RUN_CERTIFICATION = pytest.StashKey[dict[str, Any]]()
@@ -130,16 +152,7 @@ def _activate_testmon(config: pytest.Config, protected_paths: set[Path]) -> bool
             config.testmon_config.select = False
         return False
     if any(isinstance(path, str) and path.endswith(".py") for path in changed_paths):
-        protected_paths.update(
-            root / "tests" / name
-            for name in (
-                "test_refusal_gate.py",
-                "test_test_hygiene.py",
-                "test_impact_selection.py",
-                "test_full_suite_evidence.py",
-                "test_test_runner_cli.py",
-            )
-        )
+        protected_paths.update(root / "tests" / name for name in _GUARD_TESTS)
         protected_paths.update(_cache_backed_test_paths(root))
     protected = {path.resolve() for path in protected_paths}
     selector.deselected_files[:] = [
@@ -340,7 +353,7 @@ def _testmon_is_registered(config: pytest.Config) -> bool:
 def _restore_duration_order_after_testmon(
     config: pytest.Config,
     items: list[pytest.Item],
-    markdown_order: dict[str, int] | None = None,
+    markdown_order: dict[int, int] | None = None,
 ) -> None:
     if os.environ.get("INCREMENT_DISABLE_DURATION_ORDER") == "1" or not _testmon_is_registered(
         config
@@ -368,7 +381,10 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         paths: dict[Path, Path] = {}
         kept, deselected = [], []
         for item in items:
-            if not any(item.get_closest_marker(mark) for mark in ("slow", "parameter_recovery")):
+            if not any(
+                item.get_closest_marker(mark)
+                for mark in ("slow", "parameter_recovery", "numerical_certification")
+            ):
                 kept.append(item)
                 continue
             if item.path not in paths:
@@ -411,32 +427,13 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             "worker_selected": None,
         }
     markdown_order = {
-        item.nodeid: index
+        id(item): index
         for index, item in enumerate(items)
         if Path(str(item.location[0])).suffix == ".md"
     }
     yield
     if affected and not config.stash.get(_TESTMON_PRIMARY, False):
-        import_paths = {
-            Path(path).resolve()
-            for path in json.loads(os.environ.get("INCREMENT_AFFECTED_IMPORT_TEST_PATHS", "[]"))
-        }
-        retained = {
-            Path(path).resolve()
-            for path in json.loads(os.environ.get("INCREMENT_AFFECTED_TEST_PATHS", "[]"))
-        } | import_paths
-        changed_paths = json.loads(os.environ.get("INCREMENT_AFFECTED_CHANGED_PATHS", "[]"))
-        if any(isinstance(path, str) and path.endswith(".py") for path in changed_paths):
-            retained.update(
-                Path(__file__).resolve().parents[1] / "tests" / name
-                for name in (
-                    "test_refusal_gate.py",
-                    "test_test_hygiene.py",
-                    "test_impact_selection.py",
-                    "test_full_suite_evidence.py",
-                    "test_test_runner_cli.py",
-                )
-            )
+        retained = _fallback_retained_paths(Path(config.rootpath))
         deselected = [item for item in items if item.path.resolve() not in retained]
         if deselected:
             config.hook.pytest_deselected(items=deselected)
@@ -582,7 +579,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if workeroutput is not None and counts is not None:
         workeroutput["increment_affected_selection"] = {
             key: counts[key] for key in ("selected", "deselected")
-        }
+        } | {"selection_route": os.environ.get("INCREMENT_AFFECTED_SELECTION_ROUTE")}
     selection = session.config.stash.get(_DYNAMIC_CONSUMER_SELECTION, None)
     if workeroutput is not None and selection is not None:
         workeroutput["increment_dynamic_selection"] = {
