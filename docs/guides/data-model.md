@@ -875,7 +875,7 @@ not require its configuration to replay an ordinary sibling. Format stamps
 and wire-schema validation still cover every row of the imported cube.
 
 An empty-metric fixed-horizon Encouragement export carries one current
-format-11 `design_summary` envelope instead of outcome rows. It includes the
+format-12 `design_summary` envelope instead of outcome rows. It includes the
 experiment identity, complete assignment counts and compliance state, source
 identity, and empty-metric fixed-horizon decision plan. Reload with
 `metrics=[]` and the same design. Missing state, mixed rows, outcome fields, a
