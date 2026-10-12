@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
+from pydantic import BaseModel, ConfigDict, field_serializer, model_validator
 
 from increment._canonical import canonical_digest_bytes
 from increment._immutable import _FrozenMapping
@@ -37,12 +37,12 @@ class ReadoutAdvisory(BaseModel):
     message: str
     severity: Literal["info", "warning"] = "warning"
 
-    @field_validator("context", mode="before")
-    @classmethod
-    def _freeze_context(cls, value):
-        frozen = _freeze(value)
+    @model_validator(mode="after")
+    def _freeze_context(self):
+        frozen = _freeze(self.context)
         canonical_digest_bytes(_thaw(frozen))
-        return frozen
+        object.__setattr__(self, "context", frozen)
+        return self
 
     @field_serializer("context", when_used="json")
     def _serialize_context(self, value):

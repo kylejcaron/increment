@@ -1527,6 +1527,10 @@ def test_native_uptake_only_capture_and_wire_never_need_the_outcome_table(tmp_pa
         assert "events" not in connection.list_tables()
         snapshot = native.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
         rows = native.run(estimands=("compliance",))
+        assert rows[0].metric == "uptake" and rows[0].estimand == "compliance"
+        assert "estimation.engine.open_ended_sequential" not in {
+            advisory.code for record in rows.metadata.cells for advisory in record.advisories
+        }
         assert isinstance(rows, LiftEstimates)
         assert len(rows) == 1 and rows[0].stat_sig()
         checkpoint = rows[0].require_sequential_result().checkpoint
@@ -1571,6 +1575,11 @@ def test_uptake_checkpoint_ignores_unbounded_outcome_retention_in_the_catalog(tm
         assert "events" not in connection.list_tables()
         as_of = date(2025, 1, 16)
         snapshot = native.capture_sequential(finalized=True, as_of=as_of)
+        uptake_rows = native.run(estimands=("compliance",))
+        assert len(uptake_rows) == 1 and uptake_rows[0].metric == "uptake"
+        assert "estimation.engine.open_ended_sequential" not in {
+            advisory.code for record in uptake_rows.metadata.cells for advisory in record.advisories
+        }
         (row,) = native.run_asof_lift(estimands=("compliance",), completed_windows_only=True)
         assert row.estimand == "compliance" and row.ds == as_of
         assert row.sequential_result is not None

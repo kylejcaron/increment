@@ -711,6 +711,31 @@ class StreamingDigest:
         ).hexdigest()
 
 
+def render_readout_failure(code: str | None, context: Mapping[str, Any] | None) -> str | None:
+    """Render a registered readout refusal without changing its stored identity."""
+    if code is None:
+        return None
+    spec = next(
+        (
+            registry[code]
+            for registry in (
+                _CELL_FAILURE_REFUSALS,
+                _REFUSALS,
+                _UNSUPPORTED_REFUSALS,
+                _WIRE_REFUSALS,
+            )
+            if code in registry
+        ),
+        None,
+    )
+    if spec is None:
+        return None
+    try:
+        return spec.render(**thaw(context or {}))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def refuse_readout(code: str, **context: object) -> NoReturn:
     registry = (
         _WIRE_REFUSALS

@@ -1085,6 +1085,21 @@ def _open_ended_advisory(metric: Metric) -> ReadoutAdvisory | None:
     return ReadoutAdvisory(code=spec.code, context=context, message=spec.render(**context))
 
 
+def _small_total_clusters_advisory(
+    metric_name: str, cluster: str | None, n_clusters: int | None
+) -> ReadoutAdvisory | None:
+    if n_clusters is None or n_clusters >= _WARN_TOTAL_CLUSTERS:
+        return None
+    context = {
+        "metric_name": metric_name,
+        "n_clusters": n_clusters,
+        "cluster": cluster,
+        "floor": _WARN_TOTAL_CLUSTERS,
+    }
+    spec = _WARNINGS["estimation.engine.small_total_clusters"]
+    return ReadoutAdvisory(code=spec.code, context=context, message=spec.render(**context))
+
+
 def _lift_advisories(
     metric: Metric,
     treatment: ArmStats,
@@ -1095,17 +1110,9 @@ def _lift_advisories(
     sequential: bool,
 ) -> tuple[ReadoutAdvisory, ...]:
     advisories: list[ReadoutAdvisory] = []
-    if strategy.n_clusters is not None and strategy.n_clusters < _WARN_TOTAL_CLUSTERS:
-        context = {
-            "metric_name": metric.name,
-            "n_clusters": strategy.n_clusters,
-            "cluster": cluster,
-            "floor": _WARN_TOTAL_CLUSTERS,
-        }
-        spec = _WARNINGS["estimation.engine.small_total_clusters"]
-        advisories.append(
-            ReadoutAdvisory(code=spec.code, context=context, message=spec.render(**context))
-        )
+    cluster_advisory = _small_total_clusters_advisory(metric.name, cluster, strategy.n_clusters)
+    if cluster_advisory is not None:
+        advisories.append(cluster_advisory)
     if strategy.ratio_precision_note is not None:
         stats = {
             arm.group_id: ratio_denominator_precision(arm)
@@ -1128,6 +1135,25 @@ def _lift_advisories(
         if advisory is not None:
             advisories.append(advisory)
     return tuple(advisories)
+
+
+def _treatment_lift_advisories(metrics, treatment, control, strategy, cluster, sequential):
+    metric = next(item for item in metrics if item.name == treatment.metric)
+    return _lift_advisories(
+        metric,
+        treatment,
+        control,
+        strategy,
+        cluster=cluster,
+        sequential=sequential,
+    )
+
+
+def _attach_lift_advisories(advisory_map, treatment, advisories, result, failure):
+    if advisories and (result is not None or failure is not None):
+        from increment.estimation.decision_types import ArmHypothesisKey
+
+        advisory_map[ArmHypothesisKey(treatment.metric, treatment.group_id, "itt")] = advisories
 
 
 # Orchestrator
@@ -2751,29 +2777,7 @@ def _estimate_registered_sequential(
         alternative=alternative,
         null_lift=null_lift,
     )
-    computation = estimate_sequential(summary, inference)
-    from increment.estimation.decision_types import (
-        ArmHypothesisKey,
-        ContrastHypothesisKey,
-        SegmentHypothesisKey,
-    )
-
-    by_metric = {metric.name: metric for metric in metrics}
-    advisories: dict[
-        ArmHypothesisKey | SegmentHypothesisKey | ContrastHypothesisKey,
-        tuple[ReadoutAdvisory, ...],
-    ] = {}
-    for row in computation.results:
-        advisory = _open_ended_advisory(by_metric[row.metric])
-        if advisory is not None:
-            advisories[ArmHypothesisKey(row.metric, row.group_id, row.estimand)] = (advisory,)
-    return DecisionComputation(
-        results=computation.results,
-        evidence=computation.evidence,
-        failures=computation.failures,
-        sequential_snapshot=computation.sequential_snapshot,
-        advisories=advisories,
-    )
+    return estimate_sequential(summary, inference)
 
 
 def _asymptotic_lift_outcome(
@@ -3246,18 +3250,8 @@ def _estimate_lift(  # noqa: PLR0913
             cluster,
             method_strategies,
         )
-        from increment.estimation.decision_types import ArmHypothesisKey
-
-        metric = next(item for item in metrics if item.name == treatment.metric)
-        advisory_map[ArmHypothesisKey(treatment.metric, treatment.group_id, "itt")] = (
-            _lift_advisories(
-                metric,
-                treatment,
-                control,
-                strategy,
-                cluster=cluster,
-                sequential=inference is not None,
-            )
+        advisories = _treatment_lift_advisories(
+            metrics, treatment, control, strategy, cluster, inference is not None
         )
         metric_type = prepared.metric_types[treatment.metric]
         for method_strategy in strategy.methods:
@@ -3280,6 +3274,7 @@ def _estimate_lift(  # noqa: PLR0913
                 preferred_direction,
                 route_alpha,
             )
+            _attach_lift_advisories(advisory_map, treatment, advisories, result, failure)
             if failure is not None:
                 guard_failures[failure.hypothesis] = failure
             if result is not None:
