@@ -1733,9 +1733,7 @@ class Analysis:
         inference = getattr(declared_plan, "inference", runtime_inference)
         registration = getattr(inference, "triggered_registration", None)
         family_guarantee = (
-            sequential_family_guarantee(registration, look_policy="outcome_independent")
-            if registration is not None
-            else None
+            sequential_family_guarantee(registration) if registration is not None else None
         )
         return HealthCheck(
             check="trigger_assumptions",

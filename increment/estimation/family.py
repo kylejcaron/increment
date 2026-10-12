@@ -510,18 +510,12 @@ def _sequential_evidence_types(roster, models) -> dict[object, type]:
 
 def sequential_family_guarantee(
     registration: SequentialRegistration,
-    *,
-    look_policy: Literal["outcome_independent", "exploratory"],
 ) -> Literal["asymptotic_sequential", "finite_sample"] | None:
-    """Classify a declared family's guarantee without evaluating its evidence.
+    """Classify a registered family's guarantee from its evidence laws.
 
-    Guarantees are available only for outcome-independent looks. The family
-    construction determines whether the guarantee is finite-sample or
-    asymptotic; runtime selection calls this for its outcome-independent-look
-    guarantee qualification, while diagnostics pass the declared look policy.
+    The guarantee regime is finite-sample when every family cell is
+    Bernoulli; any count-clock family cell makes it asymptotic-sequential.
     """
-    if look_policy != "outcome_independent":
-        return None
     family_metrics = {cell.metric for cell in registration.roster if cell.family}
     if not family_metrics:
         return None
@@ -629,7 +623,7 @@ def select_sequential_family(
             )
     if len(prefixes) > 1:
         sequential_refuse("source.invalid", "current cells use different joint reveal prefixes")
-    guarantee = sequential_family_guarantee(registration, look_policy="outcome_independent")
+    guarantee = sequential_family_guarantee(registration)
     selected_indices = e_bh_select(log_e_values, registration.q)
     selected = frozenset(order[i] for i in selected_indices)
     realized = registration.q * len(selected) / len(order) if selected else None
