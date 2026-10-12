@@ -828,8 +828,9 @@ def test_relative_extreme_dynamic_range_is_order_invariant():
     assert reverse.relative("t").estimate == pytest.approx(expected)
 
 
-def test_rank_refuses_seeded_exact_covariate_sum():
-    rng = np.random.default_rng(6)
+@pytest.mark.parametrize("seed", [6, 7, 8])
+def test_rank_refuses_seeded_exact_covariate_sum(seed):
+    rng = np.random.default_rng(seed)
     arm = np.repeat(["c", "t"], 12)
     x, z = rng.integers(-5, 6, size=(2, len(arm)))
     with pytest.raises(InvalidRequestError) as raised:
