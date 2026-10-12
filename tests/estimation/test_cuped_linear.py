@@ -1119,3 +1119,62 @@ def test_covariate_constant_within_each_arm_is_rank_deficient():
             kinds={"x": "continuous"},
         )
     assert raised.value.code == "estimation.cuped_linear.rank_deficiency"
+
+
+@pytest.mark.parametrize("counts", [(64, 65), (75, 75)])
+def test_large_near_collinear_bm_dof_matches_qr_reference(counts):
+    rng = np.random.default_rng(105)
+    arm = np.repeat(["c", "t"], counts)
+    z = rng.normal(size=len(arm))
+    v = rng.normal(size=len(arm))
+    x = np.column_stack([z, z + 1e-7 * v])
+    y = 4 + (arm == "t") + 0.3 * z + rng.normal(size=len(arm))
+    fit = fit_cuped_linear(
+        y,
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+        covariates={"z": x[:, 0], "near": x[:, 1]},
+        kinds={"z": "continuous", "near": "continuous"},
+    )
+    groups = [np.flatnonzero(arm == label) for label in ("c", "t")]
+    means = [x[group].mean(axis=0) for group in groups]
+    design = np.zeros((len(arm), 4))
+    weights = np.empty(len(arm))
+    for a, group in enumerate(groups):
+        design[group, a] = 1
+        design[group, 2:] = x[group] - means[a]
+        weights[group] = 1 / (len(group) * (len(group) - 1))
+    contrast = np.r_[-1.0, 1.0, -(means[1] - means[0])]
+    sqrt_weights = np.sqrt(weights)
+    q, r = np.linalg.qr(design * sqrt_weights[:, None], mode="reduced")
+    ai = sqrt_weights * (q @ np.linalg.solve(r.T, contrast))
+    leverage = np.sum(q * q, axis=1)
+    hat_transpose = sqrt_weights[:, None] * (q @ q.T) / sqrt_weights[None, :]
+    score_matrix = (np.eye(len(arm)) - hat_transpose) * (ai / np.sqrt(1 - leverage))[None, :]
+    singular = np.linalg.svd(score_matrix, compute_uv=False)
+    expected = (singular @ singular) ** 2 / ((singular**2) @ (singular**2))
+    assert fit.dof == pytest.approx(expected, rel=1e-8)
+
+
+def test_large_well_conditioned_bm_dof_matches_closed_form_reference():
+    counts = (35_000, 35_001)
+    arm = np.repeat(["c", "t"], counts)
+    fit = fit_cuped_linear(np.arange(len(arm), dtype=float), arm, control="c", arm_order=("c", "t"))
+    trace = sum(1 / count for count in counts)
+    trace_square = sum(1 / (count**2 * (count - 1)) for count in counts)
+    assert fit.dof == pytest.approx(trace**2 / trace_square, rel=1e-8)
+
+
+def test_alpha_specific_interval_overflow_does_not_poison_finite_interval():
+    arm = np.array(["c", "c", "t", "t"])
+    fit = fit_cuped_linear(
+        np.array([-3e306, -1e306, 1.76e308, 1.78e308]),
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+    )
+    projection = fit.absolute("t", alpha=0.9)
+    assert projection.estimate == pytest.approx(1.79e308, rel=1e-12)
+    assert projection.se == pytest.approx(1.414213562e306, rel=1e-8)
+    assert projection.dof == pytest.approx(2.0)

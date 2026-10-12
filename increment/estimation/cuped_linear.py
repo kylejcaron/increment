@@ -132,6 +132,7 @@ class _LinearCupedCalculator:
     _weights: np.ndarray
     _design: np.ndarray
     _design_factor: np.ndarray
+    _design_q: np.ndarray
     _adjusted_local: tuple[float, ...]
     _outcome_offsets: tuple[tuple[float, ...], ...]
 
@@ -172,9 +173,18 @@ class _LinearCupedCalculator:
         self, arm: object, *, control: object | None = None, alpha: float = 0.05
     ) -> LinearCupedProjection:
         """Adjusted additive arm contrast with an HC2/BM t interval."""
+        _check_alpha(alpha)
+        return _interval(*self._absolute_statistics(arm, control), alpha)
+
+    def _absolute_statistics(
+        self, arm: object, control: object | None
+    ) -> tuple[float, float, float]:
         j = self._contrast(arm, control)
-        value = self._contrast_value(j)
-        return self._project(value, j, alpha)
+        return _projection_statistics(
+            self._contrast_value(j),
+            _stable_norm(self._family_score(0, j)),
+            self._bm_dof(j),
+        )
 
     def _contrast_value(self, j: np.ndarray, family: int = 0) -> float:
         narm = len(self.arm_order)
@@ -183,6 +193,13 @@ class _LinearCupedCalculator:
         return math.fsum(
             [float(j[a]) * local[a] for a in range(narm)]
             + [float(j[a]) * offsets[a] for a in range(narm)]
+        )
+
+    def _contrast_statistics(self, j: np.ndarray) -> tuple[float, float, float]:
+        return _projection_statistics(
+            self._contrast_value(j),
+            _stable_norm(self._family_score(0, j)),
+            self._bm_dof(j),
         )
 
     def _log_relative_value(self, ti: int, ci: int, family: int = 0) -> float:
@@ -201,6 +218,12 @@ class _LinearCupedCalculator:
         self, arm: object, *, control: object | None = None, alpha: float = 0.05
     ) -> LinearCupedProjection:
         """Log adjusted-mean ratio with a plug-in Jacobian and t interval."""
+        _check_alpha(alpha)
+        return _interval(*self._relative_statistics(arm, control), alpha)
+
+    def _relative_statistics(
+        self, arm: object, control: object | None
+    ) -> tuple[float, float, float]:
         jidx = self._pair(arm, control)
         means = np.asarray(self.adjusted_means)[: len(self.arm_order)]
         mt, mc = means[jidx[0]], means[jidx[1]]
@@ -209,9 +232,11 @@ class _LinearCupedCalculator:
         jac = np.zeros(len(means))
         jac[jidx[0]] = 1 / mt
         jac[jidx[1]] = -1 / mc
-        value = self._log_relative_value(*jidx)
-        score = self._family_score(0, jac)
-        return _interval(value, _stable_norm(score), self._bm_dof(jac), alpha)
+        return _projection_statistics(
+            self._log_relative_value(*jidx),
+            _stable_norm(self._family_score(0, jac)),
+            self._bm_dof(jac),
+        )
 
     def ratio(
         self,
@@ -222,6 +247,15 @@ class _LinearCupedCalculator:
         alpha: float = 0.05,
     ) -> LinearCupedProjection:
         """Ratio-of-component projection retaining stacked numerator/denominator scores."""
+        _check_alpha(alpha)
+        return _interval(*self._ratio_statistics(arm, control, scale), alpha)
+
+    def _ratio_statistics(
+        self,
+        arm: object,
+        control: object | None,
+        scale: Literal["log", "absolute"],
+    ) -> tuple[float, float, float]:
         if not self._components:
             _fail("estimation.cuped_linear.projection_kind", requested="ratio", available="mean")
         ti, ci = self._pair(arm, control)
@@ -245,7 +279,14 @@ class _LinearCupedCalculator:
             value = rt - rc
         else:
             _fail("estimation.cuped_linear.invalid_scale", scale=scale)
-        return self._project_components(value, jac, alpha)
+        narm = len(self.arm_order)
+        scores = [
+            self._family_score(family, jac[family * narm : (family + 1) * narm])
+            for family in range(2)
+        ]
+        return _projection_statistics(
+            value, _stable_norm(scores[0] + scores[1]), self._stacked_bm(jac)
+        )
 
     def _pair(self, arm: object, control: object | None) -> tuple[int, int]:
         try:
@@ -296,33 +337,8 @@ class _LinearCupedCalculator:
             self.leverage,
             self._design_factor,
             np.concatenate([j, -d]),
+            q_design=self._design_q,
         )
-
-    def _project(
-        self,
-        value: float,
-        j: np.ndarray,
-        alpha: float,
-        *,
-        dof: float | None = None,
-    ) -> LinearCupedProjection:
-        _check_alpha(alpha)
-        score = self._family_score(0, j)
-        se = _stable_norm(score)
-        return _interval(value, se, self._bm_dof(j) if dof is None else dof, alpha)
-
-    def _project_components(
-        self, value: float, jac: np.ndarray, alpha: float
-    ) -> LinearCupedProjection:
-        _check_alpha(alpha)
-        narm = len(self.arm_order)
-        scores = [
-            self._family_score(family, jac[family * narm : (family + 1) * narm])
-            for family in range(2)
-        ]
-        se = _stable_norm(scores[0] + scores[1])
-        dof = self._stacked_bm(jac)
-        return _interval(value, se, dof, alpha)
 
     def _stacked_bm(self, jac: np.ndarray) -> float:
         narm = len(self.arm_order)
@@ -339,6 +355,7 @@ class _LinearCupedCalculator:
                 self._design_factor,
                 contrast,
                 scale=scale,
+                q_design=self._design_q,
             )
             for contrast in contrasts
         ]
@@ -917,8 +934,13 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control, coordin
     )
     leverage = np.empty(n)
     if n <= 1024:
-        r_design = np.linalg.qr(design * sqrt_weights[:, None], mode="reduced")[1]
+        q_design, r_design = np.linalg.qr(design * sqrt_weights[:, None], mode="reduced")
     else:
+        q_design = np.empty_like(design)
+        q_design[:, :arm_count] = 0.0
+        for arm, idx in enumerate(indices):
+            q_design[idx, arm] = 1 / math.sqrt(len(idx))
+        q_design[:, arm_count:] = q_covariate
         r_design = np.zeros((arm_count + p, arm_count + p))
         for arm, idx in enumerate(indices):
             r_design[arm, arm] = math.sqrt(1 / (len(idx) - 1))
@@ -976,6 +998,7 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control, coordin
         _readonly(weights),
         _readonly(design),
         _readonly(r_design),
+        _readonly(q_design),
         tuple(float(v) for family in adjusted_local for v in family),
         outcome_offsets,
     )
@@ -1006,8 +1029,8 @@ def _cache_projections(calculator, outcomes, order):
                 treatment,
                 control,
                 "",
-                lambda treatment=treatment, control=control: calculator.absolute(
-                    treatment, control=control, alpha=0.5
+                lambda treatment=treatment, control=control: calculator._absolute_statistics(
+                    treatment, control
                 ),
                 reverse=True,
             )
@@ -1018,8 +1041,8 @@ def _cache_projections(calculator, outcomes, order):
                     treatment,
                     control,
                     "",
-                    lambda treatment=treatment, control=control: calculator.relative(
-                        treatment, control=control, alpha=0.5
+                    lambda treatment=treatment, control=control: calculator._relative_statistics(
+                        treatment, control
                     ),
                     reverse=True,
                 )
@@ -1034,7 +1057,7 @@ def _cache_projections(calculator, outcomes, order):
                             control,
                             scale,
                             lambda treatment=treatment, control=control, scale=scale: (
-                                calculator.ratio(treatment, control=control, scale=scale, alpha=0.5)
+                                calculator._ratio_statistics(treatment, control, scale)
                             ),
                             reverse=True,
                         )
@@ -1057,7 +1080,7 @@ def _append_projection(cached, kind, treatment, control, scale, calculate, *, re
     if result is None:
         entry = (kind, treatment, control, scale, math.nan, math.nan, math.nan)
     else:
-        entry = (kind, treatment, control, scale, result.estimate, result.se, result.dof)
+        entry = (kind, treatment, control, scale, result[0], result[1], result[2])
     cached.append(entry)
     if reverse:
         cached.append((kind, control, treatment, scale, -entry[4], entry[5], entry[6]))
@@ -1085,15 +1108,19 @@ def _bm(
     leverage: np.ndarray,
     factor: np.ndarray,
     contrast: np.ndarray,
+    *,
+    q_design: np.ndarray | None = None,
 ) -> float:
     scale = float(np.max(np.abs(contrast), initial=0.0))
     if scale == 0:
         return 1.0
-    trace, trace_square = _bm_terms(design, weights, leverage, factor, contrast, scale=scale)
+    trace, trace_square = _bm_terms(
+        design, weights, leverage, factor, contrast, scale=scale, q_design=q_design
+    )
     return trace * trace / trace_square if trace_square > 0 else 1.0
 
 
-def _bm_terms(design, weights, leverage, factor, contrast, *, scale):
+def _bm_terms(design, weights, leverage, factor, contrast, *, scale, q_design=None):
     if len(weights) <= 128:
         sqrt_weights = np.sqrt(weights)
         q, r = np.linalg.qr(design * sqrt_weights[:, None], mode="reduced")
@@ -1112,35 +1139,48 @@ def _bm_terms(design, weights, leverage, factor, contrast, *, scale):
         trace_square = largest**4 * float((normalized**2) @ (normalized**2))
         return trace, trace_square
 
+    sqrt_weights = np.sqrt(weights)
+    if q_design is None:
+        weighted_design = np.empty_like(design)
+        np.multiply(design, sqrt_weights[:, None], out=weighted_design)
+        q, r = scipy_qr(weighted_design, mode="economic", overwrite_a=True, check_finite=False)
+    else:
+        q, r = q_design, factor
+    coefficients = np.linalg.solve(r.T, contrast / scale)
+    ai = sqrt_weights * (q @ coefficients)
+    leverage = np.einsum("ij,ij->i", q, q)
+    qscore = ai / np.sqrt(1 - leverage)
+    q2 = qscore * qscore
+    q4 = q2 * q2
     parameter_count = design.shape[1]
-    identity = np.eye(parameter_count)
-    inverse = np.linalg.solve(factor, np.linalg.solve(factor.T, identity))
-    coefficients = inverse @ (contrast / scale)
-    ai = design @ coefficients * weights
-    q = ai / np.sqrt(1 - leverage)
-    q2 = q * q
     feature_count = 2 * parameter_count
-    s = np.zeros((feature_count, feature_count))
-    t = np.zeros_like(s)
-    gram = np.zeros((parameter_count, parameter_count))
+    gram = np.zeros((feature_count, feature_count))
+    weighted_gram = np.zeros_like(gram)
+    basis_gram = np.zeros((parameter_count, parameter_count))
     block_size = 65_536
     for start in range(0, len(weights), block_size):
         stop = min(start + block_size, len(weights))
-        design_block = design[start:stop]
-        weight_block = weights[start:stop]
-        feature_block = np.empty((stop - start, feature_count))
-        np.matmul(design_block, inverse, out=feature_block[:, :parameter_count])
-        np.multiply(design_block, weight_block[:, None], out=feature_block[:, parameter_count:])
-        weighted_block = feature_block[:, parameter_count:]
-        gram += weighted_block.T @ weighted_block
-        scaled = feature_block * q[start:stop, None]
-        s += scaled.T @ scaled
-        scaled_q2 = scaled * q2[start:stop, None]
-        t += scaled.T @ scaled_q2
-    low_rank = np.block([[gram, -identity], [-identity, np.zeros_like(identity)]])
-    trace = float(q2.sum() + np.trace(low_rank @ s))
+        sqrt_block = sqrt_weights[start:stop]
+        q_block = q[start:stop]
+        qscore_block = qscore[start:stop]
+        v = q_block * (qscore_block / sqrt_block)[:, None]
+        u = q_block * sqrt_block[:, None]
+        feature = np.empty((stop - start, feature_count))
+        feature[:, :parameter_count] = u * qscore_block[:, None]
+        feature[:, parameter_count:] = v
+        gram += feature.T @ feature
+        weighted_gram += feature.T @ (feature * q2[start:stop, None])
+        basis_gram += u.T @ u
+
+    low_rank = np.zeros((feature_count, feature_count))
+    low_rank[:parameter_count, parameter_count:] = -np.eye(parameter_count)
+    low_rank[parameter_count:, :parameter_count] = -np.eye(parameter_count)
+    low_rank[parameter_count:, parameter_count:] = basis_gram
+    trace = float(q2.sum() + np.trace(low_rank @ gram))
     trace_square = float(
-        (q2 * q2).sum() + 2 * np.trace(low_rank @ t) + np.trace(low_rank @ s @ low_rank @ s)
+        q4.sum()
+        + 2 * np.trace(low_rank @ weighted_gram)
+        + np.trace(low_rank @ gram @ low_rank @ gram)
     )
     return trace, trace_square
 
@@ -1161,7 +1201,7 @@ def _check_alpha(alpha: float) -> None:
         _fail("estimation.cuped_linear.invalid_alpha", alpha=alpha)
 
 
-def _interval(value: float, se: float, dof: float, alpha: float) -> LinearCupedProjection:
+def _projection_statistics(value: float, se: float, dof: float) -> tuple[float, float, float]:
     if not np.isfinite((value, se, dof)).all() or se < 0 or dof <= 0:
         _fail(
             "estimation.cuped_linear.nonfinite_projection",
@@ -1169,6 +1209,11 @@ def _interval(value: float, se: float, dof: float, alpha: float) -> LinearCupedP
             se=float(se),
             dof=float(dof),
         )
+    return float(value), float(se), float(dof)
+
+
+def _interval(value: float, se: float, dof: float, alpha: float) -> LinearCupedProjection:
+    value, se, dof = _projection_statistics(value, se, dof)
     critical = two_sided_critical_value(student_t_isf, alpha, dof, what="linear CUPED projection")
     half_width = critical * se
     lower, upper = value - half_width, value + half_width
