@@ -1502,7 +1502,11 @@ _AUXILIARY_ROWS: tuple[EntryRow, ...] = (
         "`sitewide(population='triggered')` with a declared trigger",
         ("sitewide_triggered_population_refused",),
         ("sitewide_artifact_triggered_population_refused",),
-        _other_auxiliary_bindings("sitewide"),
+        (
+            ("unit summary", "sitewide_from_unit_summary_triggered_population_refused"),
+            ("unit panel", "sitewide_from_unit_panel_triggered_population_refused"),
+            ("portable moments", "sitewide_from_moments_triggered_population_refused"),
+        ),
     ),
     _triggered_auxiliary_row(
         "triggered-read-cate",

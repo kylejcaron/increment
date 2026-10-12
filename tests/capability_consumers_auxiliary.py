@@ -244,6 +244,19 @@ for _key, _operation, _evidence in _TRIGGER_READS:
                     codes=("analysis.sitewide.triggered_population_unsupported",),
                     reason="The triggered-population sitewide estimand is not offered.",
                 ),
+                *(
+                    _expectation(
+                        f"sitewide_{ingress}_triggered_population_refused",
+                        _operation,
+                        ingress,
+                        "sitewide requested with population='triggered'",
+                        "refused",
+                        "tests.test_analysis_trigger::test_sitewide_triggered_population_refuses_before_loading_on_every_ingress",
+                        codes=("analysis.sitewide.triggered_population_unsupported",),
+                        reason="The triggered-population sitewide estimand is not offered.",
+                    )
+                    for ingress in ("from_unit_summary", "from_unit_panel", "from_moments")
+                ),
             )
         )
     else:

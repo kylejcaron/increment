@@ -1976,14 +1976,34 @@ def test_sitewide_triggered_population_without_trigger_refuses_before_loading(
         )
         with pytest.raises(CapabilityError) as refused:
             analysis.sitewide("revenue", population="triggered")
-        assert refused.value.code == "source.native.operation"
-        assert refused.value.context["request"] == {
-            "experiment": "exp",
-            "population": "triggered",
-            "trigger": None,
-        }
+        assert refused.value.code == "analysis.sitewide.triggered_population_unsupported"
+        assert refused.value.context == {"experiment": "exp", "population": "triggered"}
     finally:
         analysis.close()
+
+
+def test_sitewide_triggered_population_refuses_before_loading_on_every_ingress():
+    from tests.capability_consumers_auxiliary import assert_refusal
+    from tests.test_constructor_refusal_matrix import (
+        _moments_analysis,
+        _panel_analysis,
+        _summary_analysis,
+    )
+
+    analyses = (
+        (_summary_analysis(), "sitewide_from_unit_summary_triggered_population_refused"),
+        (_panel_analysis(), "sitewide_from_unit_panel_triggered_population_refused"),
+        (_moments_analysis(), "sitewide_from_moments_triggered_population_refused"),
+    )
+    try:
+        for analysis, outcome_id in analyses:
+            with pytest.raises(CapabilityError) as refused:
+                analysis.sitewide("revenue", population="triggered")
+            assert refused.value.code == "analysis.sitewide.triggered_population_unsupported"
+            assert_refusal("triggered_auxiliary_reads", outcome_id, refused.value, stage="read")
+    finally:
+        for analysis, _ in analyses:
+            analysis.close()
 
 
 def test_triggered_sitewide_seam_keeps_source_specific_refusal():

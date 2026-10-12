@@ -1990,11 +1990,6 @@ class Analysis:
         if population not in ("assigned", "triggered"):
             _refuse(_INVALID_POPULATION, population=population)
         if population == "triggered":
-            declared_trigger = experiment is not None and experiment.trigger is not None
-            validate_populations = getattr(self._src, "validate_populations", None)
-            if not declared_trigger and validate_populations is not None:
-                # Without a trigger the source's own refusal names the missing declaration.
-                validate_populations(("triggered",), operation="sitewide_evidence")
             _refuse(
                 _TRIGGERED_SITEWIDE_UNSUPPORTED,
                 experiment=None if experiment is None else experiment.name,

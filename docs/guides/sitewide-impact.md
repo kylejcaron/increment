@@ -25,10 +25,12 @@ When an experiment declares `trigger:`, `sitewide()` still reports the
 `assigned` intent-to-treat whole-site impact. It uses assignment-anchored
 windows and includes every enrolled unit, whether or not that unit triggered;
 declaring a trigger therefore does not change this estimand. Requesting
-`population="triggered"` is refused. Multiplying triggered-cohort lift by all
-enrolled units would overstate impact when some units never trigger. A
-triggered-population sitewide estimate would additionally require that units
-which never trigger are unaffected; that assumption is not made here. Use
+`population="triggered"` is refused: the triggered-population sitewide
+estimand would scale triggered lift by triggered units and is interpretable as
+whole-site impact only if units that never trigger are unaffected. That
+assumption is not made here. Scaling triggered lift by all enrolled units is
+also incorrect: for example, if 20 of 100 units trigger, lift is 10, and the
+other 80 have no effect, the whole-site impact is 200, not 1,000. Use
 `run()` for the triggered cohort effect.
 
 ## The ship-to-all counterfactual
