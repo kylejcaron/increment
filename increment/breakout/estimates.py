@@ -1066,15 +1066,92 @@ class EstimateList[M: BaseModel](list[M]):
 
         return concat_collection(self, other)
 
+    def __repr__(self) -> str:
+        from increment._interpretation import interpret_readout, render_readout_text
+
+        if self.metadata is None:
+            return super().__repr__()
+        return render_readout_text(interpret_readout(self, self.metadata))
+
+    __str__ = __repr__
+
     def to_frame(self, backend: Backend = "pandas") -> IntoDataFrame:
         """Convert this list to a native ``backend`` frame - see :func:`to_frame`."""
 
         from increment.breakout.projection import to_frame
 
         frame = nw.from_native(to_frame(self, model=self._model, backend=backend), eager_only=True)
-        return frame.with_columns(
+        from increment._interpretation import interpret_readout, readout_evidence_columns
+
+        interpretation = interpret_readout(self, self.metadata)
+        evidence = [
+            readout_evidence_columns(
+                interpretation, row, source_snapshot_id=getattr(row, "source_snapshot_id", None)
+            )
+            for row in self
+        ]
+        if evidence:
+            evidence_columns = {name: [row[name] for row in evidence] for name in evidence[0]}
+        elif interpretation.groups and interpretation.groups[0].source_cells:
+            group = interpretation.groups[0]
+            empty_evidence = readout_evidence_columns(
+                interpretation,
+                group.source_cells[0].key,
+                source_snapshot_id=group.source_snapshot_id,
+            )
+            evidence_columns = {name: [] for name in empty_evidence}
+        else:
+            evidence_columns = {}
+        string_columns = {
+            "source_snapshot_id",
+            "analysis_population",
+            "integrity_status",
+            "integrity_code",
+            "integrity_context",
+            "roster_source",
+            "posterior_reason_code",
+            "posterior_reason_context",
+            "failure_code",
+            "failure_context",
+            "failure_message",
+            "unavailable_cells",
+            "hidden_cells",
+            "advisories",
+            "multiplicity_status",
+            "retained_family",
+        }
+        boolean_columns = {
+            "decision_scope_complete",
+            "roster_complete",
+            "sampling_available",
+            "point_available",
+            "posterior_available",
+            "view_partial",
+        }
+        count_columns = {
+            "required_cell_count",
+            "available_cell_count",
+            "source_cell_count",
+            "unavailable_cell_count",
+            "hidden_cell_count",
+        }
+        for name, values in evidence_columns.items():
+            dtype = (
+                nw.String()
+                if name in string_columns
+                else nw.Boolean()
+                if name in boolean_columns
+                else nw.Int64()
+                if name in count_columns
+                else None
+            )
+            frame = frame.with_columns(
+                nw.new_series(name, values, dtype=dtype, backend=nw.get_native_namespace(frame))
+            )
+        frame = frame.with_columns(
             nw.lit(None if self.metadata is None else self.metadata.partial).alias("view_partial")
-        ).to_native()
+        )
+        return frame.to_native()
 
     @overload
     def __getitem__(self, key: SupportsIndex) -> M: ...

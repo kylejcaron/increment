@@ -31,6 +31,29 @@ appear once as header notes only when informative. They remain on result
 objects and in `to_frame()`; failure rows keep a concise `Failure` column
 with their full structured context on the result object.
 
+Scoped result collections also carry qualifications in their default
+`repr`: integrity and scope completeness precede availability, multiplicity,
+advisories, and effects. A failed integrity check is not hidden by an
+otherwise favorable estimate, and `not_rejected` means no detected mismatch,
+not proof of valid randomization. The collection display includes retained
+scope even when filtering leaves no visible rows.
+
+`LiftEstimates.to_frame()` and `ContrastResults.to_frame()` keep evidence
+portable in scalar and canonical-JSON columns, including `analysis_population`,
+`source_snapshot_id`, `integrity_status`/`integrity_code`/`integrity_context`,
+required/available/hidden cell counts and reasons, advisory disclosures, and
+multiplicity family status. `estimates_to_readout()` carries the same columns;
+use it when exporting or saving flattened readout rows. Null numeric evidence
+remains numeric null rather than a serialized placeholder.
+
+`readout_table(collection)` retains collection qualifications in its header.
+The zero-visible-row view is a deliberate exception to tables' usual reliance
+on displayed row qualifications: it still renders retained scope and integrity
+for a scoped collection, while row-only empty input reports that scope and
+integrity are unknown. Export the collection's JSON (`model_dump_json()`) when
+you need to preserve the empty view's complete scope evidence; a zero-row
+frame/table has no row on which to store attribution.
+
 An affirmative `r.discovery` is the raw selection result, not another
 significance verdict: it can differ from `r.stat_sig()`. The ordinary
 representation and `readout_table` place a selection qualification next to

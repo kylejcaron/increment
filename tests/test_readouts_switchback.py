@@ -221,6 +221,27 @@ def test_contrast_results_convert_to_readout_rows():
     assert (row["ct_cycles"], row["tc_cycles"]) == (2, 2)
 
 
+def test_scoped_contrast_collection_default_output_keeps_qualifications():
+    import narwhals as nw
+
+    results = _switchback_analysis().run()
+    assert "Integrity:" in repr(results)
+    for backend in ("pandas", "polars", "pyarrow"):
+        frame = nw.from_native(results.to_frame(backend=backend), eager_only=True)
+        assert {
+            "analysis_population",
+            "source_snapshot_id",
+            "integrity_status",
+            "required_cell_count",
+            "unavailable_cells",
+        } <= set(frame.columns)
+
+    empty = results.filter(lambda row: False)
+    assert "Required cells:" in repr(empty)
+    empty_frame = nw.from_native(empty.to_frame(), eager_only=True)
+    assert not len(empty_frame) and "integrity_status" in empty_frame.columns
+
+
 def test_shared_schedule_contrast_results_convert_to_readout_rows_with_block_counts():
     """A shared-block readout row distinguishes roster size (``n_units``)
     from the inferential block count (``n_blocks``), and reports the

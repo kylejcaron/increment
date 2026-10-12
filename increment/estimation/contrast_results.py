@@ -463,6 +463,18 @@ class ContrastResults(list[ContrastResult]):
 
         return concat_collection(self, other)
 
+    def __repr__(self) -> str:
+        from importlib import import_module
+
+        interpretation_api = import_module("increment._interpretation")
+        if self.metadata is None:
+            return super().__repr__()
+        return interpretation_api.render_readout_text(
+            interpretation_api.interpret_readout(self, self.metadata)
+        )
+
+    __str__ = __repr__
+
     def __add__(self, other):
         return self.concat(other)
 
@@ -652,6 +664,74 @@ class ContrastResults(list[ContrastResult]):
             for name in nullable_ints:
                 data.pop(name)
                 schema.pop(name)
+        from importlib import import_module
+
+        interpretation_api = import_module("increment._interpretation")
+        interpret_readout = interpretation_api.interpret_readout
+        readout_evidence_columns = interpretation_api.readout_evidence_columns
+
+        interpretation = interpret_readout(self, self.metadata)
+        evidence = [
+            readout_evidence_columns(interpretation, row, source_snapshot_id=row.source_snapshot_id)
+            for row in self
+        ]
+        string_columns = {
+            "source_snapshot_id",
+            "analysis_population",
+            "integrity_status",
+            "integrity_code",
+            "integrity_context",
+            "roster_source",
+            "posterior_reason_code",
+            "posterior_reason_context",
+            "failure_code",
+            "failure_context",
+            "failure_message",
+            "unavailable_cells",
+            "hidden_cells",
+            "advisories",
+            "multiplicity_status",
+            "retained_family",
+        }
+        boolean_columns = {
+            "decision_scope_complete",
+            "roster_complete",
+            "sampling_available",
+            "point_available",
+            "posterior_available",
+            "view_partial",
+        }
+        count_columns = {
+            "required_cell_count",
+            "available_cell_count",
+            "source_cell_count",
+            "unavailable_cell_count",
+            "hidden_cell_count",
+        }
+        if evidence:
+            evidence_columns = {name: [row[name] for row in evidence] for name in evidence[0]}
+        elif interpretation.groups and interpretation.groups[0].source_cells:
+            group = interpretation.groups[0]
+            empty_evidence = readout_evidence_columns(
+                interpretation,
+                group.source_cells[0].key,
+                source_snapshot_id=group.source_snapshot_id,
+            )
+            evidence_columns = {name: [] for name in empty_evidence}
+        else:
+            evidence_columns = {}
+        for name, values in evidence_columns.items():
+            data[name] = values
+            columns.append(name)
+            schema[name] = (
+                nw.String()
+                if name in string_columns
+                else nw.Boolean()
+                if name in boolean_columns
+                else nw.Int64()
+                if name in count_columns
+                else nw.String()
+            )
         frame = nw.from_dict(data, schema=schema, backend=backend).to_native()
         if backend == "pandas":
             import pandas as pd

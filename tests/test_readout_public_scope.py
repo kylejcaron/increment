@@ -888,6 +888,41 @@ def test_readout_table_renders_failed_scope_and_partial_collection_view():
     assert "Decision scope is incomplete" in partial_html
 
 
+def test_qualified_collection_repr_frames_and_empty_table_keep_scope():
+    pytest.importorskip("coeftable")
+    from increment.tables import estimates_to_readout, readout_table
+
+    with pytest.warns(IncrementWarning):
+        results = _analysis(_frame()).run()
+    assert "Integrity:" in repr(results)
+    assert "not success" in repr(results)
+    for backend in ("pandas", "polars", "pyarrow"):
+        frame = nw.from_native(results.to_frame(backend=backend), eager_only=True)
+        assert {
+            "analysis_population",
+            "source_snapshot_id",
+            "integrity_status",
+            "required_cell_count",
+            "unavailable_cells",
+            "hidden_cells",
+            "advisories",
+        } <= set(frame.columns)
+    rows = estimates_to_readout(results)
+    assert all(row["integrity_status"] == "not_checked_missing_declaration" for row in rows)
+    assert all(row["analysis_population"] == "assigned" for row in rows)
+    assert "not_checked_missing_declaration" in readout_table(results).gt().as_raw_html()
+    from tests.test_tables import _as_latex, _latex_text
+
+    assert "not_checked_missing_declaration" in _latex_text(_as_latex(readout_table(results)))
+
+    empty = results.filter(lambda row: False)
+    assert "Required cells:" in repr(empty)
+    empty_frame = nw.from_native(empty.to_frame(), eager_only=True)
+    assert len(empty_frame) == 0 and "integrity_status" in empty_frame.columns
+    assert "Required cells:" in readout_table(empty).gt().as_raw_html()
+    assert "Scope and integrity unknown" in readout_table([]).gt().as_raw_html()
+
+
 def test_constant_primary_is_a_failed_decision_cell_beside_a_surviving_guardrail():
     frame = _frame(guard_constant=False)
     frame["rev"] = 1.0

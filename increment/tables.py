@@ -14,11 +14,17 @@ same function directly instead.
 
 from __future__ import annotations
 
+import json
 import math
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from increment._interpretation import (
+    interpret_readout,
+    readout_evidence_columns,
+    render_readout_text,
+)
 from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate
 from increment.breakout.projection import to_frame
 from increment.errors import InvalidRequestError, RefusalSpec, raiser, refusals
@@ -428,6 +434,7 @@ def estimates_to_readout(
     """
     metadata = getattr(estimates, "metadata", None)
     view_partial = None if metadata is None else metadata.partial
+    interpretation = interpret_readout(estimates, metadata) if metadata is not None else None
     rows = []
     for est in estimates:
         if isinstance(est, ContrastResult):
@@ -436,25 +443,30 @@ def estimates_to_readout(
             row["posterior_chance_to_beat"] = None
             row["posterior_risk_if_shipped"] = None
             row["posterior_prob_favorable"] = None
-            rows.append(row)
-            continue
-        row = _liftestimate_to_row(est)
-        row["view_partial"] = view_partial
-        if hasattr(est, "dimension_value") and hasattr(est, "dimension"):
-            row["segment"] = est.dimension_value
-            row["dimension"] = est.dimension
-            source = getattr(est, "source", None)
-            if source is not None:
-                row["source"] = source
-            if hasattr(est, "excluded"):
-                row["excluded"] = est.excluded
-            if hasattr(est, "unavailable"):
-                row["unavailable"] = est.unavailable
-            row["low_reliability"] = getattr(est, "low_reliability", False)
-        ds = getattr(est, "ds", None)
-        if ds is not None:
-            row["ds"] = ds
-        row.update(_decision_stat_columns(est))
+        else:
+            row = _liftestimate_to_row(est)
+            row["view_partial"] = view_partial
+            if hasattr(est, "dimension_value") and hasattr(est, "dimension"):
+                row["segment"] = est.dimension_value
+                row["dimension"] = est.dimension
+                source = getattr(est, "source", None)
+                if source is not None:
+                    row["source"] = source
+                if hasattr(est, "excluded"):
+                    row["excluded"] = est.excluded
+                if hasattr(est, "unavailable"):
+                    row["unavailable"] = est.unavailable
+                row["low_reliability"] = getattr(est, "low_reliability", False)
+            ds = getattr(est, "ds", None)
+            if ds is not None:
+                row["ds"] = ds
+            row.update(_decision_stat_columns(est))
+        if interpretation is not None:
+            row.update(
+                readout_evidence_columns(
+                    interpretation, est, source_snapshot_id=getattr(est, "source_snapshot_id", None)
+                )
+            )
         rows.append(row)
     return rows
 
@@ -762,6 +774,87 @@ def _readout_metadata_notes(frame: Any) -> list[str]:
     return notes
 
 
+def _readout_evidence_notes(frame: Any) -> list[str]:
+    """Summarize portable collection qualifications once, retaining attribution."""
+    notes = []
+    populations = _column_values(frame, "analysis_population")
+    sources = _column_values(frame, "source_snapshot_id")
+    statuses = _column_values(frame, "integrity_status")
+    required = _column_values(frame, "required_cell_count")
+    available = _column_values(frame, "available_cell_count")
+    advisories = _column_values(frame, "advisories")
+    if statuses is not None:
+        contexts = _column_values(frame, "integrity_code")
+        seen = set()
+        for index, status in enumerate(statuses):
+            if _is_missing(status):
+                continue
+            identity = (
+                status,
+                None if populations is None else populations[index],
+                None if sources is None else sources[index],
+            )
+            if identity in seen:
+                continue
+            seen.add(identity)
+            attribution = ", ".join(str(value) for value in identity[1:] if not _is_missing(value))
+            detail = (
+                "" if contexts is None or _is_missing(contexts[index]) else f" ({contexts[index]})"
+            )
+            note = f"Integrity {status}{detail}"
+            if attribution:
+                note += f" [{attribution}]"
+            if required is not None and available is not None:
+                note += f"; required cells {required[index]}, available {available[index]}"
+            notes.append(note + ".")
+    if advisories is not None:
+        seen_advisories = set()
+        for index, value in enumerate(advisories):
+            if _is_missing(value):
+                continue
+            attribution = tuple(
+                values[index] if values is not None else None for values in (populations, sources)
+            )
+            for advisory in json.loads(value):
+                key = (
+                    advisory.get("code"),
+                    json.dumps(advisory.get("context"), sort_keys=True),
+                    attribution,
+                )
+                if key not in seen_advisories:
+                    seen_advisories.add(key)
+                    label = ", ".join(str(value) for value in attribution if not _is_missing(value))
+                    suffix = f" [{label}]" if label else ""
+                    notes.append(
+                        f"Advisory {advisory.get('code')}{suffix}: {advisory.get('message')}"
+                    )
+    for column, label in (
+        ("unavailable_cells", "Unavailable"),
+        ("hidden_cells", "Hidden by filter"),
+    ):
+        values = _column_values(frame, column)
+        if values is None:
+            continue
+        seen_cells = set()
+        for index, value in enumerate(values):
+            if _is_missing(value):
+                continue
+            attribution = tuple(
+                values[index] if values is not None else None for values in (populations, sources)
+            )
+            for cell in json.loads(value):
+                key = (json.dumps(cell, sort_keys=True), attribution)
+                if key in seen_cells:
+                    continue
+                seen_cells.add(key)
+                message = cell.get("message") or cell.get("code") or "reason unavailable"
+                metric = cell.get("cell", {}).get("metric")
+                label_parts = (*attribution, metric)
+                suffix = ", ".join(str(value) for value in label_parts if not _is_missing(value))
+                notes.append(f"{label}{f' [{suffix}]' if suffix else ''}: {message}")
+    return notes
+
+
 def _rendered_metadata_columns(
     frame: Any, *, advisory: bool, show_interval_level: bool
 ) -> dict[str, list[str]]:
@@ -785,9 +878,12 @@ def _rendered_metadata_columns(
     failure_codes = _column_values(frame, "failure_code")
     if failure_codes is not None and any(not _is_missing(value) for value in failure_codes):
         failure_contexts = _column_values(frame, "failure_context") or [None] * n
+        failure_messages = _column_values(frame, "failure_message") or [None] * n
         columns["Failure"] = [
-            _failure_disclosure(code, context)
-            for code, context in zip(failure_codes, failure_contexts, strict=True)
+            str(message) if not _is_missing(message) else _failure_disclosure(code, context)
+            for code, context, message in zip(
+                failure_codes, failure_contexts, failure_messages, strict=True
+            )
         ]
 
     null_lift = _column_values(frame, "null_lift") or [None] * n
@@ -1280,6 +1376,29 @@ def _prepare_readout_metadata(
     return frame, display_columns, shifted_null_lift, group_column
 
 
+def _readout_input_frame(data: Any, nw: Any, pd: Any) -> tuple[Any, str]:
+    """Convert row, frame, or scoped collection input to the render frame."""
+    metadata = getattr(data, "metadata", None)
+    scope_header = ""
+    if metadata is not None:
+        scope_header = render_readout_text(interpret_readout(data, metadata))
+        data = estimates_to_readout(data)
+    frame = (
+        nw.from_native(pd.DataFrame(data), eager_only=True)
+        if isinstance(data, list)
+        else nw.from_native(data, eager_only=True)
+    )
+    if not len(frame):
+        for name in ("metric", "method", "lift", "lower", "higher", "stat_sig", "group_id"):
+            if name not in frame.columns:
+                frame = frame.with_columns(
+                    nw.new_series(name, [], dtype=nw.String, backend=nw.get_native_namespace(frame))
+                )
+        if not scope_header:
+            scope_header = "Scope and integrity unknown."
+    return frame, scope_header
+
+
 # Keep trend labels aligned with ``_resolve_trend_frame``.
 def readout_table(
     data: IntoDataFrame | list[dict[str, Any]],
@@ -1352,13 +1471,7 @@ def readout_table(
     import narwhals as nw
     import pandas as pd
 
-    if isinstance(data, list):
-        # pandas (bundled with the tables extra) avoids great_tables' "PyArrow
-        # Table support is experimental" warning that pyarrow would trigger.
-        frame = nw.from_native(pd.DataFrame(data), eager_only=True)
-    else:
-        frame = nw.from_native(data, eager_only=True)
-
+    frame, scope_header = _readout_input_frame(data, nw, pd)
     if nest_by == "segment" and frame["method"].n_unique() > 1:
         _raise("tables.readout_table_nest")
 
@@ -1476,7 +1589,9 @@ def readout_table(
             axis_fmt=ct.DateAxis(),
         )
 
-    notes = _readout_metadata_notes(frame)
+    notes = _readout_metadata_notes(frame) + _readout_evidence_notes(frame)
+    if scope_header:
+        notes.insert(0, scope_header)
     level_note = _interval_level_note(
         frame,
         show_interval_level=show_interval_level,

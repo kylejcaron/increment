@@ -400,7 +400,7 @@ depends_on = [
   "increment.winsor", "increment._policy_alpha", "increment.compatibility", "increment.decision", "increment.errors",
   "increment.estimation", "increment.estimation.sequential", "increment.estimation.sequential_result",
   "increment.semantics", "increment.sequential_source", "increment.sequential_state",
-  "increment.breakout.projection",
+  "increment.breakout.projection", "increment._interpretation",
 ]
 
 [[modules]]
@@ -515,7 +515,7 @@ path = "increment.tables"
 depends_on = [
   "increment._canonical",
   "increment.breakout.estimates", "increment.estimation", "increment.errors",
-  "increment.estimation.sequential_result", "increment.breakout.projection",
+  "increment.estimation.sequential_result", "increment.breakout.projection", "increment._interpretation",
 ]
 
 [[modules]]

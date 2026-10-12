@@ -332,12 +332,16 @@ def readout_evidence_columns(
             )
         status = getattr(row, "multiplicity_status", None)
         return {
+            "source_snapshot_id": group.source_snapshot_id,
+            "analysis_population": group.population,
             "integrity_status": group.integrity_status,
             "integrity_code": group.integrity_code,
             "integrity_context": _json(group.integrity_context),
             "required_cell_count": len(group.required_cells),
             "available_cell_count": sum(entry.available for entry in group.required_cells),
             "source_cell_count": len(group.source_cells),
+            "unavailable_cell_count": len(group.unavailable_cells),
+            "hidden_cell_count": len(group.hidden_cells),
             "decision_scope_complete": group.decision_complete,
             "roster_complete": group.roster_complete,
             "roster_source": group.roster_source,
@@ -393,15 +397,19 @@ def readout_evidence_columns(
             ),
         }
     return {
+        "source_snapshot_id": source_snapshot_id,
+        "analysis_population": getattr(row, "analysis_population", None),
         "integrity_status": "unknown",
         "integrity_code": None,
         "integrity_context": None,
-        "decision_scope_complete": None,
-        "roster_complete": None,
-        "roster_source": None,
         "required_cell_count": 0,
         "available_cell_count": 0,
         "source_cell_count": 0,
+        "unavailable_cell_count": 0,
+        "hidden_cell_count": 0,
+        "decision_scope_complete": None,
+        "roster_complete": None,
+        "roster_source": None,
         "sampling_available": False,
         "point_available": False,
         "posterior_available": None,
@@ -409,6 +417,7 @@ def readout_evidence_columns(
         "posterior_reason_context": None,
         "failure_code": None,
         "failure_context": None,
+        "failure_message": None,
         "unavailable_cells": "[]",
         "hidden_cells": "[]",
         "advisories": "[]",
@@ -420,6 +429,8 @@ def readout_evidence_columns(
 
 def render_readout_text(interpretation: ReadoutInterpretation) -> str:
     """Render concise integrity/completeness qualifications before effects."""
+    if not interpretation.groups:
+        return "Scope retained; no source-qualified cells recorded."
     lines: list[str] = []
     for group in interpretation.groups:
         comparison = (
