@@ -564,7 +564,7 @@ def test_large_constant_outcome_has_zero_contrast_and_standard_error():
     assert result.se == 0
 
 
-@pytest.mark.parametrize("epsilon", [1e-8, 1e-7])
+@pytest.mark.parametrize("epsilon", [1e-7])
 def test_near_collinear_accepted_fit_matches_weighted_qr(epsilon):
     rng = np.random.default_rng(809)
     arm = np.repeat(["c", "t"], 20)
@@ -918,7 +918,7 @@ def test_small_scale_scores_and_log_ratios_do_not_underflow():
     fit = fit_cuped_linear(
         np.array([-2e-170, 0.0, -4e-170, 0.0]), arm, control="c", arm_order=("c", "t")
     )
-    assert fit.absolute("t").se == pytest.approx(math.sqrt(5) * 1e-170)
+    assert fit.absolute("t").se == pytest.approx(math.sqrt(5) * 1e-170, rel=1e-12, abs=0)
 
     ratio_fit = fit_cuped_linear(
         None,
@@ -936,7 +936,7 @@ def test_small_relative_effect_survives_log_rounding():
     fit = fit_cuped_linear(
         np.array([2**50, 2**50, 2**50 + 0.25, 2**50 + 0.25]), arm, control="c", arm_order=("c", "t")
     )
-    assert fit.relative("t").estimate == pytest.approx(math.log1p(2**-52))
+    assert fit.relative("t").estimate == pytest.approx(math.log1p(2**-52), rel=1e-12, abs=0)
 
 
 def test_arm_local_outcome_offsets_preserve_contrasts_and_row_order():
@@ -993,7 +993,8 @@ def test_nonfinite_absolute_ratio_projection_does_not_abort_log_ratio_fit():
     assert raised.value.code == "estimation.cuped_linear.nonfinite_projection"
 
 
-def test_ratio_log_effect_survives_component_log_rounding():
+@pytest.mark.parametrize("denominator_scale", [1.0, 2**100])
+def test_ratio_log_effect_survives_component_log_rounding(denominator_scale):
     arm = np.array(["c", "c", "t", "t"])
     base = 2**50
     fit = fit_cuped_linear(
@@ -1002,6 +1003,118 @@ def test_ratio_log_effect_survives_component_log_rounding():
         control="c",
         arm_order=("c", "t"),
         numerator=np.array([base, base, base + 0.25, base + 0.25]),
-        denominator=np.full(4, base),
+        denominator=np.full(4, denominator_scale),
     )
-    assert fit.ratio("t", scale="log").estimate == pytest.approx(math.log1p(2**-52))
+    assert fit.ratio("t", scale="log").estimate == pytest.approx(
+        math.log1p(2**-52), rel=1e-12, abs=0
+    )
+
+
+@pytest.mark.parametrize("epsilon", [1e-7, 1e-8])
+def test_near_collinear_bm_dof_matches_dense_eigenvalue_reference(epsilon):
+    rng = np.random.default_rng(105)
+    arm = np.repeat(["c", "t"], [11, 15])
+    z = rng.normal(size=len(arm))
+    v = 4 * rng.normal(size=len(arm))
+    x = np.column_stack([z, z + epsilon * v])
+    y = 4 + (arm == "t") + 0.3 * z + rng.normal(size=len(arm))
+    fit = fit_cuped_linear(
+        y,
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+        covariates={"z": x[:, 0], "near": x[:, 1]},
+        kinds={"z": "continuous", "near": "continuous"},
+    )
+    groups = [np.flatnonzero(arm == label) for label in ("c", "t")]
+    means = [x[group].mean(axis=0) for group in groups]
+    design = np.zeros((len(arm), 4))
+    weights = np.empty(len(arm))
+    for i, group in enumerate(groups):
+        design[group, i] = 1
+        design[group, 2:] = x[group] - means[i]
+        weights[group] = 1 / (len(group) * (len(group) - 1))
+    d = means[1] - means[0]
+    contrast = np.r_[-1.0, 1.0, -d]
+    sqrt_weights = np.sqrt(weights)
+    q, r = np.linalg.qr(design * sqrt_weights[:, None], mode="reduced")
+    ai = sqrt_weights * (q @ np.linalg.solve(r.T, contrast))
+    leverage = np.sum(q * q, axis=1)
+    hat_transpose = sqrt_weights[:, None] * (q @ q.T) / sqrt_weights[None, :]
+    score_matrix = (np.eye(len(weights)) - hat_transpose) * (ai / np.sqrt(1 - leverage))[None, :]
+    eigenvalues = np.linalg.eigvalsh(score_matrix.T @ score_matrix)
+    expected = eigenvalues.sum() ** 2 / (eigenvalues @ eigenvalues)
+    assert fit.dof == pytest.approx(expected, rel=1e-8)
+    assert fit.absolute("t").dof == pytest.approx(expected, rel=1e-8)
+
+
+def test_large_between_arm_covariate_offset_preserves_within_arm_design():
+    arm = np.array(["c"] * 4 + ["t"] * 4)
+    x = np.r_[np.full(4, 2**54), [0.25, 0.75, 0.25, 0.75]]
+    fit = fit_cuped_linear(
+        np.arange(8.0),
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+        covariates={"x": x},
+        kinds={"x": "continuous"},
+    )
+    assert fit.p == 1
+    assert fit.max_leverage == pytest.approx(0.5)
+
+
+def test_correlation_scaled_pivot_refuses_numerically_dependent_column():
+    arm = np.repeat(["c", "t"], 4)
+    z = np.tile([-1.0, 1.0], 4)
+    near = z + 1e-9 * np.tile([1.0, 1.0, -1.0, -1.0], 2)
+    with pytest.raises(InvalidRequestError) as raised:
+        fit_cuped_linear(
+            np.arange(8.0),
+            arm,
+            control="c",
+            arm_order=("c", "t"),
+            covariates={"z": z, "near": near},
+            kinds={"z": "continuous", "near": "continuous"},
+        )
+    assert raised.value.code == "estimation.cuped_linear.rank_deficiency"
+
+
+def test_categorical_sequence_detects_nan_before_string_coercion():
+    arm = np.repeat(["c", "t"], 4)
+    category = ["nan", "nan", float("nan"), float("nan")] * 2
+    with pytest.raises(InvalidRequestError) as raised:
+        fit_cuped_linear(
+            np.arange(8.0),
+            arm,
+            control="c",
+            arm_order=("c", "t"),
+            covariates={"category": category},
+            kinds={"category": "categorical"},
+        )
+    assert raised.value.code == "estimation.cuped_linear.missing_refused"
+
+
+def test_cached_interval_overflow_does_not_poison_other_alpha():
+    arm = np.array(["c", "c", "t", "t"])
+    fit = fit_cuped_linear(
+        np.array([-1e308, 0.0, -1e308, 0.0]), arm, control="c", arm_order=("c", "t")
+    )
+    projection = fit.absolute("t", alpha=0.5)
+    assert np.isfinite(
+        (projection.estimate, projection.se, projection.lower, projection.upper)
+    ).all()
+
+
+def test_covariate_constant_within_each_arm_is_rank_deficient():
+    arm = np.repeat(["c", "t"], 4)
+    x = np.repeat([1.0, 2.0], 4)
+    with pytest.raises(InvalidRequestError) as raised:
+        fit_cuped_linear(
+            np.arange(8.0),
+            arm,
+            control="c",
+            arm_order=("c", "t"),
+            covariates={"x": x},
+            kinds={"x": "continuous"},
+        )
+    assert raised.value.code == "estimation.cuped_linear.rank_deficiency"
