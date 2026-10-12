@@ -197,10 +197,7 @@ class SitewideReadouts:
             or metric.type not in _CLUSTER_COMPATIBLE_METRIC_TYPES
             or any(
                 getattr(component, "window_days", None) is not None
-                or (
-                    getattr(component, "type", None) != "conversion"
-                    and getattr(component, "aggregation", None) != "sum"
-                )
+                or getattr(component, "aggregation", None) != "sum"
                 for component in components
             )
         ):

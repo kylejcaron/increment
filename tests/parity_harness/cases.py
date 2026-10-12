@@ -8905,8 +8905,8 @@ def _winsor_size_routed_case() -> ParityCase:
     )
 
 
-def _triggered_sitewide_assigned_case() -> ParityCase:
-    """Assigned sitewide parity for a trigger-declared definitions/artifact pair."""
+def _triggered_sitewide_population_results_case() -> ParityCase:
+    """Complete assigned and triggered sitewide sum/ratio parity across sources."""
     rows = ds.event_rows()
     for row in tuple(rows):
         if row["event"] == "exposure" and int(str(row["user_id"])[1:]) % 2 == 0:
@@ -8919,12 +8919,15 @@ def _triggered_sitewide_assigned_case() -> ParityCase:
                     experiment_id="exp",
                 )
             )
-    payload = ds.definitions_dict(plan=AnalysisPlan(primary="revenue"))
+    payload = ds.definitions_dict(plan=AnalysisPlan(primary="revenue", secondaries=["rps"]))
     experiment = payload["experiments"][0]
     experiment["trigger"] = "saw_surface"
     payload["fact_sources"][0]["facts"].append({"name": "saw_surface", "column": None})
     payload["exposures"].append({"name": "saw_surface", "fact": "saw_surface"})
     payload["metrics"][0]["window_days"] = None
+    payload["metrics"][2]["numerator"]["window_days"] = None
+    payload["metrics"][2]["denominator"]["window_days"] = None
+    payload["metrics"][2]["denominator"]["aggregation"] = "sum"
     definitions = Definitions.model_validate(payload)
     untriggered_payload = copy.deepcopy(payload)
     untriggered_payload["experiments"][0].pop("trigger")
@@ -8958,11 +8961,16 @@ def _triggered_sitewide_assigned_case() -> ParityCase:
             return
         result = analysis.sitewide("revenue")
         result_triggered = analysis.sitewide("revenue", population="triggered")
+        ratio_triggered = analysis.sitewide("rps", population="triggered")
         assert result_triggered.analysis_population == "triggered"
         assert result_triggered.window == result.window
         assert result_triggered.snapshot_id == result.snapshot_id
         assert result_triggered.membership_cutoff is not None
         assert result.analysis_population == "assigned"
+        assert ratio_triggered.analysis_population == "triggered"
+        assert ratio_triggered.window == result.window
+        assert ratio_triggered.snapshot_id == result.snapshot_id
+        assert ratio_triggered.membership_cutoff is not None
         con = ds.duckdb_connection(rows)
         reference = make_analysis(
             con, untriggered, experiment="exp", source_snapshot_evidence=snapshot
@@ -8972,22 +8980,30 @@ def _triggered_sitewide_assigned_case() -> ParityCase:
         )
         try:
             expected = reference.sitewide("revenue")
-            assert result.absolute_impact == pytest.approx(expected.absolute_impact)
-            assert result.relative_impact == pytest.approx(expected.relative_impact)
             expected_triggered = trigger_reference.sitewide("revenue", population="triggered")
-            assert result_triggered.absolute_impact == pytest.approx(
-                expected_triggered.absolute_impact
-            )
-            assert result_triggered.relative_impact == pytest.approx(
-                expected_triggered.relative_impact
-            )
+            expected_triggered_ratio = trigger_reference.sitewide("rps", population="triggered")
+            for actual, reference_result in (
+                (result, expected),
+                (result_triggered, expected_triggered),
+                (ratio_triggered, expected_triggered_ratio),
+            ):
+                assert type(actual) is type(reference_result)
+                for field in type(actual).model_fields:
+                    if field == "snapshot_id":
+                        continue
+                    actual_value = getattr(actual, field)
+                    expected_value = getattr(reference_result, field)
+                    if isinstance(actual_value, float):
+                        assert actual_value == pytest.approx(expected_value)
+                    else:
+                        assert actual_value == expected_value
         finally:
             reference.close()
             trigger_reference.close()
             con.disconnect()
 
     return ParityCase(
-        id="triggered-sitewide-assigned",
+        id="triggered-sitewide-population-results",
         build={
             "from_definitions": build_definitions,
             "from_unit_day_artifact": build_artifact,
@@ -9004,7 +9020,7 @@ def _triggered_sitewide_assigned_case() -> ParityCase:
 
 
 PARITY_CASES: tuple[ParityCase, ...] = (
-    _triggered_sitewide_assigned_case(),
+    _triggered_sitewide_population_results_case(),
     *_triggered_day_axis_cases(),
     _triggered_sequential_case(),
     _triggered_encouragement_compliance_case(),

@@ -136,6 +136,70 @@ def test_batched_intervals_match_production_on_edge_case_draws(
         np.testing.assert_allclose(batch[field], [getattr(scalar, field)], rtol=0, atol=1e-12)
 
 
+def test_batched_sum_and_ratio_match_production_on_randomized_inputs():
+    from calibration import triggered_sitewide as campaign
+    from increment.estimation.sitewide import (
+        SitewideContrast,
+        SitewideRatioContrast,
+        sitewide_impact,
+        sitewide_impact_ratio,
+    )
+
+    rng = np.random.default_rng(20261012)
+    y_control = rng.lognormal(1.0, 0.5, 19)
+    y_treatment = rng.lognormal(1.1, 0.6, 23)
+    control = campaign.arm_stats("control", y_control)
+    treatment = campaign.arm_stats("treatment", y_treatment)
+    site_volume = 20_000.0
+    sum_scalar = sitewide_impact(
+        SitewideContrast.from_iid(control, treatment), site_total_volume=site_volume
+    )
+    sum_batch = campaign.batched_estimates(
+        np.array([campaign.arm_moments(y_control)]),
+        np.array([campaign.arm_moments(y_treatment)]),
+        np.array([site_volume]),
+    )
+
+    numerator_control = rng.lognormal(1.0, 0.4, 19)
+    numerator_treatment = rng.lognormal(1.1, 0.5, 23)
+    denominator_control = rng.lognormal(2.0, 0.3, 19)
+    denominator_treatment = rng.lognormal(2.1, 0.35, 23)
+    ratio_control = campaign.arm_stats("control", numerator_control, denominator_control)
+    ratio_treatment = campaign.arm_stats("treatment", numerator_treatment, denominator_treatment)
+    site_numerator, site_denominator = 10_000.0, 20_000.0
+    ratio_scalar = sitewide_impact_ratio(
+        SitewideRatioContrast.from_iid(ratio_control, ratio_treatment),
+        site_total_numerator=site_numerator,
+        site_total_denominator=site_denominator,
+    )
+    ratio_batch = campaign.batched_estimates(
+        np.array([campaign.arm_moments(numerator_control, denominator_control)]),
+        np.array([campaign.arm_moments(numerator_treatment, denominator_treatment)]),
+        np.array([site_numerator]),
+        np.array([site_denominator]),
+    )
+
+    fields = (
+        "absolute_impact",
+        "absolute_impact_se",
+        "absolute_impact_lb",
+        "absolute_impact_ub",
+        "relative_impact",
+        "relative_impact_se",
+        "relative_impact_lb",
+        "relative_impact_ub",
+    )
+    assert sum_batch["eligible"].all()
+    assert ratio_batch["eligible"].all()
+    for field in fields:
+        np.testing.assert_allclose(
+            sum_batch[field], [getattr(sum_scalar, field)], rtol=0, atol=1e-12
+        )
+        np.testing.assert_allclose(
+            ratio_batch[field], [getattr(ratio_scalar, field)], rtol=0, atol=1e-12
+        )
+
+
 def test_ineligible_report_retains_null_and_registered_consequence(tmp_path):
     from calibration import triggered_sitewide as campaign
 
@@ -153,7 +217,10 @@ def test_ineligible_report_retains_null_and_registered_consequence(tmp_path):
     campaign._write_report(tmp_path, report)
     restored = json.loads((tmp_path / "report.json").read_text())
     assert restored["gates"][1]["coverage"] is None
-    assert "Stop and escalate assigned regression" in (tmp_path / "report.md").read_text()
+    markdown = (tmp_path / "report.md").read_text()
+    assert markdown.index("| T1-1 |") < markdown.index("| T1-2 |")
+    assert markdown.index("| T1-2 |") < markdown.index("## Consequences")
+    assert markdown.index("## Consequences") < markdown.index("T1-2:")
 
 
 @pytest.mark.slow

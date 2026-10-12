@@ -2264,10 +2264,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             )
             if self._experiment.end is None or any(
                 getattr(component, "window_days", None) is not None
-                or (
-                    getattr(component, "type", None) != "conversion"
-                    and getattr(component, "aggregation", None) != "sum"
-                )
+                or getattr(component, "aggregation", None) != "sum"
                 for component in components
             ):
                 _refuse_operation(
@@ -2280,7 +2277,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     offered={"calendar_window": "unwindowed sum"},
                     route="declare an unwindowed sum metric and experiment end aligned to the calendar window",
                 )
-        if population == "assigned":
+        if population == "triggered":
+            self._validate_trigger_capability(operation="sitewide_evidence")
+            self._validate_mixed_assignments()
+        else:
             self._note_reduction()
         exposures = self._get_exposures()
         if population == "triggered":

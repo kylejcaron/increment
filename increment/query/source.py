@@ -1880,10 +1880,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             )
             if any(
                 getattr(component, "window_days", None) is not None
-                or (
-                    getattr(component, "type", None) != "conversion"
-                    and getattr(component, "aggregation", None) != "sum"
-                )
+                or getattr(component, "aggregation", None) != "sum"
                 for component in components
             ):
                 raise ArtifactContractError(

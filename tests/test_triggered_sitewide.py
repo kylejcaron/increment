@@ -26,16 +26,20 @@ def _analysis(
     *,
     store="auto",
     day_boundary=None,
+    trigger=True,
     conversion=False,
     third_arm=False,
     watermark=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
     observation_end=None,
     source_snapshot_evidence=True,
+    on_mixed_assignment="error",
 ):
     tmp_path.mkdir(parents=True, exist_ok=True)
-    definitions = _defs_yaml(end="2024-01-10", observation_end=observation_end).replace(
-        "    window_days: 7\n", ""
-    )
+    definitions = _defs_yaml(
+        trigger="saw_surface" if trigger else None,
+        end="2024-01-10",
+        observation_end=observation_end,
+    ).replace("    window_days: 7\n", "")
     if conversion:
         definitions = (
             definitions.replace("    type: mean\n", "    type: conversion\n")
@@ -74,6 +78,7 @@ def _analysis(
             if source_snapshot_evidence
             else None
         ),
+        on_mixed_assignment=on_mixed_assignment,
     )
     definitions_path.write_text(definitions)
     con = ibis.duckdb.connect()
@@ -415,29 +420,22 @@ def test_sitewide_artifact_snapshot_identity_changes_between_publications(tmp_pa
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
-def test_triggered_sitewide_unwindowed_conversion_matches_artifact(tmp_path):
-    native_analysis = _analysis(tmp_path / "native", conversion=True)
-    adopted = None
+def test_triggered_sitewide_repeated_conversion_refuses_incompatible_site_total(tmp_path):
+    events = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5)
+    repeated = [
+        {**row, "ts": dt.datetime(2024, 1, day)}
+        for row in events.to_pylist()
+        if row["event"] == "saw_surface"
+        for day in (2, 3)
+    ]
+    events = pa.concat_tables([events, pa.Table.from_pylist(repeated, schema=events.schema)])
+    analysis = _analysis(tmp_path / "native", events, conversion=True)
     try:
-        native = native_analysis.sitewide("revenue", population="triggered")
-        adopted = _publish_and_adopt(
-            native_connection(_native_source(native_analysis)),
-            native_analysis,
-            kinds=("site_volume", "trigger_population", "assignment_counts"),
-        )
-        artifact = adopted.sitewide("revenue", population="triggered")
-        assert artifact.analysis_population == "triggered"
-        assert artifact.window == native.window
-        assert artifact.scaled_units == native.scaled_units
-        assert artifact.absolute_impact == pytest.approx(native.absolute_impact)
-        assert isinstance(artifact, SitewideImpact)
-        assert isinstance(native, SitewideImpact)
-        assert artifact.baseline_volume == pytest.approx(native.baseline_volume)
+        with pytest.raises(CapabilityError) as refused:
+            analysis.sitewide("revenue", population="triggered")
+        assert refused.value.code == "facade.analysis.sitewide_triggered_metric_unaligned"
     finally:
-        if adopted is None:
-            native_analysis.close()
-        else:
-            _close_parity_analysis(adopted)
+        analysis.close()
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
@@ -638,6 +636,71 @@ def test_triggered_sitewide_artifact_rejects_corrupted_assignment_counts(tmp_pat
             analysis.close()
         else:
             _close_parity_analysis(adopted)
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+@pytest.mark.parametrize(
+    ("trigger", "source_snapshot_evidence", "code"),
+    [
+        (False, True, "source.native.operation"),
+        (True, False, "source.native.trigger_evidence_required"),
+    ],
+)
+def test_triggered_sitewide_evidence_refuses_before_resolving_exposures(
+    tmp_path, monkeypatch, trigger, source_snapshot_evidence, code
+):
+    analysis = _analysis(
+        tmp_path,
+        trigger=trigger,
+        source_snapshot_evidence=source_snapshot_evidence,
+    )
+    try:
+        monkeypatch.setattr(
+            analysis._src,
+            "_get_exposures",
+            lambda: pytest.fail("resolved exposures before validating trigger evidence"),
+        )
+        with pytest.raises(CapabilityError) as refused:
+            analysis._src.sitewide_evidence(
+                analysis.metrics[0], include_ratio=False, population="triggered"
+            )
+        assert refused.value.code == code
+    finally:
+        analysis.close()
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+@pytest.mark.parametrize("policy", ["error", "warn"])
+def test_triggered_sitewide_evidence_applies_mixed_assignment_policy(tmp_path, policy):
+    from increment.errors import IncrementWarning, InvalidRequestError
+
+    rows = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5).to_pylist()
+    assigned = next(row for row in rows if row["user_id"] == "C0" and row["event"] == "enrolled")
+    events = pa.Table.from_pylist(
+        [*rows, {**assigned, "group_id": "T"}],
+        schema=pa.Table.from_pylist(rows).schema,
+    )
+    analysis = _analysis(tmp_path, events, on_mixed_assignment=policy)
+    try:
+        if policy == "error":
+            with pytest.raises(InvalidRequestError) as refused:
+                analysis._src.sitewide_evidence(
+                    analysis.metrics[0], include_ratio=False, population="triggered"
+                )
+            assert refused.value.code == "query.integrity.mixed_assignment_units"
+        else:
+            with pytest.warns(IncrementWarning) as warning:
+                evidence = analysis._src.sitewide_evidence(
+                    analysis.metrics[0], include_ratio=False, population="triggered"
+                )
+            increment_warning = next(
+                item.message for item in warning if isinstance(item.message, IncrementWarning)
+            )
+            assert increment_warning.code == "query.integrity.mixed_assignments_excluded"
+            assert evidence.analysis_population == "triggered"
+    finally:
+        analysis.close()
 
 
 def test_triggered_sitewide_windowed_metric_refuses_before_data_load(tmp_path, monkeypatch):

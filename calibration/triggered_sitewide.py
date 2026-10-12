@@ -1,11 +1,13 @@
 """Certify calendar-aligned sitewide intervals against realized causal totals.
 
 For iid two-arm sums, I_hat = N_selected * delta_hat and
-V0_hat = V - n_t_selected * delta_hat. Their standard errors are N_selected
-* se_delta and abs(N_selected * V / V0_hat**2) * se_delta. Ratio components
-are adjusted separately: N0 = Vnum - nt * delta_num, D0 = Vden - nt *
-delta_den, N1 = N0 + N_selected * delta_num, D1 = D0 + N_selected *
-delta_den. Impact is N1/D1 - N0/D0, relative impact divides by N0/D0;
+V0_hat = V - n_t_selected * delta_hat. Conditional on V and membership,
+their standard errors are N_selected * se_delta and
+n_t_selected * se_delta. With rel_hat = I_hat / V0_hat, the quotient-rule
+standard error is abs(N_selected * V / V0_hat**2) * se_delta. Ratio
+components are adjusted separately: N0 = Vnum - nt * delta_num, D0 = Vden -
+nt * delta_den, N1 = N0 + N_selected * delta_num, D1 = D0 + N_selected *
+delta_den. Impact is N1/D1 - N0/D0; relative impact divides by N0/D0;
 the quotient-rule gradients contract the full numerator/denominator
 covariance of the independent arm means. Arm variances are Bessel-corrected.
 The iid production reference is Normal.isf(alpha/2), not a t reference.
@@ -643,8 +645,12 @@ def _write_report(output: Path, report: dict[str, Any]):
                 f"| {gate['id']} | {gate['population']} | {gate['scale']} | {gate['eligible']} "
                 f"| {' | '.join(numbers)} | {gate['decision']} |"
             )
+    consequences = []
+    for gate in report["gates"]:
         if gate["decision"] in ("FAIL", "INELIGIBLE"):
-            lines.append(f"\n{gate['id']}: {gate['consequence']}\n")
+            consequences.append(f"**{gate['id']}:** {gate['consequence']}")
+    if consequences:
+        lines += ["", "## Consequences", "", *consequences]
     lines += [
         "",
         "## Descriptive results",
