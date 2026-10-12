@@ -34,15 +34,193 @@ The two readings can be computed from one immutable artifact that includes
 the required trigger and site-volume evidence:
 
 ```python
-native = Analysis.from_definitions("experiment", definitions_path, con)
-reference = native.publish_unit_day_artifact(store, extensions=extensions)
-native.close()
-analysis = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
-assigned = analysis.sitewide("revenue")
-triggered = analysis.sitewide("revenue", population="triggered")
-assert assigned.snapshot_id == triggered.snapshot_id
-assert assigned.window == triggered.window
-assert triggered.membership_cutoff is not None
+from pathlib import Path
+import datetime as dt
+
+import ibis
+import polars as pl
+import warnings
+
+from increment import (
+    Analysis,
+    SourceSnapshotEvidence,
+    unit_day_artifact_extension_catalog,
+)
+from increment.query.session import WarehouseArtifactStore
+from increment import IncrementWarning
+
+Path("triggered-definitions").mkdir(exist_ok=True)
+Path("triggered-definitions/fact_sources.yaml").write_text("""\
+dialect: duckdb
+fact_sources:
+  - name: events
+    sql: SELECT * FROM events
+    timestamp_column: ts
+    entities: [user_id]
+    facts:
+      - name: enrolled
+        column: null
+      - name: saw_surface
+        column: null
+      - name: revenue
+        column: value
+      - name: sessions
+        column: value
+""")
+Path("triggered-definitions/exposures.yaml").write_text("""\
+exposures:
+  - name: assignment
+    fact: enrolled
+  - name: saw_surface
+    fact: saw_surface
+""")
+Path("triggered-definitions/metrics.yaml").write_text("""\
+metrics:
+  - name: revenue
+    type: mean
+    entity: user_id
+    fact: revenue
+    aggregation: sum
+  - name: revenue_per_session
+    type: ratio
+    entity: user_id
+    numerator: {fact: revenue, aggregation: sum}
+    denominator: {fact: sessions, aggregation: sum}
+""")
+Path("triggered-definitions/experiments.yaml").write_text("""\
+experiments:
+  - name: triggered_launch
+    exposure: assignment
+    trigger: saw_surface
+    unit: user_id
+    start: 2025-03-01
+    end: 2025-03-10
+    control_group: control
+    plan:
+      secondaries: [revenue, revenue_per_session]
+""")
+
+triggered_rows = []
+trigger_start = dt.datetime(2025, 3, 1, 9)
+for i in range(40):
+    user = f"u{i:03d}"
+    arm = "treatment" if i % 2 else "control"
+    event_base = {
+        "user_id": user,
+        "group_id": arm,
+        "experiment_id": "triggered_launch",
+    }
+    triggered_rows.append({**event_base, "ts": trigger_start, "event": "enrolled", "value": None})
+    if i % 3 != 0:
+        triggered_rows.append(
+            {**event_base, "ts": trigger_start, "event": "saw_surface", "value": None}
+        )
+    triggered_rows.extend(
+        [
+            {
+                **event_base,
+                "ts": trigger_start + dt.timedelta(days=1),
+                "event": "revenue",
+                "value": 12.0 + (4.0 if arm == "treatment" and i % 3 != 0 else 0.0),
+            },
+            {
+                **event_base,
+                "ts": trigger_start + dt.timedelta(days=1),
+                "event": "sessions",
+                "value": 1.0,
+            },
+        ]
+    )
+# Unexposed site activity contributes to site volume but not enrolled outcomes.
+triggered_rows.append(
+    {
+        "user_id": "background",
+        "group_id": None,
+        "experiment_id": None,
+        "ts": trigger_start + dt.timedelta(days=2),
+        "event": "revenue",
+        "value": 80.0,
+    }
+)
+triggered_events = pl.DataFrame(triggered_rows)
+triggered_con = ibis.duckdb.connect()
+triggered_con.create_table("events", triggered_events.to_arrow())
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", IncrementWarning)
+    triggered_analysis = Analysis.from_definitions(
+        "triggered_launch",
+        "triggered-definitions/",
+        triggered_con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            observation_cutoff_ts=dt.datetime(2025, 3, 12, tzinfo=dt.UTC),
+            complete_through_by_feed={"events": dt.datetime(2025, 3, 12, tzinfo=dt.UTC)},
+        ),
+    )
+triggered_store = WarehouseArtifactStore(triggered_con, schema_name="sitewide_artifacts")
+triggered_context = triggered_analysis.artifact_context
+triggered_catalog = unit_day_artifact_extension_catalog(triggered_context)
+triggered_requests = [
+    entry.request
+    for entry in triggered_catalog
+    if entry.request.kind in {"site_volume", "trigger_population", "assignment_counts"}
+]
+triggered_reference = triggered_analysis.publish_unit_day_artifact(
+    triggered_store, extensions=triggered_requests
+)
+incomplete_reference = triggered_analysis.publish_unit_day_artifact(
+    triggered_store,
+    extensions=[
+        entry.request
+        for entry in triggered_catalog
+        if entry.request.kind == "site_volume"
+    ],
+)
+incomplete_artifact = Analysis.from_unit_day_artifact(
+    triggered_store, incomplete_reference, expected_context=triggered_context
+)
+analysis = Analysis.from_unit_day_artifact(
+    triggered_store, triggered_reference, expected_context=triggered_context
+)
+```
+
+```python
+for m in ("revenue", "revenue_per_session"):
+    assigned = analysis.sitewide(m)
+    triggered = analysis.sitewide(m, population="triggered")
+    print(f"{m}: assigned={assigned}; triggered={triggered}")
+    assert assigned.snapshot_id == triggered.snapshot_id
+    assert assigned.window == triggered.window
+    assert triggered.membership_cutoff is not None
+```
+
+The result is `exploratory_unadjusted`: no family adjustment is applied, and
+these fixed-horizon intervals are not anytime-valid.
+
+The unit-day artifact above contains both trigger membership and site-volume
+evidence. If trigger membership was omitted, triggered sitewide refuses with
+`artifact.extension.missing`; republish the source with the required evidence:
+
+
+```python
+from increment.errors import InvalidRequestError
+
+try:
+    incomplete_artifact.sitewide("revenue", population="triggered")
+except InvalidRequestError as err:
+    print(err.code)
+
+recovered_reference = triggered_analysis.publish_unit_day_artifact(
+    triggered_store, extensions=triggered_requests
+)
+recovered_artifact = Analysis.from_unit_day_artifact(
+    triggered_store, recovered_reference, expected_context=triggered_context
+)
+recovered = recovered_artifact.sitewide("revenue", population="triggered")
+print(recovered.analysis_population, recovered.membership_cutoff)
+incomplete_artifact.close()
+recovered_artifact.close()
+analysis.close()
+triggered_analysis.close()
 ```
 
 The triggered result is a conditional fixed-membership estimate. It assumes
@@ -52,7 +230,12 @@ allocation-balance diagnostic, but a passed diagnostic cannot establish those
 assumptions. The result is explicitly exploratory and unadjusted for
 multiplicity.
 
-**Calibration:** `CALIBRATION_RESULTS_PENDING`
+**Calibration:** in two-arm simulations whose assumptions held, both readings
+covered the realized site impact at 95.1%–95.7% for nominal 95% intervals. When
+units that never trigger were affected, the triggered reading missed by the
+omitted effect while the assigned reading stayed calibrated. See
+[limitations](../limitations.md) for the designs, the precision comparison and
+what the campaign does not cover.
 
 ## The ship-to-all counterfactual
 
