@@ -1048,7 +1048,7 @@ class TestPValueQuantile:
         assert est.p_value() == 0.0321
 
 
-def test_lift_estimate_repr_surfaces_published_decision_fields():
+def test_lift_estimate_repr_surfaces_selection_without_recomputing_decisions():
     estimate = LiftEstimate(
         metric="revenue",
         group_id="treatment",
@@ -1065,8 +1065,8 @@ def test_lift_estimate_repr_surfaces_published_decision_fields():
     assert "group='treatment'" in text
     assert "value=+0.12 (relative)" in text
     assert "interval=(+0.03, +0.21)" in text
-    assert "stat_sig=True" in text
     assert "discovery=True" in text
+    assert "stat_sig=" not in text
 
 
 def test_lift_estimate_repr_does_not_cross_scales_for_absolute_null():
@@ -1079,7 +1079,8 @@ def test_lift_estimate_repr_does_not_cross_scales_for_absolute_null():
         lift=Estimate(value=0.12, lb=0.03, ub=0.21, level=0.95),
     )
 
-    assert "stat_sig=False" in repr(estimate)
+    assert "scale='relative'" in repr(estimate)
+    assert "stat_sig=" not in repr(estimate)
 
 
 def test_lift_estimate_repr_distinguishes_open_from_unavailable_interval():
@@ -1102,7 +1103,7 @@ def test_lift_estimate_repr_distinguishes_open_from_unavailable_interval():
     text = repr(estimate)
 
     assert "interval=(+0.03, +inf)" in text
-    assert "stat_sig=True" in text
+    assert "stat_sig=" not in text
 
 
 def test_sampling_only_row_does_not_reconstruct_posterior_from_interval():
@@ -1115,6 +1116,108 @@ def test_sampling_only_row_does_not_reconstruct_posterior_from_interval():
         scale="linear",
     )
     assert result.prob_beyond(0.0) is None
+
+
+def test_lift_estimate_str_preserves_compact_selection_meaning():
+    estimate = LiftEstimate(
+        metric="revenue",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        discovery=True,
+        family_procedure="bh",
+        family_q=0.05,
+        family_size=3,
+        lift=Estimate(value=0.12, lb=0.03, ub=0.21, level=0.95),
+    )
+
+    rendered = str(estimate)
+
+    assert rendered == repr(estimate)
+    assert "metric='revenue'" in rendered and "group='treatment'" in rendered
+    assert "value=+0.12 (relative)" in rendered and "interval=(+0.03, +0.21)" in rendered
+    assert "method='unadjusted'" in rendered and "population='assigned'" in rendered
+    assert "inference='fixed'" in rendered and "alternative='two-sided'" in rendered
+    assert "Benjamini-Hochberg" in rendered and "retained family size 3" in rendered
+
+
+def test_print_preserves_set_without_point_as_distinct_from_failure():
+    bounds = _binomial_set(x_c=0, upper=None)
+    estimate = LiftEstimate(**_binomial_row(lift=None, binomial_set=bounds))
+
+    rendered = str(estimate)
+
+    assert "metric='m'" in rendered and "group='g'" in rendered
+    assert "unavailable" in rendered and "+inf" in rendered
+    assert "failure=" not in rendered
+    assert estimate.reason is None
+
+
+def test_print_exact_binomial_row_does_not_recompute_its_tail():
+
+    from increment.errors import CodedError
+
+    bounds = _binomial_set(
+        alpha=1e-20,
+        level=1.0,
+        decision_alpha=1e-20,
+        nuisance_beta=1e-20 / 32,
+    )
+    estimate = LiftEstimate.model_construct(
+        metric="m",
+        group_id="g",
+        method="binomial",
+        method_role="decision",
+        reference_kind="binomial",
+        alternative="two-sided",
+        scale="linear",
+        lift=None,
+        binomial_set=bounds,
+        null_lift=0.0,
+    )
+
+    with pytest.raises(CodedError) as refused:
+        estimate.stat_sig()
+    assert refused.value.code == "estimation.binomial.tail_unrepresentable"
+
+    rendered = str(estimate)
+
+    assert "metric='m'" in rendered and "group='g'" in rendered
+    assert "interval=" in rendered and "tail_unrepresentable" not in rendered
+
+
+def test_print_preserves_sequential_ratio_bounds():
+    estimate = _registered_sequential_row()
+
+    rendered = str(estimate)
+
+    assert "metric=" in rendered and "group=" in rendered
+    assert "ratio_interval=" in rendered
+    assert "confidence=" in rendered and "status=" in rendered
+    assert estimate.sequential_result.bounds.lower is not None
+
+
+def test_rich_lift_estimate_display_is_compact_and_semantic():
+    from io import StringIO
+
+    from rich.console import Console
+
+    estimate = LiftEstimate(
+        metric="revenue",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        analysis_population="triggered",
+        lift=Estimate(value=0.12, lb=0.03, ub=0.21, level=0.95),
+    )
+    output = StringIO()
+    Console(file=output, width=160).print(estimate)
+    rendered = output.getvalue()
+
+    assert "metric='revenue'" in rendered and "group='treatment'" in rendered
+    assert "population='triggered'" in rendered and "value=+0.12 (relative)" in rendered
+    assert "interval=(+0.03, +0.21)" in rendered
+    assert "posterior_components" not in rendered
 
 
 def _binomial_set(**overrides: Any) -> BinomialConfidenceSet:

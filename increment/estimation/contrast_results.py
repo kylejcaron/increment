@@ -343,6 +343,41 @@ class ContrastResult(CodedModel, BaseModel):
             )
         return self
 
+    def __repr__(self) -> str:
+        """Show the additive contrast identity and its interval, not its full evidence model."""
+        estimate = self.estimate
+        if estimate.open_side == "lower" and estimate.ub is not None:
+            interval = f"(-inf, {estimate.ub!r})"
+        elif estimate.open_side == "upper" and estimate.lb is not None:
+            interval = f"({estimate.lb!r}, +inf)"
+        else:
+            interval = f"({estimate.lb!r}, {estimate.ub!r})"
+        return (
+            f"ContrastResult(metric={self.metric!r}, control={self.control_group!r}, "
+            f"treatment={self.treatment_group!r}, method={self.method!r}, "
+            f"role={self.role!r}, estimand={self.estimand!r}, "
+            f"population={self.analysis_population!r}, inference={self.inference!r}, "
+            f"scale='absolute', estimate={estimate.value!r}, interval={interval}, "
+            f"alternative={self.alternative!r}, null_abs={self.null_abs!r}, "
+            f"randomization_law={self.randomization_law!r}, "
+            f"independence_grain={self.independence_grain!r}, "
+            f"carryover_order={self.carryover_order}, retained_steps={self.retained_steps}, "
+            f"reference={self.reference!r}, decision_scope={self.decision_scope_complete!r})"
+        )
+
+    __str__ = __repr__
+
+    def __repr_args__(self) -> list[tuple[str, object]]:
+        """Give Rich a compact additive contrast summary."""
+        return [
+            ("metric", self.metric),
+            ("control", self.control_group),
+            ("treatment", self.treatment_group),
+            ("population", self.analysis_population),
+            ("scale", "absolute"),
+            ("summary", self.__repr__()),
+        ]
+
 
 class ContrastResults(list[ContrastResult]):
     """Typed contrast results with immutable scope metadata and native frame output."""

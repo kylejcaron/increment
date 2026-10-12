@@ -670,11 +670,56 @@ def test_unavailable_estimate_repr_keeps_identity_and_failure_reason(estimate_ty
             excluded="no_data",
         )
     row = estimate_type.model_construct(**fields)
-    rendered = repr(row)
+
+    rendered = str(row)
     assert "guard" in rendered
     assert "treatment" in rendered
     assert "readout.cell.missing_metric_observations" in rendered
     assert "missing_metric_observations" in rendered
+
+
+def test_cell_reason_preserves_persisted_failure():
+    row = LiftEstimate.model_construct(
+        metric="guard",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        lift=None,
+        failure_code="readout.cell.missing_metric_observations",
+        failure_context={"reason": "missing_metric_observations"},
+    )
+    restored_json = LiftEstimate.model_validate_json(row.model_dump_json())
+    restored_pickle = pickle.loads(pickle.dumps(row))
+
+    assert row.reason == "missing_metric_observations"
+    assert restored_json.reason == restored_pickle.reason == row.reason
+    for restored in (restored_json, restored_pickle):
+        assert restored.failure_code == row.failure_code
+        assert restored.failure_context == row.failure_context
+        assert restored.lift is None
+    assert "reason" not in LiftEstimate.model_fields
+    assert "reason" not in row.model_dump()
+
+    code_only = LiftEstimate.model_construct(
+        metric="guard",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        lift=None,
+        failure_code="readout.cell.failure",
+        failure_context={},
+    )
+    available = LiftEstimate.model_construct(
+        metric="guard",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        lift=None,
+        failure_code=None,
+        failure_context=None,
+    )
+    assert code_only.reason == "readout.cell.failure"
+    assert available.reason is None
 
 
 def test_missing_arm_for_one_metric_is_a_typed_cell_failure_while_another_observes_it():
@@ -689,7 +734,7 @@ def test_missing_arm_for_one_metric_is_a_typed_cell_failure_while_another_observ
     assert failed.metric == "guard"
     assert failed.failure_code == "readout.cell.missing_metric_observations"
     assert failed.failure_context["group_id"] == "treatment"
-    rendered = repr(failed)
+    rendered = str(failed)
     assert "guard" in rendered
     assert "treatment" in rendered
     assert "readout.cell.missing_metric_observations" in rendered

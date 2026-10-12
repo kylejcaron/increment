@@ -139,6 +139,11 @@ repeat); the `roles=` argument of `increment.impute.pooled_mean`. A
 `pooled_mean` call without `roles=` still fills but now emits the
 `impute.pooled_mean_role_undeclared` warning.
 
+`LiftEstimate`, `BreakoutEstimate`, and `DailyLiftEstimate` expose read-only
+`reason`, derived only from their persisted coded-cell failure fields. It
+returns the persisted context reason when present and otherwise the failure
+code; it does not combine other unavailable sampling or interval reasons.
+
 **Site-volume coverage ends at `end`.** An experiment that declares
 `observation_end` after `end` now publishes site-volume coverage through `end`,
 the window its rows and the estimand use, instead of through `observation_end`.
@@ -794,6 +799,10 @@ returned row records `discovery`, `family_axes`, `family_q`, `family_threshold` 
 row's interval is reissued at the Benjamini-Yekutieli level `1 - R*q/m`, capped at
 the row's own nominal level, and equals the interval `run_breakout(correction="bh")`
 returns for the same cell; unselected rows keep their nominal interval.
+The rows also preserve the canonical `family_procedure` value (`"bh"`,
+`"e_bh"`, or `"bonferroni"`). Older serialized rows with no recorded procedure
+remain `None`; presentation reports the procedure as unrecorded instead of
+guessing from interval or guarantee fields.
 
 Rows must be uncorrected fixed-horizon decision rows. Each refusal names every
 offending row in its `rows` context:

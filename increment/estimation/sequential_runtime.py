@@ -390,6 +390,9 @@ def selected_snapshot_results(
     nominal_alpha: Fraction | float,
 ) -> list[LiftEstimate]:
     """Evaluate the retained family and invert selected cells at their stopped state."""
+    from increment.semantics.sequential import sequential_family_rule
+
+    procedure = sequential_family_rule(inference.registration.models, inference.registration.roster)
     from increment.estimation.family import select_sequential_family
 
     computation = estimate_sequential(snapshot, inference)
@@ -422,6 +425,7 @@ def selected_snapshot_results(
                         if inference.registration.look_policy == "exploratory"
                         else row.multiplicity_status
                     ),
+                    "family_procedure": procedure,
                     "family_axes": ("metric", "arm", "segment")
                     if cell.segment
                     else ("metric", "arm"),

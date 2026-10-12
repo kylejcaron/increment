@@ -1402,6 +1402,44 @@ class TestRunDailyLiftAlwaysValidInference:
             )
         assert raised.value.code == "sequential.route.unsupported"
 
+    def test_asof_projection_preserves_selected_procedure_after_json_replay(self):
+        from increment import AlwaysValid, SequentialCell, SequentialModel, SequentialRegistration
+        from increment.tables import estimates_to_readout
+        from tests.sequential_cases import capture, records
+        from tests.sequential_cases import registration as make_registration
+
+        base = make_registration("bernoulli")
+        model = SequentialModel.model_validate({**base.models[0].model_dump(), "metric": "revenue"})
+        registration = SequentialRegistration.model_validate(
+            {
+                **base.model_dump(),
+                "models": (model,),
+                "roster": (SequentialCell(metric="revenue", group_id="treatment", family=True),),
+            }
+        )
+        observations = records([0, 1] * 200, [1, 1] * 200)
+        observations = [
+            {**row, "values": {"revenue": row["values"]["outcome"]}} for row in observations
+        ]
+        snapshot = capture(registration, observations).model_copy(
+            update={"reveal_cursor": date(2025, 1, 1)}
+        )
+        policy = AlwaysValid(registration=registration)
+        rows = run_daily_lift(
+            snapshot,
+            [_conversion_metric("revenue")],
+            control_group="control",
+            view="asof",
+            inference=policy,
+        )
+        selected = next(row for row in rows if row.discovery is True)
+        assert selected.family_procedure == "e_bh"
+
+        restored = type(selected).model_validate_json(selected.model_dump_json())
+        readout_row = estimates_to_readout([restored])[0]
+        assert readout_row["family_procedure"] == "e_bh"
+        assert "e-BH" in readout_row["selection_qualification"]
+
     @pytest.mark.parametrize("view", ["daily", "cohort"])
     def test_disjoint_slices_refuse_before_summary_access(self, view):
         class UnreadSummary:

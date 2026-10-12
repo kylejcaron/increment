@@ -922,6 +922,8 @@ class TestRunBreakoutBHCorrection:
         assert by_method["unadjusted"].reference_kind == "binomial"
         assert by_method["cuped"].method_role == "sensitivity"
         assert by_method["cuped"].discovery is None
+        assert by_method["unadjusted"].family_procedure == "bh"
+        assert by_method["cuped"].family_procedure is None
         # The sensitivity row keeps its own moment-based reference rather than
         # borrowing the decision row's exact-binomial one; CUPED estimates its
         # variance from the arms, so that reference is Welch t.
@@ -1532,6 +1534,115 @@ class TestBreakoutEstimate:
         assert est.dimension == "country"
         assert est.dimension_value == "US"
         assert est.lift is lift
+
+    def test_str_preserves_disconnected_asymptotic_sequential_components(self):
+        from fractions import Fraction
+
+        from increment.estimation.asymptotic_mean import AsymptoticMeanSet, MeanSetComponent
+        from increment.estimation.sequential_result import AsymptoticSequentialResult
+
+        bounds = AsymptoticMeanSet(
+            components=(
+                MeanSetComponent(lower=None, upper=Fraction(-1)),
+                MeanSetComponent(lower=Fraction(1), upper=None),
+            ),
+            alpha=Fraction(1, 20),
+            alternative="two-sided",
+            count=5,
+            k=Fraction(1),
+            available=True,
+            estimator_contrast=Fraction(0),
+            estimator_variance=Fraction(1),
+        )
+        result = AsymptoticSequentialResult.model_construct(
+            bounds=bounds, point_reason="ratio_point_unavailable"
+        )
+        row = BreakoutEstimate.model_construct(
+            metric="rev",
+            group_id="treatment",
+            method="unadjusted",
+            method_role="decision",
+            dimension="country",
+            dimension_value="US",
+            lift=None,
+            sequential_result=result,
+            low_reliability=False,
+        )
+
+        rendered = str(row)
+
+        assert "ratio_interval=" in rendered
+        assert "∪" in rendered and "geometry='disconnected'" in rendered
+        assert "point_reason='ratio_point_unavailable'" in rendered
+
+    def test_str_preserves_vacuous_unavailable_sequential_bounds(self):
+        from fractions import Fraction
+
+        from increment.estimation.asymptotic_mean import AsymptoticMeanSet, MeanSetComponent
+        from increment.estimation.sequential_result import AsymptoticSequentialResult
+
+        bounds = AsymptoticMeanSet(
+            components=(MeanSetComponent(lower=None, upper=None),),
+            alpha=Fraction(1, 20),
+            alternative="two-sided",
+            count=5,
+            k=None,
+            available=False,
+            reason="variance_unavailable",
+        )
+        result = AsymptoticSequentialResult.model_construct(
+            bounds=bounds, point_reason="point_unavailable"
+        )
+        row = BreakoutEstimate.model_construct(
+            metric="rev",
+            group_id="treatment",
+            method="unadjusted",
+            method_role="decision",
+            dimension="country",
+            dimension_value="US",
+            lift=None,
+            sequential_result=result,
+            low_reliability=False,
+        )
+
+        rendered = str(row)
+
+        assert "geometry='unavailable'" in rendered
+        assert "bounds_reason='variance_unavailable'" in rendered
+        assert "point_reason='point_unavailable'" in rendered
+
+    def test_str_preserves_relative_and_additive_unavailability_reasons(self):
+        from increment.estimation.results import JointContrastReference, RelativeConfidenceSet
+
+        relative_set = RelativeConfidenceSet.model_construct(
+            reference=JointContrastReference.model_construct(c=0.0),
+            alpha=0.05,
+            geometry="unavailable",
+            reason="relative_interval_unavailable",
+            intervals=(),
+        )
+        row = BreakoutEstimate.model_construct(
+            metric="rev",
+            group_id="treatment",
+            method="unadjusted",
+            method_role="decision",
+            dimension="country",
+            dimension_value="US",
+            lift=None,
+            relative_unavailable_reason="joint_covariance_unrepresentable",
+            relative_confidence_set=relative_set,
+            abs_diff=2.5,
+            abs_lb=2.0,
+            abs_ub=3.0,
+            low_reliability=False,
+        )
+
+        rendered = str(row)
+
+        assert "joint_covariance_unrepresentable" in rendered
+        assert "relative_interval_unavailable" in rendered
+        assert "zero_denominator" in rendered
+        assert "abs_diff=+2.5" in rendered and "abs_interval=(+2, +3)" in rendered
 
     def test_abs_diff_abs_se_default_none(self):
         """abs_diff/abs_se default to None until a constructor populates them."""

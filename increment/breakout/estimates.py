@@ -91,6 +91,7 @@ from increment.estimation.results import (
     _fcr_alpha_for,
     _infer_reference_from_legacy_dof,
     _RowIdentity,
+    _sequential_display_parts,
     _validate_absolute_reference_fields,
     _validate_joint_relative_row,
     _validate_reference_fields,
@@ -102,10 +103,7 @@ from increment.estimation.sequential import (
     AsymptoticMean,
     MixedFamily,
 )
-from increment.estimation.sequential_result import (
-    AsymptoticSequentialResult,
-    SequentialResult,
-)
+from increment.estimation.sequential_result import SequentialResult
 from increment.estimation.variance import VARIANCE_MODELS
 from increment.semantics.design import Encouragement, Observational, Randomized
 from increment.semantics.models import Metric, RetentionMetric
@@ -622,6 +620,8 @@ class BreakoutEstimate(_RowIdentity):
     family_axes: tuple[str, ...] | None = None
     family_q: float | None = None
     family_threshold: float | None = None
+    family_procedure: Literal["e_bh", "bonferroni", "bh"] | None = None
+    # Canonical procedure used by the retained family; absent in older payloads.
     # Which family corrected this row, at what FDR level, and that family's
     # own realized cutoff before capping at the nominal alpha. Mirrors
     # LiftEstimate's fields of the same name; see there for the cap.
@@ -811,9 +811,105 @@ class BreakoutEstimate(_RowIdentity):
         _infer_reference_from_legacy_dof
     )
     _check_reference: ClassVar[Any] = model_validator(mode="after")(_validate_reference_fields)
+
     _check_absolute_reference: ClassVar[Any] = model_validator(mode="after")(
         _validate_absolute_reference_fields
     )
+
+    def __repr__(self) -> str:
+        """Compact display for a breakout cell, retaining its segment and interval."""
+        from increment.estimation.results import _selection_qualification
+
+        if self.sequential_result is not None:
+            value = "unavailable" if self.lift is None else f"{self.lift.value:+.4g}"
+            interval = ", ".join(
+                _sequential_display_parts(
+                    self.sequential_result, point_available=self.lift is not None
+                )
+            )
+        elif self.relative_confidence_set is not None:
+            region = self.relative_confidence_set
+            value = "unavailable" if self.lift is None else f"{self.lift.value:+.4g}"
+            interval = f"relative_set={region.geometry}:{region.intervals!r}"
+            if region.reason is not None:
+                interval += f", confidence_set_reason={region.reason!r}"
+            if self.lift is None and region.point_unavailable_reason is not None:
+                interval += f", point_unavailable_reason={region.point_unavailable_reason!r}"
+        elif self.binomial_set is not None:
+            bounds = self.binomial_set
+            value = "unavailable" if self.lift is None else f"{self.lift.value:+.4g}"
+            interval = (
+                f"interval=({bounds.lower:+.4g}, "
+                f"{'+inf' if bounds.upper is None else f'{bounds.upper:+.4g}'})"
+            )
+        elif self.lift is None:
+            value = "unavailable"
+            interval = "interval=unavailable"
+        else:
+            value = f"{self.lift.value:+.4g}"
+            lower = (
+                "-inf"
+                if self.lift.open_side == "lower"
+                else ("unavailable" if self.lift.lb is None else f"{self.lift.lb:+.4g}")
+            )
+            upper = (
+                "+inf"
+                if self.lift.open_side == "upper"
+                else ("unavailable" if self.lift.ub is None else f"{self.lift.ub:+.4g}")
+            )
+            interval = f"interval=({lower}, {upper})"
+
+        details = [
+            f"metric={self.metric!r}",
+            f"dimension={self.dimension!r}",
+            f"dimension_value={self.dimension_value!r}",
+            f"group={self.group_id!r}",
+            f"method={self.method!r}",
+            f"role={self.method_role!r}",
+            f"population={self.analysis_population!r}",
+            f"estimand={self.estimand!r}",
+            f"scale={self.value_scale!r}",
+            f"inference={self.inference!r}",
+            f"value={value} ({self.value_scale})",
+            interval,
+        ]
+        if self.relative_unavailable_reason is not None:
+            details.append(f"relative_unavailable_reason={self.relative_unavailable_reason!r}")
+        if self.abs_diff is not None:
+            details.append(f"abs_diff={self.abs_diff:+.4g}")
+        if self.abs_lb is not None or self.abs_ub is not None:
+            lower = "-inf" if self.abs_lb is None else f"{self.abs_lb:+.4g}"
+            upper = "+inf" if self.abs_ub is None else f"{self.abs_ub:+.4g}"
+            details.append(f"abs_interval=({lower}, {upper})")
+        if self.failure_code is not None:
+            details.append(f"failure={self.failure_code!r}")
+            if self.reason is not None:
+                details.append(f"reason={self.reason!r}")
+        elif self.excluded is not None:
+            details.append(f"unavailable={self.excluded!r}")
+        if self.discovery is not None:
+            details.append(f"discovery={self.discovery!r}")
+        qualification = _selection_qualification(self)
+        if qualification is not None:
+            details.append(f"selection_qualification={qualification!r}")
+
+        if self.low_reliability:
+            details.append("low_reliability=True")
+        return f"BreakoutEstimate({', '.join(details)})"
+
+    __str__ = __repr__
+
+    def __repr_args__(self) -> list[tuple[str, object]]:
+        """Give Rich a compact row summary instead of the full persisted model."""
+        return [
+            ("metric", self.metric),
+            ("dimension", self.dimension),
+            ("dimension_value", self.dimension_value),
+            ("group", self.group_id),
+            ("population", self.analysis_population),
+            ("scale", self.value_scale),
+            ("summary", self.__repr__()),
+        ]
 
     @property
     def winsor_control_fraction_lower(self) -> float | None:
@@ -867,6 +963,7 @@ def _copy_common_fields(source: LiftEstimate, /, **overrides: Any) -> dict[str, 
         "family_axes": source.family_axes,
         "family_q": source.family_q,
         "family_threshold": source.family_threshold,
+        "family_procedure": source.family_procedure,
         "family_guarantee": source.family_guarantee,
         "family_nominal_alpha": source.family_nominal_alpha,
         "null_abs": source.null_abs,
@@ -1106,33 +1203,6 @@ class DailyMetricValue(CodedModel, BaseModel):
         return self
 
 
-def _sequential_display_parts(result: SequentialResult, *, point_available: bool) -> list[str]:
-    from increment._display import format_interval
-
-    if isinstance(result, AsymptoticSequentialResult):
-        bounds = result.bounds
-        geometry = (
-            " ∪ ".join(
-                format_interval(component.lower, component.upper) for component in bounds.components
-            )
-            or "∅"
-        )
-        parts = [f"ratio_interval={geometry}", f"geometry={bounds.status!r}"]
-        if not point_available and result.point_reason is not None:
-            parts.append(f"point_reason={result.point_reason!r}")
-        if bounds.reason is not None:
-            parts.append(f"bounds_reason={bounds.reason!r}")
-    else:
-        bounds = result.bounds
-        parts = [
-            f"ratio_interval={format_interval(bounds.lower, bounds.upper, empty=bounds.empty)}"
-        ]
-        if not point_available and result.point_reason is not None:
-            parts.append(f"point_reason={result.point_reason!r}")
-    parts.extend((f"confidence={float(1 - bounds.alpha):.1%}", f"status={bounds.status!r}"))
-    return parts
-
-
 class DailyLiftEstimate(_RowIdentity):
     """A relative lift estimate for ONE day of a daily time series.
 
@@ -1205,6 +1275,7 @@ class DailyLiftEstimate(_RowIdentity):
     discovery: bool | None = None
     family_axes: tuple[str, ...] | None = None
     family_q: float | None = None
+    family_procedure: Literal["e_bh", "bonferroni", "bh"] | None = None
     family_threshold: float | None = None
     family_guarantee: Literal["finite_sample", "asymptotic_sequential"] | None = None
     family_nominal_alpha: float | None = None
@@ -1524,6 +1595,7 @@ def daily_sequential_projection(
                 family_axes=row.family_axes,
                 family_q=row.family_q,
                 family_threshold=row.family_threshold,
+                family_procedure=row.family_procedure,
                 family_guarantee=row.family_guarantee,
                 family_nominal_alpha=row.family_nominal_alpha,
                 failure_code=row.failure_code,
@@ -2705,6 +2777,13 @@ def _append_breakout_slice_rows(
             estimate = outcome.estimate
             treatment_n = prepared.arm_n.get((estimate.metric, estimate.group_id))
             control_n = prepared.control_n.get(estimate.metric)
+            estimate = estimate.model_copy(
+                update={
+                    "family_procedure": context.correction
+                    if context.correction in ("bh", "bonferroni")
+                    else None
+                }
+            )
             rows.append(
                 _breakout_estimate_row(
                     estimate,
@@ -2853,6 +2932,7 @@ def _apply_breakout_family_correction(
                     "family_threshold": family_record["family_threshold"]
                     if estimate.method_role == "decision"
                     else None,
+                    "family_procedure": "bh" if estimate.method_role == "decision" else None,
                 }
             )
         return results
@@ -2908,6 +2988,7 @@ def _apply_breakout_family_correction(
                     "family_threshold": family_record["family_threshold"]
                     if estimate.method_role == "decision"
                     else None,
+                    "family_procedure": "bh" if estimate.method_role == "decision" else None,
                 }
             )
             continue
@@ -2918,6 +2999,7 @@ def _apply_breakout_family_correction(
                     "discovery": None,
                     "family_axes": None,
                     "family_q": None,
+                    "family_procedure": None,
                     "family_threshold": None,
                 }
             )
@@ -2951,7 +3033,7 @@ def _apply_breakout_family_correction(
             family_axes=("metric", "arm", "segment"),
             family_q=outcome.q,
             family_threshold=outcome.realized_threshold,
-        )
+        ).model_copy(update={"family_procedure": "bh"})
     return results
 
 

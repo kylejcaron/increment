@@ -149,6 +149,9 @@ def attach_multiplicity_scope(
                     "role": role,
                     "family_id": None if key is None else family_ids[key],
                     "family_axes": None if family is None else family.axes,
+                    "family_procedure": (
+                        None if family is None or family.correction == "none" else family.correction
+                    ),
                     "family_q": None if family is None else family.q,
                     "family_guarantee": (
                         None
@@ -271,6 +274,7 @@ def _attach_breakout_scope(
                     "role": "exploratory",
                     "family_id": family_ids[key] if belongs else None,
                     "family_axes": None if not belongs else family.axes,
+                    "family_procedure": None if not belongs else family.correction,
                     "family_q": None if not belongs else family.q,
                     "family_guarantee": None if not belongs else family.validity_regime,
                     "multiplicity_status": row_multiplicity_status(

@@ -56,6 +56,16 @@ by e-BH on its own chain but reported as `exploratory_family` with
 `triggered_look_policy="outcome_independent"`; see
 [Triggered populations](sequential-inference.md#triggered-populations).
 
+An affirmative selection is still not automatically confirmatory. A fixed
+Benjamini-Hochberg exploratory family retains its q level, whole-family size,
+FCR-adjusted selected intervals, and the independence/positive-dependence
+qualification for its FDR statement; it is shown as exploratory, not as an
+unadjusted result or a confirmatory discovery. An outcome-dependent triggered
+family retains its e-BH selection and family roster, but has no controlled
+guarantee: the outcome-driven look policy is an explicit limitation beside
+the selected row. Filtering a result view does not shrink either family or
+remove its partial-view indication.
+
 ## Declaring families: primary, guardrails, secondaries
 
 ```python

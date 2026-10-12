@@ -26,6 +26,27 @@ appear once as header notes only when informative. They remain on result
 objects and in `to_frame()`; failure rows keep a concise `Failure` column
 with their full structured context on the result object.
 
+An affirmative `r.discovery` is the raw selection result, not another
+significance verdict: it can differ from `r.stat_sig()`. The ordinary
+representation and `readout_table` place a selection qualification next to
+that result, including its procedure, exploratory/confirmatory role, retained
+family, and applicable guarantee or assumption. These disclosures do not
+change the stored selection or interval.
+`r.family_procedure` preserves the canonical correction name (`"e_bh"`,
+`"bh"`, or `"bonferroni"`) alongside the family scope and selection. Rows
+restored from payloads predating this field keep it as `None`; their display
+reports that the procedure was not recorded rather than inferring it from
+the interval or guarantee.
+
+Ordinary `str(row)` and `repr(row)` use the same compact semantic display for
+arm, breakout, daily, and additive contrast rows. A missing point is not
+necessarily a failed cell: a point-unavailable result can retain an unbounded
+or disconnected confidence set, whose geometry remains visible in the display.
+For a coded cell failure only, `row.reason` returns the persisted
+`failure_context["reason"]` when present, or the failure code otherwise. It is
+derived from the failure fields and is not persisted; other unavailable
+sampling, posterior, point, and interval reasons remain on their own fields.
+
 When a triggered experiment is read without a `population` argument, `Analysis.run()` keeps
 assigned and triggered results as separate rows. Pass `population="assigned"` or
 `population="triggered"` to select one population; a selected result never pools the two.
@@ -49,7 +70,7 @@ For a `LiftEstimate` row `r`:
 | How uncertain is it? | `r.lift.lb`, `r.lift.ub`, `r.lift.level` | An endpoint is `None` on the side named by `r.lift.open_side`. Both are `None` when relative inference is unavailable. |
 | Where is the interval when `r.lift` is `None`? | `r.binomial_set`, `r.relative_confidence_set`, `r.confidence_set`, `r.sequential_result.bounds`; the additive `r.abs_lb`, `r.abs_ub` | The set that owns the row's interval, if the row has one. A `None` upper bound on a binomial set means unbounded. Some rows have no relative set at all; see below. |
 | Is it significant? | `r.stat_sig()` | Honors one-sided tests, nonzero nulls, and the row's own inference. |
-| Was it selected within a family? | `r.role`, `r.discovery`, `r.family_q` | See [Multiplicity](multiplicity.md). |
+| Was it selected within a family? | `r.role`, `r.discovery`, `r.family_procedure`, `r.family_q` | See [Multiplicity](multiplicity.md). |
 | Why is something missing? | `r.relative_unavailable_reason`, `r.relative_confidence_set.point_unavailable_reason`, `r.confidence_set.relative` endpoint `status` and `reason`, `r.sequential_result.point_reason` | The exact persisted reason. |
 | Which inference regime? | `r.inference` | `"fixed"` is a single-look interval. `"always_valid"` has a finite-sample anytime-valid guarantee; `"asymptotic_mean"` supports repeated monitoring only under its asymptotic assumptions, without a finite-start guarantee. See [Sequential inference](sequential-inference.md). |
 
@@ -149,8 +170,8 @@ results = Analysis.from_unit_summary(
 
 for r in results:
     if r.lift is None or r.lift.lb is None or r.lift.ub is None:
-        # no point, or a withheld or open bound; the repr shows the row's set or reason
-        print(repr(r))
+        # no point, or a withheld or open bound; str shows the row's set or reason
+        print(str(r))
         continue
     print(
         f"{r.metric} / {r.group_id}: "
@@ -178,7 +199,7 @@ decision_table = results.to_frame(backend="polars")[
 
 ```text
 revenue / treatment: lift=+6.69% [+0.69%, +13.05%] significant=True
-LiftEstimate(metric='converted', group='treatment', estimand='itt', value=unavailable (relative), interval=(+2.059, +inf), stat_sig=True, discovery=None)
+LiftEstimate(metric='converted', group='treatment', method='unadjusted', role='decision', estimand='itt', population='assigned', inference='fixed', alternative='two-sided', scale='relative', value=unavailable (relative), interval=(+2.059, +inf), discovery=None)
 ```
 
 `r.lift` is `None` when no finite point estimate exists. The causes, and where

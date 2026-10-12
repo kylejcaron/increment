@@ -30,6 +30,7 @@ def input_evidence(value: Any, *, field: str | None = None) -> Any:
                 "family_axes",
                 "family_q",
                 "family_threshold",
+                "family_procedure",
                 "family_nominal_alpha",
                 "decision_scope_complete",
                 "decision_scope_reason_code",

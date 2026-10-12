@@ -31,6 +31,7 @@ from pydantic import (
 from scipy.stats import norm as _norm
 from scipy.stats import t as _t
 
+from increment._display import format_interval
 from increment._literals import (
     ALTERNATIVE_VALUES,
     Alternative,
@@ -60,6 +61,30 @@ from increment.winsor import (
     WinsorConfidenceSet,
     winsor_refuse,
 )
+
+
+def _sequential_display_parts(result: SequentialResult, *, point_available: bool) -> list[str]:
+    """Render persisted confidence geometry and reasons without recomputing inference."""
+    if isinstance(result, AsymptoticSequentialResult):
+        bounds = result.bounds
+        intervals = (
+            " ∪ ".join(
+                format_interval(component.lower, component.upper) for component in bounds.components
+            )
+            or "∅"
+        )
+        parts = [f"ratio_interval={intervals}", f"geometry={bounds.status!r}"]
+        if bounds.reason is not None:
+            parts.append(f"bounds_reason={bounds.reason!r}")
+    else:
+        bounds = result.bounds
+        interval = format_interval(bounds.lower, bounds.upper, empty=bounds.empty)
+        parts = [f"ratio_interval={interval}"]
+    if not point_available and result.point_reason is not None:
+        parts.append(f"point_reason={result.point_reason!r}")
+    parts.extend((f"confidence={float(1 - bounds.alpha):.1%}", f"status={bounds.status!r}"))
+    return parts
+
 
 RelativeUnavailableReason = Literal[
     "joint_covariance_indefinite",
@@ -647,6 +672,7 @@ class _RowIdentity(CodedModel, BaseModel):
     failure_context: Mapping[str, object] | None = None
     source_snapshot_id: str | None = None
     decision_scope_complete: bool | None = None
+
     decision_scope_reason_code: str | None = None
     decision_scope_reason_context: Mapping[str, object] | None = None
     family_id: str | None = None
@@ -820,6 +846,83 @@ class _RowIdentity(CodedModel, BaseModel):
             return PosteriorComponents.model_validate(value)
         return value
 
+    @property
+    def reason(self) -> str | None:
+        """Return the concise persisted reason for a coded cell failure."""
+        if self.failure_code is None:
+            return None
+        context = self.failure_context or {}
+        reason = context.get("reason")
+        return reason if isinstance(reason, str) else self.failure_code
+
+
+def _selection_qualification(row: Any) -> str | None:
+    """Describe an affirmative family selection from the row's retained provenance."""
+    if getattr(row, "discovery", None) is not True:
+        return None
+    status = getattr(row, "multiplicity_status", None)
+    q = getattr(row, "family_q", None)
+    size = getattr(row, "family_size", None)
+    family = f"retained family size {size}" if size is not None else "retained family"
+    level = f" at q={q:g}" if q is not None else ""
+    procedure = getattr(row, "family_procedure", None)
+    if procedure == "e_bh":
+        procedure_label = "e-BH family selection"
+    elif procedure == "bonferroni":
+        procedure_label = "Bonferroni family selection"
+    elif procedure == "bh":
+        procedure_label = "Benjamini-Hochberg family selection"
+    else:
+        procedure_label = "Family selection; procedure not recorded"
+    if getattr(row, "sequential_result", None) is not None:
+        guarantee = getattr(row, "family_guarantee", None)
+        if (
+            getattr(row, "analysis_population", None) == "triggered"
+            and status == "exploratory_family"
+            and guarantee is None
+        ):
+            return (
+                f"{procedure_label}{level}; exploratory_family; outcome-dependent triggered "
+                f"looks; no controlled guarantee; {family}"
+            )
+        qualification = (
+            "finite-sample guarantee"
+            if guarantee == "finite_sample"
+            else "asymptotic-sequential guarantee"
+            if guarantee == "asymptotic_sequential"
+            else "no controlled guarantee"
+        )
+        look = (
+            "; outcome-independent triggered-look policy"
+            if getattr(row, "analysis_population", None) == "triggered" and guarantee is not None
+            else ""
+        )
+        guarantee_kind = (
+            "FWER"
+            if procedure == "bonferroni"
+            else "FDR"
+            if procedure in ("e_bh", "bh")
+            else "family"
+        )
+        return (
+            f"{procedure_label}{level}; arbitrary-dependence {guarantee_kind} selection{look}; "
+            f"{qualification}; {family}"
+        )
+    if status == "exploratory_family" and q is not None and procedure == "bh":
+        return (
+            f"{procedure_label}{level}; {family}; selected interval is FCR-adjusted; "
+            "FDR qualification requires independence or positive dependence; exploratory, "
+            "not confirmatory"
+        )
+    if status == "exploratory_family":
+        return f"{procedure_label}{level}; {family}; exploratory, not confirmatory"
+    if q is not None and procedure == "bh":
+        return (
+            f"{procedure_label}{level}; {family}; FDR qualification requires independence or "
+            "positive dependence"
+        )
+    return f"{procedure_label}{level}; {family}"
+
 
 class LiftEstimate(_RowIdentity):
     """A lift estimate, carrying the metadata to identify which (metric,
@@ -957,6 +1060,8 @@ class LiftEstimate(_RowIdentity):
     # Primary Bonferroni allocation is recorded in lift.level and the plan.
     family_q: float | None = None  # FDR level, or qualified asymptotic-mean FWER level.
     family_threshold: float | None = None
+    family_procedure: Literal["e_bh", "bonferroni", "bh"] | None = None
+    # Canonical procedure used by the retained family; absent in older payloads.
     # Family-wide values: family_guarantee is "asymptotic_sequential" if any cell is asymptotic,
     # else "finite_sample"; family_nominal_alpha is the overall test level in
     # fcr_alpha = min(realized_threshold, family_nominal_alpha).
@@ -1412,6 +1517,12 @@ class LiftEstimate(_RowIdentity):
 
     def __repr__(self) -> str:
         """Compact interactive representation of the published estimate."""
+        identity = (
+            f"metric={self.metric!r}, group={self.group_id!r}, method={self.method!r}, "
+            f"role={self.method_role!r}, estimand={self.estimand!r}, "
+            f"population={self.analysis_population!r}, inference={self.inference!r}, "
+            f"alternative={self.alternative!r}, scale={self.value_scale!r}"
+        )
         if self.lift is None and self.failure_code is not None:
             context = self.failure_context or {}
             reason = context.get("reason")
@@ -1423,39 +1534,54 @@ class LiftEstimate(_RowIdentity):
                 }
             if not reason:
                 reason = self.failure_code
-            details = [f"metric={self.metric!r}", f"group={self.group_id!r}"]
+            details = [identity]
             details.append(f"failure={self.failure_code!r}")
             if reason is not None:
                 details.append(f"reason={reason!r}")
             return f"LiftEstimate({', '.join(details)})"
         if self.confidence_set is not None:
             region = self.confidence_set
+            qualification = _selection_qualification(self)
+            suffix = (
+                f", selection_qualification={qualification!r}" if qualification is not None else ""
+            )
             return (
-                f"LiftEstimate(metric={self.metric!r}, group={self.group_id!r}, "
+                f"LiftEstimate({identity}, "
                 f"value={region.point!r}, lower={region.relative.lower!r}, "
-                f"upper={region.relative.upper!r}, reference='confidence_set')"
+                f"upper={region.relative.upper!r}, reference='confidence_set'{suffix})"
             )
         unit = self.value_scale
         if self.relative_unavailable_reason is not None:
+            qualification = _selection_qualification(self)
+            suffix = (
+                f", selection_qualification={qualification!r}" if qualification is not None else ""
+            )
             return (
-                f"LiftEstimate(metric={self.metric!r}, group={self.group_id!r}, "
+                f"LiftEstimate({identity}, "
                 f"value={None if self.lift is None else self.lift.value!r}, "
                 f"relative_unavailable={self.relative_unavailable_reason!r}, "
-                f"abs_diff={self.abs_diff!r})"
+                f"abs_diff={self.abs_diff!r}{suffix})"
             )
         if self.relative_confidence_set is not None:
             relative = self.relative_confidence_set
+            qualification = _selection_qualification(self)
+            suffix = (
+                f", selection_qualification={qualification!r}" if qualification is not None else ""
+            )
             return (
-                f"LiftEstimate(metric={self.metric!r}, group={self.group_id!r}, "
-                f"estimand={self.estimand!r}, value="
+                f"LiftEstimate({identity}, "
+                f"value="
                 f"{None if self.lift is None else self.lift.value!r} ({unit}), "
                 f"relative_set={relative.geometry}:{relative.intervals!r}, "
-                f"stat_sig={self.stat_sig()}, discovery={self.discovery!r})"
+                f"discovery={self.discovery!r}{suffix})"
             )
         if self.sequential_result is not None:
             value = "unavailable" if self.lift is None else f"{self.lift.value:+.4g}"
-            bounds = self.sequential_result.bounds
-            interval = f"ratio_set=({bounds.lower}, {bounds.upper}), empty={bounds.empty}"
+            interval = ", ".join(
+                _sequential_display_parts(
+                    self.sequential_result, point_available=self.lift is not None
+                )
+            )
         elif self.lift is None:
             value = "unavailable"
             bset = self.binomial_set
@@ -1474,12 +1600,25 @@ class LiftEstimate(_RowIdentity):
                 interval = "interval=None"
             else:
                 interval = f"interval=({self.lift.lb:+.4g}, {self.lift.ub:+.4g})"
-        stat_sig = self.stat_sig()
+        qualification = _selection_qualification(self)
+        suffix = f", selection_qualification={qualification!r}" if qualification is not None else ""
         return (
-            f"LiftEstimate(metric={self.metric!r}, group={self.group_id!r}, "
-            f"estimand={self.estimand!r}, value={value} ({unit}), "
-            f"{interval}, stat_sig={stat_sig}, discovery={self.discovery!r})"
+            f"LiftEstimate({identity}, "
+            f"value={value} ({unit}), "
+            f"{interval}, discovery={self.discovery!r}{suffix})"
         )
+
+    __str__ = __repr__
+
+    def __repr_args__(self) -> list[tuple[str, object]]:
+        """Give Rich a compact row summary instead of the full persisted model."""
+        return [
+            ("metric", self.metric),
+            ("group", self.group_id),
+            ("population", self.analysis_population),
+            ("scale", self.value_scale),
+            ("summary", self.__repr__()),
+        ]
 
     @property
     def winsor_control_fraction_lower(self) -> float | None:

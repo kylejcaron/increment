@@ -310,6 +310,7 @@ def _estimate_randomized_secondary_family(
     fcr_alpha = outcome.fcr_alpha
     family_record = {
         "family_axes": ("metric", "arm"),
+        "family_procedure": "bh",
         "family_q": outcome.q,
         "family_threshold": outcome.realized_threshold,
         "family_size": outcome.n_family,
