@@ -977,10 +977,14 @@ available from the receive-only results namespace.
 
 `Analysis.sitewide(metric, population="assigned")` reports an assigned
 intent-to-treat whole-site impact, including when the experiment declares a
-trigger. `population="triggered"` raises
-`analysis.sitewide.triggered_population_unsupported` before data loading; use
-`run()` for the triggered cohort effect. Both `SitewideImpact` and
-`SitewideRatioImpact` serialize `analysis_population="assigned"`.
+trigger. For triggered experiments, `population="triggered"` reports a
+conditional impact scaled to enrolled units in finalized trigger membership.
+It uses calendar-window outcomes (not `run()`'s trigger-anchored windows),
+requires an aligned sum metric, and discloses membership assumptions,
+allocation-balance evidence, provenance, and its exploratory unadjusted
+multiplicity status on the result. `SitewideImpact` and `SitewideRatioImpact`
+include `analysis_population`, `window`, `membership_cutoff`, `snapshot_id`,
+`scaled_units`, `assumptions`, and `allocation_balance`.
 
 `increment.results.LiftEstimate.family_procedure` identifies the canonical correction
 procedure retained with the result's family (`e_bh`, `bonferroni`, or `bh`), when

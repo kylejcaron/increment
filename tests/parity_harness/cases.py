@@ -8924,7 +8924,7 @@ def _triggered_sitewide_assigned_case() -> ParityCase:
     experiment["trigger"] = "saw_surface"
     payload["fact_sources"][0]["facts"].append({"name": "saw_surface", "column": None})
     payload["exposures"].append({"name": "saw_surface", "fact": "saw_surface"})
-    payload["metrics"] = [metric for metric in payload["metrics"] if metric["name"] == "revenue"]
+    payload["metrics"][0]["window_days"] = None
     definitions = Definitions.model_validate(payload)
     untriggered_payload = copy.deepcopy(payload)
     untriggered_payload["experiments"][0].pop("trigger")
@@ -8957,17 +8957,33 @@ def _triggered_sitewide_assigned_case() -> ParityCase:
         if name not in {"from_definitions", "from_unit_day_artifact"}:
             return
         result = analysis.sitewide("revenue")
+        result_triggered = analysis.sitewide("revenue", population="triggered")
+        assert result_triggered.analysis_population == "triggered"
+        assert result_triggered.window == result.window
+        assert result_triggered.snapshot_id == result.snapshot_id
+        assert result_triggered.membership_cutoff is not None
         assert result.analysis_population == "assigned"
         con = ds.duckdb_connection(rows)
         reference = make_analysis(
             con, untriggered, experiment="exp", source_snapshot_evidence=snapshot
         )
+        trigger_reference = make_analysis(
+            con, definitions, experiment="exp", source_snapshot_evidence=snapshot
+        )
         try:
             expected = reference.sitewide("revenue")
             assert result.absolute_impact == pytest.approx(expected.absolute_impact)
             assert result.relative_impact == pytest.approx(expected.relative_impact)
+            expected_triggered = trigger_reference.sitewide("revenue", population="triggered")
+            assert result_triggered.absolute_impact == pytest.approx(
+                expected_triggered.absolute_impact
+            )
+            assert result_triggered.relative_impact == pytest.approx(
+                expected_triggered.relative_impact
+            )
         finally:
             reference.close()
+            trigger_reference.close()
             con.disconnect()
 
     return ParityCase(

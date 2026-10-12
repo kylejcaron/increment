@@ -272,12 +272,25 @@ uptake evidence without reducing outcomes. Clustered outcome histories still
 refuse with `facade.analysis.clustered_day_axis`; cluster-grain compliance
 histories use the declared cluster uptake sufficient state.
 
-### Triggered-population sitewide impact needs an external assumption
+### Triggered-population sitewide impact depends on an untestable assumption
 
-`Analysis.sitewide(population="triggered")` is not offered: triggered lift
-scaled by triggered units represents whole-site impact only if units that
-never trigger are unaffected. The assigned-population whole-site impact
-remains available.
+`Analysis.sitewide(population="triggered")` reports a conditional, fixed-
+membership estimate: the triggered-stratum lift is scaled by the number of
+enrolled units in finalized trigger membership, while the site-volume
+counterfactual remains full-site. Interpreting it as the sharp null of no
+whole-site effect requires that trigger membership is independent of
+treatment and that never-triggered units are unaffected. The allocation
+balance diagnostic can detect some treatment-dependent trigger rates, but its
+non-rejection does not prove either assumption; equal marginal trigger rates
+do not rule out treatment-dependent membership or timing.
+
+The estimate omits any reach effect among never-triggered units and does not
+adjust for multiplicity or provide anytime-valid inference. It uses
+assignment-anchored experiment-calendar outcomes rather than `run()`'s
+trigger-anchored windows. Use the assigned-population sitewide result when
+these conditional assumptions are not defensible.
+
+Calibration: `CALIBRATION_RESULTS_PENDING`
 
 The clustered encouragement LATE cuts its additive interval at a Welch–Satterthwaite t
 reference over the two arms' own cluster-ratio variance components. Measured by
@@ -1665,8 +1678,10 @@ are warehouse-native operations: the former preserves pre-assignment property
 values, while the latter dates triggered cohorts at their first eligible
 trigger. Artifacts do not retain the raw enrollment timeline or provide the
 dashboard aggregation operation, so those reads refuse with source-specific
-capability reasons. Sitewide impacts cannot isolate triggered units from
-whole-site volumes and likewise refuse triggered requests. CATE, CATE
+capability reasons. Triggered sitewide is available only for aligned sum
+metrics with explicit trigger and site-volume evidence; it uses calendar-
+window outcomes restricted to finalized membership and remains conditional on
+the assumptions above. CATE, CATE
 validation, and targeting use the triggered unit population when the source
 provides triggered outcomes and pre-assignment covariates; artifacts require
 the corresponding trigger, metric, and unit-covariate evidence. Missing

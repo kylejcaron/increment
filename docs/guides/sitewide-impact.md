@@ -19,19 +19,40 @@ horizon projection. Check [what refuses](#what-refuses) before selecting a
 metric or source.
 
 
-## Whole-site impact under a trigger
+When an experiment declares `trigger:`, the default `population="assigned"`
+still reports the assignment-based intent-to-treat whole-site impact. You
+can also request `population="triggered"`: this scales the lift among units
+in finalized trigger membership by the number of triggered enrolled units.
+Both readings use the experiment's calendar window (`start .. end`) for
+outcomes. In particular, triggered sitewide does **not** use `run()`'s
+trigger-anchored observation windows; late triggers can belong to the
+membership while their outcome contribution still comes from the fixed
+experiment window. Site volume remains the full-site total, not a
+trigger-filtered total.
 
-When an experiment declares `trigger:`, `sitewide()` still reports the
-`assigned` intent-to-treat whole-site impact. It uses assignment-anchored
-windows and includes every enrolled unit, whether or not that unit triggered;
-declaring a trigger therefore does not change this estimand. Requesting
-`population="triggered"` is refused: the triggered-population sitewide
-estimand would scale triggered lift by triggered units and is interpretable as
-whole-site impact only if units that never trigger are unaffected. That
-assumption is not made here. Scaling triggered lift by all enrolled units is
-also incorrect: for example, if 20 of 100 units trigger, lift is 10, and the
-other 80 have no effect, the whole-site impact is 200, not 1,000. Use
-`run()` for the triggered cohort effect.
+The two readings can be computed from one immutable artifact that includes
+the required trigger and site-volume evidence:
+
+```python
+native = Analysis.from_definitions("experiment", definitions_path, con)
+reference = native.publish_unit_day_artifact(store, extensions=extensions)
+native.close()
+analysis = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+assigned = analysis.sitewide("revenue")
+triggered = analysis.sitewide("revenue", population="triggered")
+assert assigned.snapshot_id == triggered.snapshot_id
+assert assigned.window == triggered.window
+assert triggered.membership_cutoff is not None
+```
+
+The triggered result is a conditional fixed-membership estimate. It assumes
+membership is independent of treatment assignment, units that never trigger
+are unaffected, and enrolled units exhaust exposure; the result includes an
+allocation-balance diagnostic, but a passed diagnostic cannot establish those
+assumptions. The result is explicitly exploratory and unadjusted for
+multiplicity.
+
+**Calibration:** `CALIBRATION_RESULTS_PENDING`
 
 ## The ship-to-all counterfactual
 

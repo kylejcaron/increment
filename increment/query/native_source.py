@@ -2296,7 +2296,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             cluster, operation="sitewide_evidence"
         )
         _panel, spine, stats, _events, den_events, fact_tbl, value_col, data_as_of = (
-            self._build_panel_for_metric(exposures, metric)
+            self._build_panel_for_metric(exposures, metric, use_cache=False)
         )
         summary, _pre_stats, _den_stats, _totals = self._build_metric_summary(
             metric,
@@ -2326,6 +2326,14 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             group_id = count_row["group_id"]
             if group_id is not None and str(group_id) in arm_ids:
                 assigned_counts[str(group_id)] = int(count_row["n_units"])
+        population_counts: dict[str, int] = {}
+        population_count_rows = self._con.to_pyarrow(
+            exposures.group_by("group_id").aggregate(n_units=exposures.unit_id.nunique())
+        ).to_pylist()
+        for count_row in population_count_rows:
+            group_id = count_row["group_id"]
+            if group_id is not None:
+                population_counts[str(group_id)] = int(count_row["n_units"])
         snapshot = self._session.source_snapshot_evidence
         from hashlib import sha256
 
@@ -2360,7 +2368,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 else snapshot.observation_cutoff_ts
             ),
             snapshot_id=snapshot_id,
-            population_counts={item.group_id: item.n for item in arm_stats},
+            population_counts=population_counts,
             assigned_counts=assigned_counts,
         )
 

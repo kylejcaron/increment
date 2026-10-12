@@ -1933,9 +1933,13 @@ class Analysis:
         """Whole-site impact of shipping *metric_name*'s lift to every unit.
 
         Native (:meth:`from_definitions`) and adopted artifact sources with a
-        published site-volume evidence extension combine enrolled-arm moments
-        with whole-site volume evidence. The result selects the sum-metric or
-        ratio-metric delta method from the declared metric.
+        published site-volume extension combine enrolled-arm moments with
+        whole-site volume evidence. ``population="assigned"`` scales the
+        assignment-window lift to all enrolled units. For a triggered
+        experiment, ``population="triggered"`` scales the trigger-stratum lift
+        to units in finalized trigger membership, while outcomes remain aligned
+        to the experiment's calendar window; it requires a sum metric and
+        discloses the conditional membership assumptions on the result.
 
         One result per call, for one treatment arm - required when
         more than one non-control arm is enrolled. Every other
@@ -1952,10 +1956,12 @@ class Analysis:
         alpha : float
             Two-sided significance level for both intervals. Default 0.05.
         population : Literal["assigned", "triggered"]
-            Population for the requested impact. ``"assigned"`` (the default)
-            is the whole-site intent-to-treat impact. The triggered-population
-            sitewide estimand is not offered; use :meth:`run` for the triggered
-            cohort effect.
+            selects assignment membership by default or finalized trigger
+            membership for a triggered experiment. Triggered sitewide impact
+            uses assignment-anchored calendar-window outcomes (not trigger-
+            anchored ``run()`` windows); it is conditional on membership
+            independence from treatment and never-triggered units being
+            unaffected.
 
         Returns
         -------

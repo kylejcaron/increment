@@ -156,6 +156,7 @@ count/variance) when no other arm is enrolled.
 
 from __future__ import annotations
 
+import datetime as dt
 import math
 from collections.abc import Sequence
 from typing import Literal, Self
@@ -269,6 +270,17 @@ class _Arm(BaseModel):
     own_dof: float | None = None
 
 
+class AllocationBalance(BaseModel):
+    """Descriptive triggered-population allocation-balance evidence."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    statistic: float
+    p_value: float | None = None
+    e_value: float | None = None
+    status: Literal["passed", "failed"]
+
+
 class SitewideImpact(BaseModel):
     """Whole-site impact of shipping a lift to every enrolled unit.
 
@@ -276,9 +288,9 @@ class SitewideImpact(BaseModel):
     ----------
     delta, delta_se : float
         Per-unit absolute lift of the target arm and its standard error.
-    analysis_population : Literal["assigned"]
-        The sitewide intent-to-treat result always represents the assigned
-        population, including for experiments that declare a trigger.
+    analysis_population : Literal["assigned", "triggered"]
+        Assignment units by default, or finalized trigger members when
+        `population="triggered"` was requested.
     treatment_group : str
         ``group_id`` of the target arm.
     n_control, n_treatment : float
@@ -310,13 +322,26 @@ class SitewideImpact(BaseModel):
         module docstring for which reduction each is. They differ from
         each other, and both differ from the contrast's pooled
         ``n_clusters - 2`` once another arm is enrolled.
+    window, membership_cutoff, snapshot_id : provenance fields
+        Calendar outcome window, trigger-membership observation cutoff (None
+        for assigned results), and identity of the source snapshot.
+    scaled_units : int
+        Number of enrolled units in the selected population used to scale the
+        impact (`N` or `N_T`).
+    multiplicity_status, adjustment : str
+        Sitewide results are exploratory and unadjusted; triggered results do
+        not inherit a registered analysis family.
+    assumptions : tuple[str, ...]
+        Assumptions required to interpret the selected population.
+    allocation_balance : AllocationBalance | None
+        Descriptive triggered-population SRM evidence; it never gates a result.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     delta: float
     delta_se: float
-    analysis_population: Literal["assigned"] = "assigned"
+    analysis_population: Literal["assigned", "triggered"] = "assigned"
     treatment_group: str
     n_control: float
     n_treatment: float
@@ -335,7 +360,23 @@ class SitewideImpact(BaseModel):
     alpha: float
     n_clusters: int | None = None
     absolute_dof: float | None = None
+    window: tuple[dt.date, dt.date] | None = None
+    membership_cutoff: dt.datetime | None = None
+    snapshot_id: str | None = None
+    scaled_units: int = 0
+    multiplicity_status: Literal["exploratory_unadjusted"] = "exploratory_unadjusted"
+    adjustment: Literal["unadjusted"] = "unadjusted"
+    assumptions: tuple[str, ...] = ("enrolled_units_exhaust_exposure",)
+    allocation_balance: AllocationBalance | None = None
     relative_dof: float | None = None
+
+    def __repr__(self) -> str:
+        return (
+            f"SitewideImpact(population={self.analysis_population!r}, "
+            f"scaled_units={self.scaled_units}, absolute_impact={self.absolute_impact:.6g}, "
+            f"relative_impact={self.relative_impact:.6g}, assumptions={self.assumptions!r}, "
+            f"multiplicity_status={self.multiplicity_status!r})"
+        )
 
 
 class SitewideRatioImpact(BaseModel):
@@ -353,9 +394,9 @@ class SitewideRatioImpact(BaseModel):
         Per-unit absolute lift of the target arm's denominator and its SE.
     delta_cov : float
         Covariance of ``delta_num`` and ``delta_den``.
-    analysis_population : Literal["assigned"]
-        The sitewide intent-to-treat result always represents the assigned
-        population, including for experiments that declare a trigger.
+    analysis_population : Literal["assigned", "triggered"]
+        Assignment units by default, or finalized trigger members when
+        `population="triggered"` was requested.
     treatment_group : str
         ``group_id`` of the target arm.
     n_control, n_treatment : float
@@ -387,6 +428,19 @@ class SitewideRatioImpact(BaseModel):
         ``absolute_dof`` is always the Satterthwaite reduction, never
         the plain pairwise dof (see "Degrees of freedom" in the module
         docstring).
+    window, membership_cutoff, snapshot_id : provenance fields
+        Calendar outcome window, trigger-membership observation cutoff (None
+        for assigned results), and identity of the source snapshot.
+    scaled_units : int
+        Number of enrolled units in the selected population used to scale the
+        impact (`N` or `N_T`).
+    multiplicity_status, adjustment : str
+        Sitewide results are exploratory and unadjusted; triggered results do
+        not inherit a registered analysis family.
+    assumptions : tuple[str, ...]
+        Assumptions required to interpret the selected population.
+    allocation_balance : AllocationBalance | None
+        Descriptive triggered-population SRM evidence; it never gates a result.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -396,7 +450,7 @@ class SitewideRatioImpact(BaseModel):
     delta_den: float
     delta_den_se: float
     delta_cov: float
-    analysis_population: Literal["assigned"] = "assigned"
+    analysis_population: Literal["assigned", "triggered"] = "assigned"
     treatment_group: str
     n_control: float
     n_treatment: float
@@ -421,7 +475,23 @@ class SitewideRatioImpact(BaseModel):
     alpha: float
     n_clusters: int | None = None
     absolute_dof: float | None = None
+    window: tuple[dt.date, dt.date] | None = None
+    membership_cutoff: dt.datetime | None = None
+    snapshot_id: str | None = None
+    scaled_units: int = 0
+    multiplicity_status: Literal["exploratory_unadjusted"] = "exploratory_unadjusted"
+    adjustment: Literal["unadjusted"] = "unadjusted"
+    assumptions: tuple[str, ...] = ("enrolled_units_exhaust_exposure",)
+    allocation_balance: AllocationBalance | None = None
     relative_dof: float | None = None
+
+    def __repr__(self) -> str:
+        return (
+            f"SitewideRatioImpact(population={self.analysis_population!r}, "
+            f"scaled_units={self.scaled_units}, absolute_impact={self.absolute_impact:.6g}, "
+            f"relative_impact={self.relative_impact:.6g}, assumptions={self.assumptions!r}, "
+            f"multiplicity_status={self.multiplicity_status!r})"
+        )
 
 
 def _checked_arms(
