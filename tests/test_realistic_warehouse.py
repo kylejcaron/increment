@@ -29,7 +29,8 @@ import pyarrow.parquet as pq
 import pytest
 
 from increment import Analysis, MetricSpec
-from increment.errors import IncrementWarning
+from increment.breakout.estimates import LiftEstimates
+from increment.errors import IncrementWarning, InvalidRequestError
 from increment.estimation.results import LiftEstimate
 from increment.results import NotApplicable, SRMResult
 from increment.semantics.models import RatioMetric, RetentionMetric
@@ -243,12 +244,87 @@ def test_daily_and_asof_lift_cover_all_metrics(analysis):
 
 
 @pytest.mark.integration
+def test_realistic_warehouse_artifact_replay_matches_native(analysis, con):
+    from increment.estimation.readout_types import CellKey
+    from increment.query.session import WarehouseArtifactStore
+    from tests.readout_journeys import assert_prior_free_sampling_family
+
+    store = WarehouseArtifactStore(con, schema_name="m3_realistic")
+    reference = analysis.publish_unit_day_artifact(store)
+    adopted = Analysis.from_unit_day_artifact(
+        store, reference, expected_context=analysis.artifact_context
+    )
+    expected_result = analysis.run()
+    observed_result = adopted.run()
+    assert isinstance(expected_result, LiftEstimates)
+    assert isinstance(observed_result, LiftEstimates)
+    expected_metadata = expected_result.metadata
+    observed_metadata = observed_result.metadata
+    assert expected_metadata is not None and observed_metadata is not None
+    expected_rows = _lift_rows(expected_result)
+    observed_rows = _lift_rows(observed_result)
+    expected = {CellKey.from_row(row): row for row in expected_rows}
+    observed = {CellKey.from_row(row): row for row in observed_rows}
+    assert expected.keys() == observed.keys()
+    assert_prior_free_sampling_family(expected_result)
+    assert_prior_free_sampling_family(observed_result)
+    for cell, expected_row in expected.items():
+        observed_row = observed[cell]
+        # The independently sourced snapshots/families have source-bound IDs;
+        # compare their semantic contents and linkage, not their hashes.
+        _assert_nested_approx_equal(
+            observed_row.model_dump(mode="json", exclude={"source_snapshot_id", "family_id"}),
+            expected_row.model_dump(mode="json", exclude={"source_snapshot_id", "family_id"}),
+        )
+        assert observed_row.source_snapshot_id is not None
+        assert expected_row.source_snapshot_id is not None
+        assert observed_row.family_id is not None
+        assert expected_row.family_id is not None
+        assert observed_row.family_procedure == expected_row.family_procedure
+        assert observed_row.family_size == expected_row.family_size
+        assert observed_metadata.record(observed_row.source_snapshot_id, cell) is not None
+        assert expected_metadata.record(expected_row.source_snapshot_id, cell) is not None
+    adopted.close()
+
+
+def _assert_nested_approx_equal(actual, expected):
+    if isinstance(expected, dict):
+        assert isinstance(actual, dict)
+        assert actual.keys() == expected.keys()
+        for key in expected:
+            _assert_nested_approx_equal(actual[key], expected[key])
+    elif isinstance(expected, list):
+        assert isinstance(actual, list)
+        assert len(actual) == len(expected)
+        for actual_item, expected_item in zip(actual, expected, strict=True):
+            _assert_nested_approx_equal(actual_item, expected_item)
+    elif isinstance(expected, float):
+        assert actual == pytest.approx(expected, rel=1e-12, abs=1e-12)
+    else:
+        assert actual == expected
+
+
+@pytest.mark.integration
 def test_export_from_moments_round_trips_run_exactly(analysis, tmp_path):
     """A real export/rehydrate must reproduce run() exactly, including the
     declared plan: without it a guardrail comes back unassigned and
     two-sided, widening its interval past what was pre-registered.
     """
-    baseline = {(e.metric, e.group_id): e.require_lift() for e in _lift_rows(analysis.run())}
+    from increment.semantics.models import ConversionMetric, MeanMetric
+    from tests.analysis_factory import make_analysis_like
+
+    unequal_allocation = analysis.experiment.model_copy(
+        update={"allocation": {"control": 0.6, "treatment": 0.4}}
+    )
+    analysis = make_analysis_like(analysis, experiment=unequal_allocation)
+    metrics = {metric.name: metric for metric in analysis.metrics}
+
+    assert isinstance(metrics["conversion_rate"], ConversionMetric)
+    assert metrics["conversion_rate"].window_days == 14
+    assert isinstance(metrics["revenue_per_user"], MeanMetric)
+    assert metrics["revenue_per_user"].window_days == 14
+    source_rows = _lift_rows(analysis.run())
+    baseline = {(e.metric, e.group_id): e.require_lift() for e in source_rows}
 
     path = tmp_path / "moments.parquet"
     analysis.export(path)
@@ -256,18 +332,44 @@ def test_export_from_moments_round_trips_run_exactly(analysis, tmp_path):
     assert {row["moments_format"] for row in rows} == {11}
 
     specs = [_metric_spec(m) for m in analysis.metrics]
-    rehydrated_src = Analysis.from_moments(rows, metrics=specs, control="control")
+    rehydrated_src = Analysis.from_moments(
+        rows, metrics=specs, design=analysis.experiment.resolved_design()
+    )
     rehydrated = _lift_rows(rehydrated_src.run())
 
-    # The declared plan survives, observable through the public result rows.
+    source_health = analysis.health_check()
+    replay_health = rehydrated_src.health_check()
+    source_assigned = next(
+        check for check in source_health.checks if check.check == "assigned_allocation"
+    )
+    replay_assigned = next(
+        check for check in replay_health.checks if check.check == "assigned_allocation"
+    )
+    assert source_assigned.availability == "available"
+    assert source_assigned.srm is not None
+    assert source_assigned.srm.expected == {"control": 0.6, "treatment": 0.4}
+    assert replay_assigned.availability == "available"
+    assert replay_assigned.srm == source_assigned.srm
+    feed_checks = [check for check in source_health.checks if check.check == "feed_completeness"]
+    assert [check.availability for check in feed_checks] == ["not_applicable"]
+    assert feed_checks[0].conclusion is None
+
     declared = next(e for e in _lift_rows(analysis.run()) if e.metric == "d7_retention")
     carried = next(e for e in rehydrated if e.metric == "d7_retention")
     assert declared.role == "guardrail"
     assert carried.role == declared.role
     assert carried.alternative == declared.alternative
 
+    source_by_cell = {(e.metric, e.group_id): e for e in source_rows}
     assert {(e.metric, e.group_id) for e in rehydrated} == set(baseline)
+    assert len({row.source_snapshot_id for row in source_rows}) == 1
+    assert len({row.source_snapshot_id for row in rehydrated}) == 1
+    assert all(row.source_snapshot_id is not None for row in (*source_rows, *rehydrated))
     for e in rehydrated:
+        source = source_by_cell[(e.metric, e.group_id)]
+        assert e.family_id is not None and source.family_id is not None
+        assert e.family_procedure == source.family_procedure
+        assert e.family_size == source.family_size
         base = baseline[(e.metric, e.group_id)]
         lift = e.require_lift()
         assert lift.value is not None and base.value is not None
@@ -305,6 +407,12 @@ def test_export_round_trips_registered_native_actual_state(analysis, con, tmp_pa
     end = analysis.experiment.end
     assert end is not None
     checkpoint = registered.capture_sequential(finalized=True, as_of=end.date())
+    assert checkpoint.records
+    checkpoint_size = len(checkpoint.model_dump_json().encode("utf-8"))
+    assert checkpoint_size > 0
+    look_allocations = [cell.alpha for cell in checkpoint.registration.roster]
+    assert look_allocations
+    assert all(0 < alpha <= checkpoint.registration.q for alpha in look_allocations)
     # The finite schedule must be declared independently of observed sample size.
     # This test transports an anytime checkpoint; finite-look state is tested
     # with fixed counts in test_readouts_plan's registered finite-look witness.
@@ -317,3 +425,187 @@ def test_export_round_trips_registered_native_actual_state(analysis, con, tmp_pa
         _lift_rows(replay.run())[0].require_sequential_result()
         == _lift_rows(registered.run())[0].require_sequential_result()
     )
+
+
+def test_duckdb_sequential_capture_streams_bounded_batches_without_closing_connection(
+    monkeypatch,
+):
+    from increment.query.sequential_capture import record_batches
+
+    connection = ibis.duckdb.connect()
+    relation = ibis.memtable([{"value": index} for index in range(4097)])
+    converted = []
+    to_duckdb_relation = connection._to_duckdb_relation
+
+    def capture(relation, *args, **kwargs):
+        converted.append(relation)
+        return to_duckdb_relation(relation, *args, **kwargs)
+
+    monkeypatch.setattr(connection, "_to_duckdb_relation", capture)
+    batches = list(record_batches(connection, relation))
+    assert len(converted) == 1
+    assert relation.columns == ("value",)
+    assert [batch.num_rows for batch in batches] == [4096, 1]
+    assert sum(batch.num_rows for batch in batches) == 4097
+    assert connection.to_pyarrow(relation).num_rows == 4097
+    connection.disconnect()
+
+
+def test_small_late_panel_and_moments_replay_preserve_semantics(tmp_path):  # noqa: PLR0915
+    """Exercise unequal allocation, an immature late cohort, and nullable CUPED input."""
+    import pyarrow as pa
+
+    from increment import AnalysisPlan, Randomized
+    from increment.estimation.readout_types import CellKey
+    from tests.readout_journeys import assert_prior_free_sampling_family
+
+    control_n, treatment_n = 72, 48
+    rows = []
+    for index in range(control_n + treatment_n):
+        group = "control" if index < control_n else "treatment"
+        arm_index = index if group == "control" else index - control_n
+        exposure = (
+            date(2025, 1, 1)
+            if arm_index < int((control_n if group == "control" else treatment_n) * 0.6)
+            else date(2025, 1, 4)
+        )
+        covariate = None if index % 11 == 0 else float(index % 7)
+        for day in range(7):
+            observed_day = date.fromordinal(exposure.toordinal() + day)
+            if observed_day > date(2025, 1, 9):
+                continue
+            rows.append(
+                {
+                    "unit_id": f"u{index:03d}",
+                    "group_id": group,
+                    "ds": observed_day,
+                    "exposure_date": exposure,
+                    "revenue": float((index % 5) + (group == "treatment")) if day == 2 else 0.0,
+                    "converted": int(day == 2 and index % (3 if group == "treatment" else 4) == 0),
+                    "pre_outcome": float(index % 9),
+                    "pre_x": covariate,
+                }
+            )
+    panel = pa.Table.from_pylist(rows)
+    design = Randomized(
+        control_group="control",
+        allocation={"control": 0.6, "treatment": 0.4},
+        allocation_scheme="independent",
+    )
+    plan = AnalysisPlan(primary="revenue", secondaries=("converted", "pre_outcome"))
+    metrics = [
+        MetricSpec(
+            name="revenue",
+            type="mean",
+            value_column="revenue",
+            window_days=7,
+            missing="zero",
+            preferred_direction="increase",
+        ),
+        MetricSpec(
+            name="converted",
+            type="conversion",
+            value_column="converted",
+            window_days=7,
+            missing="zero",
+            preferred_direction="increase",
+        ),
+        MetricSpec(
+            name="pre_outcome",
+            type="mean",
+            value_column="pre_outcome",
+            covariate="pre_x",
+            covariate_missing="impute",
+            preferred_direction="increase",
+        ),
+    ]
+    with pytest.warns(IncrementWarning) as warning_record:
+        source = Analysis.from_unit_panel(
+            panel,
+            unit="unit_id",
+            group="group_id",
+            date="ds",
+            exposure_date="exposure_date",
+            observation_end=date(2025, 1, 9),
+            design=design,
+            metrics=metrics,
+            plan=plan,
+            experiment_id="m3-late-panel",
+        )
+    imputation_warning = warning_record[0].message
+    assert isinstance(imputation_warning, IncrementWarning)
+    assert imputation_warning.code == "frame.validation.metric_covariate_missing_imputed"
+    assert imputation_warning.context["n_missing"] == 73
+    with pytest.warns(IncrementWarning) as censoring_warnings:
+        source_result = source.run()
+    assert censoring_warnings
+    for warning in censoring_warnings:
+        assert isinstance(warning.message, IncrementWarning)
+        assert warning.message.code == "frame.censoring.dropped_units"
+        assert warning.message.context["dropped"] == 49
+    assert isinstance(source_result, LiftEstimates)
+    assert_prior_free_sampling_family(source_result)
+    assert any(row.group_id == "treatment" and row.lift is not None for row in source_result)
+    path = tmp_path / "m3-late-panel.parquet"
+    source.export(path)
+    replay = Analysis.from_moments(
+        pq.read_table(path).to_pylist(),
+        design=design,
+        metrics=metrics,
+        plan=plan,
+        experiment_id="m3-late-panel",
+    )
+    replay_result = replay.run()
+    assert isinstance(replay_result, LiftEstimates)
+    assert_prior_free_sampling_family(replay_result)
+    expected = {CellKey.from_row(row): row for row in source_result}
+    observed = {CellKey.from_row(row): row for row in replay_result}
+    assert expected.keys() == observed.keys()
+    assert source_result.metadata is not None and replay_result.metadata is not None
+    for cell, expected_row in expected.items():
+        observed_row = observed[cell]
+        _assert_nested_approx_equal(
+            observed_row.model_dump(mode="json", exclude={"source_snapshot_id", "family_id"}),
+            expected_row.model_dump(mode="json", exclude={"source_snapshot_id", "family_id"}),
+        )
+        assert expected_row.source_snapshot_id is not None
+        assert observed_row.source_snapshot_id is not None
+        assert source_result.metadata.record(expected_row.source_snapshot_id, cell) is not None
+        assert replay_result.metadata.record(observed_row.source_snapshot_id, cell) is not None
+    source_health = source.health_check()
+    replay_health = replay.health_check()
+    source_srm = next(
+        check for check in source_health.checks if check.check == "assigned_allocation"
+    )
+    replay_srm = next(
+        check for check in replay_health.checks if check.check == "assigned_allocation"
+    )
+    assert source_srm.availability == replay_srm.availability == "available"
+    assert source_srm.srm is not None and replay_srm.srm == source_srm.srm
+    assert source_srm.srm.expected == {"control": 0.6, "treatment": 0.4}
+
+    # This source capability is explicitly refused: panel data has no per-unit
+    # window collapse to which CUPED can attach the pre-period covariate.
+    with pytest.raises(InvalidRequestError) as refused:
+        Analysis.from_unit_panel(
+            panel,
+            unit="unit_id",
+            group="group_id",
+            date="ds",
+            exposure_date="exposure_date",
+            design=design,
+            metrics=[
+                MetricSpec(
+                    name="revenue",
+                    type="mean",
+                    value_column="revenue",
+                    covariate="pre_x",
+                    window_days=7,
+                    preferred_direction="increase",
+                )
+            ],
+            experiment_id="m3-windowed-covariate-refusal",
+        )
+    assert refused.value.code == "frame.validation.from_unit_panel"
+    source.close()
+    replay.close()

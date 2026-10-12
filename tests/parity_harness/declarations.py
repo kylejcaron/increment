@@ -482,6 +482,26 @@ PARITY_DECLARATIONS = MappingProxyType(
                 ),
             ),
         ),
+        "audit-sequential-messy-mean-conversion": ParityDeclaration(
+            attempted=(
+                "from_definitions",
+                "from_unit_day_artifact",
+                "from_unit_summary",
+                "from_unit_panel",
+                "from_moments",
+            ),
+            waive=(
+                (
+                    "from_switchback_panel",
+                    "COMBINATION: unequal declared allocation is refused by the switchback constructor with source.frame.switchback.identification.",
+                ),
+                (
+                    "from_unit_panel",
+                    "COMBINATION: sequential panel capture refuses the CUPED metric with `window_days=None`; panel metrics require bounded windows (`sequential.route.unsupported`).",
+                ),
+            ),
+            refusals=(("from_unit_panel", "sequential.route.unsupported"),),
+        ),
         "audit-switchback-neighboring-integers": ParityDeclaration(
             attempted=("from_switchback_panel",),
             waive=(
