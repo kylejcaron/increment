@@ -675,6 +675,7 @@ def test_signed_support_rank_set_uses_correct_unbounded_endpoint_direction():
     assert result.confidence_set.additive.lower.status == "unbounded"
     text = render_readout_text(interpret_readout([result], None))
     assert "additive confidence interval: [−∞, +∞]" in text
+    assert "additive interval unavailable" not in text
 
 
 def test_absolute_scale_null_is_not_labeled_as_relative_lift():

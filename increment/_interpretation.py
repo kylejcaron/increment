@@ -587,13 +587,17 @@ def _render_effect(row):
     if getattr(row, "abs_diff", None) is not None:
         low = getattr(row, "abs_lb", None)
         high = getattr(row, "abs_ub", None)
-        if low is None or high is None:
-            lines.append(
-                f"{row.metric} additive effect: {row.abs_diff:.6g}; additive interval unavailable."
-            )
-        else:
+        typed_additive = getattr(getattr(row, "confidence_set", None), "additive", None)
+        if low is not None and high is not None:
             lines.append(
                 f"{row.metric} additive effect: {row.abs_diff:.6g}, set [{low:.6g}, {high:.6g}]."
+            )
+        elif typed_additive is not None:
+            # The typed confidence set below carries the endpoint states.
+            lines.append(f"{row.metric} additive effect: {row.abs_diff:.6g}.")
+        else:
+            lines.append(
+                f"{row.metric} additive effect: {row.abs_diff:.6g}; additive interval unavailable."
             )
 
     binomial = getattr(row, "binomial_set", None)
