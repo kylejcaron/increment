@@ -371,7 +371,7 @@ class TestAllocationPosteriorBands:
             assert band.mean == (prior_a + n_k) / (prior_a + prior_b + total)
 
     def test_bounds_match_scipy_beta_ppf(self):
-        """Bounds equal scipy.stats.beta(a, b).ppf(...) for the same (a, b)."""
+        """Bounds match the Beta posterior quantiles (using isf for the upper tail)."""
         counts = {"control": 40, "treatment": 60}
         total = sum(counts.values())
         rows = [{"ds": "2024-01-01", "group_id": g, "n_cumulative": n} for g, n in counts.items()]
@@ -384,8 +384,8 @@ class TestAllocationPosteriorBands:
             n_k = counts[band.group_id]
             a, b = 1.0 + n_k, 1.0 + (total - n_k)
             expected_lower, expected_upper = beta_dist(a, b).ppf([lo_q, hi_q])
-            assert band.lower == expected_lower
-            assert band.upper == expected_upper
+            assert band.lower == pytest.approx(expected_lower, rel=1e-12)
+            assert band.upper == pytest.approx(expected_upper, rel=1e-12)
 
     def test_upper_bound_survives_where_ppf_complement_collapses(self):
         """At credible_level=1-1e-16, 1-lower_q rounds to exactly
@@ -469,8 +469,8 @@ class TestAllocationPosteriorBands:
             dist = beta_dist(a, b)
             assert band.mean == a / (a + b)
             lo, hi = dist.ppf([0.025, 0.975])
-            assert band.lower == lo
-            assert band.upper == hi
+            assert band.lower == pytest.approx(lo, rel=1e-12)
+            assert band.upper == pytest.approx(hi, rel=1e-12)
 
     def test_duplicate_ds_group_row_refused(self):
         """Duplicated (ds, group_id) rows (a re-run day, an un-deduped
