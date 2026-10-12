@@ -1986,15 +1986,16 @@ class Analysis:
             ``arm`` names an arm that isn't enrolled; ``alpha`` is not
             strictly between 0 and 1.
         """
-        experiment = getattr(self, "_experiment", None)
         if population not in ("assigned", "triggered"):
             _refuse(_INVALID_POPULATION, population=population)
         if population == "triggered":
+            # Before any family dispatch, so every ingress reports this estimand's refusal.
             _refuse(
                 _TRIGGERED_SITEWIDE_UNSUPPORTED,
-                experiment=None if experiment is None else experiment.name,
+                experiment=self._experiment_name,
                 population=population,
             )
+        experiment = getattr(self, "_experiment", None)
         return SitewideReadouts(src=self._src, experiment=experiment).run(
             SitewideRequest(metric_name=metric_name, arm=arm, alpha=alpha)
         )

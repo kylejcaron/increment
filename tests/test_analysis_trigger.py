@@ -19,7 +19,6 @@ import pytest
 from increment import Analysis, SourceSnapshotEvidence
 from increment.errors import (
     CapabilityError,
-    CodedError,
     DefinitionError,
     IncrementWarning,
     InvalidRequestError,
@@ -1994,6 +1993,10 @@ def test_sitewide_triggered_population_refuses_before_loading_on_every_ingress()
         (_summary_analysis(), "sitewide_from_unit_summary_triggered_population_refused"),
         (_panel_analysis(), "sitewide_from_unit_panel_triggered_population_refused"),
         (_moments_analysis(), "sitewide_from_moments_triggered_population_refused"),
+        (
+            _switchback_panel_analysis(),
+            "sitewide_from_switchback_panel_triggered_population_refused",
+        ),
     )
     try:
         for analysis, outcome_id in analyses:
@@ -2027,34 +2030,16 @@ def test_triggered_sitewide_seam_keeps_source_specific_refusal():
     assert raised.value.code == "facade.analysis.operation"
 
 
-@pytest.mark.parametrize(
-    ("population", "code"),
-    [
-        ("triggered", "analysis.sitewide.triggered_population_unsupported"),
-        ("both", "facade.analysis.invalid_population"),
-    ],
-)
-def test_sitewide_population_request_refuses_on_a_source_without_population_checks(
-    population, code
-):
-    import pandas as pd
+def test_sitewide_unknown_population_refuses():
+    from tests.analysis_factory import make_analysis
 
-    analysis = Analysis.from_unit_summary(
-        pd.DataFrame(
-            {
-                "user_id": ["c1", "c2", "t1", "t2"],
-                "variant": ["control", "control", "treatment", "treatment"],
-                "revenue": [1.0, 2.0, 2.0, 3.0],
-            }
-        ),
-        unit="user_id",
-        group="variant",
-        control="control",
-        metrics={"revenue": "mean"},
-    )
-    with pytest.raises(CodedError) as raised:
-        analysis.sitewide("revenue", population=population)
-    assert raised.value.code == code
+    analysis = make_analysis()
+    try:
+        with pytest.raises(InvalidRequestError) as raised:
+            analysis.sitewide("revenue", population="both")  # ty: ignore[invalid-argument-type]
+        assert raised.value.code == "facade.analysis.invalid_population"
+    finally:
+        analysis.close()
 
 
 @pytest.mark.parametrize("population", ["assigned", "triggered"])
@@ -3549,13 +3534,6 @@ def test_quantile_experiment_with_trigger_narrows_to_the_triggered_population(tm
 )
 @pytest.mark.parametrize("operation", ("run_daily", "run_asof", "run_daily_lift", "run_asof_lift"))
 def test_triggered_day_axis_refuses_non_native_ingresses(ingress, operation):
-    from increment.semantics.assignment import (
-        IndependentBernoulliOrder,
-        SwitchbackAssignment,
-        SwitchbackWindow,
-    )
-    from increment.semantics.design import Randomized
-    from increment.semantics.unit_cycle import UnitCycleTApproximation
     from tests.analysis_factory import make_analysis
     from tests.capability_consumers_auxiliary import assert_refusal
 
@@ -3584,41 +3562,7 @@ def test_triggered_day_axis_refuses_non_native_ingresses(ingress, operation):
             control="control",
         )
     elif ingress == "from_switchback_panel":
-        source = Analysis.from_switchback_panel(
-            pa.Table.from_pylist(
-                [
-                    {
-                        "unit": unit,
-                        "cycle": cycle,
-                        "period": period,
-                        "step": step,
-                        "group": group,
-                        "value": float(cycle + period + step),
-                    }
-                    for unit, order in (
-                        ("u1", ("control", "treatment")),
-                        ("u2", ("treatment", "control")),
-                    )
-                    for cycle in range(2)
-                    for period, group in enumerate(order)
-                    for step in range(2)
-                ]
-            ),
-            unit="unit",
-            cycle="cycle",
-            period="period",
-            step="step",
-            group="group",
-            metrics={"value": "mean"},
-            identification=Randomized(
-                control_group="control", allocation={"control": 0.5, "treatment": 0.5}
-            ),
-            assignment=SwitchbackAssignment(
-                sequence=IndependentBernoulliOrder(probability_ct=0.5),
-                window=SwitchbackWindow(washout_steps=1, observation_steps=1),
-            ),
-            contrast_references={"value": UnitCycleTApproximation()},
-        )
+        source = _switchback_panel_analysis()
     else:
         source = make_analysis()
 
@@ -3633,3 +3577,49 @@ def test_triggered_day_axis_refuses_non_native_ingresses(ingress, operation):
         )
     finally:
         source.close()
+
+
+def _switchback_panel_analysis() -> Analysis:
+    from increment.semantics.assignment import (
+        IndependentBernoulliOrder,
+        SwitchbackAssignment,
+        SwitchbackWindow,
+    )
+    from increment.semantics.design import Randomized
+    from increment.semantics.unit_cycle import UnitCycleTApproximation
+
+    return Analysis.from_switchback_panel(
+        pa.Table.from_pylist(
+            [
+                {
+                    "unit": unit,
+                    "cycle": cycle,
+                    "period": period,
+                    "step": step,
+                    "group": group,
+                    "value": float(cycle + period + step),
+                }
+                for unit, order in (
+                    ("u1", ("control", "treatment")),
+                    ("u2", ("treatment", "control")),
+                )
+                for cycle in range(2)
+                for period, group in enumerate(order)
+                for step in range(2)
+            ]
+        ),
+        unit="unit",
+        cycle="cycle",
+        period="period",
+        step="step",
+        group="group",
+        metrics={"value": "mean"},
+        identification=Randomized(
+            control_group="control", allocation={"control": 0.5, "treatment": 0.5}
+        ),
+        assignment=SwitchbackAssignment(
+            sequence=IndependentBernoulliOrder(probability_ct=0.5),
+            window=SwitchbackWindow(washout_steps=1, observation_steps=1),
+        ),
+        contrast_references={"value": UnitCycleTApproximation()},
+    )

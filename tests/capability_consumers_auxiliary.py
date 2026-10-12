@@ -255,32 +255,12 @@ for _key, _operation, _evidence in _TRIGGER_READS:
                         codes=("analysis.sitewide.triggered_population_unsupported",),
                         reason="The triggered-population sitewide estimand is not offered.",
                     )
-                    for ingress in ("from_unit_summary", "from_unit_panel", "from_moments")
-                ),
-            )
-        )
-    else:
-        _TRIGGER_AUXILIARY_OUTCOMES.extend(
-            (
-                _expectation(
-                    "sitewide_triggered_population_refused",
-                    _operation,
-                    "from_definitions",
-                    "sitewide requested with population='triggered' on an experiment that declares a trigger",
-                    "refused",
-                    _evidence,
-                    codes=("analysis.sitewide.triggered_population_unsupported",),
-                    reason="The triggered-population sitewide estimand is not offered.",
-                ),
-                _expectation(
-                    "sitewide_artifact_triggered_population_refused",
-                    _operation,
-                    "from_unit_day_artifact",
-                    "sitewide requested with population='triggered' on an experiment that declares a trigger",
-                    "refused",
-                    _evidence,
-                    codes=("analysis.sitewide.triggered_population_unsupported",),
-                    reason="The triggered-population sitewide estimand is not offered.",
+                    for ingress in (
+                        "from_unit_summary",
+                        "from_unit_panel",
+                        "from_switchback_panel",
+                        "from_moments",
+                    )
                 ),
             )
         )
