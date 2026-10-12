@@ -270,7 +270,13 @@ class _LinearCupedCalculator:
             jac = np.zeros(2 * len(self.arm_order))
             jac[ti], jac[len(self.arm_order) + ti] = 1 / nt, -1 / nd
             jac[ci], jac[len(self.arm_order) + ci] = -1 / nc, 1 / cd
-            value = stable_log_ratio(nc, nt) - stable_log_ratio(cd, nd)
+            with np.errstate(over="ignore", under="ignore", divide="ignore", invalid="ignore"):
+                ratio_t = float(nt / nd)
+                ratio_c = float(nc / cd)
+            if ratio_t > 0 and ratio_c > 0 and math.isfinite(ratio_t) and math.isfinite(ratio_c):
+                value = stable_log_ratio(ratio_c, ratio_t)
+            else:
+                value = stable_log_ratio(nc, nt) - stable_log_ratio(cd, nd)
         elif scale == "absolute":
             rt, rc = nt / nd, nc / cd
             jac = np.zeros(2 * len(self.arm_order))
@@ -470,7 +476,15 @@ def fit_cuped_linear(
     )
     coordinate_offsets = (
         np.column_stack(
-            [np.asarray(offset) / scale for offset, scale in zip(offsets, scales, strict=True)]
+            [
+                np.array(
+                    [
+                        math.fsum((float(offset[a]), -float(offset[0]))) / scale
+                        for a in range(len(order))
+                    ]
+                )
+                for offset, scale in zip(offsets, scales, strict=True)
+            ]
         )
         if scales
         else np.empty((len(order), 0))
@@ -574,6 +588,14 @@ def _validate_request(
     return groups, order, indices, counts, outcomes, covariates, kinds, missing
 
 
+def _categorical_values(raw, raw_values, n):
+    if isinstance(raw, np.ndarray) and raw.dtype.kind in "US":
+        values = raw_values.astype(str) if raw_values.dtype.kind == "S" else raw_values
+        return values, np.zeros(n, bool)
+    values = np.asarray(raw, dtype=object)
+    return values, np.fromiter((is_null(value) for value in values), bool, n)
+
+
 def _encode_covariates(groups, indices, order, covariates, kinds, missing):
     n = len(groups)
     columns, column_names, transforms = [], [], []
@@ -587,8 +609,7 @@ def _encode_covariates(groups, indices, order, covariates, kinds, missing):
         if raw_values.shape != (n,):
             _fail("estimation.cuped_linear.input_shape", name=name, n=n, shape=raw_values.shape)
         if kinds[name] == "categorical":
-            values = np.asarray(raw, dtype=object)
-            null = np.fromiter((is_null(value) for value in values), bool, n)
+            values, null = _categorical_values(raw, raw_values, n)
         elif kinds[name] == "continuous" and raw_values.dtype.kind in "biuf":
             values = raw_values
             null = np.isnan(raw_values) if raw_values.dtype.kind == "f" else np.zeros(n, bool)

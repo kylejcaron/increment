@@ -1178,3 +1178,49 @@ def test_alpha_specific_interval_overflow_does_not_poison_finite_interval():
     assert projection.estimate == pytest.approx(1.79e308, rel=1e-12)
     assert projection.se == pytest.approx(1.414213562e306, rel=1e-8)
     assert projection.dof == pytest.approx(2.0)
+
+
+def test_covariate_arm_offset_difference_survives_scaling():
+    base = 2**54
+    arm = np.array(["c"] * 4 + ["t"] * 4)
+    x = np.r_[base + np.array([0.0, 4.0, 8.0, 12.0]), base + np.array([4.0, 8.0, 12.0, 16.0])]
+    y = np.array([0.0, 4.0, 8.0, 12.0, 5.0, 9.0, 13.0, 17.0])
+    fit = fit_cuped_linear(
+        y,
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+        covariates={"x": x},
+        kinds={"x": "continuous"},
+    )
+    assert fit.absolute("t").estimate == pytest.approx(1.0, abs=1e-12)
+
+
+def test_ratio_log_effect_survives_large_within_arm_ratio():
+    arm = np.array(["c", "c", "t", "t"])
+    base = 2**50
+    fit = fit_cuped_linear(
+        None,
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+        numerator=np.array([1.0, 1.0, base + 0.25, base + 0.25]),
+        denominator=np.array([1.0, 1.0, base, base]),
+    )
+    assert fit.ratio("t", scale="log").estimate == pytest.approx(
+        math.log1p(2**-52), rel=1e-12, abs=0
+    )
+
+
+def test_homogeneous_numpy_bytes_categories_remain_supported():
+    arm = np.repeat(["c", "t"], 4)
+    category = np.array([b"a", b"a", b"b", b"b"] * 2, dtype="S1")
+    fit = fit_cuped_linear(
+        np.arange(8.0),
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+        covariates={"category": category},
+        kinds={"category": "categorical"},
+    )
+    assert fit.layout.levels == (("a", "b"),)
