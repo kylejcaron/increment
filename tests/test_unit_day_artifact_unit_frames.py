@@ -381,16 +381,20 @@ def test_measure_covariate_extension_matches_native_preperiod_unit_frame(tmp_pat
         assert rows["u0"]["pre_sum"] == 11.0
         assert rows["u0"]["pre_avg_event"] == 11.0
         assert rows["u0"]["pre_avg_day"] == pytest.approx(11.0 / 30)
-        assert rows["u1"]["pre_sum"] == rows["u1"]["pre_count"] == 0.0
-        assert rows["u1"]["pre_distinct"] == rows["u1"]["pre_min"] == rows["u1"]["pre_max"] == 0.0
+        assert rows["u1"]["pre_sum"] is None
+        assert rows["u1"]["pre_count"] is None
+        assert rows["u1"]["pre_distinct"] is None
+        assert rows["u1"]["pre_min"] is None
+        assert rows["u1"]["pre_max"] is None
         assert rows["u1"]["pre_avg_event"] is None
         assert rows["u2"]["pre_sum"] == rows["u2"]["pre_avg_event"] == 0.0
         assert rows["u2"]["pre_count"] == rows["u2"]["pre_distinct"] == 1.0
         sum_extension = artifact._covariate_extension(metric.name, "pre_sum")
         extension_rows = artifact._read_extension(sum_extension)
         history = {row["unit_id"]: row for row in extension_rows}
-        assert history["u1"]["value"] == history["u2"]["value"] == 0.0
+        assert history["u1"]["value"] is None
         assert history["u1"]["has_preperiod_events"] is False
+        assert history["u2"]["value"] == 0.0
         assert history["u2"]["has_preperiod_events"] is True
     finally:
         artifact.close()

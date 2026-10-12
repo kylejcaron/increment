@@ -397,14 +397,23 @@ class ArtifactPublisher:
             if request.kind == "site_volume"
             for name in request.metric_names
         )
+        extra_sources = {
+            request.source_name for request in requested if getattr(request, "source_name", None)
+        }
+        for request in requested:
+            if request.kind != "cuped_measure_covariate":
+                continue
+            binding = self._experiment.bindings[request.metric_name]
+            covariate = next(
+                item for item in binding.covariates if item.name == request.covariate_name
+            )
+            if covariate.measure is not None:
+                measure_source, _ = _find_fact_source(self._defs, covariate.measure.fact)
+                extra_sources.add(measure_source.name)
         with (
             source._pinned_source_execution(
                 metrics=self._metrics,
-                extra_sources=tuple(
-                    request.source_name
-                    for request in requested
-                    if getattr(request, "source_name", None)
-                ),
+                extra_sources=tuple(sorted(extra_sources)),
                 uptake_facts=tuple(
                     request.uptake_name
                     for request in requested
@@ -966,8 +975,6 @@ class ArtifactPublisher:
             unit_id = str(exposure["unit_id"])
             has_preperiod_events = unit_id in values
             value = values.get(unit_id)
-            if value is None and measure.aggregation != "avg_event":
-                value = 0.0
             rows.append(
                 {
                     "experiment_id": self._experiment.name,

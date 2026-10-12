@@ -852,19 +852,23 @@ def _dimension_catalog_entries(definitions: Any, experiment: Any) -> list[Any]:
 
 def _covariate_catalog_entries(definitions: Any, experiment: Any) -> list[Any]:
     """Catalog declared observational and CUPED-linear property evidence."""
-    declarations: dict[tuple[str, str | None], Any] = {}
+    declarations: list[Any] = []
     design = getattr(experiment, "design", None)
     if design is not None and design.mechanism == "observational":
-        declarations.update(
-            ((covariate.property, covariate.source), covariate) for covariate in design.covariates
-        )
+        declarations.extend(design.covariates)
     for binding in experiment.bindings.values():
-        for covariate in binding.covariates:
-            if covariate.property is not None:
-                declarations[(covariate.property, covariate.source)] = covariate
+        declarations.extend(c for c in binding.covariates if c.property is not None)
+
     entries: list[Any] = []
-    for (property_name, source_name), declaration in declarations.items():
+    seen_sources: set[tuple[str, str]] = set()
+    for declaration in declarations:
+        property_name = declaration.property
+        source_name = declaration.source
         source = _source_for(definitions, property_name, source_name, unit=experiment.unit)
+        source_key = (property_name, source.name)
+        if source_key in seen_sources:
+            continue
+        seen_sources.add(source_key)
         prop = next(p for p in definitions.properties_of(source) if p.name == property_name)
         kind, model_name = (
             ("unit_covariate_level", "UnitCovariateLevelRequest")

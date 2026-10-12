@@ -250,6 +250,11 @@ DEFINITION_REFUSALS: dict[str, RefusalSpec] = {
     "definition.expected_iso_8601_numeric_string": RefusalSpec(
         "definition.expected_iso_8601_numeric_string", DefinitionError, _render_definition_message
     ),
+    "definition.cuped.ambiguous_covariate_source": RefusalSpec(
+        "definition.cuped.ambiguous_covariate_source",
+        DefinitionError,
+        _render_definition_message,
+    ),
     "definition.experiment.binding_margin_margin": RefusalSpec(
         "definition.experiment.binding_margin_margin", DefinitionError, _render_definition_message
     ),
@@ -3265,6 +3270,93 @@ class Definitions(CodedModel, _Base):
             index.source_properties,
             errors,
         )
+        self._check_metric_covariates(experiment, index, errors)
+
+    def _check_metric_covariates(
+        self,
+        experiment: Experiment,
+        index: _DefinitionIndex,
+        errors: list[tuple[str, str]],
+    ) -> None:
+        """Validate CUPED bindings against declared properties and facts."""
+        for binding in experiment.bindings.values():
+            for covariate in binding.covariates:
+                if covariate.measure is not None:
+                    if covariate.kind != "continuous":
+                        errors.append(
+                            (
+                                "definition.check_cuped.measure_kind",
+                                f"experiment '{experiment.name}' covariate '{covariate.name}' "
+                                "is measure-bound and must be continuous",
+                            )
+                        )
+                    fact = covariate.measure.fact
+                    source_name = index.fact_to_source.get(fact)
+                    if source_name is None:
+                        errors.append(
+                            (
+                                "definition.check_cuped.measure_fact",
+                                f"experiment '{experiment.name}' covariate '{covariate.name}' "
+                                f"references unknown measure fact '{fact}'",
+                            )
+                        )
+                    else:
+                        _check_unit_in_source_entities(
+                            experiment.name,
+                            experiment.unit,
+                            f"CUPED measure fact '{fact}'",
+                            source_name,
+                            index.source_entities,
+                            errors,
+                        )
+                        if index.fact_to_column.get(fact) is None:
+                            errors.append(
+                                (
+                                    "definition.check_cuped.measure_fact_value",
+                                    f"experiment '{experiment.name}' CUPED covariate "
+                                    f"'{covariate.name}' measure fact '{fact}' has no value "
+                                    "column for numeric aggregation",
+                                )
+                            )
+                    continue
+
+                assert covariate.property is not None
+                source_name = _resolve_property_source(
+                    experiment,
+                    covariate.property,
+                    covariate.source,
+                    label=f"CUPED covariate '{covariate.name}'",
+                    codes=_CUPED_SOURCE_CODES,
+                    source_entities=index.source_entities,
+                    source_properties=index.source_properties,
+                    errors=errors,
+                )
+                if source_name is None:
+                    continue
+                prop = index.source_properties[source_name][covariate.property]
+                if prop.as_of == "event_time":
+                    errors.append(
+                        (
+                            "definition.check_cuped.covariate_timing",
+                            f"experiment '{experiment.name}' CUPED covariate "
+                            f"'{covariate.name}' cannot use event_time property "
+                            f"'{covariate.property}'",
+                        )
+                    )
+                expected_dtype = (
+                    prop.dtype == "string"
+                    if covariate.kind == "categorical"
+                    else prop.dtype in ("int", "float", "bool")
+                )
+                if not expected_dtype:
+                    errors.append(
+                        (
+                            "definition.check_cuped.covariate_kind",
+                            f"experiment '{experiment.name}' CUPED covariate "
+                            f"'{covariate.name}' declares kind '{covariate.kind}' but "
+                            f"property '{covariate.property}' has dtype '{prop.dtype}'",
+                        )
+                    )
 
     @staticmethod
     def _validate_experiment_cluster(experiment: Experiment, errors: list[tuple[str, str]]):
@@ -3630,6 +3722,13 @@ _COVARIATE_SOURCE_CODES = _SourceResolutionCodes(
     unit_missing="definition.check_observational.covariate_unit_but",
     unresolved="definition.check_observational.covariate_could",
     ambiguous="definition.observational.ambiguous_covariate_source",
+)
+_CUPED_SOURCE_CODES = _SourceResolutionCodes(
+    unknown_source="definition.check_cuped.covariate_source",
+    property_missing="definition.check_cuped.covariate_property",
+    unit_missing="definition.check_cuped.covariate_unit",
+    unresolved="definition.check_cuped.covariate_unresolved",
+    ambiguous="definition.cuped.ambiguous_covariate_source",
 )
 
 

@@ -3606,8 +3606,12 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 for covariate in declared_covariates.values()
                 if covariate.measure is not None and covariate.name in covariates
             )
+            property_sources = tuple(
+                source.name for source, _property, _categorical in covariate_sources.values()
+            )
+            extra_sources = tuple(dict.fromkeys((*measure_sources, *property_sources)))
             with self._pinned_source_execution(
-                metrics=(metric,), extra_sources=measure_sources
+                metrics=(metric,), extra_sources=extra_sources
             ) as pinned:
                 return pinned.unit_frame(
                     metric,
@@ -3663,8 +3667,6 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 totals = totals.left_join(values, totals["unit_id"] == values[join_key]).drop(
                     join_key
                 )
-                if measure.aggregation != "avg_event":
-                    totals = totals.mutate(**{name: ibis.coalesce(totals[name], 0.0)})
             for name, (fact_source, property_name, categorical) in covariate_sources.items():
                 properties = self._build_breakout_properties_table(
                     fact_source, property_name, assigned

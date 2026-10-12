@@ -169,7 +169,15 @@ def _decode_unit_covariate(
 ) -> nw.Series[Any]:
     categorical = extension.kind == "unit_covariate_level"
     field = "level" if categorical else "value"
-    values = {str(row["unit_id"]): row[field] for row in rows}
+    values = {
+        str(row["unit_id"]): (
+            row[field]
+            if not isinstance(extension, CupedMeasureCovariateExtension)
+            or row["has_preperiod_events"]
+            else None
+        )
+        for row in rows
+    }
     return nw.new_series(
         name,
         [values.get(unit) for unit in unit_ids],

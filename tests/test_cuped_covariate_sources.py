@@ -24,6 +24,27 @@ def _with_metric_covariates(path, binding: str, *, n_pre_periods: int = 0):
     return path
 
 
+def test_definition_rejects_covariate_kind_mismatch_before_acquisition(tmp_path):
+    import pytest
+
+    from increment.errors import DefinitionError
+
+    defs_path, _connection, _units = categorical_defs_and_con(tmp_path)
+    _with_metric_covariates(
+        defs_path,
+        "{name: region_number, kind: continuous, property: region, source: events}",
+    )
+
+    with pytest.raises(DefinitionError) as raised:
+        load(defs_path)
+
+    assert raised.value.code == "definition.invalid"
+    assert any(
+        code == "definition.check_cuped.covariate_kind"
+        for code, _message in cast(Any, raised.value.context["errors"])
+    )
+
+
 def test_native_definition_covariate_property_acquisition_preserves_category_and_null(tmp_path):
     defs_path, con, units = categorical_defs_and_con(tmp_path, null_units=("u3",))
     _with_metric_covariates(
@@ -62,13 +83,16 @@ def test_native_measure_covariate_is_scoped_before_assignment(tmp_path):
     rows = {row["unit_id"]: row["pre_revenue"] for row in table.to_pylist()}
 
     assert rows["u0"] == 11.0
-    assert rows["u1"] == 0.0
+    assert rows["u1"] is None
 
 
 def test_raw_unit_frame_pins_separate_measure_fact_source(tmp_path):
     import datetime as dt
 
     import pyarrow as pa
+
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
 
     defs_path, con, units = categorical_defs_and_con(tmp_path)
     con.create_table(
@@ -79,10 +103,10 @@ def test_raw_unit_frame_pins_separate_measure_fact_source(tmp_path):
                     "user_id": unit,
                     "ts": dt.datetime(2025, 7, 20, 10, 0),
                     "event": "history_value",
-                    "value": float(i + 1),
+                    "value": 0.0 if i == 0 else 2.0,
                 }
-                for i, unit in enumerate(units)
-            ],
+                for i, unit in enumerate(list(units)[:2])
+            ]
         ),
     )
     text = defs_path.read_text().replace(
@@ -101,7 +125,8 @@ def test_raw_unit_frame_pins_separate_measure_fact_source(tmp_path):
         "{name: pre_value, kind: continuous, measure: {fact: history_value, aggregation: sum}}",
         n_pre_periods=30,
     )
-    source = _moment_source(Analysis.from_definitions("cat_test", defs_path, con))
+    analysis = Analysis.from_definitions("cat_test", defs_path, con)
+    source = _moment_source(analysis)
     metric = source.context.metrics[0]
     rows = (
         nw.from_native(
@@ -112,9 +137,144 @@ def test_raw_unit_frame_pins_separate_measure_fact_source(tmp_path):
         .to_pylist()
     )
     values = {row["unit_id"]: row["pre_value"] for row in rows}
-
-    assert values["u0"] == 1.0
+    assert values["u0"] == 0.0
     assert values["u1"] == 2.0
+    assert values["u2"] is None
+
+    definitions = load(defs_path)
+    experiment = definitions.experiment("cat_test")
+    assert experiment is not None
+    context = artifact_context(definitions, experiment, "error")
+    store = WarehouseArtifactStore(con, schema_name="artifacts")
+    reference = analysis.publish_unit_day_artifact(store)
+    restored = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    artifact = _moment_source(restored)
+    artifact_values = {
+        row["unit_id"]: row["pre_value"]
+        for row in nw.from_native(
+            artifact.unit_frame(metric, covariates=["pre_value"]), eager_only=True
+        )
+        .to_arrow()
+        .to_pylist()
+    }
+    assert artifact_values == values
+
+
+def test_raw_unit_frame_pins_separate_property_source(tmp_path):
+    defs_path, con, units = categorical_defs_and_con(tmp_path)
+    text = defs_path.read_text().replace(
+        "exposures:\n",
+        "  - name: profiles\n"
+        "    sql: SELECT * FROM cat_events\n"
+        "    timestamp_column: ts\n"
+        "    entities: [user_id]\n"
+        "    facts:\n"
+        "      - {name: profile_event, column: null}\n"
+        "    properties:\n"
+        "      - {name: region, column: region, dtype: string, as_of: pre_exposure}\n"
+        "exposures:\n",
+    )
+    defs_path.write_text(text)
+    _with_metric_covariates(
+        defs_path,
+        "{name: pre_region, kind: categorical, property: region, source: profiles}",
+    )
+    source = _moment_source(Analysis.from_definitions("cat_test", defs_path, con))
+    metric = source.context.metrics[0]
+    rows = (
+        nw.from_native(
+            cast(Any, source).unit_frame(metric, covariates=["pre_region"], outcome_stage="raw"),
+            eager_only=True,
+        )
+        .to_arrow()
+        .to_pylist()
+    )
+
+    assert {row["unit_id"] for row in rows} == set(units)
+    assert {row["unit_id"]: row["pre_region"] for row in rows} == {
+        unit: truth["region"] for unit, truth in units.items()
+    }
+
+
+def test_multiple_primary_artifact_binding_resolves_property_alias(tmp_path):
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+
+    defs_path, con, _units = categorical_defs_and_con(tmp_path)
+    text = (
+        defs_path.read_text()
+        .replace(
+            "metrics:\n",
+            "metrics:\n"
+            "  - name: revenue_other\n"
+            "    type: mean\n"
+            "    entity: user_id\n"
+            "    fact: purchase\n"
+            "    aggregation: sum\n"
+            "    window_days: 7\n",
+        )
+        .replace(
+            "    plan: {primary: revenue}",
+            "    plan: {primary: [{metric: revenue, covariates: "
+            "[{name: pre_region, kind: categorical, property: region, source: events}]}, "
+            "revenue_other]}",
+        )
+    )
+    defs_path.write_text(text)
+    definitions = load(defs_path)
+    experiment = definitions.experiment("cat_test")
+    assert experiment is not None
+    context = artifact_context(definitions, experiment, "error")
+    analysis = Analysis.from_definitions("cat_test", defs_path, con)
+    store = WarehouseArtifactStore(con, schema_name="artifacts")
+    reference = analysis.publish_unit_day_artifact(store)
+    restored = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    source = _moment_source(restored)
+
+    rows = (
+        nw.from_native(
+            source.unit_frame(source.context.metrics[0], covariates=["pre_region"]),
+            eager_only=True,
+        )
+        .to_arrow()
+        .to_pylist()
+    )
+
+    assert rows
+
+
+def test_artifact_deduplicates_omitted_and_explicit_resolved_source(tmp_path):
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+    from tests.covariate_cases import covariate_defs_and_con
+
+    defs_path, con, tenure, *_ = covariate_defs_and_con(tmp_path, observational=True)
+    defs_path.write_text(
+        defs_path.read_text().replace(
+            "    plan: {secondaries: [revenue]}",
+            "    plan: {primary: {metric: revenue, covariates: "
+            "[{name: pre_tenure, kind: continuous, property: tenure}]}}",
+        )
+    )
+    definitions = load(defs_path)
+    experiment = definitions.experiment("cov_test")
+    assert experiment is not None
+    context = artifact_context(definitions, experiment, "error")
+    analysis = Analysis.from_definitions("cov_test", defs_path, con)
+    store = WarehouseArtifactStore(con, schema_name="artifacts")
+    reference = analysis.publish_unit_day_artifact(store)
+    restored = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    source = _moment_source(restored)
+    rows = (
+        nw.from_native(
+            source.unit_frame(source.context.metrics[0], covariates=["pre_tenure"]),
+            eager_only=True,
+        )
+        .to_arrow()
+        .to_pylist()
+    )
+
+    assert {row["unit_id"]: row["pre_tenure"] for row in rows} == tenure
 
 
 def test_property_extensions_roundtrip_from_native_to_artifact(tmp_path):

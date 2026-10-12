@@ -1324,13 +1324,14 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         source_name = None
         context = json.loads(self._manifest.context.canonical_json)
         plan = context.get("experiment", {}).get("plan", {})
-        entries = [plan.get("primary")]
+        primary = plan.get("primary")
+        entries = list(primary) if isinstance(primary, list) else [primary]
         entries.extend(plan.get("secondaries") or ())
         entries.extend(plan.get("guardrails") or ())
         for entry in entries:
             if not isinstance(entry, dict) or entry.get("metric") != metric_name:
                 continue
-            for covariate in entry.get("covariates", ()):
+            for covariate in cast(Sequence[Any], entry.get("covariates", ())):
                 if covariate.get("name") == name and covariate.get("property") is not None:
                     property_name = covariate["property"]
                     source_name = covariate.get("source")
