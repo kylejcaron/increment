@@ -2264,7 +2264,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             )
             if self._experiment.end is None or any(
                 getattr(component, "window_days", None) is not None
-                or getattr(component, "aggregation", None) != "sum"
+                or (
+                    getattr(component, "type", None) != "conversion"
+                    and getattr(component, "aggregation", None) != "sum"
+                )
                 for component in components
             ):
                 _refuse_operation(
@@ -2277,7 +2280,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     offered={"calendar_window": "unwindowed sum"},
                     route="declare an unwindowed sum metric and experiment end aligned to the calendar window",
                 )
-        self._note_reduction()
+        if population == "assigned":
+            self._note_reduction()
         exposures = self._get_exposures()
         if population == "triggered":
             members = self._get_trigger_population(operation="sitewide_evidence")
@@ -2295,23 +2299,31 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         uptake_events, uptake_window_days = self._resolve_uptake(
             cluster, operation="sitewide_evidence"
         )
-        _panel, spine, stats, _events, den_events, fact_tbl, value_col, data_as_of = (
-            self._build_panel_for_metric(exposures, metric, use_cache=False)
-        )
-        summary, _pre_stats, _den_stats, _totals = self._build_metric_summary(
-            metric,
-            exposures,
-            spine,
-            stats,
-            den_events,
-            fact_tbl,
-            value_col,
-            data_as_of,
-            cluster=cluster,
-            uptake_events=uptake_events,
-            uptake_window_days=uptake_window_days,
-            warn_on_censoring=True,
-        )
+        original_experiment = self._experiment
+        if population == "triggered":
+            self._experiment = self._experiment.model_copy(
+                update={"observation_end": self._experiment.end}
+            )
+        try:
+            _panel, spine, stats, _events, den_events, fact_tbl, value_col, data_as_of = (
+                self._build_panel_for_metric(exposures, metric, use_cache=False)
+            )
+            summary, _pre_stats, _den_stats, _totals = self._build_metric_summary(
+                metric,
+                exposures,
+                spine,
+                stats,
+                den_events,
+                fact_tbl,
+                value_col,
+                data_as_of,
+                cluster=cluster,
+                uptake_events=uptake_events,
+                uptake_window_days=uptake_window_days,
+                warn_on_censoring=True,
+            )
+        finally:
+            self._experiment = original_experiment
         from increment.estimation.engine import _df_to_arms
 
         row = self._site_volume_row(metric)
@@ -2321,10 +2333,9 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         count_rows = self._con.to_pyarrow(
             all_exposures.group_by("group_id").aggregate(n_units=all_exposures.unit_id.nunique())
         ).to_pylist()
-        arm_ids = {item.group_id for item in arm_stats}
         for count_row in count_rows:
             group_id = count_row["group_id"]
-            if group_id is not None and str(group_id) in arm_ids:
+            if group_id is not None:
                 assigned_counts[str(group_id)] = int(count_row["n_units"])
         population_counts: dict[str, int] = {}
         population_count_rows = self._con.to_pyarrow(
@@ -2360,7 +2371,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             window=(
                 None
                 if self._experiment.end is None
-                else (self._experiment.start.date(), self._experiment.end.date())
+                else (
+                    self._experiment.start_day,
+                    self._experiment.end_day or self._experiment.start_day,
+                )
             ),
             membership_cutoff=(
                 None

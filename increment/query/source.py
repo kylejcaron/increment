@@ -1805,7 +1805,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             trigger_anchors={str(row["unit_id"]): row["first_trigger_ts"] for row in rows},
         )
 
-    def sitewide_evidence(
+    def sitewide_evidence(  # noqa: PLR0915
         self,
         metric: Metric,
         *,
@@ -1878,7 +1878,10 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             )
             if any(
                 getattr(component, "window_days", None) is not None
-                or getattr(component, "aggregation", None) != "sum"
+                or (
+                    getattr(component, "type", None) != "conversion"
+                    and getattr(component, "aggregation", None) != "sum"
+                )
                 for component in components
             ):
                 raise ArtifactContractError(
@@ -1893,7 +1896,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                         "trigger_name": self._artifact_experiment.trigger,
                     }
                 )
-                self._extension(
+                count_extension = self._extension(
                     {"kind": "assignment_counts", "populations": ("assigned", "triggered")}
                 )
             except ArtifactContractError as exc:
@@ -1904,11 +1907,14 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                         "route": "republish with trigger_population and assignment_counts extensions"
                     },
                 ) from exc
+            count_rows = self._read_extension(
+                count_extension, request=_artifact_request(count_extension)
+            )
             membership_cutoff = trigger_extension.observation_cutoff_ts
             if (
                 self._artifact_experiment.end is None
-                or extension.first_ds != self._artifact_experiment.start.date()
-                or extension.last_ds != self._artifact_experiment.end.date()
+                or extension.first_ds != self._artifact_experiment.start_day
+                or extension.last_ds != self._artifact_experiment.end_day
             ):
                 raise ArtifactContractError(
                     "artifact.extension.invalid",
@@ -1918,11 +1924,20 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                     },
                 )
             trigger_rows = self._trigger_population_rows(operation="sitewide_evidence")
+            self._validate_trigger_population_counts(count_rows, trigger_rows)
             member_ids = frozenset(str(row["unit_id"]) for row in trigger_rows)
             population_counts = dict(
                 Counter(group_by_unit[unit] for unit in member_ids if unit in group_by_unit)
             )
-            moment_rows = super()._reduce(metric, "total", population_units=member_ids)
+            calendar_experiment = self._artifact_experiment.model_copy(
+                update={"observation_end": self._artifact_experiment.end}
+            )
+            original_experiment = self._artifact_experiment
+            self._artifact_experiment = calendar_experiment
+            try:
+                moment_rows = super()._reduce(metric, "total", population_units=member_ids)
+            finally:
+                self._artifact_experiment = original_experiment
         else:
             population_counts = assigned_counts.copy()
             moment_rows = self.moments(metric)
@@ -1953,13 +1968,12 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             cluster=self.context.cluster,
             cluster_counts=cluster_counts,
             unit_counts=unit_counts,
-            analysis_population=population,
             window=(
                 None
                 if self._artifact_experiment.end is None
                 else (
-                    self._artifact_experiment.start.date(),
-                    self._artifact_experiment.end.date(),
+                    self._artifact_experiment.start_day,
+                    self._artifact_experiment.end_day or self._artifact_experiment.start_day,
                 )
             ),
             membership_cutoff=membership_cutoff,
