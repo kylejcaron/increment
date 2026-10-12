@@ -31,6 +31,7 @@ from increment.estimation.engine import Method, estimate_lift
 from increment.estimation.variance import (
     RATIO_DENOMINATOR_SKEW_THRESHOLD,
     ratio_denominator_mean_skewness,
+    ratio_denominator_precision,
 )
 from increment.frame import MetricSpec
 from increment.semantics.models import Measure, RatioMetric
@@ -227,6 +228,23 @@ def test_rows_without_the_third_moment_say_the_check_is_unavailable():
     with pytest.raises(Exception) as refused:
         control.skew_den()
     assert refused.value.code == "estimation.armstats.arm_stats.skew_den_needs_cden3"  # ty: ignore[unresolved-attribute]
+
+
+def test_subnormal_denominator_second_moment_is_reported_unavailable():
+    control = moment_arm("control", n=50, y_bar=2.0, var_y=1.0, d_bar=4.0, var_d=1.0)
+    treatment = moment_arm("treatment", n=50, y_bar=2.2, var_y=1.0, d_bar=4.0, var_d=1.0)
+    control = control.model_copy(update={"cden1": 0.0, "cden2": 1e-322, "cden3": 0.0})
+    treatment = treatment.model_copy(update={"cden1": 0.0, "cden2": 1e-322, "cden3": 0.0})
+
+    assert control.skew_den_unavailable() == "underflow"
+    assert ratio_denominator_precision(control) > 0.0
+    assert control.moments.skewness("den", what="test") == 0.0
+    (row,), record = _estimate(control, treatment)
+
+    assert warning_codes(record) == []
+    assert row.note is not None
+    assert "ratio_denominator_skew: unavailable" in row.note
+    assert "underflow" in row.note
 
 
 def _ratio_arm_with_covariate(group_id: str, rng: np.random.Generator, n: int) -> ArmStats:

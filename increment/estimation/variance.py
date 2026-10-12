@@ -240,8 +240,11 @@ def ratio_denominator_precision(arm: ArmStats) -> float:
     :func:`ratio_moments`' domain (positive means, ``n >= 2``); float
     division overflow yields ``inf`` rather than raising.
     """
-    _, d_bar, _, var_d, _ = ratio_moments(arm)
-    return math.sqrt(var_d / arm.n) / d_bar
+    _, d_bar, _, _, _ = ratio_moments(arm)
+    second = arm.moments._mean_centered_second(
+        "den", what=f"ratio_denominator_precision for {arm._label()}"
+    )
+    return math.sqrt(second) / math.sqrt(arm.n) / math.sqrt(arm.n - 1) / d_bar
 
 
 #: Standardized skewness of a denominator MEAN, ``g1 / sqrt(n)``, from which the

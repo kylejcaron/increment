@@ -526,16 +526,22 @@ class CenteredMoments:
         second, third = self._mean_centered_sums(variable, what=what)
         if second == 0.0:
             return 0.0
-        return (third / second) / math.sqrt(second / self.n)
+        return (third / second) / (math.sqrt(second) / math.sqrt(self.n))
+
+    def _mean_centered_second(self, variable: Var, *, what: str) -> float:
+        """Second sum of deviations from the exact mean; does not require ``c3``."""
+        c2 = self.c2[(variable, variable, None)]
+        c1 = self.c1[(variable, None)]
+        if c2 < 0.0:
+            _raise("estimation.armstats.arm_stats.centered_sum_squares", what=what, c2=c2)
+        return max(c2 - scaled_cross_over_n(c1, c1, self.n), 0.0)
 
     def _mean_centered_sums(self, variable: Var, *, what: str) -> tuple[float, float]:
         """``(S2, S3)``: the second and third sums of deviations from the exact mean."""
         c3 = self.c3[(variable, None)]
         c2 = self.c2[(variable, variable, None)]
         c1 = self.c1[(variable, None)]
-        if c2 < 0.0:
-            _raise("estimation.armstats.arm_stats.centered_sum_squares", what=what, c2=c2)
-        second = max(c2 - scaled_cross_over_n(c1, c1, self.n), 0.0)
+        second = self._mean_centered_second(variable, what=what)
         e = c1 / self.n
         third = c3 - 3.0 * e * c2 + 2.0 * self.n * e * e * e
         return second, third
@@ -1428,6 +1434,8 @@ class ArmStats(CodedModel, BaseModel):
             second, _ = self.moments._mean_centered_sums(
                 "den", what=f"skew_den for {self._label()}"
             )
+            # A positive S2/Sn that underflows to zero is still correctly below
+            # this positive variance-scale threshold.
             if second > 0.0 and second / self.n < _THIRD_MOMENT_UNDERFLOW_VARIANCE:
                 return "underflow"
         if not third_moment_feasible(self.cden3, self.cden2, self.cden1, self.n):
