@@ -121,9 +121,11 @@ def test_missing_arm_does_not_suppress_warning_for_the_other_arm():
     assert "control" in row.note
 
 
-def test_symmetric_denominator_at_ordinary_scale_is_checked():
-    control = moment_arm("control", n=2000, y_bar=2.0, var_y=1.0, d_bar=1.0, var_d=1.0)
-    treatment = moment_arm("treatment", n=2000, y_bar=2.2, var_y=1.0, d_bar=1.0, var_d=1.0)
+@pytest.mark.parametrize("scale", [1.0, 1e120])
+def test_symmetric_denominator_outside_underflow_range_is_checked(scale):
+    den = {"d_bar": scale, "var_d": scale * scale}
+    control = moment_arm("control", n=2000, y_bar=2.0, var_y=1.0, **den)
+    treatment = moment_arm("treatment", n=2000, y_bar=2.2, var_y=1.0, **den)
     assert control.cden3 == 0.0
     assert control.skew_den_unavailable() is None
     assert control.skew_den() == 0.0

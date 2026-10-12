@@ -105,9 +105,10 @@ _register_warning(
 
 
 _EPS = sys.float_info.epsilon
-#: Residual scale cubed below which a zero third moment may be underflow:
-#: products this small lose all precision before reaching the subnormal range.
-_THIRD_MOMENT_UNDERFLOW_SCALE = sys.float_info.min / _EPS
+#: Residual variance below which a zero third moment may be underflow: its
+#: cube, ``(float_min / eps)``, loses all precision before the subnormal range.
+#: Compared on the variance scale so large denominators cannot overflow.
+_THIRD_MOMENT_UNDERFLOW_VARIANCE = (sys.float_info.min / _EPS) ** (2.0 / 3.0)
 
 
 def _exact_centered(sum_ab: float, sum_a: float, sum_b: float, n: int) -> tuple[float, float]:
@@ -1427,7 +1428,7 @@ class ArmStats(CodedModel, BaseModel):
             second, _ = self.moments._mean_centered_sums(
                 "den", what=f"skew_den for {self._label()}"
             )
-            if second > 0.0 and (second / self.n) ** 1.5 < _THIRD_MOMENT_UNDERFLOW_SCALE:
+            if second > 0.0 and second / self.n < _THIRD_MOMENT_UNDERFLOW_VARIANCE:
                 return "underflow"
         if not third_moment_feasible(self.cden3, self.cden2, self.cden1, self.n):
             return "inconsistent"
