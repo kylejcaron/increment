@@ -706,6 +706,11 @@ def test_sitewide_serves_a_clustered_multi_arm_experiment(tmp_path):
     assert impact.other_arm_ids == ("treatment",)
     assert impact.absolute_impact == pytest.approx(flat_impact.absolute_impact, rel=1e-9)
     assert impact.absolute_impact_se > flat_impact.absolute_impact_se
+    # Every enrolled arm is scaled; the cluster-grain population is a
+    # normalized float but still reports the same whole-unit count.
+    assert impact.scaled_units == flat_impact.scaled_units == round(flat_impact.n_enrolled)
+    assert flat_impact.scaled_units > flat_impact.n_control + flat_impact.n_treatment
+    assert impact.unobserved_members == flat_impact.unobserved_members == 0
     assert impact.n_clusters == 3 * N_STORES
     # 2-arm pairwise (control vs treatment_b), not the 3-arm pooled dof
     # (3 * N_STORES - 2): sum-metric absolute impact never reads the

@@ -157,11 +157,11 @@ class SitewideReadouts:
             if population == "triggered"
             else ("enrolled_units_exhaust_exposure",)
         )
-        selected_members = sum(
-            population_counts.get(group_id, 0)
-            for group_id in (evidence.control_group, result.treatment_group)
-        )
-        scaled_units = int(result.n_control + result.n_treatment)
+        # Every enrolled arm is scaled (n_enrolled); cluster-grain populations are
+        # normalized floats, so round before reporting a unit count.
+        contributing = (evidence.control_group, result.treatment_group, *result.other_arm_ids)
+        selected_members = sum(population_counts.get(group_id, 0) for group_id in contributing)
+        scaled_units = round(result.n_enrolled)
         return result.model_copy(
             update={
                 "analysis_population": population,
