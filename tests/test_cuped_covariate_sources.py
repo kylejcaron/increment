@@ -121,7 +121,7 @@ def test_property_extensions_roundtrip_from_native_to_artifact(tmp_path):
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
 
-    defs_path, con, _units = categorical_defs_and_con(tmp_path, null_units=("u3",))
+    defs_path, con, units = categorical_defs_and_con(tmp_path, null_units=("u3",))
     _with_metric_covariates(
         defs_path,
         "{name: pre_region, kind: categorical, property: region, source: events}",
@@ -150,6 +150,9 @@ def test_property_extensions_roundtrip_from_native_to_artifact(tmp_path):
     )
 
     assert artifact_rows == native_rows
+    assert {row["unit_id"]: row["pre_region"] for row in artifact_rows} == {
+        unit: truth["region"] for unit, truth in units.items()
+    }
 
 
 def test_artifact_keeps_same_property_from_distinct_sources(tmp_path):
