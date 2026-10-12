@@ -1505,6 +1505,7 @@ _AUXILIARY_ROWS: tuple[EntryRow, ...] = (
         (
             ("unit summary", "sitewide_from_unit_summary_triggered_population_refused"),
             ("unit panel", "sitewide_from_unit_panel_triggered_population_refused"),
+            ("switchback panel", "sitewide_from_switchback_panel_triggered_population_refused"),
             ("portable moments", "sitewide_from_moments_triggered_population_refused"),
         ),
     ),
