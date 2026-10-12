@@ -3309,15 +3309,13 @@ class Definitions(CodedModel, _Base):
                             index.source_entities,
                             errors,
                         )
-                        if index.fact_to_column.get(fact) is None:
-                            errors.append(
-                                (
-                                    "definition.check_cuped.measure_fact_value",
-                                    f"experiment '{experiment.name}' CUPED covariate "
-                                    f"'{covariate.name}' measure fact '{fact}' has no value "
-                                    "column for numeric aggregation",
-                                )
-                            )
+                        self._check_value_aggregation(
+                            f"experiment '{experiment.name}' CUPED covariate '{covariate.name}'",
+                            fact,
+                            covariate.measure.aggregation,
+                            index.fact_to_column,
+                            errors,
+                        )
                     continue
 
                 assert covariate.property is not None

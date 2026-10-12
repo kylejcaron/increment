@@ -78,7 +78,7 @@ def test_native_measure_covariate_is_scoped_before_assignment(tmp_path):
     source = _moment_source(Analysis.from_definitions("cat_test", defs_path, con))
     metric = source.context.metrics[0]
     table = nw.from_native(
-        source.unit_frame(metric, covariates=["pre_revenue"]), eager_only=True
+        cast(Any, source).unit_frame(metric, covariates=["pre_revenue"], outcome_stage="raw"),
     ).to_arrow()
     rows = {row["unit_id"]: row["pre_revenue"] for row in table.to_pylist()}
 
@@ -158,6 +158,48 @@ def test_raw_unit_frame_pins_separate_measure_fact_source(tmp_path):
         .to_pylist()
     }
     assert artifact_values == values
+
+
+def test_occurrence_only_count_measure_acquires_native_and_artifact(tmp_path):
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+
+    defs_path, con, units = categorical_defs_and_con(tmp_path)
+    _with_metric_covariates(
+        defs_path,
+        "{name: pre_visits, kind: continuous, measure: {fact: exposure, aggregation: count}}",
+        n_pre_periods=30,
+    )
+    definitions = load(defs_path)
+    experiment = definitions.experiment("cat_test")
+    assert experiment is not None
+    context = artifact_context(definitions, experiment, "error")
+    analysis = Analysis.from_definitions("cat_test", defs_path, con)
+    native = _moment_source(analysis)
+    metric = native.context.metrics[0]
+    native_values = {
+        row["unit_id"]: row["pre_visits"]
+        for row in nw.from_native(
+            cast(Any, native).unit_frame(metric, covariates=["pre_visits"], outcome_stage="raw"),
+            eager_only=True,
+        )
+        .to_arrow()
+        .to_pylist()
+    }
+    store = WarehouseArtifactStore(con, schema_name="artifacts")
+    reference = analysis.publish_unit_day_artifact(store)
+    restored = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    artifact = _moment_source(restored)
+    artifact_values = {
+        row["unit_id"]: row["pre_visits"]
+        for row in nw.from_native(
+            artifact.unit_frame(metric, covariates=["pre_visits"]), eager_only=True
+        )
+        .to_arrow()
+        .to_pylist()
+    }
+
+    assert native_values == artifact_values == dict.fromkeys(units, 1.0)
 
 
 def test_raw_unit_frame_pins_separate_property_source(tmp_path):
@@ -320,7 +362,7 @@ def test_artifact_keeps_same_property_from_distinct_sources(tmp_path):
     from increment.query.session import WarehouseArtifactStore
     from tests.covariate_cases import covariate_defs_and_con
 
-    defs_path, con, *_ = covariate_defs_and_con(tmp_path, observational=True)
+    defs_path, con, tenure, *_ = covariate_defs_and_con(tmp_path, observational=True)
     text = (
         defs_path.read_text()
         .replace(
@@ -359,6 +401,83 @@ def test_artifact_keeps_same_property_from_distinct_sources(tmp_path):
     }
 
     assert source_names == {"events", "events_b"}
+    rows = (
+        nw.from_native(
+            artifact.unit_frame(artifact.context.metrics[0], covariates=["tenure", "pre_tenure"]),
+            eager_only=True,
+        )
+        .to_arrow()
+        .to_pylist()
+    )
+    assert {row["unit_id"]: row["tenure"] for row in rows} == tenure
+    assert {row["unit_id"]: row["pre_tenure"] for row in rows} == tenure
+
+
+def test_measure_and_property_covariate_names_are_scoped_by_metric(tmp_path):
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+
+    defs_path, con, units = categorical_defs_and_con(tmp_path)
+    con.raw_sql("ALTER TABLE cat_events ADD COLUMN prior DOUBLE")
+    con.raw_sql("UPDATE cat_events SET prior = tenure")
+    text = (
+        defs_path.read_text()
+        .replace(
+            "metrics:\n",
+            "metrics:\n"
+            "  - name: revenue_other\n"
+            "    type: mean\n"
+            "    entity: user_id\n"
+            "    fact: purchase\n"
+            "    aggregation: sum\n"
+            "    window_days: 7\n",
+        )
+        .replace(
+            "      - {name: tenure, column: tenure, dtype: float, as_of: pre_exposure}\n",
+            "      - {name: tenure, column: tenure, dtype: float, as_of: pre_exposure}\n"
+            "      - {name: prior, column: prior, dtype: float, as_of: pre_exposure}\n",
+        )
+        .replace(
+            "    plan: {primary: revenue}",
+            "    n_pre_periods: 30\n"
+            "    plan: {primary: [{metric: revenue, covariates: "
+            "[{name: prior, kind: continuous, measure: {fact: purchase, aggregation: sum}}]}, "
+            "{metric: revenue_other, covariates: "
+            "[{name: prior, kind: continuous, property: prior, source: events}]}]}",
+        )
+    )
+    defs_path.write_text(text)
+    definitions = load(defs_path)
+    experiment = definitions.experiment("cat_test")
+    assert experiment is not None
+    context = artifact_context(definitions, experiment, "error")
+    analysis = Analysis.from_definitions("cat_test", defs_path, con)
+    store = WarehouseArtifactStore(con, schema_name="artifacts")
+    reference = analysis.publish_unit_day_artifact(store)
+    restored = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    source = cast(Any, _moment_source(restored))
+
+    measured = (
+        nw.from_native(
+            source.unit_frame(source.context.metrics[0], covariates=["prior"]),
+            eager_only=True,
+        )
+        .to_arrow()
+        .to_pylist()
+    )
+    property_bound = (
+        nw.from_native(
+            source.unit_frame(source.context.metrics[1], covariates=["prior"]),
+            eager_only=True,
+        )
+        .to_arrow()
+        .to_pylist()
+    )
+
+    assert measured
+    assert {row["unit_id"]: row["prior"] for row in property_bound} == {
+        unit: truth["tenure"] for unit, truth in units.items()
+    }
 
 
 def test_cuped_linear_run_refuses_as_unfinished_before_acquisition(tmp_path):

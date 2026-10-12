@@ -1322,8 +1322,10 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
     def _covariate_extension(self, metric_name: str, name: str) -> Any:
         property_name = name
         source_name = None
+        measure_bound = False
         context = json.loads(self._manifest.context.canonical_json)
-        plan = context.get("experiment", {}).get("plan", {})
+        experiment_context = context.get("experiment", {})
+        plan = experiment_context.get("plan", {})
         primary = plan.get("primary")
         entries = list(primary) if isinstance(primary, list) else [primary]
         entries.extend(plan.get("secondaries") or ())
@@ -1332,18 +1334,31 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             if not isinstance(entry, dict) or entry.get("metric") != metric_name:
                 continue
             for covariate in cast(Sequence[Any], entry.get("covariates", ())):
-                if covariate.get("name") == name and covariate.get("property") is not None:
+                if covariate.get("name") != name:
+                    continue
+                if covariate.get("property") is not None:
                     property_name = covariate["property"]
+                    source_name = covariate.get("source")
+                elif covariate.get("measure") is not None:
+                    measure_bound = True
+                break
+
+        if not measure_bound and source_name is None:
+            design = experiment_context.get("design") or {}
+            for covariate in design.get("covariates", ()):
+                if covariate.get("property") == property_name:
                     source_name = covariate.get("source")
                     break
 
-        matches: list[Any] = [
-            extension
-            for extension in self._manifest.extensions
-            if isinstance(extension, (UnitCovariateExtension, UnitCovariateLevelExtension))
-            and extension.covariate_name == property_name
-            and (source_name is None or extension.source_name == source_name)
-        ]
+        matches: list[Any] = []
+        if not measure_bound:
+            matches.extend(
+                extension
+                for extension in self._manifest.extensions
+                if isinstance(extension, (UnitCovariateExtension, UnitCovariateLevelExtension))
+                and extension.covariate_name == property_name
+                and (source_name is None or extension.source_name == source_name)
+            )
         matches.extend(
             extension
             for extension in self._manifest.extensions
