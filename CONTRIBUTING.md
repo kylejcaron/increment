@@ -420,10 +420,13 @@ The
 on manual dispatch: full slow/examples suites at locked dependencies and
 floors on all three Python versions, four scientific-union shards on Python
 3.12, and all three warehouse backends. Fast, full and scientific jobs retain
-test evidence, including per-test timings, for 30 days. Live warehouse timings stay
-in the job logs, where GitHub masks secrets; raw cloud tracebacks are not
-uploaded as artifacts. Weekly failures create or update a GitHub issue
-labelled `weekly-failure`.
+test evidence, including per-test timings, for 30 days. The full-suite jobs
+allow 90 minutes: prior completed jobs needed up to 55 minutes of pytest time,
+with roughly one minute for session startup and dependency setup, so the limit
+leaves about 34 minutes of margin without adding shard/configuration overhead.
+Live warehouse timings stay in the job logs, where GitHub masks secrets; raw
+cloud tracebacks are not uploaded as artifacts. Weekly failures create or
+update a GitHub issue labelled `weekly-failure`.
 
 Tests run in parallel and must not depend on execution order or state created
 by another test. Mark functional slow tests with `slow`; simulation-based

@@ -23,6 +23,41 @@ _EXPENSIVE_TIMEOUT_SECONDS = 300
 _WAREHOUSE_TIMEOUT_SECONDS = 300
 _WAREHOUSE_MARKERS = ("warehouse_postgres", "warehouse_snowflake", "warehouse_bigquery")
 _DURATION_SNAPSHOT: tuple[tuple[str, float], ...] | None = None
+_PYTEST_ENVIRONMENT_SNAPSHOT = pytest.StashKey[dict[str, str]]()
+
+
+def _pytest_environment_controls() -> dict[str, str]:
+    prefixes = ("COV_CORE_", "COVERAGE_", "INCREMENT_TESTMON_LOCK_")
+    controls = {"PYTEST_DISABLE_PLUGIN_AUTOLOAD", "PYTEST_PLUGINS", "PYTEST_ADDOPTS"}
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name in controls or name.startswith(prefixes)
+    }
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """Snapshot subprocess controls before any fixture of any item type runs."""
+    item.stash[_PYTEST_ENVIRONMENT_SNAPSHOT] = _pytest_environment_controls()
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> None:
+    """Fail a test that leaves a nested-run control changed after its teardown."""
+    before = item.stash.get(_PYTEST_ENVIRONMENT_SNAPSHOT, None)
+    if before is None:
+        return
+    after = _pytest_environment_controls()
+    changed = sorted(
+        name for name in before.keys() | after.keys() if before.get(name) != after.get(name)
+    )
+    if changed:
+        name = changed[0]
+        pytest.fail(
+            f"test leaked environment variable {name}={after.get(name)!r}",
+            pytrace=False,
+        )
 
 
 def _load_duration_snapshot(root: Path) -> tuple[tuple[str, float], ...]:

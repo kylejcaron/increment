@@ -1371,6 +1371,34 @@ def _scope_day_axis_rows(
     )
 
 
+def _order_day_axis_rows(rows: list[Any], req: DayAxisRequest) -> list[Any]:
+    """Give every day-axis collection a source-independent identity order."""
+    if len(rows) < 2:
+        return rows
+    day_order = _day_axis_label_order(row.ds for row in rows)
+    days = sorted(
+        day_order,
+        key=lambda value: (type(value).__qualname__, day_order[value]),
+    )
+    day_rank = {day: rank for rank, day in enumerate(days)}
+    metric_rank = {metric.name: rank for rank, metric in enumerate(req.metrics)}
+    return sorted(
+        rows,
+        key=lambda row: (
+            day_rank[row.ds],
+            metric_rank.get(row.metric, len(metric_rank)),
+            row.group_id,
+            getattr(row, "method", None) or "",
+            getattr(row, "method_role", None) or "",
+            getattr(row, "estimand", ""),
+            getattr(row, "dimension", None) or "",
+            type(getattr(row, "dimension_value", None)).__qualname__,
+            repr(getattr(row, "dimension_value", None)),
+            getattr(row, "source", None) or "",
+        ),
+    )
+
+
 class DayAxisReadouts:
     """Evidence acquisition and lift/values computation shared by the four
     day-axis entry points.
@@ -1479,7 +1507,7 @@ class DayAxisReadouts:
             row.model_copy(update={"analysis_population": req.population}) for row in results
         ]
         return _scope_day_axis_rows(
-            results,
+            _order_day_axis_rows(results, req),
             req,
             source=self._src,
             route=route,
@@ -1530,7 +1558,7 @@ class DayAxisReadouts:
                 _population=req.population,
             )
             return _scope_day_axis_rows(
-                daily_sequential_projection(rows, correction=correction),
+                _order_day_axis_rows(daily_sequential_projection(rows, correction=correction), req),
                 req,
                 source=self._src,
                 route=route,
@@ -1676,7 +1704,10 @@ class DayAxisReadouts:
         ]
 
         return _scope_day_axis_rows(
-            stamp_multiplicity_status(results, correction=correction),
+            _order_day_axis_rows(
+                stamp_multiplicity_status(results, correction=correction),
+                req,
+            ),
             req,
             source=self._src,
             route=route,

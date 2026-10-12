@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from scripts.run_test_tier import _clean_pytest_environment
+
 pytestmark = pytest.mark.integration
 
 
@@ -21,7 +23,7 @@ def _collect_and_run(tmp_path: Path, source: str) -> subprocess.CompletedProcess
     project = Path(__file__).resolve().parents[1]
     (tmp_path / "conftest.py").write_text((project / "conftest.py").read_text())
     (tmp_path / "test_consumer.py").write_text(source)
-    environment = {key: value for key, value in os.environ.items() if not key.startswith("PYTEST_")}
+    environment = _clean_pytest_environment(os.environ)
     environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     environment["GITHUB_ACTIONS"] = "true"
     environment["PYTHONPATH"] = str(project)

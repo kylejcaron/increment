@@ -470,9 +470,12 @@ seven tails every cell stays within tolerance; the worst excess over each tail's
 0.50 / +0.34 / +0.40 / +0.48 / +0.53 / +0.63 / +0.67 at the 0.1 / 0.05 / 0.025 / 0.01 / 0.005 /
 0.001 / 0.0005 tails. The production pipeline on 57,601, 30,400 and 62,400 seeded draws at the
 0.1, 0.05 and 0.025 tails agrees with the exact value within four Monte Carlo standard errors;
-that check was not run below the 0.025 tail. The calibration-only vectorised interval agreed
-with `estimate_lift` within `2.1e-14` (relative), and the interpolated Student quantile agreed
-with `t.isf` within `1.7e-15`, on the measured `conformance` cells. These empirical comparisons
+that check was not run below the 0.025 tail. The calibration-only vectorised interval uses
+the runtime's `student_t_isf` for both direct quantiles and the interpolation nodes, rather
+than a separate `scipy.stats.t.isf` inversion. On the measured `conformance` cells with
+Python 3.14 and SciPy 1.16.3, it agreed with `estimate_lift` within `2.0e-14` (relative),
+and the interpolated Student quantile agreed with the runtime quantile within `2.6e-15`.
+The conformance bounds remain `1e-9` and `1e-12`, respectively. These empirical comparisons
 are not numerical certificates; planning and exact enumeration use the runtime calculation
 directly. A bounded grid is evidence at those cells, not coverage for every data-generating
 process.

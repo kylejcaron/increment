@@ -87,9 +87,9 @@ from typing import TYPE_CHECKING, Literal, NoReturn, cast, get_args, get_type_hi
 import numpy as np
 from scipy.stats import binom as _binom
 from scipy.stats import norm as _norm
-from scipy.stats import t as _student_t
 
 from increment.errors import CodedError, raiser, refusals
+from increment.estimation._tails import student_t_isf
 from increment.estimation.conversion_route import dense_min_count, routed_share
 from tests.estimation._conversion_counts import lift_row, runtime_rejection_rate
 from tests.mc import (
@@ -213,9 +213,9 @@ def _lattice(n: int, p: float) -> tuple[np.ndarray, np.ndarray]:
 
 
 #: Degree-of-freedom floor and node count of the Chebyshev interpolation in ``1 / df`` that
-#: stands in for a per-point ``t`` quantile in the vectorised measurements below (they decide
-#: no rejection); above the floor the interpolant agrees with ``t.isf`` to
-#: ``CRITICAL_AGREEMENT`` over a lattice's narrow range.
+#: stands in for the runtime's per-point Student quantile in the vectorised measurements below
+#: (they decide no rejection); above the floor the interpolant agrees with the runtime's
+#: ``student_t_isf`` to ``CRITICAL_AGREEMENT`` over a lattice's narrow range.
 INTERPOLATION_DF_FLOOR = 30.0
 INTERPOLATION_NODES = 24
 CRITICAL_AGREEMENT = 1e-12
@@ -240,16 +240,23 @@ def delta_statistic(
     return log_rr, se, df
 
 
+def _direct_critical_values(df: np.ndarray, tail: float) -> np.ndarray:
+    """The runtime's scalar Student quantile at each degree of freedom."""
+    return np.fromiter(
+        (student_t_isf(tail, float(dof)) for dof in df.flat), dtype=float, count=df.size
+    ).reshape(df.shape)
+
+
 def critical_values(df: np.ndarray, tail: float) -> np.ndarray:
-    """Student ``t`` upper-tail critical values at ``df``."""
+    """Student ``t`` upper-tail critical values using the runtime's quantile computation."""
     finite = df[np.isfinite(df)]
     if finite.size < _INTERPOLATION_MIN_POINTS or finite.min() < INTERPOLATION_DF_FLOOR:
-        return _student_t.isf(tail, df)
+        return _direct_critical_values(df, tail)
     lo, hi = 1.0 / finite.max(), 1.0 / finite.min()
     nodes = np.cos(np.pi * (np.arange(INTERPOLATION_NODES) + 0.5) / INTERPOLATION_NODES)
     inverse = 0.5 * (lo + hi) + 0.5 * (hi - lo) * nodes
     coefficients = np.polynomial.chebyshev.chebfit(
-        nodes, _student_t.isf(tail, 1.0 / inverse), INTERPOLATION_NODES - 1
+        nodes, _direct_critical_values(1.0 / inverse, tail), INTERPOLATION_NODES - 1
     )
     with np.errstate(all="ignore"):
         position = (1.0 / df - 0.5 * (lo + hi)) * (2.0 / (hi - lo)) if hi > lo else 0.0 * df
@@ -727,7 +734,8 @@ def conformance(samples: int = 200, seed: int = 20261004) -> tuple[float, int, f
     """``(gap, compared, interpolation_gap)``: the largest relative gap between
     ``delta_log_bounds`` and the delta-method row ``estimate_lift`` returns over ``compared``
     sampled count pairs the rule routes asymptotic at their tail, and the largest relative gap
-    between the interpolated and the direct ``t`` quantile over sampled degrees of freedom."""
+    between the interpolated and the runtime's direct Student quantile over sampled degrees of
+    freedom."""
     rng = np.random.default_rng(seed)
     worst, compared = 0.0, 0
     for _ in range(samples):
@@ -754,7 +762,11 @@ def conformance(samples: int = 200, seed: int = 20261004) -> tuple[float, int, f
             df = rng.uniform(df_lo, df_hi, size=5000)
             interpolation = max(
                 interpolation,
-                float(np.max(np.abs(critical_values(df, tail) / _student_t.isf(tail, df) - 1.0))),
+                float(
+                    np.max(
+                        np.abs(critical_values(df, tail) / _direct_critical_values(df, tail) - 1.0)
+                    )
+                ),
             )
     return worst, compared, interpolation
 

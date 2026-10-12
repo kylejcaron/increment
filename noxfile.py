@@ -158,14 +158,17 @@ def tests_full(session: nox.Session) -> None:
     covered exact-mass and capacity cases remain in this matrix.
     """
     _sync(session, "dev", extras=("demo", "tables", "dashboard"))
+    # Explicit session arguments replace the default selection, as in the floor session.
+    tier = "all-except-scientific"
+    if session.posargs and Path(session.posargs[0].split("::", 1)[0]).is_file():
+        tier = "focused"
     _run_test_tier(
         session,
-        "all-except-scientific",
-        "-q",
-        *PYTEST_ARGS,
-        "--evidence-root",
-        ".test-evidence",
+        tier,
+        *(session.posargs or ("-q", *PYTEST_ARGS, "--evidence-root", ".test-evidence")),
     )
+    if session.posargs:
+        return
     # Retain the numerical cases previously covered by this matrix.
     selector = (
         "tests/estimation/test_conversion_route_calibration.py::"

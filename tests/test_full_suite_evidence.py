@@ -14,6 +14,8 @@ from typing import Any, cast
 
 import pytest
 
+from scripts.run_test_tier import _clean_pytest_environment
+
 pytestmark = [pytest.mark.slow, pytest.mark.xdist_group("test_runner_subprocesses")]
 
 
@@ -58,7 +60,7 @@ def test_failed_parallel_run_retains_evidence_without_overwriting_previous_run(t
     )
     evidence = tmp_path / "evidence"
     environment = {
-        **os.environ,
+        **_clean_pytest_environment(os.environ),
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         "PYTHONPATH": str(project),
     }
@@ -177,7 +179,7 @@ def test_runtime_diagnostics_retain_parallel_failure_and_relative_reference(tmp_
         "--runtime-diagnostics",
     ]
     environment = {
-        **os.environ,
+        **_clean_pytest_environment(os.environ),
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         "PYTHONPATH": str(project),
     }
@@ -265,7 +267,11 @@ def test_runtime_diagnostics_is_opt_in(tmp_path, enabled):
     outcome = subprocess.run(
         command,
         cwd=sample,
-        env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTHONPATH": str(project)},
+        env={
+            **_clean_pytest_environment(os.environ),
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            "PYTHONPATH": str(project),
+        },
         capture_output=True,
         text=True,
         timeout=20,
@@ -325,7 +331,11 @@ def test_runtime_diagnostics_retain_pytest_timeout_progress_and_samples(tmp_path
             "--runtime-diagnostics",
         ],
         cwd=sample,
-        env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTHONPATH": str(project)},
+        env={
+            **_clean_pytest_environment(os.environ),
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            "PYTHONPATH": str(project),
+        },
         capture_output=True,
         text=True,
         timeout=15,
@@ -406,7 +416,7 @@ def test_outer_deadline_retains_failure_and_interrupted_test(tmp_path):
         command,
         cwd=sample,
         env={
-            **os.environ,
+            **_clean_pytest_environment(os.environ),
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
             "PYTHONPATH": str(project),
             "READY": str(ready),
@@ -509,7 +519,7 @@ def test_runner_finalizes_owned_unfinished_evidence(tmp_path, wrapped, terminati
             *command,
         ],
         cwd=project,
-        env={**os.environ, "EVIDENCE": str(evidence)},
+        env={**_clean_pytest_environment(os.environ), "EVIDENCE": str(evidence)},
         capture_output=True,
         text=True,
         # The child must start and write its run file inside the budget, so the budget
@@ -558,7 +568,7 @@ def test_child_exit_124_is_not_a_supervisor_timeout(tmp_path, budget_seconds, wr
             *command,
         ],
         cwd=project,
-        env={**os.environ, "EVIDENCE": str(evidence)},
+        env={**_clean_pytest_environment(os.environ), "EVIDENCE": str(evidence)},
         capture_output=True,
         text=True,
         timeout=60,

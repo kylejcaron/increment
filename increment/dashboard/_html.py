@@ -999,7 +999,7 @@ def _colour_discoveries_only(table: ct.CoefTable) -> None:
     frame = pd.DataFrame(table.data)
     if "_exploratory" not in frame.columns:
         return
-    marked = frame["_exploratory"].fillna(False).astype(bool)
+    marked = frame["_exploratory"].astype("boolean").fillna(False).astype(bool)
     neutral = frozenset(int(i) for i in frame.index[marked & ~frame["stat_sig"].astype(bool)])
     if not neutral:
         return

@@ -17,7 +17,7 @@ jobs:
   test-all:
     name: full suite (locked dependencies, slow + examples, ${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -41,7 +41,7 @@ jobs:
   test-all-floor:
     name: full suite at dependency floors (${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:

@@ -2040,17 +2040,16 @@ def _m3_assert_switchback_refusal(summary: pd.DataFrame, design: Randomized) -> 
 
 
 def _m3_print_measurements(sql: list[str], first: Any, second: Any, sizes: list[int]) -> None:
-    from sqlglot import exp, parse_one
+    from sqlglot.dialects import Dialect
 
+    tokenizer = Dialect.get_or_raise("duckdb")
     query_shapes = []
     for query in sql:
-        root = parse_one(query, read="duckdb")
-        selects = list(root.find_all(exp.Select))
-        joins = sum(len(select.args.get("joins") or ()) for select in selects)
+        tokens = tokenizer.tokenize(query)
         query_shapes.append(
-            f"{type(root).__name__}:selects={len(selects)}:"
-            f"projections={len(root.expressions)}:joins={joins}:"
-            f"group_by={int(bool(root.args.get('group')))}"
+            f"selects={sum(token.token_type.name == 'SELECT' for token in tokens)}:"
+            f"joins={sum(token.token_type.name == 'JOIN' for token in tokens)}:"
+            f"group_by={sum(token.token_type.name == 'GROUP_BY' for token in tokens)}"
         )
     assert sql and first.records and second.records
     print(

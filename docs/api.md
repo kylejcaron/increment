@@ -275,6 +275,10 @@ cohorts at their first trigger. Both are available on native definitions-backed
 analyses; non-native, artifact, and clustered sources refuse with a coded
 `CapabilityError`.
 
+The day-axis collections returned by `run_daily`, `run_daily_lift`, `run_asof`, and
+`run_asof_lift` are ordered chronologically by day, then by requested metric and a stable row
+identity order. The order is independent of backend row order.
+
 `Analysis.available_metrics` lists the saved per-unit metrics on the experiment's unit that the
 experiment does not declare, in definitions order; report-only `total`/`active` metrics and other
 entities' metrics are not offered. `run`, `run_breakout`, `run_asof_lift`, `run_asof` and `run_daily` accept
