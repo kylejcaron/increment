@@ -170,9 +170,7 @@ triggered_reference = triggered_analysis.publish_unit_day_artifact(
 incomplete_reference = triggered_analysis.publish_unit_day_artifact(
     triggered_store,
     extensions=[
-        entry.request
-        for entry in triggered_catalog
-        if entry.request.kind == "site_volume"
+        entry.request for entry in triggered_catalog if entry.request.kind == "site_volume"
     ],
 )
 incomplete_artifact = Analysis.from_unit_day_artifact(
