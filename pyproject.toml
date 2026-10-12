@@ -36,7 +36,7 @@ dependencies = [
     "pyyaml>=6.0.3; python_version >= '3.14'",
     "numpy>=1.26",
     "scipy>=1.14",
-    "sqlglot>=27.24.2,<30.18",
+    "sqlglot>=27.24.2,<30.22",
     "narwhals>=2.24",
     # Arrow 23.0.1 is the security floor; 25.0.0 crashes after its loading thread exits.
     # Exclude the broken release rather than changing process-wide allocators.
