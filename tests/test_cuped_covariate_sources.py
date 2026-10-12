@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 import narwhals as nw
 
 from increment.analysis import Analysis
@@ -26,14 +28,14 @@ def test_native_definition_covariate_property_acquisition_preserves_category_and
     defs_path, con, units = categorical_defs_and_con(tmp_path, null_units=("u3",))
     _with_metric_covariates(
         defs_path,
-        "{name: region, kind: categorical, property: region, source: events}",
+        "{name: pre_region, kind: categorical, property: region, source: events}",
     )
     source = _moment_source(Analysis.from_definitions("cat_test", defs_path, con))
     metric = source.context.metrics[0]
     table = nw.from_native(
-        source.unit_frame(metric, covariates=["region"]), eager_only=True
+        source.unit_frame(metric, covariates=["pre_region"]), eager_only=True
     ).to_arrow()
-    rows = {row["unit_id"]: row["region"] for row in table.to_pylist()}
+    rows = {row["unit_id"]: row["pre_region"] for row in table.to_pylist()}
 
     assert rows["u3"] is None
     assert rows["u0"] == units["u0"]["region"]
@@ -70,7 +72,7 @@ def test_property_extensions_roundtrip_from_native_to_artifact(tmp_path):
     defs_path, con, _units = categorical_defs_and_con(tmp_path, null_units=("u3",))
     _with_metric_covariates(
         defs_path,
-        "{name: region, kind: categorical, property: region, source: events}",
+        "{name: pre_region, kind: categorical, property: region, source: events}",
     )
     definitions = load(defs_path)
     experiment = definitions.experiment("cat_test")
@@ -85,12 +87,12 @@ def test_property_extensions_roundtrip_from_native_to_artifact(tmp_path):
     metric = native.context.metrics[0]
 
     native_rows = (
-        nw.from_native(native.unit_frame(metric, covariates=["region"]), eager_only=True)
+        nw.from_native(native.unit_frame(metric, covariates=["pre_region"]), eager_only=True)
         .to_arrow()
         .to_pylist()
     )
     artifact_rows = (
-        nw.from_native(artifact.unit_frame(metric, covariates=["region"]), eager_only=True)
+        nw.from_native(artifact.unit_frame(metric, covariates=["pre_region"]), eager_only=True)
         .to_arrow()
         .to_pylist()
     )
@@ -119,3 +121,140 @@ def test_cuped_linear_run_refuses_as_unfinished_before_acquisition(tmp_path):
         analysis.run()
 
     assert raised.value.code == "estimation.engine.cuped_linear_unfinished"
+
+
+def test_from_moments_refuses_cuped_linear_with_unit_source_route():
+    import pytest
+
+    from increment.errors import UnsupportedRequestError
+    from increment.estimation.engine import Method
+    from increment.frame import CupedCovariate, MetricSpec
+
+    spec = MetricSpec(
+        name="revenue",
+        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
+        covariates=(CupedCovariate(name="prior_spend", kind="continuous"),),
+    )
+    with pytest.raises(UnsupportedRequestError) as raised:
+        Analysis.from_moments([], metrics=[spec], control="control")
+
+    assert raised.value.code == "facade.analysis_config.cuped_linear_moments"
+    import copy
+    import pickle
+
+    for restored in (copy.deepcopy(raised.value), pickle.loads(pickle.dumps(raised.value))):
+        assert restored.code == raised.value.code
+        assert restored.context == raised.value.context
+
+
+def test_switchback_refuses_cuped_linear_with_independent_unit_route():
+    import pytest
+
+    from increment.errors import CapabilityError
+    from increment.estimation.engine import Method
+    from increment.frame import CupedCovariate, MetricSpec
+    from increment.semantics.assignment import (
+        IndependentBernoulliOrder,
+        SwitchbackAssignment,
+        SwitchbackWindow,
+    )
+    from increment.semantics.design import Randomized
+
+    spec = MetricSpec(
+        name="revenue",
+        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
+        covariates=(CupedCovariate(name="prior_spend", kind="continuous"),),
+    )
+    with pytest.raises(CapabilityError) as raised:
+        Analysis.from_switchback_panel(
+            object(),  # ty: ignore[invalid-argument-type]
+            unit="unit",
+            cycle="cycle",
+            period="period",
+            step="step",
+            group="group",
+            metrics=[spec],
+            identification=Randomized(
+                control_group="control",
+                allocation={"control": 0.5, "treatment": 0.5},
+            ),
+            assignment=SwitchbackAssignment(
+                sequence=IndependentBernoulliOrder(probability_ct=0.5),
+                window=SwitchbackWindow(washout_steps=0, observation_steps=1),
+            ),
+        )
+
+    assert raised.value.code == "source.frame.switchback.metric"
+
+
+def test_triggered_covariates_remain_anchored_to_assignment(tmp_path):
+    import datetime as dt
+
+    import ibis
+    import pyarrow as pa
+
+    from increment import SourceSnapshotEvidence
+    from tests.test_analysis_trigger import _defs_yaml, _events, _with_preassignment_region
+
+    defs_path = tmp_path / "triggered_covariates.yaml"
+    defs = (
+        _defs_yaml()
+        .replace(
+            "      - name: saw_surface\n        column: null",
+            "      - name: saw_surface\n        column: null\n    properties:\n"
+            "      - {name: region, column: region, dtype: string, as_of: pre_exposure}",
+        )
+        .replace(
+            "    plan:\n      secondaries: [revenue]",
+            "    plan: {primary: {metric: revenue, covariates: "
+            "[{name: region, kind: categorical, property: region, source: events}]}}",
+        )
+    )
+    defs_path.write_text(defs)
+    rows = _with_preassignment_region(_events(n_per_arm=20, trigger_rate=0.5)).to_pylist()
+    for row in rows:
+        if row["event"] == "saw_surface":
+            row["ts"] = dt.datetime(2024, 1, 10)
+    late_profiles = [
+        {
+            **row,
+            "ts": dt.datetime(2024, 1, 8),
+            "event": "profile",
+            "region": "post_assignment",
+        }
+        for row in rows
+        if row["event"] == "profile"
+    ]
+    rows.extend(late_profiles)
+    con = ibis.duckdb.connect()
+    con.create_table("events", obj=pa.Table.from_pylist(rows))
+    analysis = Analysis.from_definitions(
+        "exp",
+        defs_path,
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            dt.datetime(2024, 1, 31, tzinfo=dt.UTC),
+            {"events": dt.datetime(2024, 1, 31, tzinfo=dt.UTC)},
+        ),
+    )
+    try:
+        source = _moment_source(analysis)
+        metric = source.context.metrics[0]
+        rows_by_unit = {
+            row["unit_id"]: row["region"]
+            for row in nw.from_native(
+                cast(Any, source).unit_frame(metric, covariates=["region"], population="triggered"),
+                eager_only=True,
+            )
+            .to_arrow()
+            .to_pylist()
+        }
+        assert rows_by_unit
+        assert set(rows_by_unit.values()) <= {"north", "south"}
+        assert all(
+            region == ("north" if int(unit[1:]) % 2 else "south")
+            for unit, region in rows_by_unit.items()
+        )
+    finally:
+        analysis.close()
+        con.disconnect()

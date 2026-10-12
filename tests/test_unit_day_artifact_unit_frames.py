@@ -151,6 +151,20 @@ def test_published_unit_frames_keep_outcomes_and_censor_through_snapshot(
         assert "y_den" not in actual.columns
 
 
+def test_missing_cuped_covariate_extension_refuses_with_republish_route(published_units):
+    from increment.errors import CodedError
+
+    _native, artifact = published_units
+    metric = artifact.context.metrics[0]
+    with pytest.raises(CodedError) as raised:
+        artifact.unit_frame(metric, covariates=["pre_revenue"])
+
+    assert raised.value.code == "artifact.extension.missing"
+    assert raised.value.context["route"] == (
+        "republish the artifact from the definitions that declare this CUPED covariate"
+    )
+
+
 @pytest.mark.parametrize("grain", ["daily", "asof"])
 @pytest.mark.parametrize("operation", ["plain", "dimension", "cuped", "dimensioned", "breakout"])
 def test_clustered_non_total_refuses_before_extension_resolution(published_units, grain, operation):
@@ -296,3 +310,89 @@ def test_plain_reader_unit_frame_memory_does_not_grow_with_the_day_axis(tmp_path
             reader.close()
             native.close()
             connection.disconnect()
+
+
+def test_measure_covariate_extension_matches_native_preperiod_unit_frame(tmp_path):
+    from increment.query.session import WarehouseArtifactStore
+    from tests.covariate_cases import categorical_defs_and_con
+    from tests.test_cuped_covariate_sources import _with_metric_covariates
+
+    definitions_path, connection, _units = categorical_defs_and_con(tmp_path)
+    connection.raw_sql(
+        "INSERT INTO cat_events (user_id, ts, event, experiment_id, group_id, revenue, "
+        "tenure, region) VALUES "
+        "('u0', TIMESTAMP '2025-07-20 10:00:00', 'purchase', NULL, NULL, 11.0, NULL, NULL), "
+        "('u0', TIMESTAMP '2025-08-01 09:01:00', 'purchase', NULL, NULL, 99.0, NULL, NULL), "
+        "('u2', TIMESTAMP '2025-07-20 10:00:00', 'purchase', NULL, NULL, 0.0, NULL, NULL)"
+    )
+    bindings = ", ".join(
+        f"{{name: pre_{name}, kind: continuous, measure: {{fact: purchase, aggregation: {aggregation}}}}}"
+        for name, aggregation in (
+            ("sum", "sum"),
+            ("count", "count"),
+            ("distinct", "count_distinct"),
+            ("avg_event", "avg_event"),
+            ("avg_day", "avg_calendar_day"),
+            ("min", "min"),
+            ("max", "max"),
+        )
+    )
+    _with_metric_covariates(definitions_path, bindings, n_pre_periods=30)
+    covariate_names = [
+        "pre_sum",
+        "pre_count",
+        "pre_distinct",
+        "pre_avg_event",
+        "pre_avg_day",
+        "pre_min",
+        "pre_max",
+    ]
+    definitions = load(definitions_path)
+    experiment = definitions.experiment("cat_test")
+    assert experiment is not None
+    context = artifact_context(definitions, experiment, "error")
+    store = WarehouseArtifactStore(connection, schema_name="artifacts")
+    native_analysis = Analysis.from_definitions("cat_test", definitions_path, connection)
+    reference = native_analysis.publish_unit_day_artifact(store)
+    artifact = open_artifact(store, reference, expected_context=context)
+    native = _native_source(native_analysis)
+    metric = native.context.metrics[0]
+    try:
+        native_rows = (
+            nw.from_native(
+                native.unit_frame(metric, covariates=covariate_names),
+                eager_only=True,
+            )
+            .to_arrow()
+            .to_pylist()
+        )
+        artifact_rows = (
+            nw.from_native(
+                artifact.unit_frame(metric, covariates=covariate_names),
+                eager_only=True,
+            )
+            .to_arrow()
+            .to_pylist()
+        )
+        assert sorted(artifact_rows, key=lambda row: row["unit_id"]) == sorted(
+            native_rows, key=lambda row: row["unit_id"]
+        )
+        rows = {row["unit_id"]: row for row in artifact_rows}
+        assert rows["u0"]["pre_sum"] == 11.0
+        assert rows["u0"]["pre_avg_event"] == 11.0
+        assert rows["u0"]["pre_avg_day"] == pytest.approx(11.0 / 30)
+        assert rows["u1"]["pre_sum"] == rows["u1"]["pre_count"] == 0.0
+        assert rows["u1"]["pre_distinct"] == rows["u1"]["pre_min"] == rows["u1"]["pre_max"] == 0.0
+        assert rows["u1"]["pre_avg_event"] is None
+        assert rows["u2"]["pre_sum"] == rows["u2"]["pre_avg_event"] == 0.0
+        assert rows["u2"]["pre_count"] == rows["u2"]["pre_distinct"] == 1.0
+        sum_extension = artifact._covariate_extension(metric.name, "pre_sum")
+        extension_rows = artifact._read_extension(sum_extension)
+        history = {row["unit_id"]: row for row in extension_rows}
+        assert history["u1"]["value"] == history["u2"]["value"] == 0.0
+        assert history["u1"]["has_preperiod_events"] is False
+        assert history["u2"]["has_preperiod_events"] is True
+    finally:
+        artifact.close()
+        native_analysis.close()
+        connection.disconnect()

@@ -4407,3 +4407,91 @@ def test_ratio_all_null_component_keeps_zero_filled_units(absent: str) -> None:
         assert {row["n"] for row in moments} == {1}
         assert {_sum_y(row) for row in moments} == {0.0 if absent == "num" else 3.0}
         assert {_sum_den(row) for row in moments} == {0.0 if absent == "den" else 3.0}
+
+
+def test_panel_unit_frame_preserves_declared_categorical_covariate_and_null() -> None:
+    from increment.frame import CupedCovariate
+
+    frame = pa.Table.from_pylist(
+        [
+            {
+                "unit": "c1",
+                "group": "control",
+                "day": "2025-01-01",
+                "revenue": 1.0,
+                "region": "north",
+            },
+            {
+                "unit": "c1",
+                "group": "control",
+                "day": "2025-01-02",
+                "revenue": 2.0,
+                "region": "north",
+            },
+            {"unit": "c2", "group": "control", "day": "2025-01-01", "revenue": 3.0, "region": None},
+            {"unit": "c2", "group": "control", "day": "2025-01-02", "revenue": 4.0, "region": None},
+            {
+                "unit": "t1",
+                "group": "treatment",
+                "day": "2025-01-01",
+                "revenue": 5.0,
+                "region": "south",
+            },
+            {
+                "unit": "t1",
+                "group": "treatment",
+                "day": "2025-01-02",
+                "revenue": 6.0,
+                "region": "south",
+            },
+            {
+                "unit": "t2",
+                "group": "treatment",
+                "day": "2025-01-01",
+                "revenue": 7.0,
+                "region": "east",
+            },
+            {
+                "unit": "t2",
+                "group": "treatment",
+                "day": "2025-01-02",
+                "revenue": 8.0,
+                "region": "east",
+            },
+        ]
+    )
+    frame = frame.append_column("prior", pa.array([10.0, 10.0, None, None, 30.0, 30.0, None, None]))
+    source = from_unit_panel(
+        frame,
+        unit="unit",
+        group="group",
+        date="day",
+        control="control",
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                covariates=(
+                    CupedCovariate(name="region", kind="categorical"),
+                    CupedCovariate(name="prior", kind="continuous", missing="impute-indicator"),
+                ),
+            )
+        ],
+        design=_DESIGN,
+    )
+
+    rows = nw.from_native(
+        source.unit_frame(_metric(source, "revenue"), covariates=["region", "prior"]),
+    ).to_dict(as_series=False)
+
+    assert dict(zip(rows["unit_id"], rows["region"], strict=True)) == {
+        "c1": "north",
+        "c2": None,
+        "t1": "south",
+        "t2": "east",
+    }
+    assert dict(zip(rows["unit_id"], rows["prior"], strict=True)) == {
+        "c1": 10.0,
+        "c2": None,
+        "t1": 30.0,
+        "t2": None,
+    }

@@ -29,6 +29,37 @@ def test_semantic_cuped_covariate_types_and_method_are_constructible():
     )
 
 
+@pytest.mark.parametrize(
+    "aggregation",
+    ["sum", "count", "count_distinct", "avg_event", "avg_calendar_day", "min", "max"],
+)
+def test_measure_covariates_accept_numeric_measure_aggregations(aggregation):
+    binding = CupedCovariateBinding(
+        name="pre_value",
+        kind="continuous",
+        measure=Measure.model_validate({"fact": "purchase", "aggregation": aggregation}),
+    )
+
+    assert binding.measure is not None
+    assert binding.measure.aggregation == aggregation
+
+
+def test_direct_lift_estimator_refuses_unwired_cuped_linear():
+    from increment.errors import UnsupportedRequestError
+    from increment.estimation.engine import Method, estimate_lift
+    from increment.semantics.models import MeanMetric
+
+    with pytest.raises(UnsupportedRequestError) as raised:
+        estimate_lift(
+            [MeanMetric(name="revenue", entity="user", fact="revenue")],
+            [],
+            "control",
+            methods=[Method(name="linear", variance_reduction="cuped_linear")],
+        )
+
+    assert raised.value.code == "estimation.engine.cuped_linear_unfinished"
+
+
 def test_definition_covariate_requires_exactly_one_binding():
     with pytest.raises(DefinitionError) as raised:
         CupedCovariateBinding(name="x", kind="continuous")

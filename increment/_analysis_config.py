@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, NoReturn, cast
 
 from increment.errors import (
     InvalidRequestError,
@@ -285,6 +285,11 @@ def select_exploratory_metrics(
             available_names=[metric.name for metric in available],
         )
     return [by_name[name] for name in names]
+
+
+def refuse_cuped_linear_moments(metric: str) -> NoReturn:
+    """Refuse per-unit covariates at the aggregate-moments ingress."""
+    _raise("facade.analysis_config.cuped_linear_moments", metric=metric)
 
 
 def resolve_configs(

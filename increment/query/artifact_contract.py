@@ -177,6 +177,7 @@ _EXTENSION_KIND_RANK: Mapping[str, int] = MappingProxyType(
         "site_volume": 8,
         "unit_covariate": 9,
         "unit_covariate_level": 10,
+        "cuped_measure_covariate": 11,
     }
 )
 
@@ -851,19 +852,18 @@ def _dimension_catalog_entries(definitions: Any, experiment: Any) -> list[Any]:
 
 def _covariate_catalog_entries(definitions: Any, experiment: Any) -> list[Any]:
     """Catalog declared observational and CUPED-linear property evidence."""
-    declarations: dict[str, tuple[str | None, Any]] = {}
+    declarations: dict[tuple[str, str | None], Any] = {}
     design = getattr(experiment, "design", None)
     if design is not None and design.mechanism == "observational":
         declarations.update(
-            (covariate.property, (covariate.source, covariate)) for covariate in design.covariates
+            ((covariate.property, covariate.source), covariate) for covariate in design.covariates
         )
     for binding in experiment.bindings.values():
         for covariate in binding.covariates:
             if covariate.property is not None:
-                declarations[covariate.property] = (covariate.source, covariate)
-
+                declarations[(covariate.property, covariate.source)] = covariate
     entries: list[Any] = []
-    for property_name, (source_name, declaration) in declarations.items():
+    for (property_name, source_name), declaration in declarations.items():
         source = _source_for(definitions, property_name, source_name, unit=experiment.unit)
         prop = next(p for p in definitions.properties_of(source) if p.name == property_name)
         kind, model_name = (
@@ -959,7 +959,40 @@ def _cuped_catalog_entries(
     entries: list[Any] = []
     for metric_name in metric_names:
         binding = experiment.bindings.get(metric_name)
-        if binding is None or not binding.wants_cuped:
+        if binding is None:
+            continue
+        for covariate in binding.covariates:
+            measure = covariate.measure
+            if measure is None:
+                continue
+            request = _model("CupedMeasureCovariateRequest").model_validate(
+                {
+                    "kind": "cuped_measure_covariate",
+                    "metric_name": metric_name,
+                    "covariate_name": covariate.name,
+                }
+            )
+            _catalog_add(
+                entries,
+                request,
+                {
+                    "kind": "cuped_measure_covariate",
+                    "metric_name": metric_name,
+                    "covariate_name": covariate.name,
+                    "measure_key": _measure_recipe_key(measure),
+                    "aggregation": measure.aggregation,
+                    "window_start_days": -experiment.n_pre_periods,
+                    "window_end_days": 0,
+                },
+                {
+                    "experiment": experiment.name,
+                    "metric_name": metric_name,
+                    "binding": _dump(covariate),
+                    "measure": _dump(measure),
+                    "fact_source": _fact_source_recipe(definitions, measure.fact, experiment.unit),
+                },
+            )
+        if not binding.wants_cuped:
             continue
         request = _model("CupedPreperiodRequest").model_validate(
             {"kind": "cuped_preperiod", "metric_name": metric_name}

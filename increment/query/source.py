@@ -72,6 +72,8 @@ from increment.semantics.artifact import (
     ArtifactContext,
     RatioMetricMeasure,
     SimpleMetricMeasure,
+    UnitCovariateExtension,
+    UnitCovariateLevelExtension,
     UnitDayArtifactManifest,
     UnitDayArtifactRef,
 )
@@ -643,6 +645,12 @@ def _artifact_request(extension: Any) -> dict[str, Any]:
         return {"kind": kind, "cluster_name": extension.cluster_name}
     if kind == "cuped_preperiod":
         return {"kind": kind, "metric_name": extension.metric_name}
+    if kind == "cuped_measure_covariate":
+        return {
+            "kind": kind,
+            "metric_name": extension.metric_name,
+            "covariate_name": extension.covariate_name,
+        }
     if kind == "assignment_counts":
         return {"kind": kind, "populations": extension.populations}
     if kind == "trigger_population":
@@ -1273,8 +1281,8 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             refuse(_NATIVE_COVARIATE_RESERVED, covariate="cluster_id", cluster=cluster)
         # A requested declared cluster column reuses the attached metadata column.
         requested = [name for name in dict.fromkeys(covariates) if name != "cluster_id"]
-        extensions = {name: self._covariate_extension(name) for name in requested}
         metric = self.validated_metric(metric)
+        extensions = {name: self._covariate_extension(metric.name, name) for name in requested}
         if self._population_units is None:
             base = self._unit_frame(
                 metric,
@@ -1311,13 +1319,37 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             )
         return frame.to_native()
 
-    def _covariate_extension(self, name: str) -> Any:
-        matches = [
+    def _covariate_extension(self, metric_name: str, name: str) -> Any:
+        property_name = name
+        source_name = None
+        context = json.loads(self._manifest.context.canonical_json)
+        plan = context.get("experiment", {}).get("plan", {})
+        entries = [plan.get("primary")]
+        entries.extend(plan.get("secondaries") or ())
+        entries.extend(plan.get("guardrails") or ())
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("metric") != metric_name:
+                continue
+            for covariate in entry.get("covariates", ()):
+                if covariate.get("name") == name and covariate.get("property") is not None:
+                    property_name = covariate["property"]
+                    source_name = covariate.get("source")
+                    break
+
+        matches: list[Any] = [
             extension
             for extension in self._manifest.extensions
-            if (extension.kind == "unit_covariate" or extension.kind == "unit_covariate_level")
-            and extension.covariate_name == name
+            if isinstance(extension, (UnitCovariateExtension, UnitCovariateLevelExtension))
+            and extension.covariate_name == property_name
+            and (source_name is None or extension.source_name == source_name)
         ]
+        matches.extend(
+            extension
+            for extension in self._manifest.extensions
+            if extension.kind == "cuped_measure_covariate"
+            and extension.metric_name == metric_name
+            and extension.covariate_name == name
+        )
         if len(matches) == 1:
             return matches[0]
         code = "artifact.extension.missing" if not matches else "artifact.extension.invalid"
@@ -1325,16 +1357,12 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             _ARTIFACT_REFUSALS[code],
             message=(
                 f"artifact carries {'no' if not matches else 'more than one'} unit "
-                f"covariate {name!r}. An artifact publishes only the covariates its "
-                "experiment declares under design.covariates: declare it there and "
-                "republish (a declared covariate is published automatically), or "
-                "read Analysis.from_definitions."
+                f"covariate {name!r} for metric {metric_name!r}. Republish the artifact "
+                "from the matching definitions so it includes this declared covariate."
             ),
             covariate=name,
-            route=(
-                "declare the covariate under the experiment's observational design "
-                "and republish the artifact from those definitions"
-            ),
+            metric=metric_name,
+            route="republish the artifact from the definitions that declare this CUPED covariate",
         )
 
     def moments(

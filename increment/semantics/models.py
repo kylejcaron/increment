@@ -1767,8 +1767,12 @@ class CupedCovariateBinding(CupedCovariate):
             )
         if self.measure is not None and self.measure.aggregation not in (
             "sum",
-            "mean",
             "count",
+            "count_distinct",
+            "avg_event",
+            "avg_calendar_day",
+            "min",
+            "max",
         ):
             _definition_refusal(
                 "definition.experiment.covariate_measure_numeric",
@@ -3776,6 +3780,8 @@ if TYPE_CHECKING:
         BreakoutDimensionRequest,
         ClusterIdentityExtension,
         ClusterIdentityRequest,
+        CupedMeasureCovariateExtension,
+        CupedMeasureCovariateRequest,
         CupedPreperiodExtension,
         CupedPreperiodRequest,
         EncouragementUptakeExtension,
@@ -3819,6 +3825,8 @@ _ARTIFACT_REEXPORTS = frozenset(
         "BreakoutDimensionRequest",
         "ClusterIdentityExtension",
         "ClusterIdentityRequest",
+        "CupedMeasureCovariateExtension",
+        "CupedMeasureCovariateRequest",
         "CupedPreperiodExtension",
         "CupedPreperiodRequest",
         "EncouragementUptakeExtension",

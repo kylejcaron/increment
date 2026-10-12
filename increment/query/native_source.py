@@ -3573,7 +3573,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             if metric_binding is not None
             else {}
         )
-        covariate_sources = {}
+        covariate_sources: dict[str, tuple[Any, str, bool]] = {}
         covariate_measures = {}
         for name in dict.fromkeys(covariates):
             if name == "cluster_id":
@@ -3582,13 +3582,33 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             if declared is not None and declared.measure is not None:
                 covariate_measures[name] = declared.measure
             else:
-                covariate_sources[name] = self._resolve_unit_covariate_source(
-                    name,
+                property_name = (
+                    declared.property
+                    if declared is not None and declared.property is not None
+                    else name
+                )
+                fact_source = self._resolve_unit_covariate_source(
+                    property_name,
                     declared_source=declared.source if declared is not None else None,
                     kind=declared.kind if declared is not None else None,
                 )
+                prop = next(
+                    p for p in self._defs.properties_of(fact_source) if p.name == property_name
+                )
+                covariate_sources[name] = (
+                    fact_source,
+                    property_name,
+                    prop.dtype == "string",
+                )
         if outcome_stage == "raw" and self._session._source_tables is None:
-            with self._pinned_source_execution(metrics=(metric,)) as pinned:
+            measure_facts = tuple(
+                covariate.measure.fact
+                for covariate in declared_covariates.values()
+                if covariate.measure is not None and covariate.name in covariates
+            )
+            with self._pinned_source_execution(
+                metrics=(metric,), extra_sources=measure_facts
+            ) as pinned:
                 return pinned.unit_frame(
                     metric,
                     covariates=covariates,
@@ -3638,15 +3658,22 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 )
             for name, measure in covariate_measures.items():
                 values = self._pre_period_measure_covariate(measure, name, assigned)
-                totals = totals.left_join(values, "unit_id")
+                join_key = f"_cuped_unit_id_{name}"
+                values = values.rename({join_key: "unit_id"})
+                totals = totals.left_join(values, totals["unit_id"] == values[join_key]).drop(
+                    join_key
+                )
                 if measure.aggregation != "avg_event":
                     totals = totals.mutate(**{name: ibis.coalesce(totals[name], 0.0)})
-            for name, fact_source in covariate_sources.items():
-                properties = self._build_breakout_properties_table(fact_source, name, assigned)
-                prop = next(p for p in self._defs.properties_of(fact_source) if p.name == name)
-                totals = join_unit_covariates(
-                    totals, properties, name, categorical=prop.dtype == "string"
+            for name, (fact_source, property_name, categorical) in covariate_sources.items():
+                properties = self._build_breakout_properties_table(
+                    fact_source, property_name, assigned
                 )
+                if property_name != name:
+                    properties = properties.select(
+                        unit_id=properties["unit_id"], **{name: properties[property_name]}
+                    )
+                totals = join_unit_covariates(totals, properties, name, categorical=categorical)
             select_cols: dict[str, Any] = {
                 "unit_id": totals["unit_id"],
                 "group_id": totals["group_id"],

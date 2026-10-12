@@ -122,6 +122,8 @@ from increment.sources import (
 __all__ = [
     "FramePanelSource",
     "FrameSwitchbackSource",
+    "FrameTotalsSource",
+    "SwitchbackAssignmentDiagnostic",
     "CupedCovariate",
     "MetricSpec",
     "coerce_metrics",

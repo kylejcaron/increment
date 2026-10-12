@@ -124,6 +124,7 @@ UNIT_DAY_ARTIFACT_RELATION_ROLES = (
     "factor_dimension",
     "cluster_identity",
     "cuped_preperiod",
+    "cuped_measure_covariate",
     "assignment_counts",
     "trigger_population",
     "trigger_measure_stats",
@@ -268,6 +269,12 @@ UNIT_DAY_ARTIFACT_RELATION_SCHEMAS = MappingProxyType(
                 ("x", "FLOAT64"),
             )
         ),
+        "cuped_measure_covariate": (
+            ("experiment_id", "STRING", False),
+            ("unit_id", "STRING", False),
+            ("value", "FLOAT64", True),
+            ("has_preperiod_events", "BOOLEAN", False),
+        ),
         "assignment_counts": tuple(
             (field, type_tag, False)
             for field, type_tag in (
@@ -345,6 +352,7 @@ UNIT_DAY_ARTIFACT_PRIMARY_KEYS = MappingProxyType(
         "factor_dimension": ("experiment_id", "unit_id"),
         "cluster_identity": ("experiment_id", "unit_id"),
         "cuped_preperiod": ("experiment_id", "unit_id"),
+        "cuped_measure_covariate": ("experiment_id", "unit_id"),
         "assignment_counts": ("experiment_id", "population", "group_id"),
         "trigger_population": ("experiment_id", "unit_id"),
         "trigger_measure_stats": ("experiment_id", "unit_id", "ds", "measure_key"),

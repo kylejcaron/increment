@@ -362,7 +362,8 @@ class ArtifactPublisher:
         # covariate join later without it, so it is never optional.
         for entry in unit_day_artifact_extension_catalog(context):
             if (
-                entry.request.kind in {"unit_covariate", "unit_covariate_level"}
+                entry.request.kind
+                in {"unit_covariate", "unit_covariate_level", "cuped_measure_covariate"}
                 and entry.request not in requested
             ):
                 requested.append(entry.request)
@@ -769,6 +770,8 @@ class ArtifactPublisher:
                 return self._dimension_extension_spec(entry, request, exposures, kind)
             case "cuped_preperiod":
                 return self._cuped_extension_spec(entry, request, exposures, exposure_rows)
+            case "cuped_measure_covariate":
+                return self._cuped_measure_covariate_spec(entry, request, exposures, exposure_rows)
             case "assignment_counts":
                 return self._assignment_extension_spec(entry, request)
             case "trigger_population":
@@ -898,6 +901,79 @@ class ArtifactPublisher:
                     "experiment_id": self._experiment.name,
                     "unit_id": str(exposure["unit_id"]),
                     field: None if value is None else encode(value),
+                }
+            )
+        return _PublicationExtensionSpec(entry, request.kind, rows, {})
+
+    def _cuped_measure_covariate_spec(
+        self,
+        entry: Any,
+        request: Any,
+        exposures: ir.Table,
+        exposure_rows: list[dict[str, object]],
+    ) -> _PublicationExtensionSpec:
+        binding = self._experiment.bindings[request.metric_name]
+        covariate = next(item for item in binding.covariates if item.name == request.covariate_name)
+        measure = covariate.measure
+        assert measure is not None
+        source, fact = _find_fact_source(self._defs, measure.fact)
+        value_col = _resolve_value_column(source, fact)
+        from increment.semantics.models import MeanMetric
+
+        metric = MeanMetric(
+            name=covariate.name,
+            entity=self._experiment.unit,
+            fact=measure.fact,
+            aggregation=measure.aggregation,
+            filters=measure.filters,
+            window_days=measure.window_days,
+        )
+        events = metric_events(self._get_fact_table(source), metric, value_column=value_col)
+        anchors = exposures.select(
+            "unit_id",
+            "first_exposure_ts",
+            first_exposure_date=_local_date(exposures.first_exposure_ts, self._experiment),
+        )
+        joined = events.join(
+            anchors, events.unit_id == anchors.unit_id, rname="{name}_pre_covariate"
+        )
+        pre_start = joined.first_exposure_date - ibis.interval(days=self._experiment.n_pre_periods)
+        scoped = joined.filter(
+            (_local_date(joined.ts, self._experiment) >= pre_start)
+            & (joined.ts < joined.first_exposure_ts)
+        )
+        if measure.aggregation == "sum":
+            grouped = scoped.group_by("unit_id").agg(value=scoped.value.sum())
+        elif measure.aggregation == "count":
+            grouped = scoped.group_by("unit_id").agg(value=scoped.value.count().cast("float64"))
+        elif measure.aggregation == "count_distinct":
+            grouped = scoped.group_by("unit_id").agg(value=scoped.value.nunique().cast("float64"))
+        elif measure.aggregation == "avg_event":
+            grouped = scoped.group_by("unit_id").agg(value=scoped.value.mean())
+        elif measure.aggregation == "avg_calendar_day":
+            grouped = scoped.group_by("unit_id").agg(
+                value=scoped.value.sum() / self._experiment.n_pre_periods
+            )
+        elif measure.aggregation == "min":
+            grouped = scoped.group_by("unit_id").agg(value=scoped.value.min())
+        else:
+            grouped = scoped.group_by("unit_id").agg(value=scoped.value.max())
+        values = {
+            str(row["unit_id"]): row["value"] for row in self._con.to_pyarrow(grouped).to_pylist()
+        }
+        rows: list[dict[str, object]] = []
+        for exposure in exposure_rows:
+            unit_id = str(exposure["unit_id"])
+            has_preperiod_events = unit_id in values
+            value = values.get(unit_id)
+            if value is None and measure.aggregation != "avg_event":
+                value = 0.0
+            rows.append(
+                {
+                    "experiment_id": self._experiment.name,
+                    "unit_id": unit_id,
+                    "value": value,
+                    "has_preperiod_events": has_preperiod_events,
                 }
             )
         return _PublicationExtensionSpec(entry, request.kind, rows, {})

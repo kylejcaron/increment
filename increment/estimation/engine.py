@@ -3057,6 +3057,9 @@ def estimate_lift(  # noqa: PLR0913
     total clusters emits the qualified-reference warning (see
     ``check_total_clusters``).
     """
+    if methods:
+        reject_unfinished_cuped_linear(metrics, [methods] * len(metrics))
+
     return _estimate_lift(
         metrics,
         summary,
