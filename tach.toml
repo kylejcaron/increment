@@ -95,10 +95,19 @@ path = "increment._source_types"
 depends_on = ["increment._moment_plan", "increment.errors"]
 
 [[modules]]
+path = "increment.estimation.advisory"
+depends_on = ["increment._canonical", "increment._immutable"]
+
+[[modules]]
+path = "increment._interpretation"
+depends_on = ["increment.estimation"]
+
+[[modules]]
 path = "increment.estimation.decision_types"
 depends_on = [
   "increment._literals",
   "increment.errors", "increment.estimation._certified", "increment.estimation._sequential_likelihood",
+  "increment.estimation.advisory",
   "increment.estimation.sequential_result", "increment.sequential_state",
   "increment.semantics",
 ]
@@ -245,7 +254,7 @@ depends_on = [
   "increment._display", "increment._canonical", "increment._immutable",
   "increment._moment_plan",
   "increment._source_types", "increment._winsor_rank", "increment.winsor", "increment._labels", "increment._window", "increment.compatibility",
-  "increment.errors", "increment.estimation._certified", "increment.estimation.decision_types",
+  "increment.errors", "increment.estimation._certified", "increment.estimation.advisory", "increment.estimation.decision_types",
   "increment.estimation._sequential_likelihood",
   "increment.estimation.sequential", "increment.estimation.sequential_result",
   "increment.semantics", "increment.sequential_state",
@@ -462,7 +471,7 @@ depends_on = [
   "increment.winsor",
   "increment._analysis_config", "increment._policy_alpha", "increment._readout_request",
   "increment._window", "increment.breakout.estimates", "increment.compatibility", "increment.decision", "increment.errors",
-  "increment._source_identity", "increment.estimation", "increment.estimation.decision_types", "increment.semantics", "increment.sources",
+  "increment._source_identity", "increment.estimation", "increment.estimation.advisory", "increment.estimation.decision_types", "increment.semantics", "increment.sources",
   "increment._sequential_readouts", "increment.estimation.sequential",
   "increment.sequential_state", "increment.sequential_source", "increment.estimation.sequential_result",
 ]
