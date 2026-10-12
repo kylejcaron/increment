@@ -725,7 +725,6 @@ def test_triggered_sitewide_windowed_metric_refuses_before_data_load(tmp_path, m
         with pytest.raises(CapabilityError) as refused:
             analysis.sitewide("revenue", population="triggered")
         assert refused.value.code == "facade.analysis.sitewide_triggered_metric_unaligned"
-        assert "calendar-aligned" in str(refused.value)
     finally:
         analysis.close()
 

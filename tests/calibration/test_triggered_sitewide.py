@@ -65,17 +65,20 @@ def test_smoke_campaign_runs_every_cell(tmp_path):
     from calibration import triggered_sitewide as campaign
 
     assert callable(getattr(campaign, "run_campaign", None))
-    report = campaign.run_campaign("smoke", tmp_path, workers=1)
+    output = tmp_path / "campaign"
+    report = campaign.run_campaign("smoke", output, workers=1)
     assert {cell["id"] for cell in report["cells"]} == {d.id for d in campaign.DESIGNS}
     assert len(report["gates"]) == 12
     assert all(g["decision"] == "SMOKE_ONLY" for g in report["gates"])
     assert all(cell["attempted"] == campaign.SMOKE_REPS for cell in report["cells"])
-    assert json.loads((tmp_path / "report.json").read_text()) == report
-    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert json.loads((output / "report.json").read_text()) == report
+    with pytest.raises(FileExistsError):
+        campaign.run_campaign("smoke", output, workers=1)
+    manifest = json.loads((output / "manifest.json").read_text())
     assert manifest["seed_start"] == 1000
     assert manifest["gated_reps"] == 107_100
     assert {s["id"] for s in manifest["slots"]} == {s.id for s in campaign.SLOTS}
-    assert (tmp_path / "report.md").is_file()
+    assert (output / "report.md").is_file()
 
 
 @pytest.mark.parametrize(

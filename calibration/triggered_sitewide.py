@@ -678,7 +678,8 @@ def run_campaign(
     """Write the frozen manifest first; stop immediately after an assigned failed design."""
     _check_workers(workers)
     output = Path(output)
-    output.mkdir(parents=True, exist_ok=True)
+    # A new directory per run keeps earlier evidence intact.
+    output.mkdir(parents=True, exist_ok=False)
     (output / "manifest.json").write_text(json.dumps(manifest(), indent=2, allow_nan=False) + "\n")
     started = time.monotonic()
     report: dict[str, Any] = {
