@@ -240,6 +240,7 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+
   numerical-certification:
     name: numerical certification
     needs: [lint, changes]
@@ -274,7 +275,6 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
-
 
   docs:
     name: documentation

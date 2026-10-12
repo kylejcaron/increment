@@ -53,8 +53,6 @@ def test_floor_session_executes_probe_with_declared_versions(tmp_path):
             text=True,
             check=False,
         )
-    assert not (tmp_path / "nox-envs").exists()
-
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
     reports = [

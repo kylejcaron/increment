@@ -43,6 +43,17 @@ jobs:
           exit 1
         env: {MODE: "${{ inputs.backend_mode }}"}
 
+  # The shard matrix is enumerated for 1 or 3 shards only.
+  reject-unsupported-postgres-shards:
+    if: ${{ inputs.postgres_shards != 1 && inputs.postgres_shards != 3 }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: |
+          echo "::error::postgres_shards must be 1 or 3; got '$SHARDS'"
+          exit 1
+        env: {SHARDS: "${{ inputs.postgres_shards }}"}
+
   postgres:
     name: postgres shard ${{ matrix.group }}/${{ inputs.postgres_shards }}
     if: ${{ inputs.backend_mode == 'all' || inputs.backend_mode == 'postgres' }}
