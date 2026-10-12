@@ -520,7 +520,7 @@ depends_on = [
 
 [[modules]]
 path = "increment.dashboard"
-depends_on = ["increment._canonical", "increment._source_operations", "increment.breakout.estimates", "increment.errors", "increment.estimation", "increment.tables"]
+depends_on = ["increment._canonical", "increment._interpretation", "increment._source_operations", "increment.breakout.estimates", "increment.errors", "increment.estimation", "increment.tables"]
 
 [[modules]]
 path = "increment.reporting"

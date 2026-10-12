@@ -95,6 +95,12 @@ dashboard remains assigned-only.
 Switching populations retains the selected Readout metric and Explore scope,
 metric, and series controls when those selections exist in both views.
 
+The selected population's interpretation is shown with its source identity,
+integrity, required-scope completeness and retained family. Switching assigned
+and triggered populations changes the selected evidence, not the family that
+was retained when each population was analyzed. Filtering a failed guardrail
+out of the visible rows does not make the primary's required scope complete.
+
 Assigned allocation checks describe assignment integrity. Triggered allocation
 checks describe balance in the triggered cohort and are not assignment-integrity
 checks. Triggered-cohort inference is appropriate only if triggering is
@@ -267,8 +273,16 @@ trajectory, rather than claiming a new inference for each daily value.
 CSV downloads neutralize formula-leading string cells with an apostrophe.
 Numeric cells remain numeric and unavailable numbers remain empty.
 Confidence-set cells contain unrounded JSON metadata, omitting retained
-samples and solver references. This CSV is a readout, not a portable inference
-checkpoint.
+samples and solver references. Scoped readouts also carry the source/population,
+integrity status and context, required-cell availability, filtered/hidden
+identities and reasons, retained family, and retained advisory codes and
+explanations. Nested evidence is canonical JSON, not Python representations;
+numeric nulls remain empty numeric cells. Filtering a row does not discard the
+collection's required scope: visible rows report the view as partial and keep
+the original family. A CSV is a row transport, so filtering every row leaves
+no row to carry metadata; keep the scoped collection or its saved result when
+an empty view must retain its full scope. This CSV is a readout, not a portable
+inference checkpoint.
 
 `ExploreView` is the literal type `"cumulative_lift" | "daily_values" |
 "cumulative_values" | "segments"`. An unknown metric/view, a daily-values or

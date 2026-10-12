@@ -39,6 +39,7 @@ from increment.dashboard import (
     render_metric_details,
     render_results,
 )
+from increment.dashboard._data import enriched_rows
 
 STOREFRONT_WINDOW = (dt.date(2025, 1, 15), dt.date(2025, 2, 14))
 PRICING_WINDOW = (dt.date(2025, 3, 1), dt.date(2025, 3, 31))
@@ -2046,3 +2047,61 @@ def test_report_retains_directional_fieller_set_beside_central_interval(
             if endpoint is not None:
                 assert any(abs(value - endpoint) <= 0.0005 for value in displayed)
     assert "∞" in notes
+
+
+@pytest.mark.slow
+def test_dashboard_snapshot_and_csv_retain_scoped_readout_metadata(
+    dashboard_con, dashboard_definitions
+):
+    analysis = _analysis(dashboard_con, dashboard_definitions, "storefront_refresh")
+    try:
+        snapshot = prepare_dashboard(
+            analysis,
+            config=DashboardConfig(expected_allocation={"control": 0.7, "treatment": 0.3}),
+        )
+    finally:
+        analysis.close()
+    assert snapshot.allocation is not None and snapshot.allocation.is_srm
+
+    scoped = snapshot.readout_collection
+    assert scoped is not None
+    assert scoped.metadata is not None
+    assert scoped.metadata.scope.by_source
+    primary_only = scoped.filter(lambda row: row.metric == "checkout_conversion")
+    rows = enriched_rows(primary_only)
+    primary = next(row for row in rows if row["metric"] == "checkout_conversion")
+    assert primary["view_partial"] is True
+    assert primary["analysis_population"] == "assigned"
+    assert primary["integrity_status"] == "not_checked_missing_declaration"
+    hidden = json.loads(primary["hidden_cells"])
+    assert any(item["cell"]["metric"] == "session_seconds" for item in hidden)
+
+    dashboard_snapshot = dataclasses.replace(
+        snapshot,
+        estimates=tuple(primary_only),
+        readout_collection=primary_only,
+        population_collections={"assigned": primary_only},
+        population_estimates={"assigned": tuple(primary_only)},
+        readout_rows=rows,
+    )
+    exported = list(csv.DictReader(io.StringIO(readout_csv(dashboard_snapshot).decode("utf-8"))))
+    assert len(exported) == 1
+    row = exported[0]
+    assert row["view_partial"] == "True"
+    assert row["analysis_population"] == "assigned"
+    assert row["integrity_status"] == "not_checked_missing_declaration"
+    exported_hidden = json.loads(row["hidden_cells"])
+    assert any(item["cell"]["metric"] == "session_seconds" for item in exported_hidden)
+    assert row["hidden_cells"] == json.dumps(
+        exported_hidden, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    assert json.loads(row["retained_family"])
+    summary_html = render_header(dashboard_snapshot).text
+    assert "partial" in summary_html
+    assert "session_seconds" in summary_html
+    assert "not_checked_missing_declaration" in summary_html
+    readout_html = render_results(dashboard_snapshot).text
+    assert "partial" in readout_html
+    from increment.dashboard._app import _report_notes
+
+    assert any("session_seconds" in note for note in _report_notes(dashboard_snapshot))

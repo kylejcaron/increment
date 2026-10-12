@@ -28,6 +28,7 @@ from increment.dashboard._data import (
     enriched_rows,
     estimate_for_metric,
     group_data_rows,
+    readout_interpretation_text,
     require_metric,
     row_for_metric,
 )
@@ -54,12 +55,12 @@ from increment.dashboard._format import (
     monitoring_sentence,
     null_text,
     number_text,
+    outcome_label,
     percent_text,
     population_label,
     primary_method,
     primary_tone,
     result_caveats,
-    result_outcome_text,
     robust_fence,
     share_text,
     tail_word,
@@ -193,7 +194,7 @@ def render_header(
     body = (
         '<div class="inc-dashboard-headline">'
         f'<h1 class="inc-dashboard-title">{esc(snapshot.title)}</h1>{source_html}</div>'
-        f"{lede}{_header_chips(snapshot)}{_header_cards(snapshot)}"
+        f"{lede}{_header_chips(snapshot)}{_qualification_block(snapshot)}{_header_cards(snapshot)}"
     )
     return mo.Html(
         f'<section class="inc-dashboard-root inc-dashboard-section" id="overview">{body}</section>'
@@ -213,6 +214,17 @@ def _header_chips(snapshot: DashboardSnapshot) -> str:
         ("Computed", timestamp_label(snapshot.computed_at)),
     ]
     return _chips(chips)
+
+
+def _qualification_block(snapshot: DashboardSnapshot) -> str:
+    text = readout_interpretation_text(snapshot)
+    if not text:
+        return ""
+    content = esc(text).replace("\n", "<br>")
+    return (
+        '<div class="inc-dashboard-status">'
+        f"<strong>Readout qualifications</strong><p>{content}</p></div>"
+    )
 
 
 def _header_cards(snapshot: DashboardSnapshot) -> str:
@@ -618,9 +630,7 @@ def _flags_block(snapshot: DashboardSnapshot) -> str:
 
 
 def _caveats_block(snapshot: DashboardSnapshot) -> str:
-    """Keep actual caveats visible without an empty-state paragraph."""
-    caveats = result_caveats(snapshot.readout_rows)
-    return _caveats_list(caveats)
+    return _qualification_block(snapshot)
 
 
 def _caveats_list(caveats: Sequence[str]) -> str:
@@ -1089,10 +1099,10 @@ def results_notes(snapshot: DashboardSnapshot) -> str:
 def render_results(snapshot: DashboardSnapshot) -> mo.Html:
     """The whole declared family, its readout table, and its disclosures."""
     body = (
-        results_table(snapshot)
+        _qualification_block(snapshot)
+        + results_table(snapshot)
         + results_warnings(snapshot)
         + results_notes(snapshot)
-        + _caveats_list(result_caveats(snapshot.readout_rows))
     )
     return _section("results", "Results", body)
 
@@ -1134,23 +1144,19 @@ def _role_disclosures(snapshot: DashboardSnapshot) -> list[str]:
     rows_by_role: dict[str, list[Mapping[str, Any]]] = {}
     for row in snapshot.readout_rows:
         rows_by_role.setdefault(str(row.get("role") or "unassigned"), []).append(row)
-    several_arms = len({row.get("group_id") for row in snapshot.readout_rows}) > 1
     items = []
     for role in ("primary", "secondary", "guardrail", "unassigned"):
         rows = rows_by_role.get(role)
         if rows:
-            items.append(_role_disclosure(role, rows, several_arms=several_arms))
+            items.append(_role_disclosure(role, rows))
     return items
 
 
-def _role_disclosure(role: str, rows: Sequence[Mapping[str, Any]], *, several_arms: bool) -> str:
+def _role_disclosure(role: str, rows: Sequence[Mapping[str, Any]]) -> str:
     label = ROLE_LABELS.get(role, role)
     tails = "; ".join(f"{esc(row.get('metric'))} {tail_word(row)}" for row in rows)
     sentences = [f"<strong>{esc(label)}</strong>: {tails}."]
-    outcomes = "; ".join(
-        f"{esc(row.get('metric'))}, {esc(result_outcome_text(row, arm=several_arms))}"
-        for row in rows
-    )
+    outcomes = "; ".join(f"{esc(row.get('metric'))}: {esc(outcome_label(row))}" for row in rows)
     sentences.append(f"Outcomes: {outcomes}.")
     several_methods = len({(row.get("method"), row.get("method_role")) for row in rows}) > 1
     levelled = [
@@ -1286,8 +1292,7 @@ def render_metric_details(
         )
         + _geometry_disclosure(snapshot, [row], label=INTERVALS_DISCLOSURE)
         + group_body
-        + _list(result_caveats([row]), css_class="inc-dashboard-caveats"),
-        subtitle=str(getattr(model, "description", "") or ""),
+        + _qualification_block(snapshot),
     )
 
 
@@ -1357,8 +1362,7 @@ def _added_metric_details(snapshot: DashboardSnapshot, model: Any) -> mo.Html:
         )
         + _geometry_disclosure(snapshot, [row], label=INTERVALS_DISCLOSURE)
         + note
-        + _list(result_caveats([row]), css_class="inc-dashboard-caveats"),
-        subtitle=str(getattr(model, "description", "") or ""),
+        + _qualification_block(snapshot),
     )
 
 

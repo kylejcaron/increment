@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -18,7 +19,7 @@ from increment.dashboard import (
     render_metric_details,
 )
 from increment.dashboard._app import build_payload, document
-from increment.dashboard._data import estimate_for_metric, row_for_metric
+from increment.dashboard._data import decision_rows, estimate_for_metric, row_for_metric
 from increment.errors import InvalidRequestError
 from tests.test_analysis_trigger import _events, _write_defs
 from tests.test_compatibility_js import _node_gate, _resolve_node, _running_in_ci
@@ -122,6 +123,27 @@ def test_dashboard_snapshot_retains_population_specific_headline_and_group_evide
         assigned_row = row_for_metric(snapshot, "revenue", population="assigned")
         assert default_row is not None and default_row["analysis_population"] == "triggered"
         assert assigned_row is not None and assigned_row["analysis_population"] == "assigned"
+        assert set(snapshot.population_collections) == {"assigned", "triggered"}
+        retained_family_names = {}
+        for population in ("assigned", "triggered"):
+            collection = snapshot.population_collections[population]
+            assert collection.metadata is not None
+            scoped_rows = decision_rows(snapshot, population=population)
+            assert scoped_rows
+            assert {row["analysis_population"] for row in scoped_rows} == {population}
+            integrity = next(
+                item
+                for source in collection.metadata.scope.by_source.values()
+                for item in source.integrity
+                if item.analysis_population == population
+            )
+            assert {row["integrity_status"] for row in scoped_rows} == {integrity.status.value}
+            retained_family_names[population] = {
+                family["name"]
+                for row in scoped_rows
+                for family in json.loads(row["retained_family"])
+            }
+        assert retained_family_names["assigned"] == retained_family_names["triggered"]
         payload = build_payload(analysis, snapshot=snapshot)
         assert payload["defaultPopulation"] == "triggered"
         assert payload["populationOptions"] == ["assigned", "triggered"]
