@@ -1006,7 +1006,7 @@ def _assert_triggered_selection_public_surfaces(rows, selected):
 
     restored = ReadoutResults.model_validate_json(rows.model_dump_json())
     text = repr(selected)
-    assert "outcome-independent" in text
+    assert "triggered family guarantee under correct triggering" in text
     assert "asymptotic-sequential guarantee" in text
     assert "retained family" in text
     restored_selected = next(
@@ -1039,7 +1039,7 @@ def _assert_triggered_selection_public_surfaces(rows, selected):
     assert bool(selected_frame["discovery"])
     assert selected_frame["family_guarantee"] == "asymptotic_sequential"
     rendered = readout_table(estimates_to_readout(restored)).gt().as_raw_html()
-    assert "outcome-independent" in rendered
+    assert "triggered family guarantee under correct triggering" in rendered
     assert "asymptotic-sequential guarantee" in rendered
 
 
@@ -1101,7 +1101,7 @@ def test_filtered_readout_keeps_original_family_qualification(tmp_path):
         assert filtered_qualification == qualification
         html = readout_table(estimates_to_readout(filtered)).gt().as_raw_html()
         assert "Partial view" in html
-        assert "outcome-independent" in html
+        assert "triggered family guarantee under correct triggering" in html
         assert "asymptotic-sequential guarantee" in html
     finally:
         analysis.close()

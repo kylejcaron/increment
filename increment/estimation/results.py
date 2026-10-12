@@ -892,8 +892,8 @@ def _selection_qualification(row: Any) -> str | None:
             if guarantee == "asymptotic_sequential"
             else "no controlled guarantee"
         )
-        look = (
-            "; outcome-independent triggered-look policy"
+        trigger = (
+            "; triggered family guarantee under correct triggering"
             if getattr(row, "analysis_population", None) == "triggered" and guarantee is not None
             else ""
         )
@@ -905,7 +905,7 @@ def _selection_qualification(row: Any) -> str | None:
             else "family"
         )
         return (
-            f"{procedure_label}{level}; arbitrary-dependence {guarantee_kind} selection{look}; "
+            f"{procedure_label}{level}; arbitrary-dependence {guarantee_kind} selection{trigger}; "
             f"{qualification}; {family}"
         )
     if status == "exploratory_family" and q is not None and procedure == "bh":
