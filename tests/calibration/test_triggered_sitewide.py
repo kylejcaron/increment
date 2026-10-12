@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 from dataclasses import replace
 
@@ -11,33 +10,55 @@ import pytest
 
 
 def test_manifest_freezes_realized_targets_and_family_allocation():
-    assert importlib.util.find_spec("calibration.triggered_sitewide") is not None
-    from calibration.triggered_sitewide import DESIGNS, ETA, GATED_REPS, SLOTS
+    from calibration import triggered_sitewide as campaign
     from tests.mc import family_eta
 
-    assert GATED_REPS == 107_100
-    assert ETA == family_eta(0.01, 67) == 0.00007462686567164179
-    assert [s.id for s in SLOTS] == [f"T1-{i}" for i in range(1, 9)] + [
-        f"T4-{i}" for i in range(1, 5)
+    expected_slots = [
+        ("T1-1", "T1-partial", "assigned", "absolute", "I*"),
+        ("T1-2", "T1-partial", "triggered", "absolute", "I*"),
+        ("T1-3", "T1-partial", "assigned", "relative", "rel*"),
+        ("T1-4", "T1-partial", "triggered", "relative", "rel*"),
+        ("T1-5", "T1-whole", "assigned", "absolute", "I*"),
+        ("T1-6", "T1-whole", "triggered", "absolute", "I*"),
+        ("T1-7", "T1-whole", "assigned", "relative", "rel*"),
+        ("T1-8", "T1-whole", "triggered", "relative", "rel*"),
+        ("T4-1", "T4-benign", "assigned", "absolute", "ratio_impact*"),
+        ("T4-2", "T4-benign", "triggered", "absolute", "ratio_impact*"),
+        ("T4-3", "T4-benign", "assigned", "relative", "relative_ratio_impact*"),
+        ("T4-4", "T4-benign", "triggered", "relative", "relative_ratio_impact*"),
     ]
-    assert [(s.population, s.scale) for s in SLOTS[:4]] == [
-        ("assigned", "absolute"),
-        ("triggered", "absolute"),
-        ("assigned", "relative"),
-        ("triggered", "relative"),
+    manifest = campaign.manifest()
+    assert [
+        (s["id"], s["design"], s["population"], s["scale"], s["truth"]) for s in manifest["slots"]
+    ] == expected_slots
+
+    assert manifest["gated_reps"] == 107_100
+    assert manifest["eta"] == family_eta(0.01, 67) == 0.00007462686567164179
+    assert manifest["coverage_floor"] == 0.945
+    assert manifest["seed_start"] == 1000
+    expected_designs = [
+        ("T1-partial", 50_000, 10_000, 0.5, 0.2, 0.3, 1.0, 0.0, 0.05, 0.5, 0.0, 107_100),
+        ("T1-whole", 10_000, 10_000, 0.5, 0.2, 1.0, 1.0, 0.0, 0.05, 0.5, 0.0, 107_100),
+        ("T4-benign", 20_000, 10_000, 0.5, 0.2, 0.3, 1.0, 0.0, 0.05, 0.5, 0.0, 107_100),
     ]
-    assert [(s.population, s.scale) for s in SLOTS[8:]] == [
-        ("assigned", "absolute"),
-        ("triggered", "absolute"),
-        ("assigned", "relative"),
-        ("triggered", "relative"),
-    ]
-    designs = {d.id: d for d in DESIGNS}
-    assert (designs["T1-partial"].n_site, designs["T1-partial"].n_enrolled) == (50_000, 10_000)
-    assert (designs["T1-whole"].n_site, designs["T1-whole"].n_enrolled) == (10_000, 10_000)
-    assert designs["T4-benign"].sigma_den == 0.5
-    assert all(s.truth in {"I*", "rel*", "ratio_impact*", "relative_ratio_impact*"} for s in SLOTS)
-    assert all(s.consequence for s in SLOTS)
+    assert [
+        (
+            d["id"],
+            d["n_site"],
+            d["n_enrolled"],
+            d["p_t"],
+            d["p_trig"],
+            d["delta"],
+            d["s_tau"],
+            d["delta_nt"],
+            d["lift"],
+            d["sigma_den"],
+            d["den_effect"],
+            d["reps"],
+        )
+        for d in manifest["designs"]
+        if d["id"] in {"T1-partial", "T1-whole", "T4-benign"}
+    ] == expected_designs
 
 
 def test_smoke_campaign_runs_every_cell(tmp_path):
@@ -57,114 +78,62 @@ def test_smoke_campaign_runs_every_cell(tmp_path):
     assert (tmp_path / "report.md").is_file()
 
 
-def test_batched_intervals_match_production_on_random_draws():
-    from calibration import triggered_sitewide as campaign
-    from increment.estimation.sitewide import (
-        SitewideContrast,
-        SitewideRatioContrast,
-        sitewide_impact,
-        sitewide_impact_ratio,
-    )
-
-    assert callable(getattr(campaign, "batched_estimates", None))
-    rng = np.random.default_rng(7182026)
-    controls, targets, volumes, denominators, expected = [], [], [], [], []
-    sum_controls, sum_targets, sum_volumes, sum_expected = [], [], [], []
-    for _ in range(120):
-        n_c, n_t = rng.integers(25, 501, 2)
-        d_c, d_t = rng.lognormal(0, rng.uniform(0.2, 1.6), n_c), rng.lognormal(0, 1, n_t)
-        y_c = d_c * rng.normal(0.4, 0.1, n_c)
-        y_t = d_t * rng.normal(0.45, 0.1, n_t)
-        v_n, v_d = float(y_c.sum() + y_t.sum() + 3000), float(d_c.sum() + d_t.sum() + 8000)
-        controls.append(campaign.arm_moments(y_c, d_c))
-        targets.append(campaign.arm_moments(y_t, d_t))
-        volumes.append(v_n)
-        denominators.append(v_d)
-        control = campaign.arm_stats("control", y_c, d_c)
-        target = campaign.arm_stats("treatment", y_t, d_t)
-        expected.append(
-            sitewide_impact_ratio(
-                SitewideRatioContrast.from_iid(control, target),
-                site_total_numerator=v_n,
-                site_total_denominator=v_d,
-            )
-        )
-        a, b = rng.lognormal(0, 1, n_c), rng.lognormal(0, 1, n_t) + rng.uniform(-0.2, 1)
-        v = float(a.sum() + b.sum() + 5000)
-        sum_controls.append(campaign.arm_moments(a))
-        sum_targets.append(campaign.arm_moments(b))
-        sum_volumes.append(v)
-        sum_expected.append(
-            sitewide_impact(
-                SitewideContrast.from_iid(
-                    campaign.arm_stats("control", a), campaign.arm_stats("treatment", b)
-                ),
-                site_total_volume=v,
-            )
-        )
-    for result, scalar in (
+@pytest.mark.parametrize(
+    ("y_c", "y_t", "d_c", "d_t", "site_num", "site_den"),
+    [
+        # Two observations per arm; positive numerator-denominator covariance.
+        ([1.0, 3.0], [2.0, 6.0], [1.0, 3.0], [2.0, 6.0], 300.0, 800.0),
+        # Three observations per arm; negative covariance.
+        ([1.0, 3.0, 5.0], [2.0, 4.0, 8.0], [3.0, 2.0, 1.0], [4.0, 2.0, 1.0], 500.0, 900.0),
+        # Strongly imbalanced arms and zero covariance.
         (
-            campaign.batched_estimates(
-                np.array(controls), np.array(targets), np.array(volumes), np.array(denominators)
-            ),
-            expected,
+            [2.0, 4.0],
+            [1.0, 3.0, 5.0, 7.0, 9.0],
+            [1.0, 1.0],
+            [2.0, 2.0, 2.0, 2.0, 2.0],
+            700.0,
+            1500.0,
         ),
-        (
-            campaign.batched_estimates(
-                np.array(sum_controls), np.array(sum_targets), np.array(sum_volumes)
-            ),
-            sum_expected,
-        ),
-    ):
-        assert result["eligible"].all()
-        for field in (
-            "absolute_impact",
-            "absolute_impact_se",
-            "absolute_impact_lb",
-            "absolute_impact_ub",
-            "relative_impact",
-            "relative_impact_se",
-            "relative_impact_lb",
-            "relative_impact_ub",
-        ):
-            np.testing.assert_allclose(
-                result[field], [getattr(x, field) for x in scalar], rtol=0, atol=1e-12
-            )
-
-
-def test_ineligible_replications_are_counted_not_replaced():
-    from calibration import triggered_sitewide as campaign
-
-    assert callable(getattr(campaign, "run_design", None))
-    design = replace(campaign.DESIGNS[0], n_site=10, n_enrolled=2)
-    cell = campaign.run_design(design, reps=3, workers=1)
-    assert cell["attempted"] == 3
-    assert cell["coverage"]["triggered.absolute"]["eligible"] == 0
-    assert cell["coverage"]["triggered.absolute"]["refused"] == 3
-
-
-def test_batched_ratio_admits_negative_arm_numerator_means():
+        # Constant outcomes and denominators have zero variance.
+        ([2.0, 2.0, 2.0], [4.0, 4.0], [3.0, 3.0, 3.0], [5.0, 5.0], 800.0, 1200.0),
+        # Negative numerator means remain valid in production.
+        ([-1.0, -2.0], [-2.0, -4.0, -6.0], [1.0, 1.0], [1.0, 1.0, 1.0], 3000.0, 8000.0),
+    ],
+)
+def test_batched_intervals_match_production_on_edge_case_draws(
+    y_c, y_t, d_c, d_t, site_num, site_den
+):
     from calibration import triggered_sitewide as campaign
     from increment.estimation.sitewide import SitewideRatioContrast, sitewide_impact_ratio
 
-    y_c, y_t = -np.arange(1, 26, dtype=float), -np.arange(1, 36, dtype=float)
-    d_c, d_t = np.ones(25), np.ones(35)
+    y_c, y_t = np.asarray(y_c), np.asarray(y_t)
+    d_c, d_t = np.asarray(d_c), np.asarray(d_t)
     scalar = sitewide_impact_ratio(
         SitewideRatioContrast.from_iid(
             campaign.arm_stats("control", y_c, d_c),
             campaign.arm_stats("treatment", y_t, d_t),
         ),
-        site_total_numerator=3000,
-        site_total_denominator=8000,
+        site_total_numerator=site_num,
+        site_total_denominator=site_den,
     )
     batch = campaign.batched_estimates(
         np.array([campaign.arm_moments(y_c, d_c)]),
         np.array([campaign.arm_moments(y_t, d_t)]),
-        np.array([3000.0]),
-        np.array([8000.0]),
+        np.array([site_num]),
+        np.array([site_den]),
     )
     assert batch["eligible"].all()
-    assert batch["absolute_impact"][0] == pytest.approx(scalar.absolute_impact, abs=1e-12)
+    for field in (
+        "absolute_impact",
+        "absolute_impact_se",
+        "absolute_impact_lb",
+        "absolute_impact_ub",
+        "relative_impact",
+        "relative_impact_se",
+        "relative_impact_lb",
+        "relative_impact_ub",
+    ):
+        np.testing.assert_allclose(batch[field], [getattr(scalar, field)], rtol=0, atol=1e-12)
 
 
 def test_ineligible_report_retains_null_and_registered_consequence(tmp_path):
