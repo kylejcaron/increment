@@ -47,6 +47,7 @@ from increment.errors import (
 from increment.estimation import binomial_rr
 from increment.estimation._readout_refusals import READOUT_REFUSALS as _READOUT_REFUSALS
 from increment.estimation._tails import two_sided_critical_value, wald_bounds
+from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.armstats import (
     ArmStats,
     binary_counts,
@@ -1065,6 +1066,70 @@ def _warn_if_open_ended_sequential(metrics: Iterable[Metric]) -> None:
         )
 
 
+def _open_ended_advisory(metric: Metric) -> ReadoutAdvisory | None:
+    if not _is_open_ended(metric):
+        return None
+    if metric.type == "ratio":
+        windows = "one or both windows unset"
+    elif metric.type == "retention":
+        windows = "unbounded band"
+    else:
+        windows = "window_days=None"
+    fix = (
+        "Bound the band (threshold_days: [a, b])"
+        if metric.type == "retention"
+        else "Set window_days"
+    )
+    context = {"metric_name": metric.name, "windows": windows, "fix": fix}
+    spec = _WARNINGS["estimation.engine.open_ended_sequential"]
+    return ReadoutAdvisory(code=spec.code, context=context, message=spec.render(**context))
+
+
+def _lift_advisories(
+    metric: Metric,
+    treatment: ArmStats,
+    control: ArmStats,
+    strategy: _LiftVarianceStrategy,
+    *,
+    cluster: str | None,
+    sequential: bool,
+) -> tuple[ReadoutAdvisory, ...]:
+    advisories: list[ReadoutAdvisory] = []
+    if strategy.n_clusters is not None and strategy.n_clusters < _WARN_TOTAL_CLUSTERS:
+        context = {
+            "metric_name": metric.name,
+            "n_clusters": strategy.n_clusters,
+            "cluster": cluster,
+            "floor": _WARN_TOTAL_CLUSTERS,
+        }
+        spec = _WARNINGS["estimation.engine.small_total_clusters"]
+        advisories.append(
+            ReadoutAdvisory(code=spec.code, context=context, message=spec.render(**context))
+        )
+    if strategy.ratio_precision_note is not None:
+        stats = {
+            arm.group_id: ratio_denominator_precision(arm)
+            for arm in (treatment, control)
+            if ratio_denominator_precision(arm) > RATIO_DENOMINATOR_PRECISION_THRESHOLD
+        }
+        advisories.append(
+            ReadoutAdvisory(
+                code="estimation.engine.ratio_denominator_precision",
+                context={
+                    "metric_name": metric.name,
+                    "threshold": RATIO_DENOMINATOR_PRECISION_THRESHOLD,
+                    "relative_standard_errors": stats,
+                },
+                message=strategy.ratio_precision_note,
+            )
+        )
+    if sequential:
+        advisory = _open_ended_advisory(metric)
+        if advisory is not None:
+            advisories.append(advisory)
+    return tuple(advisories)
+
+
 # Orchestrator
 
 
@@ -1249,11 +1314,23 @@ def merge_decision_computations(
     results: list[Any] = []
     evidence: dict[Any, Any] = {}
     failures: dict[Any, Any] = {}
+    advisories: dict[Any, list[ReadoutAdvisory]] = {}
     for computation in computations:
         results.extend(computation.results)
         evidence.update(computation.evidence)
         failures.update(computation.failures)
-    return DecisionComputation(results=tuple(results), evidence=evidence, failures=failures)
+        for hypothesis, items in computation.advisories.items():
+            advisories.setdefault(hypothesis, []).extend(items)
+    merged_advisories = {}
+    for key, items in advisories.items():
+        distinct = {item.model_dump_json(): item for item in items}
+        merged_advisories[key] = tuple(distinct[value] for value in sorted(distinct))
+    return DecisionComputation(
+        results=tuple(results),
+        evidence=evidence,
+        failures=failures,
+        advisories=merged_advisories,
+    )
 
 
 def _lift_decision_bundle(  # noqa: PLR0915
@@ -2674,7 +2751,29 @@ def _estimate_registered_sequential(
         alternative=alternative,
         null_lift=null_lift,
     )
-    return estimate_sequential(summary, inference)
+    computation = estimate_sequential(summary, inference)
+    from increment.estimation.decision_types import (
+        ArmHypothesisKey,
+        ContrastHypothesisKey,
+        SegmentHypothesisKey,
+    )
+
+    by_metric = {metric.name: metric for metric in metrics}
+    advisories: dict[
+        ArmHypothesisKey | SegmentHypothesisKey | ContrastHypothesisKey,
+        tuple[ReadoutAdvisory, ...],
+    ] = {}
+    for row in computation.results:
+        advisory = _open_ended_advisory(by_metric[row.metric])
+        if advisory is not None:
+            advisories[ArmHypothesisKey(row.metric, row.group_id, row.estimand)] = (advisory,)
+    return DecisionComputation(
+        results=computation.results,
+        evidence=computation.evidence,
+        failures=computation.failures,
+        sequential_snapshot=computation.sequential_snapshot,
+        advisories=advisories,
+    )
 
 
 def _asymptotic_lift_outcome(
@@ -2981,6 +3080,8 @@ def _estimate_lift(  # noqa: PLR0913
     own ``alpha`` decides. Only the package's own families set it; the public function
     never does, so a caller cannot move a row's ``reference_kind`` apart from a family.
     """
+    from increment.estimation.decision_types import DecisionComputation
+
     if route_alpha is not None and not 0.0 < route_alpha <= 1.0:
         _refuse("estimation.engine.route_alpha", route_alpha=route_alpha)
     percentile_metrics = [
@@ -3080,6 +3181,7 @@ def _estimate_lift(  # noqa: PLR0913
                 results=(*bundle.results, *remaining.results),
                 evidence={**bundle.evidence, **remaining.evidence},
                 failures={**bundle.failures, **remaining.failures},
+                advisories={**bundle.advisories, **remaining.advisories},
             )
         return bundle
 
@@ -3119,6 +3221,7 @@ def _estimate_lift(  # noqa: PLR0913
     )
     results: list[LiftEstimate] = []
     guard_failures: dict[Any, Any] = {}
+    advisory_map: dict[Any, tuple[ReadoutAdvisory, ...]] = {}
     for treatment in prepared.treatment_arms:
         control = prepared.control_by_metric.get(treatment.metric)
         if control is None:
@@ -3142,6 +3245,19 @@ def _estimate_lift(  # noqa: PLR0913
             control_group,
             cluster,
             method_strategies,
+        )
+        from increment.estimation.decision_types import ArmHypothesisKey
+
+        metric = next(item for item in metrics if item.name == treatment.metric)
+        advisory_map[ArmHypothesisKey(treatment.metric, treatment.group_id, "itt")] = (
+            _lift_advisories(
+                metric,
+                treatment,
+                control,
+                strategy,
+                cluster=cluster,
+                sequential=inference is not None,
+            )
         )
         metric_type = prepared.metric_types[treatment.metric]
         for method_strategy in strategy.methods:
@@ -3172,12 +3288,9 @@ def _estimate_lift(  # noqa: PLR0913
         results,
         inference=inference,
     )
-    if not guard_failures:
-        return bundle
-    from increment.estimation.decision_types import DecisionComputation
-
     return DecisionComputation(
         results=bundle.results,
         evidence=dict(bundle.evidence),
         failures={**bundle.failures, **guard_failures},
+        advisories={**bundle.advisories, **advisory_map},
     )

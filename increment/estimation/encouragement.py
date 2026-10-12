@@ -359,7 +359,10 @@ def estimate_compliance(
         )
     bundle = _lift_decision_bundle(results, inference=inference)
     return DecisionComputation(
-        results=tuple(results), evidence=bundle.evidence, failures=bundle.failures
+        results=tuple(results),
+        evidence=bundle.evidence,
+        failures=bundle.failures,
+        advisories=bundle.advisories,
     )
 
 
@@ -802,8 +805,10 @@ def _encouragement_decision_bundle(
     bundle = _lift_decision_bundle(non_itt, inference=inference)
     evidence = dict(itt_bundle.evidence) if itt_bundle is not None else {}
     failures = dict(itt_bundle.failures) if itt_bundle is not None else {}
+    advisories = dict(itt_bundle.advisories) if itt_bundle is not None else {}
     evidence.update(bundle.evidence)
     failures.update(bundle.failures)
+    advisories.update(bundle.advisories)
     for metric, group_id, z_fs in late_failures:
         hypothesis = ArmHypothesisKey(metric, group_id, "late")
         failures[hypothesis] = DecisionFailure(
@@ -811,7 +816,9 @@ def _encouragement_decision_bundle(
             "estimation.encouragement.late.weak_first_stage",
             {"metric": metric, "group_id": group_id, "first_stage_z": z_fs},
         )
-    return DecisionComputation(results=tuple(results), evidence=evidence, failures=failures)
+    return DecisionComputation(
+        results=tuple(results), evidence=evidence, failures=failures, advisories=advisories
+    )
 
 
 @dataclass(frozen=True, slots=True)

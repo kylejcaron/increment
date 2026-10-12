@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from typing import Any, Literal, cast
 
 from increment.decision import MultiplicityFamily
+from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.multiplicity import multiplicity_status, row_multiplicity_status
 from increment.estimation.readout_types import (
     CellFailure,
@@ -524,6 +525,7 @@ def scoped_collection(
                     if getattr(row, "failure_code", None) is not None and cell.method is not None
                     else None
                 ),
+                advisories=_row_advisories(row),
             )
         )
     metadata = ReadoutMetadata(
@@ -533,3 +535,16 @@ def scoped_collection(
         ),
     )
     return collection_type(stamped, metadata=metadata)
+
+
+def _row_advisories(row):
+    note = getattr(row, "note", None)
+    if not isinstance(note, str) or not note.startswith("ratio_denominator_precision:"):
+        return ()
+    return (
+        ReadoutAdvisory(
+            code="estimation.engine.ratio_denominator_precision",
+            context={"metric_name": row.metric, "note": note},
+            message=note,
+        ),
+    )

@@ -26,6 +26,7 @@ from increment.errors import (
     refuse,
 )
 from increment.estimation._sequential_likelihood import LikelihoodCertificate
+from increment.estimation.advisory import ReadoutAdvisory
 from increment.estimation.decision_types import (
     ArmHypothesisKey,
     AsymptoticSequentialEvidence,
@@ -71,7 +72,7 @@ _CELL_FAILURE_REFUSALS = refusals(
 _WIRE_REFUSALS = refusals(
     WireFormatError,
     {
-        "readout.serialization.unsupported_version": "Unsupported envelope {kind} version {received}; supported {supported}",
+        "readout.serialization.unsupported_version": "Unsupported envelope {kind} version {received}; supported {supported}. {remedy}",
         "readout.serialization.model_mismatch": "Collection {collection} does not contain row model {row_model}",
         "readout.serialization.duplicate_cell_key": "Duplicate serialized cell {cell_key} in {source_snapshot_id}",
         "readout.serialization.noncanonical_order": "Serialized {section} is not canonically ordered",
@@ -377,6 +378,23 @@ class CellRecord(_ReadoutModel):
     failure: CellFailure | None = None
     sampling: SamplingInference | None = None
     posterior: PosteriorInference | None = None
+    advisories: tuple[ReadoutAdvisory, ...] = ()
+
+    @model_validator(mode="after")
+    def _canonical_advisories(self):
+        ordered = tuple(
+            sorted(
+                self.advisories,
+                key=lambda item: (
+                    item.code,
+                    canonical_json_bytes(thaw(item.context)),
+                    item.severity,
+                    item.message,
+                ),
+            )
+        )
+        object.__setattr__(self, "advisories", ordered)
+        return self
 
 
 class PopulationRoster(_ReadoutModel):
@@ -1103,12 +1121,13 @@ class ReadoutResults:
         from increment.sequential_state import SequentialSnapshot
 
         payload = json.loads(text, object_pairs_hook=_unique_object)
-        if payload.get("kind") != "increment.readout" or payload.get("schema_version") != 1:
+        if payload.get("kind") != "increment.readout" or payload.get("schema_version") != 2:
             refuse_readout(
                 "readout.serialization.unsupported_version",
                 kind=payload.get("kind"),
                 received=payload.get("schema_version"),
-                supported=(1,),
+                supported=(2,),
+                remedy="Recompute results with the current version from the original analysis inputs.",
             )
         collection_name = payload.get("collection")
         collection_type: Any = (
@@ -1181,7 +1200,7 @@ def dump_collection(results):
     return json.dumps(
         {
             "kind": "increment.readout",
-            "schema_version": 1,
+            "schema_version": 2,
             "collection": type(results).__name__,
             "row_model": results._model.__name__,
             "snapshot_id": None if metadata is None else metadata.scope.snapshot_id,

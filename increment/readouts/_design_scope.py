@@ -563,6 +563,19 @@ def scope_design_results(  # noqa: PLR0913
                 )
             ] = failure
 
+    advisories_by_identity = {}
+    for computation in computations:
+        for hypothesis, advisories in computation.advisories.items():
+            identity = (
+                hypothesis.metric,
+                getattr(hypothesis, "group_id", None),
+                hypothesis.estimand,
+                getattr(hypothesis, "dimension", None),
+                getattr(hypothesis, "dimension_value", None),
+            )
+            values = advisories_by_identity.setdefault(identity, {})
+            values.update({item.model_dump_json(): item for item in advisories})
+
     cell_rows, failures = _collect_expected_cells(
         expected,
         row_map,
@@ -695,6 +708,18 @@ def scope_design_results(  # noqa: PLR0913
                     reason_context=None if failure is None else failure.context,
                 ),
                 posterior=posterior,
+                advisories=tuple(
+                    advisories_by_identity.get(
+                        (
+                            cell.metric,
+                            cell.group_id,
+                            cell.estimand,
+                            cell.dimension,
+                            cell.dimension_value,
+                        ),
+                        {},
+                    ).values()
+                ),
             )
         )
 

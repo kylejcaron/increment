@@ -1960,6 +1960,7 @@ def _rekey_segment_computation(
         evidence=evidence,
         failures=failures,
         sequential_snapshot=bundle.sequential_snapshot,
+        advisories={key_for(key): values for key, values in bundle.advisories.items()},
     )
 
 
@@ -1999,6 +2000,7 @@ def _estimate_lift_computation_or_reason(
             results=rows,
             evidence=computation.evidence,
             failures=computation.failures,
+            advisories=computation.advisories,
         ), None
     except LiftGuardError as exc:
         from increment.decision import ArmHypothesisKey, DecisionComputation, DecisionFailure

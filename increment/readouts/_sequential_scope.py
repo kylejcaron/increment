@@ -287,6 +287,10 @@ def scope_sequential_results(
     registration = plan.inference.registration
     trigger_name = src.context.trigger_name
 
+    from increment.estimation.engine import _open_ended_advisory
+
+    metrics_by_name = {metric.name: metric for metric in src.context.metrics}
+
     existing_source_scope = None
     existing_integrity = None
     existing_source = None
@@ -359,6 +363,12 @@ def scope_sequential_results(
                 cell=cell,
                 source_snapshot_id=snapshot_id,
                 sampling=SamplingInference(available=True, evidence=_evidence(row, cell)),
+                advisories=(
+                    (advisory,)
+                    if cell.metric in metrics_by_name
+                    and (advisory := _open_ended_advisory(metrics_by_name[cell.metric]))
+                    else ()
+                ),
             )
         )
 

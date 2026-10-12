@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fractions import Fraction
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Generic, Literal, TypeVar
@@ -25,6 +25,7 @@ from increment.errors import (
     raiser,
     refusals,
 )
+from increment.estimation.advisory import ReadoutAdvisory
 from increment.semantics.unit_cycle import UnitCycleReference, UnitCycleVarianceEnvelope
 
 if TYPE_CHECKING:
@@ -285,6 +286,7 @@ class DecisionComputation(Generic[ResultT]):  # noqa: UP046 -- preserve Generic 
     evidence: Mapping[HypothesisKey, TestEvidence]
     failures: Mapping[HypothesisKey, DecisionFailure]
     sequential_snapshot: SequentialSnapshot | None = None
+    advisories: Mapping[HypothesisKey, tuple[ReadoutAdvisory, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         results = tuple(self.results)
@@ -297,6 +299,7 @@ class DecisionComputation(Generic[ResultT]):  # noqa: UP046 -- preserve Generic 
 
                 require_public_laws((checkpoint.model,), "decision computations")
         failures = dict(self.failures)
+        advisories = {key: tuple(value) for key, value in self.advisories.items()}
         for value in evidence.values():
             if isinstance(value, (EValueEvidence, AsymptoticSequentialEvidence)):
                 from increment.sequential_state import sequential_refuse
@@ -314,9 +317,31 @@ class DecisionComputation(Generic[ResultT]):  # noqa: UP046 -- preserve Generic 
             for key, value in entries.items():
                 if key != value.hypothesis:
                     raise AssertionError("decision entry key must match its hypothesis")
+        represented = set(evidence) | set(failures)
+        represented.update(
+            ArmHypothesisKey(result.metric, result.group_id, result.estimand)
+            for result in results
+            if hasattr(result, "group_id")
+        )
+        represented.update(
+            ContrastHypothesisKey(result.metric, result.control_group, result.treatment_group)
+            for result in results
+            if hasattr(result, "control_group")
+        )
+        represented.update(
+            SegmentHypothesisKey(result.metric, group_id, estimand, dimension, dimension_value)
+            for result in results
+            if isinstance((dimension := getattr(result, "dimension", None)), str)
+            and isinstance((dimension_value := getattr(result, "dimension_value", None)), str)
+            and isinstance((group_id := getattr(result, "group_id", None)), str)
+            and isinstance((estimand := getattr(result, "estimand", None)), str)
+        )
+        if not set(advisories) <= represented:
+            raise AssertionError("decision advisory key must match a computation hypothesis")
         object.__setattr__(self, "results", results)
         object.__setattr__(self, "evidence", MappingProxyType(evidence))
         object.__setattr__(self, "failures", MappingProxyType(failures))
+        object.__setattr__(self, "advisories", MappingProxyType(advisories))
 
 
 DECISION_ARM_DECISION_ONE_SIDED_ALPHA = _REFUSALS["decision.arm_decision.one_sided_alpha"]

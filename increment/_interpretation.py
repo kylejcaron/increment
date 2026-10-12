@@ -1,0 +1,403 @@
+"""Evidence-only interpretation for scoped readout collections."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import Any
+
+from increment.estimation.readout_types import CellKey, ReadoutMetadata
+
+
+@dataclass(frozen=True, slots=True)
+class InterpretedCell:
+    key: CellKey
+    visible: bool
+    available: bool
+    failure_code: str | None
+    failure_context: Any
+    advisories: tuple[Any, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class InterpretedGroup:
+    source_snapshot_id: str | None
+    population: str | None
+    control_group: str | None
+    treatment_group: str | None
+    integrity_status: str
+    integrity_code: str | None
+    integrity_context: Any
+    required_cells: tuple[InterpretedCell, ...]
+    available_cells: tuple[InterpretedCell, ...]
+    unavailable_cells: tuple[InterpretedCell, ...]
+    hidden_cells: tuple[InterpretedCell, ...]
+    retained_families: tuple[Any, ...]
+    partial: bool
+    advisories: tuple[Any, ...]
+    visible_rows: tuple[Any, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ReadoutInterpretation:
+    groups: tuple[InterpretedGroup, ...]
+    metadata_known: bool
+    partial: bool
+
+
+def interpret_readout(rows, metadata: ReadoutMetadata | None) -> ReadoutInterpretation:
+    """Interpret retained collection evidence without recomputing inference."""
+    visible_rows = tuple(rows)
+    if metadata is None:
+        grouped: dict[tuple[str | None, str | None, str | None, str | None], list[Any]] = {}
+        for row in visible_rows:
+            key = (
+                getattr(row, "source_snapshot_id", None),
+                getattr(row, "analysis_population", None),
+                getattr(row, "control_group", "control"),
+                getattr(row, "group_id", getattr(row, "treatment_group", None)),
+            )
+            grouped.setdefault(key, []).append(row)
+        groups = tuple(
+            InterpretedGroup(
+                source_snapshot_id=source,
+                population=population,
+                control_group=control,
+                treatment_group=treatment,
+                integrity_status="unknown",
+                integrity_code=None,
+                integrity_context=None,
+                required_cells=(),
+                available_cells=(),
+                unavailable_cells=(),
+                hidden_cells=(),
+                retained_families=(),
+                partial=False,
+                advisories=(),
+                visible_rows=tuple(group_rows),
+            )
+            for (source, population, control, treatment), group_rows in sorted(
+                grouped.items(), key=lambda item: repr(item[0])
+            )
+        )
+        if not groups:
+            groups = (
+                InterpretedGroup(
+                    None, None, None, None, "unknown", None, None, (), (), (), (), (), False, (), ()
+                ),
+            )
+        return ReadoutInterpretation(groups, False, False)
+
+    row_by_key: dict[tuple[str, CellKey], Any] = {}
+    for row in visible_rows:
+        try:
+            key = CellKey.from_row(row)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        source = getattr(row, "source_snapshot_id", None)
+        if source is not None:
+            row_by_key[(source, key)] = row
+
+    groups: list[InterpretedGroup] = []
+    for source_id, source in sorted(metadata.scope.by_source.items()):
+        integrity_by_population = {item.analysis_population: item for item in source.integrity}
+        for population in sorted({cell.analysis_population for cell in source.cells}):
+            by_comparison: dict[tuple[str | None, str | None], list[CellKey]] = {}
+            for cell in source.cells:
+                if cell.analysis_population != population:
+                    continue
+                treatment = cell.group_id if cell.kind != "contrast" else cell.treatment_group
+                row = row_by_key.get((source_id, cell))
+                control = cell.control_group or getattr(row, "control_group", None)
+                by_comparison.setdefault((control, treatment), []).append(cell)
+            for (control, treatment), cells in sorted(
+                by_comparison.items(), key=lambda item: repr(item[0])
+            ):
+                integrity = integrity_by_population.get(population)
+                required = tuple(cell for cell in source.decision_cells if cell in cells)
+                interpreted: list[InterpretedCell] = []
+                for cell in required:
+                    record = metadata.record(source_id, cell)
+                    row = row_by_key.get((source_id, cell))
+                    failure = record.failure
+                    if failure is None and row is not None:
+                        failure_code = getattr(row, "failure_code", None)
+                        failure_context = getattr(row, "failure_context", None)
+                    else:
+                        failure_code = None if failure is None else failure.code
+                        failure_context = None if failure is None else failure.context
+                    interpreted.append(
+                        InterpretedCell(
+                            key=cell,
+                            visible=row is not None,
+                            available=(
+                                row is not None
+                                and failure_code is None
+                                and (
+                                    getattr(row, "lift", None) is not None
+                                    or getattr(row, "relative_confidence_set", None) is not None
+                                    or getattr(row, "confidence_set", None) is not None
+                                )
+                            ),
+                            failure_code=failure_code,
+                            failure_context=failure_context,
+                            advisories=record.advisories,
+                        )
+                    )
+                unavailable = tuple(
+                    item for item in interpreted if not item.available and item.visible
+                )
+                hidden = tuple(item for item in interpreted if not item.visible)
+                families = tuple(
+                    family
+                    for family in metadata.scope.families
+                    if family.source_snapshot_id == source_id
+                    and family.analysis_population == population
+                    and any(member in cells for member in family.members)
+                )
+                rows_here = tuple(
+                    row_by_key[(source_id, cell)]
+                    for cell in cells
+                    if (source_id, cell) in row_by_key
+                )
+                advisories = tuple(
+                    sorted(
+                        {
+                            (
+                                advisory.code,
+                                json.dumps(advisory.context, sort_keys=True, default=str),
+                            ): advisory
+                            for item in interpreted
+                            for advisory in item.advisories
+                        }.values(),
+                        key=lambda item: (
+                            item.code,
+                            json.dumps(item.context, sort_keys=True, default=str),
+                        ),
+                    )
+                )
+                groups.append(
+                    InterpretedGroup(
+                        source_id,
+                        population,
+                        control,
+                        treatment,
+                        "unknown" if integrity is None else integrity.status.value,
+                        None if integrity is None else integrity.code,
+                        None if integrity is None else integrity.context,
+                        tuple(interpreted),
+                        tuple(item for item in interpreted if item.available),
+                        unavailable,
+                        hidden,
+                        families,
+                        metadata.partial,
+                        advisories,
+                        rows_here,
+                    )
+                )
+    return ReadoutInterpretation(tuple(groups), True, metadata.partial)
+
+
+def readout_evidence_columns(interpretation: ReadoutInterpretation, cell) -> dict[str, object]:
+    """Return portable scalar/JSON qualification columns for one interpreted cell."""
+    for group in interpretation.groups:
+        for item in group.required_cells:
+            if item.key == cell:
+                row = next(
+                    (
+                        candidate
+                        for candidate in group.visible_rows
+                        if CellKey.from_row(candidate) == cell
+                    ),
+                    None,
+                )
+                status = getattr(row, "multiplicity_status", None)
+                return {
+                    "integrity_status": group.integrity_status,
+                    "integrity_code": group.integrity_code,
+                    "integrity_context": _json(group.integrity_context),
+                    "required_cell_count": len(group.required_cells),
+                    "available_cell_count": len(group.available_cells),
+                    "unavailable_cells": _json(
+                        [
+                            {
+                                "cell": entry.key.model_dump(mode="json"),
+                                "code": entry.failure_code,
+                                "context": entry.failure_context,
+                                "hidden_by_filter": False,
+                            }
+                            for entry in group.unavailable_cells
+                        ]
+                    ),
+                    "hidden_cells": _json(
+                        [
+                            {
+                                "cell": entry.key.model_dump(mode="json"),
+                                "code": entry.failure_code,
+                                "context": entry.failure_context,
+                                "hidden_by_filter": True,
+                            }
+                            for entry in group.hidden_cells
+                        ]
+                    ),
+                    "advisories": _json(
+                        [advisory.model_dump(mode="json") for advisory in group.advisories]
+                    ),
+                    "view_partial": group.partial,
+                    "multiplicity_status": status
+                    or (
+                        "unknown"
+                        if not group.retained_families
+                        else "adjusted"
+                        if any(family.family is not None for family in group.retained_families)
+                        else "exploratory_unadjusted"
+                    ),
+                    "retained_family": _json(
+                        [family.model_dump(mode="json") for family in group.retained_families]
+                    ),
+                }
+    return {
+        "integrity_status": "unknown",
+        "integrity_code": None,
+        "integrity_context": None,
+        "required_cell_count": 0,
+        "available_cell_count": 0,
+        "unavailable_cells": "[]",
+        "hidden_cells": "[]",
+        "advisories": "[]",
+        "view_partial": interpretation.partial,
+        "multiplicity_status": "unknown",
+        "retained_family": "[]",
+    }
+
+
+def render_readout_text(interpretation: ReadoutInterpretation) -> str:
+    """Render concise integrity/completeness qualifications before effects."""
+    lines: list[str] = []
+    for group in interpretation.groups:
+        comparison = (
+            f"{group.treatment_group} vs {group.control_group}"
+            if group.control_group and group.treatment_group
+            else f"treatment {group.treatment_group}; control identity not retained"
+            if group.treatment_group
+            else "comparison unknown"
+        )
+        lines.append(f"{group.population or 'population unknown'} — {comparison}")
+        if group.integrity_status == "failed":
+            lines.append(f"Integrity: failed ({group.integrity_code or 'mismatch'}).")
+        elif group.integrity_status == "not_rejected":
+            lines.append(
+                "Integrity: not_rejected — no detected mismatch; not proof of valid randomization."
+            )
+        else:
+            lines.append(f"Integrity: {group.integrity_status} (not success).")
+        if group.partial:
+            lines.append("View: partial; do not treat visible cells as a complete decision.")
+        if group.required_cells:
+            lines.append(
+                f"Required cells: {len(group.required_cells)}; available: {len(group.available_cells)}."
+            )
+        for item in group.unavailable_cells:
+            lines.append(
+                f"Unavailable {item.key.metric}: {item.failure_code}: {_reason(item.failure_context)}"
+            )
+        for item in group.hidden_cells:
+            if item.failure_code:
+                lines.append(
+                    f"Required cell {item.key.metric} hidden by filter; {item.failure_code}: {_reason(item.failure_context)}"
+                )
+            else:
+                lines.append(f"Required cell {item.key.metric} hidden by filter.")
+        if group.retained_families:
+            labels = sorted({family.name for family in group.retained_families})
+            statuses = sorted(
+                str(status)
+                for row in group.visible_rows
+                if (status := getattr(row, "multiplicity_status", None)) is not None
+            )
+            status_text = ", ".join(statuses) if statuses else "retained scope"
+            lines.append(f"Multiplicity: {status_text}; retained family {', '.join(labels)}.")
+        for advisory in group.advisories:
+            lines.append(f"Advisory {advisory.code}: {advisory.message}")
+        advisory_codes = {item.code for item in group.advisories}
+        for row in group.visible_rows:
+            if getattr(row, "note", None) and not any(code in row.note for code in advisory_codes):
+                lines.append(f"Qualification: {row.note}")
+            lines.extend(_render_effect(row))
+    return "\n".join(lines)
+
+
+def _reason(context):
+    if context is None:
+        return "reason unavailable"
+    if isinstance(context, dict):
+        return str(context.get("reason", context.get("display", context)))
+    return (
+        str(context.get("reason", context.get("display", context)))
+        if hasattr(context, "get")
+        else str(context)
+    )
+
+
+def _json(value):
+    if value is None:
+        return None
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")
+    elif hasattr(value, "items"):
+        value = {key: _jsonable(item) for key, item in value.items()}
+    return json.dumps(_jsonable(value), sort_keys=True, separators=(",", ":"))
+
+
+def _jsonable(value):
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if hasattr(value, "items"):
+        return {key: _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_jsonable(item) for item in value]
+    return value
+
+
+def _render_effect(row):
+    lines = []
+    role = getattr(row, "role", None) or "outcome"
+    scale = getattr(row, "value_scale", "relative")
+    label = "absolute" if scale == "absolute" else "relative lift"
+    estimate = getattr(row, "lift", None)
+    if estimate is not None:
+        effect = f"{row.metric} ({role}, {label}): {estimate.value:.6g}"
+        if estimate.lb is not None or estimate.ub is not None:
+            low = "−∞" if estimate.lb is None else f"{estimate.lb:.6g}"
+            high = "+∞" if estimate.ub is None else f"{estimate.ub:.6g}"
+            effect += f", set [{low}, {high}]"
+            if estimate.level is not None:
+                effect += f" at {estimate.level:.3g} confidence"
+        lines.append(effect + ".")
+    confidence_set = getattr(row, "relative_confidence_set", None)
+    if confidence_set is not None:
+        intervals = ", ".join(
+            f"[{('-∞' if lower is None else format(lower, '.6g'))}, "
+            f"{('+∞' if upper is None else format(upper, '.6g'))}]"
+            for lower, upper in confidence_set.intervals
+        )
+        lines.append(
+            f"{row.metric} relative confidence set: {confidence_set.geometry}"
+            + (f" {intervals}" if intervals else "")
+            + "."
+        )
+    confidence_set = getattr(row, "confidence_set", None)
+    if confidence_set is not None:
+        lines.append(
+            f"{row.metric} confidence set: {confidence_set.geometry}; "
+            f"qualification {confidence_set.qualification}."
+        )
+    if getattr(row, "alternative", None):
+        null = (
+            getattr(row, "null_abs", None)
+            if scale == "absolute"
+            else getattr(row, "null_lift", None)
+        )
+        if null is not None:
+            lines.append(f"Test alternative: {row.alternative}; null: {null:.6g}.")
+    return lines

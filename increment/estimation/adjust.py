@@ -1053,7 +1053,10 @@ def _estimate_ate(  # noqa: PLR0913, PLR0915
     failures = dict(bundle.failures)
     failures.update(refused_failures)
     return DecisionComputation(
-        results=bundle.results, evidence=dict(bundle.evidence), failures=failures
+        results=bundle.results,
+        evidence=dict(bundle.evidence),
+        failures=failures,
+        advisories=bundle.advisories,
     )
 
 
