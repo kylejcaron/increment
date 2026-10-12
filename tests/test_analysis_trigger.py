@@ -19,6 +19,7 @@ import pytest
 from increment import Analysis, SourceSnapshotEvidence
 from increment.errors import (
     CapabilityError,
+    CodedError,
     DefinitionError,
     IncrementWarning,
     InvalidRequestError,
@@ -2004,6 +2005,36 @@ def test_triggered_sitewide_seam_keeps_source_specific_refusal():
     with pytest.raises(CapabilityError) as raised:
         analysis.sitewide("revenue")
     assert raised.value.code == "facade.analysis.operation"
+
+
+@pytest.mark.parametrize(
+    ("population", "code"),
+    [
+        ("triggered", "analysis.sitewide.triggered_population_unsupported"),
+        ("both", "facade.analysis.invalid_population"),
+    ],
+)
+def test_sitewide_population_request_refuses_on_a_source_without_population_checks(
+    population, code
+):
+    import pandas as pd
+
+    analysis = Analysis.from_unit_summary(
+        pd.DataFrame(
+            {
+                "user_id": ["c1", "c2", "t1", "t2"],
+                "variant": ["control", "control", "treatment", "treatment"],
+                "revenue": [1.0, 2.0, 2.0, 3.0],
+            }
+        ),
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"revenue": "mean"},
+    )
+    with pytest.raises(CodedError) as raised:
+        analysis.sitewide("revenue", population=population)
+    assert raised.value.code == code
 
 
 @pytest.mark.parametrize("population", ["assigned", "triggered"])

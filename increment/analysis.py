@@ -1987,16 +1987,19 @@ class Analysis:
             strictly between 0 and 1.
         """
         experiment = getattr(self, "_experiment", None)
+        if population not in ("assigned", "triggered"):
+            _refuse(_INVALID_POPULATION, population=population)
         if population == "triggered":
-            if experiment is not None and experiment.trigger is not None:
-                _refuse(
-                    _TRIGGERED_SITEWIDE_UNSUPPORTED,
-                    experiment=experiment.name,
-                    population=population,
-                )
+            declared_trigger = experiment is not None and experiment.trigger is not None
             validate_populations = getattr(self._src, "validate_populations", None)
-            if validate_populations is not None:
+            if not declared_trigger and validate_populations is not None:
+                # Without a trigger the source's own refusal names the missing declaration.
                 validate_populations(("triggered",), operation="sitewide_evidence")
+            _refuse(
+                _TRIGGERED_SITEWIDE_UNSUPPORTED,
+                experiment=None if experiment is None else experiment.name,
+                population=population,
+            )
         return SitewideReadouts(src=self._src, experiment=experiment).run(
             SitewideRequest(metric_name=metric_name, arm=arm, alpha=alpha)
         )
