@@ -94,6 +94,7 @@ def test_testmon_nested_lock_requires_live_owner_and_skips_certification(
         assert testmon_nested_context(tmp_path)
         from scripts.affected_pytest_launcher import _prepare_testmon_environment
 
+        monkeypatch.setattr(os, "environ", os.environ.copy())
         monkeypatch.delenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", raising=False)
         monkeypatch.delenv("INCREMENT_AFFECTED_WORKER_ALLOWANCE", raising=False)
         _prepare_testmon_environment(tmp_path, "fast", 2)
@@ -256,6 +257,7 @@ def test_affected_launcher_pins_worktree_testmon_database(
 ) -> None:
     from scripts.affected_pytest_launcher import _prepare_testmon_environment
 
+    monkeypatch.setattr(os, "environ", os.environ.copy())
     monkeypatch.setenv("TESTMON_DATAFILE", str(tmp_path / "wrong.sqlite"))
     monkeypatch.setenv("PYTEST_ADDOPTS", "--lf")
     monkeypatch.delenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", raising=False)
@@ -976,8 +978,10 @@ def test_impact_selection_preserves_filesystem_guards_and_filters(tmp_path: Path
     (tests / "test_unrelated.py").write_text(
         "from increment.untouched import VALUE\n\ndef test_unrelated():\n    assert VALUE == 1\n"
     )
+    from scripts.run_test_tier import _clean_pytest_environment
+
     environment = {
-        **os.environ,
+        **_clean_pytest_environment(os.environ),
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         "PYTEST_ADDOPTS": "",
         "GIT_CONFIG_NOSYSTEM": "1",
@@ -2034,14 +2038,16 @@ def test_affected_feedback_detects_same_size_timestamp_cache_edits(
     tmp_path: Path, changed_target: str
 ) -> None:
     project = Path(__file__).resolve().parents[1]
+    from scripts.run_test_tier import _clean_pytest_environment
+
     base = _make_affected_fixture(tmp_path)
     target = tmp_path / ("pkg/leaf.py" if changed_target == "provider" else "tests/test_direct.py")
     timestamp = 1_700_000_000
     os.utime(target, (timestamp, timestamp))
     environment = {
         key: value
-        for key, value in os.environ.items()
-        if not key.startswith(("INCREMENT_", "PYTEST_", "TESTMON_"))
+        for key, value in _clean_pytest_environment(os.environ).items()
+        if not key.startswith(("INCREMENT_", "TESTMON_"))
         and key not in {"PYTHONPYCACHEPREFIX", "PYTHONDONTWRITEBYTECODE"}
     }
     environment.update(

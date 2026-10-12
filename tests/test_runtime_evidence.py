@@ -8,12 +8,14 @@ from pathlib import Path
 
 import pytest
 
+from scripts.run_test_tier import _clean_pytest_environment
+
 
 def _child_environment() -> dict[str, str]:
     """The caller's environment without an outer affected run's selection controls."""
     return {
         name: value
-        for name, value in os.environ.items()
+        for name, value in _clean_pytest_environment(os.environ).items()
         if not name.startswith("INCREMENT_AFFECTED_")
     }
 

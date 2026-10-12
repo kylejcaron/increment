@@ -14,17 +14,30 @@ import pytest
 from scripts.run_test_tier import _clean_pytest_environment, run_with_budget
 
 
-def test_clean_pytest_environment_removes_inherited_controls():
-    environment = {
-        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
-        "PYTEST_ADDOPTS": "-n 0",
-        "PYTEST_CURRENT_TEST": "test_outer",
-        "COV_CORE_SOURCE": "increment",
-        "COVERAGE_FILE": ".coverage",
-        "PATH": "/bin",
-    }
+def test_pytest_environment_guard_reports_unrestored_control():
+    repository = Path(__file__).parents[1]
+    with tempfile.TemporaryDirectory(dir=repository) as temporary:
+        leaking_test = Path(temporary) / "test_environment_leak.py"
+        leaking_test.write_text(
+            "import os\n"
+            "def test_leaks_autoload_control():\n"
+            "    os.environ['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:tach", str(leaking_test)],
+            cwd=repository,
+            env=_clean_pytest_environment(os.environ),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
 
-    assert _clean_pytest_environment(environment) == {"PATH": "/bin"}
+    assert result.returncode == 1
+    assert (
+        "test leaked environment variable PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'"
+        in result.stdout + result.stderr
+    )
 
 
 @pytest.mark.slow
