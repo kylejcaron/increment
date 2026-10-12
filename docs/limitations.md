@@ -181,7 +181,7 @@ above 0.15 carries the older `ratio_denominator_precision` note. Both are adviso
 qualifications, not refusals or corrected intervals: the estimate and interval are
 emitted unchanged, and a flagged row is still anticonservative.
 
-The cutoff comes from `calibration/ratio_skew.py` (seed 20261010, 6,000 replications
+The cutoff comes from `campaign-module:calibration.ratio_skew` (seed 20261010, 6,000 replications
 per cell, lognormal denominators with an independent `Normal(2, 1)` numerator, coverage
 among the rows the log-scale admission guard admits at nominal 95%):
 

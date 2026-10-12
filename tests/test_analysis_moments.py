@@ -76,7 +76,7 @@ def _legacy_fixed10_rows(**extra: object) -> list[dict[str, object]]:
         "winsor_n": None,
         "winsor_n_lower": None,
         "winsor_n_upper": None,
-        "moments_format": 11,
+        "moments_format": 10,
         **extra,
     }
     from increment.decision_wire import compiled_plan_to_json

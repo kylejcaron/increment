@@ -1001,14 +1001,14 @@ def test_secondary_family_is_selected_per_population_with_the_same_guarantee(tmp
         analysis.close()
 
 
-def _assert_exploratory_selection_public_surfaces(rows, selected):
+def _assert_triggered_selection_public_surfaces(rows, selected):
     from increment.tables import estimates_to_readout, readout_table
 
     restored = ReadoutResults.model_validate_json(rows.model_dump_json())
     text = repr(selected)
-    assert "outcome-dependent" in text
-    assert "exploratory_family" in text
-    assert "no controlled guarantee" in text
+    assert "outcome-independent" in text
+    assert "asymptotic-sequential guarantee" in text
+    assert "retained family" in text
     restored_selected = next(
         row
         for row in restored
@@ -1018,9 +1018,9 @@ def _assert_exploratory_selection_public_surfaces(rows, selected):
         and row.discovery
     )
     assert restored_selected.discovery is True
-    assert restored_selected.family_guarantee is None
+    assert restored_selected.family_guarantee == "asymptotic_sequential"
     assert restored_selected.family_procedure == "e_bh"
-    assert restored_selected.multiplicity_status == "exploratory_family"
+    assert restored_selected.multiplicity_status == "declared_plan"
     assert restored_selected.family_id == selected.family_id
     assert restored_selected.family_axes == selected.family_axes
     assert restored_selected.family_q == selected.family_q
@@ -1032,20 +1032,18 @@ def _assert_exploratory_selection_public_surfaces(rows, selected):
         & (frame["group_id"] == selected.group_id)
     ].iloc[0]
     assert selected_frame["family_id"] == selected.family_id
-    assert selected_frame["multiplicity_status"] == "exploratory_family"
+    assert selected_frame["multiplicity_status"] == "declared_plan"
     assert selected_frame["family_procedure"] == "e_bh"
     assert selected_frame["family_q"] == pytest.approx(selected.family_q)
     assert all(axis in selected_frame["family_axes"] for axis in selected.family_axes)
     assert bool(selected_frame["discovery"])
-    import pandas as pd
-
-    assert pd.isna(selected_frame["family_guarantee"])
+    assert selected_frame["family_guarantee"] == "asymptotic_sequential"
     rendered = readout_table(estimates_to_readout(restored)).gt().as_raw_html()
-    assert "outcome-dependent" in rendered
-    assert "no controlled guarantee" in rendered
+    assert "outcome-independent" in rendered
+    assert "asymptotic-sequential guarantee" in rendered
 
 
-def test_exploratory_selection_is_qualified_on_public_surfaces(tmp_path):
+def test_triggered_selection_is_qualified_on_public_surfaces(tmp_path):
     secondaries = ("aux_a", "aux_b")
     analysis, _ = _analysis(
         tmp_path,
@@ -1063,7 +1061,7 @@ def test_exploratory_selection_is_qualified_on_public_surfaces(tmp_path):
             and row.metric in secondaries
             and row.discovery
         )
-        _assert_exploratory_selection_public_surfaces(rows, selected)
+        _assert_triggered_selection_public_surfaces(rows, selected)
     finally:
         analysis.close()
 
@@ -1103,8 +1101,8 @@ def test_filtered_readout_keeps_original_family_qualification(tmp_path):
         assert filtered_qualification == qualification
         html = readout_table(estimates_to_readout(filtered)).gt().as_raw_html()
         assert "Partial view" in html
-        assert "outcome-dependent" in html
-        assert "no controlled guarantee" in html
+        assert "outcome-independent" in html
+        assert "asymptotic-sequential guarantee" in html
     finally:
         analysis.close()
 
