@@ -971,6 +971,13 @@ codes = {w.message.code for w in caught if isinstance(w.message, IncrementWarnin
 Sitewide behavior is exposed through `Analysis.sitewide`, with output values
 available from the receive-only results namespace.
 
+`Analysis.sitewide(metric, population="assigned")` reports an assigned
+intent-to-treat whole-site impact, including when the experiment declares a
+trigger. `population="triggered"` raises
+`analysis.sitewide.triggered_population_unsupported` before data loading; use
+`run()` for the triggered cohort effect. Both `SitewideImpact` and
+`SitewideRatioImpact` serialize `analysis_population="assigned"`.
+
 `increment.results.LiftEstimate.family_procedure` identifies the canonical correction
 procedure retained with the result's family (`e_bh`, `bonferroni`, or `bh`), when
 applicable. Its read-only `reason` exposes only the persisted reason for a coded cell

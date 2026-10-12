@@ -1491,11 +1491,23 @@ _AUXILIARY_ROWS: tuple[EntryRow, ...] = (
         ),
     ),
     _triggered_auxiliary_row(
-        "triggered-read-sitewide",
-        "`sitewide()` with a declared trigger",
-        ("sitewide_definitions_refused",),
-        ("sitewide_artifact_refused",),
+        "triggered-read-sitewide-assigned",
+        "`sitewide(population='assigned')` with a declared trigger",
+        ("sitewide_definitions_assigned_supported",),
+        ("sitewide_artifact_assigned_supported",),
         _other_auxiliary_bindings("sitewide"),
+    ),
+    _triggered_auxiliary_row(
+        "triggered-read-sitewide",
+        "`sitewide(population='triggered')` with a declared trigger",
+        ("sitewide_triggered_population_refused",),
+        ("sitewide_artifact_triggered_population_refused",),
+        (
+            ("unit summary", "sitewide_from_unit_summary_triggered_population_refused"),
+            ("unit panel", "sitewide_from_unit_panel_triggered_population_refused"),
+            ("switchback panel", "sitewide_from_switchback_panel_triggered_population_refused"),
+            ("portable moments", "sitewide_from_moments_triggered_population_refused"),
+        ),
     ),
     _triggered_auxiliary_row(
         "triggered-read-cate",

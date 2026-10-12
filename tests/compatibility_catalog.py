@@ -331,9 +331,18 @@ MATRIX: dict[str, dict[str, Cell]] = {
         "active": _NA_REPORT_LAYER,
     },
     "sitewide": {
-        "mean": S(),
-        "conversion": S(),
-        "ratio": S(note="numerator and denominator get independent site sums"),
+        "mean": S(
+            note="assigned intent-to-treat sitewide impact is supported under a declared trigger"
+        ),
+        "conversion": S(
+            note="assigned intent-to-treat sitewide impact is supported under a declared trigger"
+        ),
+        "ratio": S(
+            note=(
+                "numerator and denominator get independent site sums; the assigned "
+                "intent-to-treat impact is supported under a declared trigger"
+            )
+        ),
         "retention": R(
             "site volume is undefined for a retention metric",
             CapabilityError,

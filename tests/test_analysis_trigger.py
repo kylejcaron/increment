@@ -25,6 +25,7 @@ from increment.errors import (
     UnsupportedRequestError,
 )
 from increment.estimation.results import LiftEstimate
+from increment.estimation.sitewide import SitewideImpact
 from increment.semantics import load
 from tests.warning_codes import warning_codes
 
@@ -587,13 +588,19 @@ def _assert_parity_tables_close(left: pa.Table, right: pa.Table, *, keys: tuple[
 
 
 def _analysis(
-    tmp_path, table, trigger="saw_surface", *, on_mixed_assignment="error", allocation_scheme=None
+    tmp_path,
+    table,
+    trigger="saw_surface",
+    *,
+    on_mixed_assignment="error",
+    allocation_scheme=None,
+    end=None,
 ):
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
     return Analysis.from_definitions(
         "exp",
-        _write_defs(tmp_path, trigger, allocation_scheme=allocation_scheme),
+        _write_defs(tmp_path, trigger, allocation_scheme=allocation_scheme, end=end),
         con,
         on_mixed_assignment=on_mixed_assignment,
         source_snapshot_evidence=SourceSnapshotEvidence(
@@ -1890,46 +1897,158 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
             _close_parity_analysis(adopted)
 
 
-def test_triggered_sitewide_refuses_with_source_specific_reason(tmp_path):
-    from tests.capability_consumers_auxiliary import assert_refusal
+def test_sitewide_reports_assigned_impact_for_triggered_experiment(tmp_path):
+    from tests.analysis_factory import _native_source, native_connection
+    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
 
-    analysis = _analysis(tmp_path, _events(n_per_arm=100))
+    analysis = _analysis(
+        tmp_path, _events(n_per_arm=100, trigger_rate=0.2, effect=0.5), end="2024-01-16"
+    )
+    untriggered = _analysis(
+        tmp_path,
+        _events(n_per_arm=100, trigger_rate=0.2, effect=0.5),
+        trigger=None,
+        end="2024-01-16",
+    )
     adopted = None
     try:
-        with pytest.raises(CapabilityError) as raised:
-            analysis.sitewide("revenue")
-        assert raised.value.code == "analysis.sitewide.triggered_population_unsupported"
-        assert_refusal(
-            "triggered_auxiliary_reads",
-            "sitewide_definitions_refused",
-            raised.value,
-            stage="read",
-        )
-        from tests.analysis_factory import _native_source, native_connection
-        from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+        triggered_result = analysis.sitewide("revenue")
+        untriggered_result = untriggered.sitewide("revenue")
+        assert triggered_result.analysis_population == "assigned"
+        assert triggered_result.absolute_impact == pytest.approx(untriggered_result.absolute_impact)
+        assert triggered_result.relative_impact == pytest.approx(untriggered_result.relative_impact)
 
         adopted = _publish_and_adopt(
-            native_connection(_native_source(analysis)),
-            analysis,
-            kinds=("trigger_population", "trigger_measure_stats"),
+            native_connection(_native_source(analysis)), analysis, kinds=("site_volume",)
         )
-        with pytest.raises(CapabilityError) as artifact_refused:
-            adopted.sitewide("revenue")
-        assert artifact_refused.value.code == "analysis.sitewide.triggered_population_unsupported"
-        assert_refusal(
+        artifact_result = adopted.sitewide("revenue")
+        assert artifact_result.analysis_population == "assigned"
+        assert artifact_result.absolute_impact == pytest.approx(triggered_result.absolute_impact)
+        assert artifact_result.relative_impact == pytest.approx(triggered_result.relative_impact)
+        from tests.capability_consumers_auxiliary import assert_support
+
+        assert_support(
             "triggered_auxiliary_reads",
-            "sitewide_artifact_refused",
-            artifact_refused.value,
-            stage="read",
+            "sitewide_definitions_assigned_supported",
+            triggered_result,
         )
+        assert_support(
+            "triggered_auxiliary_reads",
+            "sitewide_artifact_assigned_supported",
+            artifact_result,
+        )
+
+        import copy
+        import pickle
+
+        from tests.capability_consumers_auxiliary import assert_refusal
+
+        for source_analysis, outcome_id in (
+            (analysis, "sitewide_triggered_population_refused"),
+            (adopted, "sitewide_artifact_triggered_population_refused"),
+        ):
+            with pytest.raises(CapabilityError) as refused:
+                source_analysis.sitewide("revenue", population="triggered")
+            assert refused.value.code == "analysis.sitewide.triggered_population_unsupported"
+            assert refused.value.context == {"experiment": "exp", "population": "triggered"}
+
+            for copied in (copy.deepcopy(refused.value), pickle.loads(pickle.dumps(refused.value))):
+                assert copied.code == refused.value.code
+                assert copied.context == refused.value.context
+            assert_refusal("triggered_auxiliary_reads", outcome_id, refused.value, stage="read")
     finally:
-        if adopted is None:
-            analysis.close()
-        else:
+        analysis.close()
+        untriggered.close()
+        if adopted is not None:
             _close_parity_analysis(adopted)
 
 
-def test_triggered_sitewide_refusal_from_seam_keeps_coded_source_reason():
+def test_sitewide_site_volume_excludes_events_after_the_snapshot_cutoff(tmp_path):
+    from tests.analysis_factory import _native_source, native_connection
+    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+
+    base = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5)
+    late = pa.table(
+        {
+            "user_id": ["visitor"],
+            "group_id": [None],
+            "ts": pa.array([dt.datetime(2024, 1, 16, 12)], type=base.schema.field("ts").type),
+            "event": ["revenue"],
+            "value": [1_000.0],
+            "experiment_id": [None],
+        },
+        schema=base.schema,
+    )
+    with_late = _analysis(tmp_path, pa.concat_tables([base, late]), end="2024-01-16")
+    without_late = _analysis(tmp_path, base, end="2024-01-16")
+    adopted = None
+    try:
+        native = with_late.sitewide("revenue")
+        reference = without_late.sitewide("revenue")
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(with_late)), with_late, kinds=("site_volume",)
+        )
+        artifact = adopted.sitewide("revenue")
+        assert isinstance(reference, SitewideImpact)
+        for result in (native, artifact):
+            assert isinstance(result, SitewideImpact)
+            assert result.site_total_volume == pytest.approx(reference.site_total_volume)
+            assert result.relative_impact == pytest.approx(reference.relative_impact)
+    finally:
+        with_late.close()
+        without_late.close()
+        if adopted is not None:
+            _close_parity_analysis(adopted)
+
+
+def test_sitewide_triggered_population_without_trigger_refuses_before_loading(
+    tmp_path, monkeypatch
+):
+    analysis = _analysis(tmp_path, _events(n_per_arm=10), trigger=None)
+    try:
+        from tests.analysis_factory import _native_source
+
+        source = _native_source(analysis)
+        monkeypatch.setattr(
+            source, "sitewide_evidence", lambda *args, **kwargs: pytest.fail("loaded sitewide data")
+        )
+        with pytest.raises(CapabilityError) as refused:
+            analysis.sitewide("revenue", population="triggered")
+        assert refused.value.code == "analysis.sitewide.triggered_population_unsupported"
+        assert refused.value.context == {"experiment": "exp", "population": "triggered"}
+    finally:
+        analysis.close()
+
+
+def test_sitewide_triggered_population_refuses_before_loading_on_every_ingress():
+    from tests.capability_consumers_auxiliary import assert_refusal
+    from tests.test_constructor_refusal_matrix import (
+        _moments_analysis,
+        _panel_analysis,
+        _summary_analysis,
+    )
+
+    analyses = (
+        (_summary_analysis(), "sitewide_from_unit_summary_triggered_population_refused"),
+        (_panel_analysis(), "sitewide_from_unit_panel_triggered_population_refused"),
+        (_moments_analysis(), "sitewide_from_moments_triggered_population_refused"),
+        (
+            _switchback_panel_analysis(),
+            "sitewide_from_switchback_panel_triggered_population_refused",
+        ),
+    )
+    try:
+        for analysis, outcome_id in analyses:
+            with pytest.raises(CapabilityError) as refused:
+                analysis.sitewide("revenue", population="triggered")
+            assert refused.value.code == "analysis.sitewide.triggered_population_unsupported"
+            assert_refusal("triggered_auxiliary_reads", outcome_id, refused.value, stage="read")
+    finally:
+        for analysis, _ in analyses:
+            analysis.close()
+
+
+def test_triggered_sitewide_seam_keeps_source_specific_refusal():
     import pandas as pd
 
     analysis = Analysis.from_unit_summary(
@@ -1948,6 +2067,18 @@ def test_triggered_sitewide_refusal_from_seam_keeps_coded_source_reason():
     with pytest.raises(CapabilityError) as raised:
         analysis.sitewide("revenue")
     assert raised.value.code == "facade.analysis.operation"
+
+
+def test_sitewide_unknown_population_refuses():
+    from tests.analysis_factory import make_analysis
+
+    analysis = make_analysis()
+    try:
+        with pytest.raises(InvalidRequestError) as raised:
+            analysis.sitewide("revenue", population="both")  # ty: ignore[invalid-argument-type]
+        assert raised.value.code == "facade.analysis.invalid_population"
+    finally:
+        analysis.close()
 
 
 @pytest.mark.parametrize("population", ["assigned", "triggered"])
@@ -3442,13 +3573,6 @@ def test_quantile_experiment_with_trigger_narrows_to_the_triggered_population(tm
 )
 @pytest.mark.parametrize("operation", ("run_daily", "run_asof", "run_daily_lift", "run_asof_lift"))
 def test_triggered_day_axis_refuses_non_native_ingresses(ingress, operation):
-    from increment.semantics.assignment import (
-        IndependentBernoulliOrder,
-        SwitchbackAssignment,
-        SwitchbackWindow,
-    )
-    from increment.semantics.design import Randomized
-    from increment.semantics.unit_cycle import UnitCycleTApproximation
     from tests.analysis_factory import make_analysis
     from tests.capability_consumers_auxiliary import assert_refusal
 
@@ -3477,41 +3601,7 @@ def test_triggered_day_axis_refuses_non_native_ingresses(ingress, operation):
             control="control",
         )
     elif ingress == "from_switchback_panel":
-        source = Analysis.from_switchback_panel(
-            pa.Table.from_pylist(
-                [
-                    {
-                        "unit": unit,
-                        "cycle": cycle,
-                        "period": period,
-                        "step": step,
-                        "group": group,
-                        "value": float(cycle + period + step),
-                    }
-                    for unit, order in (
-                        ("u1", ("control", "treatment")),
-                        ("u2", ("treatment", "control")),
-                    )
-                    for cycle in range(2)
-                    for period, group in enumerate(order)
-                    for step in range(2)
-                ]
-            ),
-            unit="unit",
-            cycle="cycle",
-            period="period",
-            step="step",
-            group="group",
-            metrics={"value": "mean"},
-            identification=Randomized(
-                control_group="control", allocation={"control": 0.5, "treatment": 0.5}
-            ),
-            assignment=SwitchbackAssignment(
-                sequence=IndependentBernoulliOrder(probability_ct=0.5),
-                window=SwitchbackWindow(washout_steps=1, observation_steps=1),
-            ),
-            contrast_references={"value": UnitCycleTApproximation()},
-        )
+        source = _switchback_panel_analysis()
     else:
         source = make_analysis()
 
@@ -3526,3 +3616,49 @@ def test_triggered_day_axis_refuses_non_native_ingresses(ingress, operation):
         )
     finally:
         source.close()
+
+
+def _switchback_panel_analysis() -> Analysis:
+    from increment.semantics.assignment import (
+        IndependentBernoulliOrder,
+        SwitchbackAssignment,
+        SwitchbackWindow,
+    )
+    from increment.semantics.design import Randomized
+    from increment.semantics.unit_cycle import UnitCycleTApproximation
+
+    return Analysis.from_switchback_panel(
+        pa.Table.from_pylist(
+            [
+                {
+                    "unit": unit,
+                    "cycle": cycle,
+                    "period": period,
+                    "step": step,
+                    "group": group,
+                    "value": float(cycle + period + step),
+                }
+                for unit, order in (
+                    ("u1", ("control", "treatment")),
+                    ("u2", ("treatment", "control")),
+                )
+                for cycle in range(2)
+                for period, group in enumerate(order)
+                for step in range(2)
+            ]
+        ),
+        unit="unit",
+        cycle="cycle",
+        period="period",
+        step="step",
+        group="group",
+        metrics={"value": "mean"},
+        identification=Randomized(
+            control_group="control", allocation={"control": 0.5, "treatment": 0.5}
+        ),
+        assignment=SwitchbackAssignment(
+            sequence=IndependentBernoulliOrder(probability_ct=0.5),
+            window=SwitchbackWindow(washout_steps=1, observation_steps=1),
+        ),
+        contrast_references={"value": UnitCycleTApproximation()},
+    )

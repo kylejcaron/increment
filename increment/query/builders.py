@@ -681,10 +681,12 @@ def _windowed_fact_sum(
     *,
     value_column: str | None,
     part: Literal["numerator", "denominator"],
+    observation_cutoff: dt.datetime | None = None,
 ) -> ir.Table:
     """One ratio part's whole-site sum over events in
     `[experiment.start, experiment.end]` (date-inclusive, an unset `end`
-    open on the right).
+    open on the right), and at or before *observation_cutoff* when a source
+    snapshot pins one, so site volume and arm moments see the same events.
 
     Shared by `site_volume` (one fact table serving both ratio parts) and
     any caller resolving numerator/denominator against independently
@@ -697,6 +699,8 @@ def _windowed_fact_sum(
     events = events.filter(local_date >= ibis.literal(experiment.start_day))
     if experiment.end is not None:
         events = events.filter(local_date <= ibis.literal(experiment.end_day))
+    if observation_cutoff is not None:
+        events = events.filter(events.ts <= _utc_timestamp_literal(events.ts, observation_cutoff))
     return events.aggregate(y=ibis.coalesce(events.value.sum(), 0.0))
 
 
@@ -706,6 +710,7 @@ def site_volume(
     experiment: Experiment,
     *,
     value_column: str | None = None,
+    observation_cutoff: dt.datetime | None = None,
 ) -> ir.Table:
     """Whole-site metric volume within the experiment's enrollment window
     (no exposure join - every unit's events count, exposed or not).
@@ -723,11 +728,21 @@ def site_volume(
     """
     validate_site_volume_metric(metric)
     num = _windowed_fact_sum(
-        fact_table, metric, experiment, value_column=value_column, part="numerator"
+        fact_table,
+        metric,
+        experiment,
+        value_column=value_column,
+        part="numerator",
+        observation_cutoff=observation_cutoff,
     )
     if isinstance(metric, RatioMetric):
         den = _windowed_fact_sum(
-            fact_table, metric, experiment, value_column=value_column, part="denominator"
+            fact_table,
+            metric,
+            experiment,
+            value_column=value_column,
+            part="denominator",
+            observation_cutoff=observation_cutoff,
         )
         totals = num.cross_join(den, rname="{name}_den")
     else:

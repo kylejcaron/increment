@@ -185,9 +185,9 @@ _TRIGGERED_SITEWIDE_UNSUPPORTED = RefusalSpec(
     "analysis.sitewide.triggered_population_unsupported",
     CapabilityError,
     template=(
-        "sitewide() is an all-units deployment estimand and cannot isolate trigger-eligible "
-        "units from the whole-site evidence for {experiment!r}; use run() for the triggered "
-        "cohort effect."
+        "sitewide() does not offer the triggered-population impact for {experiment!r}; "
+        "request population='assigned' for the whole-site impact, or use run() for the "
+        "triggered cohort effect."
     ),
 )
 
@@ -1933,7 +1933,12 @@ class Analysis:
         return triggered.triggered_source()
 
     def sitewide(
-        self, metric_name: str, *, arm: str | None = None, alpha: float = 0.05
+        self,
+        metric_name: str,
+        *,
+        arm: str | None = None,
+        alpha: float = 0.05,
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> SitewideImpact | SitewideRatioImpact:
         """Whole-site impact of shipping *metric_name*'s lift to every unit.
 
@@ -1956,6 +1961,11 @@ class Analysis:
             ``group_id`` of the treatment arm to score.
         alpha : float
             Two-sided significance level for both intervals. Default 0.05.
+        population : Literal["assigned", "triggered"]
+            Population for the requested impact. ``"assigned"`` (the default)
+            is the whole-site intent-to-treat impact. The triggered-population
+            sitewide estimand is not offered; use :meth:`run` for the triggered
+            cohort effect.
 
         Returns
         -------
@@ -1976,13 +1986,17 @@ class Analysis:
             ``arm`` names an arm that isn't enrolled; ``alpha`` is not
             strictly between 0 and 1.
         """
-        experiment = getattr(self, "_experiment", None)
-        if experiment is not None and experiment.trigger is not None:
-            _raise(
-                "analysis.sitewide.triggered_population_unsupported",
-                experiment=experiment.name,
+        if population not in ("assigned", "triggered"):
+            _refuse(_INVALID_POPULATION, population=population)
+        if population == "triggered":
+            # Before any family dispatch, so every ingress reports this estimand's refusal.
+            _refuse(
+                _TRIGGERED_SITEWIDE_UNSUPPORTED,
+                experiment=self._experiment_name,
+                population=population,
             )
-        return SitewideReadouts(src=self._src, experiment=getattr(self, "_experiment", None)).run(
+        experiment = getattr(self, "_experiment", None)
+        return SitewideReadouts(src=self._src, experiment=experiment).run(
             SitewideRequest(metric_name=metric_name, arm=arm, alpha=alpha)
         )
 
