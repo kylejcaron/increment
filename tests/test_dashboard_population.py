@@ -368,6 +368,40 @@ def test_explicit_triggered_sequential_run_returns_triggered_checkpoint_rows(tmp
 
 
 @pytest.mark.slow
+def test_triggered_sequential_qualification_uses_selected_population(tmp_path):
+    from increment.dashboard._format import allocation_evidence
+
+    analysis = _triggered_dashboard(tmp_path, sequential=True)
+    try:
+        analysis.capture_sequential(finalized=True, as_of=dt.date(2024, 1, 15))
+        snapshot = prepare_dashboard(
+            analysis,
+            config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
+        )
+        assert snapshot.allocation is not None
+        assert snapshot.triggered_allocation is not None
+        assigned_evidence = allocation_evidence(snapshot.allocation)
+        triggered_evidence = allocation_evidence(snapshot.triggered_allocation)
+
+        assigned = render_header(snapshot, population="assigned").text
+        triggered = render_header(snapshot, population="triggered").text
+        assert "Dashboard allocation check (assigned" in assigned
+        assert assigned_evidence in assigned
+        assert "Dashboard triggered-population balance check (triggered" in triggered
+        assert triggered_evidence in triggered
+        assert "Dashboard allocation check (assigned" not in triggered
+
+        payload = build_payload(analysis, snapshot=snapshot)
+        assigned_payload = payload["populationViews"]["assigned"]["qualifications"]
+        triggered_payload = payload["populationViews"]["triggered"]["qualifications"]
+        assert assigned_evidence in assigned_payload
+        assert triggered_evidence in triggered_payload
+        assert "Dashboard allocation check (assigned" not in triggered_payload
+    finally:
+        analysis.close()
+
+
+@pytest.mark.slow
 def test_triggered_sequential_group_data_decodes_the_triggered_checkpoint(tmp_path):
     analysis = _triggered_dashboard(tmp_path, sequential=True)
     try:

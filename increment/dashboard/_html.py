@@ -18,8 +18,11 @@ import marimo as mo
 import pandas as pd
 from scipy.stats import norm
 
+from increment._interpretation import interpret_readout, render_readout_text
 from increment.dashboard._data import (
+    _OVERVIEW_WHOLE,
     DashboardSnapshot,
+    _dashboard_allocation_qualification,
     _default_population,
     _population_snapshot,
     added_row,
@@ -216,8 +219,7 @@ def _header_chips(snapshot: DashboardSnapshot) -> str:
     return _chips(chips)
 
 
-def _qualification_block(snapshot: DashboardSnapshot) -> str:
-    text = readout_interpretation_text(snapshot)
+def _qualification_fragment(text: str) -> str:
     if not text:
         return ""
     content = esc(text).replace("\n", "<br>")
@@ -225,6 +227,57 @@ def _qualification_block(snapshot: DashboardSnapshot) -> str:
         '<div class="inc-dashboard-status">'
         f"<strong>Readout qualifications</strong><p>{content}</p></div>"
     )
+
+
+def _qualification_block(snapshot: DashboardSnapshot) -> str:
+    return _qualification_fragment(readout_interpretation_text(snapshot))
+
+
+def _added_qualification_block(snapshot: DashboardSnapshot, metric: str) -> str:
+    population = _default_population(snapshot)
+    overview = snapshot.overview
+    if overview is None:
+        return _qualification_fragment(
+            f"Readout qualifications unavailable for added metric {metric}: "
+            "its collection evidence was not captured."
+        )
+    capture = next(
+        (
+            capture
+            for key, capture in snapshot.explore.items()
+            if key[0] == population
+            and key[1] == _OVERVIEW_WHOLE
+            and key[2] is None
+            and key[4] is None
+        ),
+        None,
+    )
+    if capture is None:
+        return _qualification_fragment(
+            f"Readout qualifications unavailable for added metric {metric}: "
+            "its collection evidence was not captured."
+        )
+    collection = capture.load()
+    rows = tuple(row for row in overview.exploratory if row.metric == metric)
+    if not rows:
+        return _qualification_fragment(
+            f"Readout qualifications unavailable for added metric {metric}: "
+            "its retained result was not captured."
+        )
+    interpretation = interpret_readout(rows, getattr(collection, "metadata", None))
+    rendered = []
+    for group in interpretation.groups:
+        if group.population not in (None, population):
+            continue
+        allocation, _ = _dashboard_allocation_qualification(snapshot, population)
+        evidence = render_readout_text(replace(interpretation, groups=(group,)))
+        rendered.append(
+            f"Source snapshot: {group.source_snapshot_id or 'unknown'}\n"
+            + allocation
+            + "\n"
+            + evidence
+        )
+    return _qualification_fragment("\n\n".join(rendered))
 
 
 def _header_cards(snapshot: DashboardSnapshot) -> str:
@@ -1144,21 +1197,44 @@ def _role_disclosures(snapshot: DashboardSnapshot) -> list[str]:
     rows_by_role: dict[str, list[Mapping[str, Any]]] = {}
     for row in snapshot.readout_rows:
         rows_by_role.setdefault(str(row.get("role") or "unassigned"), []).append(row)
+    all_rows = snapshot.readout_rows
+    several_arms = len({row.get("group_id") for row in all_rows}) > 1
+    several_methods = len({(row.get("method"), row.get("method_role")) for row in all_rows}) > 1
     items = []
     for role in ("primary", "secondary", "guardrail", "unassigned"):
         rows = rows_by_role.get(role)
         if rows:
-            items.append(_role_disclosure(role, rows))
+            items.append(
+                _role_disclosure(
+                    role,
+                    rows,
+                    several_arms=several_arms,
+                    several_methods=several_methods,
+                )
+            )
     return items
 
 
-def _role_disclosure(role: str, rows: Sequence[Mapping[str, Any]]) -> str:
+def _role_disclosure(
+    role: str,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    several_arms: bool,
+    several_methods: bool,
+) -> str:
     label = ROLE_LABELS.get(role, role)
     tails = "; ".join(f"{esc(row.get('metric'))} {tail_word(row)}" for row in rows)
     sentences = [f"<strong>{esc(label)}</strong>: {tails}."]
-    outcomes = "; ".join(f"{esc(row.get('metric'))}: {esc(outcome_label(row))}" for row in rows)
+
+    def name(row: Mapping[str, Any]) -> str:
+        metric = str(row.get("metric"))
+        qualifiers = [str(row.get("group_id"))] if several_arms else []
+        if several_methods:
+            qualifiers.append(f"{row.get('method')}, {row.get('method_role')}")
+        return f"{metric} ({'; '.join(qualifiers)})" if qualifiers else metric
+
+    outcomes = "; ".join(f"{esc(name(row))}: {esc(outcome_label(row))}" for row in rows)
     sentences.append(f"Outcomes: {outcomes}.")
-    several_methods = len({(row.get("method"), row.get("method_role")) for row in rows}) > 1
     levelled = [
         (
             f"{row.get('metric')} ({row.get('method')}, {row.get('method_role')})"
@@ -1362,7 +1438,7 @@ def _added_metric_details(snapshot: DashboardSnapshot, model: Any) -> mo.Html:
         )
         + _geometry_disclosure(snapshot, [row], label=INTERVALS_DISCLOSURE)
         + note
-        + _qualification_block(snapshot),
+        + _added_qualification_block(snapshot, model.name),
     )
 
 

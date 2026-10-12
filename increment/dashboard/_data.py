@@ -943,7 +943,7 @@ def _analysis_integrity_qualification(group) -> str:
 def _dashboard_allocation_qualification(
     snapshot: DashboardSnapshot, population: str | None
 ) -> tuple[str, bool]:
-    selected = population or "assigned"
+    selected = population or _default_population(snapshot)
     if selected == "triggered":
         allocation = snapshot.triggered_allocation
         refusal = snapshot.triggered_allocation_refusal
@@ -969,26 +969,40 @@ def _dashboard_allocation_qualification(
     return f"{prefix}: {state}. {detail}. {evidence}", allocation.is_srm
 
 
-def readout_interpretation_text(snapshot: DashboardSnapshot) -> str:
+def readout_interpretation_text(
+    snapshot: DashboardSnapshot,
+    *,
+    rows: Sequence[Any] | None = None,
+    collection: LiftEstimates | None = None,
+) -> str:
     """Render source, analysis-integrity, and dashboard allocation qualifications."""
-    collection = snapshot.readout_collection
-    rows = snapshot.estimates if collection is None else collection
+    collection = snapshot.readout_collection if collection is None else collection
+    rows = (snapshot.estimates if collection is None else collection) if rows is None else rows
     metadata = None if collection is None else collection.metadata
     interpretation = interpret_readout(rows, metadata)
-    groups = []
-    for group in interpretation.groups:
-        allocation_text, mismatch = _dashboard_allocation_qualification(snapshot, group.population)
+    selected_population = (
+        next(iter(snapshot.population_estimates))
+        if len(snapshot.population_estimates) == 1
+        else _default_population(snapshot)
+    )
+    groups = [
+        group for group in interpretation.groups if group.population in (None, selected_population)
+    ]
+    rendered = []
+    for group in groups:
+        population = group.population or selected_population
+        allocation_text, mismatch = _dashboard_allocation_qualification(snapshot, population)
         analysis_text = _analysis_integrity_qualification(group)
         qualifications = (
             (allocation_text, analysis_text) if mismatch else (analysis_text, allocation_text)
         )
-        groups.append(
+        rendered.append(
             f"Source snapshot: {group.source_snapshot_id or 'unknown'}\n"
             + "\n".join(qualifications)
             + "\n"
             + render_readout_text(replace(interpretation, groups=(group,)))
         )
-    return "\n\n".join(groups)
+    return "\n\n".join(rendered)
 
 
 # Shared read-only accessors for the rendering layer.

@@ -250,18 +250,21 @@ def _build_payload_for_population(
         scopes[key] = {"label": label, "dimension": dimension, "source": source}
         breakouts[key] = (source, dimension)
     table = results_table(snapshot) + results_warnings(snapshot)
+    qualifications = readout_interpretation_text(snapshot)
     return {
         "title": snapshot.title,
         "theme": asdict(snapshot.config.theme),
         "description": snapshot.description or "",
         "meta": _meta(snapshot),
         "primary": _primary(snapshot),
+        "qualifications": qualifications,
         "healthStatus": health_status(snapshot),
         "healthReport": (
             None if snapshot.health is None else snapshot.health.model_dump(mode="json")
         ),
         "report": {
             "results": _styled(table),
+            "qualifications": qualifications,
             "notes": _report_notes(snapshot),
             "context": _report_context(snapshot),
         },
@@ -507,7 +510,7 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
     rows = snapshot.readout_rows
     notes: list[str] = []
     if not rows:
-        return [readout_interpretation_text(snapshot)]
+        return []
     several_arms = len({row.get("group_id") for row in rows}) > 1
     several_methods = len({(row.get("method"), row.get("method_role")) for row in rows}) > 1
 
@@ -534,7 +537,6 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
             + "; ".join(f"{label} ({', '.join(names)})" for label, names in groups.items())
             + "."
         )
-    notes.append(readout_interpretation_text(snapshot))
     levels = {float(row["level"]) for row in rows if not is_missing(row.get("level"))}
     if len(levels) > 1:
         notes.append("Interval levels differ; compare each interval only with its own level.")
@@ -570,7 +572,7 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
     if any(row.get("family_guarantee") == "asymptotic_sequential" for row in rows):
         notes.append("The sequential family guarantee is asymptotic, not finite-sample.")
     for row in rows:
-        notes.append(f"{row.get('metric')}: {outcome_label(row)}")
+        notes.append(f"{name(row)}: {outcome_label(row)}")
         confidence_set = complete_confidence_set_text(row)
         retained = _plain(confidence_set) if confidence_set else ""
         if retained:

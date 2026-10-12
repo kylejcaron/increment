@@ -109,6 +109,11 @@ population with `DashboardConfig.expected_allocation` and reports its own
 evidence. When that dashboard check detects a mismatch, its source and
 population are named before effect summaries.
 
+The complete dashboard places the selected qualifications in the hero before
+the primary effect and at the start of Report before its effect and results
+table. An added metric's inspector uses that metric's captured collection
+evidence and retained qualifications, not the confirmatory Readout's rows.
+
 Assigned allocation checks describe assignment integrity. Triggered allocation
 checks describe balance in the triggered cohort and are not assignment-integrity
 checks. Triggered-cohort inference is appropriate only if triggering is

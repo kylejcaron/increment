@@ -84,6 +84,8 @@ code, .number { font-family: var(--inc-dashboard-mono-font); font-variant-numeri
 .hero-description { font-size: 14px; line-height: 1.6; max-width: 640px; margin: 0 0 13px; overflow-wrap: anywhere; }
 .hero-meta { font-size: 11px; color: var(--muted); line-height: 1.65; margin: 0; overflow-wrap: anywhere; }
 .hero-description:empty, .hero-meta:empty { display: none; }
+.hero-qualifications { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--inc-dashboard-radius); background: var(--tint); color: var(--ink); font-size: 12px; line-height: 1.55; white-space: pre-line; overflow-wrap: anywhere; }
+.hero-qualifications:empty { display: none; }
 
 /* The pill reports allocation only; its wording comes from the payload. */
 .health-pill {
@@ -287,6 +289,9 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
 .rpt-title { font-size: 30px; line-height: 1.12; letter-spacing: -.01em; margin: 0 0 8px; overflow-wrap: anywhere; }
 .rpt-meta { font-size: 12px; line-height: 1.5; color: var(--muted); margin: 0; overflow-wrap: anywhere; }
 .rpt-meta:empty { display: none; }
+.rpt-qualifications { padding: 12px 14px; margin: 0 0 14px; border: 1px solid var(--line); border-radius: var(--inc-dashboard-radius); background: var(--tint); color: var(--ink); font-size: 11px; line-height: 1.55; white-space: pre-line; overflow-wrap: anywhere; }
+.rpt-qualifications h2 { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; margin: 0 0 5px; color: var(--muted); }
+.rpt-qualifications p { margin: 0; }
 /* Primary card: the estimate carries the tone; the interval beneath is smaller and neutral. */
 .rpt-primary { display: block; min-width: 210px; max-width: 280px; margin: 0; padding: 11px 16px 12px; }
 .rpt-primary-label { margin: 0 0 4px; font-size: 10px; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; overflow-wrap: anywhere; }
@@ -577,6 +582,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
       </div>
       <p class="hero-description" id="hero-description"></p>
       <p class="hero-meta" id="hero-meta"></p>
+      <div class="hero-qualifications" id="hero-qualifications" hidden aria-label="Readout qualifications"></div>
     </div>
     <div class="primary-box" id="hero-primary" role="group" aria-labelledby="hero-primary-label" hidden>
       <p class="primary-label" id="hero-primary-label"></p>
@@ -738,6 +744,10 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
                 <p class="rpt-brand">increment <span>/ experiment report</span></p>
                 <p class="rpt-kind">Snapshot report</p>
               </div>
+              <section class="rpt-qualifications" id="report-qualifications" aria-label="Readout qualifications" hidden>
+                <h2>Readout qualifications</h2>
+                <p id="report-qualifications-text"></p>
+              </section>
               <div class="rpt-summary">
                 <div>
                   <h1 class="rpt-title" id="report-title"></h1>
@@ -902,7 +912,8 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     document.title = str(data.title) || 'Experiment dashboard';
     $('hero-title').textContent = str(data.title);
     $('hero-description').textContent = [str(data.description), str(data.populationDisclaimer)].filter(Boolean).join(' ');
-    $('hero-meta').textContent = str(data.meta) + ' · Population: ' + str(data.populationLabel || 'Assigned');
+    $('hero-qualifications').textContent = str(data.qualifications);
+    $('hero-qualifications').hidden = !str(data.qualifications);
     const box = $('hero-primary');
     for (const tone of TONES) box.classList.remove(toneClass(tone));
     $('hero').classList.toggle('no-primary', !primary);
@@ -1236,6 +1247,9 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
   function mountReport() {
     $('report-title').textContent = str(data.title);
     $('report-meta').textContent = str(data.meta);
+    const qualifications = str(report.qualifications);
+    $('report-qualifications-text').textContent = qualifications;
+    $('report-qualifications').hidden = qualifications === '';
     const box = $('report-primary-box');
     box.hidden = true;
     for (const tone of TONES) box.classList.remove(toneClass(tone));

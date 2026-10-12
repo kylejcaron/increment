@@ -1923,6 +1923,12 @@ def test_summary_levels_distinguish_methods_for_the_same_metric(
         method_at = summary.index(str(row["method"]))
         preceding = [value for start, value in levels if start < method_at]
         assert preceding[-1] == pytest.approx(float(row["level"]), abs=0.00005)
+    notes = "\n".join(_app._report_notes(snapshot))
+    disclosure = render_results(snapshot).text
+    for row in (decision, sensitivity):
+        attribution = f"{row['metric']} ({row['method']}, {row['method_role']})"
+        assert attribution in notes
+        assert attribution in disclosure
 
 
 def test_a_rising_trajectory_of_a_decrease_preferred_metric_is_coloured_adverse(
@@ -2102,11 +2108,7 @@ def test_dashboard_snapshot_and_csv_retain_scoped_readout_metadata(
     assert "not_checked_missing_declaration" in summary_html
     readout_html = render_results(dashboard_snapshot).text
     assert "partial" in readout_html
-    from increment.dashboard._app import _report_notes
-
-    assert any("session_seconds" in note for note in _report_notes(dashboard_snapshot))
-    report_text = "\n".join(_report_notes(dashboard_snapshot))
-    for surface in (summary_html, readout_html, report_text):
+    for surface in (summary_html, readout_html):
         assert "Dashboard allocation check" in surface
         assert "configured expected control 70% / treatment 30%" in surface
         assert "mismatch detected" in surface
@@ -2176,7 +2178,8 @@ def test_dashboard_round_trips_real_unavailable_cell_and_advisories(tmp_path: Pa
         (definitions / name).write_text(content)
 
     from increment import Analysis
-    from increment.dashboard._app import _report_notes
+    from increment.dashboard import render_metric_details
+    from increment.dashboard._app import build_payload, document
 
     analysis = Analysis.from_definitions("storefront_refresh", definitions, dashboard_con)
     try:
@@ -2187,7 +2190,8 @@ def test_dashboard_round_trips_real_unavailable_cell_and_advisories(tmp_path: Pa
             snapshot = prepare_dashboard(
                 analysis,
                 config=DashboardConfig(
-                    expected_allocation={"control": 0.9999, "treatment": 0.0001}
+                    expected_allocation={"control": 0.9999, "treatment": 0.0001},
+                    exploratory_metrics=("purchase_rate",),
                 ),
             )
         assert snapshot.allocation is not None and snapshot.allocation.is_srm
@@ -2205,12 +2209,27 @@ def test_dashboard_round_trips_real_unavailable_cell_and_advisories(tmp_path: Pa
 
         summary_html = render_header(snapshot).text
         readout_html = render_results(snapshot).text
-        report_text = "\n".join(_report_notes(snapshot))
+        payload = build_payload(analysis, snapshot=snapshot)
+        report_text = payload["report"]["qualifications"]
         for surface in (summary_html, readout_html, report_text):
             assert reason["code"] in surface
             assert advisory["code"] in surface
             assert "below 40" in surface
         assert advisory["message"] in report_text
+        shell = document(payload)
+        assert payload["qualifications"] == payload["report"]["qualifications"]
+        assert "integrity.allocation_missing_or_nonconstant" in payload["qualifications"]
+        assert shell.index('id="hero-qualifications"') < shell.index('id="hero-primary-effect"')
+        assert shell.index('id="report-qualifications"') < shell.index('id="report-primary-effect"')
+        assert shell.index('id="report-qualifications"') < shell.index('id="report-table"')
+        added_details = render_metric_details(snapshot, metric="purchase_rate").text
+        assert "purchase_rate" in added_details
+        assert snapshot.overview is not None
+        added_result = next(
+            row for row in snapshot.overview.exploratory if row.metric == "purchase_rate"
+        )
+        assert added_result.note is not None and added_result.note in added_details
+        assert "session_seconds" not in added_details
 
         exported = list(csv.DictReader(io.StringIO(readout_csv(snapshot).decode("utf-8"))))
         exported_failed = next(row for row in exported if row["metric"] == "empty_guardrail")
