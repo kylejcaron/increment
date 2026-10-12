@@ -1732,12 +1732,9 @@ class Analysis:
             declared_plan = self._state.experiment.plan
         inference = getattr(declared_plan, "inference", runtime_inference)
         registration = getattr(inference, "triggered_registration", None)
-        look_policy = getattr(inference, "triggered_look_policy", None)
-        if registration is not None:
-            look_policy = getattr(registration, "look_policy", look_policy)
         family_guarantee = (
-            sequential_family_guarantee(registration, look_policy=look_policy)
-            if registration is not None and look_policy is not None
+            sequential_family_guarantee(registration, look_policy="outcome_independent")
+            if registration is not None
             else None
         )
         return HealthCheck(
@@ -1748,7 +1745,6 @@ class Analysis:
             context={
                 "counterfactual_trigger_invariance": "assumed, not established by balance or rates",
                 "trigger_order_stationarity": "assumed, not established by balance or rates",
-                "triggered_look_policy": look_policy,
                 "family_guarantee": family_guarantee,
                 "family_guarantee_status": (
                     "assumed, not verified" if family_guarantee is not None else None

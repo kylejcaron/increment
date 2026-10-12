@@ -424,7 +424,6 @@ def _health_checks_block(report: ExperimentHealth | None) -> str:
             "counterfactual_trigger_invariance",
             "trigger_order_stationarity",
             "family_guarantee_status",
-            "triggered_look_policy",
             "family_guarantee",
             "observed_edge",
             "finalized_edge",

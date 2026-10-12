@@ -857,9 +857,10 @@ separate cohort diagnostics. Check each metric's retained maturity and each
 feed's certified completeness watermark. An unavailable or not-applicable row
 is not a pass, and observed event times do not certify a feed. Finally read
 `trigger_assumptions`: balanced rates do not establish counterfactual trigger
-invariance, and the declared look policy does not prove that the analyst's
-actual look schedule followed it. The report is a sanity check, not a causal
-validity or ship verdict. See the [health-check API](../api.md#diagnostics-and-robustness).
+invariance or correct triggering. The family guarantee is conditional on those
+assumptions and does not authorize cross-metric stopping based on assigned
+results. The report is a sanity check, not a causal validity or ship verdict.
+See the [health-check API](../api.md#diagnostics-and-robustness).
 
 Assignment-window uptake is not covered by `A3`: a unit that triggers late has
 less of its uptake window after the trigger, so uptake is mechanically tied to

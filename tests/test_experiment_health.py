@@ -39,7 +39,6 @@ def test_health_json_replay_preserves_checks_and_risks() -> None:
                 availability="available",
                 conclusion="descriptive",
                 context={
-                    "triggered_look_policy": "exploratory",
                     "family_guarantee": None,
                     "risk": ("balanced rates do not establish trigger invariance",),
                 },
@@ -960,23 +959,14 @@ def test_health_srm_report_supports_pickle_and_deepcopy() -> None:
         assert restored_srm.observed == assigned.srm.observed
 
 
-@pytest.mark.parametrize(
-    ("look_policy", "guarantee"),
-    [("exploratory", None), ("outcome_independent", "asymptotic_sequential")],
-)
-def test_health_assumption_discloses_triggered_family_guarantee(
-    tmp_path, look_policy, guarantee
-) -> None:
+def test_health_assumption_discloses_triggered_family_guarantee(tmp_path) -> None:
     from tests.test_triggered_sequential import _FAMILY_PLAN, _analysis, _events
 
-    plan = _FAMILY_PLAN
-    if look_policy == "outcome_independent":
-        plan += "        triggered_look_policy: outcome_independent\n"
     secondaries = ("aux_a", "aux_b")
     analysis, _ = _analysis(
         tmp_path,
         _events(n_per_arm=20, secondaries=secondaries),
-        plan=plan,
+        plan=_FAMILY_PLAN,
         secondaries=secondaries,
     )
     try:
@@ -987,10 +977,9 @@ def test_health_assumption_discloses_triggered_family_guarantee(
         )
     finally:
         analysis.close()
-    assert assumptions.context["triggered_look_policy"] == look_policy
-    assert assumptions.context["family_guarantee"] == guarantee
-    if guarantee is not None:
-        assert assumptions.context["family_guarantee_status"] == "assumed, not verified"
+    assert assumptions.context["family_guarantee"] == "asymptotic_sequential"
+    assert assumptions.context["family_guarantee_status"] == "assumed, not verified"
+    assert "triggered_look_policy" not in assumptions.context
 
 
 def test_health_missing_assignment_scheme_suggests_supported_routes() -> None:
