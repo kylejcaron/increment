@@ -1112,6 +1112,17 @@ class Analysis:
 
         design = design or Randomized(control_group=cast("str", control))
         specs = _coerce_source_metrics(metrics, design=design)
+        from increment._analysis_config import refuse_cuped_linear_moments
+
+        for spec in specs:
+            if spec.covariates or any(
+                method.variance_reduction == "cuped_linear"
+                for method in (
+                    (() if spec.decision_method is None else (spec.decision_method,))
+                    + spec.sensitivity_methods
+                )
+            ):
+                refuse_cuped_linear_moments(spec.name)
         metric_catalog = [synthesise_metric(spec) for spec in specs]
         from increment._analysis_config import resolve_configs
 

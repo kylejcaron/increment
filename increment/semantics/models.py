@@ -250,8 +250,43 @@ DEFINITION_REFUSALS: dict[str, RefusalSpec] = {
     "definition.expected_iso_8601_numeric_string": RefusalSpec(
         "definition.expected_iso_8601_numeric_string", DefinitionError, _render_definition_message
     ),
+    "definition.cuped.ambiguous_covariate_source": RefusalSpec(
+        "definition.cuped.ambiguous_covariate_source",
+        DefinitionError,
+        _render_definition_message,
+    ),
     "definition.experiment.binding_margin_margin": RefusalSpec(
         "definition.experiment.binding_margin_margin", DefinitionError, _render_definition_message
+    ),
+    "definition.experiment.covariate_binding_exactly_one": RefusalSpec(
+        "definition.experiment.covariate_binding_exactly_one",
+        DefinitionError,
+        _render_definition_message,
+    ),
+    "definition.experiment.covariate_source_requires_property": RefusalSpec(
+        "definition.experiment.covariate_source_requires_property",
+        DefinitionError,
+        _render_definition_message,
+    ),
+    "definition.experiment.covariate_measure_numeric": RefusalSpec(
+        "definition.experiment.covariate_measure_numeric",
+        DefinitionError,
+        _render_definition_message,
+    ),
+    "definition.experiment.covariate_names_unique": RefusalSpec(
+        "definition.experiment.covariate_names_unique",
+        DefinitionError,
+        _render_definition_message,
+    ),
+    "definition.experiment.metric_cuped_linear_needs_covariates": RefusalSpec(
+        "definition.experiment.metric_cuped_linear_needs_covariates",
+        DefinitionError,
+        _render_definition_message,
+    ),
+    "definition.experiment.covariate_measure_needs_preperiod": RefusalSpec(
+        "definition.experiment.covariate_measure_needs_preperiod",
+        DefinitionError,
+        _render_definition_message,
     ),
     "definition.experiment.cluster_combined_n": RefusalSpec(
         "definition.experiment.cluster_combined_n", DefinitionError, _render_definition_message
@@ -1704,6 +1739,54 @@ class EncouragementDeclaration(_Base):
     exclusion_restriction: ExclusionRestriction | None = None
 
 
+class CupedCovariate(_Base):
+    """One explicitly typed per-unit covariate for mixed linear CUPED."""
+
+    name: str = Field(min_length=1)
+    kind: Literal["continuous", "categorical"]
+    missing: Literal["refuse", "impute-indicator"] = "refuse"
+
+
+class CupedCovariateBinding(CupedCovariate):
+    """Definition-backed property or pre-period measure for one covariate."""
+
+    property: str | None = None
+    source: str | None = None
+    measure: Measure | None = None
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "CupedCovariateBinding":
+        property_bound = self.property is not None
+        measure_bound = self.measure is not None
+        if property_bound == measure_bound:
+            _definition_refusal(
+                "definition.experiment.covariate_binding_exactly_one",
+                "a CUPED covariate binding requires exactly one of property or measure",
+                name=self.name,
+            )
+        if self.source is not None and not property_bound:
+            _definition_refusal(
+                "definition.experiment.covariate_source_requires_property",
+                "a CUPED covariate source qualifier requires a property binding",
+                name=self.name,
+            )
+        if self.measure is not None and self.measure.aggregation not in (
+            "sum",
+            "count",
+            "count_distinct",
+            "avg_event",
+            "avg_calendar_day",
+            "min",
+            "max",
+        ):
+            _definition_refusal(
+                "definition.experiment.covariate_measure_numeric",
+                "a CUPED measure binding must use a numeric aggregation",
+                name=self.name,
+            )
+        return self
+
+
 class AdjustmentCovariate(_Base):
     """One covariate binding for an observational design's adjustment
     set, named the same way a ``Breakout``/``Factor`` names its dimension:
@@ -1778,7 +1861,7 @@ class MethodSpec(_Base):
     metric that is not a conversion or retention rate, at definition load."""
 
     name: str
-    variance_reduction: Literal["none", "cuped"] = "none"
+    variance_reduction: Literal["none", "cuped", "cuped_linear"] = "none"
     conversion_inference: ConversionInference = "auto"
 
     @model_validator(mode="after")
@@ -1818,6 +1901,7 @@ class ExperimentMetric(_Base):
     prior: NormalPriorSpec | None = None
     margin: float | None = Field(default=None, gt=0.0, allow_inf_nan=False)
     margin_abs: float | None = Field(default=None, gt=0.0, allow_inf_nan=False)
+    covariates: tuple[CupedCovariateBinding, ...] = ()
 
     @model_validator(mode="after")
     def _margins_mutually_exclusive(self) -> "ExperimentMetric":
@@ -1843,6 +1927,24 @@ class ExperimentMetric(_Base):
             () if self.decision_method is None else (self.decision_method,)
         ) + self.sensitivity_methods
         return any(method.conversion_inference == "finite_sample" for method in methods)
+
+    @model_validator(mode="after")
+    def _unique_covariates(self) -> "ExperimentMetric":
+        names = [covariate.name for covariate in self.covariates]
+        if len(names) != len(set(names)):
+            _definition_refusal(
+                "definition.experiment.covariate_names_unique",
+                f"experiment metric {self.metric!r} declares duplicate CUPED covariate names",
+                metric=self.metric,
+            )
+        return self
+
+    @property
+    def wants_cuped_linear(self) -> bool:
+        methods = (
+            () if self.decision_method is None else (self.decision_method,)
+        ) + self.sensitivity_methods
+        return any(method.variance_reduction == "cuped_linear" for method in methods)
 
 
 def _plan_entry_name(entry: "PlanEntry") -> str:
@@ -2401,6 +2503,27 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
                     f"experiment '{self.name}': metric '{name}' declares a CUPED "
                     f"method but n_pre_periods=0 -- no pre-period covariate can "
                     f"be materialized",
+                    experiment_name=self.name,
+                    metric_name=name,
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_cuped_linear_bindings(self):
+        for name, binding in self.bindings.items():
+            if binding.wants_cuped_linear and not binding.covariates:
+                _definition_refusal(
+                    "definition.experiment.metric_cuped_linear_needs_covariates",
+                    f"experiment '{self.name}': metric '{name}' requests cuped_linear "
+                    "without a declared covariate set",
+                    experiment_name=self.name,
+                    metric_name=name,
+                )
+            if any(c.measure is not None for c in binding.covariates) and self.n_pre_periods <= 0:
+                _definition_refusal(
+                    "definition.experiment.covariate_measure_needs_preperiod",
+                    f"experiment '{self.name}': measure-bound CUPED covariates require "
+                    "n_pre_periods > 0",
                     experiment_name=self.name,
                     metric_name=name,
                 )
@@ -3147,6 +3270,91 @@ class Definitions(CodedModel, _Base):
             index.source_properties,
             errors,
         )
+        self._check_metric_covariates(experiment, index, errors)
+
+    def _check_metric_covariates(
+        self,
+        experiment: Experiment,
+        index: _DefinitionIndex,
+        errors: list[tuple[str, str]],
+    ) -> None:
+        """Validate CUPED bindings against declared properties and facts."""
+        for binding in experiment.bindings.values():
+            for covariate in binding.covariates:
+                if covariate.measure is not None:
+                    if covariate.kind != "continuous":
+                        errors.append(
+                            (
+                                "definition.check_cuped.measure_kind",
+                                f"experiment '{experiment.name}' covariate '{covariate.name}' "
+                                "is measure-bound and must be continuous",
+                            )
+                        )
+                    fact = covariate.measure.fact
+                    source_name = index.fact_to_source.get(fact)
+                    if source_name is None:
+                        errors.append(
+                            (
+                                "definition.check_cuped.measure_fact",
+                                f"experiment '{experiment.name}' covariate '{covariate.name}' "
+                                f"references unknown measure fact '{fact}'",
+                            )
+                        )
+                    else:
+                        _check_unit_in_source_entities(
+                            experiment.name,
+                            experiment.unit,
+                            f"CUPED measure fact '{fact}'",
+                            source_name,
+                            index.source_entities,
+                            errors,
+                        )
+                        self._check_value_aggregation(
+                            f"experiment '{experiment.name}' CUPED covariate '{covariate.name}'",
+                            fact,
+                            covariate.measure.aggregation,
+                            index.fact_to_column,
+                            errors,
+                        )
+                    continue
+
+                assert covariate.property is not None
+                source_name = _resolve_property_source(
+                    experiment,
+                    covariate.property,
+                    covariate.source,
+                    label=f"CUPED covariate '{covariate.name}'",
+                    codes=_CUPED_SOURCE_CODES,
+                    source_entities=index.source_entities,
+                    source_properties=index.source_properties,
+                    errors=errors,
+                )
+                if source_name is None:
+                    continue
+                prop = index.source_properties[source_name][covariate.property]
+                if prop.as_of == "event_time":
+                    errors.append(
+                        (
+                            "definition.check_cuped.covariate_timing",
+                            f"experiment '{experiment.name}' CUPED covariate "
+                            f"'{covariate.name}' cannot use event_time property "
+                            f"'{covariate.property}'",
+                        )
+                    )
+                expected_dtype = (
+                    prop.dtype == "string"
+                    if covariate.kind == "categorical"
+                    else prop.dtype in ("int", "float", "bool")
+                )
+                if not expected_dtype:
+                    errors.append(
+                        (
+                            "definition.check_cuped.covariate_kind",
+                            f"experiment '{experiment.name}' CUPED covariate "
+                            f"'{covariate.name}' declares kind '{covariate.kind}' but "
+                            f"property '{covariate.property}' has dtype '{prop.dtype}'",
+                        )
+                    )
 
     @staticmethod
     def _validate_experiment_cluster(experiment: Experiment, errors: list[tuple[str, str]]):
@@ -3513,6 +3721,13 @@ _COVARIATE_SOURCE_CODES = _SourceResolutionCodes(
     unresolved="definition.check_observational.covariate_could",
     ambiguous="definition.observational.ambiguous_covariate_source",
 )
+_CUPED_SOURCE_CODES = _SourceResolutionCodes(
+    unknown_source="definition.check_cuped.covariate_source",
+    property_missing="definition.check_cuped.covariate_property",
+    unit_missing="definition.check_cuped.covariate_unit",
+    unresolved="definition.check_cuped.covariate_unresolved",
+    ambiguous="definition.cuped.ambiguous_covariate_source",
+)
 
 
 def _resolve_breakout_source(
@@ -3662,6 +3877,8 @@ if TYPE_CHECKING:
         BreakoutDimensionRequest,
         ClusterIdentityExtension,
         ClusterIdentityRequest,
+        CupedMeasureCovariateExtension,
+        CupedMeasureCovariateRequest,
         CupedPreperiodExtension,
         CupedPreperiodRequest,
         EncouragementUptakeExtension,
@@ -3705,6 +3922,8 @@ _ARTIFACT_REEXPORTS = frozenset(
         "BreakoutDimensionRequest",
         "ClusterIdentityExtension",
         "ClusterIdentityRequest",
+        "CupedMeasureCovariateExtension",
+        "CupedMeasureCovariateRequest",
         "CupedPreperiodExtension",
         "CupedPreperiodRequest",
         "EncouragementUptakeExtension",

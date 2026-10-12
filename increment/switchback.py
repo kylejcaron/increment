@@ -1175,6 +1175,20 @@ def from_switchback_panel(  # noqa: PLR0915
             metrics=unsupported,
             reason="unsupported_metric_type",
         )
+    if plan is not None and any(
+        getattr(entry, "covariates", ()) or getattr(entry, "wants_cuped_linear", False)
+        for entry in (*plan.primaries, *(plan.secondaries or ()), *plan.guardrails)
+        if not isinstance(entry, str)
+    ):
+        _reject_metric(
+            message=(
+                "switchback plans cannot use cuped_linear or per-metric covariates; "
+                "use from_unit_summary, from_unit_panel, definitions, or a covariate "
+                "artifact for independent-unit randomized inference"
+            ),
+            field="covariates",
+            reason="cuped_linear_construction_unsupported",
+        )
     for spec in specs:
         if spec.winsorization is not None:
             _reject_metric(
@@ -1196,6 +1210,23 @@ def from_switchback_panel(  # noqa: PLR0915
                 field="missing",
                 policy=spec.missing,
                 reason="ignored_metric_option",
+            )
+        if spec.covariates or any(
+            method.variance_reduction == "cuped_linear"
+            for method in (
+                (() if spec.decision_method is None else (spec.decision_method,))
+                + spec.sensitivity_methods
+            )
+        ):
+            _reject_metric(
+                message=(
+                    f"switchback metric {spec.name!r} cannot use cuped_linear; "
+                    "use from_unit_summary, from_unit_panel, definitions, or a covariate "
+                    "artifact for independent-unit randomized inference"
+                ),
+                metric=spec.name,
+                field="covariates",
+                reason="cuped_linear_construction_unsupported",
             )
         if spec.decision_method is not None or spec.sensitivity_methods:
             offending_field = (

@@ -128,7 +128,13 @@ _REFUSALS = refusals(
         "estimation.engine.arm.duplicate_rows": "group_summary carries more than one row for (metric, group_id) {keys} -- an unchecked duplicate control row silently overwrites an earlier one in the lookup dict, and an unchecked duplicate treatment row is silently iterated as if it were a second arm, either way returning an arbitrary lift instead of a refusal. Deduplicate group_summary to exactly one row per (metric, group_id) before calling estimate_lift.",
         "estimation.engine.arm.invalid_count": "{what} is {value!r}, not a finite integer-valued count -- ArmStats.n rejects a fractional value at direct construction, so the untyped dataframe ingress must too instead of silently truncating it (int(2.9) == 2) into a different arm size than the row declared. Round or fix the upstream aggregation so 'n' is integral.",
         "estimation.engine.ratio.negative_variance": "ratio_abs_diff_se refused these moments: {reason} -- a deficit at this scale means the numerator/denominator moments violate Cauchy-Schwarz (an infeasible covariance), not merely cancelled, so reporting a clamped zero-SE (maximal confidence) would be the most dangerous possible failure mode for a decision number.",
-        "estimation.engine.method.name_without_variance": "Method(name={self!r}) without variance_reduction='cuped' would label an unadjusted estimate as CUPED-adjusted; pass Method(name='cuped', variance_reduction='cuped') or rename.",
+        "estimation.engine.method.name_without_variance": "Method(name={self!r}) without its matching variance_reduction would label an unadjusted estimate as CUPED-adjusted.",
+        "estimation.engine.cuped_linear_unfinished": RefusalSpec(
+            "estimation.engine.cuped_linear_unfinished",
+            UnsupportedRequestError,
+            template="cuped_linear is declared for metric {metric!r}, but its estimator is not available in this build. Use variance_reduction='none' or scalar variance_reduction='cuped' with covariate=.",
+            keys=frozenset({"metric"}),
+        ),
         "estimation.engine.method.name_iptw_does": "Method(name='iptw') does not accept outcome_learner/folds -- IPTW fits one propensity model with no cross-fitting; set propensity_learner (mapped to iptw_estimate's learner=) instead, or use Method(name='dml') / Method(name='aipw') for cross-fit outcome-model pluggability.",
         "estimation.engine.carries_format_moments": "{what} carries format-1 moments (raw additive sums: 'sum_y2' present, 'cy2' absent). increment consumes CENTERED moments -- ref_y/cy1/cy2 and the c-form families -- because raw second moments lose the variance signal to floating-point cancellation once the mean dwarfs the spread, so they are never reinterpreted here. Two ways in: Analysis.from_moments(...), which adapts stamped or unstamped format-1 rows automatically, or ArmStats.from_raw_sums(...) for hand-built rows.",
         "estimation.engine.carries_unsupported_weighted": "{what} carries unsupported weighted ArmStats fields: {unsupported}; weighted estimands must use ScoreStats.",
@@ -312,7 +318,7 @@ class Method(CodedModel, BaseModel):
     model_config = ConfigDict(frozen=True)
 
     name: str  # label carried on the LiftEstimate
-    variance_reduction: str = "none"  # "none" | "cuped" (same Registry)
+    variance_reduction: str = "none"  # "none" | "cuped" | "cuped_linear"
     conversion_inference: ConversionInference = "auto"
     propensity_learner: Callable[[], Any] | None = None
     outcome_learner: Callable[[], Any] | None = None
@@ -321,7 +327,10 @@ class Method(CodedModel, BaseModel):
     @model_validator(mode="after")
     def _check_label_matches_configuration(self) -> Method:
         VARIANCE_REDUCTION.get(self.variance_reduction)  # raises if unregistered
-        if self.conversion_inference == "finite_sample" and self.variance_reduction == "cuped":
+        if self.conversion_inference == "finite_sample" and self.variance_reduction in (
+            "cuped",
+            "cuped_linear",
+        ):
             refuse_finite_sample_cuped(self.name)
         if self.name == "cuped" and self.variance_reduction != "cuped":
             _refuse("estimation.engine.method.name_without_variance", self=self.name)
@@ -914,6 +923,15 @@ def reject_completed_windows_on_unbounded_retention(
         _refuse("breakout.retention.completion", fn_name=fn_name, names=open_bands)
 
 
+def reject_unfinished_cuped_linear(
+    metrics: Sequence[Metric], method_catalog: Sequence[Sequence[Method]]
+) -> None:
+    """Refuse cuped_linear until its estimator is wired into readout."""
+    for metric, metric_methods in zip(metrics, method_catalog, strict=True):
+        if any(method.variance_reduction == "cuped_linear" for method in metric_methods):
+            _refuse("estimation.engine.cuped_linear_unfinished", metric=metric.name)
+
+
 def validate_readout_engine(request: ReadoutRequest) -> None:
     """Validate metric/method compatibility before source moments are read."""
     metrics = tuple(request.metrics)
@@ -925,6 +943,7 @@ def validate_readout_engine(request: ReadoutRequest) -> None:
     mechanism = getattr(design, "mechanism", None)
     method_catalog = request.estimation_methods
     methods = [method for metric_methods in method_catalog for method in metric_methods]
+    reject_unfinished_cuped_linear(metrics, method_catalog)
     if mechanism != "observational":
         for metric_methods in method_catalog:
             _validate_methods(metric_methods)
@@ -3153,6 +3172,9 @@ def estimate_lift(  # noqa: PLR0913
     total clusters emits the qualified-reference warning (see
     ``check_total_clusters``).
     """
+    if methods:
+        reject_unfinished_cuped_linear(metrics, [methods] * len(metrics))
+
     return _estimate_lift(
         metrics,
         summary,

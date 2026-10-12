@@ -57,6 +57,12 @@ _EXPECTED_ARTIFACT_SCHEMAS = {
         ("unit_id", "STRING", False),
         ("x", "FLOAT64", False),
     ),
+    "cuped_measure_covariate": (
+        ("experiment_id", "STRING", False),
+        ("unit_id", "STRING", False),
+        ("value", "FLOAT64", True),
+        ("has_preperiod_events", "BOOLEAN", False),
+    ),
     "assignment_counts": (
         ("experiment_id", "STRING", False),
         ("population", "STRING", False),
@@ -101,6 +107,7 @@ _EXPECTED_ARTIFACT_PRIMARY_KEYS = {
     "factor_dimension": ("experiment_id", "unit_id"),
     "cluster_identity": ("experiment_id", "unit_id"),
     "cuped_preperiod": ("experiment_id", "unit_id"),
+    "cuped_measure_covariate": ("experiment_id", "unit_id"),
     "assignment_counts": ("experiment_id", "population", "group_id"),
     "trigger_population": ("experiment_id", "unit_id"),
     "trigger_measure_stats": ("experiment_id", "unit_id", "ds", "measure_key"),

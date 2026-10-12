@@ -44,6 +44,11 @@ _NATIVE_COVARIATE_DTYPE = RefusalSpec(
     CapabilityError,
     template="unit_frame: covariate {covariate!r} (source {source!r}) has dtype {dtype!r}; covariate adjustment needs a numeric (int/float/bool) or categorical (string) column -- a date carries no adjustment meaning. Derive a numeric or categorical pre-exposure property.",
 )
+_NATIVE_COVARIATE_KIND = RefusalSpec(
+    "source.native.covariate_kind_mismatch",
+    CapabilityError,
+    template="unit_frame: covariate {covariate!r} (source {source!r}) has property type {dtype!r}, incompatible with declared kind {kind!r}.",
+)
 
 
 _NATIVE_WAREHOUSE_CLUSTER = RefusalSpec(

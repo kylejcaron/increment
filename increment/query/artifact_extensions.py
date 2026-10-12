@@ -56,6 +56,7 @@ from increment.semantics.artifact import (
     AssignmentCountsExtension,
     BreakoutDimensionExtension,
     ClusterIdentityExtension,
+    CupedMeasureCovariateExtension,
     CupedPreperiodExtension,
     EncouragementUptakeExtension,
     FactorDimensionExtension,
@@ -157,7 +158,9 @@ class _ExtensionHandler:
 
 
 def _decode_unit_covariate(
-    extension: UnitCovariateExtension | UnitCovariateLevelExtension,
+    extension: UnitCovariateExtension
+    | UnitCovariateLevelExtension
+    | CupedMeasureCovariateExtension,
     rows: Sequence[Mapping[str, Any]],
     *,
     name: str,
@@ -166,7 +169,15 @@ def _decode_unit_covariate(
 ) -> nw.Series[Any]:
     categorical = extension.kind == "unit_covariate_level"
     field = "level" if categorical else "value"
-    values = {str(row["unit_id"]): row[field] for row in rows}
+    values = {
+        str(row["unit_id"]): (
+            row[field]
+            if not isinstance(extension, CupedMeasureCovariateExtension)
+            or row["has_preperiod_events"]
+            else None
+        )
+        for row in rows
+    }
     return nw.new_series(
         name,
         [values.get(unit) for unit in unit_ids],
@@ -309,7 +320,7 @@ def _build_handler(spec: ExtensionKindSpec) -> _ExtensionHandler:
         read=validate_extension,
         read_unit_covariate=(
             _decode_unit_covariate
-            if spec.kind in {"unit_covariate", "unit_covariate_level"}
+            if spec.kind in {"unit_covariate", "unit_covariate_level", "cuped_measure_covariate"}
             else None
         ),
     )
@@ -561,6 +572,48 @@ def _bind_cuped(_request: Any, definition: Mapping[str, Any]) -> None:
         _reject("artifact.extension.invalid", "CUPED definition lacks metric_name")
 
 
+def _bind_measure_covariate(request: Any, definition: Mapping[str, Any]) -> None:
+    if definition.get("metric_name") != _request_value(request, "metric_name") or definition.get(
+        "covariate_name"
+    ) != _request_value(request, "covariate_name"):
+        _reject("artifact.extension.invalid", "measure covariate definition does not match request")
+
+
+def _validate_measure_covariate_definition(definition: Mapping[str, Any], _request: Any) -> None:
+    if not all(
+        field in definition
+        for field in (
+            "measure_key",
+            "aggregation",
+            "window_start_days",
+            "window_end_days",
+        )
+    ):
+        _reject(
+            "artifact.extension.invalid", "measure covariate definition lacks its measure recipe"
+        )
+
+
+def _identity_measure_covariate(
+    extension: Any, request: Mapping[str, Any], definition: Mapping[str, Any] | None
+) -> bool:
+    if extension.metric_name != request.get(
+        "metric_name"
+    ) or extension.covariate_name != request.get("covariate_name"):
+        return False
+    if definition is None:
+        return True
+    return all(
+        getattr(extension, field) == definition.get(field)
+        for field in (
+            "measure_key",
+            "aggregation",
+            "window_start_days",
+            "window_end_days",
+        )
+    )
+
+
 def _bind_request_definition(kind: str, request: Any, definition: Mapping[str, Any]) -> None:
     if definition.get("kind") != kind:
         _reject("artifact.extension.invalid", "definition kind does not match request")
@@ -707,6 +760,14 @@ def _validate_cuped_row(row: Mapping[str, Any]) -> None:
         _reject("artifact.extension.invalid", "CUPED value domain is invalid")
 
 
+def _validate_measure_covariate_row(row: Mapping[str, Any]) -> None:
+    value = row["value"]
+    if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool)):
+        _reject("artifact.extension.invalid", "measure covariate value must be numeric or null")
+    if not isinstance(row["has_preperiod_events"], bool):
+        _reject("artifact.extension.invalid", "measure covariate history marker must be boolean")
+
+
 def _validate_trigger_row(row: Mapping[str, Any]) -> None:
     value = row["first_trigger_ts"]
     if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
@@ -823,6 +884,28 @@ def _model_cuped(
     base = _model_base(relation, entry)
     base.update({field: definition[field] for field in fields})
     return CupedPreperiodExtension.model_validate(base)
+
+
+def _model_cuped_measure_covariate(
+    *,
+    relation: ArtifactRelationRef,
+    entry: ArtifactExtensionCatalogEntry,
+    definition: Mapping[str, Any],
+    **_: Any,
+) -> ArtifactExtensionRef:
+    fields = (
+        "metric_name",
+        "covariate_name",
+        "measure_key",
+        "aggregation",
+        "window_start_days",
+        "window_end_days",
+    )
+    if any(field not in definition for field in fields):
+        _reject("artifact.extension.invalid", "measure covariate definition lacks required fields")
+    base = _model_base(relation, entry)
+    base.update({field: definition[field] for field in fields})
+    return CupedMeasureCovariateExtension.model_validate(base)
 
 
 def _model_assignment(
@@ -1436,6 +1519,25 @@ _HANDLERS = {
             identity_matches=_identity_cuped,
             request_from_extension=_request_cuped,
             model=_model_cuped,
+        )
+    ),
+    "cuped_measure_covariate": _build_handler(
+        ExtensionKindSpec(
+            kind="cuped_measure_covariate",
+            role="cuped_measure_covariate",
+            operation="day_source",
+            protocol=DaySourceOperation,
+            model_cls=CupedMeasureCovariateExtension,
+            fields=(("metric_name", "metric_name"), ("covariate_name", "covariate_name")),
+            row_validator=_validate_measure_covariate_row,
+            source_rows=lambda _source, _request, _experiment_id: _reject(
+                "artifact.evidence.unavailable",
+                "measure covariates must be built from raw events by the publisher",
+            ),
+            bind_definition=_bind_measure_covariate,
+            validate_definition=_validate_measure_covariate_definition,
+            identity_matches=_identity_measure_covariate,
+            model=_model_cuped_measure_covariate,
         )
     ),
     "assignment_counts": _ExtensionHandler(

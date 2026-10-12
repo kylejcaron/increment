@@ -55,6 +55,7 @@ RelationRole = Literal[
     "factor_dimension",
     "cluster_identity",
     "cuped_preperiod",
+    "cuped_measure_covariate",
     "assignment_counts",
     "trigger_population",
     "trigger_measure_stats",
@@ -76,6 +77,7 @@ _EXTENSION_KIND_RANK = {
     "site_volume": 8,
     "unit_covariate": 9,
     "unit_covariate_level": 10,
+    "cuped_measure_covariate": 11,
 }
 
 
@@ -308,6 +310,7 @@ _ARTIFACT_PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "factor_dimension": ("experiment_id", "unit_id"),
     "cluster_identity": ("experiment_id", "unit_id"),
     "cuped_preperiod": ("experiment_id", "unit_id"),
+    "cuped_measure_covariate": ("experiment_id", "unit_id"),
     "assignment_counts": ("experiment_id", "population", "group_id"),
     "trigger_population": ("experiment_id", "unit_id"),
     "trigger_measure_stats": ("experiment_id", "unit_id", "ds", "measure_key"),
@@ -603,6 +606,50 @@ class CupedPreperiodExtension(ExtensionRefBase):
         return self
 
 
+class CupedMeasureCovariateExtension(ExtensionRefBase):
+    """One named numeric covariate reduced from a bound pre-period measure."""
+
+    kind: Literal["cuped_measure_covariate"] = "cuped_measure_covariate"
+    metric_name: str
+    covariate_name: str
+    measure_key: str
+    aggregation: Literal[
+        "sum",
+        "count",
+        "count_distinct",
+        "avg_event",
+        "avg_calendar_day",
+        "min",
+        "max",
+    ]
+    window_start_days: int
+    window_end_days: int = 0
+
+    @field_validator("metric_name", "covariate_name", "measure_key")
+    @classmethod
+    def _identity_scalar(cls, value: str, info) -> str:
+        return _artifact_scalar(value, info.field_name)
+
+    @field_validator("window_start_days", "window_end_days")
+    @classmethod
+    def _strict_window_day(cls, value: int) -> int:
+        if isinstance(value, bool):
+            _definition_refusal(
+                "definition.cuped_preperiod.window_bounds_integers",
+                "window bounds must be integers",
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _valid_window(self) -> CupedMeasureCovariateExtension:
+        if self.window_start_days >= self.window_end_days or self.window_end_days > 0:
+            _definition_refusal(
+                "definition.cuped_preperiod.window_satisfy_window",
+                "cuped window must satisfy window_start_days < window_end_days <= 0",
+            )
+        return self
+
+
 def _normalize_populations(
     populations: tuple[Literal["assigned", "triggered"], ...],
 ) -> tuple[Literal["assigned", "triggered"], ...]:
@@ -809,6 +856,7 @@ ArtifactExtensionRef = Annotated[
     | FactorDimensionExtension
     | ClusterIdentityExtension
     | CupedPreperiodExtension
+    | CupedMeasureCovariateExtension
     | AssignmentCountsExtension
     | TriggerPopulationExtension
     | TriggerMeasureStatsExtension
@@ -864,6 +912,17 @@ class CupedPreperiodRequest(ExtensionRequestBase):
     @classmethod
     def _identity_scalar(cls, value: str) -> str:
         return _artifact_scalar(value, "metric_name")
+
+
+class CupedMeasureCovariateRequest(ExtensionRequestBase):
+    kind: Literal["cuped_measure_covariate"] = "cuped_measure_covariate"
+    metric_name: str
+    covariate_name: str
+
+    @field_validator("metric_name", "covariate_name")
+    @classmethod
+    def _identity_scalar(cls, value: str, info) -> str:
+        return _artifact_scalar(value, info.field_name)
 
 
 class AssignmentCountsRequest(ExtensionRequestBase):
@@ -964,6 +1023,7 @@ ArtifactExtensionRequest = Annotated[
     | FactorDimensionRequest
     | ClusterIdentityRequest
     | CupedPreperiodRequest
+    | CupedMeasureCovariateRequest
     | AssignmentCountsRequest
     | TriggerPopulationRequest
     | TriggerMeasureStatsRequest
@@ -1303,6 +1363,8 @@ def _extension_identity(extension: ArtifactExtensionRef) -> str:
             f"{extension.metric_name}\x00{extension.measure_key}\x00"
             f"{extension.window_start_days}\x00{extension.window_end_days}"
         )
+    if isinstance(extension, CupedMeasureCovariateExtension):
+        return f"{extension.metric_name}\x00{extension.covariate_name}"
     if isinstance(extension, AssignmentCountsExtension):
         return ",".join(extension.populations)
     if isinstance(extension, TriggerPopulationExtension):
@@ -1349,6 +1411,8 @@ def _catalog_request_identity(request: Mapping[str, Any]) -> str:
         return ",".join(request.get("populations", ()))
     if kind == "site_volume":
         return "\x00".join(request.get("metric_names", ()))
+    if kind == "cuped_measure_covariate":
+        return f"{request.get('metric_name')}\x00{request.get('covariate_name')}"
     return ""
 
 
@@ -1411,6 +1475,16 @@ def _extension_matches_definition(
             return _matches_trigger_extension(extension, request)
         case CupedPreperiodExtension():
             return _matches_cuped_extension(extension, request, definition)
+        case CupedMeasureCovariateExtension():
+            return _catalog_request_identity(request) == _extension_identity(extension) and all(
+                getattr(extension, field) == definition.get(field)
+                for field in (
+                    "measure_key",
+                    "aggregation",
+                    "window_start_days",
+                    "window_end_days",
+                )
+            )
         case AssignmentCountsExtension():
             return _matches_assignment_extension(extension, request)
         case EncouragementUptakeExtension():

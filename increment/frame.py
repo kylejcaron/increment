@@ -79,6 +79,7 @@ from increment._frame_validation import (  # noqa: F401
     refuse_observational_quantile,
 )
 from increment._metric_specs import (
+    CupedCovariate,
     MetricsArg,
     MetricSpec,
     coerce_metrics,
@@ -122,8 +123,9 @@ __all__ = [
     "FramePanelSource",
     "FrameSwitchbackSource",
     "FrameTotalsSource",
-    "MetricSpec",
     "SwitchbackAssignmentDiagnostic",
+    "CupedCovariate",
+    "MetricSpec",
     "coerce_metrics",
     "from_switchback_panel",
     "from_unit_panel",
@@ -135,6 +137,7 @@ __all__ = [
 # as frame's own public names rather than the module that defines them.
 MetricSpec.__module__ = __name__
 coerce_metrics.__module__ = __name__
+CupedCovariate.__module__ = __name__
 synthesise_metric.__module__ = __name__
 
 
