@@ -10,10 +10,12 @@ from typing import Literal, NoReturn
 
 import numpy as np
 import numpy.typing as npt
+from scipy.linalg import qr as scipy_qr
 
 from increment.errors import InvalidRequestError, RefusalSpec, refusals, refuse
-from increment.estimation._adjust.encoding import is_null, level_codes
+from increment.estimation._adjust.encoding import is_null
 from increment.estimation._tails import student_t_isf, two_sided_critical_value
+from increment.estimation.variance import stable_log_ratio
 
 _REFUSALS = refusals(
     InvalidRequestError,
@@ -128,14 +130,37 @@ class _LinearCupedCalculator:
     _weights: np.ndarray
     _design: np.ndarray
     _design_factor: np.ndarray
+    _adjusted_local: tuple[float, ...]
+    _outcome_offsets: tuple[tuple[float, ...], ...]
 
     def absolute(
         self, arm: object, *, control: object | None = None, alpha: float = 0.05
     ) -> LinearCupedProjection:
         """Adjusted additive arm contrast with an HC2/BM t interval."""
         j = self._contrast(arm, control)
-        means = np.asarray(self.adjusted_means)[: len(self.arm_order)]
-        return self._project(float(j @ means), j, alpha)
+        value = self._contrast_value(j)
+        return self._project(value, j, alpha)
+
+    def _contrast_value(self, j: np.ndarray, family: int = 0) -> float:
+        narm = len(self.arm_order)
+        local = self._adjusted_local[family * narm : (family + 1) * narm]
+        offsets = self._outcome_offsets[family]
+        return math.fsum(
+            [float(j[a]) * local[a] for a in range(narm)]
+            + [float(j[a]) * offsets[a] for a in range(narm)]
+        )
+
+    def _log_relative_value(self, ti: int, ci: int, family: int = 0) -> float:
+        narm = len(self.arm_order)
+        local = self._adjusted_local[family * narm : (family + 1) * narm]
+        offsets = self._outcome_offsets[family]
+        mt = self.adjusted_means[family * narm + ti]
+        mc = self.adjusted_means[family * narm + ci]
+        difference = math.fsum((local[ti], offsets[ti], -local[ci], -offsets[ci]))
+        relative = difference / mc
+        if 0.5 <= mt / mc <= 2.0 and math.isfinite(relative):
+            return math.log1p(relative)
+        return stable_log_ratio(mc, mt)
 
     def relative(
         self, arm: object, *, control: object | None = None, alpha: float = 0.05
@@ -149,7 +174,7 @@ class _LinearCupedCalculator:
         jac = np.zeros(len(means))
         jac[jidx[0]] = 1 / mt
         jac[jidx[1]] = -1 / mc
-        value = math.log(mt) - math.log(mc)
+        value = self._log_relative_value(*jidx)
         score = self._family_score(0, jac)
         return _interval(value, _stable_norm(score), self._bm_dof(jac), alpha)
 
@@ -176,7 +201,7 @@ class _LinearCupedCalculator:
             jac = np.zeros(2 * len(self.arm_order))
             jac[ti], jac[len(self.arm_order) + ti] = 1 / nt, -1 / nd
             jac[ci], jac[len(self.arm_order) + ci] = -1 / nc, 1 / cd
-            value = math.log(nt) - math.log(nd) - math.log(nc) + math.log(cd)
+            value = stable_log_ratio(nd, nt) - stable_log_ratio(cd, nc)
         elif scale == "absolute":
             rt, rc = nt / nd, nc / cd
             jac = np.zeros(2 * len(self.arm_order))
@@ -211,57 +236,22 @@ class _LinearCupedCalculator:
             )
 
     def _family_score(self, family: int, j: np.ndarray) -> np.ndarray:
-        theta = self._slopes[family]
-        means_x = self._x_means
-        anchor = np.asarray(self.anchor)
-        d = sum(j[a] * (means_x[a] - anchor) for a in range(len(j)))
-        active = np.flatnonzero(j)
-        s = np.zeros((len(j), len(theta)))
-        if len(active) == 2:
-            ti, ci = int(np.argmax(j)), int(np.argmin(j))
-            pi = np.asarray(self.n_by_arm, dtype=float) / sum(self.n_by_arm)
-            k = j[ti] * pi[ci] - j[ci] * pi[ti]
-            s[ti] = theta * k / j[ti]
-            s[ci] = -theta * k / j[ci]
-        scores = []
-        for a, (xbar, outcome, n) in enumerate(
-            zip(means_x, self._components[family], self.n_by_arm, strict=True)
-        ):
-            idx = np.flatnonzero(self._arm_index == a)
-            xc = self._x[idx] - xbar
-            residual = outcome - outcome.mean() - xc @ theta
-            lam = 1.0 / (n * (n - 1))
-            solved_d = (
-                np.linalg.solve(self._gram_factor, np.linalg.solve(self._gram_factor.T, d))
-                if len(theta)
-                else d
-            )
-            c = j[a] / n - lam * (xc @ solved_d)
-            score = c * residual / np.sqrt(1 - self.leverage[idx])
-            if len(active) == 1:
-                score += (float(j.sum()) / sum(self.n_by_arm)) * (xc @ theta)
-            else:
-                score += (j[a] / n) * (xc @ (theta - s[a]))
-            scores.append(score)
-        return np.concatenate(scores)
-
-    def _project(self, value: float, j: np.ndarray, alpha: float) -> LinearCupedProjection:
-        _check_alpha(alpha)
         d = sum(j[a] * (self._x_means[a] - np.asarray(self.anchor)) for a in range(len(j)))
-        coefficient_contrast = np.concatenate([j, -d])
-        residual = np.empty(len(self._x))
-        for a, scores in enumerate(self._residuals[0]):
-            residual[self._arm_index == a] = scores
-        influence = (
-            self._design
-            @ np.linalg.solve(
-                self._design_factor,
-                np.linalg.solve(self._design_factor.T, coefficient_contrast),
-            )
-            * self._weights
+        contrast = np.concatenate([j, -d])
+        coefficients = np.linalg.solve(
+            self._design_factor,
+            np.linalg.solve(self._design_factor.T, contrast),
         )
-        se = _stable_norm(influence * residual / np.sqrt(1 - self.leverage))
-        return _interval(value, se, self._bm_dof(j), alpha)
+        residual = np.empty(len(self._x))
+        anchor_score = np.empty(len(self._x))
+        for a, scores in enumerate(self._residuals[family]):
+            mask = self._arm_index == a
+            residual[mask] = scores
+            anchor_score[mask] = (
+                float(j.sum()) / sum(self.n_by_arm) * (self._x[mask] @ self._slopes[family])
+            )
+        influence = self._design @ coefficients * self._weights
+        return influence * residual / np.sqrt(1 - self.leverage) + anchor_score
 
     def _bm_dof(self, j: np.ndarray) -> float:
         d = sum(j[a] * (self._x_means[a] - np.asarray(self.anchor)) for a in range(len(j)))
@@ -272,6 +262,19 @@ class _LinearCupedCalculator:
             self._design_factor,
             np.concatenate([j, -d]),
         )
+
+    def _project(
+        self,
+        value: float,
+        j: np.ndarray,
+        alpha: float,
+        *,
+        dof: float | None = None,
+    ) -> LinearCupedProjection:
+        _check_alpha(alpha)
+        score = self._family_score(0, j)
+        se = _stable_norm(score)
+        return _interval(value, se, self._bm_dof(j) if dof is None else dof, alpha)
 
     def _project_components(
         self, value: float, jac: np.ndarray, alpha: float
@@ -414,6 +417,7 @@ def fit_cuped_linear(
         groups, indices, order, covariates, kinds, missing
     )
     calculator, leverage = _fit_calculator(groups, order, counts, outcomes, x, layout, control)
+    del x
     public_anchor = tuple(
         offset + scale * value
         for offset, scale, value in zip(offsets, scales, calculator.anchor, strict=True)
@@ -515,10 +519,18 @@ def _encode_covariates(groups, indices, order, covariates, kinds, missing):
     for name, raw in covariates.items():
         if kinds[name] not in ("continuous", "categorical"):
             _fail("estimation.cuped_linear.covariate_kind", name=name, kind=kinds[name])
-        values = np.asarray(raw, dtype=object)
-        if values.shape != (n,):
-            _fail("estimation.cuped_linear.input_shape", name=name, n=n, shape=values.shape)
-        null = np.fromiter((is_null(value) for value in values), bool, n)
+        raw_values = np.asarray(raw)
+        if raw_values.shape != (n,):
+            _fail("estimation.cuped_linear.input_shape", name=name, n=n, shape=raw_values.shape)
+        if kinds[name] == "continuous" and raw_values.dtype.kind in "biuf":
+            values = raw_values
+            null = np.isnan(raw_values) if raw_values.dtype.kind == "f" else np.zeros(n, bool)
+        elif kinds[name] == "categorical" and raw_values.dtype.kind in "US":
+            values = raw_values
+            null = np.zeros(n, bool)
+        else:
+            values = np.asarray(raw, dtype=object)
+            null = np.fromiter((is_null(value) for value in values), bool, n)
         policy = missing.get(name, "refuse")
         if policy not in ("refuse", "impute-indicator") or (null.any() and policy == "refuse"):
             _fail("estimation.cuped_linear.missing_refused", name=name)
@@ -551,11 +563,28 @@ def _encode_covariates(groups, indices, order, covariates, kinds, missing):
         column_names.append(f"missing[{','.join(owners)}]")
         transforms.append((0.0, 1.0))
         shared.append(tuple(owners))
-    matrix = np.column_stack(columns) if columns else np.empty((n, 0), dtype=float)
-    active = [j for j in range(matrix.shape[1]) if np.ptp(matrix[:, j]) > 0]
-    x = matrix[:, active]
-    encoded_names = tuple(column_names[j] for j in active)
-    active_transforms = tuple(transforms[j] for j in active)
+    matrix = np.empty((n, len(columns)), dtype=float)
+    j = 0
+    while j < len(columns):
+        column = columns[j]
+        if isinstance(column, tuple):
+            codes = column[0]
+            stop = j + 1
+            while stop < len(columns) and isinstance(columns[stop], tuple):
+                if columns[stop][0] is not codes:
+                    break
+                stop += 1
+            selected = np.fromiter(
+                (columns[i][1] for i in range(j, stop)), dtype=int, count=stop - j
+            )
+            np.equal(codes[:, None], selected[None, :], out=matrix[:, j:stop])
+            j = stop
+        else:
+            matrix[:, j] = column
+            j += 1
+    x = matrix
+    encoded_names = tuple(column_names)
+    active_transforms = tuple(transforms)
     layout = LinearCupedLayout(
         names,
         tuple(kinds[name] for name in names),
@@ -576,15 +605,22 @@ def _encode_covariates(groups, indices, order, covariates, kinds, missing):
 def _encode_numeric(
     name, values, null, columns, column_names, structural, references, levels, masks
 ):
-    numeric = np.zeros(len(values), dtype=float)
-    for i, value in enumerate(values):
-        if not null[i]:
-            try:
-                numeric[i] = float(value)
-            except (TypeError, ValueError, OverflowError):
-                _fail(
-                    "estimation.cuped_linear.covariate_kind", name=name, kind=type(value).__name__
-                )
+    if values.dtype.kind in "biuf":
+        numeric = np.asarray(values, dtype=float)
+        if null.any():
+            numeric = np.where(null, 0.0, numeric)
+    else:
+        numeric = np.zeros(len(values), dtype=float)
+        for i, value in enumerate(values):
+            if not null[i]:
+                try:
+                    numeric[i] = float(value)
+                except (TypeError, ValueError, OverflowError):
+                    _fail(
+                        "estimation.cuped_linear.covariate_kind",
+                        name=name,
+                        kind=type(value).__name__,
+                    )
     if not np.isfinite(numeric).all():
         _fail(
             "estimation.cuped_linear.nonfinite",
@@ -617,16 +653,16 @@ def _encode_numeric(
 def _encode_category(
     name, values, null, indices, order, columns, column_names, structural, references, levels
 ):
-    labels_values = [
-        value for value, is_missing in zip(values, null, strict=True) if not is_missing
-    ]
-    if any(not isinstance(value, str) for value in labels_values):
+    labels_values = values[~null]
+    if values.dtype.kind not in "US" and any(not isinstance(value, str) for value in labels_values):
         _fail(
             "estimation.cuped_linear.covariate_kind",
             name=name,
             kind="categorical values must be strings",
         )
-    codes, labels = level_codes(labels_values)
+    labels_array = np.asarray(labels_values, dtype=str)
+    sorted_labels, codes = np.unique(labels_array, return_inverse=True)
+    labels = tuple(str(label) for label in sorted_labels)
     full_levels: list[object] = list(labels)
     if null.any():
         full_levels.append(MISSING_CATEGORY)
@@ -640,21 +676,29 @@ def _encode_category(
     if len(full_levels) <= 1:
         structural.append(name)
         return
-    for code, level in enumerate(full_levels):
-        per_arm = tuple(int(np.sum(codes_full[idx] == code)) for idx in indices)
-        if min(per_arm) < 2:
-            shown = "<typed-missing>" if level is MISSING_CATEGORY else level
-            _fail(
-                "estimation.cuped_linear.level_support",
-                column=name,
-                level=shown,
-                counts=dict(zip(order, per_arm, strict=True)),
-            )
+    arm_codes = np.empty(len(values), dtype=int)
+    for arm_code, idx in enumerate(indices):
+        arm_codes[idx] = arm_code
+    per_arm = np.bincount(
+        codes_full * len(order) + arm_codes,
+        minlength=len(full_levels) * len(order),
+    ).reshape(len(full_levels), len(order))
+    deficient = np.flatnonzero(np.min(per_arm, axis=1) < 2)
+    if len(deficient):
+        code = int(deficient[0])
+        level = full_levels[code]
+        shown = "<typed-missing>" if level is MISSING_CATEGORY else level
+        _fail(
+            "estimation.cuped_linear.level_support",
+            column=name,
+            level=shown,
+            counts=dict(zip(order, per_arm[code].tolist(), strict=True)),
+        )
     for code, level in enumerate(full_levels):
         if code == ref_code:
             continue
         shown = "<typed-missing>" if level is MISSING_CATEGORY else repr(level)
-        columns.append((codes_full == code).astype(float))
+        columns.append((codes_full, code))
         column_names.append(f"{name}[{shown}]")
 
 
@@ -677,22 +721,18 @@ def _center_outcomes(outcomes, indices):
     return tuple(centered_outcomes), tuple(offsets)
 
 
-def _fit_calculator(groups, order, counts, outcomes, x, layout, control):
-    n = len(groups)
-    indices = tuple(np.flatnonzero(groups == arm) for arm in order)
-    centered_outcomes, outcome_offsets = _center_outcomes(outcomes, indices)
+def _fit_covariate_slopes(x, indices, centered_outcomes, layout):
+    n = len(x)
     means = tuple(x[idx].mean(axis=0) for idx in indices)
-    centered = np.vstack([x[idx] - mean for idx, mean in zip(indices, means, strict=True)])
-    p = centered.shape[1]
-    group_weights = np.concatenate(
-        [np.full(len(idx), 1 / (len(idx) * (len(idx) - 1))) for idx in indices]
-    )
     weights = np.empty(n, dtype=float)
-    for idx in indices:
+    for idx, mean in zip(indices, means, strict=True):
+        x[idx] -= mean
         weights[idx] = 1 / (len(idx) * (len(idx) - 1))
-    weighted_centered = centered * np.sqrt(group_weights)[:, None]
+    sqrt_weights = np.sqrt(weights)
+    p = x.shape[1]
     if p:
-        scales = np.linalg.norm(weighted_centered, axis=0)
+        np.multiply(x, sqrt_weights[:, None], out=x)
+        scales = np.linalg.norm(x, axis=0)
         if not np.isfinite(scales).all() or np.any(scales == 0):
             deficient_columns = tuple(
                 layout.encoded_columns[i]
@@ -704,9 +744,15 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control):
                 columns=deficient_columns,
                 partners=(),
             )
-        q_covariate, r_scaled = np.linalg.qr(weighted_centered / scales, mode="reduced")
+        np.divide(x, scales, out=x)
+        if n <= 1024:
+            q_covariate, r_scaled = np.linalg.qr(x, mode="reduced")
+        else:
+            q_covariate, r_scaled = scipy_qr(
+                x, mode="economic", overwrite_a=True, check_finite=False
+            )
         _, singular_values, right_vectors = np.linalg.svd(r_scaled, full_matrices=False)
-        tolerance = max(weighted_centered.shape) * np.finfo(float).eps * singular_values[0]
+        tolerance = max(x.shape) * np.finfo(float).eps * singular_values[0]
         if singular_values[-1] <= tolerance:
             loading = np.abs(right_vectors[-1])
             partners_idx = np.argsort(loading)[-2:]
@@ -718,6 +764,9 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control):
         r_covariate = r_scaled * scales[None, :]
         gram_factor = r_covariate
     else:
+        q_covariate = np.empty((n, 0))
+        r_scaled = np.empty((0, 0))
+        scales = np.empty(0)
         gram_factor = np.empty((0, 0))
     anchor = (
         sum((len(idx) / n) * mean for idx, mean in zip(indices, means, strict=True))
@@ -726,29 +775,69 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control):
     )
     slopes = []
     for outcome in centered_outcomes:
-        outcome_centered = np.concatenate([outcome[idx] - outcome[idx].mean() for idx in indices])
+        outcome_centered = np.empty(n)
+        for idx in indices:
+            outcome_centered[idx] = outcome[idx] - outcome[idx].mean()
         if p:
             slopes.append(
-                np.linalg.solve(
-                    r_scaled,
-                    q_covariate.T @ (np.sqrt(group_weights) * outcome_centered),
-                )
+                np.linalg.solve(r_scaled, q_covariate.T @ (sqrt_weights * outcome_centered))
                 / scales
             )
         else:
             slopes.append(np.empty(0))
-    slopes = tuple(slopes)
-    adjusted_families = tuple(
+    return (
+        means,
+        weights,
+        sqrt_weights,
+        q_covariate,
+        r_scaled,
+        scales,
+        gram_factor,
+        tuple(slopes),
+        anchor,
+    )
+
+
+def _fit_calculator(groups, order, counts, outcomes, x, layout, control):
+    n = len(groups)
+    indices = tuple(np.flatnonzero(groups == arm) for arm in order)
+    centered_outcomes, outcome_offsets = _center_outcomes(outcomes, indices)
+    means, weights, sqrt_weights, q_covariate, r_scaled, scales, gram_factor, slopes, anchor = (
+        _fit_covariate_slopes(x, indices, centered_outcomes, layout)
+    )
+    p = x.shape[1]
+    arm_count = len(order)
+    design = np.zeros((n, arm_count + p))
+    arm_index = np.empty(n, dtype=int)
+    for arm, idx in enumerate(indices):
+        arm_index[idx] = arm
+        design[idx, arm] = 1
+    x = design[:, arm_count:]
+    if p:
+        np.matmul(q_covariate, r_scaled, out=x)
+        x *= scales
+        x /= sqrt_weights[:, None]
+    adjusted_local = tuple(
         tuple(
-            float(outcome[idx].mean() + outcome_offsets[f][a] - slopes[f] @ (means[a] - anchor))
+            float(outcome[idx].mean() - slopes[f] @ (means[a] - anchor))
             for a, idx in enumerate(indices)
         )
         for f, outcome in enumerate(centered_outcomes)
     )
-    design, _ = _wls_design(groups, order, x, means, p)
-    weighted_design = design * np.sqrt(weights)[:, None]
-    q_design, r_design = np.linalg.qr(weighted_design, mode="reduced")
-    leverage = np.sum(q_design * q_design, axis=1)
+    adjusted_families = tuple(
+        tuple(adjusted_local[f][a] + outcome_offsets[f][a] for a in range(len(indices)))
+        for f in range(len(outcomes))
+    )
+    leverage = np.empty(n)
+    if n <= 1024:
+        r_design = np.linalg.qr(design * sqrt_weights[:, None], mode="reduced")[1]
+    else:
+        r_design = np.zeros((arm_count + p, arm_count + p))
+        for arm, idx in enumerate(indices):
+            r_design[arm, arm] = math.sqrt(1 / (len(idx) - 1))
+        r_design[arm_count:, arm_count:] = gram_factor
+    for idx in indices:
+        leverage[idx] = 1 / len(idx) + np.sum(q_covariate[idx] ** 2, axis=1)
     df = n - len(order) - p
     if df <= 0:
         _fail("estimation.cuped_linear.residual_df", df=df)
@@ -763,7 +852,7 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control):
     )
     residuals = tuple(
         tuple(
-            _readonly(outcome[idx] - outcome[idx].mean() - (x[idx] - means[a]) @ slopes[f])
+            _readonly(outcome[idx] - outcome[idx].mean() - x[idx] @ slopes[f])
             for a, idx in enumerate(indices)
         )
         for f, outcome in enumerate(centered_outcomes)
@@ -789,7 +878,7 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control):
         float(leverage.mean()),
         _readonly(leverage),
         _readonly(x),
-        _readonly(np.array([order.index(a) for a in groups])),
+        _readonly(arm_index),
         components,
         tuple(_readonly(slope) for slope in slopes),
         residuals,
@@ -798,6 +887,8 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control):
         _readonly(weights),
         _readonly(design),
         _readonly(r_design),
+        tuple(float(v) for family in adjusted_local for v in family),
+        outcome_offsets,
     )
     return calculator, leverage
 
@@ -809,48 +900,78 @@ def _wls_design(groups, order, x, means, p):
         idx = np.flatnonzero(groups == arm)
         arm_index[idx] = a
         design[idx, a] = 1
-        design[idx, len(order) :] = x[idx] - means[a]
+        design[idx, len(order) :] = x[idx]
     return design, arm_index
 
 
 def _cache_projections(calculator, outcomes, order):
     cached = []
-    for treatment in order:
-        for control in order:
-            if treatment == control:
-                continue
-            result = calculator.absolute(treatment, control=control)
-            cached.append(
-                ("absolute", treatment, control, "", result.estimate, result.se, result.dof)
-            )
-            ti, ci = order.index(treatment), order.index(control)
+    for ti in range(1, len(order)):
+        treatment = order[ti]
+        for ci in range(ti):
+            control = order[ci]
             mean_values = np.asarray(calculator.adjusted_means[: len(order)])
+            _append_projection(
+                cached,
+                "absolute",
+                treatment,
+                control,
+                "",
+                lambda treatment=treatment, control=control: calculator.absolute(
+                    treatment, control=control
+                ),
+                reverse=True,
+            )
             if mean_values[ti] > 0 and mean_values[ci] > 0:
-                result = calculator.relative(treatment, control=control)
-                cached.append(
-                    ("relative", treatment, control, "", result.estimate, result.se, result.dof)
+                _append_projection(
+                    cached,
+                    "relative",
+                    treatment,
+                    control,
+                    "",
+                    lambda treatment=treatment, control=control: calculator.relative(
+                        treatment, control=control
+                    ),
+                    reverse=True,
                 )
             if len(outcomes) == 2:
                 components = np.asarray(calculator.adjusted_means).reshape(2, -1)
                 if np.all(components[:, [ti, ci]] > 0):
                     for scale in ("log", "absolute"):
-                        try:
-                            with np.errstate(over="raise", divide="raise", invalid="raise"):
-                                result = calculator.ratio(treatment, control=control, scale=scale)
-                        except (FloatingPointError, ZeroDivisionError, OverflowError):
-                            continue
-                        cached.append(
-                            (
-                                "ratio",
-                                treatment,
-                                control,
-                                scale,
-                                result.estimate,
-                                result.se,
-                                result.dof,
-                            )
+                        _append_projection(
+                            cached,
+                            "ratio",
+                            treatment,
+                            control,
+                            scale,
+                            lambda treatment=treatment, control=control, scale=scale: (
+                                calculator.ratio(treatment, control=control, scale=scale)
+                            ),
+                            reverse=True,
                         )
     return tuple(cached)
+
+
+def _append_projection(cached, kind, treatment, control, scale, calculate, *, reverse=False):
+    try:
+        with np.errstate(over="raise", divide="raise", invalid="raise"):
+            result = calculate()
+    except (FloatingPointError, ZeroDivisionError, OverflowError):
+        result = None
+    except InvalidRequestError as error:
+        if error.code not in {
+            "estimation.cuped_linear.nonfinite_projection",
+            "estimation.tails.unresolvable",
+        }:
+            raise
+        result = None
+    if result is None:
+        entry = (kind, treatment, control, scale, math.nan, math.nan, math.nan)
+    else:
+        entry = (kind, treatment, control, scale, result.estimate, result.se, result.dof)
+    cached.append(entry)
+    if reverse:
+        cached.append((kind, control, treatment, scale, -entry[4], entry[5], entry[6]))
 
 
 def _mean_covariance(fit: _LinearCupedCalculator) -> np.ndarray:
@@ -886,12 +1007,24 @@ def _bm(
     ai = design @ coefficients * weights
     q = ai / np.sqrt(1 - leverage)
     q2 = q * q
-    weighted_design = design * weights[:, None]
-    features = np.concatenate([design @ inverse, weighted_design], axis=1)
-    scaled_features = features * q[:, None]
-    s = scaled_features.T @ scaled_features
-    t = scaled_features.T @ (features * (q2 * q)[:, None])
-    gram = weighted_design.T @ weighted_design
+    feature_count = 2 * parameter_count
+    s = np.zeros((feature_count, feature_count))
+    t = np.zeros_like(s)
+    gram = np.zeros((parameter_count, parameter_count))
+    block_size = 65_536
+    for start in range(0, len(weights), block_size):
+        stop = min(start + block_size, len(weights))
+        design_block = design[start:stop]
+        weight_block = weights[start:stop]
+        feature_block = np.empty((stop - start, feature_count))
+        np.matmul(design_block, inverse, out=feature_block[:, :parameter_count])
+        np.multiply(design_block, weight_block[:, None], out=feature_block[:, parameter_count:])
+        weighted_block = feature_block[:, parameter_count:]
+        gram += weighted_block.T @ weighted_block
+        scaled = feature_block * q[start:stop, None]
+        s += scaled.T @ scaled
+        scaled_q2 = scaled * q2[start:stop, None]
+        t += scaled.T @ scaled_q2
     low_rank = np.block([[gram, -identity], [-identity, np.zeros_like(identity)]])
     trace = float(q2.sum() + np.trace(low_rank @ s))
     trace_square = float(
@@ -901,7 +1034,7 @@ def _bm(
 
 
 def _readonly(array: np.ndarray) -> np.ndarray:
-    out = np.asarray(array, dtype=float).copy()
+    out = np.asarray(array)
     out.setflags(write=False)
     return out
 
@@ -925,4 +1058,13 @@ def _interval(value: float, se: float, dof: float, alpha: float) -> LinearCupedP
             dof=float(dof),
         )
     critical = two_sided_critical_value(student_t_isf, alpha, dof, what="linear CUPED projection")
-    return LinearCupedProjection(value, se, dof, value - critical * se, value + critical * se)
+    half_width = critical * se
+    lower, upper = value - half_width, value + half_width
+    if not np.isfinite((half_width, lower, upper)).all():
+        _fail(
+            "estimation.cuped_linear.nonfinite_projection",
+            value=float(value),
+            se=float(se),
+            dof=float(dof),
+        )
+    return LinearCupedProjection(value, se, dof, lower, upper)
