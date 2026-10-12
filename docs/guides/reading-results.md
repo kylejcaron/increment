@@ -38,6 +38,12 @@ otherwise favorable estimate, and `not_rejected` means no detected mismatch,
 not proof of valid randomization. The collection display includes retained
 scope even when filtering leaves no visible rows.
 
+For an effect with a retained interval and tested null, the collection display
+states whether the interval excludes the null in one direction or contains it.
+Containment is described as inconclusive about direction, not as evidence of
+no effect. Secondary selection status is shown separately from this interval
+interpretation; neither is a ship/no-ship verdict.
+
 `LiftEstimates.to_frame()` and `ContrastResults.to_frame()` keep evidence
 portable in scalar and canonical-JSON columns, including `analysis_population`,
 `source_snapshot_id`, `integrity_status`/`integrity_code`/`integrity_context`,

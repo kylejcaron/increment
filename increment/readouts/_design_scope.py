@@ -739,6 +739,7 @@ def scope_design_results(  # noqa: PLR0913
                 arms=arms,
                 source=roster.source,
                 complete=roster.complete,
+                control_group=getattr(design, "control_group", None),
             ),
         ),
         decision_complete_by_population={population: complete},

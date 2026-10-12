@@ -48,12 +48,13 @@ def _frame(*, guard_constant=True, drop_guard_treatment=False):
     return pd.DataFrame(rows)
 
 
-def _analysis(frame, *, drop_missing_guard=False):
+def _analysis(frame, *, drop_missing_guard=False, design=None):
     return Analysis.from_unit_summary(
         frame,
         unit="unit",
         group="arm",
-        control="control",
+        control=None if design is not None else "control",
+        design=design,
         metrics=[
             MetricSpec(name="rev", type="mean", preferred_direction="increase"),
             MetricSpec(
@@ -62,9 +63,48 @@ def _analysis(frame, *, drop_missing_guard=False):
                 preferred_direction="decrease",
                 missing="drop" if drop_missing_guard else "error",
             ),
+            MetricSpec(name="secondary", type="mean", preferred_direction="increase"),
+        ]
+        if "secondary" in frame
+        else [
+            MetricSpec(name="rev", type="mean", preferred_direction="increase"),
+            MetricSpec(
+                name="guard",
+                type="mean",
+                preferred_direction="decrease",
+                missing="drop" if drop_missing_guard else "error",
+            ),
         ],
-        plan=AnalysisPlan(primary="rev", guardrails=["guard"]),
+        plan=(
+            AnalysisPlan(primary="rev", guardrails=["guard"])
+            if "secondary" not in frame
+            else AnalysisPlan(primary="rev", guardrails=["guard"], secondaries=["secondary"])
+        ),
     )
+
+
+def test_default_repr_qualifies_comparisons_families_and_interval_meaning():
+    frame = _frame(guard_constant=False)
+    frame["secondary"] = frame["rev"] * 0.8
+    results = _analysis(
+        frame,
+        design=Randomized(
+            control_group="control",
+            allocation={"control": 0.5, "treatment": 0.5},
+        ),
+    ).run()
+    rendered = repr(results)
+    assert "treatment vs control" in rendered
+    assert "control identity not retained" not in rendered
+    assert rendered.index("rev (primary") < rendered.index("guard (guardrail")
+    assert rendered.index("guard (guardrail") < rendered.index("secondary (secondary")
+    assert rendered.count("Multiplicity (primary)") == 1
+    assert rendered.count("Multiplicity (secondary)") == 1
+    assert "family" in rendered
+    assert "inconclusive about direction" in rendered
+    assert "direction supported" in rendered
+    assert "not evidence of no effect" in rendered
+    assert "Selection:" in rendered
 
 
 def test_saved_results_decode_when_only_the_boundary_module_is_imported():

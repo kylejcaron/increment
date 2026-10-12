@@ -417,6 +417,7 @@ class PopulationRoster(_ReadoutModel):
     arms: tuple[str, ...]
     source: Literal["declared_allocation", "experiment_counts", "observed_union", "unknown"]
     complete: bool
+    control_group: str | None = None
 
 
 class FamilyScope(_ReadoutModel):
