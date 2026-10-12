@@ -209,9 +209,8 @@ class _LinearCupedCalculator:
         mt = self.adjusted_means[family * narm + ti]
         mc = self.adjusted_means[family * narm + ci]
         difference = math.fsum((local[ti], offsets[ti], -local[ci], -offsets[ci]))
-        relative = difference / mc
-        if 0.5 <= mt / mc <= 2.0 and math.isfinite(relative):
-            return math.log1p(relative)
+        if min(mt, mc) * 2 >= max(mt, mc):
+            return math.log1p(difference / mc)
         return stable_log_ratio(mc, mt)
 
     def relative(
@@ -270,13 +269,7 @@ class _LinearCupedCalculator:
             jac = np.zeros(2 * len(self.arm_order))
             jac[ti], jac[len(self.arm_order) + ti] = 1 / nt, -1 / nd
             jac[ci], jac[len(self.arm_order) + ci] = -1 / nc, 1 / cd
-            with np.errstate(over="ignore", under="ignore", divide="ignore", invalid="ignore"):
-                ratio_t = float(nt / nd)
-                ratio_c = float(nc / cd)
-            if ratio_t > 0 and ratio_c > 0 and math.isfinite(ratio_t) and math.isfinite(ratio_c):
-                value = stable_log_ratio(ratio_c, ratio_t)
-            else:
-                value = stable_log_ratio(nc, nt) - stable_log_ratio(cd, nd)
+            value = _stable_log_cross_ratio(nt, nd, nc, cd)
         elif scale == "absolute":
             rt, rc = nt / nd, nc / cd
             jac = np.zeros(2 * len(self.arm_order))
@@ -479,7 +472,7 @@ def fit_cuped_linear(
             [
                 np.array(
                     [
-                        math.fsum((float(offset[a]), -float(offset[0]))) / scale
+                        _normalized_offset_difference(offset[a], offset[0], scale)
                         for a in range(len(order))
                     ]
                 )
@@ -586,6 +579,28 @@ def _validate_request(
             "estimation.cuped_linear.covariate_input", values=tuple(covariates), kinds=tuple(kinds)
         )
     return groups, order, indices, counts, outcomes, covariates, kinds, missing
+
+
+def _normalized_offset_difference(offset, reference, scale):
+    exponent = max(math.frexp(abs(value))[1] for value in (offset, reference, scale) if value != 0)
+    numerator = math.fsum((math.ldexp(offset, -exponent), -math.ldexp(reference, -exponent)))
+    denominator = math.ldexp(scale, -exponent)
+    if denominator == 0:
+        if numerator == 0:
+            return 0.0
+        _fail(
+            "estimation.cuped_linear.nonfinite",
+            name="covariate offset",
+            row=0,
+        )
+    result = numerator / denominator
+    if not math.isfinite(result):
+        _fail(
+            "estimation.cuped_linear.nonfinite",
+            name="covariate offset",
+            row=0,
+        )
+    return result
 
 
 def _categorical_values(raw, raw_values, n):
@@ -1215,6 +1230,56 @@ def _readonly(array: np.ndarray) -> np.ndarray:
 def _stable_norm(values: np.ndarray) -> float:
     scale = float(np.max(np.abs(values), initial=0.0))
     return 0.0 if scale == 0 else scale * float(np.linalg.norm(values / scale))
+
+
+def _two_product(left: float, right: float) -> tuple[float, float]:
+    product = left * right
+    if hasattr(math, "fma"):
+        return product, math.fma(left, right, -product)
+    splitter = 134217729.0
+    left_split = splitter * left
+    left_high = left_split - (left_split - left)
+    left_low = left - left_high
+    right_split = splitter * right
+    right_high = right_split - (right_split - right)
+    right_low = right - right_high
+    error = (
+        (left_high * right_high - product)
+        + left_high * right_low
+        + left_low * right_high
+        + left_low * right_low
+    )
+    return product, error
+
+
+def _stable_log_cross_ratio(nt: float, nd: float, nc: float, cd: float) -> float:
+    ntm, nte = math.frexp(nt)
+    ndm, nde = math.frexp(nd)
+    ncm, nce = math.frexp(nc)
+    cdm, cde = math.frexp(cd)
+    treatment_exponent = nte + cde
+    control_exponent = nce + nde
+    if abs(treatment_exponent - control_exponent) <= 1:
+        treatment_product = _two_product(ntm, cdm)
+        control_product = _two_product(ncm, ndm)
+        common_exponent = max(treatment_exponent, control_exponent)
+        treatment_scale = math.ldexp(1.0, treatment_exponent - common_exponent)
+        control_scale = math.ldexp(1.0, control_exponent - common_exponent)
+        control = math.fsum(
+            (control_product[0] * control_scale, control_product[1] * control_scale)
+        )
+        difference = math.fsum(
+            (
+                treatment_product[0] * treatment_scale,
+                treatment_product[1] * treatment_scale,
+                -control_product[0] * control_scale,
+                -control_product[1] * control_scale,
+            )
+        )
+        relative = difference / control
+        if abs(relative) <= 0.5:
+            return math.log1p(relative)
+    return math.fsum((math.log(nt), -math.log(nd), -math.log(nc), math.log(cd)))
 
 
 def _check_alpha(alpha: float) -> None:

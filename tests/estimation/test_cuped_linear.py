@@ -994,7 +994,7 @@ def test_nonfinite_absolute_ratio_projection_does_not_abort_log_ratio_fit():
     assert raised.value.code == "estimation.cuped_linear.nonfinite_projection"
 
 
-@pytest.mark.parametrize("denominator_scale", [1.0, 2**100])
+@pytest.mark.parametrize("denominator_scale", [1.0, 3.0, 5.0, 2**100])
 def test_ratio_log_effect_survives_component_log_rounding(denominator_scale):
     arm = np.array(["c", "c", "t", "t"])
     base = 2**50
@@ -1224,3 +1224,42 @@ def test_homogeneous_numpy_bytes_categories_remain_supported():
         kinds={"category": "categorical"},
     )
     assert fit.layout.levels == (("a", "b"),)
+
+
+@pytest.mark.parametrize("denominator_scale", [1.0, 3.0, 5.0, 2**100])
+def test_ratio_cross_product_log_effect_is_denominator_unit_invariant(denominator_scale):
+    arm = np.array(["c", "c", "t", "t"])
+    base = 2**50
+    fit = fit_cuped_linear(
+        None,
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+        numerator=np.array([1.0, 1.0, base + 0.25, base + 0.25]),
+        denominator=np.array(
+            [
+                denominator_scale,
+                denominator_scale,
+                base * denominator_scale,
+                base * denominator_scale,
+            ]
+        ),
+    )
+    assert fit.ratio("t", scale="log").estimate == pytest.approx(
+        math.log1p(2**-52), rel=1e-12, abs=0
+    )
+
+
+def test_scaled_opposite_sign_covariate_offsets_do_not_overflow():
+    arm = np.array(["c"] * 4 + ["t"] * 4)
+    x = np.r_[[-10.0, -9.0, -8.0, -7.0], [10.0, 11.0, 12.0, 13.0]] * 1e307
+    y = np.array([10.0, 11.0, 12.0, 13.0, 31.0, 32.0, 33.0, 34.0])
+    fit = fit_cuped_linear(
+        y,
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+        covariates={"x": x},
+        kinds={"x": "continuous"},
+    )
+    assert fit.absolute("t").estimate == pytest.approx(1.0, abs=1e-12)
