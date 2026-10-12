@@ -587,13 +587,19 @@ def _assert_parity_tables_close(left: pa.Table, right: pa.Table, *, keys: tuple[
 
 
 def _analysis(
-    tmp_path, table, trigger="saw_surface", *, on_mixed_assignment="error", allocation_scheme=None
+    tmp_path,
+    table,
+    trigger="saw_surface",
+    *,
+    on_mixed_assignment="error",
+    allocation_scheme=None,
+    end=None,
 ):
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
     return Analysis.from_definitions(
         "exp",
-        _write_defs(tmp_path, trigger, allocation_scheme=allocation_scheme),
+        _write_defs(tmp_path, trigger, allocation_scheme=allocation_scheme, end=end),
         con,
         on_mixed_assignment=on_mixed_assignment,
         source_snapshot_evidence=SourceSnapshotEvidence(
@@ -1890,46 +1896,96 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
             _close_parity_analysis(adopted)
 
 
-def test_triggered_sitewide_refuses_with_source_specific_reason(tmp_path):
-    from tests.capability_consumers_auxiliary import assert_refusal
+def test_sitewide_reports_assigned_impact_for_triggered_experiment(tmp_path):
+    from tests.analysis_factory import _native_source, native_connection
+    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
 
-    analysis = _analysis(tmp_path, _events(n_per_arm=100))
+    analysis = _analysis(
+        tmp_path, _events(n_per_arm=100, trigger_rate=0.2, effect=0.5), end="2024-01-16"
+    )
+    untriggered = _analysis(
+        tmp_path,
+        _events(n_per_arm=100, trigger_rate=0.2, effect=0.5),
+        trigger=None,
+        end="2024-01-16",
+    )
     adopted = None
     try:
-        with pytest.raises(CapabilityError) as raised:
-            analysis.sitewide("revenue")
-        assert raised.value.code == "analysis.sitewide.triggered_population_unsupported"
-        assert_refusal(
-            "triggered_auxiliary_reads",
-            "sitewide_definitions_refused",
-            raised.value,
-            stage="read",
-        )
-        from tests.analysis_factory import _native_source, native_connection
-        from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+        triggered_result = analysis.sitewide("revenue")
+        untriggered_result = untriggered.sitewide("revenue")
+        assert triggered_result.analysis_population == "assigned"
+        assert triggered_result.absolute_impact == pytest.approx(untriggered_result.absolute_impact)
+        assert triggered_result.relative_impact == pytest.approx(untriggered_result.relative_impact)
 
         adopted = _publish_and_adopt(
-            native_connection(_native_source(analysis)),
-            analysis,
-            kinds=("trigger_population", "trigger_measure_stats"),
+            native_connection(_native_source(analysis)), analysis, kinds=("site_volume",)
         )
-        with pytest.raises(CapabilityError) as artifact_refused:
-            adopted.sitewide("revenue")
-        assert artifact_refused.value.code == "analysis.sitewide.triggered_population_unsupported"
-        assert_refusal(
+        artifact_result = adopted.sitewide("revenue")
+        assert artifact_result.analysis_population == "assigned"
+        assert artifact_result.absolute_impact == pytest.approx(triggered_result.absolute_impact)
+        assert artifact_result.relative_impact == pytest.approx(triggered_result.relative_impact)
+        from tests.capability_consumers_auxiliary import assert_support
+
+        assert_support(
             "triggered_auxiliary_reads",
-            "sitewide_artifact_refused",
-            artifact_refused.value,
-            stage="read",
+            "sitewide_definitions_assigned_supported",
+            triggered_result,
         )
+        assert_support(
+            "triggered_auxiliary_reads",
+            "sitewide_artifact_assigned_supported",
+            artifact_result,
+        )
+
+        import copy
+        import pickle
+
+        from tests.capability_consumers_auxiliary import assert_refusal
+
+        for source_analysis, outcome_id in (
+            (analysis, "sitewide_triggered_population_refused"),
+            (adopted, "sitewide_artifact_triggered_population_refused"),
+        ):
+            with pytest.raises(CapabilityError) as refused:
+                source_analysis.sitewide("revenue", population="triggered")
+            assert refused.value.code == "analysis.sitewide.triggered_population_unsupported"
+            assert refused.value.context == {"experiment": "exp", "population": "triggered"}
+
+            for copied in (copy.deepcopy(refused.value), pickle.loads(pickle.dumps(refused.value))):
+                assert copied.code == refused.value.code
+                assert copied.context == refused.value.context
+            assert_refusal("triggered_auxiliary_reads", outcome_id, refused.value, stage="read")
     finally:
-        if adopted is None:
-            analysis.close()
-        else:
+        analysis.close()
+        untriggered.close()
+        if adopted is not None:
             _close_parity_analysis(adopted)
 
 
-def test_triggered_sitewide_refusal_from_seam_keeps_coded_source_reason():
+def test_sitewide_triggered_population_without_trigger_refuses_before_loading(
+    tmp_path, monkeypatch
+):
+    analysis = _analysis(tmp_path, _events(n_per_arm=10), trigger=None)
+    try:
+        from tests.analysis_factory import _native_source
+
+        source = _native_source(analysis)
+        monkeypatch.setattr(
+            source, "sitewide_evidence", lambda *args, **kwargs: pytest.fail("loaded sitewide data")
+        )
+        with pytest.raises(CapabilityError) as refused:
+            analysis.sitewide("revenue", population="triggered")
+        assert refused.value.code == "source.native.operation"
+        assert refused.value.context["request"] == {
+            "experiment": "exp",
+            "population": "triggered",
+            "trigger": None,
+        }
+    finally:
+        analysis.close()
+
+
+def test_triggered_sitewide_seam_keeps_source_specific_refusal():
     import pandas as pd
 
     analysis = Analysis.from_unit_summary(

@@ -18,6 +18,19 @@ units, and it reports only the window actually run—no annualized or longer
 horizon projection. Check [what refuses](#what-refuses) before selecting a
 metric or source.
 
+
+## Whole-site impact under a trigger
+
+When an experiment declares `trigger:`, `sitewide()` still reports the
+`assigned` intent-to-treat whole-site impact. It uses assignment-anchored
+windows and includes every enrolled unit, whether or not that unit triggered;
+declaring a trigger therefore does not change this estimand. Requesting
+`population="triggered"` is refused. Multiplying triggered-cohort lift by all
+enrolled units would overstate impact when some units never trigger. A
+triggered-population sitewide estimate would additionally require that units
+which never trigger are unaffected; that assumption is not made here. Use
+`run()` for the triggered cohort effect.
+
 ## The ship-to-all counterfactual
 
 Given a per-unit absolute lift

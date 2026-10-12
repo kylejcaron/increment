@@ -2204,8 +2204,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         return self._con.to_pyarrow(volume).to_pylist()[0]
 
     def sitewide_evidence(self, metric: Metric, *, include_ratio: bool = False) -> SitewideEvidence:
-        """Prepare typed, exposure-independent evidence for ``sitewide``."""
-        self._refuse_declared_trigger("sitewide_evidence")
+        """Prepare typed, assignment-anchored evidence for ``sitewide``."""
         if isinstance(metric, RatioMetric) and not include_ratio:
             _refuse_operation(
                 operation="sitewide_evidence",

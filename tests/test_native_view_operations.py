@@ -589,9 +589,7 @@ def test_day_source_validates_metrics_passed_directly(pricing_analysis):
     assert raised.value.code == "source.native.operation"
 
 
-def test_direct_native_view_operations_refuse_declared_trigger_before_warehouse_work(
-    tmp_path, monkeypatch
-):
+def test_direct_native_sitewide_uses_assigned_evidence_with_declared_trigger(tmp_path, monkeypatch):
     import ibis
 
     from tests.test_analysis_trigger import (
@@ -622,19 +620,21 @@ def test_direct_native_view_operations_refuse_declared_trigger_before_warehouse_
     analysis = Analysis.from_definitions("exp", path, con)
     source = _native_source(analysis)
     metric = analysis.metrics[0]
-    monkeypatch.setattr(
-        source,
-        "_note_reduction",
-        lambda: (_ for _ in ()).throw(AssertionError("warehouse work started")),
-    )
 
     try:
-        with pytest.raises(CapabilityError) as raised:
-            source.sitewide_evidence(metric)
-        assert raised.value.code == "source.native.operation"
+        evidence = source.sitewide_evidence(metric)
+        assert {arm.group_id: arm.n for arm in evidence.arm_stats} == {
+            "C": 10,
+            "T": 10,
+        }
 
-        # T3 supports these native summaries, but only after snapshot evidence pins
-        # the trigger population; the refusal must happen before warehouse work.
+        # These other triggered views still require snapshot evidence before
+        # resolving warehouse tables.
+        monkeypatch.setattr(
+            source,
+            "_note_reduction",
+            lambda: (_ for _ in ()).throw(AssertionError("warehouse work started")),
+        )
         for call in (analysis.breakout_summaries, analysis.factor_summaries):
             with pytest.raises(CapabilityError) as raised:
                 call()

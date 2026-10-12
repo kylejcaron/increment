@@ -65,8 +65,8 @@ _TRIGGER_READS = (
     ),
     (
         "sitewide",
-        "sitewide()",
-        "tests.test_analysis_trigger::test_triggered_sitewide_refuses_with_source_specific_reason",
+        "sitewide(population=...)",
+        "tests.test_analysis_trigger::test_sitewide_reports_assigned_impact_for_triggered_experiment",
     ),
     (
         "cate",
@@ -205,28 +205,69 @@ for _key, _operation, _evidence in _TRIGGER_READS:
                 ),
             )
         )
+    elif _key == "sitewide":
+        _TRIGGER_AUXILIARY_OUTCOMES.extend(
+            (
+                _expectation(
+                    "sitewide_definitions_assigned_supported",
+                    _operation,
+                    "from_definitions",
+                    "sitewide requested with the default assigned population on an experiment that declares a trigger",
+                    "supported",
+                    _evidence,
+                ),
+                _expectation(
+                    "sitewide_artifact_assigned_supported",
+                    _operation,
+                    "from_unit_day_artifact",
+                    "sitewide requested with the default assigned population and a site-volume extension",
+                    "supported",
+                    _evidence,
+                ),
+                _expectation(
+                    "sitewide_triggered_population_refused",
+                    _operation,
+                    "from_definitions",
+                    "sitewide requested with population='triggered' on an experiment that declares a trigger",
+                    "refused",
+                    _evidence,
+                    codes=("analysis.sitewide.triggered_population_unsupported",),
+                    reason="The triggered-population sitewide estimand is not offered.",
+                ),
+                _expectation(
+                    "sitewide_artifact_triggered_population_refused",
+                    _operation,
+                    "from_unit_day_artifact",
+                    "sitewide requested with population='triggered' on an experiment that declares a trigger",
+                    "refused",
+                    _evidence,
+                    codes=("analysis.sitewide.triggered_population_unsupported",),
+                    reason="The triggered-population sitewide estimand is not offered.",
+                ),
+            )
+        )
     else:
         _TRIGGER_AUXILIARY_OUTCOMES.extend(
             (
                 _expectation(
-                    "sitewide_definitions_refused",
+                    "sitewide_triggered_population_refused",
                     _operation,
                     "from_definitions",
-                    "triggered population requested from source-owned native analysis",
+                    "sitewide requested with population='triggered' on an experiment that declares a trigger",
                     "refused",
                     _evidence,
                     codes=("analysis.sitewide.triggered_population_unsupported",),
-                    reason="Sitewide aggregation is unsupported for triggered population.",
+                    reason="The triggered-population sitewide estimand is not offered.",
                 ),
                 _expectation(
-                    "sitewide_artifact_refused",
+                    "sitewide_artifact_triggered_population_refused",
                     _operation,
                     "from_unit_day_artifact",
-                    "triggered population requested from artifact-backed analysis",
+                    "sitewide requested with population='triggered' on an experiment that declares a trigger",
                     "refused",
                     _evidence,
                     codes=("analysis.sitewide.triggered_population_unsupported",),
-                    reason="Sitewide aggregation is unsupported for triggered population.",
+                    reason="The triggered-population sitewide estimand is not offered.",
                 ),
             )
         )

@@ -158,7 +158,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, model_validator
 from scipy.stats import norm as _norm
@@ -276,6 +276,9 @@ class SitewideImpact(BaseModel):
     ----------
     delta, delta_se : float
         Per-unit absolute lift of the target arm and its standard error.
+    analysis_population : Literal["assigned"]
+        The sitewide intent-to-treat result always represents the assigned
+        population, including for experiments that declare a trigger.
     treatment_group : str
         ``group_id`` of the target arm.
     n_control, n_treatment : float
@@ -313,6 +316,7 @@ class SitewideImpact(BaseModel):
 
     delta: float
     delta_se: float
+    analysis_population: Literal["assigned"] = "assigned"
     treatment_group: str
     n_control: float
     n_treatment: float
@@ -349,6 +353,9 @@ class SitewideRatioImpact(BaseModel):
         Per-unit absolute lift of the target arm's denominator and its SE.
     delta_cov : float
         Covariance of ``delta_num`` and ``delta_den``.
+    analysis_population : Literal["assigned"]
+        The sitewide intent-to-treat result always represents the assigned
+        population, including for experiments that declare a trigger.
     treatment_group : str
         ``group_id`` of the target arm.
     n_control, n_treatment : float
@@ -389,6 +396,7 @@ class SitewideRatioImpact(BaseModel):
     delta_den: float
     delta_den_se: float
     delta_cov: float
+    analysis_population: Literal["assigned"] = "assigned"
     treatment_group: str
     n_control: float
     n_treatment: float

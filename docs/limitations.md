@@ -74,6 +74,7 @@ One row per entry on this page. Rows carry no numbers or codes; the entry is aut
 | [Sequential selected intervals use the same stopped likelihood](#sequential-selected-intervals-use-the-same-stopped-likelihood) | scope of guarantee | Reading a selected interval as coverage for one metric picked afterwards. |
 | [Stopping-date guarantees require the registered reveal contract](#stopping-date-guarantees-require-the-registered-reveal-contract) | assumption | Monitoring departs from the registered reveal contract, or flags accumulate across dates. |
 | [Clustered CATE uncertainty is cluster-asymptotic](#clustered-cate-uncertainty-is-cluster-asymptotic) | approximation | Clustered CATE with few, unbalanced, or high-leverage clusters. |
+| [Triggered sitewide impact assumes never-triggered units are unaffected](#triggered-sitewide-impact-assumes-never-triggered-units-are-unaffected) | assumption | Estimating whole-site impact only among units that trigger. |
 | [Targeting validation depends on identification and overlap](#targeting-validation-depends-on-identification-and-overlap) | assumption | Validating targeting on observational data; ignorability cannot be checked. |
 | [The targeting workflow carries no joint error control](#the-targeting-workflow-carries-no-joint-error-control) | scope of guarantee | Acting on the strongest of many targeting-workflow tests. |
 | [Meta-analysis can be anticonservative at small K](#meta-analysis-can-be-anticonservative-at-small-k) | approximation | Pooling few segments; HKSJ can undercover in the tested design. |
@@ -270,6 +271,12 @@ window and completion rules. The compliance-only request reads trigger and
 uptake evidence without reducing outcomes. Clustered outcome histories still
 refuse with `facade.analysis.clustered_day_axis`; cluster-grain compliance
 histories use the declared cluster uptake sufficient state.
+
+### Triggered sitewide impact assumes never-triggered units are unaffected
+
+`Analysis.sitewide(population="triggered")` is not offered: scaling triggered
+lift to all enrolled units assumes units that never trigger are unaffected.
+The assigned-population whole-site intent-to-treat impact remains available.
 
 The clustered encouragement LATE cuts its additive interval at a Welch–Satterthwaite t
 reference over the two arms' own cluster-ratio variance components. Measured by
