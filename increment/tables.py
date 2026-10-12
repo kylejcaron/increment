@@ -605,9 +605,16 @@ def _resolve_trend_frame(
 
 
 def _is_missing(value: Any) -> bool:
-    """``None``, or a float NaN (pandas' fill for keys absent in a mixed
-    row list) - the two shapes "no value" takes in a readout frame."""
-    return value is None or (isinstance(value, float) and math.isnan(value))
+    """``None``, a float NaN (pandas' fill for keys absent in a mixed row
+    list), or ``pd.NA``/``NaT`` - every shape "no value" takes in a readout
+    frame. Missing markers are the values unequal to themselves; ``pd.NA``
+    compares to an ambiguous ``NA`` instead, so that also reads as missing."""
+    if value is None:
+        return True
+    try:
+        return bool(value != value)
+    except TypeError:
+        return True
 
 
 def _column_values(frame: Any, column: str) -> list[Any] | None:
