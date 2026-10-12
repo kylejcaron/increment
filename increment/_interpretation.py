@@ -564,6 +564,10 @@ def render_readout_qualifications(interpretation: ReadoutInterpretation) -> tupl
     """Return compact, source-attributed qualifications for a rendered table header."""
     if not interpretation.groups:
         return ("Scope and integrity unknown.",)
+    attribution_count = len(
+        {(group.population, group.source_snapshot_id) for group in interpretation.groups}
+    )
+    repeat_attribution = attribution_count > 1
     bullets: list[str] = []
     for group in interpretation.groups:
         attribution = [
@@ -572,6 +576,11 @@ def render_readout_qualifications(interpretation: ReadoutInterpretation) -> tupl
             if value
         ]
         suffix = "" if not attribution else f" [{', '.join(attribution)}]"
+
+        def add_bullet(text: str, group_suffix: str = suffix) -> None:
+            attribution_suffix = group_suffix if repeat_attribution or not bullets else ""
+            bullets.append(text + attribution_suffix)
+
         comparison = (
             f"{group.treatment_group} vs {group.control_group}"
             if group.control_group is not None and group.treatment_group is not None
@@ -582,13 +591,13 @@ def render_readout_qualifications(interpretation: ReadoutInterpretation) -> tupl
             if not interpretation.metadata_known
             else "comparison not represented by retained scope"
         )
-        bullets.append(f"Comparison: {comparison}{suffix}")
+        add_bullet(f"Comparison: {comparison}")
         integrity = f"Integrity: {group.integrity_status}"
         if group.integrity_code:
             integrity += f" ({group.integrity_code})"
         if group.integrity_status == "not_rejected":
             integrity += "; no detected mismatch, not proof of valid randomization"
-        bullets.append(integrity + suffix)
+        add_bullet(integrity)
         decision = (
             "unknown"
             if group.decision_complete is None
@@ -613,22 +622,22 @@ def render_readout_qualifications(interpretation: ReadoutInterpretation) -> tupl
                 f"available: {required_available}; hidden: {len(group.hidden_cells)}; "
                 f"unavailable: {len(group.unavailable_cells)}"
             )
-        bullets.append(
+        add_bullet(
             f"Scope: decision {decision}; roster {roster}"
-            f"{'; partial view' if group.partial else ''}{counts}{suffix}"
+            f"{'; partial view' if group.partial else ''}{counts}"
         )
         for item in group.unavailable_cells:
             if not item.visible:
                 continue
             identity = _cell_label(item.key)
             reason = item.failure_message or item.failure_code or "reason unavailable"
-            bullets.append(f"Unavailable {identity}: {reason}{suffix}")
+            add_bullet(f"Unavailable {identity}: {reason}")
         for item in group.hidden_cells:
             identity = _cell_label(item.key)
             reason = item.failure_message or (
                 "availability unknown" if not item.available else "result retained in scope"
             )
-            bullets.append(f"Hidden by filter {identity}: {reason}{suffix}")
+            add_bullet(f"Hidden by filter {identity}: {reason}")
         family_by_id = {family.family_id: family for family in group.retained_families}
         multiplicity = set()
         for row in group.visible_rows:
@@ -646,14 +655,14 @@ def render_readout_qualifications(interpretation: ReadoutInterpretation) -> tupl
                 multiplicity,
                 key=lambda item: (_ROLE_ORDER.get(item[0], 3), item[2], item[1]),
             ):
-                bullets.append(f"Multiplicity ({role}): {status}; family {family_name}{suffix}")
+                add_bullet(f"Multiplicity ({role}): {status}; family {family_name}")
         elif group.retained_families:
             family_names = ", ".join(sorted({family.name for family in group.retained_families}))
-            bullets.append(f"Multiplicity: retained scope; family {family_names}{suffix}")
+            add_bullet(f"Multiplicity: retained scope; family {family_names}")
         for advisory in group.advisories:
             context = _json(advisory.context)
             detail = "" if not context else f"; context {context}"
-            bullets.append(f"Advisory {advisory.code}: {advisory.message}{detail}{suffix}")
+            add_bullet(f"Advisory {advisory.code}: {advisory.message}{detail}")
     return tuple(bullets)
 
 

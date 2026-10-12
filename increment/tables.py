@@ -18,6 +18,7 @@ import json
 import math
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from html import escape as escape_html
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from increment._interpretation import (
@@ -877,6 +878,20 @@ def _readout_evidence_notes(frame: Any) -> list[str]:
     return notes
 
 
+def _compact_interval_interpretation(value: Any) -> str:
+    text = str(value)
+    if "interval contains the tested null" in text:
+        return "Contains null — inconclusive"
+    for direction in ("increase", "decrease"):
+        if f"direction supported ({direction})" in text:
+            return f"Excludes null — {direction} supported"
+    if "spans opposing directions" in text:
+        return "Excludes null — mixed directions"
+    if "direction opposite the declared alternative" in text:
+        return "Excludes null — opposite direction"
+    return text
+
+
 def _rendered_metadata_columns(
     frame: Any, *, advisory: bool, show_interval_level: bool
 ) -> dict[str, list[str]]:
@@ -946,7 +961,8 @@ def _rendered_metadata_columns(
     interpretations = _column_values(frame, "effect_interpretation")
     if interpretations is not None and any(not _is_missing(value) for value in interpretations):
         columns["Interval interpretation"] = [
-            "" if _is_missing(value) else str(value) for value in interpretations
+            "" if _is_missing(value) else _compact_interval_interpretation(value)
+            for value in interpretations
         ]
     levels = _column_values(frame, "level")
     if show_interval_level and levels is not None:
@@ -1403,12 +1419,12 @@ def _prepare_readout_metadata(
     return frame, display_columns, shifted_null_lift, group_column
 
 
-def _readout_input_frame(data: Any, nw: Any, pd: Any) -> tuple[Any, str]:
+def _readout_input_frame(data: Any, nw: Any, pd: Any) -> tuple[Any, tuple[str, ...]]:
     """Convert row, frame, or scoped collection input to the render frame."""
     metadata = getattr(data, "metadata", None)
-    scope_header = ""
+    scope_notes = ()
     if metadata is not None:
-        scope_header = " • ".join(render_readout_qualifications(interpret_readout(data, metadata)))
+        scope_notes = render_readout_qualifications(interpret_readout(data, metadata))
         data = estimates_to_readout(data)
     frame = (
         nw.from_native(pd.DataFrame(data), eager_only=True)
@@ -1421,9 +1437,9 @@ def _readout_input_frame(data: Any, nw: Any, pd: Any) -> tuple[Any, str]:
                 frame = frame.with_columns(
                     nw.new_series(name, [], dtype=nw.String, backend=nw.get_native_namespace(frame))
                 )
-        if not scope_header:
-            scope_header = "Scope and integrity unknown."
-    return frame, scope_header
+        if not scope_notes:
+            scope_notes = ("Scope and integrity unknown.",)
+    return frame, scope_notes
 
 
 # Keep trend labels aligned with ``_resolve_trend_frame``.
@@ -1619,8 +1635,7 @@ def readout_table(
     notes = (
         _readout_metadata_notes(frame) + _readout_evidence_notes(frame) if not scope_header else []
     )
-    if scope_header:
-        notes.append(scope_header)
+    notes.extend(scope_header)
     level_note = _interval_level_note(
         frame,
         show_interval_level=show_interval_level,
@@ -1628,9 +1643,24 @@ def readout_table(
     )
     if level_note is not None:
         notes.append(level_note)
-    if title:
-        if notes:
-            subtitle = " • ".join(([subtitle] if subtitle else []) + notes)
+    if title and notes:
+        from great_tables import html as gt_html
+
+        items = ([subtitle] if subtitle else []) + notes
+        body = "".join(f"<li>{escape_html(str(item))}</li>" for item in items)
+        width_style = (
+            '<style>th[id="Interval-interpretation"]{width:18em;min-width:18em}</style>'
+            if "Interval interpretation" in display_columns
+            else ""
+        )
+        subtitle = cast(
+            Any,
+            gt_html(
+                width_style
+                + '<ul style="margin:0;padding-left:1.25em;text-align:left;line-height:1.35">'
+                + f"{body}</ul>"
+            ),
+        )
     elif notes or subtitle:
         title = " • ".join(([subtitle] if subtitle else []) + notes)
         subtitle = ""

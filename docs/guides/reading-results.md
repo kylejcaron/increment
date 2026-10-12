@@ -29,9 +29,10 @@ The `readout_table` coeftable keeps per-row estimate evidence compact:
 decision-scope completeness, partial-view state, integrity, availability,
 multiplicity, and advisories appear as source-attributed qualification bullets
 in the header. Source identifiers are abbreviated there; the full identifiers
-remain in result objects and evidence columns. Interval interpretation stays
-with its effect row, and failure rows keep a concise `Failure` column with
-their full structured context on the result object.
+remain in result objects and evidence columns. Each effect row uses a compact
+interval-interpretation label; the full restrained explanation remains in
+the collection `repr`. Failure rows keep a concise `Failure` column with their
+full structured context on the result object.
 
 Scoped result collections also carry qualifications in their default
 `repr`: integrity and scope completeness precede availability, multiplicity,

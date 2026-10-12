@@ -112,13 +112,26 @@ def test_readout_table_uses_qualification_bullets_and_keeps_interpretation_per_r
     results = _analysis(_frame(guard_constant=False)).run(metrics=["rev"])
     html = readout_table(results).gt().as_raw_html()
     subtitle = html.split('class="gt_heading gt_subtitle', 1)[1].split("</td>", 1)[0]
-    assert "•" in subtitle
+    assert "<ul " in subtitle
+    assert subtitle.count("<li>") == 4
     assert "Integrity: not_checked" in subtitle
-    assert "Interpretation:" not in subtitle
-    assert html.count("Interpretation:") == 1
-    assert results[0].source_snapshot_id.startswith("sha256:")
-    assert results[0].source_snapshot_id[:19] in subtitle
+    assert subtitle.count("sha256:") == 1
+    assert "Interpretation:" not in subtitle and "Interpretation:" not in html
+    assert "Interval interpretation" in html
+    assert 'th[id="Interval-interpretation"]{width:18em' in html
+    assert "Excludes null — increase supported" in html
     assert results[0].source_snapshot_id not in subtitle
+
+
+def test_readout_table_escapes_user_text_in_qualification_list():
+    frame = _frame(guard_constant=False)
+    frame["arm"] = frame["arm"].replace("treatment", "<img src=x>")
+    results = _analysis(frame).run(metrics=["rev"])
+    html = readout_table(results).gt().as_raw_html()
+    subtitle = html.split('class="gt_heading gt_subtitle', 1)[1].split("</td>", 1)[0]
+
+    assert "<img" not in subtitle
+    assert "&lt;img src=x&gt;" in subtitle
 
 
 def test_saved_results_decode_when_only_the_boundary_module_is_imported():
