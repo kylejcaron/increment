@@ -41,6 +41,7 @@ from increment.breakout.estimates import (
     DailyMetricValues,
     LiftEstimates,
 )
+from increment.dashboard._format import allocation_evidence, allocation_verdict
 from increment.dashboard._theme import MIDNIGHT, DashboardTheme, require_theme
 from increment.errors import (
     CapabilityError,
@@ -926,17 +927,68 @@ def enriched_rows(
     )
 
 
+def _analysis_integrity_qualification(group) -> str:
+    status = group.integrity_status
+    if status == "not_checked_missing_declaration":
+        text = "Analysis assignment check: not run — no allocation declared on the analysis design"
+    elif status == "unknown":
+        text = "Analysis assignment check: unknown; missing integrity metadata is not a pass"
+    else:
+        text = f"Analysis assignment check: {status}"
+    if group.integrity_code:
+        text += f" (code {group.integrity_code})"
+    return text + "."
+
+
+def _dashboard_allocation_qualification(
+    snapshot: DashboardSnapshot, population: str | None
+) -> tuple[str, bool]:
+    selected = population or "assigned"
+    if selected == "triggered":
+        allocation = snapshot.triggered_allocation
+        refusal = snapshot.triggered_allocation_refusal
+        name = "Dashboard triggered-population balance check"
+    else:
+        allocation = snapshot.allocation
+        refusal = snapshot.allocation_refusal
+        name = "Dashboard allocation check"
+    expected = " / ".join(
+        f"{arm} {100 * weight:g}%" for arm, weight in snapshot.config.expected_allocation.items()
+    )
+    prefix = f"{name} ({selected}, configured expected {expected})"
+    if allocation is None:
+        code, reason = refusal or ("", "")
+        state = "not run" if code == _ALLOCATION_NOT_APPLICABLE else "unavailable"
+        detail = f": {reason} (code {code})" if code else f": {reason}" if reason else ""
+        return f"{prefix}: {state}{detail}.", False
+    state = "mismatch detected" if allocation.is_srm else "no mismatch detected"
+    detail = allocation_verdict(
+        allocation, population=cast(Literal["assigned", "triggered"], selected)
+    )
+    evidence = allocation_evidence(allocation)
+    return f"{prefix}: {state}. {detail}. {evidence}", allocation.is_srm
+
+
 def readout_interpretation_text(snapshot: DashboardSnapshot) -> str:
-    """Render retained source and collection scope for dashboard summary and report surfaces."""
+    """Render source, analysis-integrity, and dashboard allocation qualifications."""
     collection = snapshot.readout_collection
     rows = snapshot.estimates if collection is None else collection
     metadata = None if collection is None else collection.metadata
     interpretation = interpret_readout(rows, metadata)
-    return "\n\n".join(
-        f"Source snapshot: {group.source_snapshot_id or 'unknown'}\n"
-        + render_readout_text(replace(interpretation, groups=(group,)))
-        for group in interpretation.groups
-    )
+    groups = []
+    for group in interpretation.groups:
+        allocation_text, mismatch = _dashboard_allocation_qualification(snapshot, group.population)
+        analysis_text = _analysis_integrity_qualification(group)
+        qualifications = (
+            (allocation_text, analysis_text) if mismatch else (analysis_text, allocation_text)
+        )
+        groups.append(
+            f"Source snapshot: {group.source_snapshot_id or 'unknown'}\n"
+            + "\n".join(qualifications)
+            + "\n"
+            + render_readout_text(replace(interpretation, groups=(group,)))
+        )
+    return "\n\n".join(groups)
 
 
 # Shared read-only accessors for the rendering layer.

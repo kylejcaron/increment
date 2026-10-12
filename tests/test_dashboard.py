@@ -2105,3 +2105,127 @@ def test_dashboard_snapshot_and_csv_retain_scoped_readout_metadata(
     from increment.dashboard._app import _report_notes
 
     assert any("session_seconds" in note for note in _report_notes(dashboard_snapshot))
+    report_text = "\n".join(_report_notes(dashboard_snapshot))
+    for surface in (summary_html, readout_html, report_text):
+        assert "Dashboard allocation check" in surface
+        assert "configured expected control 70% / treatment 30%" in surface
+        assert "mismatch detected" in surface
+        assert "Analysis assignment check: not run" in surface
+        assert "integrity.allocation_missing_or_nonconstant" in surface
+        assert surface.index("mismatch detected") < surface.index("Analysis assignment check")
+
+
+@pytest.mark.slow
+def test_dashboard_round_trips_real_unavailable_cell_and_advisories(tmp_path: Path, dashboard_con):
+    facts = (
+        FACT_SOURCES.replace(
+            "SELECT * FROM analytics.event_log",
+            "SELECT *, concat(group_id, '_', country_code) AS store_id FROM analytics.event_log",
+        )
+        .replace(
+            "    properties:\n",
+            "    properties:\n"
+            "      - name: store_id\n"
+            "        column: store_id\n"
+            "        dtype: string\n"
+            "        as_of: static\n"
+            "        description: Randomization cluster\n",
+            1,
+        )
+        .replace(
+            "    properties:\n",
+            "      - name: no_data\n"
+            "        column: revenue\n"
+            "        description: No observations\n"
+            "    properties:\n",
+            1,
+        )
+    )
+    metrics = (
+        METRICS
+        + """
+  - type: ratio
+    name: empty_guardrail
+    entity: user_id
+    preferred_direction: decrease
+    numerator: {fact: purchase, aggregation: sum, window_days: 14}
+    denominator: {fact: no_data, aggregation: count, window_days: 14}
+"""
+    )
+    experiments = (
+        EXPERIMENTS.replace(
+            "    unit: user_id\n",
+            "    unit: user_id\n    cluster: store_id\n",
+            1,
+        )
+        .replace(
+            "      guardrails:\n        - session_seconds\n",
+            "      guardrails:\n        - session_seconds\n        - empty_guardrail\n",
+            1,
+        )
+        .replace("    breakouts:\n      - property: country\n        source: event_log\n", "")
+    )
+    definitions = tmp_path / "definitions"
+    definitions.mkdir()
+    for name, content in (
+        ("fact_sources.yaml", facts),
+        ("exposures.yaml", EXPOSURES),
+        ("metrics.yaml", metrics),
+        ("experiments.yaml", experiments),
+    ):
+        (definitions / name).write_text(content)
+
+    from increment import Analysis
+    from increment.dashboard._app import _report_notes
+
+    analysis = Analysis.from_definitions("storefront_refresh", definitions, dashboard_con)
+    try:
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            snapshot = prepare_dashboard(
+                analysis,
+                config=DashboardConfig(
+                    expected_allocation={"control": 0.9999, "treatment": 0.0001}
+                ),
+            )
+        assert snapshot.allocation is not None and snapshot.allocation.is_srm
+        failed = next(row for row in snapshot.readout_rows if row["metric"] == "empty_guardrail")
+        unavailable = json.loads(failed["unavailable_cells"])
+        reason = next(item for item in unavailable if item["cell"]["metric"] == "empty_guardrail")
+        assert reason["code"] == "estimation.variance.ratio_moments_nonpositive_denominator_mean"
+        advisory = next(
+            item
+            for row in snapshot.readout_rows
+            for item in json.loads(row["advisories"])
+            if item["code"] == "estimation.engine.small_total_clusters"
+        )
+        assert "below 40" in advisory["message"]
+
+        summary_html = render_header(snapshot).text
+        readout_html = render_results(snapshot).text
+        report_text = "\n".join(_report_notes(snapshot))
+        for surface in (summary_html, readout_html, report_text):
+            assert reason["code"] in surface
+            assert advisory["code"] in surface
+            assert "below 40" in surface
+        assert advisory["message"] in report_text
+
+        exported = list(csv.DictReader(io.StringIO(readout_csv(snapshot).decode("utf-8"))))
+        exported_failed = next(row for row in exported if row["metric"] == "empty_guardrail")
+        exported_reason = next(
+            item
+            for item in json.loads(exported_failed["unavailable_cells"])
+            if item["cell"]["metric"] == "empty_guardrail"
+        )
+        assert exported_reason["code"] == reason["code"]
+        exported_advisory = next(
+            item
+            for row in exported
+            for item in json.loads(row["advisories"])
+            if item["code"] == "estimation.engine.small_total_clusters"
+        )
+        assert exported_advisory["message"] == advisory["message"]
+    finally:
+        analysis.close()

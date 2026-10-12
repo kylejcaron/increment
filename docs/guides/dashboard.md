@@ -101,6 +101,14 @@ and triggered populations changes the selected evidence, not the family that
 was retained when each population was analyzed. Filtering a failed guardrail
 out of the visible rows does not make the primary's required scope complete.
 
+Summary, Readout, and Report distinguish the analysis-design assignment check
+from the dashboard's configured allocation check. The first uses retained
+analysis integrity evidence; if the design did not declare an allocation, it
+is shown as not run, never as a pass. The second compares the selected
+population with `DashboardConfig.expected_allocation` and reports its own
+evidence. When that dashboard check detects a mismatch, its source and
+population are named before effect summaries.
+
 Assigned allocation checks describe assignment integrity. Triggered allocation
 checks describe balance in the triggered cohort and are not assignment-integrity
 checks. Triggered-cohort inference is appropriate only if triggering is
