@@ -75,6 +75,8 @@ from increment.semantics.artifact import (
     MeasureManifest,
     RatioMetricMeasure,
     SimpleMetricMeasure,
+    TriggerMeasureStatsExtension,
+    TriggerPopulationExtension,
     UnitDayArtifactManifest,
     UnitDayArtifactRef,
 )
@@ -1827,6 +1829,46 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 factory().day_source(metrics=metrics, population="triggered"),
             )
         return self
+
+    def triggered_health_evidence(self) -> Any:
+        from increment._source_operations import TriggeredHealthEvidence, TriggeredHealthFeed
+
+        extensions = tuple(
+            item
+            for item in self._manifest.extensions
+            if isinstance(item, (TriggerPopulationExtension, TriggerMeasureStatsExtension))
+        )
+        population_extension = next(
+            (item for item in extensions if isinstance(item, TriggerPopulationExtension)),
+            None,
+        )
+        cutoff = (
+            population_extension.observation_cutoff_ts
+            if population_extension is not None
+            else next((item.observation_cutoff_ts for item in extensions), None)
+        )
+        feeds = []
+        for item in extensions:
+            if isinstance(item, TriggerPopulationExtension):
+                feeds.append(
+                    TriggeredHealthFeed(
+                        evidence_kind=item.kind,
+                        feed="trigger_population",
+                        metric=None,
+                        complete_through=item.complete_through_ts,
+                    )
+                )
+            else:
+                feeds.extend(
+                    TriggeredHealthFeed(
+                        evidence_kind=item.kind,
+                        feed=None,
+                        metric=metric,
+                        complete_through=item.complete_through_ts,
+                    )
+                    for metric in item.metric_names
+                )
+        return TriggeredHealthEvidence(observation_cutoff=cutoff, feeds=tuple(feeds))
 
     def triggered_observation_edges(self, metric: Metric) -> tuple[dt.date, dt.date | None]:
         """Return cutoff-derived trigger spine edge and optional certified edge."""

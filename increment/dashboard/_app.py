@@ -250,6 +250,9 @@ def _build_payload_for_population(
         "meta": _meta(snapshot),
         "primary": _primary(snapshot),
         "healthStatus": health_status(snapshot),
+        "healthReport": (
+            None if snapshot.health is None else snapshot.health.model_dump(mode="json")
+        ),
         "report": {
             "results": _styled(table),
             "notes": _report_notes(snapshot),

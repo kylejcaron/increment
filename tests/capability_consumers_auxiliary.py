@@ -1252,6 +1252,67 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
             ),
         ),
     ),
+    ConsumerContract(
+        "callable_experiment_health",
+        (
+            _expectation(
+                "health_definitions_triggered",
+                "health_check()",
+                "from_definitions",
+                "declared trigger with retained native source evidence",
+                "supported",
+                "tests.test_experiment_health::test_balanced_trigger_rates_do_not_clear_assumption_risk",
+            ),
+            _expectation(
+                "health_artifact_triggered",
+                "health_check()",
+                "from_unit_day_artifact",
+                "published trigger population, assignment counts and metric-stat extensions",
+                "supported",
+                "tests.test_experiment_health::test_health_artifact_trigger_extensions_are_optional_but_explicit",
+            ),
+            _expectation(
+                "health_artifact_without_extensions",
+                "health_check()",
+                "from_unit_day_artifact",
+                "artifact omits trigger membership and rate extensions",
+                "supported",
+                "tests.test_experiment_health::test_health_artifact_without_trigger_extensions_is_unavailable",
+            ),
+            _expectation(
+                "health_unit_panel",
+                "health_check()",
+                "from_unit_panel",
+                "unit panel has no trigger declaration or raw trigger membership",
+                "supported",
+                "tests.test_experiment_health::test_health_unit_panel_reports_only_supported_population",
+            ),
+            _expectation(
+                "health_switchback",
+                "health_check()",
+                "from_switchback_panel",
+                "switchback assignment law cannot be tested as a unit-arm allocation",
+                "supported",
+                "tests.test_experiment_health::test_health_switchback_does_not_substitute_unit_arm_srm",
+            ),
+            _expectation(
+                "health_moments",
+                "health_check()",
+                "from_moments",
+                "moments replay retains no declared trigger membership",
+                "supported",
+                "tests.test_experiment_health::test_health_moments_replay_does_not_reconstruct_trigger_population",
+            ),
+            _expectation(
+                "health_unit_summary",
+                "health_check()",
+                "from_unit_summary",
+                "summary-backed analysis with declared randomized allocation",
+                "supported",
+                "tests.test_experiment_health::test_untriggered_summary_has_explicit_unavailable_triggered_rows",
+            ),
+        ),
+    ),
 )
 
 

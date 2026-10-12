@@ -206,7 +206,7 @@ depends_on = ["increment._canonical"]
 [[modules]]
 path = "increment.sources"
 depends_on = [
-  "increment._source_identity",
+  "increment._canonical", "increment._source_identity",
   "increment.winsor",
   "increment.estimation.decision_types",
   "increment._analysis_config", "increment._labels", "increment._moment_plan", "increment._source_types",

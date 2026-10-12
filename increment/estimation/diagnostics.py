@@ -141,20 +141,44 @@ def _validate_srm_support(expected: Mapping[str, float] | None) -> None:
         _raise("estimation.diagnostics.expected_allocation_contain", accounting=accounting)
 
 
+def _normalize_expected_shares(expected: Mapping[str, float] | None) -> dict[str, float] | None:
+    _validate_srm_support(expected)
+    if expected is None:
+        return None
+    if not expected:
+        _raise(
+            "estimation.diagnostics.expected_keys_do",
+            expected_keys=set(),
+            counts_keys=set(),
+        )
+    nonfinite = {k: v for k, v in expected.items() if not math.isfinite(v)}
+    if nonfinite:
+        _raise("estimation.diagnostics.every_expected_share_finite", nonfinite=nonfinite)
+    if any(v <= 0 for v in expected.values()):
+        _raise("estimation.diagnostics.every_expected_share_positive", expected=expected)
+    scale = max(expected.values())
+    scaled_total = math.fsum(v / scale for v in expected.values())
+    normalized = {k: (v / scale) / scaled_total for k, v in expected.items()}
+    invalid = {k: v for k, v in normalized.items() if not math.isfinite(v) or v <= 0}
+    if invalid:
+        _raise("estimation.diagnostics.expected_share_normalization", invalid_normalized=invalid)
+    return normalized
+
+
 def resolve_srm_expected(
     expected: dict[str, float] | None,
     *,
     allocation: dict[str, float] | None,
     inference: Literal["always_valid", "fixed"],
 ) -> dict[str, float] | None:
-    """Select SRM allocation support and require it for anytime-valid looks."""
+    """Select and validate SRM allocation support before reading a population."""
     resolved = expected if expected is not None else allocation
-    _validate_srm_support(resolved)
     if resolved is None and inference == "always_valid":
         _raise(
             "estimation.diagnostics.always_srm_predeclared",
             route="pass expected=... or declare design.allocation",
         )
+    _normalize_expected_shares(resolved)
     return resolved
 
 

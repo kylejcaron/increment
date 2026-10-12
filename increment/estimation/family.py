@@ -87,6 +87,7 @@ from increment.estimation.decision_types import (
     exact_fraction,
 )
 from increment.estimation.sequential import AlwaysValid, AsymptoticMean, MixedFamily
+from increment.semantics.sequential import SequentialRegistration
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -507,6 +508,30 @@ def _sequential_evidence_types(roster, models) -> dict[object, type]:
     }
 
 
+def sequential_family_guarantee(
+    registration: SequentialRegistration,
+    *,
+    look_policy: Literal["outcome_independent", "exploratory"],
+) -> Literal["asymptotic_sequential", "finite_sample"] | None:
+    """Classify a declared family's guarantee without evaluating its evidence.
+
+    Guarantees are available only for outcome-independent looks. The family
+    construction determines whether the guarantee is finite-sample or
+    asymptotic; runtime selection calls this for its outcome-independent-look
+    guarantee qualification, while diagnostics pass the declared look policy.
+    """
+    if look_policy != "outcome_independent":
+        return None
+    family_metrics = {cell.metric for cell in registration.roster if cell.family}
+    if not family_metrics:
+        return None
+    if any(
+        model.metric in family_metrics and model.law != "bernoulli" for model in registration.models
+    ):
+        return "asymptotic_sequential"
+    return "finite_sample"
+
+
 def select_sequential_family(
     cells: Sequence[tuple[object, object]],
     q: Fraction | float,
@@ -574,7 +599,6 @@ def select_sequential_family(
         expected_types=_sequential_evidence_types(roster, models),
     )
     log_e_values: list[Fraction | float] = []
-    regimes: set[str] = set()
     methods: dict[SequentialHypothesisKey, str] = {}
     prefixes = set()
     nominal = exact_fraction(nominal_alpha)
@@ -598,22 +622,14 @@ def select_sequential_family(
         methods[key] = value.method
         if isinstance(value, EValueEvidence):
             log_e_values.append(value.log_e)
-            regimes.add("finite_sample")
         else:
             result = value.result
             log_e_values.append(
                 result.log_e if result._denominator_resolved(nominal) else float("-inf")
             )
-            regimes.add("asymptotic_sequential")
     if len(prefixes) > 1:
         sequential_refuse("source.invalid", "current cells use different joint reveal prefixes")
-    guarantee = (
-        "asymptotic_sequential"
-        if "asymptotic_sequential" in regimes
-        else "finite_sample"
-        if regimes
-        else None
-    )
+    guarantee = sequential_family_guarantee(registration, look_policy="outcome_independent")
     selected_indices = e_bh_select(log_e_values, registration.q)
     selected = frozenset(order[i] for i in selected_indices)
     realized = registration.q * len(selected) / len(order) if selected else None

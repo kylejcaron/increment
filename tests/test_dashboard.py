@@ -430,6 +430,29 @@ def test_preparation_pins_allocation_history_and_estimates_without_rebinding_cal
         con.disconnect()
 
 
+def test_dashboard_preparation_calls_public_health_method(
+    dashboard_con, dashboard_definitions, pricing, monkeypatch
+):
+    from increment import Analysis
+
+    analysis = _analysis(dashboard_con, dashboard_definitions, "pricing_copy")
+    original_health_check = Analysis.health_check
+    observed_analyses = []
+
+    def record_health_check(pinned, **kwargs):
+        observed_analyses.append(pinned)
+        return original_health_check(pinned, **kwargs)
+
+    monkeypatch.setattr(Analysis, "health_check", record_health_check)
+    try:
+        prepare_dashboard(analysis, config=pricing.config)
+    finally:
+        analysis.close()
+
+    assert len(observed_analyses) == 1
+    assert observed_analyses[0] is not analysis
+
+
 @pytest.mark.parametrize("change", ["control", "window", "policy", "breakouts"])
 def test_explore_rejects_same_name_binding_changes_before_query(
     dashboard_con, dashboard_definitions, pricing, tmp_path, monkeypatch, change
@@ -509,6 +532,73 @@ def test_renders_expected_shares_from_configuration(pricing: DashboardSnapshot) 
     assert "30.0%" in html
     assert "baseline" in html
     assert "candidate" in html
+
+
+def test_health_renderer_consumes_restored_health_report(
+    pricing: DashboardSnapshot, tmp_path: Path
+) -> None:
+    from increment.results import ExperimentHealth, HealthCheck
+
+    report = ExperimentHealth(
+        checks=(
+            HealthCheck(
+                check="assigned_allocation",
+                analysis_population="assigned",
+                availability="unavailable",
+                code="integrity.allocation_scheme_missing",
+                context={
+                    "reason": "Assignment-law admission is not_checked_missing_declaration.",
+                    "route": (
+                        "Declare allocation_scheme='independent' on a design that uses an "
+                        "independent constant-probability draw, or use "
+                        "Analysis.srm(inference='fixed') for one predeclared look."
+                    ),
+                },
+            ),
+            HealthCheck(
+                check="trigger_rates",
+                analysis_population="triggered",
+                availability="available",
+                conclusion="descriptive",
+                rates={"baseline": 0.25, "candidate": 0.25},
+                context={"description": "Observed trigger share by assigned arm."},
+            ),
+            HealthCheck(
+                check="feed_completeness",
+                analysis_population="triggered",
+                feed="event_log",
+                availability="unavailable",
+                context={"reason": "No certified completeness watermark is retained."},
+            ),
+            HealthCheck(
+                check="trigger_assumptions",
+                analysis_population="triggered",
+                availability="available",
+                conclusion="descriptive",
+                context={
+                    "counterfactual_trigger_invariance": "assumed, not established",
+                    "trigger_order_stationarity": "assumed, not established",
+                    "triggered_look_policy": "outcome_independent",
+                    "family_guarantee_status": "assumed, not verified",
+                    "family_guarantee": "asymptotic_sequential",
+                    "risk": ("Balanced rates do not establish trigger invariance.",),
+                },
+            ),
+        )
+    )
+    restored = ExperimentHealth.model_validate_json(report.model_dump_json())
+    snapshot = dataclasses.replace(pricing, health=restored)
+    html_path = tmp_path / "health.html"
+    html_path.write_text(render_health(snapshot).text)
+    html = html_path.read_text()
+
+    assert "Observed trigger rate" in html
+    assert "No certified completeness watermark is retained." in html
+    assert "outcome_independent" in html
+    assert "Balanced rates do not establish trigger invariance." in html
+    assert "independent constant-probability draw" in html
+    assert "one predeclared look" in html
+    assert "assumed, not verified" in html
 
 
 def test_both_experiments_share_the_same_sections(

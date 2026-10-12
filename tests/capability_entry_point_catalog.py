@@ -1519,6 +1519,29 @@ _AUXILIARY_ROWS: tuple[EntryRow, ...] = (
         ),
         _other_auxiliary_bindings("cate"),
     ),
+    _row(
+        "callable-experiment-health",
+        "`Analysis.health_check()` source diagnostics",
+        {
+            D: (_consumer("callable_experiment_health", "health_definitions_triggered"),),
+            A: (
+                _consumer("callable_experiment_health", "health_artifact_triggered"),
+                _consumer("callable_experiment_health", "health_artifact_without_extensions"),
+            ),
+            OTHER: (
+                _consumer("callable_experiment_health", "health_unit_summary"),
+                _consumer("callable_experiment_health", "health_unit_panel"),
+                _consumer("callable_experiment_health", "health_switchback"),
+                _consumer("callable_experiment_health", "health_moments"),
+            ),
+        },
+        table="triggered-auxiliary",
+        notes={
+            D: "matched native definitions health parity test uses explicit source cutoff and feed watermark",
+            A: "matched artifact health parity requires trigger_population, assignment_counts and trigger_measure_stats",
+            OTHER: "unit summary, unit panel, switchback and moments do not retain trigger population evidence",
+        },
+    ),
 )
 
 _BOOLEAN_CONTINUATION_CAPTURE = (
