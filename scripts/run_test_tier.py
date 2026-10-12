@@ -433,9 +433,10 @@ def _affected_environment(identity: dict[str, object]) -> dict[str, str | None]:
 
 def _affected_runner_environment(identity: dict[str, object]) -> dict[str, str | None]:
     environment: dict[str, str | None] = _affected_environment(identity)
-    for name in os.environ:
-        if name.startswith(("PYTEST_", "COV_CORE_", "COVERAGE_")):
-            environment[name] = None
+    cleared_names = {
+        name for name in os.environ if name.startswith(("PYTEST_", "COV_CORE_", "COVERAGE_"))
+    }
+    environment.update(dict.fromkeys(cleared_names))
     environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     return environment
 
