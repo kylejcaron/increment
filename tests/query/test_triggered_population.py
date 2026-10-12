@@ -26,7 +26,7 @@ def _exposures(con, rows):
                 "unit_id": [row[0] for row in rows],
                 "group_id": [row[1] for row in rows],
                 "experiment_id": ["exp"] * len(rows),
-                "first_exposure_ts": ["2025-01-05T09:00:00Z"] * len(rows),
+                "first_exposure_ts": [dt.datetime(2025, 1, 5, 9, tzinfo=dt.UTC)] * len(rows),
             },
             schema={
                 "unit_id": "string",
@@ -52,7 +52,7 @@ def _triggers(con, unit_ids):
         ibis.memtable(
             {
                 "unit_id": list(unit_ids),
-                "ts": ["2025-01-06T12:00:00Z"] * len(unit_ids),
+                "ts": [dt.datetime(2025, 1, 6, 12, tzinfo=dt.UTC)] * len(unit_ids),
             },
             schema={"unit_id": "string", "ts": "timestamp('UTC')"},
         ),
@@ -121,11 +121,11 @@ def test_first_eligible_trigger_is_filtered_before_min_and_cutoff_is_inclusive(c
             {
                 "unit_id": ["u1", "u1", "u1", "u1", "u2"],
                 "ts": [
-                    "2025-01-03T08:00:00Z",
-                    "2025-01-20T12:00:00Z",
-                    "2025-01-20T12:00:00Z",
-                    "2025-01-20T12:00:01Z",
-                    "2025-01-20T12:00:01Z",
+                    dt.datetime(2025, 1, 3, 8, tzinfo=dt.UTC),
+                    dt.datetime(2025, 1, 20, 12, tzinfo=dt.UTC),
+                    dt.datetime(2025, 1, 20, 12, tzinfo=dt.UTC),
+                    dt.datetime(2025, 1, 20, 12, 0, 1, tzinfo=dt.UTC),
+                    dt.datetime(2025, 1, 20, 12, 0, 1, tzinfo=dt.UTC),
                 ],
             },
             schema={"unit_id": "string", "ts": "timestamp('UTC')"},
@@ -146,7 +146,7 @@ def test_preassignment_only_trigger_does_not_enroll(con):
     triggers = con.create_table(
         "timed_triggers",
         ibis.memtable(
-            {"unit_id": ["u1"], "ts": ["2025-01-03T08:00:00Z"]},
+            {"unit_id": ["u1"], "ts": [dt.datetime(2025, 1, 3, 8, tzinfo=dt.UTC)]},
             schema={"unit_id": "string", "ts": "timestamp('UTC')"},
         ),
     )
@@ -167,7 +167,7 @@ def test_staggered_cluster_members_keep_assignment_cluster_and_individual_anchor
                 "group_id": ["C", "C"],
                 "experiment_id": ["exp", "exp"],
                 "cluster_id": ["c1", "c1"],
-                "first_exposure_ts": ["2025-01-05T09:00:00Z"] * 2,
+                "first_exposure_ts": [dt.datetime(2025, 1, 5, 9, tzinfo=dt.UTC)] * 2,
             },
             schema={
                 "unit_id": "string",
@@ -183,7 +183,10 @@ def test_staggered_cluster_members_keep_assignment_cluster_and_individual_anchor
         ibis.memtable(
             {
                 "unit_id": ["u1", "u2"],
-                "ts": ["2025-01-06T12:00:00Z", "2025-01-09T12:00:00Z"],
+                "ts": [
+                    dt.datetime(2025, 1, 6, 12, tzinfo=dt.UTC),
+                    dt.datetime(2025, 1, 9, 12, tzinfo=dt.UTC),
+                ],
             },
             schema={"unit_id": "string", "ts": "timestamp('UTC')"},
         ),
