@@ -1,10 +1,22 @@
 # Causal inference in Python: IPTW, DML, and AIPW
 
-When treatment is self-selected, phased, or opt-in, a raw arm difference is not automatically causal. Declare and justify the adjustment set. Increment checks overlap and post-adjustment balance, but cannot validate conditional ignorability.
+Use observational analysis when treatment is self-selected, phased, or opt-in
+and the target is an adjusted comparison rather than a randomized arm
+difference. The `Observational` design requires a declared `AdjustmentSet`
+whose covariates you can defend as sufficient for conditional ignorability;
+Increment checks overlap and post-adjustment balance but cannot establish that
+causal assumption. The worked [IPTW example](#declaring-an-adjustment-set)
+uses `Analysis.from_unit_summary`; the same unwindowed mean/conversion
+estimators are supported by `from_definitions`, `from_unit_day_artifact`, and
+`from_unit_panel`. Read each row's estimand, scale, interval and method, and
+consult [Reading results](reading-results.md) for result status and
+[Multiplicity](multiplicity.md) for the canonical population/status table.
 
-Choose IPTW, DML, or AIPW only when the causal assumptions are defensible.
-
-IPTW, AIPW, and DML run identically from `Analysis.from_unit_summary`, `Analysis.from_definitions`, `Analysis.from_unit_day_artifact`, and `Analysis.from_unit_panel` (unwindowed mean/conversion metrics only): identical per-unit data returns the same rows and intervals on each. Ratio metrics are not covered by any of the three (see [Current limits](#current-limits)). `from_moments` refuses by name (see [Current limits](#current-limits)).
+IPTW is the default; AIPW and DML are available when their assumptions and
+target are appropriate. These adjustments do not make observational data
+randomized: overlap and balance are necessary diagnostics, not proof of
+identification. Ratio metrics and `from_moments` are outside this supported
+route; see [Current limits](#current-limits).
 
 ## Declaring an adjustment set
 

@@ -1,13 +1,21 @@
 # CUPED variance reduction for A/B tests
 
-CUPED uses measurements from before an experiment to improve precision.
-For example, a user's past revenue can explain some of the variation in
-their revenue during the experiment. This pre-treatment measurement is
-the **covariate**.
+CUPED uses a measurement from before treatment as a covariate to reduce
+variance without changing the target effect or assignment. Declare the
+pre-period covariate on a `MetricSpec` for `Analysis.from_unit_summary`, or use
+`n_pre_periods` in warehouse definitions; `from_unit_panel` has narrower
+fixed-horizon support for constant-per-unit covariates on unwindowed mean and
+ratio metrics. The [dataframe example](#on-the-dataframe-path) compares the
+adjusted and unadjusted rows; the [definitions example](#in-yaml-definitions)
+shows the warehouse declaration. Read the reported method, estimate and
+interval together, with result scope in [Reading results](reading-results.md)
+and [Multiplicity](multiplicity.md).
 
-CUPED stands for Controlled-experiment Using Pre-Experiment Data. It
-adjusts the estimate without changing treatment assignment or the target
-effect.
+A pre-treatment covariate can improve precision but does not guarantee a
+narrower interval. Same-experiment fitted coefficients have asymptotic, not
+finite-sample, guarantees; exact sequential inference additionally requires
+predictable adjustments. See [When CUPED does nothing](#when-cuped-does-nothing)
+and [CUPED under sequential inference](#cuped-under-sequential-inference).
 
 !!! warning "More precision is not guaranteed"
     A useful covariate can narrow the interval, but some adjustments widen

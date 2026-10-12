@@ -1,12 +1,21 @@
 # Fixed-horizon switchback contrasts
 
-A switchback randomizes treatment order over repeated cycles, either independently
-per unit or once per block for a fixed roster that follows a shared schedule.
-Use it when time-varying treatment assignment is unavoidable and the estimand is
-the mean-unit additive difference between treatment and control retained windows.
-
-Switchback is an **assignment protocol under randomized identification**. It does
-not define a separate identification mechanism.
+A switchback is a fixed-horizon randomized design for outcomes with time-varying
+assignment: each two-period cycle has a CT or TC order, drawn independently
+per unit-cycle or once per shared block for a fixed roster. Successive cycles
+may draw the same order. Use
+`Analysis.from_switchback_panel` with one row per unit × cycle × period × step
+and a declared `SwitchbackAssignment`, randomized identification, washout and
+retained-window rules. Its `ContrastResult` is an additive mean-unit difference
+over retained windows, not an individual-level relative lift. The
+[supported-contract example](#supported-contract) shows the ordinary workflow;
+see [Reading results](reading-results.md) for interpretation and
+[Multiplicity](multiplicity.md) for the canonical population/status table.
+Cycle-order draws are the randomization units for the independent unit-cycle
+law, but inference averages cycle contributions within each unit, so units are
+the inferential replicates; under a shared schedule, blocks are the replicates.
+Carryover and complete schedules constrain use; see the
+[limitations](#deliberate-refusals) before interpreting a result.
 
 ## Supported contract
 

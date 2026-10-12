@@ -1,15 +1,24 @@
 # A/B Testing Dashboard
 
 `increment.dashboard` is an optional presentation layer over one bound
-experiment. The bundled `examples/ab_testing_dashboard.py` notebook uses
-`render_dashboard` for a shared experiment summary and four tabs: **Readout**,
-**Explore**, **Health**, and a printable **Report**. Native CoefTable plots
-retain the engine's uncertainty; CSV downloads retain the captured readout
-and observed group data. Section-level helpers remain available for custom
-notebook compositions.
+experiment. The supported path is a two-arm randomized `Analysis.from_definitions`;
+see [Supported experiments](#supported-experiments) for inference and design
+requirements. The bundled [A/B testing dashboard example](../examples/ab_testing_dashboard.md)
+shows preparation and rendering. The
+Readout, Explore, Health and Report views present the same captured evidence;
+they do not replace the analysis plan or turn diagnostics into a validity
+verdict. Read result populations and selection qualifications in
+[Reading results](reading-results.md) and the canonical
+[Multiplicity](multiplicity.md) status table.
 
-Core Increment never imports this package: estimation, power, and the
-dataframe entry points stay free of marimo, CoefTable, and pandas.
+For triggered analyses, assigned allocation checks remain distinct from
+triggered-cohort balance. Treatment-independent trigger membership and timing
+must be defensible; balanced rates cannot prove that counterfactual condition.
+Use the existing [`Analysis.health_check()`](../api.md#diagnostics-and-robustness)
+workflow as a sanity check, not a causal-validity badge. A late or unavailable
+feed and an immature outcome window are not interchangeable with a null
+estimate; the population controls and refusal reasons remain visible in the
+[triggered population guide](#population-selection).
 
 ## Install
 

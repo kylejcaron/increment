@@ -2,7 +2,12 @@
 
 `Analysis.run()` returns one of two result families. The family fixes the row
 type, but the scale of a value is a property of each row, so check every row
-before comparing or combining rows.
+before comparing or combining rows. First establish population, estimand and
+inference regime; then read the point with its interval or confidence set,
+availability reason and selection qualification. The canonical
+[Multiplicity](multiplicity.md) table explains the existing status literals
+and guarantees; this guide explains how to interpret those disclosures on
+result objects and tables.
 
 | Evidence | Returns | Row type | Scale |
 |---|---|---|---|

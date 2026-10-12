@@ -729,7 +729,12 @@ contributors (search for an existing one first), a GitHub issue for external
 contributors. Whether to take on a method is a product decision for the
 code owners; the conditions below decide whether an approved addition is
 complete. They gate new methods only and do not hold up fixes to behavior that
-already ships. A new method needs all of the following:
+already ships.
+
+For worked source-to-result examples, see the
+[estimator and evidence extension guide](docs/development/adding-an-estimator.md).
+
+A new method needs all of the following:
 
 1. **A documented need.** A concrete user workflow or maintenance burden,
    not breadth for its own sake. A published source supports the method's

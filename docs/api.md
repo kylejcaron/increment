@@ -684,10 +684,6 @@ analysis.close()
 
 ::: increment.Analysis.health_check
 
-::: increment.results.ExperimentHealth
-
-::: increment.results.HealthCheck
-
 ## Conditional effects and targeting
 
 `estimate_cate(..., cluster_weight="member_count")` uses every member equally.
@@ -968,6 +964,12 @@ codes = {w.message.code for w in caught if isinstance(w.message, IncrementWarnin
 Sitewide behavior is exposed through `Analysis.sitewide`, with output values
 available from the receive-only results namespace.
 
+`increment.results.LiftEstimate.family_procedure` identifies the canonical correction
+procedure retained with the result's family (`e_bh`, `bonferroni`, or `bh`), when
+applicable. Its read-only `reason` exposes only the persisted reason for a coded cell
+failure (the context reason, or the failure code); it does not combine other unavailable
+sampling or interval reasons.
+
 ::: increment.results.Estimate
 
 ::: increment.results.LiftEstimate
@@ -1024,6 +1026,10 @@ claim.
 ::: increment.results.SRMResult
 
 ::: increment.results.AllocationBand
+
+::: increment.results.ExperimentHealth
+
+::: increment.results.HealthCheck
 
 ::: increment.results.NotApplicable
 
