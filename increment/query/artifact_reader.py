@@ -1047,6 +1047,7 @@ class ArtifactMomentSource(SequentialSourceMixin):
             properties_table=properties_table,
             cluster=cluster,
             cluster_table=cluster_table,
+            pre_stats=pre_stats,
             population_units=population_units,
             completed_windows_only=completed_windows_only,
             calendar_end=calendar_end,
