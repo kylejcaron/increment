@@ -230,7 +230,7 @@ def test_categorical_only_fit_equals_target_weighted_stratum_contrast():
     assert fit.absolute("t").estimate == pytest.approx(target, abs=1e-12)
 
 
-def test_unrelated_covariate_does_not_change_declared_fit():
+def test_repeated_fit_has_stable_results():
     rng = np.random.default_rng(617)
     arm = np.array(["c"] * 30 + ["t"] * 30)
     x = rng.normal(size=60)
@@ -457,3 +457,21 @@ def test_constant_covariates_are_disclosed_without_losing_missingness_indicators
     assert fit.layout.structural_omissions == ("constant", "history")
     assert fit.layout.levels == (None, None)
     assert sum(fit.n_by_arm) == len(arm)
+
+
+def test_three_arm_absolute_projection_has_independent_hc2_scores():
+    rng = np.random.default_rng(872)
+    arm = np.repeat(["c", "t", "other"], [9, 13, 11])
+    x = rng.normal(size=33)
+    y = 2.0 + (arm == "t") * 0.7 + (arm == "other") * 0.2 + 1.4 * x + rng.normal(size=33)
+    fit = fit_cuped_linear(
+        y,
+        arm,
+        control="c",
+        arm_order=("c", "t", "other"),
+        covariates={"x": x},
+        kinds={"x": "continuous"},
+    )
+    result = fit.absolute("t")
+    contrast = np.array([-1.0, 1.0, 0.0])
+    assert result.se**2 == pytest.approx(contrast @ np.asarray(fit.covariance) @ contrast)

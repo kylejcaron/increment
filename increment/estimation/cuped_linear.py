@@ -6,7 +6,7 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import Literal
+from typing import Literal, NoReturn
 
 import numpy as np
 import numpy.typing as npt
@@ -35,11 +35,36 @@ _REFUSALS = refusals(
         "estimation.cuped_linear.residual_df": "residual degrees of freedom must be positive; got {df}",
         "estimation.cuped_linear.nonpositive_component": "adjusted component {family!r} for arm {arm!r} must be positive for a log or ratio projection; got {value}",
         "estimation.cuped_linear.invalid_alpha": "alpha must be strictly between zero and one; got {alpha}",
+        "estimation.cuped_linear.invalid_scale": RefusalSpec(
+            "estimation.cuped_linear.invalid_scale",
+            InvalidRequestError,
+            template="projection scale must be 'log' or 'absolute', got {scale!r}",
+        ),
+        "estimation.cuped_linear.projection_arm": RefusalSpec(
+            "estimation.cuped_linear.projection_arm",
+            InvalidRequestError,
+            template="projection requires distinct declared treatment/control arms: {arm!r}, {control!r}",
+        ),
+        "estimation.cuped_linear.projection_kind": RefusalSpec(
+            "estimation.cuped_linear.projection_kind",
+            InvalidRequestError,
+            template="projection {requested!r} is incompatible with fit kind {available!r}",
+        ),
+        "estimation.cuped_linear.outcome_components": RefusalSpec(
+            "estimation.cuped_linear.outcome_components",
+            InvalidRequestError,
+            template="supply either y or both numerator and denominator components",
+        ),
+        "estimation.cuped_linear.projection_unavailable": RefusalSpec(
+            "estimation.cuped_linear.projection_unavailable",
+            InvalidRequestError,
+            template="projection is unavailable for fit: kind={kind!r}, arm={arm!r}, control={control!r}",
+        ),
     },
 )
 
 
-def _fail(code: str, **context: object) -> None:
+def _fail(code: str, **context: object) -> NoReturn:
     refuse(_REFUSALS[code], **context)
 
 
@@ -131,39 +156,39 @@ class _LinearCupedCalculator:
         alpha: float = 0.05,
     ) -> LinearCupedProjection:
         """Ratio-of-component projection retaining stacked numerator/denominator scores."""
-        if self._components is None:
-            raise ValueError("ratio projection requires numerator and denominator components")
+        if not self._components:
+            _fail("estimation.cuped_linear.projection_kind", requested="ratio", available="mean")
         ti, ci = self._pair(arm, control)
         means = np.asarray(self.adjusted_means).reshape(2, -1)
         nt, nd = means[0, ti], means[1, ti]
         nc, cd = means[0, ci], means[1, ci]
         self._positive(nd, arm, "denominator")
         self._positive(cd, self.arm_order[ci], "denominator")
-        rt, rc = nt / nd, nc / cd
         self._positive(nt, arm, "numerator")
         self._positive(nc, self.arm_order[ci], "numerator")
         if scale == "log":
             jac = np.zeros(2 * len(self.arm_order))
             jac[ti], jac[len(self.arm_order) + ti] = 1 / nt, -1 / nd
             jac[ci], jac[len(self.arm_order) + ci] = -1 / nc, 1 / cd
-            value = math.log(rt / rc)
+            value = math.log(nt) - math.log(nd) - math.log(nc) + math.log(cd)
         elif scale == "absolute":
+            rt, rc = nt / nd, nc / cd
             jac = np.zeros(2 * len(self.arm_order))
             jac[ti], jac[len(self.arm_order) + ti] = 1 / nd, -nt / nd**2
             jac[ci], jac[len(self.arm_order) + ci] = -1 / cd, nc / cd**2
             value = rt - rc
         else:
-            raise ValueError("scale must be 'log' or 'absolute'")
+            _fail("estimation.cuped_linear.invalid_scale", scale=scale)
         return self._project_components(value, jac, alpha)
 
     def _pair(self, arm: object, control: object | None) -> tuple[int, int]:
         try:
             ti = self.arm_order.index(arm)
             ci = self.arm_order.index(self.control if control is None else control)
-        except ValueError as exc:
-            raise ValueError("projection arm must be declared in arm_order") from exc
+        except ValueError:
+            _fail("estimation.cuped_linear.projection_arm", arm=arm, control=control)
         if ti == ci:
-            raise ValueError("treatment arm and control must differ")
+            _fail("estimation.cuped_linear.projection_arm", arm=arm, control=control)
         return ti, ci
 
     def _contrast(self, arm: object, control: object | None) -> np.ndarray:
@@ -216,8 +241,9 @@ class _LinearCupedCalculator:
         self, value: float, j: np.ndarray, _: np.ndarray, alpha: float
     ) -> LinearCupedProjection:
         _check_alpha(alpha)
-        score, _variance = self._score(j)
-        return _interval(value, float(np.linalg.norm(score)), self._bm_dof(j), alpha)
+        covariance = np.asarray(self.covariance)[: len(j), : len(j)]
+        se = math.sqrt(max(0.0, float(j @ covariance @ j)))
+        return _interval(value, se, self._bm_dof(j), alpha)
 
     def _bm_dof(self, j: np.ndarray, d_override: np.ndarray | None = None) -> float:
         d = sum(j[a] * (self._x_means[a] - np.asarray(self.anchor)) for a in range(len(j)))
@@ -309,7 +335,9 @@ class LinearCupedFit:
         ti, ci = self._pair(arm, control)
         means = np.asarray(self.adjusted_means)
         if self.is_ratio:
-            raise ValueError("relative mean projection requires a mean fit")
+            _fail(
+                "estimation.cuped_linear.projection_kind", requested="relative", available="ratio"
+            )
         self._positive(means[ti], arm, "outcome")
         self._positive(means[ci], self.arm_order[ci], "outcome")
         return self._lookup("relative", arm, control, "", alpha)
@@ -323,24 +351,24 @@ class LinearCupedFit:
         alpha: float = 0.05,
     ) -> LinearCupedProjection:
         if not self.is_ratio:
-            raise ValueError("ratio projection requires numerator and denominator components")
+            _fail("estimation.cuped_linear.projection_kind", requested="ratio", available="mean")
         ti, ci = self._pair(arm, control)
         means = np.asarray(self.adjusted_means).reshape(2, -1)
         for family, values in (("numerator", means[0]), ("denominator", means[1])):
             self._positive(values[ti], arm, family)
             self._positive(values[ci], self.arm_order[ci], family)
         if scale not in ("log", "absolute"):
-            raise ValueError("scale must be 'log' or 'absolute'")
+            _fail("estimation.cuped_linear.invalid_scale", scale=scale)
         return self._lookup("ratio", arm, control, scale, alpha)
 
     def _pair(self, arm: object, control: object | None) -> tuple[int, int]:
         try:
             ti = self.arm_order.index(arm)
             ci = self.arm_order.index(self.control if control is None else control)
-        except ValueError as exc:
-            raise ValueError("projection arm must be declared in arm_order") from exc
+        except ValueError:
+            _fail("estimation.cuped_linear.projection_arm", arm=arm, control=control)
         if ti == ci:
-            raise ValueError("treatment arm and control must differ")
+            _fail("estimation.cuped_linear.projection_arm", arm=arm, control=control)
         return ti, ci
 
     def _positive(self, value: float, arm: object, family: str) -> None:
@@ -358,7 +386,7 @@ class LinearCupedFit:
             if entry[:4] == (kind, arm, ci, scale):
                 _, _, _, _, estimate, se, dof = entry
                 return _interval(estimate, se, dof, alpha)
-        raise ValueError("projection was not available in this fit")
+        _fail("estimation.cuped_linear.projection_unavailable", kind=kind, arm=arm, control=ci)
 
 
 def fit_cuped_linear(
@@ -433,11 +461,11 @@ def _validate_request(
         _fail("estimation.cuped_linear.arm_counts", counts=dict(zip(order, counts, strict=True)))
     if numerator is not None or denominator is not None:
         if numerator is None or denominator is None or y is not None:
-            raise ValueError("supply either y or both numerator and denominator")
+            _fail("estimation.cuped_linear.outcome_components")
         outcomes = (np.asarray(numerator, dtype=float), np.asarray(denominator, dtype=float))
     else:
         if y is None:
-            raise ValueError("y is required for a mean fit")
+            _fail("estimation.cuped_linear.outcome_components")
         outcomes = (np.asarray(y, dtype=float),)
     for family, values in enumerate(outcomes):
         if values.shape != (len(groups),):
@@ -608,6 +636,17 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control):
     gram = centered.T @ (centered * group_weights[:, None])
     if p:
         scales = np.sqrt(np.diag(gram))
+        if not np.isfinite(scales).all() or np.any(scales == 0):
+            deficient_columns = tuple(
+                layout.encoded_columns[i]
+                for i, scale in enumerate(scales)
+                if not np.isfinite(scale) or scale == 0
+            )
+            _fail(
+                "estimation.cuped_linear.rank_deficiency",
+                columns=deficient_columns,
+                partners=(),
+            )
         deficient = _pivoted_cholesky_deficiency(
             gram / scales[:, None] / scales[None, :], layout.encoded_columns
         )
