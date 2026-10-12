@@ -205,7 +205,15 @@ def _treatment_arms(design, *, route: str, multi_arm: bool) -> tuple[str, ...]:
     """The declared treatment arms, in canonical order, from the assignment allocation."""
     allocation = getattr(design, "allocation", None)
     if allocation is None:
-        sequential_refuse("source.invalid", f"{route} needs declared assignment allocation")
+        sequential_refuse(
+            "source.invalid",
+            f"{route} needs the actual assignment allocation because sequential "
+            "registration fixes its inference boundary from how units were assigned. "
+            "Pass the real design as Randomized(control_group=..., allocation={...}); "
+            "do not invent an allocation declaration.",
+            required="actual assignment allocation",
+            route="Randomized(control_group=..., allocation={...})",
+        )
     control = str(design.control_group)
     arms = tuple(sorted(str(arm) for arm in allocation if str(arm) != control))
     if not multi_arm and len(arms) != 1:

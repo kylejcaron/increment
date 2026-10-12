@@ -1827,3 +1827,49 @@ def test_always_valid_plan_reports_every_role_at_its_declared_budget():
     assert observed["sessions"][:3] == ("secondary", "always_valid", "two-sided")
     assert observed["signups"][4] is True and observed["signups"][5] == ("metric", "arm")
     assert observed["sessions"][4] is False and observed["sessions"][5] == ("metric", "arm")
+
+
+def test_missing_sequential_allocation_explains_actual_design_and_recovers():
+    import copy
+    import pickle
+
+    from increment.errors import CapabilityError
+
+    spec = MetricSpec(name="outcome", type="mean")
+    plan = AnalysisPlan(primary="outcome", inference=InferenceSpec(kind="asymptotic_mean"))
+    frame = _frame([0, 1, 2], [1, 3, 5])
+
+    with pytest.raises(CapabilityError) as refused:
+        Analysis.from_unit_summary(
+            frame,
+            unit="unit",
+            group="arm",
+            design=Randomized(control_group="control"),
+            metrics=[spec],
+            experiment_id="experiment",
+            plan=plan,
+            exposure_date="exposure",
+        )
+
+    refusal = refused.value
+    assert refusal.code == "sequential.source.invalid"
+    assert refusal.context["required"] == "actual assignment allocation"
+    assert refusal.context["route"] == "Randomized(control_group=..., allocation={...})"
+    for restored in (copy.deepcopy(refusal), pickle.loads(pickle.dumps(refusal))):
+        assert type(restored) is type(refusal)
+        assert restored.code == refusal.code
+        assert restored.context == refusal.context
+
+    corrected = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        design=Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5}),
+        metrics=[spec],
+        experiment_id="experiment",
+        plan=plan,
+        exposure_date="exposure",
+    )
+    rows = corrected.run()
+    assert len(rows) == 1
+    assert rows[0].metric == "outcome"
