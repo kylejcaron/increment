@@ -878,6 +878,14 @@ def _reveal_cursor_moved_backward(
         and isinstance(previous_cursor, (int, float))
         and not isinstance(previous_cursor, bool)
     )
+    if isinstance(reveal_cursor, str) and isinstance(previous_cursor, str):
+        from increment._day_axis_labels import _day_axis_label_order
+
+        try:
+            order = _day_axis_label_order((reveal_cursor, previous_cursor))
+        except CapabilityError:
+            return False
+        return order[reveal_cursor] < order[previous_cursor]
     if comparable_dates:
         if isinstance(reveal_cursor, datetime):
             return reveal_cursor < cast(datetime, previous_cursor)

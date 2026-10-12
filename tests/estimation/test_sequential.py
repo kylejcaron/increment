@@ -139,6 +139,41 @@ def test_reveal_cursor_cannot_move_backward_on_an_unchanged_prefix():
     assert raised.value.context["requested_cursor"] == "2025-01-01"
 
 
+@pytest.mark.parametrize(
+    ("previous_cursor", "requested_cursor"),
+    [("2025-01-14", "2025-01-13"), ("d14", "d13")],
+)
+def test_string_reveal_cursor_cannot_move_backward_on_an_unchanged_prefix(
+    previous_cursor, requested_cursor
+):
+    from increment import capture_sequential_snapshot
+    from tests.sequential_cases import records, registration
+
+    reg = registration()
+    rows = records([0], [1])
+    first = capture_sequential_snapshot(
+        reg,
+        rows,
+        source_id=reg.source_id,
+        definitions_id=reg.definitions_id,
+        finalized=True,
+        reveal_cursor=previous_cursor,
+    )
+
+    with pytest.raises(CapabilityError) as raised:
+        capture_sequential_snapshot(
+            reg,
+            rows,
+            source_id=reg.source_id,
+            definitions_id=reg.definitions_id,
+            finalized=True,
+            previous=first,
+            reveal_cursor=requested_cursor,
+        )
+
+    assert raised.value.code == "sequential.continuation.rewrite"
+
+
 @pytest.mark.parametrize("operation", ["capture", "link"])
 def test_unchanged_prefix_without_cursor_preserves_asof_label(operation):
     from datetime import date
