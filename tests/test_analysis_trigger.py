@@ -25,6 +25,7 @@ from increment.errors import (
     UnsupportedRequestError,
 )
 from increment.estimation.results import LiftEstimate
+from increment.estimation.sitewide import SitewideImpact
 from increment.semantics import load
 from tests.warning_codes import warning_codes
 
@@ -1958,6 +1959,44 @@ def test_sitewide_reports_assigned_impact_for_triggered_experiment(tmp_path):
     finally:
         analysis.close()
         untriggered.close()
+        if adopted is not None:
+            _close_parity_analysis(adopted)
+
+
+def test_sitewide_site_volume_excludes_events_after_the_snapshot_cutoff(tmp_path):
+    from tests.analysis_factory import _native_source, native_connection
+    from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
+
+    base = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5)
+    late = pa.table(
+        {
+            "user_id": ["visitor"],
+            "group_id": [None],
+            "ts": pa.array([dt.datetime(2024, 1, 16, 12)], type=base.schema.field("ts").type),
+            "event": ["revenue"],
+            "value": [1_000.0],
+            "experiment_id": [None],
+        },
+        schema=base.schema,
+    )
+    with_late = _analysis(tmp_path, pa.concat_tables([base, late]), end="2024-01-16")
+    without_late = _analysis(tmp_path, base, end="2024-01-16")
+    adopted = None
+    try:
+        native = with_late.sitewide("revenue")
+        reference = without_late.sitewide("revenue")
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(with_late)), with_late, kinds=("site_volume",)
+        )
+        artifact = adopted.sitewide("revenue")
+        assert isinstance(reference, SitewideImpact)
+        for result in (native, artifact):
+            assert isinstance(result, SitewideImpact)
+            assert result.site_total_volume == pytest.approx(reference.site_total_volume)
+            assert result.relative_impact == pytest.approx(reference.relative_impact)
+    finally:
+        with_late.close()
+        without_late.close()
         if adopted is not None:
             _close_parity_analysis(adopted)
 

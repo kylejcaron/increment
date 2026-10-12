@@ -2169,8 +2169,18 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         ``sitewide_evidence``'s ``float(row["y"])`` as NULL.
         """
         return _windowed_fact_sum(
-            fact_tbl, metric, self._experiment, value_column=value_col, part=part
+            fact_tbl,
+            metric,
+            self._experiment,
+            value_column=value_col,
+            part=part,
+            observation_cutoff=self._site_observation_cutoff(),
         )
+
+    def _site_observation_cutoff(self) -> dt.datetime | None:
+        """The pinned snapshot's cutoff, which arm moments also respect."""
+        evidence = self._session.source_snapshot_evidence
+        return None if evidence is None else evidence.observation_cutoff_ts
 
     def _site_volume_row(self, metric: Metric) -> dict[str, Any]:
         """Whole-site ``{"metric", "y", "y_den"}`` for *metric*.
@@ -2200,7 +2210,13 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         fs, fact_def = _find_fact_source(self._defs, metric.fact)
         fact_tbl = self._get_fact_table(fs)
         value_col = _resolve_value_column(fs, fact_def)
-        volume = site_volume(fact_tbl, metric, self._experiment, value_column=value_col)
+        volume = site_volume(
+            fact_tbl,
+            metric,
+            self._experiment,
+            value_column=value_col,
+            observation_cutoff=self._site_observation_cutoff(),
+        )
         return self._con.to_pyarrow(volume).to_pylist()[0]
 
     def sitewide_evidence(self, metric: Metric, *, include_ratio: bool = False) -> SitewideEvidence:
