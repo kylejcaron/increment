@@ -78,6 +78,8 @@ try:
     )
 except CapabilityError as exc:
     assert exc.code == "sequential.source.invalid"
+    assert exc.context["route"] == "design.allocation"
+    assert exc.context["mechanism"] == "randomized"
     assert exc.context["required"] == "actual assignment allocation"
 else:
     raise AssertionError("the missing allocation should be refused")

@@ -1854,7 +1854,7 @@ def test_missing_sequential_allocation_explains_actual_design_and_recovers():
     refusal = refused.value
     assert refusal.code == "sequential.source.invalid"
     assert refusal.context["required"] == "actual assignment allocation"
-    assert refusal.context["route"] == "Randomized(control_group=..., allocation={...})"
+    assert refusal.context["route"] == "design.allocation"
     for restored in (copy.deepcopy(refusal), pickle.loads(pickle.dumps(refusal))):
         assert type(restored) is type(refusal)
         assert restored.code == refusal.code
@@ -1871,5 +1871,118 @@ def test_missing_sequential_allocation_explains_actual_design_and_recovers():
         exposure_date="exposure",
     )
     rows = corrected.run()
+    assert len(rows) == 1
+    assert rows[0].metric == "outcome"
+
+
+@pytest.mark.integration
+def test_definition_sequential_allocation_guides_to_experiment_field(tmp_path):
+    import copy
+    import pickle
+
+    import yaml
+
+    from increment.errors import CapabilityError
+
+    connection, definitions, seeded_analysis = _native_fixture("scalar_mean")
+    corrected = None
+    try:
+        experiment = definitions.experiments[0]
+        plan = AnalysisPlan(primary="outcome", inference=InferenceSpec(kind="asymptotic_mean"))
+        missing = experiment.model_copy(update={"plan": plan, "allocation": None})
+        missing_definitions = definitions.model_copy(update={"experiments": (missing,)})
+        path = tmp_path / "automatic.yaml"
+        path.write_text(yaml.safe_dump(missing_definitions.model_dump(mode="json")))
+
+        with pytest.raises(CapabilityError) as refused:
+            Analysis.from_definitions("experiment", path, connection, store="none")
+
+        refusal = refused.value
+        assert refusal.code == "sequential.source.invalid"
+        assert refusal.context["required"] == "actual assignment allocation"
+        assert refusal.context["route"] == "experiment.allocation"
+        assert refusal.context["mechanism"] == "randomized"
+        for restored in (copy.deepcopy(refusal), pickle.loads(pickle.dumps(refusal))):
+            assert type(restored) is type(refusal)
+            assert restored.code == refusal.code
+            assert restored.context == refusal.context
+
+        declared = missing.model_copy(update={"allocation": {"control": 0.5, "treatment": 0.5}})
+        corrected_definitions = definitions.model_copy(update={"experiments": (declared,)})
+        path.write_text(yaml.safe_dump(corrected_definitions.model_dump(mode="json")))
+        corrected = Analysis.from_definitions("experiment", path, connection, store="none")
+        corrected.capture_sequential(finalized=True, as_of=date(2025, 1, 20))
+        rows = corrected.run()
+        assert len(rows) == 1
+        assert rows[0].metric == "outcome"
+    finally:
+        if corrected is not None:
+            corrected.close()
+        seeded_analysis.close()
+        connection.disconnect()
+
+
+def test_encouragement_sequential_allocation_keeps_its_design_and_recovers():
+    import copy
+    import pickle
+
+    import pandas as pd
+
+    from increment.errors import CapabilityError
+    from increment.semantics.design import Encouragement, UptakeSpec
+
+    frame = pd.DataFrame(
+        [
+            {
+                "unit": f"{arm}{i}",
+                "arm": arm,
+                "outcome": float(i + shift),
+                "clicked": i % 2,
+                "exposure": i,
+            }
+            for arm, shift in (("control", 0), ("treatment", 2))
+            for i in range(8)
+        ]
+    )
+    spec = MetricSpec(name="outcome", type="mean")
+    plan = AnalysisPlan(primary="outcome", inference=InferenceSpec(kind="asymptotic_mean"))
+    design = Encouragement(control_group="control", uptake=UptakeSpec(fact="clicked"))
+
+    with pytest.raises(CapabilityError) as refused:
+        Analysis.from_unit_summary(
+            frame,
+            unit="unit",
+            group="arm",
+            design=design,
+            uptake="clicked",
+            metrics=[spec],
+            experiment_id="encouragement",
+            plan=plan,
+            exposure_date="exposure",
+        )
+
+    refusal = refused.value
+    assert refusal.code == "sequential.source.invalid"
+    assert refusal.context["route"] == "design.allocation"
+    assert refusal.context["mechanism"] == "encouragement"
+    for restored in (copy.deepcopy(refusal), pickle.loads(pickle.dumps(refusal))):
+        assert type(restored) is type(refusal)
+        assert restored.code == refusal.code
+        assert restored.context == refusal.context
+
+    corrected_design = design.model_copy(update={"allocation": {"control": 0.5, "treatment": 0.5}})
+    corrected = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        design=corrected_design,
+        uptake="clicked",
+        metrics=[spec],
+        experiment_id="encouragement",
+        plan=plan,
+        exposure_date="exposure",
+    )
+    assert isinstance(corrected_design, Encouragement)
+    rows = corrected.run(estimands=("itt",))
     assert len(rows) == 1
     assert rows[0].metric == "outcome"
