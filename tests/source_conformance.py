@@ -130,7 +130,7 @@ def _format3_row(
     return row
 
 
-def _format10_rows(
+def _legacy_fixed10_rows(
     rows: list[dict[str, Any]], *, assignment_counts: str | None = None
 ) -> list[dict[str, Any]]:
     from increment.decision_wire import compiled_plan_to_json
@@ -152,13 +152,6 @@ def _format10_rows(
             }
         )
     return result
-
-
-def _format10_row(*, group: str, assignment_counts: str | None = None) -> dict[str, Any]:
-    return _format10_rows(
-        [_format3_row(group=group)],
-        assignment_counts=assignment_counts,
-    )[0]
 
 
 def _artifact_analysis(tmp_path: Path) -> Any:
@@ -232,20 +225,60 @@ def frame_panel_source() -> Any:
     )
 
 
+def _current_fixed11_rows() -> list[dict[str, Any]]:
+    import tempfile
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from increment import Analysis
+
+    analysis = Analysis.from_unit_summary(
+        pa.table(
+            {
+                "unit": [1, 2, 3, 4],
+                "arm": ["control", "control", "treatment", "treatment"],
+                "revenue": [10.0, 12.0, 18.0, 20.0],
+            }
+        ),
+        unit="unit",
+        group="arm",
+        metrics={"revenue": "mean"},
+        control="control",
+        experiment_id="moments-current-conformance",
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "current-fixed11.parquet"
+        analysis.export(path)
+        return pq.read_table(path).to_pylist()
+
+
 def moments_source() -> Any:
+    from increment.semantics.design import Randomized
+    from increment.sources import MomentsSource
+
+    return MomentsSource(
+        _current_fixed11_rows(),
+        metrics=[mean_metric()],
+        study_id="moments-current-conformance",
+        design=Randomized(control_group="control"),
+    )
+
+
+def legacy_fixed10_moments_source() -> Any:
     from increment.semantics.design import Randomized
     from increment.sources import MomentsSource
 
     metric = mean_metric()
     return MomentsSource(
-        _format10_rows([_format3_row(group="control"), _format3_row(group="treatment")]),
+        _legacy_fixed10_rows([_format3_row(group="control"), _format3_row(group="treatment")]),
         metrics=[metric],
         study_id="moments-conformance",
         design=Randomized(control_group="control"),
     )
 
 
-def moments_with_assignment_counts_source() -> Any:
+def legacy_fixed10_moments_with_counts_source() -> Any:
     import json
 
     from increment.semantics.design import Randomized
@@ -253,7 +286,7 @@ def moments_with_assignment_counts_source() -> Any:
 
     metric = mean_metric()
     counts = json.dumps({"control": 2, "treatment": 2}, separators=(",", ":"))
-    rows = _format10_rows(
+    rows = _legacy_fixed10_rows(
         [_format3_row(group="control"), _format3_row(group="treatment")],
         assignment_counts=counts,
     )
@@ -436,7 +469,8 @@ def arm_adapters(tmp_path: Path) -> tuple[ArmAdapter, ...]:
         ArmAdapter("frame_summary", frame_summary_source),
         ArmAdapter("frame_panel", frame_panel_source),
         ArmAdapter("moments", moments_source),
-        ArmAdapter("moments_with_counts", moments_with_assignment_counts_source),
+        ArmAdapter("legacy_fixed10", legacy_fixed10_moments_source),
+        ArmAdapter("legacy_fixed10_with_counts", legacy_fixed10_moments_with_counts_source),
         ArmAdapter("breakout_moments", breakout_moments_source),
         ArmAdapter("sql_totals", sql_totals_source),
         ArmAdapter(
@@ -608,9 +642,10 @@ __all__ = [
     "definitions_source",
     "frame_panel_source",
     "frame_summary_source",
+    "legacy_fixed10_moments_source",
+    "legacy_fixed10_moments_with_counts_source",
     "moments_source",
     "unit_day_artifact_analysis",
-    "moments_with_assignment_counts_source",
     "public_result_factories",
     "sql_totals_source",
     "switchback_analysis",

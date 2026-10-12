@@ -425,7 +425,7 @@ def _run_prepared(
     effective_inference: AsymptoticMean | AlwaysValid | MixedFamily | None = _sequential_inference(
         plan
     )
-    advisory_seen: set[tuple[str, str]] = set()
+    advisory_seen: set[tuple[object, ...]] = set()
     observed_arms: set[str] = set()
     observed_by_metric: dict[str, set[str]] = {}
     evidence_components: dict[str, tuple[str, str, int]] = {}

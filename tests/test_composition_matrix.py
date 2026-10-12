@@ -580,18 +580,23 @@ def native(tmp_path_factory):
     )
 
     class Native:
+        export_rows: Any
+        export_metrics: Any
+        analysis: Any
+        clustered_analysis: Any
         run = main.run()
         seq_run = _main_with_always_valid_inference(defs_path, con).run()
         cuped_run = cuped.run(decision_method=Method(name="cuped", variance_reduction="cuped"))
         breakout = main.run_breakout()
         asof = main.run_asof_lift(metrics=[d1])
         cluster_run = clustered.run()
-        clustered_analysis = clustered
-        analysis = main
-        export_metrics = sorted({r["metric"] for r in export_rows})
         rehydrated_run = rehydrated.run()
         report = Report.from_definitions(report_defs, con)
 
+    Native.export_rows = export_rows
+    Native.export_metrics = {row["metric"] for row in export_rows}
+    Native.analysis = main
+    Native.clustered_analysis = clustered
     return Native
 
 
@@ -920,130 +925,30 @@ def test_report_window(metric_type, native):
     assert all(r["value"] is not None for r in frame.to_pylist())
 
 
-_MOMENT_NULLS = {
-    "sum_x": None,
-    "sum_x2": None,
-    "sum_xy": None,
-    "sum_den": None,
-    "sum_den2": None,
-    "sum_yden": None,
-}
+def _current_moment_rows(metric_type: str, native) -> list[dict[str, Any]]:
+    """Return fixed-horizon rows captured from the current export writer."""
+    metric_name = {
+        "mean": "revenue",
+        "conversion": "purchase_rate",
+        "ratio": "rev_per_order",
+        "retention": "d1",
+    }.get(metric_type, "revenue")
+    return [row for row in native.export_rows if row["metric"] == metric_name]
 
 
-def _moment_rows(metric_type: str) -> list[dict[str, Any]]:
-    """Raw additive sums for one two-arm metric, format-1 shape."""
-    if metric_type in ("mean", "quantile"):
-        return [
-            {
-                "experiment_id": "e1",
-                "metric": "m",
-                "group_id": "control",
-                "n": 12,
-                "sum_y": 120.0,
-                "sum_y2": 1208.0,
-                **_MOMENT_NULLS,
-            },
-            {
-                "experiment_id": "e1",
-                "metric": "m",
-                "group_id": "treatment",
-                "n": 12,
-                "sum_y": 144.0,
-                "sum_y2": 1736.0,
-                **_MOMENT_NULLS,
-            },
-        ]
-    if metric_type in ("conversion", "retention"):
-        return [
-            {
-                "experiment_id": "e1",
-                "metric": "m",
-                "group_id": "control",
-                "n": 12,
-                "sum_y": 5.0,
-                "sum_y2": 5.0,
-                "successes": 5,
-                **_MOMENT_NULLS,
-            },
-            {
-                "experiment_id": "e1",
-                "metric": "m",
-                "group_id": "treatment",
-                "n": 12,
-                "sum_y": 8.0,
-                "sum_y2": 8.0,
-                "successes": 8,
-                **_MOMENT_NULLS,
-            },
-        ]
-    assert metric_type == "ratio"
-    return [
-        {
-            "experiment_id": "e1",
-            "metric": "m",
-            "group_id": "control",
-            "n": 12,
-            "sum_y": 120.0,
-            "sum_y2": 1208.0,
-            **_MOMENT_NULLS,
-            "sum_den": 24.0,
-            "sum_den2": 50.0,
-            "sum_yden": 242.0,
-        },
-        {
-            "experiment_id": "e1",
-            "metric": "m",
-            "group_id": "treatment",
-            "n": 12,
-            "sum_y": 144.0,
-            "sum_y2": 1736.0,
-            **_MOMENT_NULLS,
-            "sum_den": 26.0,
-            "sum_den2": 60.0,
-            "sum_yden": 314.0,
-        },
-    ]
+def test_current_moment_rows_come_from_current_writer(native):
+    rows = _current_moment_rows("mean", native)
+    assert {row["moments_format"] for row in rows} == {11}
 
 
-def _current_moment_rows(metric_type: str) -> list[dict[str, Any]]:
-    from increment.decision_wire import compiled_plan_to_json
-    from increment.estimation.armstats import centered_row_from_raw_sums
-    from increment.frame import synthesise_metric
-    from increment.plan import compile_decision_plan
-
-    metric = _moment_spec(metric_type)
-    wire = compiled_plan_to_json(compile_decision_plan(None, [synthesise_metric(metric)]))
-    winsor = dict.fromkeys(
-        (
-            "winsor_lower_percentile",
-            "winsor_upper_percentile",
-            "winsor_lower_bound",
-            "winsor_upper_bound",
-            "winsor_n",
-            "winsor_n_lower",
-            "winsor_n_upper",
-        )
-    )
-    return [
-        {
-            **centered_row_from_raw_sums(row),
-            "successes": row.get("successes"),
-            **winsor,
-            "moments_format": 10,
-            "decision_plan": wire,
-        }
-        for row in _moment_rows(metric_type)
-    ]
-
-
-def _moment_spec(metric_type: str) -> MetricSpec:
+def _moment_spec(metric_type: str, name: str) -> MetricSpec:
     if metric_type == "ratio":
-        return MetricSpec(name="m", type="ratio", numerator="num", denominator="den")
+        return MetricSpec(name=name, type="ratio", numerator="num", denominator="den")
     if metric_type == "retention":
-        return MetricSpec(name="m", type="retention", threshold_days=(1, 3))
+        return MetricSpec(name=name, type="retention", threshold_days=(1, 3))
     if metric_type == "quantile":
-        return MetricSpec(name="m", type="quantile", quantile=0.5)
-    return MetricSpec(name="m", type=cast("Any", metric_type))
+        return MetricSpec(name=name, type="quantile", quantile=0.5)
+    return MetricSpec(name=name, type=cast("Any", metric_type))
 
 
 @pytest.mark.parametrize("metric_type", METRIC_TYPES)
@@ -1051,24 +956,27 @@ def test_from_moments(metric_type, native):
     from increment import Analysis
 
     cell = _cell("from_moments", metric_type)
+    metric_name = {
+        "mean": "revenue",
+        "conversion": "purchase_rate",
+        "ratio": "rev_per_order",
+        "retention": "d1",
+    }.get(metric_type, "revenue")
+    rows = _current_moment_rows(metric_type, native)
     if cell.status == "na":
-        # No MetricSpec type exists for report-layer metrics; the terse
-        # form names the accepted set.
         with pytest.raises(InvalidRequestError) as unknown_type:
-            Analysis.from_moments(
-                _current_moment_rows("mean"), metrics={"m": metric_type}, control="control"
-            )
+            Analysis.from_moments(rows, metrics={metric_name: metric_type}, control="control")
         assert unknown_type.value.code == "frame.metric_unknown_type"
         assert unknown_type.value.context["kind"] == metric_type
         with pytest.raises(InvalidRequestError) as spec_error:
-            MetricSpec(name="m", type=metric_type)  # type: ignore[arg-type]
+            MetricSpec(name=metric_name, type=metric_type)  # type: ignore[arg-type]
         assert spec_error.value.code == "model.field.literal"
         return
 
     def probe():
         analysis = Analysis.from_moments(
-            _current_moment_rows(metric_type),
-            metrics=[_moment_spec(metric_type)],
+            rows,
+            metrics=[_moment_spec(metric_type, metric_name)],
             control="control",
         )
         return analysis.run()
@@ -1076,15 +984,11 @@ def test_from_moments(metric_type, native):
     if cell.status == "refused":
         _expect_refusal(cell, probe)
         return
-    _assert_sane_lift(probe(), "m")
+    _assert_sane_lift(probe(), metric_name)
     if metric_type == "retention":
-        # The terse form still refuses, pointing at the explicit MetricSpec.
         with pytest.raises(InvalidRequestError) as terse:
-            Analysis.from_moments(
-                _current_moment_rows("retention"), metrics={"m": "retention"}, control="control"
-            )
+            Analysis.from_moments(rows, metrics={"d1": "retention"}, control="control")
         assert terse.value.code == "frame.metric_type_retention"
-        # And a REAL exported cube round-trips to the native answer.
         native_d1 = next(e for e in native.run if e.metric == "d1")
         rehydrated_d1 = next(e for e in native.rehydrated_run if e.metric == "d1")
         assert rehydrated_d1.require_lift().value == pytest.approx(

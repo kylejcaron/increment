@@ -2559,6 +2559,67 @@ class TestRunBreakoutDenseGrid:
         assert by_metric["sessions"].lift is None
 
 
+def test_breakout_replays_one_open_ended_warning_per_metric_across_segments(monkeypatch):
+    import increment.breakout.estimates as breakout
+    from increment.errors import warn
+    from increment.estimation.engine import _WARNINGS
+
+    original = breakout._estimate_lift
+    spec = _WARNINGS["estimation.engine.open_ended_sequential"]
+
+    def warn_then_estimate(*args, **kwargs):
+        metric = kwargs["metrics"][0]
+        warn(
+            spec,
+            context={
+                "metric_name": metric.name,
+                "windows": "window_days=None",
+                "fix": "Set window_days",
+            },
+        )
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(breakout, "_estimate_lift", warn_then_estimate)
+    metrics = [_mean_metric("rev"), _mean_metric("sessions")]
+    rows = [
+        _make_arm_row(
+            50,
+            mean,
+            4.0,
+            country=country,
+            group_id=group,
+            metric=metric,
+        )
+        for country, offset in (("US", 0.0), ("CA", 1.0))
+        for metric in ("rev", "sessions")
+        for group, mean in (
+            ("control", 10.0 + offset),
+            ("treatment_a", 11.0 + offset),
+            ("treatment_b", 12.0 + offset),
+        )
+    ]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for _ in range(2):
+            run_breakout(
+                rows,
+                metrics,
+                control_group="control",
+                dimension="country",
+            )
+    advisories = [
+        item.message
+        for item in caught
+        if isinstance(item.message, IncrementWarning) and item.message.code == spec.code
+    ]
+    assert [item.context["metric_name"] for item in advisories] == [
+        "rev",
+        "sessions",
+        "rev",
+        "sessions",
+    ]
+
+
 class TestRunBreakoutBinomialGateExemption:
     """The shared few_units/nonpositive_mean prefilter gates only rows bound
     for the log-Normal delta method, which needs a ddof=1 variance (n>=2)

@@ -54,7 +54,7 @@ def _analysis_with_metrics(con, definitions_path, metrics, *, store):
     )
 
 
-def _moment_rows(**extra: object) -> list[dict[str, object]]:
+def _legacy_fixed10_rows(**extra: object) -> list[dict[str, object]]:
     base = {
         "experiment_id": "e1",
         "metric": "revenue",
@@ -95,82 +95,90 @@ def _moment_rows(**extra: object) -> list[dict[str, object]]:
     ]
 
 
-def test_current_fixed_horizon_moments_round_trip(tmp_path):
+def test_current_conformance_runs_restored_writer_rows(tmp_path):
     import pyarrow as pa
     import pyarrow.parquet as pq
 
     original = Analysis.from_unit_summary(
         pa.table(
             {
-                "unit": [1, 2, 3, 4],
-                "arm": ["control", "control", "treatment", "treatment"],
-                "revenue": [10.0, 12.0, 18.0, 20.0],
+                "unit": [1, 2, 3, 4, 5, 6],
+                "arm": ["control", "control", "control", "treatment", "treatment", "treatment"],
+                "revenue": [10.0, 12.0, 11.0, 18.0, 20.0, 19.0],
+                "converted": [0, 1, 0, 1, 1, 0],
             }
         ),
         unit="unit",
         group="arm",
-        metrics={"revenue": "mean"},
+        metrics={"revenue": "mean", "converted": "conversion"},
         control="control",
     )
     path = tmp_path / "current.parquet"
     original.export(path)
     payload = pq.read_table(path).to_pylist()
     assert {row["moments_format"] for row in payload} == {11}
-    replay = Analysis.from_moments(payload, metrics={"revenue": "mean"}, control="control")
-    (original_row,) = original.run()
-    (replay_row,) = replay.run()
-    assert replay_row.model_dump(exclude={"source_snapshot_id"}) == original_row.model_dump(
-        exclude={"source_snapshot_id"}
+    replay = Analysis.from_moments(
+        payload, metrics={"revenue": "mean", "converted": "conversion"}, control="control"
     )
-    # Format-11 moments retain the exact source identity and request semantics,
-    # so content identity is shared across the live and replayed source.
-    assert replay_row.source_snapshot_id == original_row.source_snapshot_id
+    original_rows = {row.metric: row for row in _lift_rows(original.run())}
+    replay_rows = {row.metric: row for row in _lift_rows(replay.run())}
+    assert replay_rows.keys() == original_rows.keys()
+    for metric, original_row in original_rows.items():
+        replay_row = replay_rows[metric]
+        assert replay_row.value_scale == original_row.value_scale
+        assert replay_row.require_lift().value == pytest.approx(
+            original_row.require_lift().value, rel=1e-12
+        )
+        assert replay_row.require_lift().lb == pytest.approx(
+            original_row.require_lift().lb, rel=1e-12
+        )
+        assert replay_row.require_lift().ub == pytest.approx(
+            original_row.require_lift().ub, rel=1e-12
+        )
+        assert replay_row.source_snapshot_id == original_row.source_snapshot_id
+        assert replay_row.model_dump(exclude={"source_snapshot_id"}) == original_row.model_dump(
+            exclude={"source_snapshot_id"}
+        )
+
+    assert {row["moments_format"] for row in payload} == {11}
 
 
-def test_legacy_moments_identity_is_stable_across_reload(tmp_path):
+def test_legacy_moments_preserve_missing_evidence():
+
+    legacy = Analysis.from_moments(
+        _legacy_fixed10_rows(),
+        metrics={"revenue": "mean"},
+        control="control",
+    )
+    result = _lift_rows(legacy.run())[0]
+    assert result.require_lift().value == pytest.approx(0.6901408450703352)
+    assert result.source_snapshot_id
+    with pytest.raises(CapabilityError) as exc:
+        legacy.srm(inference="fixed")
+    assert exc.value.code == "source.moments.assignment_counts"
+
+
+def test_legacy_fixed10_identity_is_stable_across_reload(tmp_path):
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    original = Analysis.from_unit_summary(
-        pa.table(
-            {
-                "unit": [1, 2, 3, 4],
-                "arm": ["control", "control", "treatment", "treatment"],
-                "revenue": [10.0, 12.0, 18.0, 20.0],
-            }
-        ),
-        unit="unit",
-        group="arm",
-        metrics={"revenue": "mean"},
-        control="control",
-        experiment_id="exp",
-    )
-    source_path = tmp_path / "source.parquet"
-    original.export(source_path)
-    legacy_rows = [
-        {key: value for key, value in row.items() if key != "source_identity"}
-        | {"moments_format": 10}
-        for row in pq.read_table(source_path).to_pylist()
-    ]
-    legacy_path = tmp_path / "legacy.parquet"
+    legacy_rows = _legacy_fixed10_rows()
+    assert {row["moments_format"] for row in legacy_rows} == {10}
+    assert all("source_identity" not in row for row in legacy_rows)
+    legacy_path = tmp_path / "legacy-fixed10.parquet"
     pq.write_table(pa.Table.from_pylist(legacy_rows), legacy_path)
     legacy = Analysis.from_moments(
         pq.read_table(legacy_path).to_pylist(),
         metrics={"revenue": "mean"},
         control="control",
-        experiment_id="exp",
     )
     reloaded = None
     try:
-        (original_row,) = original.run()
         (legacy_row,) = legacy.run()
-        assert legacy_row.source_snapshot_id != original_row.source_snapshot_id
-
         reloaded = Analysis.from_moments(
             pq.read_table(legacy_path).to_pylist(),
             metrics={"revenue": "mean"},
             control="control",
-            experiment_id="exp",
         )
         (reloaded_row,) = reloaded.run()
         assert reloaded_row.source_snapshot_id == legacy_row.source_snapshot_id
@@ -178,7 +186,6 @@ def test_legacy_moments_identity_is_stable_across_reload(tmp_path):
         if reloaded is not None:
             reloaded.close()
         legacy.close()
-        original.close()
 
 
 def test_triggered_run_refuses_unit_summary_and_moment_replay():
@@ -191,7 +198,9 @@ def test_triggered_run_refuses_unit_summary_and_moment_replay():
         metrics={"revenue": "mean"},
         control="control",
     )
-    replay = Analysis.from_moments(_moment_rows(), metrics={"revenue": "mean"}, control="control")
+    replay = Analysis.from_moments(
+        _legacy_fixed10_rows(), metrics={"revenue": "mean"}, control="control"
+    )
     panel = Analysis.from_unit_panel(
         pa.table(
             {
@@ -272,7 +281,9 @@ def test_triggered_run_refuses_unit_summary_and_moment_replay():
 def test_legacy_moments_cannot_claim_exact_count_transport(version):
     with pytest.raises(WireFormatError) as exc:
         Analysis.from_moments(
-            _moment_rows(moments_format=version), metrics={"revenue": "mean"}, control="control"
+            _legacy_fixed10_rows(moments_format=version),
+            metrics={"revenue": "mean"},
+            control="control",
         )
     assert exc.value.code == "moments.format.unsupported_legacy"
 
@@ -280,7 +291,7 @@ def test_legacy_moments_cannot_claim_exact_count_transport(version):
 def test_moments_reject_noncanonical_source_identity_at_replay():
     from increment.sources import SOURCE_IDENTITY_FIELD
 
-    rows = _moment_rows()
+    rows = _legacy_fixed10_rows()
     for row in rows:
         row[SOURCE_IDENTITY_FIELD] = json.dumps({"oversized": 2**53})
 
@@ -292,7 +303,7 @@ def test_moments_reject_noncanonical_source_identity_at_replay():
 def test_moments_reject_conflicting_boolean_and_integer_identities():
     from increment.sources import SOURCE_IDENTITY_FIELD
 
-    rows = _moment_rows()
+    rows = _legacy_fixed10_rows()
     rows[0][SOURCE_IDENTITY_FIELD] = json.dumps({"generation": True})
     rows[1][SOURCE_IDENTITY_FIELD] = json.dumps({"generation": 1})
 
@@ -308,13 +319,15 @@ def test_moments_reject_conflicting_boolean_and_integer_identities():
 def test_moments_refuse_counts_encoded_as_floats_or_booleans(field, value):
     with pytest.raises(WireFormatError) as exc:
         Analysis.from_moments(
-            _moment_rows(**{field: value}), metrics={"revenue": "mean"}, control="control"
+            _legacy_fixed10_rows(**{field: value}),
+            metrics={"revenue": "mean"},
+            control="control",
         )
     assert exc.value.code == "moments.count_not_integer"
 
 
 def test_current_moments_require_the_nullable_success_count_field():
-    rows = _moment_rows()
+    rows = _legacy_fixed10_rows()
     del rows[0]["successes"]
     with pytest.raises(WireFormatError) as exc:
         Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="control")
@@ -326,7 +339,7 @@ def test_current_moments_require_the_nullable_success_count_field():
 )
 @pytest.mark.parametrize("selected", [True, False])
 def test_moments_count_ranges_are_validated_even_for_unselected_rows(field, value, selected):
-    rows = _moment_rows()
+    rows = _legacy_fixed10_rows()
     if selected:
         rows[0][field] = value
     else:
@@ -347,7 +360,9 @@ def test_export_refuses_invalid_provider_counts_before_writing(field, value, mon
     from increment.sources import ASSIGNMENT_COUNTS_FIELD, MomentsSource, export_source_moments
 
     source = MomentsSource(
-        _moment_rows(**{ASSIGNMENT_COUNTS_FIELD: json.dumps({"control": 2, "treatment": 2})}),
+        _legacy_fixed10_rows(
+            **{ASSIGNMENT_COUNTS_FIELD: json.dumps({"control": 2, "treatment": 2})}
+        ),
         metrics=[MeanMetric(name="revenue", entity="user", fact="revenue")],
         study_id="e1",
     )
@@ -679,7 +694,7 @@ def test_from_moments_run_refuses_call_time_epistemic_policy_kwargs():
     Each must now raise TypeError instead of no-oping."""
     from increment import AlwaysValid
 
-    rows = _moment_rows()
+    rows = _legacy_fixed10_rows()
     a = Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="control")
     baseline = _lift_rows(a.run())
     assert baseline[0].require_lift().level == pytest.approx(0.95)
@@ -711,7 +726,7 @@ def test_from_moments_declared_plan_reaches_role_based_dispatch():
     dropped: a declared `primary="revenue"` stamps `role="primary"` and
     `discovery=None`, while the same rows with no `plan=` stay
     undeclared (`role=None`)."""
-    rows = _moment_rows()
+    rows = _legacy_fixed10_rows()
     undeclared = Analysis.from_moments(rows, metrics={"revenue": "mean"}, control="control")
     assert undeclared.run()[0].role is None
 

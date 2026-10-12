@@ -31,7 +31,8 @@ _EXPECTED_ADAPTER_NAMES = frozenset(
         "frame_summary",
         "frame_panel",
         "moments",
-        "moments_with_counts",
+        "legacy_fixed10",
+        "legacy_fixed10_with_counts",
         "breakout_moments",
         "sql_totals",
         "unit_day_artifact",
@@ -138,19 +139,22 @@ def test_absent_grains_and_extensions_are_stable_coded_refusals(
             _expect_code(
                 lambda: source.moments(metric, by=["missing"]), "source.frame.breakouts_unsupported"
             )
-        elif adapter.name in {"moments", "moments_with_counts"}:
+        elif adapter.name in {"moments", "legacy_fixed10", "legacy_fixed10_with_counts"}:
             _expect_code(lambda: source.moments(metric, grain="daily"), "source.moments.grain")
             _expect_code(lambda: source.moments(metric, by=["missing"]), "source.moments.breakout")
-
         if adapter.name == "frame_summary":
             _expect_code(lambda: source.sql(), "source.frame.sql_unsupported")
         elif adapter.name == "frame_panel":
             _expect_code(lambda: source.sql(), "source.frame.sql_unsupported")
         elif adapter.name == "moments":
             _expect_code(lambda: source.unit_frame(metric), "source.moments.unit_grain")
+            assert source.unit_counts() == {"control": 2, "treatment": 2}
+            _expect_code(lambda: source.sql(), "source.moments.sql")
+        elif adapter.name == "legacy_fixed10":
+            _expect_code(lambda: source.unit_frame(metric), "source.moments.unit_grain")
             _expect_code(lambda: source.unit_counts(), "source.moments.assignment_counts")
             _expect_code(lambda: source.sql(), "source.moments.sql")
-        elif adapter.name == "moments_with_counts":
+        elif adapter.name == "legacy_fixed10_with_counts":
             _expect_code(lambda: source.unit_frame(metric), "source.moments.unit_grain")
             assert source.unit_counts() == {"control": 2, "treatment": 2}
             _expect_code(lambda: source.sql(), "source.moments.sql")
