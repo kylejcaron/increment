@@ -2345,6 +2345,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             group_id = count_row["group_id"]
             if group_id is not None:
                 population_counts[str(group_id)] = int(count_row["n_units"])
+        for group_id in assigned_counts:
+            population_counts.setdefault(group_id, 0)
         snapshot = self._session.source_snapshot_evidence
         from hashlib import sha256
 

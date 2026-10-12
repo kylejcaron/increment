@@ -1004,6 +1004,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         pre_stats: ir.Table | None = None,
         population_units: frozenset[str] | None = None,
         completed_windows_only: bool = False,
+        calendar_end: dt.date | None = None,
     ) -> list[dict[str, Any]]:
         if self._population_units is None:
             return super()._reduce(
@@ -1016,6 +1017,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 pre_stats=pre_stats,
                 population_units=population_units,
                 completed_windows_only=completed_windows_only,
+                calendar_end=calendar_end,
             )
         return self.reduce_triggered(
             metric,
@@ -1805,7 +1807,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             trigger_anchors={str(row["unit_id"]): row["first_trigger_ts"] for row in rows},
         )
 
-    def sitewide_evidence(  # noqa: PLR0915
+    def sitewide_evidence(
         self,
         metric: Metric,
         *,
@@ -1929,15 +1931,14 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             population_counts = dict(
                 Counter(group_by_unit[unit] for unit in member_ids if unit in group_by_unit)
             )
-            calendar_experiment = self._artifact_experiment.model_copy(
-                update={"observation_end": self._artifact_experiment.end}
+            for group_id in assigned_counts:
+                population_counts.setdefault(group_id, 0)
+            moment_rows = super()._reduce(
+                metric,
+                "total",
+                population_units=member_ids,
+                calendar_end=self._artifact_experiment.end_day,
             )
-            original_experiment = self._artifact_experiment
-            self._artifact_experiment = calendar_experiment
-            try:
-                moment_rows = super()._reduce(metric, "total", population_units=member_ids)
-            finally:
-                self._artifact_experiment = original_experiment
         else:
             population_counts = assigned_counts.copy()
             moment_rows = self.moments(metric)

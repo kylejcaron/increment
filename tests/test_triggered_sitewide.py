@@ -13,17 +13,48 @@ from scipy.stats import norm
 
 from increment import Analysis, SourceSnapshotEvidence
 from increment.errors import CapabilityError, DefinitionError
-from increment.estimation.sitewide import SitewideRatioImpact
+from increment.estimation.sitewide import SitewideImpact, SitewideRatioImpact
 from increment.query.artifact_contract import ArtifactContractError
 from tests.analysis_factory import _native_source, native_connection
 from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
 from tests.test_analysis_trigger import _defs_yaml, _events
 
 
-def _analysis(tmp_path, events=None, *, store="auto"):
+def _analysis(
+    tmp_path,
+    events=None,
+    *,
+    store="auto",
+    day_boundary=None,
+    conversion=False,
+    third_arm=False,
+    watermark=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+    observation_end=None,
+):
     tmp_path.mkdir(parents=True, exist_ok=True)
-    definitions = tmp_path / "triggered-sitewide.yml"
-    definitions.write_text(_defs_yaml(end="2024-01-10").replace("    window_days: 7\n", ""))
+    definitions = _defs_yaml(end="2024-01-10", observation_end=observation_end).replace(
+        "    window_days: 7\n", ""
+    )
+    if conversion:
+        definitions = (
+            definitions.replace("    type: mean\n", "    type: conversion\n")
+            .replace("    fact: revenue\n", "    fact: saw_surface\n")
+            .replace("    aggregation: sum\n", "")
+        )
+    if day_boundary is not None:
+        definitions = definitions.replace(
+            "    start: 2024-01-01T00:00:00\n",
+            f"    day_boundary: {day_boundary}\n    start: 2024-01-01T00:00:00\n",
+        )
+    if third_arm:
+        definitions = definitions.replace(
+            "    control_group: C\n",
+            "    control_group: C\n"
+            "    allocation: {C: 0.4, T: 0.4, U: 0.2}\n"
+            "    allocation_scheme: independent\n",
+        )
+    definitions_path = tmp_path / "triggered-sitewide.yml"
+    definitions_path.write_text(definitions)
     con = ibis.duckdb.connect()
     con.create_table(
         "events",
@@ -31,7 +62,23 @@ def _analysis(tmp_path, events=None, *, store="auto"):
     )
     return Analysis.from_definitions(
         "exp",
-        definitions,
+        definitions_path,
+        con,
+        store=store,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+            complete_through_by_feed={"events": watermark},
+        ),
+    )
+    definitions_path.write_text(definitions)
+    con = ibis.duckdb.connect()
+    con.create_table(
+        "events",
+        obj=_events(n_per_arm=100, trigger_rate=0.2, effect=0.5) if events is None else events,
+    )
+    return Analysis.from_definitions(
+        "exp",
+        definitions_path,
         con,
         store=store,
         source_snapshot_evidence=SourceSnapshotEvidence(
@@ -74,15 +121,45 @@ def test_triggered_sitewide_evidence_uses_calendar_window_member_outcomes(tmp_pa
     base_events = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5)
     member_only_events = _add_late_trigger_and_outcome(base_events, include_outcome=False)
     with_late_outcome_events = _add_late_trigger_and_outcome(base_events, include_outcome=True)
-    member_only = _analysis(tmp_path / "member-only", member_only_events)
-    with_late_outcome = _analysis(tmp_path / "late-outcome", with_late_outcome_events)
+    member_only = _analysis(
+        tmp_path / "member-only",
+        member_only_events,
+        observation_end="2024-01-16",
+    )
+    with_late_outcome = _analysis(
+        tmp_path / "late-outcome",
+        with_late_outcome_events,
+        observation_end="2024-01-16",
+    )
+    adopted = None
     try:
         source = with_late_outcome._src
         evidence = source.sitewide_evidence(
             with_late_outcome.metrics[0], include_ratio=False, population="triggered"
         )
-        reference = member_only._src.sitewide_evidence(
-            member_only.metrics[0], include_ratio=False, population="triggered"
+        calendar_start = dt.datetime(2024, 1, 1)
+        calendar_end = dt.datetime(2024, 1, 10, 23, 59, 59, 999999)
+        rows = with_late_outcome_events.to_pylist()
+        members = {
+            row["user_id"]
+            for row in rows
+            if row["event"] == "saw_surface" and row["ts"] <= dt.datetime(2024, 1, 16)
+        }
+        groups = {row["user_id"]: row["group_id"] for row in rows}
+        sums: dict[str, float] = {}
+        for row in rows:
+            if row["event"] == "revenue" and calendar_start <= row["ts"] <= calendar_end:
+                sums[row["user_id"]] = sums.get(row["user_id"], 0.0) + row["value"]
+        expected_by_arm: dict[str, list[float]] = {}
+        for unit in members:
+            expected_by_arm.setdefault(groups[unit], []).append(sums.get(unit, 0.0))
+        hand_computed_means = {
+            group: sum(values) / len(values) for group, values in expected_by_arm.items()
+        }
+        hand_computed_site_total = sum(
+            row["value"]
+            for row in rows
+            if row["event"] == "revenue" and calendar_start <= row["ts"] <= calendar_end
         )
         assert evidence.analysis_population == "triggered"
         assert evidence.window == (dt.date(2024, 1, 1), dt.date(2024, 1, 10))
@@ -90,18 +167,41 @@ def test_triggered_sitewide_evidence_uses_calendar_window_member_outcomes(tmp_pa
         assert evidence.population_counts == source.assignment_counts(population="triggered")
         assert evidence.assigned_counts == {"C": 100, "T": 100}
         assert evidence.population_counts["C"] == 17
-        assert evidence.site_total == pytest.approx(
-            with_late_outcome._src.sitewide_evidence(with_late_outcome.metrics[0]).site_total
-        )
+        assert evidence.site_total == pytest.approx(hand_computed_site_total)
         assert {arm.group_id: arm.n for arm in evidence.arm_stats} == {
-            arm.group_id: arm.n for arm in reference.arm_stats
+            group: len(values) for group, values in expected_by_arm.items()
         }
         assert {arm.group_id: arm.mean_y() for arm in evidence.arm_stats} == pytest.approx(
-            {arm.group_id: arm.mean_y() for arm in reference.arm_stats}
+            hand_computed_means
         )
+        native_result = with_late_outcome.sitewide("revenue", population="triggered")
+        reference_result = member_only.sitewide("revenue", population="triggered")
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(with_late_outcome)),
+            with_late_outcome,
+            kinds=("site_volume", "trigger_population", "assignment_counts"),
+        )
+        artifact_result = adopted.sitewide("revenue", population="triggered")
+        artifact_evidence = adopted._src.sitewide_evidence(
+            adopted.metrics[0], include_ratio=False, population="triggered"
+        )
+        assert {arm.group_id: arm.n for arm in artifact_evidence.arm_stats} == {
+            group: len(values) for group, values in expected_by_arm.items()
+        }
+        assert {arm.group_id: arm.mean_y() for arm in artifact_evidence.arm_stats} == pytest.approx(
+            hand_computed_means
+        )
+        assert artifact_result.window == native_result.window == reference_result.window
+        assert artifact_result.absolute_impact == pytest.approx(reference_result.absolute_impact)
+        assert isinstance(artifact_result, SitewideImpact)
+        assert isinstance(reference_result, SitewideImpact)
+        assert artifact_result.baseline_volume == pytest.approx(reference_result.baseline_volume)
     finally:
         member_only.close()
-        with_late_outcome.close()
+        if adopted is None:
+            with_late_outcome.close()
+        else:
+            _close_parity_analysis(adopted)
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
@@ -210,6 +310,116 @@ def test_triggered_sitewide_artifact_matches_native_evidence(tmp_path):
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_triggered_sitewide_unwindowed_conversion_matches_artifact(tmp_path):
+    native_analysis = _analysis(tmp_path / "native", conversion=True)
+    adopted = None
+    try:
+        native = native_analysis.sitewide("revenue", population="triggered")
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(native_analysis)),
+            native_analysis,
+            kinds=("site_volume", "trigger_population", "assignment_counts"),
+        )
+        artifact = adopted.sitewide("revenue", population="triggered")
+        assert artifact.analysis_population == "triggered"
+        assert artifact.window == native.window
+        assert artifact.scaled_units == native.scaled_units
+        assert artifact.absolute_impact == pytest.approx(native.absolute_impact)
+        assert isinstance(artifact, SitewideImpact)
+        assert isinstance(native, SitewideImpact)
+        assert artifact.baseline_volume == pytest.approx(native.baseline_volume)
+    finally:
+        if adopted is None:
+            native_analysis.close()
+        else:
+            _close_parity_analysis(adopted)
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_triggered_sitewide_non_utc_boundary_matches_artifact(tmp_path):
+    analysis = _analysis(tmp_path, day_boundary="UTC+05:00")
+    adopted = None
+    try:
+        native = analysis.sitewide("revenue", population="triggered")
+        assert native.window == (
+            analysis.experiment.start_day,
+            analysis.experiment.end_day,
+        )
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(analysis)),
+            analysis,
+            kinds=("site_volume", "trigger_population", "assignment_counts"),
+        )
+        artifact = adopted.sitewide("revenue", population="triggered")
+        assert artifact.window == native.window
+        assert artifact.absolute_impact == pytest.approx(native.absolute_impact)
+        assert isinstance(artifact, SitewideImpact)
+        assert isinstance(native, SitewideImpact)
+        assert artifact.baseline_volume == pytest.approx(native.baseline_volume)
+    finally:
+        if adopted is None:
+            analysis.close()
+        else:
+            _close_parity_analysis(adopted)
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_triggered_sitewide_retains_assigned_arm_with_zero_members(tmp_path):
+    rows = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5).to_pylist()
+    for index in range(10):
+        unit = f"U{index}"
+        for event, value, timestamp in (
+            ("enrolled", 0.0, dt.datetime(2024, 1, 2)),
+            ("revenue", 1.0, dt.datetime(2024, 1, 8)),
+        ):
+            rows.append(
+                {
+                    "user_id": unit,
+                    "group_id": "U",
+                    "ts": timestamp,
+                    "event": event,
+                    "value": value,
+                    "experiment_id": "exp",
+                }
+            )
+    analysis = _analysis(
+        tmp_path,
+        pa.Table.from_pylist(rows),
+        third_arm=True,
+        watermark=dt.datetime(2024, 1, 12, tzinfo=dt.UTC),
+    )
+    adopted = None
+    try:
+        native_result = analysis.sitewide("revenue", population="triggered")
+        native = analysis._src.sitewide_evidence(
+            analysis.metrics[0], include_ratio=False, population="triggered"
+        )
+        assert native.assigned_counts == {"C": 100, "T": 100, "U": 10}
+        assert native.population_counts.get("U") == 0
+        assert "U" not in {arm.group_id for arm in native.arm_stats}
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(analysis)),
+            analysis,
+            kinds=("site_volume", "trigger_population", "assignment_counts"),
+        )
+        artifact_result = adopted.sitewide("revenue", population="triggered")
+        artifact = adopted._src.sitewide_evidence(
+            adopted.metrics[0], include_ratio=False, population="triggered"
+        )
+        assert artifact.assigned_counts == native.assigned_counts
+        assert artifact.population_counts == native.population_counts
+        assert artifact.assigned_counts["U"] == 10
+        assert artifact.population_counts["U"] == 0
+        assert artifact_result.scaled_units == native_result.scaled_units
+        assert artifact_result.absolute_impact == pytest.approx(native_result.absolute_impact)
+    finally:
+        if adopted is None:
+            analysis.close()
+        else:
+            _close_parity_analysis(adopted)
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_triggered_sitewide_artifact_without_membership_refuses_with_republish_route(tmp_path):
     analysis = _analysis(tmp_path)
     adopted = None
@@ -229,6 +439,95 @@ def test_triggered_sitewide_artifact_without_membership_refuses_with_republish_r
             assert restored.context == raised.value.context
         assert raised.value.code == "artifact.extension.missing"
         assert "republish" in str(raised.value.context["route"])
+    finally:
+        if adopted is None:
+            analysis.close()
+        else:
+            _close_parity_analysis(adopted)
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_triggered_sitewide_artifact_without_assignment_counts_refuses(tmp_path):
+    analysis = _analysis(tmp_path)
+    adopted = None
+    try:
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(analysis)),
+            analysis,
+            kinds=("site_volume", "trigger_population"),
+        )
+        with pytest.raises(ArtifactContractError) as refused:
+            adopted.sitewide("revenue", population="triggered")
+        assert refused.value.code == "artifact.extension.missing"
+    finally:
+        if adopted is None:
+            analysis.close()
+        else:
+            _close_parity_analysis(adopted)
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_triggered_sitewide_artifact_rejects_inconsistent_assignment_counts(tmp_path, monkeypatch):
+    analysis = _analysis(tmp_path)
+    adopted = None
+    try:
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(analysis)),
+            analysis,
+            kinds=("site_volume", "trigger_population", "assignment_counts"),
+        )
+        source = adopted._src
+        original_read_extension = source._read_extension
+
+        def inconsistent_counts(extension, *, request):
+            rows = original_read_extension(extension, request=request)
+            if extension.kind == "assignment_counts":
+                rows = [dict(row) for row in rows]
+                row = next(row for row in rows if row["population"] == "triggered")
+                row["n_units"] = int(row["n_units"]) + 1
+            return rows
+
+        monkeypatch.setattr(source, "_read_extension", inconsistent_counts)
+        with pytest.raises(ArtifactContractError) as refused:
+            adopted.sitewide("revenue", population="triggered")
+        assert refused.value.code == "artifact.extension.invalid"
+        assert refused.value.context["extension_kind"] == "assignment_counts"
+        assert "republish" in str(refused.value.context["route"])
+    finally:
+        if adopted is None:
+            analysis.close()
+        else:
+            _close_parity_analysis(adopted)
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_triggered_sitewide_artifact_rejects_corrupted_assignment_counts(tmp_path):
+    analysis = _analysis(tmp_path)
+    adopted = None
+    try:
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(analysis)),
+            analysis,
+            kinds=("site_volume", "trigger_population", "assignment_counts"),
+        )
+        con, store, reference = cast(Any, adopted)._parity_artifacts[0]
+        with store.open_snapshot(reference) as snapshot:
+            manifest = snapshot.read_manifest(
+                reference.manifest, expected_sha256=reference.manifest_sha256
+            )
+            extension = next(
+                item for item in manifest.extensions if item.kind == "assignment_counts"
+            )
+            rows = snapshot.execute(
+                snapshot.verify_relation(extension.relation, expected_role="assignment_counts")
+            ).to_pylist()
+        rows[0]["n_units"] += 1
+        from tests.test_unit_day_artifact_parity import _replace_artifact_relation
+
+        _replace_artifact_relation(con, extension.relation, "assignment_counts", rows)
+        with pytest.raises(ArtifactContractError) as refused:
+            adopted.sitewide("revenue", population="triggered")
+        assert refused.value.code == "artifact.snapshot.mixed"
     finally:
         if adopted is None:
             analysis.close()

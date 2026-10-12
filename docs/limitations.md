@@ -289,6 +289,11 @@ adjust for multiplicity or provide anytime-valid inference. It uses
 assignment-anchored experiment-calendar outcomes rather than `run()`'s
 trigger-anchored windows. Use the assigned-population sitewide result when
 these conditional assumptions are not defensible.
+Population counts retain every assigned arm, including explicit zero counts
+for arms with no triggered members. An empty arm outside the selected
+control/treatment contrast contributes no members to the scaling total; an
+empty selected contrast arm remains an estimability refusal.
+
 
 Calibration: `CALIBRATION_RESULTS_PENDING`
 
