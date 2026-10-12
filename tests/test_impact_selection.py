@@ -89,12 +89,13 @@ def test_testmon_nested_lock_requires_live_owner_and_skips_certification(
         testmon_nested_context,
     )
 
+    # The lock and the launcher both write process-global controls; keep them in a copy.
+    monkeypatch.setattr(os, "environ", os.environ.copy())
     with testmon_database_lock(tmp_path) as owns_lock:
         assert owns_lock
         assert testmon_nested_context(tmp_path)
         from scripts.affected_pytest_launcher import _prepare_testmon_environment
 
-        monkeypatch.setattr(os, "environ", os.environ.copy())
         monkeypatch.delenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", raising=False)
         monkeypatch.delenv("INCREMENT_AFFECTED_WORKER_ALLOWANCE", raising=False)
         _prepare_testmon_environment(tmp_path, "fast", 2)
@@ -237,9 +238,9 @@ def test_supervised_affected_launcher_engages_testmon_primary(
         "run",
         staticmethod(capture),
     )
+    monkeypatch.setattr(os, "environ", os.environ.copy())
     with testmon_database_lock(tmp_path):
         os.environ["INCREMENT_TESTMON_LOCK_ROLE"] = "owner-child"
-        monkeypatch.setattr(os, "environ", os.environ.copy())
         assert affected_pytest_launcher.main(["--tach-base", base, "--tier", "fast"]) == 0
 
     from typing import cast

@@ -27,7 +27,7 @@ _PYTEST_ENVIRONMENT_SNAPSHOT = pytest.StashKey[dict[str, str]]()
 
 
 def _pytest_environment_controls() -> dict[str, str]:
-    prefixes = ("COV_CORE_", "COVERAGE_")
+    prefixes = ("COV_CORE_", "COVERAGE_", "INCREMENT_TESTMON_LOCK_")
     controls = {"PYTEST_DISABLE_PLUGIN_AUTOLOAD", "PYTEST_PLUGINS", "PYTEST_ADDOPTS"}
     return {
         name: value
@@ -36,15 +36,18 @@ def _pytest_environment_controls() -> dict[str, str]:
     }
 
 
-@pytest.fixture(autouse=True)
-def _guard_pytest_environment(request: pytest.FixtureRequest) -> None:
-    """Snapshot subprocess controls before each test and check after teardown."""
-    request.node.stash[_PYTEST_ENVIRONMENT_SNAPSHOT] = _pytest_environment_controls()
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """Snapshot subprocess controls before any fixture of any item type runs."""
+    item.stash[_PYTEST_ENVIRONMENT_SNAPSHOT] = _pytest_environment_controls()
 
 
 @pytest.hookimpl(trylast=True)
 def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> None:
-    before = item.stash.get(_PYTEST_ENVIRONMENT_SNAPSHOT, {})
+    """Fail a test that leaves a nested-run control changed after its teardown."""
+    before = item.stash.get(_PYTEST_ENVIRONMENT_SNAPSHOT, None)
+    if before is None:
+        return
     after = _pytest_environment_controls()
     changed = sorted(
         name for name in before.keys() | after.keys() if before.get(name) != after.get(name)
