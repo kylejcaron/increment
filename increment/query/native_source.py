@@ -44,6 +44,7 @@ from increment.query._native_refusals import (
     _NATIVE_COVARIATE_AMBIGUOUS,
     _NATIVE_COVARIATE_AS_OF,
     _NATIVE_COVARIATE_DTYPE,
+    _NATIVE_COVARIATE_KIND,
     _NATIVE_COVARIATE_UNRESOLVED,
     _NATIVE_SQL_GRAIN,
     _NATIVE_TRIGGER_EVIDENCE_REQUIRED,
@@ -118,6 +119,8 @@ from increment.semantics.models import (
     Experiment,
     Factor,
     FactSource,
+    MeanMetric,
+    Measure,
     Metric,
     ObservationalDeclaration,
     QuantileMetric,
@@ -808,12 +811,14 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         scoped_exposures = exposures if prop_def.as_of == "pre_exposure" else None
         return breakout_property_table(raw, property_name, scoped_exposures)
 
-    def _resolve_unit_covariate_source(self, name: str) -> FactSource:
-        """Resolve a covariate the way a breakout resolves: an explicit
-        ``source:`` on a declared observational covariate wins; otherwise
-        exactly one fact source with the unit must carry the property. The
-        property must be pre-exposure/static and numeric (int/float/bool)
-        or categorical (string)."""
+    def _resolve_unit_covariate_source(
+        self,
+        name: str,
+        *,
+        declared_source: str | None = None,
+        kind: Literal["continuous", "categorical"] | None = None,
+    ) -> FactSource:
+        """Resolve a covariate by its declared source or the existing unique-property rule."""
         unit = self._experiment.unit
         design = self._experiment.design
         declared = (
@@ -821,11 +826,12 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             if isinstance(design, ObservationalDeclaration)
             else None
         )
-        if declared is not None and declared.source is not None:
+        source = declared_source or (declared.source if declared is not None else None)
+        if source is not None:
             candidates = [
                 fs
                 for fs in self._defs.fact_sources
-                if fs.name == declared.source
+                if fs.name == source
                 and unit in fs.entities
                 and any(p.name == name for p in self._defs.properties_of(fs))
             ]
@@ -834,7 +840,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     _NATIVE_COVARIATE_UNRESOLVED,
                     covariate=name,
                     unit=unit,
-                    source=declared.source,
+                    source=source,
                 )
         else:
             candidates = [
@@ -866,7 +872,87 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 source=fact_source.name,
                 dtype=prop.dtype,
             )
+        if kind is not None:
+            compatible = (
+                prop.dtype == "string"
+                if kind == "categorical"
+                else prop.dtype
+                in (
+                    "int",
+                    "float",
+                    "bool",
+                )
+            )
+            if not compatible:
+                _refuse(
+                    _NATIVE_COVARIATE_KIND,
+                    covariate=name,
+                    source=fact_source.name,
+                    dtype=prop.dtype,
+                    kind=kind,
+                )
+
         return fact_source
+
+    def _pre_period_measure_covariate(self, measure: Measure, name: str, exposures: Table) -> Table:
+        from increment.query.builders import _days_literal, _local_date
+
+        if self._experiment.n_pre_periods <= 0:
+            _refuse(
+                _NATIVE_COVARIATE_UNRESOLVED,
+                covariate=name,
+                unit=self._experiment.unit,
+                source="n_pre_periods=0",
+            )
+        fact_source, fact = _find_fact_source(self._defs, measure.fact)
+        measure_metric = MeanMetric(
+            name=name,
+            entity=self._experiment.unit,
+            fact=measure.fact,
+            aggregation=measure.aggregation,
+            filters=measure.filters,
+            window_days=measure.window_days,
+        )
+        events = metric_events(
+            self._get_fact_table(fact_source),
+            measure_metric,
+            value_column=_resolve_value_column(fact_source, fact),
+        )
+        anchors = exposures.select(
+            "unit_id",
+            "first_exposure_ts",
+            first_exposure_date=_local_date(exposures.first_exposure_ts, self._experiment),
+        ).distinct()
+        joined = events.join(anchors, events.unit_id == anchors.unit_id, rname="{name}_cuped")
+        pre_start = joined.first_exposure_date - _days_literal(
+            self._experiment.n_pre_periods
+        ).as_interval("D")
+        scoped = joined.filter(
+            (_local_date(joined.ts, self._experiment) >= pre_start)
+            & (joined.ts < joined.first_exposure_ts)
+        )
+        aggregation = measure.aggregation
+        if aggregation == "sum":
+            values = scoped.group_by("unit_id").agg(**{name: scoped.value.sum()})
+        elif aggregation == "count":
+            values = scoped.group_by("unit_id").agg(**{name: scoped.value.count().cast("float64")})
+        elif aggregation == "avg_event":
+            values = scoped.group_by("unit_id").agg(**{name: scoped.value.mean()})
+        elif aggregation == "avg_calendar_day":
+            values = scoped.group_by("unit_id").agg(
+                **{
+                    name: scoped.value.sum() / self._experiment.n_pre_periods,
+                }
+            )
+        elif aggregation == "count_distinct":
+            values = scoped.group_by("unit_id").agg(
+                **{name: scoped.value.nunique().cast("float64")}
+            )
+        elif aggregation == "min":
+            values = scoped.group_by("unit_id").agg(**{name: scoped.value.min()})
+        else:
+            values = scoped.group_by("unit_id").agg(**{name: scoped.value.max()})
+        return values
 
     def _build_exposure_events_table(self) -> Table:
         """Build the raw exposure-events table from the experiment's exposure.
@@ -3481,12 +3567,26 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         cluster = self._experiment.cluster
         if "cluster_id" in covariates and cluster != "cluster_id":
             _refuse(_NATIVE_COVARIATE_RESERVED, covariate="cluster_id", cluster=cluster)
-        # A requested declared cluster column reuses the attached metadata column.
-        covariate_sources = {
-            name: self._resolve_unit_covariate_source(name)
-            for name in dict.fromkeys(covariates)
-            if name != "cluster_id"
-        }
+        metric_binding = self._experiment.bindings.get(metric.name)
+        declared_covariates = (
+            {covariate.name: covariate for covariate in metric_binding.covariates}
+            if metric_binding is not None
+            else {}
+        )
+        covariate_sources = {}
+        covariate_measures = {}
+        for name in dict.fromkeys(covariates):
+            if name == "cluster_id":
+                continue
+            declared = declared_covariates.get(name)
+            if declared is not None and declared.measure is not None:
+                covariate_measures[name] = declared.measure
+            else:
+                covariate_sources[name] = self._resolve_unit_covariate_source(
+                    name,
+                    declared_source=declared.source if declared is not None else None,
+                    kind=declared.kind if declared is not None else None,
+                )
         if outcome_stage == "raw" and self._session._source_tables is None:
             with self._pinned_source_execution(metrics=(metric,)) as pinned:
                 return pinned.unit_frame(
@@ -3536,6 +3636,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 winsor_refuse(
                     "raw_state_required", "Warehouse reduction did not retain pre-winsor outcomes."
                 )
+            for name, measure in covariate_measures.items():
+                values = self._pre_period_measure_covariate(measure, name, assigned)
+                totals = totals.left_join(values, "unit_id")
+                if measure.aggregation != "avg_event":
+                    totals = totals.mutate(**{name: ibis.coalesce(totals[name], 0.0)})
             for name, fact_source in covariate_sources.items():
                 properties = self._build_breakout_properties_table(fact_source, name, assigned)
                 prop = next(p for p in self._defs.properties_of(fact_source) if p.name == name)
@@ -3551,7 +3656,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             }
             if isinstance(metric, RatioMetric):
                 select_cols["y_den"] = totals["y_den"]
-            for name in covariate_sources:
+            for name in (*covariate_sources, *covariate_measures):
                 select_cols[name] = totals[name]
             if cluster is not None:
                 select_cols["cluster_id"] = totals[cluster].cast("string")

@@ -850,37 +850,36 @@ def _dimension_catalog_entries(definitions: Any, experiment: Any) -> list[Any]:
 
 
 def _covariate_catalog_entries(definitions: Any, experiment: Any) -> list[Any]:
-    """One entry per covariate an observational design declares; an artifact
-    can publish exactly these, never an ad hoc name. A numeric property is
-    offered as `unit_covariate`, a string property as `unit_covariate_level`:
-    the declared dtype picks the wire relation that can carry its values."""
-    entries: list[Any] = []
+    """Catalog declared observational and CUPED-linear property evidence."""
+    declarations: dict[str, tuple[str | None, Any]] = {}
     design = getattr(experiment, "design", None)
-    if design is None or design.mechanism != "observational":
-        return entries
-    for covariate in design.covariates:
-        source = _source_for(
-            definitions, covariate.property, covariate.source, unit=experiment.unit
+    if design is not None and design.mechanism == "observational":
+        declarations.update(
+            (covariate.property, (covariate.source, covariate)) for covariate in design.covariates
         )
-        prop = next(p for p in definitions.properties_of(source) if p.name == covariate.property)
+    for binding in experiment.bindings.values():
+        for covariate in binding.covariates:
+            if covariate.property is not None:
+                declarations[covariate.property] = (covariate.source, covariate)
+
+    entries: list[Any] = []
+    for property_name, (source_name, declaration) in declarations.items():
+        source = _source_for(definitions, property_name, source_name, unit=experiment.unit)
+        prop = next(p for p in definitions.properties_of(source) if p.name == property_name)
         kind, model_name = (
             ("unit_covariate_level", "UnitCovariateLevelRequest")
             if prop.dtype == "string"
             else ("unit_covariate", "UnitCovariateRequest")
         )
         request = _model(model_name).model_validate(
-            {
-                "kind": kind,
-                "property_name": covariate.property,
-                "source_name": source.name,
-            }
+            {"kind": kind, "property_name": property_name, "source_name": source.name}
         )
         _catalog_add(
             entries,
             request,
             {
                 "kind": kind,
-                "property": _dump(covariate),
+                "property": _dump(declaration),
                 "property_definition": _dump(prop),
             },
             {
