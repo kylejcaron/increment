@@ -121,12 +121,63 @@ def test_missing_arm_does_not_suppress_warning_for_the_other_arm():
     assert "control" in row.note
 
 
-def test_symmetric_denominators_raise_no_warning_and_carry_no_note():
+def test_zero_third_moment_and_nonzero_variance_is_unavailable():
     control = moment_arm("control", n=2000, y_bar=2.0, var_y=1.0, d_bar=1.0, var_d=1.0)
     treatment = moment_arm("treatment", n=2000, y_bar=2.2, var_y=1.0, d_bar=1.0, var_d=1.0)
     (row,), record = _estimate(control, treatment)
     assert warning_codes(record) == []
-    assert row.note is None
+    assert row.note is not None
+    assert "zero while denominator variance is nonzero" in row.note
+
+
+def test_third_moment_scale_extremes_never_silently_pass():
+    denominator = np.array([1.0] * 49 + [3.0])
+    centered = denominator - denominator.mean()
+    n = len(denominator)
+    skewness = float(np.mean(centered**3) / np.mean(centered**2) ** 1.5)
+    variance = float(np.var(denominator, ddof=1))
+    decisions = []
+
+    for scale in (1e-110, 1.0, 1e110):
+        control = moment_arm(
+            "control",
+            n=n,
+            y_bar=2.0,
+            var_y=1.0,
+            d_bar=float(denominator.mean()) * scale,
+            var_d=variance * scale * scale,
+            skew_d=skewness,
+        )
+        treatment = moment_arm(
+            "treatment",
+            n=n,
+            y_bar=2.2,
+            var_y=1.0,
+            d_bar=float(denominator.mean()) * scale,
+            var_d=variance * scale * scale,
+            skew_d=skewness,
+        )
+        if scale == 1e-110:
+            assert control.cden3 == 0.0
+            assert control.cden2 is not None and control.cden2 > 0.0
+            assert control.skew_den_unavailable() == "zero"
+            with pytest.raises(Exception) as refused:
+                control.skew_den()
+            assert refused.value.code == "estimation.armstats.arm_stats.skew_den_zero"  # ty: ignore[unresolved-attribute]
+        elif scale == 1e110:
+            assert control.cden3 is not None and not math.isfinite(control.cden3)
+
+        (row,), record = _estimate(control, treatment)
+        if warning_codes(record):
+            decisions.append("warning")
+            assert set(_flagged(record)) == {"control", "treatment"}
+        elif row.note is not None and "ratio_denominator_skew: unavailable" in row.note:
+            decisions.append("unavailable")
+            assert "underflow" in row.note or "overflowed" in row.note
+        else:
+            decisions.append("silent")
+
+    assert decisions == ["unavailable", "warning", "unavailable"]
 
 
 def test_warning_leaves_the_interval_unchanged():

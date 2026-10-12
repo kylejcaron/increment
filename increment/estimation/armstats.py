@@ -1409,26 +1409,40 @@ class ArmStats(CodedModel, BaseModel):
         return self.moments.var("den", what=f"var_den for {self._label()}")
 
     def skew_den_unavailable(self) -> str | None:
-        """Why the denominator's standardized skewness cannot be read, or ``None``.
+        """Why denominator skewness cannot be trusted, or ``None``.
 
-        ``"missing"``: the producer did not carry the third moment.
-        ``"inconsistent"``: it is non-finite or exceeds the largest skewness a
-        sample of ``n`` values attains beyond rounding (overflowed or
-        mis-aggregated upstream); the second moments stay usable.
+        ``"missing"`` means the producer did not carry the third moment.
+        ``"zero"`` means it is zero despite nonzero variance, so underflow
+        cannot be distinguished from exact cancellation. ``"inconsistent"``
+        means it is non-finite or outside the feasible sample bound.
         """
         if self.cden3 is None or self.cden2 is None or self.cden1 is None:
             return "missing"
+        if self.cden3 == 0.0:
+            second, _ = self.moments._mean_centered_sums(
+                "den", what=f"skew_den for {self._label()}"
+            )
+            if second > 0.0:
+                return "zero"
         if not third_moment_feasible(self.cden3, self.cden2, self.cden1, self.n):
             return "inconsistent"
         return None
 
     def skew_den(self) -> float:
         """Standardized sample skewness ``g1`` of the ratio denominator (see
-        :meth:`CenteredMoments.skewness`); refuses when the third moment was
-        not carried or is inconsistent (:meth:`skew_den_unavailable`)."""
+        :meth:`CenteredMoments.skewness`); refuses when the third moment is
+        missing, zero despite nonzero variance, or inconsistent
+        (:meth:`skew_den_unavailable`)."""
         reason = self.skew_den_unavailable()
         if reason == "missing":
             _raise("estimation.armstats.arm_stats.skew_den_needs_cden3")
+        if reason == "zero":
+            _raise(
+                "estimation.armstats.arm_stats.skew_den_zero",
+                group_id=self.group_id,
+                metric=self.metric,
+                cden2=self.cden2,
+            )
         if reason is not None:
             _raise(
                 "estimation.armstats.arm_stats.skew_den_inconsistent",
@@ -1719,7 +1733,7 @@ _REFUSALS = refusals(
         ),
         "estimation.armstats.summary_stats.mean_finite": "mean must be finite, got {mean}",
         "estimation.armstats.arm_stats.skew_den_inconsistent": "denominator skewness for metric={metric!r} group={group_id!r} is unavailable: the carried third moment cden3={cden3!r} is non-finite or exceeds the largest skewness any sample of n={n} values attains -- it overflowed or was mis-aggregated upstream; the second moments remain usable",
-        "estimation.armstats.summary_stats.var_finite": "var must be finite, got {var}",
+        "estimation.armstats.arm_stats.skew_den_zero": "denominator skewness for metric={metric!r} group={group_id!r} is unavailable: cden3 is zero while the centered second moment is nonzero ({cden2!r}); the third moment may have underflowed or exactly cancelled",
         "estimation.armstats.arm_stats.obsolete_armstats_fields": "obsolete ArmStats fields are not supported: {obsolete}; weighted estimands must use ScoreStats",
         "estimation.armstats.arm_stats.group_summary_moment": "group_summary moment {name!r} is non-finite ({value!r}) for metric={metric!r} group={group_id!r}; {name} must be finite",
         "estimation.armstats.arm_stats.partial_family_missing": "partial {label} family: has {present} but is missing {missing}",

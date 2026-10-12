@@ -85,12 +85,15 @@ def test_advisory_names_only_the_arm_that_exceeds_the_threshold():
     assert "control=" not in row.note
 
 
-def test_well_resolved_denominators_carry_no_advisory():
-    # sqrt(1 / 2000) / 1 = 0.022, well under the threshold.
+def test_well_resolved_denominators_omit_the_precision_advisory():
+    # sqrt(1 / 2000) / 1 = 0.022, well under the precision threshold.
     control = _arm("control", n=2000, y_bar=2.0, var_y=1.0, d_bar=1.0, var_d=1.0)
     treatment = _arm("treatment", n=2000, y_bar=2.2, var_y=1.0, d_bar=1.0, var_d=1.0)
     row = _row(control, treatment)
-    assert row.note is None
+    assert row.note is not None
+    assert "ratio_denominator_precision" not in row.note
+    assert "ratio_denominator_skew: unavailable" in row.note
+    assert "zero while denominator variance is nonzero" in row.note
 
 
 def test_advisory_leaves_the_interval_unchanged():
