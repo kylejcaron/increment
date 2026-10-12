@@ -277,23 +277,31 @@ histories use the declared cluster uptake sufficient state.
 `Analysis.sitewide(population="triggered")` reports a conditional, fixed-
 membership estimate: the triggered-stratum lift is scaled by the number of
 enrolled units in finalized trigger membership, while the site-volume
-counterfactual remains full-site. Interpreting it as the sharp null of no
-whole-site effect requires that trigger membership is independent of
-treatment and that never-triggered units are unaffected. The allocation
-balance diagnostic can detect some treatment-dependent trigger rates, but its
-non-rejection does not prove either assumption; equal marginal trigger rates
-do not rule out treatment-dependent membership or timing.
+counterfactual remains full-site. Reading it as the whole-site impact
+requires that trigger membership is independent of treatment and that
+never-triggered units are unaffected. The allocation balance diagnostic can
+detect some treatment-dependent trigger rates, but its non-rejection does not
+prove either assumption; equal marginal trigger rates do not rule out
+treatment-dependent membership or timing.
+
+It supports unwindowed mean and ratio metrics with sum-aggregated components
+and unit-randomized, fixed-horizon experiments with a declared end. A
+conversion counts converted units while the site total counts events, so
+conversions refuse; clustered experiments, registered sequential plans and
+winsorized metrics also refuse.
 
 The estimate omits any reach effect among never-triggered units and does not
 adjust for multiplicity or provide anytime-valid inference. It uses
 assignment-anchored experiment-calendar outcomes rather than `run()`'s
 trigger-anchored windows. Use the assigned-population sitewide result when
 these conditional assumptions are not defensible.
+
 Population counts retain every assigned arm, including explicit zero counts
 for arms with no triggered members. An empty arm outside the selected
 control/treatment contrast contributes no members to the scaling total; an
-empty selected contrast arm remains an estimability refusal.
-After outcome-edge censoring, `scaled_units` counts only selected observed members and `unobserved_members` reports selected finalized members omitted from scaling.
+empty selected contrast arm remains an estimability refusal. When outcome
+observation censors members, `scaled_units` counts the observed members that
+were scaled and `unobserved_members` reports the members left out.
 
 The full calibration gates use two-arm, unclustered designs with 20% trigger
 reach and measure coverage against realized potential-outcome site totals;
