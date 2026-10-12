@@ -1928,17 +1928,17 @@ def _ratio_denominator_skew_note(treatment: ArmStats, control: ArmStats) -> str 
     ]
     reasons = []
     missing = [group_id for group_id, reason in unavailable if reason == "missing"]
-    zero = [group_id for group_id, reason in unavailable if reason == "zero"]
+    underflow = [group_id for group_id, reason in unavailable if reason == "underflow"]
     inconsistent = [group_id for group_id, reason in unavailable if reason == "inconsistent"]
     if missing:
         reasons.append(
             f"the moments for {', '.join(missing)} do not carry the denominator's third moment "
             "(cden3)"
         )
-    if zero:
+    if underflow:
         reasons.append(
-            f"the carried third moment cden3 for {', '.join(zero)} is zero while denominator "
-            "variance is nonzero (underflow and exact cancellation cannot be distinguished)"
+            f"the carried third moment cden3 for {', '.join(underflow)} is zero at a "
+            "denominator scale where cubed residuals underflow"
         )
     if inconsistent:
         reasons.append(

@@ -121,13 +121,15 @@ def test_missing_arm_does_not_suppress_warning_for_the_other_arm():
     assert "control" in row.note
 
 
-def test_zero_third_moment_and_nonzero_variance_is_unavailable():
+def test_symmetric_denominator_at_ordinary_scale_is_checked():
     control = moment_arm("control", n=2000, y_bar=2.0, var_y=1.0, d_bar=1.0, var_d=1.0)
     treatment = moment_arm("treatment", n=2000, y_bar=2.2, var_y=1.0, d_bar=1.0, var_d=1.0)
+    assert control.cden3 == 0.0
+    assert control.skew_den_unavailable() is None
+    assert control.skew_den() == 0.0
     (row,), record = _estimate(control, treatment)
     assert warning_codes(record) == []
-    assert row.note is not None
-    assert "zero while denominator variance is nonzero" in row.note
+    assert "ratio_denominator_skew" not in (row.note or "")
 
 
 def test_third_moment_scale_extremes_never_silently_pass():
@@ -160,10 +162,10 @@ def test_third_moment_scale_extremes_never_silently_pass():
         if scale == 1e-110:
             assert control.cden3 == 0.0
             assert control.cden2 is not None and control.cden2 > 0.0
-            assert control.skew_den_unavailable() == "zero"
+            assert control.skew_den_unavailable() == "underflow"
             with pytest.raises(Exception) as refused:
                 control.skew_den()
-            assert refused.value.code == "estimation.armstats.arm_stats.skew_den_zero"  # ty: ignore[unresolved-attribute]
+            assert refused.value.code == "estimation.armstats.arm_stats.skew_den_underflow"  # ty: ignore[unresolved-attribute]
         elif scale == 1e110:
             assert control.cden3 is not None and not math.isfinite(control.cden3)
 

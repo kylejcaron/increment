@@ -105,6 +105,9 @@ _register_warning(
 
 
 _EPS = sys.float_info.epsilon
+#: Residual scale cubed below which a zero third moment may be underflow:
+#: products this small lose all precision before reaching the subnormal range.
+_THIRD_MOMENT_UNDERFLOW_SCALE = sys.float_info.min / _EPS
 
 
 def _exact_centered(sum_ab: float, sum_a: float, sum_b: float, n: int) -> tuple[float, float]:
@@ -1412,9 +1415,11 @@ class ArmStats(CodedModel, BaseModel):
         """Why denominator skewness cannot be trusted, or ``None``.
 
         ``"missing"`` means the producer did not carry the third moment.
-        ``"zero"`` means it is zero despite nonzero variance, so underflow
-        cannot be distinguished from exact cancellation. ``"inconsistent"``
-        means it is non-finite or outside the feasible sample bound.
+        ``"underflow"`` means it is zero while the denominator's residual
+        scale cubed is below the normal float range, so underflow cannot be
+        told apart from exact cancellation; at representable scales a zero
+        third moment is a genuine symmetric sample. ``"inconsistent"`` means
+        it is non-finite or outside the feasible sample bound.
         """
         if self.cden3 is None or self.cden2 is None or self.cden1 is None:
             return "missing"
@@ -1422,8 +1427,8 @@ class ArmStats(CodedModel, BaseModel):
             second, _ = self.moments._mean_centered_sums(
                 "den", what=f"skew_den for {self._label()}"
             )
-            if second > 0.0:
-                return "zero"
+            if second > 0.0 and (second / self.n) ** 1.5 < _THIRD_MOMENT_UNDERFLOW_SCALE:
+                return "underflow"
         if not third_moment_feasible(self.cden3, self.cden2, self.cden1, self.n):
             return "inconsistent"
         return None
@@ -1431,14 +1436,14 @@ class ArmStats(CodedModel, BaseModel):
     def skew_den(self) -> float:
         """Standardized sample skewness ``g1`` of the ratio denominator (see
         :meth:`CenteredMoments.skewness`); refuses when the third moment is
-        missing, zero despite nonzero variance, or inconsistent
+        missing, zero where cubed residuals underflow, or inconsistent
         (:meth:`skew_den_unavailable`)."""
         reason = self.skew_den_unavailable()
         if reason == "missing":
             _raise("estimation.armstats.arm_stats.skew_den_needs_cden3")
-        if reason == "zero":
+        if reason == "underflow":
             _raise(
-                "estimation.armstats.arm_stats.skew_den_zero",
+                "estimation.armstats.arm_stats.skew_den_underflow",
                 group_id=self.group_id,
                 metric=self.metric,
                 cden2=self.cden2,
@@ -1733,7 +1738,8 @@ _REFUSALS = refusals(
         ),
         "estimation.armstats.summary_stats.mean_finite": "mean must be finite, got {mean}",
         "estimation.armstats.arm_stats.skew_den_inconsistent": "denominator skewness for metric={metric!r} group={group_id!r} is unavailable: the carried third moment cden3={cden3!r} is non-finite or exceeds the largest skewness any sample of n={n} values attains -- it overflowed or was mis-aggregated upstream; the second moments remain usable",
-        "estimation.armstats.arm_stats.skew_den_zero": "denominator skewness for metric={metric!r} group={group_id!r} is unavailable: cden3 is zero while the centered second moment is nonzero ({cden2!r}); the third moment may have underflowed or exactly cancelled",
+        "estimation.armstats.summary_stats.var_finite": "var must be finite, got {var}",
+        "estimation.armstats.arm_stats.skew_den_underflow": "denominator skewness for metric={metric!r} group={group_id!r} is unavailable: cden3 is zero while the centered second moment ({cden2!r}) is so small that cubed residuals underflow; rescale the denominator to check skew",
         "estimation.armstats.arm_stats.obsolete_armstats_fields": "obsolete ArmStats fields are not supported: {obsolete}; weighted estimands must use ScoreStats",
         "estimation.armstats.arm_stats.group_summary_moment": "group_summary moment {name!r} is non-finite ({value!r}) for metric={metric!r} group={group_id!r}; {name} must be finite",
         "estimation.armstats.arm_stats.partial_family_missing": "partial {label} family: has {present} but is missing {missing}",
