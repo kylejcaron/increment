@@ -157,7 +157,9 @@ def choose_cutoff(cells: list[Cell]) -> float | None:
     """Lower edge of the first statistic bin at which it and the next bin both
     cover below :data:`UNDERCOVERED`; ``None`` when no two consecutive bins do."""
     curve = binned_coverage(cells, BIN_WIDTH)
-    for (lo, coverage, _), (_, next_coverage, _) in zip(curve, curve[1:], strict=False):
+    for (lo, coverage, _), (next_lo, next_coverage, _) in zip(curve, curve[1:], strict=False):
+        if round(next_lo / BIN_WIDTH) != round(lo / BIN_WIDTH) + 1:
+            continue
         if coverage < UNDERCOVERED and next_coverage < UNDERCOVERED:
             return lo
     return None
