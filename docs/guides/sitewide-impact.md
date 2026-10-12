@@ -29,6 +29,9 @@ trigger-anchored observation windows; late triggers can belong to the
 membership while their outcome contribution still comes from the fixed
 experiment window. Site volume remains the full-site total, not a
 trigger-filtered total.
+The assigned/triggered `snapshot_id` equality is content-bound only for
+artifacts; native identity reflects declared `SourceSnapshotEvidence`, not
+table contents.
 
 The two readings can be computed from one immutable artifact that includes
 the required trigger and site-volume evidence:

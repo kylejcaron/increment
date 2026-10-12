@@ -293,6 +293,7 @@ Population counts retain every assigned arm, including explicit zero counts
 for arms with no triggered members. An empty arm outside the selected
 control/treatment contrast contributes no members to the scaling total; an
 empty selected contrast arm remains an estimability refusal.
+After outcome-edge censoring, `scaled_units` counts only selected observed members and `unobserved_members` reports selected finalized members omitted from scaling.
 
 Calibration (`python -m calibration.triggered_sitewide --campaign full`): two-arm,
 unclustered designs with 20% trigger reach, measured against realized

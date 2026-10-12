@@ -157,14 +157,19 @@ class SitewideReadouts:
             if population == "triggered"
             else ("enrolled_units_exhaust_exposure",)
         )
-        counts = population_counts
+        selected_members = sum(
+            population_counts.get(group_id, 0)
+            for group_id in (evidence.control_group, result.treatment_group)
+        )
+        scaled_units = int(result.n_control + result.n_treatment)
         return result.model_copy(
             update={
                 "analysis_population": population,
                 "window": evidence.window,
                 "membership_cutoff": evidence.membership_cutoff,
                 "snapshot_id": evidence.snapshot_id,
-                "scaled_units": sum(counts.values()),
+                "scaled_units": scaled_units,
+                "unobserved_members": max(0, selected_members - scaled_units),
                 "multiplicity_status": "exploratory_unadjusted",
                 "adjustment": "unadjusted",
                 "assumptions": assumptions,

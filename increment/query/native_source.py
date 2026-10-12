@@ -2348,16 +2348,20 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         for group_id in assigned_counts:
             population_counts.setdefault(group_id, 0)
         snapshot = self._session.source_snapshot_evidence
-        from hashlib import sha256
+        snapshot_id = None
+        if snapshot is not None:
+            from hashlib import sha256
 
-        from increment._canonical import canonical_json_bytes
-        from increment._source_identity import source_identity
+            from increment._canonical import canonical_json_bytes
 
-        identity = {
-            "source": source_identity(self),
-            "cutoff": None if snapshot is None else snapshot.observation_cutoff_ts.isoformat(),
-        }
-        snapshot_id = "sha256:" + sha256(canonical_json_bytes(identity)).hexdigest()
+            snapshot_identity = {
+                "observation_cutoff_ts": snapshot.observation_cutoff_ts.isoformat(),
+                "complete_through_by_feed": {
+                    feed: None if instant is None else instant.isoformat()
+                    for feed, instant in sorted(snapshot.complete_through_by_feed.items())
+                },
+            }
+            snapshot_id = "sha256:" + sha256(canonical_json_bytes(snapshot_identity)).hexdigest()
         return SitewideEvidence(
             metric=metric,
             site_total=float(row["y"]),

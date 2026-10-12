@@ -30,6 +30,7 @@ def _analysis(
     third_arm=False,
     watermark=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
     observation_end=None,
+    source_snapshot_evidence=True,
 ):
     tmp_path.mkdir(parents=True, exist_ok=True)
     definitions = _defs_yaml(end="2024-01-10", observation_end=observation_end).replace(
@@ -65,9 +66,13 @@ def _analysis(
         definitions_path,
         con,
         store=store,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            complete_through_by_feed={"events": watermark},
+        source_snapshot_evidence=(
+            SourceSnapshotEvidence(
+                observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+                complete_through_by_feed={"events": watermark},
+            )
+            if source_snapshot_evidence
+            else None
         ),
     )
     definitions_path.write_text(definitions)
@@ -294,6 +299,7 @@ def test_triggered_sitewide_artifact_matches_native_evidence(tmp_path):
         artifact = adopted._src.sitewide_evidence(
             adopted.metrics[0], include_ratio=False, population="triggered"
         )
+        assert artifact.analysis_population == "triggered"
         assert artifact.population_counts == native.population_counts
         assert artifact.assigned_counts == native.assigned_counts
         assert artifact.site_total == pytest.approx(native.site_total, rel=1e-12)
@@ -303,11 +309,109 @@ def test_triggered_sitewide_artifact_matches_native_evidence(tmp_path):
         assert {arm.group_id: arm.mean_y() for arm in artifact.arm_stats} == pytest.approx(
             {arm.group_id: arm.mean_y() for arm in native.arm_stats}, rel=1e-12
         )
+        artifact_assigned = adopted._src.sitewide_evidence(
+            adopted.metrics[0], include_ratio=False, population="assigned"
+        )
+        assert artifact.snapshot_id == artifact_assigned.snapshot_id
+        assert artifact_assigned.analysis_population == "assigned"
     finally:
         if adopted is None:
             analysis.close()
         else:
             _close_parity_analysis(adopted)
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_triggered_sitewide_censoring_reports_observed_scaled_members(tmp_path):
+    events = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5)
+    late_member_rows = pa.Table.from_pylist(
+        [
+            {
+                "user_id": "late-member",
+                "group_id": "C",
+                "ts": dt.datetime(2024, 1, 9),
+                "event": event,
+                "value": None if event == "enrolled" else 1.0,
+                "experiment_id": "exp",
+            }
+            for event in ("enrolled", "saw_surface")
+        ],
+        schema=events.schema,
+    )
+    analysis = _analysis(
+        tmp_path,
+        events=pa.concat_tables([events, late_member_rows]),
+        watermark=dt.datetime(2024, 1, 8, tzinfo=dt.UTC),
+    )
+    adopted = None
+    try:
+        native_result = analysis.sitewide("revenue", population="triggered")
+        native_evidence = _native_source(analysis).sitewide_evidence(
+            analysis.metrics[0], include_ratio=False, population="triggered"
+        )
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(analysis)),
+            analysis,
+            kinds=("site_volume", "trigger_population", "assignment_counts"),
+        )
+        artifact_result = adopted.sitewide("revenue", population="triggered")
+        artifact_evidence = adopted._src.sitewide_evidence(
+            adopted.metrics[0], include_ratio=False, population="triggered"
+        )
+        native_counts = native_evidence.population_counts
+        artifact_counts = artifact_evidence.population_counts
+        assert native_counts is not None
+        assert artifact_counts is not None
+        assert native_counts["C"] == artifact_counts["C"]
+        assert (
+            native_counts["C"]
+            == next(arm.n for arm in native_evidence.arm_stats if arm.group_id == "C") + 1
+        )
+        assert native_result.scaled_units == artifact_result.scaled_units
+        assert native_result.scaled_units == sum(
+            arm.n for arm in native_evidence.arm_stats if arm.group_id in {"C", "T"}
+        )
+        assert native_result.unobserved_members == artifact_result.unobserved_members == 1
+    finally:
+        if adopted is None:
+            analysis.close()
+        else:
+            _close_parity_analysis(adopted)
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_native_sitewide_without_snapshot_evidence_has_no_snapshot_identity(tmp_path):
+    analysis = _analysis(tmp_path, source_snapshot_evidence=False)
+    try:
+        assert analysis.sitewide("revenue").snapshot_id is None
+    finally:
+        analysis.close()
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_sitewide_artifact_snapshot_identity_changes_between_publications(tmp_path):
+    first = _analysis(tmp_path / "first")
+    second = _analysis(tmp_path / "second")
+    adopted_first = adopted_second = None
+    try:
+        adopted_first = _publish_and_adopt(
+            native_connection(_native_source(first)),
+            first,
+            kinds=("site_volume", "trigger_population", "assignment_counts"),
+        )
+        adopted_second = _publish_and_adopt(
+            native_connection(_native_source(second)),
+            second,
+            kinds=("site_volume", "trigger_population", "assignment_counts"),
+        )
+        assert (
+            adopted_first.sitewide("revenue").snapshot_id
+            != adopted_second.sitewide("revenue").snapshot_id
+        )
+    finally:
+        for adopted in (adopted_first, adopted_second):
+            if adopted is not None:
+                _close_parity_analysis(adopted)
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")

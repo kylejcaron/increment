@@ -982,9 +982,11 @@ conditional impact scaled to enrolled units in finalized trigger membership.
 It uses calendar-window outcomes (not `run()`'s trigger-anchored windows),
 requires an aligned sum metric, and discloses membership assumptions,
 allocation-balance evidence, provenance, and its exploratory unadjusted
-multiplicity status on the result. `SitewideImpact` and `SitewideRatioImpact`
+`multiplicity status on the result. `SitewideImpact` and `SitewideRatioImpact`
 include `analysis_population`, `window`, `membership_cutoff`, `snapshot_id`,
-`scaled_units`, `assumptions`, and `allocation_balance`.
+`scaled_units`, `unobserved_members`, `assumptions`, and `allocation_balance`.
+The paired-provenance check is content-bound only for artifacts; native
+`snapshot_id` reflects declared `SourceSnapshotEvidence`, not table contents.
 
 `increment.results.LiftEstimate.family_procedure` identifies the canonical correction
 procedure retained with the result's family (`e_bh`, `bonferroni`, or `bh`), when

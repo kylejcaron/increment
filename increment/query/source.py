@@ -1933,6 +1933,10 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             )
             for group_id in assigned_counts:
                 population_counts.setdefault(group_id, 0)
+            # Artifact relation/generation checks bind base and extension relations to
+            # one generation; a pinned publish writes that generation at one cutoff,
+            # so membership, calendar measures, and site volume share that cutoff.
+            # Adoption trusts the caller-pinned generation.
             moment_rows = super()._reduce(
                 metric,
                 "total",
@@ -1965,6 +1969,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             site_total=site_total,
             site_total_denominator=site_den,
             arm_stats=tuple(_df_to_arms(pa.Table.from_pylist(moment_rows))),
+            analysis_population=population,
             control_group=self._artifact_experiment.control_group,
             cluster=self.context.cluster,
             cluster_counts=cluster_counts,

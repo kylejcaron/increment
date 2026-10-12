@@ -324,10 +324,15 @@ class SitewideImpact(BaseModel):
         ``n_clusters - 2`` once another arm is enrolled.
     window, membership_cutoff, snapshot_id : provenance fields
         Calendar outcome window, trigger-membership observation cutoff (None
-        for assigned results), and identity of the source snapshot.
+        for assigned results), and source identity. Native identity reflects
+        declared source snapshot evidence, not table contents; artifact
+        identity is generation-based.
     scaled_units : int
-        Number of enrolled units in the selected population used to scale the
-        impact (`N` or `N_T`).
+        Number of units in the selected control and treatment arms actually
+        used to scale impact after outcome-edge censoring.
+    unobserved_members : int
+        Selected finalized members omitted from outcome reduction by
+        outcome-edge censoring.
     multiplicity_status, adjustment : str
         Sitewide results are exploratory and unadjusted; triggered results do
         not inherit a registered analysis family.
@@ -364,6 +369,7 @@ class SitewideImpact(BaseModel):
     membership_cutoff: dt.datetime | None = None
     snapshot_id: str | None = None
     scaled_units: int = 0
+    unobserved_members: int = 0
     multiplicity_status: Literal["exploratory_unadjusted"] = "exploratory_unadjusted"
     adjustment: Literal["unadjusted"] = "unadjusted"
     assumptions: tuple[str, ...] = ("enrolled_units_exhaust_exposure",)
@@ -430,10 +436,15 @@ class SitewideRatioImpact(BaseModel):
         docstring).
     window, membership_cutoff, snapshot_id : provenance fields
         Calendar outcome window, trigger-membership observation cutoff (None
-        for assigned results), and identity of the source snapshot.
+        for assigned results), and source identity. Native identity reflects
+        declared source snapshot evidence, not table contents; artifact
+        identity is generation-based.
     scaled_units : int
-        Number of enrolled units in the selected population used to scale the
-        impact (`N` or `N_T`).
+        Number of units in the selected control and treatment arms actually
+        used to scale impact after outcome-edge censoring.
+    unobserved_members : int
+        Selected finalized members omitted from outcome reduction by
+        outcome-edge censoring.
     multiplicity_status, adjustment : str
         Sitewide results are exploratory and unadjusted; triggered results do
         not inherit a registered analysis family.
@@ -479,6 +490,7 @@ class SitewideRatioImpact(BaseModel):
     membership_cutoff: dt.datetime | None = None
     snapshot_id: str | None = None
     scaled_units: int = 0
+    unobserved_members: int = 0
     multiplicity_status: Literal["exploratory_unadjusted"] = "exploratory_unadjusted"
     adjustment: Literal["unadjusted"] = "unadjusted"
     assumptions: tuple[str, ...] = ("enrolled_units_exhaust_exposure",)
