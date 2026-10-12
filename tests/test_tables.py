@@ -944,6 +944,7 @@ def test_readout_table_treats_pandas_na_as_missing_multiplicity_status():
 
     assert "m¹" in html
     assert "other¹" not in html
+    assert "(1 of 2 rows)" in html
 
 
 def test_readout_table_shows_disclosures_without_a_title():

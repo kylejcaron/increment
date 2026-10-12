@@ -737,7 +737,7 @@ def _readout_metadata_notes(frame: Any) -> list[str]:
         markers = _multiplicity_markers(statuses)
         if markers:
             for status, marker in markers.items():
-                count = sum(value == status for value in statuses)
+                count = sum(not _is_missing(value) and value == status for value in statuses)
                 label = _MULTIPLICITY_STATUS_LABELS[status]
                 notes.append(f"{marker} {label} ({count} of {len(statuses)} rows)")
         else:
