@@ -1951,7 +1951,7 @@ def test_export_and_fused_breakout_summaries_match_the_definitions_source(
             [{field: row[field] for field in exported_fields} for row in adopted_rows],
         )
         assert all(type(row["successes"]) is int for row in adopted_rows)
-        assert {row["moments_format"] for row in adopted_rows} == {11}
+        assert {row["moments_format"] for row in adopted_rows} == {12}
     finally:
         adopted_source.close()
         adopted.close()

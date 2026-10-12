@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -30,26 +31,28 @@ def test_floor_session_executes_probe_with_declared_versions(tmp_path):
         "'duckdb': duckdb.__version__, 'numpy': numpy.__version__}\n"
         "    print('FLOOR_PROBE=' + json.dumps(versions))\n"
     )
-    # Keep nested floor runs independent of the invoking session's environment.
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nox",
-            "--envdir",
-            str(tmp_path / "nox-envs"),
-            "-s",
-            "tests_floor-3.12",
-            "--",
-            str(probe),
-            "-s",
-            "-q",
-        ],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    # Nested environments are disposable, not test output; keep them outside tmp_path
+    # so full-suite evidence does not archive duplicate package installations.
+    with tempfile.TemporaryDirectory(prefix="increment-floor-envs-") as envdir:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "nox",
+                "--envdir",
+                envdir,
+                "-s",
+                "tests_floor-3.12",
+                "--",
+                str(probe),
+                "-s",
+                "-q",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
     reports = [

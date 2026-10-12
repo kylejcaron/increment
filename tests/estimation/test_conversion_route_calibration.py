@@ -24,6 +24,7 @@ from scipy.stats import binom
 
 from calibration import conversion_route as cr
 from increment._literals import Alternative
+from increment.estimation._tails import student_t_isf
 from increment.estimation.conversion_delta import delta_interval, production_decision
 from increment.estimation.conversion_route import dense_min_count, route_for_counts
 from tests.estimation._conversion_counts import lift_row
@@ -37,6 +38,26 @@ def test_the_vectorised_interval_is_the_production_interval():
     assert compared == 60
     assert gap < 1e-9
     assert interpolation < cr.CRITICAL_AGREEMENT
+
+
+@pytest.mark.parametrize("tail", cr.TAILS)
+def test_direct_critical_values_are_the_runtime_quantiles(tail):
+    df = np.array([[0.5, 29.0, 30.0], [59.99893873971821, 2e4, math.inf]])
+    expected = np.array([[student_t_isf(tail, float(dof)) for dof in row] for row in df])
+    np.testing.assert_array_equal(cr.critical_values(df, tail), expected)
+
+
+@pytest.mark.parametrize("tail", cr.TAILS)
+@pytest.mark.parametrize(
+    ("df_lo", "df_hi"),
+    [(30.0, 60.0), (800.0, 1600.0), (2e4, 8e4), (5e6, 2e7)],
+)
+def test_interpolated_critical_values_agree_with_the_runtime_quantiles(tail, df_lo, df_hi):
+    df = np.linspace(df_lo, df_hi, 5_000).reshape(50, 100)
+    expected = np.array([[student_t_isf(tail, float(dof)) for dof in row] for row in df])
+    np.testing.assert_allclose(
+        cr.critical_values(df, tail), expected, rtol=cr.CRITICAL_AGREEMENT, atol=0
+    )
 
 
 # --- fast smoke: labels and coverage -----------------------------------------------------

@@ -205,7 +205,7 @@ def _format3_row(**extra):
         "winsor_n": 10,
         "winsor_n_lower": 0,
         "winsor_n_upper": 1,
-        "moments_format": 10,
+        "moments_format": 11,
         "decision_plan": wire_plan,
         **extra,
     }
@@ -476,7 +476,7 @@ def test_legacy_moments_format_is_refused_with_stable_context(received):
         )
     assert raised.value.code == "moments.format.unsupported_legacy"
     assert raised.value.context["received"] == received
-    assert raised.value.context["required"] == 11
+    assert raised.value.context["required"] == 12
 
 
 def test_future_moments_format_is_refused():
@@ -486,7 +486,7 @@ def test_future_moments_format_is_refused():
 
     with pytest.raises(WireFormatError) as raised:
         MomentsSource(
-            [_format3_row(moments_format=12)],
+            [_format3_row(moments_format=13)],
             metrics=[MeanMetric(name="revenue", entity="user", fact="revenue")],
             study_id="exp",
         )

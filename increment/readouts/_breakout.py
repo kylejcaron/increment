@@ -51,6 +51,7 @@ def _scoped_breakout_results(
     design: Any,
     dimension: str,
     source_name: str | None,
+    sequential_snapshot: Any = None,
 ) -> BreakoutEstimates:
     route = classify_source(src)
     if route == "panel":
@@ -71,6 +72,7 @@ def _scoped_breakout_results(
         design=design,
         dimension=dimension,
         source=source_name,
+        sequential_snapshot=sequential_snapshot,
     )
 
 
@@ -207,7 +209,7 @@ def breakout(
         "analysis_population": analysis_population,
     }
 
-    def scoped(rows):
+    def scoped(rows, *, sequential_snapshot=None):
         return _scoped_breakout_results(
             rows,
             src=src,
@@ -218,10 +220,12 @@ def breakout(
             design=design,
             dimension=dimension,
             source_name=source_name,
+            sequential_snapshot=sequential_snapshot,
         )
 
     if isinstance(plan.inference, SEQUENTIAL_POLICIES):
         from increment._sequential_readouts import sequential_readout
+        from increment.sequential_source import source_snapshot
         from increment.sequential_state import sequential_refuse
 
         rows = sequential_readout(src, metrics=selected, estimands=estimands)
@@ -247,7 +251,7 @@ def breakout(
                     family_threshold=row.family_threshold,
                 )
             )
-        return scoped(stamp_multiplicity_status(output))
+        return scoped(stamp_multiplicity_status(output), sequential_snapshot=source_snapshot(src))
 
     methods_by_metric = {
         config.metric.name: _runtime_methods(config, design) for config in resolved_configs

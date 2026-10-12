@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from typing import Any, Literal, cast
 
@@ -30,6 +31,7 @@ def attach_multiplicity_scope(
     dimension: str | None = None,
     source: str | None = None,
     family_populations: set[str] | None = None,
+    view_policy: MultiplicityFamily | None = None,
 ) -> tuple[list[Any], tuple[FamilyScope, ...]]:
     """Attach row provenance and the unchanged source family membership.
 
@@ -60,8 +62,18 @@ def attach_multiplicity_scope(
         config = configs_by_metric.get(cell.metric)
         # Encouragement selection ranks ITT only; its LATE/compliance
         # diagnostics keep their role but are not family members.
+        view_member = (
+            view_policy is not None
+            and view_policy.correction != "none"
+            and role in ("primary", "secondary", "exploratory")
+            and cell.method_role == "decision"
+            and cell.estimand not in ("late", "compliance")
+        )
         effective_member = (
-            membership is not None
+            view_member
+            if view_policy is not None
+            else view != "daily"
+            and membership is not None
             and membership.member
             and config is not None
             and cell.estimand not in ("late", "compliance")
@@ -70,23 +82,16 @@ def attach_multiplicity_scope(
         if effective_member and cell.method_role != "decision":
             cell_family[cell] = None
             continue
-        family = (
-            membership.family
-            if effective_member and isinstance(membership.family, MultiplicityFamily)
-            else None
-        )
+        family = None
+        if view_member:
+            family = view_policy
+        elif effective_member and membership is not None:
+            candidate = membership.family
+            if isinstance(candidate, MultiplicityFamily):
+                family = candidate
         registration = getattr(getattr(plan, "inference", None), "registration", None)
         if cell.analysis_population == "triggered":
             registration = getattr(plan.inference, "triggered_registration", None)
-            if family is not None and registration is not None:
-                family = family.model_copy(
-                    update={
-                        "look_policy": registration.look_policy,
-                        "guarantee": "none"
-                        if registration.look_policy == "exploratory"
-                        else family.guarantee,
-                    }
-                )
         if (
             view == "run"
             and family is not None
@@ -97,11 +102,19 @@ def attach_multiplicity_scope(
         if role is None or (role == "secondary" and family is None):
             cell_family[cell] = None
             continue
+        registered_asof = (
+            view == "asof"
+            and getattr(getattr(plan, "inference", None), "registration", None) is not None
+        )
+        scope_metric = cell.metric if view in ("daily", "asof") and not registered_asof else None
+        scope_look = cell.ds if view in ("daily", "asof") else None
         key = (
             cell.analysis_population,
-            role,
+            "view" if view_member else role,
             family.name if family is not None else role,
             family,
+            scope_metric,
+            scope_look,
         )
         family_cells.setdefault(key, []).append(cell)
         family_by_key[key] = family
@@ -110,8 +123,17 @@ def attach_multiplicity_scope(
     family_scopes = []
     family_ids = {}
     for key, members in family_cells.items():
-        cell_population, _, name, family = key
-        family_id = family_identity(snapshot_id, cell_population, view, dimension, source, name)
+        cell_population, _, name, family, metric, look = key
+        family_id = family_identity(
+            snapshot_id,
+            cell_population,
+            view,
+            dimension,
+            source,
+            name,
+            identity_metric=metric,
+            identity_look=look,
+        )
         family_ids[key] = family_id
         family_scopes.append(
             FamilyScope(
@@ -122,6 +144,8 @@ def attach_multiplicity_scope(
                 dimension=dimension,
                 source=source,
                 name=name,
+                identity_metric=metric,
+                identity_look=look,
                 family=family,
                 members=tuple(sorted(set(members), key=cell_order)),
                 complete=True,
@@ -154,21 +178,13 @@ def attach_multiplicity_scope(
                         None if family is None or family.correction == "none" else family.correction
                     ),
                     "family_q": None if family is None else family.q,
-                    "family_guarantee": (
-                        None
-                        if family is None or family.look_policy == "exploratory"
-                        else family.validity_regime
-                    ),
+                    "family_guarantee": (None if family is None else family.validity_regime),
                     "discovery": None if selection_excluded else row.discovery,
                     "family_threshold": None if selection_excluded else row.family_threshold,
                     "family_nominal_alpha": None
                     if selection_excluded
                     else row.family_nominal_alpha,
-                    "multiplicity_status": (
-                        "exploratory_family"
-                        if family is not None and family.look_policy == "exploratory"
-                        else multiplicity_status(role, family)
-                    ),
+                    "multiplicity_status": multiplicity_status(role, family),
                 }
             )
         )
@@ -330,6 +346,13 @@ def _attach_family_scope(
             dimension=dimension,
             source=family_source,
         )
+    view_policy = None
+    if view == "asof" and getattr(getattr(plan, "inference", None), "registration", None) is None:
+        view_policy = plan.view_policies.for_view(
+            "asof",
+            mechanism=getattr(design, "mechanism", None),
+            segmented=dimension is not None,
+        )
     return attach_multiplicity_scope(
         stamped,
         cells,
@@ -340,6 +363,7 @@ def _attach_family_scope(
         dimension=dimension,
         source=family_source,
         family_populations=family_populations,
+        view_policy=view_policy,
     )
 
 
@@ -356,6 +380,7 @@ def scoped_collection(
     dimension: str | None = None,
     source: str | None = None,
     family_populations: set[str] | None = None,
+    sequential_snapshot: Any = None,
 ):
     """Return rows with a source snapshot and source-local readout metadata."""
     from hashlib import sha256
@@ -534,17 +559,27 @@ def scoped_collection(
             sorted(records, key=lambda record: cell_order(cast("CellRecord", record).cell))
         ),
     )
-    return collection_type(stamped, metadata=metadata)
+    return collection_type(stamped, metadata=metadata, sequential_snapshot=sequential_snapshot)
+
+
+_RATIO_NOTE_CODES = {
+    "ratio_denominator_precision": "estimation.engine.ratio_denominator_precision",
+    "ratio_denominator_skew": "estimation.engine.ratio_denominator_skew",
+}
 
 
 def _row_advisories(row):
     note = getattr(row, "note", None)
-    if not isinstance(note, str) or not note.startswith("ratio_denominator_precision:"):
+    if not isinstance(note, str):
         return ()
-    return (
+    # Ratio rows join their advisories with "; "; a skew note can itself contain "; ".
+    parts = re.split(r"; (?=ratio_denominator_(?:precision|skew):)", note)
+    return tuple(
         ReadoutAdvisory(
-            code="estimation.engine.ratio_denominator_precision",
-            context={"metric_name": row.metric, "note": note},
-            message=note,
-        ),
+            code=_RATIO_NOTE_CODES[part.split(":", 1)[0]],
+            context={"metric_name": row.metric, "note": part},
+            message=part,
+        )
+        for part in parts
+        if part.split(":", 1)[0] in _RATIO_NOTE_CODES
     )

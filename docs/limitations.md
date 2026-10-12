@@ -74,6 +74,7 @@ One row per entry on this page. Rows carry no numbers or codes; the entry is aut
 | [Sequential selected intervals use the same stopped likelihood](#sequential-selected-intervals-use-the-same-stopped-likelihood) | scope of guarantee | Reading a selected interval as coverage for one metric picked afterwards. |
 | [Stopping-date guarantees require the registered reveal contract](#stopping-date-guarantees-require-the-registered-reveal-contract) | assumption | Monitoring departs from the registered reveal contract, or flags accumulate across dates. |
 | [Clustered CATE uncertainty is cluster-asymptotic](#clustered-cate-uncertainty-is-cluster-asymptotic) | approximation | Clustered CATE with few, unbalanced, or high-leverage clusters. |
+| [Triggered-population sitewide impact needs an external assumption](#triggered-population-sitewide-impact-needs-an-external-assumption) | assumption | Estimating whole-site impact from the triggered cohort. |
 | [Targeting validation depends on identification and overlap](#targeting-validation-depends-on-identification-and-overlap) | assumption | Validating targeting on observational data; ignorability cannot be checked. |
 | [The targeting workflow carries no joint error control](#the-targeting-workflow-carries-no-joint-error-control) | scope of guarantee | Acting on the strongest of many targeting-workflow tests. |
 | [Meta-analysis can be anticonservative at small K](#meta-analysis-can-be-anticonservative-at-small-k) | approximation | Pooling few segments; HKSJ can undercover in the tested design. |
@@ -168,20 +169,56 @@ unadjusted arm lift instead retains joint covariance and relative-set geometry;
 that representation prevents misleading finite intervals near zero controls,
 but does not establish finite-sample coverage for rare events or few clusters.
 
-A unit-grain ratio row (unadjusted or CUPED, fixed horizon) carries a
-`ratio_denominator_precision` note when either arm's denominator mean is resolved to a
-relative standard error `sqrt(var_d / n) / d_bar` above 0.15. This is an advisory
-qualification, not a refusal or a corrected interval: the interval is emitted unchanged.
-The threshold comes from `helper:calibration/ratio_precision.py`, a seeded coverage grid over
-sample sizes 20-2000 and lognormal, exponential and gamma denominators with an independent
-numerator. Every cell covering below 93% at nominal 95% exceeds it in most draws, and no cell
-covering at least 94.5% does. The note names the arm, the statistic and
-the threshold. The unchanged interval is still anticonservative under a right-skewed
-denominator (85.5% coverage at n=20 and 89.6% at n=50 under lognormal(sigma=1.5)).
-The statistic sees only the denominator's own precision: a numerator that moves with the
-denominator covers close to nominal even when flagged, and a numerator independent of it
-undercovers most. The carried moments end at second order, so the heavy-tail correction
-and broader small-sample coverage remain unresolved.
+A unit-grain ratio row (unadjusted or CUPED, fixed horizon) is checked against the
+measured under-covering region of the delta-method interval. The moments wire carries
+the denominator's centered third moment, so each arm's standardized sample skewness
+`g1 = m3 / m2^1.5` is known at inference time, and the statistic that governs the
+interval's failure is the skewness of the denominator MEAN, `g1 / sqrt(n)`. When either
+arm exceeds 0.30 the engine raises the coded `estimation.engine.ratio_denominator_skew`
+runtime warning (context: metric, arm, n, skewness, statistic, threshold) and the row
+carries a `ratio_denominator_skew` note naming each flagged arm. Either arm additionally
+resolving its denominator mean to a relative standard error `sqrt(var_d / n) / d_bar`
+above 0.15 carries the older `ratio_denominator_precision` note. Both are advisory
+qualifications, not refusals or corrected intervals: the estimate and interval are
+emitted unchanged, and a flagged row is still anticonservative.
+
+The cutoff comes from `campaign-module:calibration.ratio_skew` (seed 20261010, 6,000 replications
+per cell, lognormal denominators with an independent `Normal(2, 1)` numerator, coverage
+among the rows the log-scale admission guard admits at nominal 95%):
+
+| denominator | n = 50 | n = 100 | n = 200 | n = 400 |
+|---|---|---|---|---|
+| lognormal(0.5) | 95.1% | 94.8% | 95.5% | 94.5% |
+| lognormal(1.0) | 93.3% | 94.6% | 94.3% | 94.8% |
+| lognormal(1.5) | 90.2% (16% refused) | 92.7% | 93.1% | 93.7% |
+| lognormal(2.0) | 85.1% (62% refused) | 87.6% (33% refused) | 90.1% (15% refused) | 91.7% (5% refused) |
+
+Pooled over the grid, rows whose observed statistic lies below 0.25 cover at 94.3–94.8%,
+rows in [0.25, 0.30) at 93.6%, and every bin from 0.30 to 0.75 at 92.0–93.0%; the cutoff
+is the first bin edge from which two consecutive bins cover below 93.5%. At 0.30 the
+warning reaches 83–100% of admitted lognormal(1.5) and lognormal(2.0) rows, 24–85% of
+lognormal(1.0) rows, and 0–20% of lognormal(0.5) rows (20% at n = 50, 0% at n = 400);
+flagged rows cover at 92.2% pooled and unflagged rows at 94.3%. The statistic is read off
+the sample, and the samples that miss a heavy tail look benign while under-covering most,
+so the warning marks where observed skew begins to predict under-coverage rather than a
+line that separates safe rows from unsafe ones. The precision note sees only the
+denominator's own spread: a numerator that moves with the denominator covers close to
+nominal even when flagged, and a numerator independent of it under-covers most. The
+heavy-tail correction itself remains unresolved.
+
+The check runs where its inputs are defined. `from_definitions`, `from_unit_day_artifact`,
+`from_unit_summary`, `from_unit_panel` and current `from_moments` cubes carry the third
+moment through every partition merge (day slices, breakout cells) and reach the same
+decision for the same units. A preceding-format moments cube or a format-1 raw-sum row
+has no third moment: its ratio rows load, and every lift row estimated from them carries
+`ratio_denominator_skew: unavailable` instead of a silent pass. A CUPED-adjusted ratio
+row is checked on the unadjusted denominator; the adjusted denominator's third moment
+and its calibration are not carried, so this raw-denominator diagnostic does not establish
+whether adjustment changes the warning or the adjusted ratio interval's coverage.
+Clustered ratio rows and sequential ratio rows carry neither note nor warning: the
+region was measured for the single-look unit-grain interval, and a clustered
+denominator is a cluster total whose skew/count regime was not measured. Ratio metrics
+do not declare winsorization, so the two never meet.
 
 ### The switchback t reference is itself an approximation
 
@@ -234,6 +271,13 @@ window and completion rules. The compliance-only request reads trigger and
 uptake evidence without reducing outcomes. Clustered outcome histories still
 refuse with `facade.analysis.clustered_day_axis`; cluster-grain compliance
 histories use the declared cluster uptake sufficient state.
+
+### Triggered-population sitewide impact needs an external assumption
+
+`Analysis.sitewide(population="triggered")` is not offered: triggered lift
+scaled by triggered units represents whole-site impact only if units that
+never trigger are unaffected. The assigned-population whole-site impact
+remains available.
 
 The clustered encouragement LATE cuts its additive interval at a Welch–Satterthwaite t
 reference over the two arms' own cluster-ratio variance components. Measured by
@@ -426,9 +470,12 @@ seven tails every cell stays within tolerance; the worst excess over each tail's
 0.50 / +0.34 / +0.40 / +0.48 / +0.53 / +0.63 / +0.67 at the 0.1 / 0.05 / 0.025 / 0.01 / 0.005 /
 0.001 / 0.0005 tails. The production pipeline on 57,601, 30,400 and 62,400 seeded draws at the
 0.1, 0.05 and 0.025 tails agrees with the exact value within four Monte Carlo standard errors;
-that check was not run below the 0.025 tail. The calibration-only vectorised interval agreed
-with `estimate_lift` within `2.1e-14` (relative), and the interpolated Student quantile agreed
-with `t.isf` within `1.7e-15`, on the measured `conformance` cells. These empirical comparisons
+that check was not run below the 0.025 tail. The calibration-only vectorised interval uses
+the runtime's `student_t_isf` for both direct quantiles and the interpolation nodes, rather
+than a separate `scipy.stats.t.isf` inversion. On the measured `conformance` cells with
+Python 3.14 and SciPy 1.16.3, it agreed with `estimate_lift` within `2.0e-14` (relative),
+and the interpolated Student quantile agreed with the runtime quantile within `2.6e-15`.
+The conformance bounds remain `1e-9` and `1e-12`, respectively. These empirical comparisons
 are not numerical certificates; planning and exact enumeration use the runtime calculation
 directly. A bounded grid is evidence at those cells, not coverage for every data-generating
 process.
@@ -1305,16 +1352,22 @@ effect, and no null guarantee is asserted. Assignment-window uptake is
 mechanically tied to trigger timing, so triggered compliance cells stay
 unavailable (`triggered_uptake_unsupported`).
 
-The per-cell guarantee holds for any look schedule; the triggered family's e-BH
-verdict holds only when look times are outcome-independent, because a look rule
-that uses not-yet-finalized information (the assigned chain exposes some)
-inflates the stopped e-value's expectation. The library records the declared
-`triggered_look_policy` and reports the triggered family as exploratory unless
-outcome-independent looks were declared. Both chains need every contributing
-feed certified complete through the capture horizon; a process committed
-without a triggered chain stays assigned-only and is never backfilled. Clustered
-assignment, registered segments and breakouts remain unsupported on the
-triggered chain for the same reasons they are on the assigned one.
+The per-cell guarantee holds for any look schedule under those assumptions.
+The triggered family keeps the assigned family's e-BH guarantee only under
+correct triggering (no treatment effect before the trigger, arm-independent
+trigger propensity and timing) and stopping/freezing decisions adapted to its
+joint triggered filtration. Use only already-revealed triggered information;
+do not time a triggered family look, stop or freeze on any assigned result that
+reveals future triggered outcomes, including the same metric's result. Correct
+triggering does not prevent this leak: trigger-day-only outcomes can be identical
+in both populations yet close earlier in the assigned window. Lookahead can
+inflate the stopped e-value's expectation without changing the per-cell crossing
+bound. Guarantee labels are conditional on this unverified decision rule.
+Both chains need every contributing feed certified complete through the capture
+horizon; a process committed without a triggered chain stays assigned-only and
+is never backfilled.
+Clustered assignment, registered segments and breakouts remain unsupported on
+the triggered chain for the same reasons they are on the assigned one.
 
 ### Clustered CATE uncertainty is cluster-asymptotic
 

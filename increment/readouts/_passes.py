@@ -38,9 +38,17 @@ def _emit_captured_lift_warnings(
     captured: list[Any],
     advisory_seen: set[tuple[object, ...]],
 ) -> None:
-    """Replay estimator warnings, deduplicating only explicitly keyed warnings."""
+    """Replay estimator warnings, deduplicating explicitly keyed warnings and
+    denominator-skew warnings once per metric and flagged arm.
+    """
     for record in captured:
-        dedupe_key = getattr(record.message, "dedupe_key", None)
+        message = record.message
+        dedupe_key = getattr(message, "dedupe_key", None)
+        if dedupe_key is None and getattr(message, "code", None) == (
+            "estimation.engine.ratio_denominator_skew"
+        ):
+            context = message.context
+            dedupe_key = (message.code, context["metric"], context["arm"])
         if dedupe_key is not None:
             if dedupe_key in advisory_seen:
                 continue

@@ -124,7 +124,7 @@ def test_unit_grain_every_family_agrees():
     ).raw_moments
     con = ibis.duckdb.connect()
     builder_rows = con.to_pyarrow(group_summary(_totals(con, units))).to_pylist()
-    _assert_rows_agree(frame_rows, builder_rows)
+    _assert_rows_agree(frame_rows, builder_rows, cross_family=("cden3",))
 
 
 @pytest.mark.parametrize("uptake", [False, True], ids=["cluster_size", "cluster_uptake"])
@@ -143,7 +143,7 @@ def test_cluster_grain_agrees(uptake: bool):
     con = ibis.duckdb.connect()
     totals = _totals(con, units, metric="rev")
     builder_rows = con.to_pyarrow(group_summary(totals, cluster="store", uptake=uptake)).to_pylist()
-    _assert_rows_agree(frame_rows, builder_rows, cross_family=("cden2", "cyden", "cxden"))
+    _assert_rows_agree(frame_rows, builder_rows, cross_family=("cden2", "cden3", "cyden", "cxden"))
 
 
 def test_compliance_cluster_moments_agree():

@@ -578,7 +578,8 @@ def test_health_renderer_consumes_restored_health_report(
                 context={
                     "counterfactual_trigger_invariance": "assumed, not established",
                     "trigger_order_stationarity": "assumed, not established",
-                    "triggered_look_policy": "outcome_independent",
+                    "no_effect_before_trigger": "pre-trigger assumption sentinel",
+                    "triggered_look_predictability": "triggered-filtration assumption sentinel",
                     "family_guarantee_status": "assumed, not verified",
                     "family_guarantee": "asymptotic_sequential",
                     "risk": ("Balanced rates do not establish trigger invariance.",),
@@ -594,11 +595,16 @@ def test_health_renderer_consumes_restored_health_report(
 
     assert "Observed trigger rate" in html
     assert "No certified completeness watermark is retained." in html
-    assert "outcome_independent" in html
+    assert "asymptotic_sequential" in html
+    assert "Triggered Look Policy" not in html
     assert "Balanced rates do not establish trigger invariance." in html
     assert "independent constant-probability draw" in html
     assert "one predeclared look" in html
     assert "assumed, not verified" in html
+    for condition in ("no_effect_before_trigger", "triggered_look_predictability"):
+        value = restored.checks[-1].context[condition]
+        assert isinstance(value, str)
+        assert value in html
 
 
 def test_both_experiments_share_the_same_sections(

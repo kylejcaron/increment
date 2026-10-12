@@ -167,6 +167,7 @@ class TestSitewide:
         a = make_analysis_like(a, [_REVENUE_PER_USER], plan=_REVENUE_PER_USER_PLAN)
         result = a.sitewide("revenue_per_user")
         assert isinstance(result, SitewideImpact)
+        assert result.analysis_population == "assigned"
         assert result.n_control == 20
         assert result.n_treatment == 20
         exposed_only_total = 200.0 + 560.0
@@ -214,6 +215,7 @@ class TestSitewide:
         )
         result = a.sitewide("revenue_per_session")
         assert isinstance(result, SitewideRatioImpact)
+        assert result.analysis_population == "assigned"
         assert result.n_control == 20
         assert result.n_treatment == 20
         assert result.site_total_numerator == pytest.approx(200.0 + 560.0 + 123.45)

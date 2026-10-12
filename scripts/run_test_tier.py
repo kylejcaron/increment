@@ -38,6 +38,16 @@ from scripts._test_impact import (
 )
 from scripts._test_tier_policy import TIER_MARKERS
 
+
+def _clean_pytest_environment(environment: Mapping[str, str]) -> dict[str, str]:
+    """Remove pytest and coverage controls inherited by a fresh pytest run."""
+    return {
+        name: value
+        for name, value in environment.items()
+        if not name.startswith(("PYTEST_", "COV_CORE_", "COVERAGE_"))
+    }
+
+
 _TIMEOUT_STATUS = 124
 
 

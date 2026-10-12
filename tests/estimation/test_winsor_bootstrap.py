@@ -548,6 +548,19 @@ def test_large_pool_tiny_additive_variance_preserves_legacy_degeneracy():
     assert error.value.code == "estimation.winsor.studentization_degenerate"
 
 
+def test_observed_log_point_uses_exact_positive_means_below_float_range():
+    from fractions import Fraction
+
+    from increment.estimation._winsor_bootstrap import _bootstrap_observed_points
+
+    ((log_point, additive_point),) = _bootstrap_observed_points(
+        Fraction(1, 10**300), (Fraction(1, 10**400),)
+    )
+
+    assert log_point == pytest.approx(-100 * np.log(10.0))
+    assert additive_point < 0
+
+
 def test_large_pool_score_moments_preserve_tiny_arm_variance():
     from increment.estimation._winsor_bootstrap import full_procedure_statistics_many
 
@@ -643,7 +656,10 @@ def test_precomputed_draw_logs_preserve_realized_extreme_failure_masks(control_d
         realized = tuple(_realized_draw_and_logs(log_draw) for log_draw in latent_draw_logs)
     samples = tuple(draw for draw, _ in realized)
     realized_logs = tuple(logs for _, logs in realized)
-    assert samples[0][0, 1] == control_draw
+    if np.isfinite(control_log) and control_log < math.log(np.nextafter(0.0, 1.0)):
+        assert np.isnan(samples[0][0, 1])
+    else:
+        assert samples[0][0, 1] == control_draw
     old_refit = full_procedure_statistics_many(samples, 0.5, ((0, 1),))[0]
     cached_refit = full_procedure_statistics_many(
         samples, 0.5, ((0, 1),), log_samples=realized_logs
@@ -1075,6 +1091,20 @@ def test_exact_point_summary_matches_legacy_fraction_identity():
         }
     )
     assert copied._exact_point_summary() != summary
+
+
+def test_bootstrap_observed_log_point_matches_reference_validation_when_ratio_rounds_to_minus_one():
+    from fractions import Fraction
+
+    from increment.estimation._winsor_bootstrap import _bootstrap_observed_points
+    from increment.winsor import _log_relative_exact_means
+
+    control = Fraction(sum((Fraction(value) for value in (1, 2, 3, 9)), Fraction()), 4)
+    treatment = control * Fraction(1, 2**61)
+    point, _ = _bootstrap_observed_points(control, (treatment,))[0]
+
+    assert float((treatment - control) / control) == -1.0
+    assert point == _log_relative_exact_means(control, treatment)
 
 
 @pytest.mark.slow

@@ -189,6 +189,7 @@ _FRAME_ROW_SLOTS = (
     "ref_den",
     "cden1",
     "cden2",
+    "cden3",
     "cyden",
     "sum_d",
     "cyd",

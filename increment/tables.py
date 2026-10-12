@@ -605,9 +605,16 @@ def _resolve_trend_frame(
 
 
 def _is_missing(value: Any) -> bool:
-    """``None``, or a float NaN (pandas' fill for keys absent in a mixed
-    row list) - the two shapes "no value" takes in a readout frame."""
-    return value is None or (isinstance(value, float) and math.isnan(value))
+    """``None``, a float NaN (pandas' fill for keys absent in a mixed row
+    list), or ``pd.NA``/``NaT`` - every shape "no value" takes in a readout
+    frame. Missing markers are the values unequal to themselves; ``pd.NA``
+    compares to an ambiguous ``NA`` instead, so that also reads as missing."""
+    if value is None:
+        return True
+    try:
+        return bool(value != value)
+    except TypeError:
+        return True
 
 
 def _column_values(frame: Any, column: str) -> list[Any] | None:
@@ -730,7 +737,7 @@ def _readout_metadata_notes(frame: Any) -> list[str]:
         markers = _multiplicity_markers(statuses)
         if markers:
             for status, marker in markers.items():
-                count = sum(value == status for value in statuses)
+                count = sum(not _is_missing(value) and value == status for value in statuses)
                 label = _MULTIPLICITY_STATUS_LABELS[status]
                 notes.append(f"{marker} {label} ({count} of {len(statuses)} rows)")
         else:

@@ -275,9 +275,42 @@ def test_ratio_denominator_precision_note_is_an_interpreted_advisory():
     text = render_readout_text(_interpret(results))
     assert "ratio_denominator_precision" in text
     assert results.metadata is not None
-    advisories = [advisory for record in results.metadata.cells for advisory in record.advisories]
-    assert len(advisories) == 1
-    assert advisories[0].code == "estimation.engine.ratio_denominator_precision"
+    codes = {advisory.code for record in results.metadata.cells for advisory in record.advisories}
+    assert "estimation.engine.ratio_denominator_precision" in codes
+
+
+def test_ratio_denominator_skew_advisory_survives_saving_with_warnings_suppressed():
+    import numpy as np
+
+    rng = np.random.default_rng(20261009)
+    rows = [
+        {
+            "unit": f"{group}-{i}",
+            "arm": group,
+            "revenue": float(rng.normal(2.0, 1.0)),
+            "sessions": float(rng.lognormal(0.0, 1.5)),
+        }
+        for group in ("control", "treatment")
+        for i in range(100)
+    ]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        results = Analysis.from_unit_summary(
+            pd.DataFrame(rows),
+            unit="unit",
+            group="arm",
+            control="control",
+            metrics=[
+                MetricSpec(name="rps", type="ratio", numerator="revenue", denominator="sessions")
+            ],
+            plan=AnalysisPlan(primary="rps"),
+        ).run()
+    restored = ReadoutResults.model_validate_json(results.model_dump_json())
+    assert restored.metadata is not None
+    codes = {advisory.code for record in restored.metadata.cells for advisory in record.advisories}
+    assert "estimation.engine.ratio_denominator_skew" in codes
+    column_codes = readout_evidence_columns(_interpret(restored), restored[0])
+    assert "estimation.engine.ratio_denominator_skew" in json.dumps(column_codes, default=str)
 
 
 def test_evidence_columns_use_the_row_source_when_cell_keys_repeat():

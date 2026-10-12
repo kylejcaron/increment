@@ -423,8 +423,9 @@ def _health_checks_block(report: ExperimentHealth | None) -> str:
         for key in (
             "counterfactual_trigger_invariance",
             "trigger_order_stationarity",
+            "no_effect_before_trigger",
+            "triggered_look_predictability",
             "family_guarantee_status",
-            "triggered_look_policy",
             "family_guarantee",
             "observed_edge",
             "finalized_edge",
@@ -998,7 +999,7 @@ def _colour_discoveries_only(table: ct.CoefTable) -> None:
     frame = pd.DataFrame(table.data)
     if "_exploratory" not in frame.columns:
         return
-    marked = frame["_exploratory"].fillna(False).astype(bool)
+    marked = frame["_exploratory"].astype("boolean").fillna(False).astype(bool)
     neutral = frozenset(int(i) for i in frame.index[marked & ~frame["stat_sig"].astype(bool)])
     if not neutral:
         return

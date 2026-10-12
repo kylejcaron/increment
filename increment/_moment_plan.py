@@ -15,9 +15,10 @@ from typing import Literal
 
 Var = str
 Mask = str | None
-MomentKind = Literal["n", "ref", "c1", "c2", "count"]
+MomentKind = Literal["n", "ref", "c1", "c2", "c3", "count"]
 #: One moment: its kind, its variables (none for a count, one for a
-#: reference or first moment, two for a second moment) and its mask.
+#: reference or first moment, two for a second moment, three for a third
+#: central moment) and its mask.
 Moment = tuple[MomentKind, tuple[Var, ...], Mask]
 
 
@@ -26,7 +27,8 @@ class Slot:
     """One format-8 wire column: which moment of which slot variable(s) it carries.
 
     For a second moment, ``variables`` is the operand order the producers
-    multiply residuals in (``cxy`` is ``dx * dy``).
+    multiply residuals in (``cxy`` is ``dx * dy``). A third moment repeats
+    one variable three times (``cden3`` is ``dden ** 3``).
     """
 
     kind: MomentKind
@@ -52,6 +54,7 @@ SLOTS: Mapping[str, Slot] = MappingProxyType(
         "ref_den": Slot("ref", ("den",)),
         "cden1": Slot("c1", ("den",)),
         "cden2": Slot("c2", ("den", "den")),
+        "cden3": Slot("c3", ("den", "den", "den")),
         "cyden": Slot("c2", ("y", "den")),
         "cxden": Slot("c2", ("x", "den")),
         "sum_d": Slot("count", (), UPTAKE_MASK),
@@ -120,12 +123,14 @@ def _ordered_moments(
     variables: tuple[Var, ...],
     pairs: tuple[tuple[Var, Var], ...],
     masked: Mapping[str, tuple[tuple[Var, ...], ...]],
+    cubed: tuple[Var, ...],
 ) -> tuple[tuple[Moment, ...], tuple[Moment, ...]]:
     """(unmasked, masked) moments in emission order.
 
-    Each variable's family is its reference, first and second moment, then
-    its cross moments with every EARLIER variable in declaration order;
-    that is the column order every producer has emitted since format 2.
+    Each variable's family is its reference, first and second moment, its
+    third central moment when the variable is in *cubed*, then its cross
+    moments with every EARLIER variable in declaration order; that is the
+    column order every producer has emitted since format 2.
     """
     unmasked: list[Moment] = []
     for index, variable in enumerate(variables):
@@ -134,6 +139,8 @@ def _ordered_moments(
             ("c1", (variable,), None),
             ("c2", (variable, variable), None),
         ]
+        if variable in cubed:
+            unmasked.append(("c3", (variable, variable, variable), None))
         for earlier in variables[:index]:
             unmasked += [("c2", pair, None) for pair in pairs if set(pair) == {earlier, variable}]
     masked_out: list[Moment] = []
@@ -150,8 +157,9 @@ class MomentPlan:
     ``variables`` are emitted in declaration order (reference, first and
     second moment each); ``pairs`` are the cross second moments, each
     ``(a, b)`` in the operand order the residual product is written;
-    ``masked`` lists, per mask, the entries emitted under it (one variable
-    = first moment, two = second moment) after the mask's count;
+    ``cubed`` names the variables whose third central moment is also
+    emitted; ``masked`` lists, per mask, the entries emitted under it (one
+    variable = first moment, two = second moment) after the mask's count;
     ``names`` gives every emitted moment its output column;
     ``passthrough`` names metadata columns carried through the aggregate.
     """
@@ -161,6 +169,7 @@ class MomentPlan:
     masked: Mapping[str, tuple[tuple[Var, ...], ...]]
     names: Mapping[Moment, str]
     passthrough: tuple[Passthrough, ...] = ()
+    cubed: tuple[Var, ...] = ()
 
     def __post_init__(self) -> None:
         declared = set(self.variables)
@@ -175,16 +184,17 @@ class MomentPlan:
                 assert len(entry) in (1, 2) and set(entry) <= declared, (
                     f"masked entry {entry!r} under {mask!r} is malformed"
                 )
+        assert set(self.cubed) <= declared, f"cubed {self.cubed!r} names an undeclared variable"
         object.__setattr__(self, "masked", MappingProxyType(dict(self.masked)))
         object.__setattr__(self, "names", MappingProxyType(dict(self.names)))
         missing = [moment for moment in self.moments() if moment not in self.names]
         assert not missing, f"plan emits unnamed moments: {missing!r}"
 
     def unmasked_moments(self) -> tuple[Moment, ...]:
-        return _ordered_moments(self.variables, self.pairs, self.masked)[0]
+        return _ordered_moments(self.variables, self.pairs, self.masked, self.cubed)[0]
 
     def masked_moments(self) -> tuple[Moment, ...]:
-        return _ordered_moments(self.variables, self.pairs, self.masked)[1]
+        return _ordered_moments(self.variables, self.pairs, self.masked, self.cubed)[1]
 
     def moments(self) -> tuple[Moment, ...]:
         return (("n", (), None), *self.unmasked_moments(), *self.masked_moments())
@@ -226,7 +236,12 @@ class MomentPlan:
                 if slot.mask == UPTAKE_MASK and slot.kind != "count"
             )
         }
-        unmasked, masked_moments = _ordered_moments(variables, pairs, masked)
+        cubed = tuple(
+            by_slot[slot.variables[0]]
+            for slot in SLOTS.values()
+            if slot.kind == "c3" and slot.mask is None
+        )
+        unmasked, masked_moments = _ordered_moments(variables, pairs, masked, cubed)
         to_slot = {variable: slot for slot, variable in by_slot.items()}
         names: dict[Moment, str] = {("n", (), None): "n"}
         for kind, moment_variables, mask in (*unmasked, *masked_moments):
@@ -235,7 +250,7 @@ class MomentPlan:
             if key not in _SLOT_BY_MOMENT:
                 key = (kind, slot_variables[::-1], mask)
             names[(kind, moment_variables, mask)] = _SLOT_BY_MOMENT[key]
-        return cls(variables, pairs, masked, names, passthrough)
+        return cls(variables, pairs, masked, names, passthrough, cubed)
 
 
 #: Unit-grain rows: ``group_summary`` / frame totals, winsor metadata carried.

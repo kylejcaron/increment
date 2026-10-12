@@ -89,6 +89,8 @@ def test_testmon_nested_lock_requires_live_owner_and_skips_certification(
         testmon_nested_context,
     )
 
+    # The lock and the launcher both write process-global controls; keep them in a copy.
+    monkeypatch.setattr(os, "environ", os.environ.copy())
     with testmon_database_lock(tmp_path) as owns_lock:
         assert owns_lock
         assert testmon_nested_context(tmp_path)
@@ -236,9 +238,9 @@ def test_supervised_affected_launcher_engages_testmon_primary(
         "run",
         staticmethod(capture),
     )
+    monkeypatch.setattr(os, "environ", os.environ.copy())
     with testmon_database_lock(tmp_path):
         os.environ["INCREMENT_TESTMON_LOCK_ROLE"] = "owner-child"
-        monkeypatch.setattr(os, "environ", os.environ.copy())
         assert affected_pytest_launcher.main(["--tach-base", base, "--tier", "fast"]) == 0
 
     from typing import cast
@@ -256,6 +258,7 @@ def test_affected_launcher_pins_worktree_testmon_database(
 ) -> None:
     from scripts.affected_pytest_launcher import _prepare_testmon_environment
 
+    monkeypatch.setattr(os, "environ", os.environ.copy())
     monkeypatch.setenv("TESTMON_DATAFILE", str(tmp_path / "wrong.sqlite"))
     monkeypatch.setenv("PYTEST_ADDOPTS", "--lf")
     monkeypatch.delenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", raising=False)
@@ -784,6 +787,10 @@ def test_testmon_protects_tests_using_cached_fixtures_for_code_changes(
 
     tests = tmp_path / "tests"
     tests.mkdir()
+    (tests / "__init__.py").write_text("")
+    (tests / "_shared_cache.py").write_text(
+        "def fixture_cache_key(): pass\ndef get_or_build(): pass\n"
+    )
     consumer = tests / "test_cached.py"
     consumer.write_text(
         "from tests._shared_cache import fixture_cache_key, get_or_build\ndef test_cached(): pass\n"
@@ -809,6 +816,24 @@ def test_testmon_protects_tests_using_cached_fixtures_for_code_changes(
     protected: set[Path] = set()
     assert _activate_testmon(config, protected)
     assert consumer.resolve() in protected
+
+
+def test_cache_fixture_protection_includes_transitive_module_consumers(tmp_path: Path) -> None:
+    from scripts.run_test_tier_plugin import _cache_backed_test_paths
+
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "__init__.py").write_text("")
+    (tests / "_shared_cache.py").write_text("def get_or_build(): pass\n")
+    (tests / "test_dashboard.py").write_text(
+        "from tests._shared_cache import get_or_build\ndef storefront(): return get_or_build()\n"
+    )
+    consumer = tests / "test_dashboard_result_evidence.py"
+    consumer.write_text(
+        "from tests.test_dashboard import storefront\ndef test_evidence(): storefront()\n"
+    )
+
+    assert consumer.resolve() in _cache_backed_test_paths(tmp_path)
 
 
 def test_module_scope_fingerprint_tracks_import_time_state_only(tmp_path: Path) -> None:
@@ -954,8 +979,10 @@ def test_impact_selection_preserves_filesystem_guards_and_filters(tmp_path: Path
     (tests / "test_unrelated.py").write_text(
         "from increment.untouched import VALUE\n\ndef test_unrelated():\n    assert VALUE == 1\n"
     )
+    from scripts.run_test_tier import _clean_pytest_environment
+
     environment = {
-        **os.environ,
+        **_clean_pytest_environment(os.environ),
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         "PYTEST_ADDOPTS": "",
         "GIT_CONFIG_NOSYSTEM": "1",
@@ -1333,8 +1360,10 @@ def _run_affected(
     *pytest_args: str,
     env_overrides: dict[str, str | None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    from scripts.run_test_tier import _clean_pytest_environment
+
     environment: dict[str, str] = {
-        **os.environ,
+        **_clean_pytest_environment(os.environ),
         "PYTHONPATH": os.pathsep.join((str(project), os.environ.get("PYTHONPATH", ""))),
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         "PYTEST_ADDOPTS": "",
@@ -1708,6 +1737,8 @@ def _run_make_affected(
     evidence: Path,
     pytest_args: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    from scripts.run_test_tier import _clean_pytest_environment
+
     runner = (
         f"uv run --no-sync --project {project} --extra demo --extra tables --extra dashboard "
         "python -m scripts.run_test_tier"
@@ -1724,6 +1755,7 @@ def _run_make_affected(
             f"PYTEST_ARGS={arguments}",
         ],
         cwd=root,
+        env=_clean_pytest_environment(os.environ),
         capture_output=True,
         text=True,
         timeout=90,
@@ -2012,14 +2044,16 @@ def test_affected_feedback_detects_same_size_timestamp_cache_edits(
     tmp_path: Path, changed_target: str
 ) -> None:
     project = Path(__file__).resolve().parents[1]
+    from scripts.run_test_tier import _clean_pytest_environment
+
     base = _make_affected_fixture(tmp_path)
     target = tmp_path / ("pkg/leaf.py" if changed_target == "provider" else "tests/test_direct.py")
     timestamp = 1_700_000_000
     os.utime(target, (timestamp, timestamp))
     environment = {
         key: value
-        for key, value in os.environ.items()
-        if not key.startswith(("INCREMENT_", "PYTEST_", "TESTMON_"))
+        for key, value in _clean_pytest_environment(os.environ).items()
+        if not key.startswith(("INCREMENT_", "TESTMON_"))
         and key not in {"PYTHONPYCACHEPREFIX", "PYTHONDONTWRITEBYTECODE"}
     }
     environment.update(

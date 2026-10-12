@@ -138,7 +138,7 @@ package = true
 [tool.pytest.ini_options]
 # Doc snippets (README.md, docs/) are collected by the root conftest's sybil
 # hook but stay out of testpaths: prose integrity is its own tier, not a unit
-# test. The `docs_snippets` Nox session and `docs-snippets` CI job run them.
+# test. The `docs_snippets` Nox session runs them in the conditional docs CI job.
 testpaths = ["tests"]
 markers = [
     "integration: exercises cooperating components, local query engines, UI or subprocess boundaries; purpose only, included in fast unless slow",

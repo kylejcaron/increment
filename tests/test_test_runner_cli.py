@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from scripts.run_test_tier import _clean_pytest_environment
+
 pytestmark = pytest.mark.xdist_group("test_runner_subprocesses")
 
 
@@ -17,8 +19,8 @@ def test_focused_cli_isolates_git_repositories_from_invoking_hook(tmp_path: Path
     project = Path(__file__).resolve().parents[1]
     environment = {
         key: value
-        for key, value in os.environ.items()
-        if not key.startswith(("GIT_", "PYTEST_", "INCREMENT_", "TESTMON_"))
+        for key, value in _clean_pytest_environment(os.environ).items()
+        if not key.startswith(("GIT_", "INCREMENT_", "TESTMON_"))
     }
     owner = tmp_path / "owner"
     subprocess.run(["git", "init", "-q", str(owner)], env=environment, check=True)
@@ -176,7 +178,9 @@ def test_partial_feedback_is_independent_of_corrupt_coverage_map(tmp_path: Path,
 def test_all_cli_help_needs_no_private_authorization():
     project = Path(__file__).parents[1]
     environment = {
-        key: value for key, value in os.environ.items() if not key.startswith("INCREMENT_")
+        key: value
+        for key, value in _clean_pytest_environment(os.environ).items()
+        if not key.startswith("INCREMENT_")
     }
     for key in ("INCREMENT_TESTMON_LOCK_OWNER", "INCREMENT_TESTMON_LOCK_ROLE"):
         if key in os.environ:
@@ -243,7 +247,7 @@ def test_focused_runner_does_not_execute_deselected_slow_tests(tmp_path):
         "def test_certification():\n    print('CERTIFICATION_EXECUTED')\n"
     )
     environment = {
-        **os.environ,
+        **_clean_pytest_environment(os.environ),
         "INCREMENT_AFFECTED_EVIDENCE": json.dumps({"tier": "fast"}),
         "INCREMENT_AFFECTED_TEST_PATHS": "[]",
         "INCREMENT_AFFECTED_DYNAMIC_TEST_PATHS": "[]",
@@ -385,6 +389,7 @@ def test_tier_markers_execute_only_their_declared_selection(tmp_path, tier, expe
     result = subprocess.run(
         [sys.executable, "-m", "scripts.run_test_tier", tier, str(test_file), "-q", "-s"],
         cwd=project,
+        env=_clean_pytest_environment(os.environ),
         text=True,
         capture_output=True,
         timeout=60,
@@ -444,7 +449,7 @@ def test_make_test_keeps_a_quoted_expression_in_the_focused_tier(tmp_path):
 @pytest.mark.parametrize("entrypoint", ["tier", "examples"])
 def test_cli_performance_budget_is_local_only(tmp_path, github_actions, entrypoint):
     project = Path(__file__).parents[1]
-    environment = dict(os.environ)
+    environment = _clean_pytest_environment(os.environ)
     if github_actions is None:
         environment.pop("GITHUB_ACTIONS", None)
     else:
@@ -491,7 +496,9 @@ def test_cli_performance_budget_is_local_only(tmp_path, github_actions, entrypoi
 def test_affected_cli_documents_option_and_rejects_invalid_base_before_pytest():
     project = Path(__file__).resolve().parents[1]
     environment = {
-        key: value for key, value in os.environ.items() if not key.startswith("INCREMENT_")
+        key: value
+        for key, value in _clean_pytest_environment(os.environ).items()
+        if not key.startswith("INCREMENT_")
     }
     help_result = subprocess.run(
         [sys.executable, "-m", "scripts.run_test_tier", "--help"],
@@ -596,8 +603,8 @@ def _map_recording_project(root: Path) -> tuple[dict[str, str], str]:
     ).stdout.strip()
     environment = {
         key: value
-        for key, value in os.environ.items()
-        if not key.startswith(("PYTEST_", "INCREMENT_", "TESTMON_", "COVERAGE_", "COV_CORE_"))
+        for key, value in _clean_pytest_environment(os.environ).items()
+        if not key.startswith(("INCREMENT_", "TESTMON_"))
     }
     environment["PYTHONPATH"] = str(project)
     return environment, base

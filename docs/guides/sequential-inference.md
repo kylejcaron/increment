@@ -145,8 +145,8 @@ old record proof and reuses the parent's exact sufficient state.
 containing the version-2 registration/snapshot/checkpoint, a version-3
 compiled plan, and the originating source identity. `Analysis.from_moments`
 can replay this exact state. The preceding sequential format 9 remains
-readable; fixed-horizon format 11 carries the same source identity, while the
-preceding fixed-horizon format 10 remains readable.
+readable; fixed-horizon format 12 carries the same source identity, while the
+preceding fixed-horizon format 11 remains readable.
 
 Every rational in that envelope -- prior hyperparameters, `rho`,
 `treatment_probability`, cell `alpha` and `null_lift`, `q`, adjustment
@@ -794,12 +794,14 @@ An experiment that declares a `trigger` monitors two populations under one
 registered plan. The assigned chain is what the sections above describe. The
 triggered chain is a second, independently identified chain in the same
 checkpoint (`snapshot.triggered`): its members are the units whose first
-eligible trigger has been observed and whose longest trigger-anchored outcome
-window has closed by the capture horizon, revealed in `(first trigger, unit)`
-order, with outcomes measured from each unit's trigger and pre-period covariates
-kept assignment-anchored, exactly as the fixed-horizon triggered readout
-measures them. `capture_sequential(finalized=True, as_of=d)` captures both
-chains in one pinned execution on `from_definitions` and `from_unit_day_artifact`
+eligible trigger has been observed and whose registered joint reveal window has
+closed by the capture horizon. That window can include a longer assignment-
+anchored uptake window even though uptake is not part of the triggered chain.
+Members are revealed in `(first trigger, unit)` order, with outcomes measured
+from each unit's trigger and pre-period covariates kept assignment-anchored,
+exactly as the fixed-horizon triggered readout measures them.
+`capture_sequential(finalized=True, as_of=d)` captures both chains in one pinned
+execution on `from_definitions` and `from_unit_day_artifact`
 (the artifact needs its `trigger_population`, `trigger_measure_stats` and
 triggered `assignment_counts` extensions); `from_moments` replays an exported
 checkpoint carrying both chains and cannot start one; frame sources have no
@@ -854,10 +856,15 @@ integrity; then inspect `triggered_balance` and descriptive `trigger_rates` as
 separate cohort diagnostics. Check each metric's retained maturity and each
 feed's certified completeness watermark. An unavailable or not-applicable row
 is not a pass, and observed event times do not certify a feed. Finally read
-`trigger_assumptions`: balanced rates do not establish counterfactual trigger
-invariance, and the declared look policy does not prove that the analyst's
-actual look schedule followed it. The report is a sanity check, not a causal
-validity or ship verdict. See the [health-check API](../api.md#diagnostics-and-robustness).
+`trigger_assumptions`: balanced rates establish neither counterfactual trigger
+invariance, absence of pre-trigger treatment effects nor trigger-order stationarity.
+The structured `triggered_look_predictability` condition is also assumed, not
+verified: choose triggered family looks, stops and freezes using only information
+already revealed by its joint triggered chain. Do not use assigned results that
+reveal future triggered outcomes, including the same metric's assigned results.
+The family guarantee is conditional on these assumptions. The report is a sanity
+check, not a causal validity or ship verdict.
+See the [health-check API](../api.md#diagnostics-and-robustness).
 
 Assignment-window uptake is not covered by `A3`: a unit that triggers late has
 less of its uptake window after the trigger, so uptake is mechanically tied to
@@ -866,29 +873,38 @@ compliance cells of an encouragement plan therefore stay unavailable
 (`readout.cell.unsupported_request`, reason `triggered_uptake_unsupported`), and
 a plan that monitors only uptake derives no triggered registration.
 
-### Per-cell coverage versus the family verdict
+### Per-cell coverage and the family verdict
 
 The per-cell guarantee is a statement about the whole path, so it holds for
-any look schedule, including looks chosen with information from outside the
-triggered chain. The family verdict is not: e-BH's FDR control and the
-selected-interval reinversion need the stopped evidence to be an e-value, which
-optional stopping gives only when look times are stopping times of the chain's
-own reveal filtration. The readout itself exposes information outside it -- a
-unit's assigned-chain outcome can be reported before its triggered outcome has
-finalized -- and a look rule that waits for favourable not-yet-finalized
-observations inflates the stopped e-value's expectation while leaving the
-per-cell threshold intact (`tests/estimation/test_triggered_sequential_validity.py`).
+any look schedule under `A1`-`A3`. The family verdict needs more: e-BH's FDR
+control and the selected-interval reinversion require each stopped evidence
+value to remain an e-value. Optional stopping establishes this when the looks,
+stops and freezes are stopping times with respect to the registered **joint
+triggered filtration**: decisions may use already-revealed triggered records,
+but not information about later triggered records. A predeclared schedule also
+meets this condition.
 
-The library cannot observe the analyst's look rule, so the registration records
-the declaration. `InferenceSpec(triggered_look_policy="outcome_independent")`
-asserts that every triggered look happens at a calendar time fixed in advance,
-never chosen from any outcome; the triggered family then claims its FDR
-guarantee like the assigned one. The default, `"exploratory"`, makes no such
-assertion: e-BH selection is still performed and `discovery` is reported, but
-the triggered family's `guarantee` is `none`, each row's `multiplicity_status`
-is `exploratory_family` and `family_guarantee` is empty. The assigned family is
-unaffected either way. No joint error control across the two populations is
-claimed; the families are separate, population-qualified scopes.
+Correct triggering -- arm-independent trigger propensity and timing, with no
+treatment effect before the trigger -- does not by itself establish this stopping
+condition. The assigned chain can reveal a unit's outcome before its triggered
+window closes. For example, with three-day windows, every unit triggering one day
+after assignment, and outcomes only on its trigger day, assigned and triggered
+outcomes are identical. The assigned window closes one day earlier, exposing the
+next triggered block's arm-specific outcomes. Freezing the triggered metric
+before an unfavorable block uses future information even though triggering is
+arm-independent and there is no pre-trigger effect.
+
+Therefore do not time a triggered family look, stop or freeze using **any**
+assigned-population result that reveals future triggered outcomes, including the
+same metric's result as well as other metrics' results. Such lookahead can inflate
+the stopped e-value's expectation without changing the per-cell crossing bound
+(`tests/estimation/test_triggered_sequential_validity.py`). Under `A1`-`A3`, correct
+triggering and this stopping condition, the triggered family keeps the assigned
+family's e-BH guarantee: its `MultiplicityFamily` reports `guarantee="fdr"` and
+its rows carry the same `multiplicity_status` and `family_guarantee`. These labels
+state a conditional guarantee; neither capture nor a health check verifies the
+analyst's decision rule. No joint error control across the two populations is
+claimed; the families remain separate, population-qualified scopes.
 
 ### Certified feeds, not evidence presence
 

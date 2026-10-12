@@ -2169,8 +2169,18 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         ``sitewide_evidence``'s ``float(row["y"])`` as NULL.
         """
         return _windowed_fact_sum(
-            fact_tbl, metric, self._experiment, value_column=value_col, part=part
+            fact_tbl,
+            metric,
+            self._experiment,
+            value_column=value_col,
+            part=part,
+            observation_cutoff=self._site_observation_cutoff(),
         )
+
+    def _site_observation_cutoff(self) -> dt.datetime | None:
+        """The pinned snapshot's cutoff, which arm moments also respect."""
+        evidence = self._session.source_snapshot_evidence
+        return None if evidence is None else evidence.observation_cutoff_ts
 
     def _site_volume_row(self, metric: Metric) -> dict[str, Any]:
         """Whole-site ``{"metric", "y", "y_den"}`` for *metric*.
@@ -2200,12 +2210,17 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         fs, fact_def = _find_fact_source(self._defs, metric.fact)
         fact_tbl = self._get_fact_table(fs)
         value_col = _resolve_value_column(fs, fact_def)
-        volume = site_volume(fact_tbl, metric, self._experiment, value_column=value_col)
+        volume = site_volume(
+            fact_tbl,
+            metric,
+            self._experiment,
+            value_column=value_col,
+            observation_cutoff=self._site_observation_cutoff(),
+        )
         return self._con.to_pyarrow(volume).to_pylist()[0]
 
     def sitewide_evidence(self, metric: Metric, *, include_ratio: bool = False) -> SitewideEvidence:
-        """Prepare typed, exposure-independent evidence for ``sitewide``."""
-        self._refuse_declared_trigger("sitewide_evidence")
+        """Prepare typed, assignment-anchored evidence for ``sitewide``."""
         if isinstance(metric, RatioMetric) and not include_ratio:
             _refuse_operation(
                 operation="sitewide_evidence",
@@ -3036,15 +3051,15 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         for the wire-format contract.
 
         Fixed-horizon exports carry ``group_summary`` rows, or one metric-free
-        ``design_summary`` envelope, stamped ``moments_format=11`` with the
+        ``design_summary`` envelope, stamped ``moments_format=12`` with the
         originating source identity. Registered sequential exports carry one
         typed ``sequential_checkpoint`` envelope stamped ``moments_format=10``
-        with the same identity. The preceding fixed-horizon format 10 and
-        sequential format 9 remain readable. ``from_moments`` validates and
-        strips these transport columns before constructing its immutable
-        context. Formats 1-8 and missing or partial decision-plan payloads are
-        refused; supported inference variants and view policies round-trip
-        without fallback.
+        with the same identity. The earlier fixed-horizon formats 10 and 11
+        and sequential format 9 remain readable. ``from_moments`` validates
+        and strips these transport columns before constructing its immutable
+        context. Formats 1-8 and missing or partial
+        decision-plan payloads are refused; supported inference variants and
+        view policies round-trip without fallback.
         """
         if getattr(self.context.plan.inference, "registration", None) is not None:
             from increment.sources import export_source_moments
@@ -3271,7 +3286,6 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
 
     def capture_sequential(self, *, finalized: bool, as_of: dt.date, previous=None):
         """Capture only units finalized through the explicit common horizon."""
-        from increment.query.artifact_contract import observation_recipe_sha256
         from increment.query.artifact_publish import artifact_context
         from increment.query.sequential_capture import (
             capture_relations,
@@ -3280,17 +3294,15 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         from increment.sequential_state import sequential_refuse
 
-        recipe_id = observation_recipe_sha256(
-            artifact_context(
-                self._defs,
-                self._experiment,
-                self._on_mixed_assignment,
-                metrics=self.context.metrics,
-                encouragement_uptake=self.context.design
-                if isinstance(self.context.design, Encouragement)
-                else None,
-            )
-        )
+        recipe_id = artifact_context(
+            self._defs,
+            self._experiment,
+            self._on_mixed_assignment,
+            metrics=self.context.metrics,
+            encouragement_uptake=self.context.design
+            if isinstance(self.context.design, Encouragement)
+            else None,
+        ).sha256
         previous = previous if previous is not None else getattr(self, "_sequential_snapshot", None)
         covariate = self._experiment.n_pre_periods > 0
         registration, _ = validate_relational_capture(

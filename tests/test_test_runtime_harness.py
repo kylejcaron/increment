@@ -11,14 +11,40 @@ from typing import Any
 
 import pytest
 
-from scripts.run_test_tier import run_with_budget
+from scripts.run_test_tier import _clean_pytest_environment, run_with_budget
+
+
+def test_pytest_environment_guard_reports_unrestored_control():
+    repository = Path(__file__).parents[1]
+    with tempfile.TemporaryDirectory(dir=repository) as temporary:
+        leaking_test = Path(temporary) / "test_environment_leak.py"
+        leaking_test.write_text(
+            "import os\n"
+            "def test_leaks_autoload_control():\n"
+            "    os.environ['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:tach", str(leaking_test)],
+            cwd=repository,
+            env=_clean_pytest_environment(os.environ),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+
+    assert result.returncode == 1
+    assert (
+        "test leaked environment variable PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'"
+        in result.stdout + result.stderr
+    )
 
 
 @pytest.mark.slow
 @pytest.mark.parametrize("github_actions", [None, "false", "true"])
 def test_root_runtime_budget_is_local_only(github_actions):
     repository = Path(__file__).parents[1]
-    environment = dict(os.environ)
+    environment = _clean_pytest_environment(os.environ)
     if github_actions is None:
         environment.pop("GITHUB_ACTIONS", None)
     else:

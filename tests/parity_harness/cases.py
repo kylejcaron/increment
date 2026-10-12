@@ -2040,17 +2040,16 @@ def _m3_assert_switchback_refusal(summary: pd.DataFrame, design: Randomized) -> 
 
 
 def _m3_print_measurements(sql: list[str], first: Any, second: Any, sizes: list[int]) -> None:
-    from sqlglot import exp, parse_one
+    from sqlglot.dialects import Dialect
 
+    tokenizer = Dialect.get_or_raise("duckdb")
     query_shapes = []
     for query in sql:
-        root = parse_one(query, read="duckdb")
-        selects = list(root.find_all(exp.Select))
-        joins = sum(len(select.args.get("joins") or ()) for select in selects)
+        tokens = tokenizer.tokenize(query)
         query_shapes.append(
-            f"{type(root).__name__}:selects={len(selects)}:"
-            f"projections={len(root.expressions)}:joins={joins}:"
-            f"group_by={int(bool(root.args.get('group')))}"
+            f"selects={sum(token.token_type.name == 'SELECT' for token in tokens)}:"
+            f"joins={sum(token.token_type.name == 'JOIN' for token in tokens)}:"
+            f"group_by={sum(token.token_type.name == 'GROUP_BY' for token in tokens)}"
         )
     assert sql and first.records and second.records
     print(
@@ -8351,7 +8350,7 @@ def _export_counts_and_replay(
     """
     try:
         rows = _export_rows(analysis)
-        assert {row["moments_format"] for row in rows} == {11}
+        assert {row["moments_format"] for row in rows} == {12}
         for name, arms in expected.items():
             _assert_arm_counts(
                 f"export/{name}", [row for row in rows if row["metric"] == name], arms
@@ -8906,7 +8905,90 @@ def _winsor_size_routed_case() -> ParityCase:
     )
 
 
+def _triggered_sitewide_assigned_case() -> ParityCase:
+    """Assigned sitewide parity for a trigger-declared definitions/artifact pair."""
+    rows = ds.event_rows()
+    for row in tuple(rows):
+        if row["event"] == "exposure" and int(str(row["user_id"])[1:]) % 2 == 0:
+            rows.append(
+                ds._row(
+                    row["user_id"],
+                    dt.datetime(2025, 1, 10, 10),
+                    "saw_surface",
+                    group_id=row["group_id"],
+                    experiment_id="exp",
+                )
+            )
+    payload = ds.definitions_dict(plan=AnalysisPlan(primary="revenue"))
+    experiment = payload["experiments"][0]
+    experiment["trigger"] = "saw_surface"
+    payload["fact_sources"][0]["facts"].append({"name": "saw_surface", "column": None})
+    payload["exposures"].append({"name": "saw_surface", "fact": "saw_surface"})
+    payload["metrics"] = [metric for metric in payload["metrics"] if metric["name"] == "revenue"]
+    definitions = Definitions.model_validate(payload)
+    untriggered_payload = copy.deepcopy(payload)
+    untriggered_payload["experiments"][0].pop("trigger")
+    untriggered = Definitions.model_validate(untriggered_payload)
+    snapshot = SourceSnapshotEvidence(
+        observation_cutoff_ts=dt.datetime(2025, 1, 20, tzinfo=dt.UTC),
+        complete_through_by_feed={"events": dt.datetime(2025, 1, 19, tzinfo=dt.UTC)},
+    )
+
+    def build_definitions() -> Analysis:
+        con = ds.duckdb_connection(rows)
+        return _track_connection(
+            make_analysis(con, definitions, experiment="exp", source_snapshot_evidence=snapshot),
+            con,
+        )
+
+    def build_artifact() -> Analysis:
+        con = ds.duckdb_connection(rows)
+        native = make_analysis(
+            con, definitions, experiment="exp", source_snapshot_evidence=snapshot
+        )
+        _track_connection(native, con)
+        return _publish_and_adopt(
+            con,
+            native,
+            kinds=(*_ARTIFACT_EXTENSION_KINDS, "assignment_counts"),
+        )
+
+    def source_probe(name: str, analysis: Analysis) -> None:
+        if name not in {"from_definitions", "from_unit_day_artifact"}:
+            return
+        result = analysis.sitewide("revenue")
+        assert result.analysis_population == "assigned"
+        con = ds.duckdb_connection(rows)
+        reference = make_analysis(
+            con, untriggered, experiment="exp", source_snapshot_evidence=snapshot
+        )
+        try:
+            expected = reference.sitewide("revenue")
+            assert result.absolute_impact == pytest.approx(expected.absolute_impact)
+            assert result.relative_impact == pytest.approx(expected.relative_impact)
+        finally:
+            reference.close()
+            con.disconnect()
+
+    return ParityCase(
+        id="triggered-sitewide-assigned",
+        build={
+            "from_definitions": build_definitions,
+            "from_unit_day_artifact": build_artifact,
+        },
+        waive={
+            "from_unit_summary": "SOURCE: unit summaries cannot supply whole-site volume evidence.",
+            "from_unit_panel": "SOURCE: unit panels cannot supply whole-site volume evidence.",
+            "from_switchback_panel": "SOURCE: switchback panels cannot supply whole-site volume evidence.",
+            "from_moments": "SOURCE: portable moments cannot supply whole-site volume evidence.",
+        },
+        source_probe=source_probe,
+        slow=True,
+    )
+
+
 PARITY_CASES: tuple[ParityCase, ...] = (
+    _triggered_sitewide_assigned_case(),
     *_triggered_day_axis_cases(),
     _triggered_sequential_case(),
     _triggered_encouragement_compliance_case(),
