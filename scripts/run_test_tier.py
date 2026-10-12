@@ -1305,11 +1305,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 4
     tier = TIERS[args.tier]
     extra_env = {
-        **{
-            name: None
-            for name in os.environ
-            if name.startswith(("PYTEST_", "COV_CORE_", "COVERAGE_"))
-        },
         "INCREMENT_AFFECTED_EVIDENCE": "",
         "INCREMENT_AFFECTED_TEST_PATHS": "[]",
         "INCREMENT_AFFECTED_DYNAMIC_TEST_PATHS": "[]",
