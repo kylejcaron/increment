@@ -126,8 +126,15 @@ def test_public_run_uses_captured_randomized_or_encouragement_state_without_live
         snapshot = source.capture_sequential(finalized=True, as_of=date(2025, 1, 16))
         estimands = ("compliance",) if uptake_only else ("itt",)
         expected = list(source.run(estimands=estimands))
-        for name in connection.list_tables():
-            connection.drop_table(name)
+        object_types = connection.raw_sql(
+            "SELECT table_name, table_type FROM information_schema.tables "
+            "WHERE table_schema = 'main'"
+        ).fetchall()
+        for name, object_type in object_types:
+            if object_type == "VIEW":
+                connection.drop_view(name)
+            else:
+                connection.drop_table(name)
         actual = list(source.run(estimands=estimands))
         assert actual == expected
         assert len(actual) == 1 and actual[0].stat_sig()
