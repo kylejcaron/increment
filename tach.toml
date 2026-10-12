@@ -153,8 +153,12 @@ depends_on = ["increment.errors", "increment.semantics"]
 path = "increment.sequential_state"
 depends_on = [
   "increment.errors", "increment.estimation._sequential_likelihood", "increment.semantics",
-  "increment._immutable",
+  "increment._immutable", "increment._day_axis_labels",
 ]
+
+[[modules]]
+path = "increment._day_axis_labels"
+depends_on = ["increment.errors"]
 
 [[modules]]
 path = "increment.sequential_source"
@@ -263,7 +267,7 @@ depends_on = ["increment._frame_panel", "increment._frame_validation", "incremen
 
 [[modules]]
 path = "increment._frame_panel"
-depends_on = ["increment._frame_validation", "increment._window", "increment.errors", "increment.sources"]
+depends_on = ["increment._day_axis_labels", "increment._frame_validation", "increment._window", "increment.errors", "increment.sources"]
 
 [[modules]]
 path = "increment._frame_validation"

@@ -1792,6 +1792,9 @@ def test_triggered_compliance_insufficient_early_sample_continues(clustered):
 def test_triggered_encouragement_itt_and_late_match_artifact_uptake(tmp_path):
     con, analysis, context, store, _panel = native_fixture(("full",), triggered=True)
     try:
+        con.raw_sql(
+            "UPDATE events SET ts = TIMESTAMPTZ '2025-01-04 00:00:00+00' WHERE event = 'triggered'"
+        )
         native = _native_source(analysis)
         from increment.query.artifact_contract import unit_day_artifact_extension_catalog
 
@@ -2146,7 +2149,7 @@ def test_design_summary_rejects_incompatible_shape_identity_catalog_and_plans(tm
             assert raised.value.code == "moments.format.invalid"
         with pytest.raises(CodedError) as future:
             MomentsSource(
-                [{**envelope, "moments_format": 12}],
+                [{**envelope, "moments_format": 13}],
                 metrics=[],
                 study_id="uptake_test",
                 design=design(7),

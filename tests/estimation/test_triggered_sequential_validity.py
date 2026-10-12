@@ -6,8 +6,8 @@ closed. The null sentinel checks that the package's own count-clock set,
 evaluated at every daily look of a growing cohort, keeps its any-look false
 rejection rate below alpha. The stopping-policy test separates the per-cell
 crossing bound, which no look rule can inflate, from the stopped e-value's
-expectation that a family selection needs: a rule that peeks at information
-outside the chain's own filtration inflates the latter while the former holds.
+expectation that a family selection needs: a rule driven by information about
+outcomes not yet revealed on the chain inflates the latter while the former holds.
 """
 
 from __future__ import annotations
@@ -129,9 +129,14 @@ def _log_e(control: tuple[int, int], treatment: tuple[int, int], prior: BetaPrio
 @pytest.mark.slow
 @pytest.mark.parameter_recovery
 def test_leak_informed_stopping_inflates_the_stopped_e_value_but_not_the_crossing_bound():
-    """A look rule using information outside the chain's filtration breaks E[e_tau] <= 1
-    while P(sup e >= 1/alpha) <= alpha stays intact, which is why the family verdict
-    (not the per-cell threshold) carries the outcome-independent look-time condition.
+    """Lookahead inflates stopped evidence relative to a predeclared look,
+    without changing the per-cell crossing bound.
+
+    With three-day windows and an arm-independent trigger one day after
+    assignment, trigger-day-only outcomes are identical in both populations.
+    Assigned checkpoints then reveal the next triggered block's arm-specific
+    outcomes, even for the same metric. Freezing before an unfavorable block
+    uses that future information; correct triggering does not prevent it.
     """
     rng = np.random.default_rng(7)
     prior = BetaPrior(Fraction(3), Fraction(7))

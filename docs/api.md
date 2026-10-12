@@ -71,16 +71,17 @@ writer:
 
 | Format | Written by | Read by `from_moments` |
 |---|---|---|
-| 11 | fixed-horizon `export`, with source identity and exact counts | yes |
-| 10 | preceding fixed-horizon export, or current sequential checkpoint export | yes |
+| 12 | fixed-horizon `export`, with source identity, exact counts and the ratio denominator's third moment `cden3` | yes |
+| 11 | preceding fixed-horizon export, with source identity and exact counts | yes; a ratio row loads with its denominator-skew coverage check unavailable |
+| 10 | earlier fixed-horizon export, or current sequential checkpoint export | yes; a fixed-horizon ratio row loads with its denominator-skew coverage check unavailable |
 | 9 | preceding sequential checkpoint export | yes |
 | below 9 | no longer written | refused, `moments.format.unsupported_legacy` |
-| above 11 | not written by this release | refused, `moments.format.unsupported_future` |
+| above 12 | not written by this release | refused, `moments.format.unsupported_future` |
 
 A cube must use one format (`moments.format.mixed`) and repeat no
 `(metric, group_id)` row (`moments.rows.duplicate`). Fixed and sequential
 formats are distinguished by their typed record envelope; fixed-horizon
-format 10 and sequential format 9 remain readable. Every row stamped below 9,
+formats 10 and 11 and sequential format 9 remain readable. Every row stamped below 9,
 including each row of a sequential analysis written as format 8, is refused
 with `moments.format.unsupported_legacy` before any plan is read. A checkpoint
 envelope restamped below the preceding sequential format reaches
@@ -92,14 +93,19 @@ Historical fixed-horizon format 10 does not synthesize missing
 `assignment_counts`; operations that require those counts refuse with
 `source.moments.assignment_counts`. Its format-10 fixed rows remain distinct
 from the typed sequential format-10 checkpoint envelope.
-Current fixed-horizon format 11 and sequential format 10 exports carry the
+A format-12 ratio row without `cden3` is refused with
+`moments.denominator_third_moment_missing`; format-10 and format-11 ratio rows carry no
+`cden3`, and every lift row estimated from them says the denominator-skew
+coverage check was unavailable instead of passing silently.
+Fixed-horizon formats 11 and 12 and sequential format 10 exports carry the
 originating source identity. `from_moments` restores that identity instead
 of deriving a new one from the replay object's default study name. The
 snapshot identity remains based on the canonical request, pinned evidence and
 source identity, and integer sufficient statistics—not floating aggregates.
-Older fixed-horizon format 10 and sequential format 9 cubes lack that field.
-Their replay identity is conservatively namespaced by the legacy format and
-study ID because original source provenance cannot be recovered. The
+Fixed-horizon format 10 and sequential format 9 cubes lack that field, and a
+format 11 cube may be loaded without it. Their replay identity is
+conservatively namespaced by the legacy format and study ID because original
+source provenance cannot be recovered. The
 `source_identity` field is self-asserted input, not authenticated provenance.
 Every ordinary row requires integer `n >= 1` and, when present, integer
 `0 <= successes <= n`; import and export refuse invalid ranges with
@@ -174,22 +180,18 @@ defend. See [Sequential inference](guides/sequential-inference.md).
 declared trigger carries the triggered population's chain as a nested
 `SequentialSnapshot` (`triggered`), each chain with its own registration,
 records, states and `prefix_id`; `SequentialRegistration.population`,
-`SequentialRegistration.look_policy`, `SequentialCheckpoint.population`,
-`InferenceSpec.triggered_registration`, `InferenceSpec.triggered_look_policy`
-and the compiled plan's wire `triggered_registration` are the optional fields
-that carry it. Every one of them is absent from the dump when unused. The
+`SequentialCheckpoint.population`, `InferenceSpec.triggered_registration` and
+the compiled plan's wire `triggered_registration` are the optional fields that
+carry it. Every one of them is absent from the dump when unused, and the
 derived triggered registration stays out of the hashed artifact context (it is
-a function of content the context already binds), and a non-default
-`triggered_look_policy` travels as the context's own top-level field rather
-than inside the plan every observation recipe hashes; sequential records bind
-the context digest with that field removed. Assigned record, prefix and
+a function of content the context already binds). Assigned record, prefix and
 checkpoint identities are therefore the same with or without a triggered
-commitment and for either look policy, so checkpoints, registrations, moments
-exports and artifact contexts written before this change replay as they did,
-and an artifact published before the derivation existed opens and derives the
-same triggered registration. A checkpoint captured without a triggered chain
-continues assigned-only and never acquires one
-(`sequential.continuation.legacy` on a backfill attempt).
+commitment, so checkpoints, registrations, moments exports and artifact
+contexts written before this change replay as they did, and an artifact
+published before the derivation existed opens and derives the same triggered
+registration. A checkpoint captured without a triggered chain continues
+assigned-only and never acquires one (`sequential.continuation.legacy` on a
+backfill attempt).
 
 **Frame segment labels and degenerate shared schedules.** A frame sequential registration
 whose segment labels were not canonical used to report `missing_arm` on the unit summary;
@@ -658,8 +660,13 @@ trigger assumptions. Use it as a diagnostic alongside estimates, not as an overa
 healthy/safe verdict or a causal-validity test. Missing source evidence stays
 unavailable with its identity and reason; a non-rejected SRM does not prove that
 assignment was valid. For a triggered experiment, read the assigned and triggered
-checks separately and treat counterfactual trigger invariance and trigger-order
-stationarity as assumptions even when observed rates are balanced.
+checks separately and treat counterfactual trigger invariance, no pre-trigger
+treatment effect, and trigger-order stationarity as assumptions even when
+observed rates are balanced. A sequential triggered family also assumes
+`triggered_look_predictability`: looks, stops and freezes use only already-revealed
+triggered-chain information, not assigned results revealing future triggered
+outcomes, including the same metric's results. A health check does not verify
+the analyst's decision rule.
 
 ```python
 import pandas as pd

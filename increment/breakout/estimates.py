@@ -1513,11 +1513,10 @@ class DailyLiftEstimate(_RowIdentity):
         ]
         if self.dimension is not None:
             args.extend((("dimension", self.dimension), ("dimension_value", self.dimension_value)))
-        args.append(("scale", self.value_scale))
+        args.append(("value_scale", self.value_scale))
         args.append(("estimate", None if self.lift is None else self.lift.value))
 
         args.append(("interval", ", ".join(self._interval_display_parts())))
-
         if self.unavailable is not None:
             args.append(("unavailable", self.unavailable))
         if self.relative_unavailable_reason is not None:

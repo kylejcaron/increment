@@ -12,7 +12,14 @@ from enum import StrEnum
 from hashlib import sha256
 from typing import Any, Literal, NoReturn
 
-from pydantic import BaseModel, ConfigDict, field_serializer, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from increment._canonical import _jcs_float, canonical_digest_bytes, canonical_json_bytes
 from increment._immutable import _FrozenMapping
@@ -395,8 +402,45 @@ class FamilyScope(_ReadoutModel):
     source: str | None
     name: str
     family: MultiplicityFamily | None = None
+    identity_metric: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    identity_look: date | datetime | str | int | float | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     members: tuple[CellKey, ...]
     complete: bool
+
+    @field_validator("identity_look", mode="before")
+    @classmethod
+    def _decode_identity_look(cls, value):
+        if isinstance(value, Mapping) and set(value) == {"type", "value"}:
+            kind = value["type"]
+            encoded = value["value"]
+            if kind == "date":
+                return date.fromisoformat(encoded)
+            if kind == "datetime":
+                return datetime.fromisoformat(encoded["datetime"])
+            if kind == "str" and isinstance(encoded, Mapping) and set(encoded) == {"label"}:
+                return encoded["label"]
+            if kind in ("int", "float"):
+                return encoded
+            return value
+        if isinstance(value, str):
+            if "T" in value or " " in value:
+                try:
+                    return datetime.fromisoformat(value)
+                except ValueError:
+                    return value
+            try:
+                return date.fromisoformat(value)
+            except ValueError:
+                return value
+        return value
+
+    @field_serializer("identity_look", when_used="json")
+    def _encode_identity_look(self, value):
+        if value is None:
+            return None
+        return {"type": type(value).__name__, "value": serialize_day_axis(value)}
 
     @model_validator(mode="after")
     def _canonical_members(self):
@@ -409,6 +453,8 @@ class FamilyScope(_ReadoutModel):
             self.dimension,
             self.source,
             self.name,
+            identity_metric=self.identity_metric,
+            identity_look=self.identity_look,
         )
         if self.family_id != expected:
             refuse_readout(
@@ -420,24 +466,40 @@ class FamilyScope(_ReadoutModel):
         return self
 
 
-def family_identity(source_snapshot_id, analysis_population, view, dimension, source, name):
-    return (
-        "sha256:"
-        + sha256(
-            canonical_json_bytes(
-                {
-                    "kind": "increment.readout.family",
-                    "version": 1,
-                    "source_snapshot_id": source_snapshot_id,
-                    "analysis_population": analysis_population,
-                    "view": view,
-                    "dimension": dimension,
-                    "source": source,
-                    "name": name,
-                }
-            )
-        ).hexdigest()
-    )
+def family_identity(
+    source_snapshot_id,
+    analysis_population,
+    view,
+    dimension,
+    source,
+    name,
+    *,
+    identity_metric: str | None = None,
+    identity_look: date | datetime | str | int | float | None = None,
+):
+    payload = {
+        "kind": "increment.readout.family",
+        "version": 2 if identity_metric is not None or identity_look is not None else 1,
+        "source_snapshot_id": source_snapshot_id,
+        "analysis_population": analysis_population,
+        "view": view,
+        "dimension": dimension,
+        "source": source,
+        "name": name,
+    }
+    if identity_metric is not None:
+        payload["metric"] = identity_metric
+    if identity_look is not None:
+        serialized_look = serialize_day_axis(identity_look)
+        payload["look"] = (
+            serialized_look
+            if isinstance(identity_look, date) and not isinstance(identity_look, datetime)
+            else {
+                "type": type(identity_look).__name__,
+                "value": serialized_look,
+            }
+        )
+    return "sha256:" + sha256(canonical_json_bytes(payload)).hexdigest()
 
 
 class SourceReadoutScope(_ReadoutModel):
@@ -1144,7 +1206,7 @@ class ReadoutResults:
             if payload.get("sequential_snapshot") is None
             else SequentialSnapshot.model_validate_json(json.dumps(payload["sequential_snapshot"]))
         )
-        rows: list[Any] = [model.model_validate(row) for row in payload["rows"]]
+        rows: list[Any] = [model.model_validate_json(json.dumps(row)) for row in payload["rows"]]
         checkpoints = []
         for row in rows:
             result = getattr(row, "sequential_result", None)

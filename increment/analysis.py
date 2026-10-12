@@ -1076,13 +1076,16 @@ class Analysis:
         (day axis, ``panel_sql``, ``run_breakout``, ``materialize``).
 
         *rows* must carry centered ``group_summary`` columns, a fixed-horizon
-        ``moments_format=11`` stamp, integer ``n``, nullable integer
-        ``successes``, a source identity record, and a complete embedded
-        ``decision_plan`` on every fixed-horizon row. The preceding fixed
-        format 10 remains readable. Declared binary outcomes require exact
-        success counts. Sequential exports use ``moments_format=10``
-        checkpoint envelopes and a version-3 sequential wire plan; the
-        preceding sequential format 9 remains readable.
+        ``moments_format=12`` stamp, integer ``n``, nullable integer
+        ``successes``, the ratio denominator's third moment ``cden3`` on
+        every denominator row, a source identity record, and a complete
+        embedded ``decision_plan`` on every fixed-horizon row. The earlier
+        fixed formats 10 and 11 remain readable; their ratio rows predate ``cden3``,
+        so their lift rows report the denominator-skew coverage check as
+        unavailable. Declared binary outcomes require exact success counts.
+        Sequential exports use ``moments_format=10`` checkpoint envelopes
+        and a version-3 sequential wire plan; the preceding sequential
+        format 9 remains readable.
         Encouragement exports additionally carry cluster identity, member
         counts, and full bivariate uptake/size moments on every row. Supply
         the same Encouragement design when reloading; an omitted experiment_id
@@ -1090,7 +1093,7 @@ class Analysis:
         match the exported cohort. A
         cube without that state cannot provide design-level compliance.
         An empty-metric fixed-horizon Encouragement export carries one
-        complete format-11 ``design_summary`` envelope. Reload it with
+        complete format-12 ``design_summary`` envelope. Reload it with
         ``metrics=[]``; both its embedded and effective plans must remain
         fixed-horizon and metric-free, even when *plan* is supplied.
 
@@ -1729,13 +1732,8 @@ class Analysis:
             declared_plan = self._state.experiment.plan
         inference = getattr(declared_plan, "inference", runtime_inference)
         registration = getattr(inference, "triggered_registration", None)
-        look_policy = getattr(inference, "triggered_look_policy", None)
-        if registration is not None:
-            look_policy = getattr(registration, "look_policy", look_policy)
         family_guarantee = (
-            sequential_family_guarantee(registration, look_policy=look_policy)
-            if registration is not None and look_policy is not None
-            else None
+            sequential_family_guarantee(registration) if registration is not None else None
         )
         return HealthCheck(
             check="trigger_assumptions",
@@ -1745,7 +1743,14 @@ class Analysis:
             context={
                 "counterfactual_trigger_invariance": "assumed, not established by balance or rates",
                 "trigger_order_stationarity": "assumed, not established by balance or rates",
-                "triggered_look_policy": look_policy,
+                "no_effect_before_trigger": "assumed, not established by balance or rates",
+                "triggered_look_predictability": (
+                    "assumed, not verified: looks, stops and freezes use only already-revealed "
+                    "triggered-chain information, not assigned results that reveal future "
+                    "triggered outcomes, including the same metric"
+                    if family_guarantee is not None
+                    else None
+                ),
                 "family_guarantee": family_guarantee,
                 "family_guarantee_status": (
                     "assumed, not verified" if family_guarantee is not None else None
@@ -1753,6 +1758,8 @@ class Analysis:
                 "risk": (
                     "Balanced trigger rates do not verify counterfactual trigger invariance.",
                     "Trigger-order stationarity remains an assumption.",
+                    "Assigned results can reveal future triggered outcomes, including "
+                    "the same metric; they must not inform triggered family stops or freezes.",
                 ),
             },
         )
@@ -2332,6 +2339,11 @@ class Analysis:
         ``declare_sequential_freeze``. A frozen secondary still takes part in
         its family, whose e-BH selection is redone at each look over frozen and
         current evidence, so its discovery and selected interval can change.
+
+        A triggered family guarantee requires stopping and freezing decisions
+        based only on already-revealed triggered-chain information. Assigned
+        results can reveal future triggered outcomes, including the same
+        metric, and must not inform those decisions.
         """
         from increment.sequential_source import adopt_source_snapshot, source_snapshot
         from increment.sequential_state import declare_sequential_freeze, sequential_refuse
@@ -2841,6 +2853,15 @@ class Analysis:
             if state.family == "arm_moments"
             else None
         )
+        if population == "triggered" and experiment is not None and experiment.trigger is None:
+            _refuse(
+                _TRIGGER_UNSUPPORTED,
+                method="run_breakout",
+                experiment=experiment.name,
+                trigger=None,
+                route="native",
+                supported_sources=("from_definitions", "from_unit_day_artifact"),
+            )
         if experiment is not None and not experiment.breakouts:
             select_metrics(
                 cast("Sequence[Metric]", self._src.context.metrics),

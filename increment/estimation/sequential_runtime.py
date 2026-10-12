@@ -389,7 +389,12 @@ def selected_snapshot_results(
     *,
     nominal_alpha: Fraction | float,
 ) -> list[LiftEstimate]:
-    """Evaluate the retained family and invert selected cells at their stopped state."""
+    """Evaluate and reinvert the family at its stopped state.
+
+    Triggered family guarantees assume correct triggering and looks, stops and
+    freezes adapted to the triggered joint filtration, not informed by early
+    assigned results, including the same metric; see ``sequential_family_guarantee``.
+    """
     from increment.semantics.sequential import sequential_family_rule
 
     procedure = sequential_family_rule(inference.registration.models, inference.registration.roster)
@@ -420,22 +425,13 @@ def selected_snapshot_results(
             row = row.model_copy(
                 update={
                     "discovery": selected,
-                    "multiplicity_status": (
-                        "exploratory_family"
-                        if inference.registration.look_policy == "exploratory"
-                        else row.multiplicity_status
-                    ),
                     "family_procedure": procedure,
                     "family_axes": ("metric", "arm", "segment")
                     if cell.segment
                     else ("metric", "arm"),
                     "family_q": float(inference.registration.q),
                     "family_threshold": outcome.realized_threshold,
-                    "family_guarantee": (
-                        None
-                        if inference.registration.look_policy == "exploratory"
-                        else outcome.guarantee
-                    ),
+                    "family_guarantee": outcome.guarantee,
                     "family_nominal_alpha": float(nominal_alpha),
                 }
             )

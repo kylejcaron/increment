@@ -42,6 +42,30 @@ def _lift_rows(rows: object) -> list[LiftEstimate]:
     return cast(list[LiftEstimate], rows)
 
 
+_RATIO_SKEW_WARNING = "estimation.engine.ratio_denominator_skew"
+
+
+def _assert_breakout_warnings(record):
+    codes = warning_codes(record)
+    assert any(code.startswith("breakout.estimates.") for code in codes)
+    assert all(
+        code.startswith("breakout.estimates.") or code == _RATIO_SKEW_WARNING for code in codes
+    )
+
+
+def _assert_ratio_skew_warnings(record):
+    messages = [
+        warning.message for warning in record if isinstance(warning.message, IncrementWarning)
+    ]
+    assert messages
+    assert {message.code for message in messages} == {_RATIO_SKEW_WARNING}
+    assert any(
+        message.context.get("metric") == "average_order_value"
+        and message.context.get("arm") == "treatment"
+        for message in messages
+    )
+
+
 # Slow: regenerating the small warehouse and restoring the normal one runs the
 # generator twice in subprocesses. The xdist group keeps this module and the
 # notebook smoke tests on one worker because both rewrite
@@ -181,7 +205,7 @@ def test_breakout_country_segments_have_no_null_bin(analysis):
                 module=r"ibis\.backends\.duckdb",
             )
             estimates = analysis.run_breakout()
-    assert all(code.startswith("breakout.estimates.") for code in warning_codes(record))
+    _assert_breakout_warnings(record)
     country_rows = [
         e for e in estimates if e.metric == "conversion_rate" and e.dimension == "country"
     ]
@@ -220,7 +244,7 @@ def test_breakout_plan_segments_are_pre_exposure_free_only(analysis):
                 module=r"ibis\.backends\.duckdb",
             )
             estimates = analysis.run_breakout()
-    assert all(code.startswith("breakout.estimates.") for code in warning_codes(record))
+    _assert_breakout_warnings(record)
     plan_segments = {e.dimension_value for e in estimates if e.dimension == "plan"}
     assert plan_segments == {"free"}
 
@@ -234,11 +258,29 @@ def test_daily_and_asof_lift_cover_all_metrics(analysis):
         analysis,
         experiment=analysis.experiment.model_copy(update={"plan": fixed_plan}),
     )
-    daily = analysis.run_daily_lift()
+    with pytest.warns(IncrementWarning) as daily_warnings:
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"fetch_arrow_table\(\) is deprecated, use to_arrow_table\(\) instead\.",
+                category=DeprecationWarning,
+                module=r"ibis\.backends\.duckdb",
+            )
+            daily = analysis.run_daily_lift()
+    _assert_ratio_skew_warnings(daily_warnings)
     assert daily
     assert {e.metric for e in daily} == METRIC_NAMES
 
-    asof = analysis.run_asof_lift()
+    with pytest.warns(IncrementWarning) as asof_warnings:
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"fetch_arrow_table\(\) is deprecated, use to_arrow_table\(\) instead\.",
+                category=DeprecationWarning,
+                module=r"ibis\.backends\.duckdb",
+            )
+            asof = analysis.run_asof_lift()
+    _assert_ratio_skew_warnings(asof_warnings)
     assert asof
     assert {e.metric for e in asof} == METRIC_NAMES
 
@@ -329,7 +371,7 @@ def test_export_from_moments_round_trips_run_exactly(analysis, tmp_path):
     path = tmp_path / "moments.parquet"
     analysis.export(path)
     rows = pq.read_table(path).to_pylist()
-    assert {row["moments_format"] for row in rows} == {11}
+    assert {row["moments_format"] for row in rows} == {12}
 
     specs = [_metric_spec(m) for m in analysis.metrics]
     rehydrated_src = Analysis.from_moments(
