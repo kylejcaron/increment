@@ -94,6 +94,17 @@ local fast/slow hooks until hosted success, failure/cancellation blocking,
 retained evidence, required-check configuration, and owner-approved activation
 have been verified. Workflow preparation alone does not establish those conditions.
 
+The two Python 3.12 fast CI shards also publish an optional combined executed-code
+coverage artifact when both shards succeed for the same commit and run attempt.
+It counts `increment/` source statements executed during the fast tier (including
+pytest-cov's measured test workers); it does not measure the slow or scientific
+tiers, establish whole-suite coverage, or rate test quality. Missing, failed or
+mismatched shard data is reported as incomplete and is not published as an
+aggregate. Collection runs inside the required shards to avoid a second fast-tier
+run, so a coverage save or combine error after the tests pass fails that shard. If
+that happens, remove the coverage arguments from the 3.12 shards rather than
+relaxing the test result.
+
 Commit `uv.lock` whenever a dependency change updates the resolution.
 
 Notebook examples use Marimo; the development environment does not include
@@ -551,24 +562,46 @@ For a local calculation without GitHub or any tag mutation:
 uv run python scripts/next_version.py --bump auto --stage keep-current
 ```
 
-The default gate requires successful GitHub Actions `ci-ok` on that exact
+The default `bump` gate requires successful GitHub Actions `ci-ok` on that exact
 commit, no other unfinished or failed checks, and successful legacy commit
 statuses when present. It excludes only the running bump workflow itself.
-`force=true` explicitly bypasses this CI gate; do not use it to release an
-unverified candidate.
+`force=true` skips only this upstream CI gate; it does not bypass any release
+workflow checks.
 
 Bump creates the version tag and explicitly dispatches `release.yml` on it.
-The job's `GITHUB_TOKEN` cannot trigger a second workflow through a tag push.
-If the dispatch fails after the tag was pushed, dispatch the release on the
-existing tag rather than creating another one:
+The release workflow also runs on pushed `v*` tags; a direct manual dispatch is
+accepted only when its ref is a version tag. A failed bump dispatch can be
+reissued against the existing tag, without creating another tag:
 
 ```bash
 gh workflow run release.yml --ref v0.1.0a3
 ```
 
-Release accepts only `v*` tag refs, verifies the version and package artifacts,
-then waits for the protected `pypi` environment approval. Inspect the artifacts
-before approving: approval uploads to real PyPI, not a test registry.
+Every route resolves the tag to the exact checked-out commit, builds and hashes
+the wheel and sdist, then runs strict documentation validation and the README
+mean-analysis example using the installed built wheel outside the checkout.
+Both checks must succeed for that same commit before publication is eligible;
+there is no force/bypass input for this gate. The workflow run summary and
+`release-receipt` artifact record the candidate SHA, tag/version, artifact
+hashes, tested scope, run link, unresolved evidence, and deviations. Missing,
+failed, cancelled, or wrong-SHA evidence blocks upload.
+
+After those checks, publication still waits for the `pypi` environment. Inspect
+the exact candidate receipt and build artifacts before approving: approval
+uploads to real PyPI, not a test registry. A separate post-publication job
+installs `increment==<version>` from PyPI into an isolated environment, waits
+up to five minutes for that exact version to appear, checks installed metadata
+and import location, and runs the README mean-analysis example. A failure here
+is after publication; it never retries upload, deletes a tag, or rolls back.
+The post-index result is not a prerequisite for the already completed upload.
+
+The hosted-settings audit found the `pypi` environment with a branch-policy
+rule and a required reviewer (`kylejcaron`); `can_admins_bypass` is false and
+self-review is not prevented. Active `main-review` rules require `ci-ok` and
+`cla`; `main-safety` prevents deletion and non-fast-forward updates. The
+branch-protection endpoint reports the branch is not protected. These settings
+are not changed here; environment and ruleset configuration is distinct from
+the workflow's exact-candidate gate.
 
 #### Website documentation sync
 
@@ -643,6 +676,17 @@ uv run --with nox nox -s docs
 
 Use the Nox documentation session rather than invoking MkDocs directly. It
 exports notebook-backed pages before performing the strict site build.
+
+The PR workflow runs snippets for `README.md`, `docs/`, Python package source,
+and documentation/build inputs. It runs the strict site build for
+documentation/navigation/build/dependency changes, the root public exports and
+results modules, or PRs labelled `breaking` or `docs-required`. This intentionally
+does not build the strict site for every source-only public API change; an
+unlabelled API change can first be caught by the mandatory exact-candidate
+strict-docs check before release publication. `docs-required` is an orthogonal
+review label for public API documentation, not a release-note category; the
+repository owner must create and activate that label. The existing
+`documentation` label remains for documentation-only release notes.
 
 ### Capability composition
 

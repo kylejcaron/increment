@@ -212,10 +212,108 @@ Daily encouragement uptake is meaningful as a first-stage rate, but per-day
 LATE is not. Request only the supported estimand explicitly:
 
 ```python
+import datetime as dt
+from pathlib import Path
+
+import ibis
+import pyarrow as pa
+
+from increment import Analysis, SourceSnapshotEvidence
+
+definitions = Path("encouragement.yml")
+definitions.write_text(
+    """
+dialect: duckdb
+fact_sources:
+  - name: events
+    sql: SELECT * FROM events
+    timestamp_column: ts
+    entities: [user_id]
+    facts:
+      - name: revenue
+        column: value
+      - name: enrolled
+        column: null
+      - name: saw_surface
+        column: null
+      - name: clicked
+        column: null
+exposures:
+  - name: assignment
+    fact: enrolled
+  - name: saw_surface
+    fact: saw_surface
+metrics:
+  - name: revenue
+    type: mean
+    entity: user_id
+    fact: revenue
+    window_days: 3
+    aggregation: sum
+experiments:
+  - name: encouragement_example
+    exposure: assignment
+    trigger: saw_surface
+    unit: user_id
+    start: 2026-01-01T00:00:00
+    end: 2026-01-03
+    observation_end: 2026-01-04
+    control_group: control
+    plan:
+      secondaries: [revenue]
+    design:
+      mechanism: encouragement
+      uptake:
+        fact: clicked
+    """
+)
+con = ibis.duckdb.connect()
+con.create_table(
+    "events",
+    obj=pa.table(
+        {
+            "experiment_id": ["encouragement_example"] * 8,
+            "user_id": ["c1", "t1", "c1", "t1", "c1", "t1", "c1", "t1"],
+            "group_id": ["control", "encouraged"] * 4,
+            "ts": [
+                dt.datetime(2026, 1, 1),
+                dt.datetime(2026, 1, 1),
+                dt.datetime(2026, 1, 2),
+                dt.datetime(2026, 1, 2),
+                dt.datetime(2026, 1, 2),
+                dt.datetime(2026, 1, 2),
+                dt.datetime(2026, 1, 3),
+                dt.datetime(2026, 1, 3),
+            ],
+            "event": [
+                "enrolled",
+                "enrolled",
+                "saw_surface",
+                "saw_surface",
+                "clicked",
+                "clicked",
+                "revenue",
+                "revenue",
+            ],
+            "value": [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 2.0],
+        }
+    ),
+)
+analysis = Analysis.from_definitions(
+    "encouragement_example",
+    definitions,
+    con,
+    source_snapshot_evidence=SourceSnapshotEvidence(
+        dt.datetime(2026, 1, 4, tzinfo=dt.UTC),
+        {"events": dt.datetime(2026, 1, 4, tzinfo=dt.UTC)},
+    ),
+)
 analysis.run_daily_lift(
     estimands=("compliance",),
     population="triggered",
 )
+analysis.close()
+con.disconnect()
 ```
 
 This reads trigger membership by day and counts each selected unit's uptake

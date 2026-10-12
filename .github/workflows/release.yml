@@ -34,6 +34,9 @@ jobs:
     outputs:
       version: ${{ steps.check.outputs.version }}
       prerelease: ${{ steps.check.outputs.prerelease }}
+      candidate_sha: ${{ steps.check.outputs.candidate_sha }}
+      wheel_sha256: ${{ steps.hashes.outputs.wheel_sha256 }}
+      sdist_sha256: ${{ steps.hashes.outputs.sdist_sha256 }}
     steps:
       - name: Require a version tag
         env:
@@ -55,6 +58,19 @@ jobs:
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with:
           enable-cache: true
+
+      - name: Verify checked-out candidate matches tag target
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          checkout_sha="$(git rev-parse HEAD)"
+          tag_sha="$(git rev-parse "refs/tags/$TAG^{commit}")"
+          if [ "$checkout_sha" != "$EXPECTED_SHA" ] || [ "$tag_sha" != "$EXPECTED_SHA" ]; then
+            echo "::error::tag, workflow SHA, and checked-out candidate must resolve to one commit"
+            exit 1
+          fi
 
       - run: uv build --sdist --wheel --out-dir dist
 
@@ -90,6 +106,7 @@ jobs:
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
           fi
           echo "version=$built" >> "$GITHUB_OUTPUT"
+          echo "candidate_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Check metadata renders on PyPI
         run: uvx twine check --strict dist/*
@@ -132,14 +149,131 @@ jobs:
           print(f"sdist: {len(src)} module(s)")
           PY
 
+      - name: Hash release artifacts
+        id: hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "wheel_sha256=$(sha256sum dist/*.whl | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "sdist_sha256=$(sha256sum dist/*.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist
           path: dist/
           if-no-files-found: error
 
-  publish:
+  verify:
     needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with:
+          enable-cache: true
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+
+      - name: Bind downloaded build artifacts to candidate
+        env:
+          EXPECTED_SHA: ${{ needs.build.outputs.candidate_sha }}
+          WHEEL_SHA256: ${{ needs.build.outputs.wheel_sha256 }}
+          SDIST_SHA256: ${{ needs.build.outputs.sdist_sha256 }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$(sha256sum dist/*.whl | cut -d' ' -f1)" = "$WHEEL_SHA256"
+          test "$(sha256sum dist/*.tar.gz | cut -d' ' -f1)" = "$SDIST_SHA256"
+
+      - name: Build strict documentation
+        run: uv run --with nox nox -s docs
+
+      - name: Smoke installed candidate wheel and README mean example
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: uv run --with nox nox -s wheel_smoke -- --expected-version "$VERSION" --readme-example
+
+      - name: Write and validate exact-candidate receipt
+        env:
+          SHA: ${{ needs.build.outputs.candidate_sha }}
+          VERSION: ${{ needs.build.outputs.version }}
+          WHEEL_SHA256: ${{ needs.build.outputs.wheel_sha256 }}
+          SDIST_SHA256: ${{ needs.build.outputs.sdist_sha256 }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import json, os
+          receipt = {
+              "candidate_sha": os.environ["SHA"],
+              "tag": os.environ["GITHUB_REF_NAME"],
+              "version": os.environ["VERSION"],
+              "wheel_sha256": os.environ["WHEEL_SHA256"],
+              "sdist_sha256": os.environ["SDIST_SHA256"],
+              "run_url": os.environ["RUN_URL"],
+              "scope": ["strict-docs", "installed-wheel-readme-mean-analysis"],
+              "docs": {"status": "success", "sha": os.environ["SHA"], "run_url": os.environ["RUN_URL"]},
+              "readme_smoke": {"status": "success", "sha": os.environ["SHA"], "run_url": os.environ["RUN_URL"]},
+              "unresolved": [
+                  "Upstream ci-ok/legacy status checks are evaluated by bump.yml, not revalidated here; bump's explicit force input can bypass them."
+              ],
+              "deviations": [],
+          }
+          with open("release-receipt.json", "w", encoding="utf-8") as stream:
+              json.dump(receipt, stream, indent=2)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("## Exact-candidate release receipt\n\n```json\n")
+              json.dump(receipt, summary, indent=2)
+              summary.write("\n```\n")
+          PY
+          python scripts/release_receipt.py verify --receipt release-receipt.json --sha "$SHA"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-receipt
+          path: release-receipt.json
+          if-no-files-found: error
+
+  pypi-smoke:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with:
+          enable-cache: true
+
+      - name: Install and smoke the exact PyPI version
+        env:
+          VERSION: ${{ needs.publish.outputs.version }}
+        run: uv run --no-project --python 3.12 python scripts/pypi_release_smoke.py "$VERSION"
+
+      - name: Report post-publication failure boundary
+        if: failure()
+        run: |
+          echo "::error::PyPI publication already occurred; this smoke failed after publication. No rollback or republish was attempted."
+
+  publish:
+    needs: [build, verify]
+    outputs:
+      version: ${{ needs.build.outputs.version }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Gate releases behind a protected environment so a pushed tag alone cannot

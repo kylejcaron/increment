@@ -10,6 +10,8 @@ core-only call chain fails to execute.
 
 from __future__ import annotations
 
+import argparse
+import importlib.metadata
 import importlib.util
 import pathlib
 import sys
@@ -36,7 +38,7 @@ def _check_duckdb_memtable_from_pyarrow() -> None:
     con.drop_table("wheel_smoke_memtable")
 
 
-def main() -> None:
+def main(*, core_only: bool = True) -> None:
     if any(pathlib.Path(p).resolve() == _REPO_ROOT for p in sys.path if p):
         raise SystemExit(
             "increment resolved with the source checkout on sys.path -- not a wheel-only run"
@@ -48,12 +50,13 @@ def main() -> None:
         raise SystemExit(
             f"increment imported from {increment.__file__!r}, not this environment's site-packages"
         )
-    optional_modules = ("duckdb", "pandas", "coeftable")
-    present = [name for name in optional_modules if importlib.util.find_spec(name) is not None]
-    if present:
-        raise SystemExit(
-            f"core-only wheel environment unexpectedly contains optional modules: {present}"
-        )
+    if core_only:
+        optional_modules = ("duckdb", "pandas", "coeftable")
+        present = [name for name in optional_modules if importlib.util.find_spec(name) is not None]
+        if present:
+            raise SystemExit(
+                f"core-only wheel environment unexpectedly contains optional modules: {present}"
+            )
 
     failures: list[tuple[str, str]] = []
     promised_tiers = ("increment", "increment.results", "increment.power")
@@ -148,12 +151,67 @@ def main() -> None:
     assert frame_row["lift"] is None and frame_row["set_lower"] > 0
     assert frame_row["set_upper"] is None
 
-    print(f"wheel_smoke: OK (package={increment.__file__}; cwd={pathlib.Path.cwd()})")
+
+def _check_readme_mean_example() -> None:
+    """Execute the README dataframe mean-analysis example with its documented inputs."""
+    from random import Random
+
+    import polars as pl
+
+    from increment import Analysis
+    from increment.estimation.results import LiftEstimate
+
+    rng = Random(0)
+    df = pl.DataFrame(
+        {
+            "user_id": [f"u{i}" for i in range(200)],
+            "variant": ["control"] * 100 + ["treatment"] * 100,
+            "revenue": [rng.gauss(20 + (i >= 100), 5) for i in range(200)],
+        }
+    )
+    results = Analysis.from_unit_summary(
+        df,
+        unit="user_id",
+        group="variant",
+        control="control",
+        metrics={"revenue": "mean"},
+    ).run()
+    if len(results) != 1:
+        raise SystemExit("README mean-analysis example did not produce one result")
+    result = results[0]
+    if not isinstance(result, LiftEstimate) or result.metric != "revenue" or result.lift is None:
+        raise SystemExit("README mean-analysis example did not produce a revenue lift")
+    print(f"README mean-analysis smoke: OK (revenue lift={result.lift.value:+.1%})")
 
 
-if __name__ == "__main__":
-    if "--demo-extras" in sys.argv[1:]:
+def _arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--expected-version")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--readme-example", action="store_true")
+    modes.add_argument("--demo-extras", action="store_true")
+    return parser.parse_args()
+
+
+def _run() -> None:
+    args = _arguments()
+    main(core_only=not args.demo_extras)
+    if args.expected_version is not None:
+        actual = importlib.metadata.version("increment")
+        if actual != args.expected_version:
+            raise SystemExit(
+                f"installed increment version {actual!r} does not match expected "
+                f"{args.expected_version!r}"
+            )
+    if args.readme_example:
+        _check_readme_mean_example()
+        print(f"wheel_smoke: OK (package={increment.__file__}; cwd={pathlib.Path.cwd()})")
+    elif args.demo_extras:
         _check_duckdb_memtable_from_pyarrow()
         print("wheel_smoke: OK (--demo-extras: sqlglot/DuckDB memtable regression probe passed)")
     else:
-        main()
+        print(f"wheel_smoke: OK (package={increment.__file__}; cwd={pathlib.Path.cwd()})")
+
+
+if __name__ == "__main__":
+    _run()
