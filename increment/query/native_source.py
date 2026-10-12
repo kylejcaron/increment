@@ -3601,13 +3601,13 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     prop.dtype == "string",
                 )
         if outcome_stage == "raw" and self._session._source_tables is None:
-            measure_facts = tuple(
-                covariate.measure.fact
+            measure_sources = tuple(
+                _find_fact_source(self._defs, covariate.measure.fact)[0].name
                 for covariate in declared_covariates.values()
                 if covariate.measure is not None and covariate.name in covariates
             )
             with self._pinned_source_execution(
-                metrics=(metric,), extra_sources=measure_facts
+                metrics=(metric,), extra_sources=measure_sources
             ) as pinned:
                 return pinned.unit_frame(
                     metric,

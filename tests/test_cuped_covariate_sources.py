@@ -65,6 +65,58 @@ def test_native_measure_covariate_is_scoped_before_assignment(tmp_path):
     assert rows["u1"] == 0.0
 
 
+def test_raw_unit_frame_pins_separate_measure_fact_source(tmp_path):
+    import datetime as dt
+
+    import pyarrow as pa
+
+    defs_path, con, units = categorical_defs_and_con(tmp_path)
+    con.create_table(
+        "history",
+        obj=pa.Table.from_pylist(
+            [
+                {
+                    "user_id": unit,
+                    "ts": dt.datetime(2025, 7, 20, 10, 0),
+                    "event": "history_value",
+                    "value": float(i + 1),
+                }
+                for i, unit in enumerate(units)
+            ],
+        ),
+    )
+    text = defs_path.read_text().replace(
+        "exposures:\n",
+        "  - name: history\n"
+        "    sql: SELECT * FROM history\n"
+        "    timestamp_column: ts\n"
+        "    entities: [user_id]\n"
+        "    facts:\n"
+        "      - {name: history_value, column: value}\n"
+        "exposures:\n",
+    )
+    defs_path.write_text(text)
+    _with_metric_covariates(
+        defs_path,
+        "{name: pre_value, kind: continuous, measure: {fact: history_value, aggregation: sum}}",
+        n_pre_periods=30,
+    )
+    source = _moment_source(Analysis.from_definitions("cat_test", defs_path, con))
+    metric = source.context.metrics[0]
+    rows = (
+        nw.from_native(
+            cast(Any, source).unit_frame(metric, covariates=["pre_value"], outcome_stage="raw"),
+            eager_only=True,
+        )
+        .to_arrow()
+        .to_pylist()
+    )
+    values = {row["unit_id"]: row["pre_value"] for row in rows}
+
+    assert values["u0"] == 1.0
+    assert values["u1"] == 2.0
+
+
 def test_property_extensions_roundtrip_from_native_to_artifact(tmp_path):
     from increment.query.artifact_publish import artifact_context
     from increment.query.session import WarehouseArtifactStore
@@ -98,6 +150,52 @@ def test_property_extensions_roundtrip_from_native_to_artifact(tmp_path):
     )
 
     assert artifact_rows == native_rows
+
+
+def test_artifact_keeps_same_property_from_distinct_sources(tmp_path):
+    from increment.query.artifact_publish import artifact_context
+    from increment.query.session import WarehouseArtifactStore
+    from tests.covariate_cases import covariate_defs_and_con
+
+    defs_path, con, *_ = covariate_defs_and_con(tmp_path, observational=True)
+    text = (
+        defs_path.read_text()
+        .replace(
+            "exposures:\n",
+            "  - name: events_b\n"
+            "    sql: SELECT * FROM cov_events\n"
+            "    timestamp_column: ts\n"
+            "    entities: [user_id]\n"
+            "    facts:\n"
+            "      - {name: exposure_b, column: null}\n"
+            "      - {name: purchase_b, column: revenue}\n"
+            "    properties:\n"
+            "      - {name: tenure, column: tenure, dtype: float, as_of: pre_exposure}\n"
+            "exposures:\n",
+        )
+        .replace(
+            "    plan: {secondaries: [revenue]}",
+            "    plan: {primary: {metric: revenue, covariates: "
+            "[{name: pre_tenure, kind: continuous, property: tenure, source: events_b}]}}",
+        )
+    )
+    defs_path.write_text(text)
+    definitions = load(defs_path)
+    experiment = definitions.experiment("cov_test")
+    assert experiment is not None
+    context = artifact_context(definitions, experiment, "error")
+    analysis = Analysis.from_definitions("cov_test", defs_path, con)
+    store = WarehouseArtifactStore(con, schema_name="artifacts")
+    reference = analysis.publish_unit_day_artifact(store)
+    artifact_analysis = Analysis.from_unit_day_artifact(store, reference, expected_context=context)
+    artifact = cast(Any, _moment_source(artifact_analysis))
+    source_names = {
+        extension.source_name
+        for extension in artifact._manifest.extensions
+        if extension.kind == "unit_covariate"
+    }
+
+    assert source_names == {"events", "events_b"}
 
 
 def test_cuped_linear_run_refuses_as_unfinished_before_acquisition(tmp_path):
