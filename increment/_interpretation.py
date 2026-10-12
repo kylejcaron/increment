@@ -551,6 +551,128 @@ def render_readout_text(interpretation: ReadoutInterpretation) -> str:
     return "\n".join(lines)
 
 
+def _display_source(source_id: str | None) -> str | None:
+    if source_id is None:
+        return None
+    prefix, separator, digest = source_id.partition(":")
+    if not separator:
+        return source_id[:12]
+    return f"{prefix}:{digest[:12]}"
+
+
+def render_readout_qualifications(interpretation: ReadoutInterpretation) -> tuple[str, ...]:
+    """Return compact, source-attributed qualifications for a rendered table header."""
+    if not interpretation.groups:
+        return ("Scope and integrity unknown.",)
+    bullets: list[str] = []
+    for group in interpretation.groups:
+        attribution = [
+            value
+            for value in (group.population, _display_source(group.source_snapshot_id))
+            if value
+        ]
+        suffix = "" if not attribution else f" [{', '.join(attribution)}]"
+        comparison = (
+            f"{group.treatment_group} vs {group.control_group}"
+            if group.control_group is not None and group.treatment_group is not None
+            else f"treatment {group.treatment_group}; control identity "
+            + ("unknown" if not interpretation.metadata_known else "unavailable in retained scope")
+            if group.treatment_group is not None
+            else "comparison unknown"
+            if not interpretation.metadata_known
+            else "comparison not represented by retained scope"
+        )
+        bullets.append(f"Comparison: {comparison}{suffix}")
+        integrity = f"Integrity: {group.integrity_status}"
+        if group.integrity_code:
+            integrity += f" ({group.integrity_code})"
+        if group.integrity_status == "not_rejected":
+            integrity += "; no detected mismatch, not proof of valid randomization"
+        bullets.append(integrity + suffix)
+        decision = (
+            "unknown"
+            if group.decision_complete is None
+            else "complete"
+            if group.decision_complete
+            else "incomplete"
+        )
+        roster = (
+            "unknown"
+            if group.roster_complete is None
+            else "complete"
+            if group.roster_complete
+            else "incomplete"
+        )
+        if group.roster_source:
+            roster += f" ({group.roster_source})"
+        counts = ""
+        if group.required_cells:
+            required_available = sum(item.available for item in group.required_cells)
+            counts = (
+                f"; Required cells: {len(group.required_cells)}; "
+                f"available: {required_available}; hidden: {len(group.hidden_cells)}; "
+                f"unavailable: {len(group.unavailable_cells)}"
+            )
+        bullets.append(
+            f"Scope: decision {decision}; roster {roster}"
+            f"{'; partial view' if group.partial else ''}{counts}{suffix}"
+        )
+        for item in group.unavailable_cells:
+            if not item.visible:
+                continue
+            identity = _cell_label(item.key)
+            reason = item.failure_message or item.failure_code or "reason unavailable"
+            bullets.append(f"Unavailable {identity}: {reason}{suffix}")
+        for item in group.hidden_cells:
+            identity = _cell_label(item.key)
+            reason = item.failure_message or (
+                "availability unknown" if not item.available else "result retained in scope"
+            )
+            bullets.append(f"Hidden by filter {identity}: {reason}{suffix}")
+        family_by_id = {family.family_id: family for family in group.retained_families}
+        multiplicity = set()
+        for row in group.visible_rows:
+            role = getattr(row, "role", None) or "outcome"
+            family = family_by_id.get(getattr(row, "family_id", None))
+            status = getattr(row, "multiplicity_status", None)
+            if status is None and family is not None:
+                status = "adjusted" if family.family is not None else "exploratory_unadjusted"
+            if status is not None or family is not None:
+                multiplicity.add(
+                    (role, status or "unknown", "retained scope" if family is None else family.name)
+                )
+        if multiplicity:
+            for role, status, family_name in sorted(
+                multiplicity,
+                key=lambda item: (_ROLE_ORDER.get(item[0], 3), item[2], item[1]),
+            ):
+                bullets.append(f"Multiplicity ({role}): {status}; family {family_name}{suffix}")
+        elif group.retained_families:
+            family_names = ", ".join(sorted({family.name for family in group.retained_families}))
+            bullets.append(f"Multiplicity: retained scope; family {family_names}{suffix}")
+        for advisory in group.advisories:
+            context = _json(advisory.context)
+            detail = "" if not context else f"; context {context}"
+            bullets.append(f"Advisory {advisory.code}: {advisory.message}{detail}{suffix}")
+    return tuple(bullets)
+
+
+def _cell_label(cell: CellKey) -> str:
+    parts = [cell.metric]
+    if cell.kind == "contrast" and cell.treatment_group is not None:
+        comparison = (
+            f"{cell.treatment_group} vs {cell.control_group}"
+            if cell.control_group is not None
+            else f"treatment {cell.treatment_group}"
+        )
+        parts.append(comparison)
+    elif cell.group_id is not None:
+        parts.append(cell.group_id)
+    if cell.method is not None:
+        parts.append(cell.method)
+    return " / ".join(parts)
+
+
 def _retained_intervals(row, estimate, scale: str):
     if (
         getattr(row, "failure_code", None) is not None
@@ -645,6 +767,14 @@ def _interval_interpretation(row, estimate, scale: str, *, contrast: bool):
         f"Interpretation: interval excludes the tested null{level_note}; "
         f"direction supported ({direction})."
     )
+
+
+def render_effect_interpretation(row) -> str | None:
+    """Render a restrained interpretation from a row's retained interval and null."""
+    contrast = hasattr(row, "control_group")
+    scale = "absolute" if contrast else getattr(row, "value_scale", "relative")
+    estimate = getattr(row, "lift", None) or getattr(row, "estimate", None)
+    return _interval_interpretation(row, estimate, scale, contrast=contrast)
 
 
 def _reason(context):

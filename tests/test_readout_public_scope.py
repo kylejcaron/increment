@@ -21,6 +21,7 @@ from increment.errors import IncrementWarning, InvalidRequestError, UnsupportedR
 from increment.estimation.readout_types import CellKey, ReadoutResults
 from increment.estimation.results import LiftEstimate
 from increment.semantics.design import Randomized
+from increment.tables import readout_table
 from tests.readout_journeys import (
     assert_failed_assigned_integrity as check_failed_assigned_integrity,
 )
@@ -105,6 +106,19 @@ def test_default_repr_qualifies_comparisons_families_and_interval_meaning():
     assert "direction supported" in rendered
     assert "not evidence of no effect" in rendered
     assert "Selection:" in rendered
+
+
+def test_readout_table_uses_qualification_bullets_and_keeps_interpretation_per_row():
+    results = _analysis(_frame(guard_constant=False)).run(metrics=["rev"])
+    html = readout_table(results).gt().as_raw_html()
+    subtitle = html.split('class="gt_heading gt_subtitle', 1)[1].split("</td>", 1)[0]
+    assert "•" in subtitle
+    assert "Integrity: not_checked" in subtitle
+    assert "Interpretation:" not in subtitle
+    assert html.count("Interpretation:") == 1
+    assert results[0].source_snapshot_id.startswith("sha256:")
+    assert results[0].source_snapshot_id[:19] in subtitle
+    assert results[0].source_snapshot_id not in subtitle
 
 
 def test_saved_results_decode_when_only_the_boundary_module_is_imported():

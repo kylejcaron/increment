@@ -26,10 +26,12 @@ with an additive value numerically.
 the readout adapter below adds `value_scale="absolute"` to contrast rows.
 
 The `readout_table` coeftable keeps per-row estimate evidence compact:
-decision-scope completeness, partial-view state, and multiplicity provenance
-appear once as header notes only when informative. They remain on result
-objects and in `to_frame()`; failure rows keep a concise `Failure` column
-with their full structured context on the result object.
+decision-scope completeness, partial-view state, integrity, availability,
+multiplicity, and advisories appear as source-attributed qualification bullets
+in the header. Source identifiers are abbreviated there; the full identifiers
+remain in result objects and evidence columns. Interval interpretation stays
+with its effect row, and failure rows keep a concise `Failure` column with
+their full structured context on the result object.
 
 Scoped result collections also carry qualifications in their default
 `repr`: integrity and scope completeness precede availability, multiplicity,

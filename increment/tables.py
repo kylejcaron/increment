@@ -23,7 +23,8 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from increment._interpretation import (
     interpret_readout,
     readout_evidence_columns,
-    render_readout_text,
+    render_effect_interpretation,
+    render_readout_qualifications,
 )
 from increment.breakout.estimates import BreakoutEstimate, DailyLiftEstimate
 from increment.breakout.projection import to_frame
@@ -199,6 +200,7 @@ def _base_liftestimate_to_row(
         "role": getattr(est, "role", None),
         "discovery": getattr(est, "discovery", None),
         "selection_qualification": _selection_qualification(est),
+        "effect_interpretation": render_effect_interpretation(est),
         "family_axes": getattr(est, "family_axes", None),
         "family_q": getattr(est, "family_q", None),
         "family_threshold": getattr(est, "family_threshold", None),
@@ -774,6 +776,13 @@ def _readout_metadata_notes(frame: Any) -> list[str]:
     return notes
 
 
+def _display_source_snapshot(source: Any) -> Any:
+    if not isinstance(source, str):
+        return source
+    prefix, separator, digest = source.partition(":")
+    return f"{prefix}:{digest[:12]}" if separator else source[:12]
+
+
 def _readout_evidence_notes(frame: Any) -> list[str]:
     """Summarize portable collection qualifications once, retaining attribution."""
     notes = []
@@ -797,7 +806,10 @@ def _readout_evidence_notes(frame: Any) -> list[str]:
             if identity in seen:
                 continue
             seen.add(identity)
-            attribution = ", ".join(str(value) for value in identity[1:] if not _is_missing(value))
+            display_attribution = (identity[1], _display_source_snapshot(identity[2]))
+            attribution = ", ".join(
+                str(value) for value in display_attribution if not _is_missing(value)
+            )
             detail = (
                 "" if contexts is None or _is_missing(contexts[index]) else f" ({contexts[index]})"
             )
@@ -823,7 +835,13 @@ def _readout_evidence_notes(frame: Any) -> list[str]:
                 )
                 if key not in seen_advisories:
                     seen_advisories.add(key)
-                    label = ", ".join(str(value) for value in attribution if not _is_missing(value))
+                    display_attribution = (
+                        attribution[0],
+                        _display_source_snapshot(attribution[1]),
+                    )
+                    label = ", ".join(
+                        str(value) for value in display_attribution if not _is_missing(value)
+                    )
                     suffix = f" [{label}]" if label else ""
                     notes.append(
                         f"Advisory {advisory.get('code')}{suffix}: {advisory.get('message')}"
@@ -849,7 +867,11 @@ def _readout_evidence_notes(frame: Any) -> list[str]:
                 seen_cells.add(key)
                 message = cell.get("message") or cell.get("code") or "reason unavailable"
                 metric = cell.get("cell", {}).get("metric")
-                label_parts = (*attribution, metric)
+                label_parts = (
+                    attribution[0],
+                    _display_source_snapshot(attribution[1]),
+                    metric,
+                )
                 suffix = ", ".join(str(value) for value in label_parts if not _is_missing(value))
                 notes.append(f"{label}{f' [{suffix}]' if suffix else ''}: {message}")
     return notes
@@ -920,6 +942,11 @@ def _rendered_metadata_columns(
     if qualifications is not None and any(not _is_missing(value) for value in qualifications):
         columns["Selection qualification"] = [
             "" if _is_missing(value) else str(value) for value in qualifications
+        ]
+    interpretations = _column_values(frame, "effect_interpretation")
+    if interpretations is not None and any(not _is_missing(value) for value in interpretations):
+        columns["Interval interpretation"] = [
+            "" if _is_missing(value) else str(value) for value in interpretations
         ]
     levels = _column_values(frame, "level")
     if show_interval_level and levels is not None:
@@ -1381,7 +1408,7 @@ def _readout_input_frame(data: Any, nw: Any, pd: Any) -> tuple[Any, str]:
     metadata = getattr(data, "metadata", None)
     scope_header = ""
     if metadata is not None:
-        scope_header = render_readout_text(interpret_readout(data, metadata))
+        scope_header = " • ".join(render_readout_qualifications(interpret_readout(data, metadata)))
         data = estimates_to_readout(data)
     frame = (
         nw.from_native(pd.DataFrame(data), eager_only=True)
@@ -1589,9 +1616,11 @@ def readout_table(
             axis_fmt=ct.DateAxis(),
         )
 
-    notes = _readout_metadata_notes(frame) + _readout_evidence_notes(frame)
+    notes = (
+        _readout_metadata_notes(frame) + _readout_evidence_notes(frame) if not scope_header else []
+    )
     if scope_header:
-        notes.insert(0, scope_header)
+        notes.append(scope_header)
     level_note = _interval_level_note(
         frame,
         show_interval_level=show_interval_level,
@@ -1601,9 +1630,9 @@ def readout_table(
         notes.append(level_note)
     if title:
         if notes:
-            subtitle = " · ".join(([subtitle] if subtitle else []) + notes)
+            subtitle = " • ".join(([subtitle] if subtitle else []) + notes)
     elif notes or subtitle:
-        title = " · ".join(([subtitle] if subtitle else []) + notes)
+        title = " • ".join(([subtitle] if subtitle else []) + notes)
         subtitle = ""
     return table.header(title, subtitle)
 
