@@ -1151,7 +1151,18 @@ class EstimateList[M: BaseModel](list[M]):
         frame = frame.with_columns(
             nw.lit(None if self.metadata is None else self.metadata.partial).alias("view_partial")
         )
-        return frame.to_native()
+        native = cast(Any, frame.to_native())
+        if backend == "pandas":
+            import pandas as pd
+
+            for name in boolean_columns:
+                if name in evidence_columns:
+                    native[name] = pd.array(evidence_columns[name], dtype="boolean")
+            native["view_partial"] = pd.array(
+                [None if self.metadata is None else self.metadata.partial] * len(native),
+                dtype="boolean",
+            )
+        return native
 
     @overload
     def __getitem__(self, key: SupportsIndex) -> M: ...

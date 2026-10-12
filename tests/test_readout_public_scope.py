@@ -4,6 +4,8 @@ import copy
 import pickle
 import subprocess
 import sys
+from datetime import date
+from typing import Any, cast
 
 import narwhals as nw
 import numpy as np
@@ -15,11 +17,13 @@ from increment.breakout.estimates import (
     BreakoutEstimate,
     DailyLiftEstimate,
     DailyLiftEstimates,
+    DailyMetricValue,
+    DailyMetricValues,
     LiftEstimates,
 )
 from increment.errors import IncrementWarning, InvalidRequestError, UnsupportedRequestError
 from increment.estimation.readout_types import CellKey, ReadoutResults
-from increment.estimation.results import LiftEstimate
+from increment.estimation.results import Estimate, LiftEstimate
 from increment.semantics.design import Randomized
 from increment.tables import readout_table
 from tests.readout_journeys import (
@@ -132,6 +136,135 @@ def test_readout_table_escapes_user_text_in_qualification_list():
 
     assert "<img" not in subtitle
     assert "&lt;img src=x&gt;" in subtitle
+
+
+def test_absolute_margin_uses_additive_interval_not_relative_interval():
+    from increment.tables import estimates_to_readout
+
+    estimate = LiftEstimate(
+        metric="revenue",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        lift=Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
+        null_lift=0.0,
+        null_abs=-0.01,
+        abs_diff=-0.5,
+        abs_lb=-0.66,
+        abs_ub=-0.34,
+    )
+    (row,) = estimates_to_readout([estimate])
+
+    assert "direction supported (decrease)" in row["effect_interpretation"]
+    assert "increase supported" not in row["effect_interpretation"]
+
+
+def test_absolute_margin_without_additive_interval_does_not_fall_back_to_relative():
+    from increment.tables import estimates_to_readout
+
+    estimate = LiftEstimate(
+        metric="revenue",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        lift=Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
+        null_lift=0.0,
+        null_abs=-0.01,
+    )
+    (row,) = estimates_to_readout([estimate])
+
+    assert "unavailable" in row["effect_interpretation"].lower()
+    assert "increase supported" not in row["effect_interpretation"]
+
+
+def test_estimate_frames_preserve_unknown_nullable_evidence_and_daily_values():
+    estimate = LiftEstimate(
+        metric="revenue",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        lift=Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
+    )
+    unscoped = cast(pd.DataFrame, LiftEstimates([estimate]).to_frame(backend="pandas"))
+    assert str(unscoped["decision_scope_complete"].dtype) == "boolean"
+    assert unscoped["decision_scope_complete"].isna().all()
+    assert str(unscoped["posterior_available"].dtype) == "boolean"
+    assert unscoped["posterior_available"].isna().all()
+
+    daily = cast(
+        pd.DataFrame,
+        DailyMetricValues(
+            [
+                DailyMetricValue(
+                    ds=date(2024, 1, 1),
+                    metric="revenue",
+                    group_id="treatment",
+                    value=Estimate(value=10, lb=9, ub=11, level=0.95),
+                    n=100,
+                )
+            ]
+        ).to_frame(backend="pandas"),
+    )
+    assert daily["point_available"].tolist() == [True]
+    assert daily["sampling_available"].tolist() == [True]
+    assert daily["unavailable_cell_count"].tolist() == [0]
+
+
+def test_row_only_readout_table_retains_roster_and_family_qualifications():
+    from increment.tables import estimates_to_readout
+
+    results = _analysis(_frame(guard_constant=False)).run(metrics=["rev"])
+    rows = estimates_to_readout(results)
+    direct_html = readout_table(results).gt().as_raw_html()
+    row_only_html = readout_table(rows).gt().as_raw_html()
+
+    assert "family" in direct_html.lower()
+    assert "roster" in direct_html.lower()
+    assert "family" in row_only_html.lower()
+    assert "roster" in row_only_html.lower()
+
+
+def test_interpretation_labels_distinct_source_snapshots():
+    from increment._interpretation import interpret_readout, render_readout_text
+
+    estimate = LiftEstimate(
+        metric="revenue",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        source_snapshot_id=f"sha256:{'1' * 64}",
+        lift=Estimate(value=0.2, lb=0.1, ub=0.3, level=0.95),
+    )
+    second = estimate.model_copy(update={"source_snapshot_id": f"sha256:{'2' * 64}"})
+    rendered = render_readout_text(interpret_readout([estimate, second], None))
+
+    assert rendered.count("sha256:") == 2
+
+
+def test_failure_passthrough_is_escaped_in_complete_html_table():
+    payload = "<img src=x onerror=alert(1)>"
+    frame = _frame(guard_constant=False).rename(columns={"guard": payload})
+    analysis = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[
+            MetricSpec(name="rev", type="mean"),
+            MetricSpec(
+                name=payload,
+                type="mean",
+                missing="drop",
+                preferred_direction="decrease",
+            ),
+        ],
+        plan=AnalysisPlan(primary="rev", guardrails=[payload]),
+    )
+    with analysis:
+        results = analysis.run()
+    html = readout_table(cast(Any, results)).gt().as_raw_html()
+    assert "<img" not in html
+    assert "&lt;img src=x onerror=alert(1)&gt;" in html
 
 
 def test_saved_results_decode_when_only_the_boundary_module_is_imported():

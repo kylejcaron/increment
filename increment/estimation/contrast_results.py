@@ -739,7 +739,7 @@ class ContrastResults(list[ContrastResult]):
             for name, values in nullable_ints.items():
                 frame.insert(columns.index(name), name, pd.array(values, dtype="Int64"))
             frame["preferred_direction"] = pd.array(data["preferred_direction"], dtype="string")
-        return (
+        frame = (
             nw.from_native(frame, eager_only=True)
             .with_columns(
                 nw.lit(None if self.metadata is None else self.metadata.partial).alias(
@@ -748,6 +748,17 @@ class ContrastResults(list[ContrastResult]):
             )
             .to_native()
         )
+        if backend == "pandas":
+            import pandas as pd
+
+            for name in boolean_columns:
+                if name in evidence_columns:
+                    frame[name] = pd.array(evidence_columns[name], dtype="boolean")
+            frame["view_partial"] = pd.array(
+                [None if self.metadata is None else self.metadata.partial] * len(frame),
+                dtype="boolean",
+            )
+        return frame
 
 
 __all__ = ["ContrastResult", "ContrastResults"]

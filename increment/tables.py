@@ -786,67 +786,124 @@ def _display_source_snapshot(source: Any) -> Any:
 
 def _readout_evidence_notes(frame: Any) -> list[str]:
     """Summarize portable collection qualifications once, retaining attribution."""
-    notes = []
     populations = _column_values(frame, "analysis_population")
     sources = _column_values(frame, "source_snapshot_id")
+    return (
+        _integrity_notes(frame, populations, sources)
+        + _roster_notes(frame, populations, sources)
+        + _family_notes(frame, populations, sources)
+        + _advisory_notes(frame, populations, sources)
+        + _cell_evidence_notes(frame, populations, sources)
+    )
+
+
+def _row_attribution(populations, sources, index):
+    return tuple(values[index] if values is not None else None for values in (populations, sources))
+
+
+def _display_attribution(populations, sources, index):
+    population, source = _row_attribution(populations, sources, index)
+    return population, _display_source_snapshot(source)
+
+
+def _attribution_suffix(values) -> str:
+    label = ", ".join(str(value) for value in values if not _is_missing(value))
+    return f" [{label}]" if label else ""
+
+
+def _integrity_notes(frame, populations, sources) -> list[str]:
     statuses = _column_values(frame, "integrity_status")
+    if statuses is None:
+        return []
+    contexts = _column_values(frame, "integrity_code")
     required = _column_values(frame, "required_cell_count")
     available = _column_values(frame, "available_cell_count")
-    advisories = _column_values(frame, "advisories")
-    if statuses is not None:
-        contexts = _column_values(frame, "integrity_code")
-        seen = set()
-        for index, status in enumerate(statuses):
-            if _is_missing(status):
+    notes = []
+    seen = set()
+    for index, status in enumerate(statuses):
+        if _is_missing(status):
+            continue
+        identity = (status, *_row_attribution(populations, sources, index))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        detail = "" if contexts is None or _is_missing(contexts[index]) else f" ({contexts[index]})"
+        note = f"Integrity {status}{detail}{_attribution_suffix(_display_attribution(populations, sources, index))}"
+        if required is not None and available is not None:
+            note += f"; required cells {required[index]}, available {available[index]}"
+        notes.append(note + ".")
+    return notes
+
+
+def _roster_notes(frame, populations, sources) -> list[str]:
+    complete_values = _column_values(frame, "roster_complete")
+    if complete_values is None:
+        return []
+    roster_sources = _column_values(frame, "roster_source")
+    notes = []
+    seen = set()
+    for index, complete in enumerate(complete_values):
+        roster_source = None if roster_sources is None else roster_sources[index]
+        identity = (complete, *_row_attribution(populations, sources, index), roster_source)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        state = "unknown" if _is_missing(complete) else "complete" if complete else "incomplete"
+        source_note = "" if _is_missing(roster_source) else f" ({roster_source})"
+        suffix = _attribution_suffix(_display_attribution(populations, sources, index))
+        notes.append(f"Roster completeness {state}{source_note}{suffix}.")
+    return notes
+
+
+def _family_notes(frame, populations, sources) -> list[str]:
+    values = _column_values(frame, "retained_family")
+    if values is None:
+        return []
+    notes = []
+    seen = set()
+    for index, value in enumerate(values):
+        if _is_missing(value):
+            continue
+        attribution = _row_attribution(populations, sources, index)
+        for family in json.loads(value):
+            identity = (family.get("family_id"), attribution)
+            if identity in seen:
                 continue
+            seen.add(identity)
+            family_model = family.get("family") or {}
+            name = family_model.get("name") or family.get("name") or "unknown"
+            state = "complete" if family.get("complete") else "incomplete"
+            display = _display_attribution(populations, sources, index)
+            notes.append(f"Multiplicity family {name} {state}{_attribution_suffix(display)}.")
+    return notes
+
+
+def _advisory_notes(frame, populations, sources) -> list[str]:
+    values = _column_values(frame, "advisories")
+    if values is None:
+        return []
+    notes = []
+    seen = set()
+    for index, value in enumerate(values):
+        if _is_missing(value):
+            continue
+        attribution = _row_attribution(populations, sources, index)
+        suffix = _attribution_suffix(_display_attribution(populations, sources, index))
+        for advisory in json.loads(value):
             identity = (
-                status,
-                None if populations is None else populations[index],
-                None if sources is None else sources[index],
+                advisory.get("code"),
+                json.dumps(advisory.get("context"), sort_keys=True),
+                attribution,
             )
             if identity in seen:
                 continue
             seen.add(identity)
-            display_attribution = (identity[1], _display_source_snapshot(identity[2]))
-            attribution = ", ".join(
-                str(value) for value in display_attribution if not _is_missing(value)
-            )
-            detail = (
-                "" if contexts is None or _is_missing(contexts[index]) else f" ({contexts[index]})"
-            )
-            note = f"Integrity {status}{detail}"
-            if attribution:
-                note += f" [{attribution}]"
-            if required is not None and available is not None:
-                note += f"; required cells {required[index]}, available {available[index]}"
-            notes.append(note + ".")
-    if advisories is not None:
-        seen_advisories = set()
-        for index, value in enumerate(advisories):
-            if _is_missing(value):
-                continue
-            attribution = tuple(
-                values[index] if values is not None else None for values in (populations, sources)
-            )
-            for advisory in json.loads(value):
-                key = (
-                    advisory.get("code"),
-                    json.dumps(advisory.get("context"), sort_keys=True),
-                    attribution,
-                )
-                if key not in seen_advisories:
-                    seen_advisories.add(key)
-                    display_attribution = (
-                        attribution[0],
-                        _display_source_snapshot(attribution[1]),
-                    )
-                    label = ", ".join(
-                        str(value) for value in display_attribution if not _is_missing(value)
-                    )
-                    suffix = f" [{label}]" if label else ""
-                    notes.append(
-                        f"Advisory {advisory.get('code')}{suffix}: {advisory.get('message')}"
-                    )
+            notes.append(f"Advisory {advisory.get('code')}{suffix}: {advisory.get('message')}")
+    return notes
+
+
+def _cell_evidence_notes(frame, populations, sources) -> list[str]:
+    notes = []
     for column, label in (
         ("unavailable_cells", "Unavailable"),
         ("hidden_cells", "Hidden by filter"),
@@ -854,27 +911,20 @@ def _readout_evidence_notes(frame: Any) -> list[str]:
         values = _column_values(frame, column)
         if values is None:
             continue
-        seen_cells = set()
+        seen = set()
         for index, value in enumerate(values):
             if _is_missing(value):
                 continue
-            attribution = tuple(
-                values[index] if values is not None else None for values in (populations, sources)
-            )
+            attribution = _row_attribution(populations, sources, index)
             for cell in json.loads(value):
-                key = (json.dumps(cell, sort_keys=True), attribution)
-                if key in seen_cells:
+                identity = (json.dumps(cell, sort_keys=True), attribution)
+                if identity in seen:
                     continue
-                seen_cells.add(key)
+                seen.add(identity)
                 message = cell.get("message") or cell.get("code") or "reason unavailable"
                 metric = cell.get("cell", {}).get("metric")
-                label_parts = (
-                    attribution[0],
-                    _display_source_snapshot(attribution[1]),
-                    metric,
-                )
-                suffix = ", ".join(str(value) for value in label_parts if not _is_missing(value))
-                notes.append(f"{label}{f' [{suffix}]' if suffix else ''}: {message}")
+                display = (*_display_attribution(populations, sources, index), metric)
+                notes.append(f"{label}{_attribution_suffix(display)}: {message}")
     return notes
 
 
@@ -1019,7 +1069,20 @@ def _rendered_metadata_columns(
         qualifications = [_binomial_qualification_disclosure(value) for value in binomial_sets]
         if any(qualifications):
             columns["Numerical qualification"] = qualifications
-    return columns
+    markdown_special = set("\\`*_{}[]()#+-.!>|~")
+    return {
+        label: [
+            escape_html(
+                "".join(
+                    f"\\{character}" if character in markdown_special else character
+                    for character in str(value)
+                ),
+                quote=True,
+            )
+            for value in values
+        ]
+        for label, values in columns.items()
+    }
 
 
 def _binomial_qualification_disclosure(value: Any) -> str:

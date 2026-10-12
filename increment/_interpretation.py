@@ -444,29 +444,44 @@ def _row_display_order(row):
     )
 
 
+def _render_group_label(group, *, metadata_known: bool, show_source: bool) -> str:
+    if group.control_group is not None and group.treatment_group is not None:
+        comparison = f"{group.treatment_group} vs {group.control_group}"
+    elif group.treatment_group is not None:
+        control = (
+            "control identity unknown"
+            if not metadata_known
+            else "control identity unavailable in retained scope"
+        )
+        comparison = f"treatment {group.treatment_group}; {control}"
+    else:
+        comparison = (
+            "comparison unknown"
+            if not metadata_known
+            else "comparison not represented by retained scope"
+        )
+    source = (
+        f" [{_display_source(group.source_snapshot_id)}]"
+        if show_source and group.source_snapshot_id is not None
+        else ""
+    )
+    return f"{group.population or 'population unknown'} — {comparison}{source}"
+
+
 def render_readout_text(interpretation: ReadoutInterpretation) -> str:
     """Render concise integrity/completeness qualifications before effects."""
     if not interpretation.groups:
         return "Scope retained; no source-qualified cells recorded."
     lines: list[str] = []
+    show_source = len({group.source_snapshot_id for group in interpretation.groups}) > 1
     for group in interpretation.groups:
-        comparison = (
-            f"{group.treatment_group} vs {group.control_group}"
-            if group.control_group is not None and group.treatment_group is not None
-            else f"treatment {group.treatment_group}; "
-            + (
-                "control identity unknown"
-                if not interpretation.metadata_known
-                else "control identity unavailable in retained scope"
-            )
-            if group.treatment_group is not None
-            else (
-                "comparison unknown"
-                if not interpretation.metadata_known
-                else "comparison not represented by retained scope"
+        lines.append(
+            _render_group_label(
+                group,
+                metadata_known=interpretation.metadata_known,
+                show_source=show_source,
             )
         )
-        lines.append(f"{group.population or 'population unknown'} — {comparison}")
         visible_rows = sorted(group.visible_rows, key=_row_display_order)
         if group.integrity_status == "failed":
             lines.append(f"Integrity: failed ({group.integrity_code or 'mismatch'}).")
@@ -709,11 +724,17 @@ def _retained_intervals(row, estimate, scale: str):
                     else None,
                 ),
             ), getattr(confidence_set, "level", None)
+    if scale == "absolute":
+        lower = getattr(row, "abs_lb", None)
+        upper = getattr(row, "abs_ub", None)
+        if lower is None and upper is None:
+            return (), getattr(estimate, "level", None)
+        return ((lower, upper),), getattr(estimate, "level", None)
     relative_set = getattr(row, "relative_confidence_set", None)
-    if relative_set is not None and scale != "absolute":
+    if relative_set is not None:
         return tuple(relative_set.intervals), getattr(relative_set, "level", None)
     binomial = getattr(row, "binomial_set", None)
-    if binomial is not None and scale != "absolute":
+    if binomial is not None:
         return ((binomial.lower, binomial.upper),), binomial.level
     sequential = getattr(row, "sequential_result", None)
     if sequential is not None:
@@ -743,6 +764,8 @@ def _interval_interpretation(row, estimate, scale: str, *, contrast: bool):
         return None
     intervals, level = _retained_intervals(row, estimate, scale)
     if not intervals:
+        if getattr(row, "null_abs", None) is not None:
+            return "Interpretation: unavailable; the additive interval is not retained."
         return None
     contains_null = any(
         (lower is None or lower <= null) and (upper is None or null <= upper)
@@ -781,7 +804,11 @@ def _interval_interpretation(row, estimate, scale: str, *, contrast: bool):
 def render_effect_interpretation(row) -> str | None:
     """Render a restrained interpretation from a row's retained interval and null."""
     contrast = hasattr(row, "control_group")
-    scale = "absolute" if contrast else getattr(row, "value_scale", "relative")
+    scale = (
+        "absolute"
+        if contrast or getattr(row, "null_abs", None) is not None
+        else getattr(row, "value_scale", "relative")
+    )
     estimate = getattr(row, "lift", None) or getattr(row, "estimate", None)
     return _interval_interpretation(row, estimate, scale, contrast=contrast)
 
@@ -821,7 +848,11 @@ def _jsonable(value):
 def _has_point(row) -> bool:
     if row is None:
         return False
-    return getattr(row, "lift", None) is not None or getattr(row, "estimate", None) is not None
+    return (
+        getattr(row, "lift", None) is not None
+        or getattr(row, "estimate", None) is not None
+        or getattr(row, "value", None) is not None
+    )
 
 
 def _has_sampling_result(row) -> bool:

@@ -66,6 +66,13 @@ def test_result_models_are_typed_and_immutable():
         result.metric = "other"  # type: ignore[misc]
 
 
+def test_frame_keeps_unknown_evidence_nullable_in_pandas():
+    frame = cast(Any, ContrastResults([_result()]).to_frame(backend="pandas"))
+
+    assert str(frame["posterior_available"].dtype) == "boolean"
+    assert frame["posterior_available"].isna().all()
+
+
 def test_slice_preserves_contrast_results():
     result = _result()
 
