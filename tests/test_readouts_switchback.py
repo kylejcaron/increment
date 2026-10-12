@@ -853,6 +853,9 @@ def test_public_envelope_plan_result_frame_and_readout_roundtrip(backend):
     source = _source(reference)
     results = analysis.run()
     result = results[0]
+    rendered = repr(results)
+    assert "Interpretation:" in rendered
+    assert "Interpretation: unavailable" not in rendered
     context = source.context
     restored_context = type(context).model_validate_json(context.model_dump_json())
     assert restored_context == context
@@ -918,8 +921,8 @@ def test_public_envelope_plan_result_frame_and_readout_roundtrip(backend):
         assert row[name] == readout[name] == getattr(result, name)
     assert row["source_snapshot_id"] == result.source_snapshot_id
     assert row["analysis_population"] == "assigned"
-    assert row["decision_scope_complete"] is True
-    assert row["view_partial"] is False
+    assert bool(row["decision_scope_complete"]) is True
+    assert bool(row["view_partial"]) is False
     assert readout["source_snapshot_id"] == result.source_snapshot_id
     assert readout["analysis_population"] == "assigned"
     assert readout["decision_scope_complete"] is True

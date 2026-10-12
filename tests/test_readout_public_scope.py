@@ -138,6 +138,46 @@ def test_readout_table_escapes_user_text_in_qualification_list():
     assert "&lt;img src=x&gt;" in subtitle
 
 
+def test_absolute_margin_repr_matches_exported_additive_interpretation():
+    from increment.semantics.models import ExperimentMetric
+    from increment.tables import estimates_to_readout
+
+    records = []
+    for arm in ("control", "treatment"):
+        for index in range(200):
+            value = 9.0 if index % 2 == 0 else 11.0
+            records.append(
+                {
+                    "unit": f"{arm}-{index}",
+                    "arm": arm,
+                    "revenue": value,
+                    "latency": value,
+                }
+            )
+    analysis = Analysis.from_unit_summary(
+        pd.DataFrame(records),
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[
+            MetricSpec(name="revenue", type="mean", preferred_direction="increase"),
+            MetricSpec(name="latency", type="mean", preferred_direction="decrease"),
+        ],
+        plan=AnalysisPlan(
+            primary="revenue",
+            guardrails=[ExperimentMetric(metric="latency", margin_abs=0.5)],
+        ),
+    )
+    with analysis:
+        results = analysis.run()
+
+    latency = next(row for row in estimates_to_readout(results) if row["metric"] == "latency")
+    rendered = repr(results)
+
+    assert "direction supported (decrease)" in latency["effect_interpretation"]
+    assert latency["effect_interpretation"] in rendered
+
+
 def test_absolute_margin_uses_additive_interval_not_relative_interval():
     from increment.tables import estimates_to_readout
 

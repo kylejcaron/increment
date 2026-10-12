@@ -725,6 +725,10 @@ def _retained_intervals(row, estimate, scale: str):
                 ),
             ), getattr(confidence_set, "level", None)
     if scale == "absolute":
+        if hasattr(row, "control_group"):
+            if estimate is None or (estimate.lb is None and estimate.ub is None):
+                return (), getattr(estimate, "level", None)
+            return ((estimate.lb, estimate.ub),), getattr(estimate, "level", None)
         lower = getattr(row, "abs_lb", None)
         upper = getattr(row, "abs_ub", None)
         if lower is None and upper is None:
@@ -908,7 +912,7 @@ def _render_effect(row):
             if estimate.level is not None:
                 effect += f" at {estimate.level:.3g} confidence"
         lines.append(effect + ".")
-    interpretation = _interval_interpretation(row, estimate, scale, contrast=contrast)
+    interpretation = render_effect_interpretation(row)
     if interpretation is not None:
         lines.append(interpretation)
     if getattr(row, "abs_diff", None) is not None:
