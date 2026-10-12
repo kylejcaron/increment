@@ -4,6 +4,7 @@ import copy
 import datetime as dt
 import math
 import pickle
+from typing import Any, cast
 
 import ibis
 import pyarrow as pa
@@ -11,7 +12,7 @@ import pytest
 from scipy.stats import norm
 
 from increment import Analysis, SourceSnapshotEvidence
-from increment.errors import CapabilityError
+from increment.errors import CapabilityError, DefinitionError
 from increment.estimation.sitewide import SitewideRatioImpact
 from increment.query.artifact_contract import ArtifactContractError
 from tests.analysis_factory import _native_source, native_connection
@@ -19,7 +20,7 @@ from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adop
 from tests.test_analysis_trigger import _defs_yaml, _events
 
 
-def _analysis(tmp_path, events=None):
+def _analysis(tmp_path, events=None, *, store="auto"):
     tmp_path.mkdir(parents=True, exist_ok=True)
     definitions = tmp_path / "triggered-sitewide.yml"
     definitions.write_text(_defs_yaml(end="2024-01-10").replace("    window_days: 7\n", ""))
@@ -32,6 +33,7 @@ def _analysis(tmp_path, events=None):
         "exp",
         definitions,
         con,
+        store=store,
         source_snapshot_evidence=SourceSnapshotEvidence(
             observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
             complete_through_by_feed={"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
@@ -103,6 +105,79 @@ def test_triggered_sitewide_evidence_uses_calendar_window_member_outcomes(tmp_pa
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+@pytest.mark.parametrize("store", ["auto", "always", "none"])
+@pytest.mark.parametrize(
+    "order",
+    [
+        ("assigned", "triggered"),
+        ("triggered", "triggered"),
+        ("triggered", "assigned"),
+    ],
+)
+def test_triggered_sitewide_reductions_do_not_cross_contaminate_cache(tmp_path, store, order):
+    analysis = _analysis(tmp_path / "cached", store=store)
+    fresh_triggered = _analysis(tmp_path / "fresh-triggered", store=store)
+    fresh_assigned = _analysis(tmp_path / "fresh-assigned", store=store)
+    try:
+        expected = {
+            "triggered": fresh_triggered.sitewide("revenue", population="triggered"),
+            "assigned": fresh_assigned.sitewide("revenue"),
+        }
+        actual = {}
+        for population in order:
+            actual[population] = analysis.sitewide(
+                "revenue",
+                population="triggered" if population == "triggered" else "assigned",
+            )
+        for population, result in actual.items():
+            reference = expected[population]
+            assert result.delta == pytest.approx(reference.delta)
+            assert result.n_control == pytest.approx(reference.n_control)
+            assert result.n_treatment == pytest.approx(reference.n_treatment)
+            assert result.analysis_population == reference.analysis_population
+            assert result.absolute_impact == pytest.approx(reference.absolute_impact)
+            assert result.baseline_volume == pytest.approx(reference.baseline_volume)
+    finally:
+        analysis.close()
+        fresh_triggered.close()
+        fresh_assigned.close()
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_artifact_adoption_rejects_trigger_cutoff_mismatch(tmp_path):
+    analysis = _analysis(tmp_path)
+    adopted = None
+    try:
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(analysis)),
+            analysis,
+            kinds=("site_volume", "trigger_population", "trigger_measure_stats"),
+        )
+        _con, store, reference = cast(Any, adopted)._parity_artifacts[0]
+        with store.open_snapshot(reference) as snapshot:
+            manifest = snapshot.read_manifest(
+                reference.manifest, expected_sha256=reference.manifest_sha256
+            )
+        trigger = next(item for item in manifest.extensions if item.kind == "trigger_population")
+        trigger_measure = next(
+            item for item in manifest.extensions if item.kind == "trigger_measure_stats"
+        )
+        assert trigger.observation_cutoff_ts == trigger_measure.observation_cutoff_ts
+
+        payload = manifest.model_dump(mode="python")
+        for extension in payload["extensions"]:
+            if extension["kind"] == "trigger_measure_stats":
+                extension["observation_cutoff_ts"] = dt.datetime(2024, 1, 15, tzinfo=dt.UTC)
+        with pytest.raises(DefinitionError) as refused:
+            type(manifest).model_validate(payload)
+        assert getattr(refused.value, "code", None) == "definition.unit_day.trigger_measure_anchor"
+    finally:
+        if adopted is None:
+            analysis.close()
+        else:
+            _close_parity_analysis(adopted)
+
+
 def test_triggered_sitewide_artifact_matches_native_evidence(tmp_path):
     analysis = _analysis(tmp_path)
     adopted = None
