@@ -368,6 +368,9 @@ documentation assets. Library, test, fixture, dependency, CI, unknown,
 deletion, and rename changes require it; an unavailable diff also requires it.
 Main pushes never use this filter.
 
+The PR PostgreSQL gate runs one duration-balanced shard. The reusable
+warehouse workflow defaults to three shards for weekly and manual runs.
+
 Each fast Python-version cell has two duration-balanced `pytest-split` shards,
 with `xdist` workers inside each shard. `ci-ok` requires all six jobs. The
 machine-generated `.github/fast-test-durations.json` weights come from the
