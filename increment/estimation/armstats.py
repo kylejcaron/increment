@@ -1418,6 +1418,18 @@ class ArmStats(CodedModel, BaseModel):
         self._require_two_units("ddof=1 variance")
         return self.moments.var("den", what=f"var_den for {self._label()}")
 
+    def se_mean_den(self) -> float:
+        """Standard error of the denominator mean, ``sqrt(var_den / n)``.
+
+        Formed from separate square roots of the centered sum and the counts
+        so a subnormal second moment cannot underflow to a zero divisor.
+        """
+        if self.cden2 is None or self.cden1 is None:
+            _raise("estimation.armstats.arm_stats.var_den_needs_cden2")
+        self._require_two_units("ddof=1 variance")
+        second = self.moments._mean_centered_second("den", what=f"se_mean_den for {self._label()}")
+        return math.sqrt(second) / math.sqrt(self.n) / math.sqrt(self.n - 1)
+
     def skew_den_unavailable(self) -> str | None:
         """Why denominator skewness cannot be trusted, or ``None``.
 

@@ -241,10 +241,7 @@ def ratio_denominator_precision(arm: ArmStats) -> float:
     division overflow yields ``inf`` rather than raising.
     """
     _, d_bar, _, _, _ = ratio_moments(arm)
-    second = arm.moments._mean_centered_second(
-        "den", what=f"ratio_denominator_precision for {arm._label()}"
-    )
-    return math.sqrt(second) / math.sqrt(arm.n) / math.sqrt(arm.n - 1) / d_bar
+    return arm.se_mean_den() / d_bar
 
 
 #: Standardized skewness of a denominator MEAN, ``g1 / sqrt(n)``, from which the
