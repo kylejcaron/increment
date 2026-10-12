@@ -294,8 +294,30 @@ for arms with no triggered members. An empty arm outside the selected
 control/treatment contrast contributes no members to the scaling total; an
 empty selected contrast arm remains an estimability refusal.
 
+Calibration (`python -m calibration.triggered_sitewide --campaign full`): two-arm,
+unclustered designs with 20% trigger reach, measured against realized
+potential-outcome site totals, 107,100 replications per statistic. For sum
+metrics (20% and 100% of the site enrolled) and a benign ratio metric, the
+assigned and triggered readings each covered 95.12%–95.66% for absolute and
+relative impact at nominal 95%; every Clopper–Pearson lower bound, at a
+family-allocated error of 7.5e-5, cleared 94.5%. The campaign checks the
+Normal-reference intervals the sitewide functions report; it does not cover
+multi-arm netting, clustered designs, or uncertainty about future traffic or
+trigger reach. Assumption failures are not detectable from coverage:
 
-Calibration: `CALIBRATION_RESULTS_PENDING`
+- **Never-triggered units affected:** with a 0.1 effect among never-triggered
+  units, the triggered reading undercounted the impact by the omitted
+  complement total (about −800 of a true 1,400) and covered 3%. The assigned
+  reading still covered 95%.
+- **Membership depends on treatment, at equal trigger rates:** the triggered
+  reading covered almost never, while the triggered sample-ratio check
+  rejected in only 4.7% of runs.
+
+Precision relative to the assigned reading depends on the outcome. The
+variance ratios observed were 0.91, 0.65 and 0.10 for a binary
+post-trigger-only outcome, a lognormal post-trigger-only outcome and a broad
+metric respectively. Each was within 5% of
+$p\sigma_T^2 / (p\sigma_T^2 + (1-p)\sigma_{NT}^2 + p(1-p)(\mu_T-\mu_{NT})^2)$.
 
 The clustered encouragement LATE cuts its additive interval at a Welch–Satterthwaite t
 reference over the two arms' own cluster-ratio variance components. Measured by
