@@ -278,6 +278,7 @@ def test_artifact_adoption_rejects_trigger_cutoff_mismatch(tmp_path):
             _close_parity_analysis(adopted)
 
 
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_triggered_sitewide_artifact_matches_native_evidence(tmp_path):
     analysis = _analysis(tmp_path)
     adopted = None
