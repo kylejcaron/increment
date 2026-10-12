@@ -19,6 +19,10 @@ and rel* = I*/V0*, not a superpopulation mean. Ratio truths apply the same
 potential-outcome accounting to both components. Never-triggered and
 non-enrolled outcomes remain in V even for the triggered reading.
 
+T3 retains the C.2 outcomes and adds a fixed unaffected site background of
+1,000,000 solely to admit a positive baseline for the broad zero-mean metric.
+Only its absolute-impact variances are compared; these do not depend on V.
+
 The manifest below is frozen before sampling. Every design uses independent
 replication seeds 1000 + rep; readings within a design are paired. Full gates
 share the 67-statistic family allocation with other certification campaigns.
@@ -41,6 +45,7 @@ SMOKE_REPS = 3
 SENTINEL_REPS = 2000
 SENTINEL_ETA = 0.01
 SENTINEL_FLOOR = 0.925
+VARIANCE_BACKGROUND = 1_000_000.0
 
 
 @dataclass(frozen=True)
