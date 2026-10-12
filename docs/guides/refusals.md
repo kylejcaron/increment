@@ -39,3 +39,63 @@ estimated; it does not prevent reading arm counts or a separate allocation
 diagnostic. A triggered readout refusal does not license interpreting the
 assigned-population result as a triggered-population estimate. See
 [reading results](reading-results.md) for interpretation and next actions.
+
+## Recover from a missing sequential allocation
+
+Automatic sequential registration fixes its inference boundary using the
+assignment probabilities. When a public frame analysis has no allocation, pass
+the **actual** allocation used to assign units; do not add a declaration that
+does not match the experiment. This runnable example shows the refusal and the
+corrected rerun:
+
+```python
+import pandas as pd
+
+from increment import Analysis, AnalysisPlan, InferenceSpec, MetricSpec, Randomized
+from increment.errors import CapabilityError
+
+frame = pd.DataFrame(
+    [
+        {"unit": "c1", "arm": "control", "outcome": 2.0, "exposure": 1},
+        {"unit": "c2", "arm": "control", "outcome": 3.0, "exposure": 2},
+        {"unit": "t1", "arm": "treatment", "outcome": 4.0, "exposure": 3},
+        {"unit": "t2", "arm": "treatment", "outcome": 5.0, "exposure": 4},
+    ]
+)
+plan = AnalysisPlan(primary="outcome", inference=InferenceSpec(kind="asymptotic_mean"))
+metrics = [MetricSpec(name="outcome", type="mean")]
+
+try:
+    Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        design=Randomized(control_group="control"),
+        metrics=metrics,
+        experiment_id="example",
+        plan=plan,
+        exposure_date="exposure",
+    )
+except CapabilityError as exc:
+    assert exc.code == "sequential.source.invalid"
+    assert exc.context["route"] == "design.allocation"
+    assert exc.context["mechanism"] == "randomized"
+    assert exc.context["required"] == "actual assignment allocation"
+else:
+    raise AssertionError("the missing allocation should be refused")
+
+# This example's units were assigned 1:1; use the real allocation.
+analysis = Analysis.from_unit_summary(
+    frame,
+    unit="unit",
+    group="arm",
+    design=Randomized(control_group="control", allocation={"control": 0.5, "treatment": 0.5}),
+    metrics=metrics,
+    experiment_id="example",
+    plan=plan,
+    exposure_date="exposure",
+)
+results = analysis.run()
+assert len(results) == 1
+assert results[0].metric == "outcome"
+```

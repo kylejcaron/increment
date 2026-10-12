@@ -64,8 +64,16 @@ _UNSUPPORTED_REFUSALS = refusals(
 _CELL_FAILURE_REFUSALS = refusals(
     InvalidRequestError,
     {
-        "readout.cell.missing_arm": "Metric {metric} lacks declared arm {group_id}",
-        "readout.cell.missing_metric_observations": "Metric {metric} has no usable observations for {group_id}",
+        "readout.cell.missing_arm": (
+            "Metric {metric} has no observations for requested arm {group_id}; check the "
+            "observed group label and control spelling, then correct the source or requested "
+            "contrast and rerun"
+        ),
+        "readout.cell.missing_metric_observations": (
+            "Metric {metric} has no usable observations for arm {group_id}; check the metric's "
+            "missing-value policy and the values available in that arm, then correct the data "
+            "or policy and rerun"
+        ),
         "readout.cell.unsupported_request": "Requested cell is unsupported: {reason}",
     },
 )

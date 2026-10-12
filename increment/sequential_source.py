@@ -201,11 +201,36 @@ def _law_inputs(metric, spec, binding, *, pre_period_covariate: bool) -> tuple[b
     return _declared_cuped(methods), pre_period_covariate
 
 
-def _treatment_arms(design, *, route: str, multi_arm: bool) -> tuple[str, ...]:
+def _treatment_arms(
+    design, *, route: str, multi_arm: bool, allocation_owner: Literal["experiment", "design"]
+) -> tuple[str, ...]:
     """The declared treatment arms, in canonical order, from the assignment allocation."""
     allocation = getattr(design, "allocation", None)
     if allocation is None:
-        sequential_refuse("source.invalid", f"{route} needs declared assignment allocation")
+        mechanism = getattr(design, "mechanism", "randomized")
+        if allocation_owner == "experiment":
+            recovery = "set the actual allocation on the experiment's top-level allocation field"
+            if mechanism == "encouragement":
+                recovery += " and keep the experiment's existing encouragement design"
+            route_key = "experiment.allocation"
+        elif mechanism == "encouragement":
+            recovery = (
+                "set allocation on the existing Encouragement design and keep its uptake "
+                "declaration"
+            )
+            route_key = "design.allocation"
+        else:
+            recovery = "pass the actual Randomized(control_group=..., allocation={...}) design"
+            route_key = "design.allocation"
+        sequential_refuse(
+            "source.invalid",
+            f"{route} needs the actual assignment allocation because sequential "
+            "registration fixes its inference boundary from how units were assigned; "
+            f"{recovery}. Do not invent an allocation or replace the assignment mechanism.",
+            required="actual assignment allocation",
+            route=route_key,
+            mechanism=mechanism,
+        )
     control = str(design.control_group)
     arms = tuple(sorted(str(arm) for arm in allocation if str(arm) != control))
     if not multi_arm and len(arms) != 1:
@@ -503,6 +528,7 @@ def auto_register_scalar_mean(  # noqa: PLR0913
     compliance: SequentialCompliancePolicy | None = None,
     segments: Mapping[str, Sequence[str]] | None = None,
     view_multiplicity: MultiplicitySpec | None = None,
+    allocation_owner: Literal["experiment", "design"] = "design",
 ):
     """Build strict asymptotic registration from metadata before source reads.
 
@@ -525,7 +551,12 @@ def auto_register_scalar_mean(  # noqa: PLR0913
             "scalar mean requires randomized assignment (randomized or encouragement design; "
             "assignment to encouragement is itself randomized)",
         )
-    arms = _treatment_arms(design, route="scalar registration", multi_arm=False)
+    arms = _treatment_arms(
+        design,
+        route="scalar registration",
+        multi_arm=False,
+        allocation_owner=allocation_owner,
+    )
     allocation = design.allocation
     total = sum((Fraction(value) for value in allocation.values()), Fraction(0))
     treatment_probability = Fraction(allocation[arms[0]]) / total
@@ -659,6 +690,7 @@ def auto_register_bernoulli(
     compliance: SequentialCompliancePolicy | None = None,
     segments: Mapping[str, Sequence[str]] | None = None,
     view_multiplicity: MultiplicitySpec | None = None,
+    allocation_owner: Literal["experiment", "design"] = "design",
 ):
     """Build the exact Bernoulli registration from metadata before source reads.
 
@@ -684,7 +716,12 @@ def auto_register_bernoulli(
             "automatic Bernoulli registration requires randomized assignment (randomized or "
             "encouragement design; assignment to encouragement is itself randomized)",
         )
-    arms = _treatment_arms(design, route="automatic Bernoulli registration", multi_arm=True)
+    arms = _treatment_arms(
+        design,
+        route="automatic Bernoulli registration",
+        multi_arm=True,
+        allocation_owner=allocation_owner,
+    )
     ordered = tuple(sorted(metrics, key=lambda m: m.name))
     if not ordered and compliance is None:
         sequential_refuse(
