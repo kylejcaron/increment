@@ -1079,6 +1079,7 @@ def test_exact_point_summary_matches_legacy_fraction_identity():
 
 @pytest.mark.slow
 def test_full_reference_stream_centering_wire_and_reinversion():
+    from increment._interpretation import interpret_readout, render_readout_text
     from increment.estimation.winsor import estimate_winsor_lift
     from increment.results import LiftEstimate
     from increment.winsor import BootstrapReference
@@ -1144,6 +1145,9 @@ def test_full_reference_stream_centering_wire_and_reinversion():
     unresolved = restored.reintervalize(1e-300)
     assert unresolved.confidence_set is not None
     assert unresolved.confidence_set.relative.upper.reason == "bootstrap_tail_unresolved"
+    text = render_readout_text(interpret_readout([unresolved], None))
+    assert "undefined (bootstrap_tail_unresolved)" in text
+    assert "−∞" not in text.split("relative confidence interval:", 1)[-1]
     assert restored.p_value() == row.p_value()
 
 

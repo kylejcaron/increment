@@ -573,3 +573,119 @@ def test_posterior_unavailability_reason_is_separate_from_sampling_availability(
     assert cell.sampling_available is True
     assert cell.posterior_available is False
     assert cell.posterior_reason_code is not None
+
+
+def test_unscoped_rows_keep_row_level_failure_and_posterior_facts():
+    rows = list(_run_mean(_mean_frame()))
+    success_columns = readout_evidence_columns(interpret_readout(rows, None), rows[0])
+    assert success_columns["integrity_status"] == "unknown"
+    assert success_columns["sampling_available"] is True
+    assert success_columns["point_available"] is True
+
+    failed = rows[0].model_copy(
+        update={
+            "lift": None,
+            "failure_code": "evidence.p_value.unavailable",
+            "failure_context": {"reason": "missing_sampling_statistic"},
+            "posterior_available": False,
+            "posterior_reason_code": "estimation.results.lift.posterior_unavailable",
+            "posterior_reason_context": {"reason": "no posterior"},
+        }
+    )
+    interpretation = interpret_readout([failed], None)
+    columns = readout_evidence_columns(interpretation, failed)
+    assert columns["sampling_available"] is False
+    assert columns["point_available"] is False
+    assert columns["failure_code"] == "evidence.p_value.unavailable"
+    assert json.loads(cast(str, columns["failure_context"])) == {
+        "reason": "missing_sampling_statistic"
+    }
+    assert columns["posterior_available"] is False
+    assert columns["posterior_reason_code"] == "estimation.results.lift.posterior_unavailable"
+    text = render_readout_text(interpretation)
+    assert "evidence.p_value.unavailable" in text
+    assert "estimation.results.lift.posterior_unavailable" in text
+
+
+def test_sequential_text_labels_ratio_geometry_for_finite_unbounded_and_disconnected_sets():
+    from tests.estimation.test_asymptotic_mean import _evaluate
+
+    finite = _evaluate([1, 2, 3] * 40, [8, 10, 12] * 40)[0]
+    unbounded = _evaluate([1, 2, 3] * 40, [8, 10, 12] * 40, alternative="greater")[0]
+    disconnected = _evaluate([-1, 1] * 40, [10, 12] * 40)[0]
+    finite_bounds = finite.require_asymptotic_sequential_result().bounds
+    unbounded_bounds = unbounded.require_asymptotic_sequential_result().bounds
+    disconnected_bounds = disconnected.require_asymptotic_sequential_result().bounds
+    assert finite_bounds.lower is not None and finite_bounds.upper is not None
+    assert unbounded_bounds.upper is None
+    assert disconnected_bounds.status == "disconnected"
+    text = render_readout_text(interpret_readout([finite, unbounded, disconnected], None))
+    assert text.count("sequential ratio confidence set") == 3
+    assert "disconnected" in text
+    assert "+∞" in text
+
+
+def test_missing_additive_interval_is_not_reported_as_an_unbounded_set():
+    rows = [
+        {
+            "unit": f"{group}-{i}",
+            "arm": group,
+            "converted": int(group == "treatment"),
+        }
+        for group in ("control", "treatment")
+        for i in range(40)
+    ]
+    result = Analysis.from_unit_summary(
+        pd.DataFrame(rows),
+        unit="unit",
+        group="arm",
+        control="control",
+        metrics=[MetricSpec(name="converted", type="conversion")],
+        plan=AnalysisPlan(primary="converted"),
+    ).run()[0]
+    from increment.estimation.results import LiftEstimate
+
+    assert isinstance(result, LiftEstimate)
+    assert result.abs_diff == 1.0 and result.abs_lb is None and result.abs_ub is None
+    text = render_readout_text(interpret_readout([result], None))
+    assert "additive interval unavailable" in text
+    assert "additive effect: 1" in text
+    assert "set [−∞, +∞]" not in text
+
+
+def test_signed_support_rank_set_uses_correct_unbounded_endpoint_direction():
+    from increment.estimation.winsor import estimate_winsor_lift
+    from increment.winsor import RawArm, WinsorInferenceSpec, WinsorRawState, WinsorSupport
+
+    raw = WinsorRawState(
+        metric="revenue",
+        study_id="signed",
+        population="assigned",
+        missingness="error",
+        quantile=0.75,
+        inference=WinsorInferenceSpec(method="joint-rank-projection-v1"),
+        support=WinsorSupport(lower=-10, provenance="external signed support"),
+        arms=(
+            RawArm(group_id="control", values=(-2, -1, 0, 1)),
+            RawArm(group_id="treatment", values=(-1, 0, 1, 2)),
+        ),
+    )
+    result = estimate_winsor_lift(raw, "control", "treatment", alpha=0.0001)
+    assert result.confidence_set is not None
+    assert result.confidence_set.additive.lower.status == "unbounded"
+    text = render_readout_text(interpret_readout([result], None))
+    assert "additive confidence interval: [−∞, +∞]" in text
+
+
+def test_absolute_scale_null_is_not_labeled_as_relative_lift():
+    row = list(_run_mean(_mean_frame()))[0].model_copy(
+        update={
+            "value_scale": "absolute",
+            "null_abs": None,
+            "null_lift": 0.0,
+            "alternative": "greater",
+        }
+    )
+    text = render_readout_text(interpret_readout([row], None))
+    assert "null (absolute units): 0" in text
+    assert "null (relative lift):" not in text

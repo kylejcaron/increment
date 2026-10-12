@@ -63,6 +63,53 @@ class ReadoutInterpretation:
     partial: bool
 
 
+def _unscoped_cell(row) -> InterpretedCell:
+    failure_code = getattr(row, "failure_code", None)
+    failure_context = getattr(row, "failure_context", None)
+    failure_message = render_readout_failure(failure_code, failure_context)
+    if failure_code is not None and failure_message is None:
+        failure_message = f"{failure_code}: {_json(failure_context) or '{}'}"
+    return InterpretedCell(
+        key=CellKey.from_row(row),
+        required=False,
+        visible=True,
+        sampling_available=_has_sampling_result(row),
+        point_available=_has_point(row),
+        failure_code=failure_code,
+        failure_message=failure_message,
+        failure_context=failure_context,
+        advisories=(),
+        posterior_available=getattr(row, "posterior_available", None),
+        posterior_reason_code=getattr(row, "posterior_reason_code", None),
+        posterior_reason_context=getattr(row, "posterior_reason_context", None),
+    )
+
+
+def _unscoped_group(source, population, control, treatment, rows):
+    cells = tuple(_unscoped_cell(row) for row in rows)
+    return InterpretedGroup(
+        source_snapshot_id=source,
+        population=population,
+        control_group=control,
+        treatment_group=treatment,
+        decision_complete=None,
+        roster_complete=None,
+        roster_source=None,
+        integrity_status="unknown",
+        integrity_code=None,
+        integrity_context=None,
+        source_cells=cells,
+        required_cells=(),
+        available_cells=tuple(cell for cell in cells if cell.available),
+        unavailable_cells=tuple(cell for cell in cells if not cell.available),
+        hidden_cells=(),
+        retained_families=(),
+        partial=False,
+        advisories=(),
+        visible_rows=tuple(rows),
+    )
+
+
 def _interpret_unscoped(visible_rows):
     grouped: dict[tuple[str | None, str | None, str | None, str | None], list[Any]] = {}
     for row in visible_rows:
@@ -74,28 +121,8 @@ def _interpret_unscoped(visible_rows):
         )
         grouped.setdefault(key, []).append(row)
     groups = tuple(
-        InterpretedGroup(
-            source_snapshot_id=source,
-            population=population,
-            control_group=control,
-            treatment_group=treatment,
-            decision_complete=None,
-            roster_complete=None,
-            roster_source=None,
-            integrity_status="unknown",
-            integrity_code=None,
-            integrity_context=None,
-            source_cells=(),
-            required_cells=(),
-            available_cells=(),
-            unavailable_cells=(),
-            hidden_cells=(),
-            retained_families=(),
-            partial=False,
-            advisories=(),
-            visible_rows=tuple(group_rows),
-        )
-        for (source, population, control, treatment), group_rows in sorted(
+        _unscoped_group(source, population, control, treatment, rows)
+        for (source, population, control, treatment), rows in sorted(
             grouped.items(), key=lambda item: repr(item[0])
         )
     )
@@ -526,14 +553,14 @@ def _format_bound(value, *, lower=False):
     return ("−∞" if lower else "+∞") if value is None else f"{value:.6g}"
 
 
-def _endpoint_text(endpoint):
+def _endpoint_text(endpoint, *, lower: bool):
     status = getattr(endpoint, "status", None)
     value = getattr(endpoint, "value", None)
     reason = getattr(endpoint, "reason", None)
     if status == "finite":
         return f"{value:.6g}"
     if status == "unbounded":
-        return "+∞"
+        return "−∞" if lower else "+∞"
     if status == "undefined":
         return f"undefined ({reason or 'reason unavailable'})"
     return _format_bound(endpoint)
@@ -557,10 +584,17 @@ def _render_effect(row):
             if estimate.level is not None:
                 effect += f" at {estimate.level:.3g} confidence"
         lines.append(effect + ".")
-    elif getattr(row, "abs_diff", None) is not None:
-        low = "−∞" if getattr(row, "abs_lb", None) is None else f"{row.abs_lb:.6g}"
-        high = "+∞" if getattr(row, "abs_ub", None) is None else f"{row.abs_ub:.6g}"
-        lines.append(f"{row.metric} additive effect: {row.abs_diff:.6g}, set [{low}, {high}].")
+    if getattr(row, "abs_diff", None) is not None:
+        low = getattr(row, "abs_lb", None)
+        high = getattr(row, "abs_ub", None)
+        if low is None or high is None:
+            lines.append(
+                f"{row.metric} additive effect: {row.abs_diff:.6g}; additive interval unavailable."
+            )
+        else:
+            lines.append(
+                f"{row.metric} additive effect: {row.abs_diff:.6g}, set [{low:.6g}, {high:.6g}]."
+            )
 
     binomial = getattr(row, "binomial_set", None)
     if binomial is not None:
@@ -594,7 +628,7 @@ def _render_effect(row):
             if components is not None
             else f"[{_format_bound(bounds.lower, lower=True)}, {_format_bound(bounds.upper)}]"
         ) or "∅"
-        lines.append(f"{row.metric} sequential confidence set {bounds.status}: {intervals}.")
+        lines.append(f"{row.metric} sequential ratio confidence set {bounds.status}: {intervals}.")
     confidence_set = getattr(row, "confidence_set", None)
     if confidence_set is not None:
         geometry = getattr(confidence_set, "geometry", None)
@@ -609,13 +643,18 @@ def _render_effect(row):
                 if interval is not None:
                     lines.append(
                         f"{row.metric} {scale_name} confidence interval: "
-                        f"[{_endpoint_text(interval.lower)}, {_endpoint_text(interval.upper)}]; "
+                        f"[{_endpoint_text(interval.lower, lower=True)}, "
+                        f"{_endpoint_text(interval.upper, lower=False)}]; "
                         f"qualification {confidence_set.qualification}."
                     )
     null_abs = getattr(row, "null_abs", None)
     null_lift = getattr(row, "null_lift", None)
     null = null_abs if null_abs is not None else null_lift
     if getattr(row, "alternative", None) and null is not None:
-        unit = "absolute units" if null_abs is not None or contrast else "relative lift"
+        unit = (
+            "absolute units"
+            if null_abs is not None or contrast or scale == "absolute"
+            else "relative lift"
+        )
         lines.append(f"Test alternative: {row.alternative}; null ({unit}): {null:.6g}.")
     return lines

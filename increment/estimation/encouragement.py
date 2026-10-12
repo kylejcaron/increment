@@ -814,6 +814,8 @@ def _encouragement_decision_bundle(
     bundle = _lift_decision_bundle(non_itt, inference=inference)
     evidence = dict(itt_bundle.evidence) if itt_bundle is not None else {}
     failures = dict(itt_bundle.failures) if itt_bundle is not None else {}
+    evidence.update(bundle.evidence)
+    failures.update(bundle.failures)
     advisories = dict(itt_bundle.advisories) if itt_bundle is not None else {}
     advisories.update(bundle.advisories)
     advisories.update(first_stage_advisories)
