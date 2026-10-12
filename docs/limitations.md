@@ -1341,17 +1341,20 @@ effect, and no null guarantee is asserted. Assignment-window uptake is
 mechanically tied to trigger timing, so triggered compliance cells stay
 unavailable (`triggered_uptake_unsupported`).
 
-The per-cell guarantee holds for any look schedule. The triggered family keeps
-the assigned family's e-BH guarantee because, under correct triggering (no
-treatment effect before the trigger, arm-independent trigger propensity and
-timing), a same-metric assigned observation carries no arm information about a
-null triggered outcome even though it is revealed first. The remaining caveat
-is second-order and cross-metric: timing a triggered stop or freeze on the
-strength of other metrics' assigned results is a look rule driven by
-not-yet-revealed outcomes and inflates the stopped e-value's expectation; the
-per-metric confidence sequences are valid regardless. Both chains need every
-contributing feed certified complete through the capture horizon; a process
-committed without a triggered chain stays assigned-only and is never backfilled.
+The per-cell guarantee holds for any look schedule under those assumptions.
+The triggered family keeps the assigned family's e-BH guarantee only under
+correct triggering (no treatment effect before the trigger, arm-independent
+trigger propensity and timing) and stopping/freezing decisions adapted to its
+joint triggered filtration. Use only already-revealed triggered information;
+do not time a triggered family look, stop or freeze on any assigned result that
+reveals future triggered outcomes, including the same metric's result. Correct
+triggering does not prevent this leak: trigger-day-only outcomes can be identical
+in both populations yet close earlier in the assigned window. Lookahead can
+inflate the stopped e-value's expectation without changing the per-cell crossing
+bound. Guarantee labels are conditional on this unverified decision rule.
+Both chains need every contributing feed certified complete through the capture
+horizon; a process committed without a triggered chain stays assigned-only and
+is never backfilled.
 Clustered assignment, registered segments and breakouts remain unsupported on
 the triggered chain for the same reasons they are on the assigned one.
 

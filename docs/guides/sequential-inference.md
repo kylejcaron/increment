@@ -856,10 +856,14 @@ integrity; then inspect `triggered_balance` and descriptive `trigger_rates` as
 separate cohort diagnostics. Check each metric's retained maturity and each
 feed's certified completeness watermark. An unavailable or not-applicable row
 is not a pass, and observed event times do not certify a feed. Finally read
-`trigger_assumptions`: balanced rates do not establish counterfactual trigger
-invariance or correct triggering. The family guarantee is conditional on those
-assumptions and does not authorize cross-metric stopping based on assigned
-results. The report is a sanity check, not a causal validity or ship verdict.
+`trigger_assumptions`: balanced rates establish neither counterfactual trigger
+invariance, absence of pre-trigger treatment effects nor trigger-order stationarity.
+The structured `triggered_look_predictability` condition is also assumed, not
+verified: choose triggered family looks, stops and freezes using only information
+already revealed by its joint triggered chain. Do not use assigned results that
+reveal future triggered outcomes, including the same metric's assigned results.
+The family guarantee is conditional on these assumptions. The report is a sanity
+check, not a causal validity or ship verdict.
 See the [health-check API](../api.md#diagnostics-and-robustness).
 
 Assignment-window uptake is not covered by `A3`: a unit that triggers late has
@@ -872,28 +876,35 @@ a plan that monitors only uptake derives no triggered registration.
 ### Per-cell coverage and the family verdict
 
 The per-cell guarantee is a statement about the whole path, so it holds for
-any look schedule. The family verdict needs more: e-BH's FDR control and the
-selected-interval reinversion need the stopped evidence to be an e-value, which
-optional stopping gives when the look and stopping rule depends only on what
-the chain has revealed. The triggered chain's reveal lags the assigned chain's
-for the same unit (a window from the trigger closes after one from assignment),
-so the readout shows a unit's assigned outcome before its triggered one. Under
-correct triggering -- `A2`, no treatment effect before the trigger and
-arm-independent trigger propensity and timing -- a same-metric assigned
-observation carries no arm information about a null triggered outcome, so
-conditioning on it does not change the next triggered observation's null law
-and the triggered family keeps the same e-BH guarantee as the assigned one:
-its `MultiplicityFamily` reports `guarantee="fdr"` and its rows carry the same
-`multiplicity_status` and `family_guarantee` the assigned rows do.
+any look schedule under `A1`-`A3`. The family verdict needs more: e-BH's FDR
+control and the selected-interval reinversion require each stopped evidence
+value to remain an e-value. Optional stopping establishes this when the looks,
+stops and freezes are stopping times with respect to the registered **joint
+triggered filtration**: decisions may use already-revealed triggered records,
+but not information about later triggered records. A predeclared schedule also
+meets this condition.
 
-The caveat that remains is second-order and cross-metric: do not time a
-triggered stop or freeze on the strength of other metrics' assigned results.
-A rule that waits for favourable not-yet-revealed observations inflates the
-stopped e-value's expectation while leaving the per-cell threshold intact
-(`tests/estimation/test_triggered_sequential_validity.py`); the per-metric
-confidence sequences are valid regardless. No joint error control across the
-two populations is claimed; the families are separate, population-qualified
-scopes.
+Correct triggering -- arm-independent trigger propensity and timing, with no
+treatment effect before the trigger -- does not by itself establish this stopping
+condition. The assigned chain can reveal a unit's outcome before its triggered
+window closes. For example, with three-day windows, every unit triggering one day
+after assignment, and outcomes only on its trigger day, assigned and triggered
+outcomes are identical. The assigned window closes one day earlier, exposing the
+next triggered block's arm-specific outcomes. Freezing the triggered metric
+before an unfavorable block uses future information even though triggering is
+arm-independent and there is no pre-trigger effect.
+
+Therefore do not time a triggered family look, stop or freeze using **any**
+assigned-population result that reveals future triggered outcomes, including the
+same metric's result as well as other metrics' results. Such lookahead can inflate
+the stopped e-value's expectation without changing the per-cell crossing bound
+(`tests/estimation/test_triggered_sequential_validity.py`). Under `A1`-`A3`, correct
+triggering and this stopping condition, the triggered family keeps the assigned
+family's e-BH guarantee: its `MultiplicityFamily` reports `guarantee="fdr"` and
+its rows carry the same `multiplicity_status` and `family_guarantee`. These labels
+state a conditional guarantee; neither capture nor a health check verifies the
+analyst's decision rule. No joint error control across the two populations is
+claimed; the families remain separate, population-qualified scopes.
 
 ### Certified feeds, not evidence presence
 

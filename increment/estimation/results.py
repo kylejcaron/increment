@@ -876,15 +876,6 @@ def _selection_qualification(row: Any) -> str | None:
         procedure_label = "Family selection; procedure not recorded"
     if getattr(row, "sequential_result", None) is not None:
         guarantee = getattr(row, "family_guarantee", None)
-        if (
-            getattr(row, "analysis_population", None) == "triggered"
-            and status == "exploratory_family"
-            and guarantee is None
-        ):
-            return (
-                f"{procedure_label}{level}; exploratory_family; outcome-dependent triggered "
-                f"looks; no controlled guarantee; {family}"
-            )
         qualification = (
             "finite-sample guarantee"
             if guarantee == "finite_sample"
@@ -893,7 +884,10 @@ def _selection_qualification(row: Any) -> str | None:
             else "no controlled guarantee"
         )
         trigger = (
-            "; triggered family guarantee under correct triggering"
+            "; triggered family guarantee under arm-independent triggering, no pre-trigger "
+            "treatment effect, trigger-order stationarity, and looks/stops/freezes using only "
+            "revealed triggered-chain information, not early assigned results (including "
+            "the same metric)"
             if getattr(row, "analysis_population", None) == "triggered" and guarantee is not None
             else ""
         )

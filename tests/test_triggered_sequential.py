@@ -845,6 +845,43 @@ def test_assigned_identities_are_unchanged_by_the_triggered_commitment(tmp_path)
         analysis.close()
 
 
+@pytest.mark.integration
+def test_assigned_checkpoint_exposes_next_same_metric_triggered_block(tmp_path):
+    events = _events(n_per_arm=30, trigger_rate=1.0, effect=0.0).to_pylist()
+    assignment = {row["user_id"]: row["ts"] for row in events if row["event"] == "enrolled"}
+    for row in events:
+        anchor = assignment[row["user_id"]] + dt.timedelta(days=1)
+        if row["event"] == "saw_surface":
+            row["ts"] = anchor
+        elif row["event"] == "revenue":
+            row["ts"] = anchor + dt.timedelta(hours=1)
+    analysis, _ = _analysis(tmp_path, pa.Table.from_pylist(events))
+    try:
+        early = analysis.capture_sequential(
+            finalized=True, as_of=dt.date(2024, 1, 5), freeze=["revenue"]
+        )
+        assert early.triggered is not None
+        assert (
+            early.registration.reveal.filtration_id
+            != early.triggered.registration.reveal.filtration_id
+        )
+        assert len(early.records) > len(early.triggered.records)
+        later = analysis.capture_sequential(
+            finalized=True, as_of=dt.date(2024, 1, 6), previous=early
+        )
+        assert later.triggered is not None
+        for arm in ("C", "T"):
+            assert early.arm("revenue", arm) == later.triggered.arm("revenue", arm)
+            assert early.arm("revenue", arm).n > early.triggered.arm("revenue", arm).n
+        frozen = later.triggered.frozen[0]
+        assert frozen.control == early.triggered.arm("revenue", "C")
+        assert frozen.treatment == early.triggered.arm("revenue", "T")
+        row = analysis.run(population="triggered")[0]
+        assert row.require_sequential_result().checkpoint == frozen
+    finally:
+        analysis.close()
+
+
 def test_metric_freeze_reaches_the_triggered_chain_once_it_is_ready(tmp_path):
     analysis, _ = _analysis(tmp_path, _events(treatment_trigger_delay=6))
     try:
@@ -1005,10 +1042,9 @@ def _assert_triggered_selection_public_surfaces(rows, selected):
     from increment.tables import estimates_to_readout, readout_table
 
     restored = ReadoutResults.model_validate_json(rows.model_dump_json())
-    text = repr(selected)
-    assert "triggered family guarantee under correct triggering" in text
-    assert "asymptotic-sequential guarantee" in text
-    assert "retained family" in text
+    qualification = estimates_to_readout([selected])[0]["selection_qualification"]
+    assert qualification is not None
+    assert repr(qualification) in repr(selected)
     restored_selected = next(
         row
         for row in restored
@@ -1039,8 +1075,8 @@ def _assert_triggered_selection_public_surfaces(rows, selected):
     assert bool(selected_frame["discovery"])
     assert selected_frame["family_guarantee"] == "asymptotic_sequential"
     rendered = readout_table(estimates_to_readout(restored)).gt().as_raw_html()
-    assert "triggered family guarantee under correct triggering" in rendered
-    assert "asymptotic-sequential guarantee" in rendered
+    assert estimates_to_readout([restored_selected])[0]["selection_qualification"] == qualification
+    assert qualification in rendered
 
 
 def test_triggered_selection_is_qualified_on_public_surfaces(tmp_path):
@@ -1101,8 +1137,7 @@ def test_filtered_readout_keeps_original_family_qualification(tmp_path):
         assert filtered_qualification == qualification
         html = readout_table(estimates_to_readout(filtered)).gt().as_raw_html()
         assert "Partial view" in html
-        assert "triggered family guarantee under correct triggering" in html
-        assert "asymptotic-sequential guarantee" in html
+        assert qualification in html
     finally:
         analysis.close()
 

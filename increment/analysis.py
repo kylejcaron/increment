@@ -1743,6 +1743,14 @@ class Analysis:
             context={
                 "counterfactual_trigger_invariance": "assumed, not established by balance or rates",
                 "trigger_order_stationarity": "assumed, not established by balance or rates",
+                "no_effect_before_trigger": "assumed, not established by balance or rates",
+                "triggered_look_predictability": (
+                    "assumed, not verified: looks, stops and freezes use only already-revealed "
+                    "triggered-chain information, not assigned results that reveal future "
+                    "triggered outcomes, including the same metric"
+                    if family_guarantee is not None
+                    else None
+                ),
                 "family_guarantee": family_guarantee,
                 "family_guarantee_status": (
                     "assumed, not verified" if family_guarantee is not None else None
@@ -1750,6 +1758,8 @@ class Analysis:
                 "risk": (
                     "Balanced trigger rates do not verify counterfactual trigger invariance.",
                     "Trigger-order stationarity remains an assumption.",
+                    "Assigned results can reveal future triggered outcomes, including "
+                    "the same metric; they must not inform triggered family stops or freezes.",
                 ),
             },
         )
@@ -2329,6 +2339,11 @@ class Analysis:
         ``declare_sequential_freeze``. A frozen secondary still takes part in
         its family, whose e-BH selection is redone at each look over frozen and
         current evidence, so its discovery and selected interval can change.
+
+        A triggered family guarantee requires stopping and freezing decisions
+        based only on already-revealed triggered-chain information. Assigned
+        results can reveal future triggered outcomes, including the same
+        metric, and must not inform those decisions.
         """
         from increment.sequential_source import adopt_source_snapshot, source_snapshot
         from increment.sequential_state import declare_sequential_freeze, sequential_refuse

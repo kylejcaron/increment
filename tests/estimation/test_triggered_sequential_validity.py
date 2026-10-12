@@ -129,14 +129,14 @@ def _log_e(control: tuple[int, int], treatment: tuple[int, int], prior: BetaPrio
 @pytest.mark.slow
 @pytest.mark.parameter_recovery
 def test_leak_informed_stopping_inflates_the_stopped_e_value_but_not_the_crossing_bound():
-    """A look rule driven by information about not-yet-revealed outcomes breaks
-    E[e_tau] <= 1 while P(sup e >= 1/alpha) <= alpha stays intact.
+    """Lookahead inflates stopped evidence relative to a predeclared look,
+    without changing the per-cell crossing bound.
 
-    Under correct triggering a same-metric assigned observation carries no arm
-    information about a null triggered outcome, so the triggered family keeps
-    its e-BH guarantee; what this documents is the remaining cross-metric caveat,
-    that stopping or freezing a triggered cell on the strength of other metrics'
-    results is such a rule, and the per-cell confidence sequence is unaffected.
+    With three-day windows and an arm-independent trigger one day after
+    assignment, trigger-day-only outcomes are identical in both populations.
+    Assigned checkpoints then reveal the next triggered block's arm-specific
+    outcomes, even for the same metric. Freezing before an unfavorable block
+    uses that future information; correct triggering does not prevent it.
     """
     rng = np.random.default_rng(7)
     prior = BetaPrior(Fraction(3), Fraction(7))

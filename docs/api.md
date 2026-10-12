@@ -660,8 +660,13 @@ trigger assumptions. Use it as a diagnostic alongside estimates, not as an overa
 healthy/safe verdict or a causal-validity test. Missing source evidence stays
 unavailable with its identity and reason; a non-rejected SRM does not prove that
 assignment was valid. For a triggered experiment, read the assigned and triggered
-checks separately and treat counterfactual trigger invariance and trigger-order
-stationarity as assumptions even when observed rates are balanced.
+checks separately and treat counterfactual trigger invariance, no pre-trigger
+treatment effect, and trigger-order stationarity as assumptions even when
+observed rates are balanced. A sequential triggered family also assumes
+`triggered_look_predictability`: looks, stops and freezes use only already-revealed
+triggered-chain information, not assigned results revealing future triggered
+outcomes, including the same metric's results. A health check does not verify
+the analyst's decision rule.
 
 ```python
 import pandas as pd

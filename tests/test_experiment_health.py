@@ -979,6 +979,10 @@ def test_health_assumption_discloses_triggered_family_guarantee(tmp_path) -> Non
         analysis.close()
     assert assumptions.context["family_guarantee"] == "asymptotic_sequential"
     assert assumptions.context["family_guarantee_status"] == "assumed, not verified"
+    assert assumptions.context["no_effect_before_trigger"] is not None
+    assert assumptions.context["triggered_look_predictability"] is not None
+    restored = type(assumptions).model_validate_json(assumptions.model_dump_json())
+    assert restored.context == assumptions.context
     assert "triggered_look_policy" not in assumptions.context
 
 
