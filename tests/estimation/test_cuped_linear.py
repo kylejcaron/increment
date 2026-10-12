@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import pickle
 
 import numpy as np
@@ -290,7 +291,7 @@ def test_ratio_projection_uses_joint_component_covariance():
         ("level", "estimation.cuped_linear.level_support"),
         ("leverage", "estimation.cuped_linear.leverage"),
         ("df", "estimation.cuped_linear.residual_df"),
-        ("nonfinite", "estimation.cuped_linear.nonfinite"),
+        ("arm_constant", "estimation.cuped_linear.rank_deficiency"),
     ],
 )
 def test_fit_refusals_have_stable_codes(case, code):
@@ -313,6 +314,9 @@ def test_fit_refusals_have_stable_codes(case, code):
         x = np.r_[np.zeros(5), 100.0, np.ones(6)]
         covariates = {"x": x}
         kinds = {"x": "continuous"}
+    elif case == "arm_constant":
+        covariates = {"arm_intercept": np.r_[np.zeros(6), np.ones(6)]}
+        kinds = {"arm_intercept": "continuous"}
     elif case == "df":
         rng = np.random.default_rng(88)
         arm = np.array(["c"] * 3 + ["t"] * 3)
@@ -459,7 +463,7 @@ def test_constant_covariates_are_disclosed_without_losing_missingness_indicators
     assert sum(fit.n_by_arm) == len(arm)
 
 
-def test_three_arm_absolute_projection_has_independent_hc2_scores():
+def test_three_arm_absolute_projection_uses_joint_covariance():
     rng = np.random.default_rng(872)
     arm = np.repeat(["c", "t", "other"], [9, 13, 11])
     x = rng.normal(size=33)
@@ -475,3 +479,172 @@ def test_three_arm_absolute_projection_has_independent_hc2_scores():
     result = fit.absolute("t")
     contrast = np.array([-1.0, 1.0, 0.0])
     assert result.se**2 == pytest.approx(contrast @ np.asarray(fit.covariance) @ contrast)
+
+
+def test_three_arm_relative_and_ratio_projections_preserve_joint_covariance():
+    rng = np.random.default_rng(941)
+    arm = np.repeat(["c", "t", "other"], [9, 13, 11])
+    x = rng.normal(size=33)
+    y = 5 + (arm == "t") * 0.8 + 0.3 * x + rng.normal(scale=0.2, size=33)
+    numerator = 8 + (arm == "t") * 0.7 + 0.5 * x + rng.normal(scale=0.2, size=33)
+    denominator = 4 + (arm == "other") * 0.2 + 0.1 * x + rng.normal(scale=0.1, size=33)
+    mean_fit = fit_cuped_linear(
+        y,
+        arm,
+        control="c",
+        arm_order=("c", "t", "other"),
+        covariates={"x": x},
+        kinds={"x": "continuous"},
+    )
+    fit = fit_cuped_linear(
+        None,
+        arm,
+        control="c",
+        arm_order=("c", "t", "other"),
+        covariates={"x": x},
+        kinds={"x": "continuous"},
+        numerator=numerator,
+        denominator=denominator,
+    )
+    narm = len(fit.arm_order)
+    means = np.asarray(fit.adjusted_means).reshape(2, narm)
+    covariance = np.asarray(fit.covariance)
+    relative_means = np.asarray(mean_fit.adjusted_means)
+    relative_covariance = np.asarray(mean_fit.covariance)
+    relative_jac = np.zeros(narm)
+    relative_jac[1], relative_jac[0] = 1 / relative_means[1], -1 / relative_means[0]
+    relative = mean_fit.relative("t")
+    assert relative.estimate == pytest.approx(
+        math.log(relative_means[1]) - math.log(relative_means[0])
+    )
+    assert relative.se**2 == pytest.approx(relative_jac @ relative_covariance @ relative_jac)
+    for scale in ("log", "absolute"):
+        jac = np.zeros(2 * narm)
+        if scale == "log":
+            jac[1], jac[narm + 1] = 1 / means[0, 1], -1 / means[1, 1]
+            jac[0], jac[narm] = -1 / means[0, 0], 1 / means[1, 0]
+            expected = (
+                math.log(means[0, 1])
+                - math.log(means[1, 1])
+                - math.log(means[0, 0])
+                + math.log(means[1, 0])
+            )
+        else:
+            treatment_ratio, control_ratio = means[0, 1] / means[1, 1], means[0, 0] / means[1, 0]
+            jac[1], jac[narm + 1] = 1 / means[1, 1], -means[0, 1] / means[1, 1] ** 2
+            jac[0], jac[narm] = -1 / means[1, 0], means[0, 0] / means[1, 0] ** 2
+            expected = treatment_ratio - control_ratio
+        result = fit.ratio("t", scale=scale)
+        assert result.estimate == pytest.approx(expected)
+        assert result.se**2 == pytest.approx(jac @ covariance @ jac)
+
+
+def test_covariate_unit_scale_and_translation_are_invariant():
+    rng = np.random.default_rng(721)
+    arm = np.repeat(["c", "t"], 15)
+    x = np.tile(np.arange(15.0), 2)
+    y = np.r_[np.arange(15.0), 1.5 + np.arange(15.0)] + rng.normal(0, 0.1, 30)
+    reference = fit_cuped_linear(
+        y,
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+        covariates={"x": x},
+        kinds={"x": "continuous"},
+    )
+    for transform in (x * 1e200, x * 1e-200, x + 1e15):
+        candidate = fit_cuped_linear(
+            y,
+            arm,
+            control="c",
+            arm_order=("c", "t"),
+            covariates={"x": transform},
+            kinds={"x": "continuous"},
+        )
+        assert candidate.absolute("t").estimate == pytest.approx(
+            reference.absolute("t").estimate, abs=1e-10
+        )
+        assert candidate.absolute("t").se == pytest.approx(reference.absolute("t").se, rel=1e-9)
+
+
+def test_large_constant_outcome_has_zero_contrast_and_standard_error():
+    arm = np.array(["c"] * 6 + ["t"] * 6)
+    fit = fit_cuped_linear(np.full(12, 1e308), arm, control="c", arm_order=("c", "t"))
+    result = fit.absolute("t")
+    assert result.estimate == 0
+    assert result.se == 0
+
+
+@pytest.mark.parametrize("epsilon", [1e-8, 1e-7])
+def test_near_collinear_accepted_fit_matches_weighted_qr(epsilon):
+    rng = np.random.default_rng(809)
+    arm = np.repeat(["c", "t"], 20)
+    z = rng.normal(size=40)
+    v = rng.normal(size=40)
+    x = np.column_stack([z, z + epsilon * v])
+    y = 2 + (arm == "t") * 0.5 + x @ np.array([0.7, -0.2]) + rng.normal(size=40)
+    fit = fit_cuped_linear(
+        y,
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+        covariates={"z": x[:, 0], "near": x[:, 1]},
+        kinds={"z": "continuous", "near": "continuous"},
+    )
+    groups = [np.flatnonzero(arm == label) for label in ("c", "t")]
+    means = [x[group].mean(axis=0) for group in groups]
+    design = np.zeros((len(y), 4))
+    for a, group in enumerate(groups):
+        design[group, a] = 1
+        design[group, 2:] = x[group] - means[a]
+    weights = np.concatenate(
+        [np.full(len(group), 1 / (len(group) * (len(group) - 1))) for group in groups]
+    )
+    sqrt_weights = np.sqrt(weights)
+    q, r = np.linalg.qr(design * sqrt_weights[:, None], mode="reduced")
+    beta = np.linalg.solve(r, q.T @ (sqrt_weights * y))
+    pooled = (20 * means[0] + 20 * means[1]) / 40
+    adjusted = np.array(
+        [y[group].mean() - beta[2:] @ (means[a] - pooled) for a, group in enumerate(groups)]
+    )
+    assert fit.absolute("t").estimate == pytest.approx(adjusted[1] - adjusted[0], rel=1e-7)
+    assert fit.leverage_trace == pytest.approx(4.0, abs=1e-8)
+    d = means[1] - means[0]
+    contrast = np.r_[-1.0, 1.0, -d]
+    coefficients = np.linalg.solve(r, np.linalg.solve(r.T, contrast))
+    leverage = np.sum(q * q, axis=1)
+    residual = y - design @ beta
+    influence = design @ coefficients * weights
+    expected_se = np.linalg.norm(influence * residual / np.sqrt(1 - leverage))
+    assert fit.absolute("t").se == pytest.approx(expected_se, rel=5e-4)
+
+
+def test_outcome_translation_and_extreme_log_ratio_are_stable():
+    arm = np.array(["c"] * 6 + ["t"] * 6)
+    y = np.array([1.0, 2.0, 3.0, 2.0, 4.0, 5.0, 2.0, 4.0, 5.0, 3.0, 6.0, 7.0])
+    base = fit_cuped_linear(y, arm, control="c", arm_order=("c", "t"))
+    shifted = fit_cuped_linear(y + 1e15, arm, control="c", arm_order=("c", "t"))
+    assert shifted.absolute("t").estimate == pytest.approx(base.absolute("t").estimate, abs=0.15)
+    assert shifted.absolute("t").se == pytest.approx(base.absolute("t").se, rel=1e-12)
+    extreme = fit_cuped_linear(
+        np.r_[np.full(6, 1e-200), np.full(6, 1e200)],
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+    )
+    assert extreme.relative("t").estimate == pytest.approx(math.log(1e200) - math.log(1e-200))
+
+
+def test_extreme_ratio_log_fit_survives_unrepresentable_absolute_cache():
+    arm = np.array(["c"] * 6 + ["t"] * 6)
+    numerator = np.full(12, 1e200)
+    denominator = np.r_[np.full(6, 1e-200), np.full(6, 2e-200)]
+    fit = fit_cuped_linear(
+        None,
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+        numerator=numerator,
+        denominator=denominator,
+    )
+    assert fit.ratio("t", scale="log").estimate == pytest.approx(-math.log(2))
