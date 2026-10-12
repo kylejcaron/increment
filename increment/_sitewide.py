@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from increment._source_operations import SitewideEvidenceOperation
 from increment._source_types import classify_source
@@ -81,6 +81,23 @@ _SITEWIDE_ARM_NOT_ENROLLED = RefusalSpec(
     template="arm {arm!r} is not an enrolled non-control arm for metric {metric!r} (control_group is {control_group!r}). Enrolled non-control arms: {arms!r}",
 )
 
+
+_TRIGGERED_SITEWIDE_METRIC_UNALIGNED = RefusalSpec(
+    "facade.analysis.sitewide_triggered_metric_unaligned",
+    CapabilityError,
+    template="triggered sitewide requires a sum-aggregated unwindowed mean, conversion, or ratio metric; {metric!r} has {metric_type!r}, window_days={window_days!r}, aggregation={aggregation!r}. Use a calendar-aligned unwindowed sum metric.",
+)
+
+_TRIGGERED_SITEWIDE_CLUSTER = RefusalSpec(
+    "facade.analysis.sitewide_triggered_cluster_unsupported",
+    CapabilityError,
+    template="triggered sitewide does not support cluster-randomized experiment {cluster!r}; use unit-randomized definitions.",
+)
+_TRIGGERED_SITEWIDE_SEQUENTIAL = RefusalSpec(
+    "facade.analysis.sitewide_triggered_sequential_unsupported",
+    CapabilityError,
+    template="triggered sitewide is fixed-horizon and cannot use a registered sequential plan; use a fixed-horizon plan.",
+)
 # Retention and quantile are refused by validate_site_volume_metric.
 _CLUSTER_COMPATIBLE_METRIC_TYPES = ("mean", "conversion", "ratio")
 
@@ -90,6 +107,7 @@ class SitewideRequest:
     metric_name: str
     arm: str | None
     alpha: float
+    population: Literal["assigned", "triggered"] = "assigned"
 
 
 class SitewideReadouts:
@@ -128,6 +146,37 @@ class SitewideReadouts:
         if getattr(metric, "winsorization", None) is not None:
             _refuse(_SITEWIDE_WINSORIZED_METRIC, metric=req.metric_name)
         assert self._experiment is not None
+        if req.population == "triggered":
+            if self._experiment.cluster is not None:
+                _refuse(
+                    _TRIGGERED_SITEWIDE_CLUSTER,
+                    cluster=self._experiment.cluster,
+                )
+            if self._experiment.plan.inference is not None:
+                _refuse(_TRIGGERED_SITEWIDE_SEQUENTIAL)
+            components = (
+                (metric.numerator, metric.denominator)
+                if isinstance(metric, RatioMetric)
+                else (metric,)
+            )
+            aggregation = getattr(metric, "aggregation", None)
+            window_days = getattr(metric, "window_days", None)
+            if (
+                self._experiment.end is None
+                or metric.type not in _CLUSTER_COMPATIBLE_METRIC_TYPES
+                or any(
+                    getattr(component, "aggregation", None) != "sum"
+                    or getattr(component, "window_days", None) is not None
+                    for component in components
+                )
+            ):
+                _refuse(
+                    _TRIGGERED_SITEWIDE_METRIC_UNALIGNED,
+                    metric=req.metric_name,
+                    metric_type=metric.type,
+                    window_days=window_days,
+                    aggregation=aggregation,
+                )
         cluster = self._experiment.cluster
         if cluster is not None and metric.type not in _CLUSTER_COMPATIBLE_METRIC_TYPES:
             _refuse(
@@ -137,7 +186,11 @@ class SitewideReadouts:
                 cluster=cluster,
             )
         validate_site_volume_metric(metric)
-        evidence = src.sitewide_evidence(metric, include_ratio=isinstance(metric, RatioMetric))
+        evidence = src.sitewide_evidence(
+            metric,
+            include_ratio=isinstance(metric, RatioMetric),
+            population=req.population,
+        )
         arms = evidence.arm_stats
         control_group = evidence.control_group
         control_arms = [item for item in arms if item.group_id == control_group]

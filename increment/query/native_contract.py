@@ -9,7 +9,7 @@ Nothing here may import an adapter module.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
@@ -44,6 +44,12 @@ class SitewideEvidence:
     site_total_denominator: float | None = None
     cluster_counts: dict[str, int] | None = None
     unit_counts: dict[str, int] | None = None
+    analysis_population: Literal["assigned", "triggered"] = "assigned"
+    window: tuple[dt.date, dt.date] | None = None
+    membership_cutoff: dt.datetime | None = None
+    snapshot_id: str | None = None
+    population_counts: Mapping[str, int] | None = None
+    assigned_counts: Mapping[str, int] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,7 +156,11 @@ class NativeViewSource(Protocol):
     operations: frozenset[SourceOperation]
 
     def sitewide_evidence(
-        self, metric: Metric, *, include_ratio: bool = False
+        self,
+        metric: Metric,
+        *,
+        include_ratio: bool = False,
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> SitewideEvidence: ...
 
     def validate_populations(

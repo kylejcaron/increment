@@ -2219,8 +2219,14 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         return self._con.to_pyarrow(volume).to_pylist()[0]
 
-    def sitewide_evidence(self, metric: Metric, *, include_ratio: bool = False) -> SitewideEvidence:
-        """Prepare typed, assignment-anchored evidence for ``sitewide``."""
+    def sitewide_evidence(
+        self,
+        metric: Metric,
+        *,
+        include_ratio: bool = False,
+        population: Literal["assigned", "triggered"] = "assigned",
+    ) -> SitewideEvidence:
+        """Prepare calendar-window evidence for assigned or triggered units."""
         if isinstance(metric, RatioMetric) and not include_ratio:
             _refuse_operation(
                 operation="sitewide_evidence",
@@ -2250,8 +2256,32 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 ),
             )
         validate_site_volume_metric(metric)
+        if population == "triggered":
+            components = (
+                (metric.numerator, metric.denominator)
+                if isinstance(metric, RatioMetric)
+                else (metric,)
+            )
+            if self._experiment.end is None or any(
+                getattr(component, "window_days", None) is not None
+                or getattr(component, "aggregation", None) != "sum"
+                for component in components
+            ):
+                _refuse_operation(
+                    operation="sitewide_evidence",
+                    request={
+                        "metric": metric.name,
+                        "window_days": getattr(metric, "window_days", None),
+                        "aggregation": getattr(metric, "aggregation", None),
+                    },
+                    offered={"calendar_window": "unwindowed sum"},
+                    route="declare an unwindowed sum metric and experiment end aligned to the calendar window",
+                )
         self._note_reduction()
         exposures = self._get_exposures()
+        if population == "triggered":
+            members = self._get_trigger_population(operation="sitewide_evidence")
+            exposures = exposures.join(members.select("unit_id"), "unit_id")
         cluster = self._experiment.cluster
         cluster_counts: dict[str, int] | None = None
         unit_counts: dict[str, int] | None = None
@@ -2285,10 +2315,32 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         from increment.estimation.engine import _df_to_arms
 
         row = self._site_volume_row(metric)
+        arm_stats = tuple(_df_to_arms(summary.to_pyarrow()))
+        assigned_counts: dict[str, int] = {}
+        all_exposures = self._get_exposures()
+        count_rows = self._con.to_pyarrow(
+            all_exposures.group_by("group_id").aggregate(n_units=all_exposures.unit_id.nunique())
+        ).to_pylist()
+        arm_ids = {item.group_id for item in arm_stats}
+        for count_row in count_rows:
+            group_id = count_row["group_id"]
+            if group_id is not None and str(group_id) in arm_ids:
+                assigned_counts[str(group_id)] = int(count_row["n_units"])
+        snapshot = self._session.source_snapshot_evidence
+        from hashlib import sha256
+
+        from increment._canonical import canonical_json_bytes
+        from increment._source_identity import source_identity
+
+        identity = {
+            "source": source_identity(self),
+            "cutoff": None if snapshot is None else snapshot.observation_cutoff_ts.isoformat(),
+        }
+        snapshot_id = "sha256:" + sha256(canonical_json_bytes(identity)).hexdigest()
         return SitewideEvidence(
             metric=metric,
             site_total=float(row["y"]),
-            arm_stats=tuple(_df_to_arms(summary.to_pyarrow())),
+            arm_stats=arm_stats,
             control_group=self._experiment.control_group,
             cluster=cluster,
             site_total_denominator=(
@@ -2296,6 +2348,20 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             ),
             cluster_counts=cluster_counts,
             unit_counts=unit_counts,
+            analysis_population=population,
+            window=(
+                None
+                if self._experiment.end is None
+                else (self._experiment.start.date(), self._experiment.end.date())
+            ),
+            membership_cutoff=(
+                None
+                if population == "assigned" or snapshot is None
+                else snapshot.observation_cutoff_ts
+            ),
+            snapshot_id=snapshot_id,
+            population_counts={item.group_id: item.n for item in arm_stats},
+            assigned_counts=assigned_counts,
         )
 
     def _day_axis_source(

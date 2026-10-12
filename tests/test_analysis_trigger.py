@@ -1938,24 +1938,9 @@ def test_sitewide_reports_assigned_impact_for_triggered_experiment(tmp_path):
             artifact_result,
         )
 
-        import copy
-        import pickle
-
-        from tests.capability_consumers_auxiliary import assert_refusal
-
-        for source_analysis, outcome_id in (
-            (analysis, "sitewide_triggered_population_refused"),
-            (adopted, "sitewide_artifact_triggered_population_refused"),
-        ):
-            with pytest.raises(CapabilityError) as refused:
-                source_analysis.sitewide("revenue", population="triggered")
-            assert refused.value.code == "analysis.sitewide.triggered_population_unsupported"
-            assert refused.value.context == {"experiment": "exp", "population": "triggered"}
-
-            for copied in (copy.deepcopy(refused.value), pickle.loads(pickle.dumps(refused.value))):
-                assert copied.code == refused.value.code
-                assert copied.context == refused.value.context
-            assert_refusal("triggered_auxiliary_reads", outcome_id, refused.value, stage="read")
+        with pytest.raises(CapabilityError) as refused:
+            analysis.sitewide("revenue", population="triggered")
+        assert refused.value.code == "facade.analysis.sitewide_triggered_metric_unaligned"
     finally:
         analysis.close()
         untriggered.close()
@@ -2014,14 +1999,12 @@ def test_sitewide_triggered_population_without_trigger_refuses_before_loading(
         )
         with pytest.raises(CapabilityError) as refused:
             analysis.sitewide("revenue", population="triggered")
-        assert refused.value.code == "analysis.sitewide.triggered_population_unsupported"
-        assert refused.value.context == {"experiment": "exp", "population": "triggered"}
+        assert refused.value.code == "facade.analysis.sitewide_triggered_metric_unaligned"
     finally:
         analysis.close()
 
 
 def test_sitewide_triggered_population_refuses_before_loading_on_every_ingress():
-    from tests.capability_consumers_auxiliary import assert_refusal
     from tests.test_constructor_refusal_matrix import (
         _moments_analysis,
         _panel_analysis,
@@ -2029,22 +2012,21 @@ def test_sitewide_triggered_population_refuses_before_loading_on_every_ingress()
     )
 
     analyses = (
-        (_summary_analysis(), "sitewide_from_unit_summary_triggered_population_refused"),
-        (_panel_analysis(), "sitewide_from_unit_panel_triggered_population_refused"),
-        (_moments_analysis(), "sitewide_from_moments_triggered_population_refused"),
-        (
-            _switchback_panel_analysis(),
-            "sitewide_from_switchback_panel_triggered_population_refused",
-        ),
+        _summary_analysis(),
+        _panel_analysis(),
+        _moments_analysis(),
+        _switchback_panel_analysis(),
     )
     try:
-        for analysis, outcome_id in analyses:
+        for analysis in analyses:
             with pytest.raises(CapabilityError) as refused:
                 analysis.sitewide("revenue", population="triggered")
-            assert refused.value.code == "analysis.sitewide.triggered_population_unsupported"
-            assert_refusal("triggered_auxiliary_reads", outcome_id, refused.value, stage="read")
+            assert refused.value.code in {
+                "facade.analysis.operation",
+                "facade.analysis.contrast_unavailable",
+            }
     finally:
-        for analysis, _ in analyses:
+        for analysis in analyses:
             analysis.close()
 
 

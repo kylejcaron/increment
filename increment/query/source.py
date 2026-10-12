@@ -1805,15 +1805,22 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             trigger_anchors={str(row["unit_id"]): row["first_trigger_ts"] for row in rows},
         )
 
-    def sitewide_evidence(self, metric: Metric, *, include_ratio: bool = False) -> Any:
+    def sitewide_evidence(
+        self,
+        metric: Metric,
+        *,
+        include_ratio: bool = False,
+        population: Literal["assigned", "triggered"] = "assigned",
+    ) -> Any:
+        import pyarrow as pa
+
         from increment.estimation.engine import _df_to_arms
 
         metric = self.validated_metric(metric)
-        entries = unit_day_artifact_extension_catalog(self._expected_context)
         entry = next(
             (
                 candidate
-                for candidate in entries
+                for candidate in unit_day_artifact_extension_catalog(self._expected_context)
                 if candidate.request.kind == "site_volume"
                 and metric.name in candidate.request.metric_names
             ),
@@ -1834,9 +1841,12 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             raise ArtifactContractError(
                 "artifact.extension.missing",
                 f"site-volume evidence is absent for metric {metric.name!r}",
+                context={"route": "republish with this metric's site_volume extension"},
             )
-        request = entry.request.model_dump(mode="json") if entry is not None else None
-        rows = self._read_extension(extension, request=request)
+        rows = self._read_extension(
+            extension,
+            request=entry.request.model_dump(mode="json") if entry is not None else None,
+        )
         by_measure: dict[str, float] = {}
         for row in rows:
             key = str(row["measure_key"])
@@ -1850,8 +1860,72 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         else:
             site_total = by_measure.get(binding.measure_key, 0.0)
             site_den = None
-        import pyarrow as pa
+        from collections import Counter
 
+        exposures = self._exposure_rows()
+        group_by_unit = {
+            str(row["unit_id"]): str(row["group_id"])
+            for row in exposures
+            if row.get("group_id") is not None
+        }
+        assigned_counts = dict(Counter(group_by_unit.values()))
+        membership_cutoff = None
+        if population == "triggered":
+            components = (
+                (metric.numerator, metric.denominator)
+                if isinstance(metric, RatioMetric)
+                else (metric,)
+            )
+            if any(
+                getattr(component, "window_days", None) is not None
+                or getattr(component, "aggregation", None) != "sum"
+                for component in components
+            ):
+                raise ArtifactContractError(
+                    "artifact.evidence.unavailable",
+                    "triggered sitewide requires an unwindowed sum metric",
+                    context={"route": "use a calendar-aligned unwindowed sum metric"},
+                )
+            try:
+                trigger_extension = self._extension(
+                    {
+                        "kind": "trigger_population",
+                        "trigger_name": self._artifact_experiment.trigger,
+                    }
+                )
+                self._extension(
+                    {"kind": "assignment_counts", "populations": ("assigned", "triggered")}
+                )
+            except ArtifactContractError as exc:
+                raise ArtifactContractError(
+                    "artifact.extension.missing",
+                    "triggered sitewide requires trigger membership and assignment counts",
+                    context={
+                        "route": "republish with trigger_population and assignment_counts extensions"
+                    },
+                ) from exc
+            membership_cutoff = trigger_extension.observation_cutoff_ts
+            if (
+                self._artifact_experiment.end is None
+                or extension.first_ds != self._artifact_experiment.start.date()
+                or extension.last_ds != self._artifact_experiment.end.date()
+            ):
+                raise ArtifactContractError(
+                    "artifact.extension.invalid",
+                    "site-volume coverage does not match the experiment calendar window",
+                    context={
+                        "route": "republish matching site_volume and trigger_population evidence"
+                    },
+                )
+            trigger_rows = self._trigger_population_rows(operation="sitewide_evidence")
+            member_ids = frozenset(str(row["unit_id"]) for row in trigger_rows)
+            population_counts = dict(
+                Counter(group_by_unit[unit] for unit in member_ids if unit in group_by_unit)
+            )
+            moment_rows = super()._reduce(metric, "total", population_units=member_ids)
+        else:
+            population_counts = assigned_counts.copy()
+            moment_rows = self.moments(metric)
         cluster_counts = None
         unit_counts = None
         if self.context.cluster is not None:
@@ -1861,9 +1935,6 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             cluster_rows = self._read_extension(
                 cluster_extension, request=_artifact_request(cluster_extension)
             )
-            group_by_unit = {
-                str(row["unit_id"]): str(row["group_id"]) for row in self._exposure_rows()
-            }
             clusters_by_group: dict[str, set[str]] = {}
             units_by_group: dict[str, set[str]] = {}
             for row in cluster_rows:
@@ -1873,16 +1944,28 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 units_by_group.setdefault(group, set()).add(unit_id)
             cluster_counts = {group: len(values) for group, values in clusters_by_group.items()}
             unit_counts = {group: len(values) for group, values in units_by_group.items()}
-        summary_rows = self.moments(metric)
         return SitewideEvidence(
             metric=metric,
             site_total=site_total,
             site_total_denominator=site_den,
-            arm_stats=tuple(_df_to_arms(pa.Table.from_pylist(summary_rows))),
+            arm_stats=tuple(_df_to_arms(pa.Table.from_pylist(moment_rows))),
             control_group=self._artifact_experiment.control_group,
             cluster=self.context.cluster,
             cluster_counts=cluster_counts,
             unit_counts=unit_counts,
+            analysis_population=population,
+            window=(
+                None
+                if self._artifact_experiment.end is None
+                else (
+                    self._artifact_experiment.start.date(),
+                    self._artifact_experiment.end.date(),
+                )
+            ),
+            membership_cutoff=membership_cutoff,
+            snapshot_id=f"{self._manifest.artifact_id}:{self._manifest.generation_id}",
+            population_counts=population_counts,
+            assigned_counts=assigned_counts,
         )
 
 

@@ -181,15 +181,6 @@ _UNCORRECTED_SEQUENTIAL = RefusalSpec(
     UnsupportedRequestError,
     template="uncorrected segment rows have no fixed-horizon p-values under {inference}; read the registered breakout with run_breakout() instead.",
 )
-_TRIGGERED_SITEWIDE_UNSUPPORTED = RefusalSpec(
-    "analysis.sitewide.triggered_population_unsupported",
-    CapabilityError,
-    template=(
-        "sitewide() does not offer the triggered-population impact for {experiment!r}; "
-        "request population='assigned' for the whole-site impact, or use run() for the "
-        "triggered cohort effect."
-    ),
-)
 
 
 def fit_predeclared_adjustment(
@@ -248,7 +239,6 @@ def fit_predeclared_adjustment(
 _REFUSALS = refusals(
     InvalidRequestError,
     {
-        "analysis.sitewide.triggered_population_unsupported": _TRIGGERED_SITEWIDE_UNSUPPORTED,
         "facade.analysis.definitions_state_requires_identification": "definitions state requires a declared parallel identification",
         "facade.analysis.unknown_experiment": RefusalSpec(
             "facade.analysis.unknown_experiment",
@@ -1988,16 +1978,14 @@ class Analysis:
         """
         if population not in ("assigned", "triggered"):
             _refuse(_INVALID_POPULATION, population=population)
-        if population == "triggered":
-            # Before any family dispatch, so every ingress reports this estimand's refusal.
-            _refuse(
-                _TRIGGERED_SITEWIDE_UNSUPPORTED,
-                experiment=self._experiment_name,
-                population=population,
-            )
         experiment = getattr(self, "_experiment", None)
         return SitewideReadouts(src=self._src, experiment=experiment).run(
-            SitewideRequest(metric_name=metric_name, arm=arm, alpha=alpha)
+            SitewideRequest(
+                metric_name=metric_name,
+                arm=arm,
+                alpha=alpha,
+                population=population,
+            )
         )
 
     def export(self, path: str | Path) -> None:
