@@ -158,6 +158,10 @@ def tests_full(session: nox.Session) -> None:
     covered exact-mass and capacity cases remain in this matrix.
     """
     _sync(session, "dev", extras=("demo", "tables", "dashboard"))
+    if session.posargs:
+        _run_test_tier(session, "focused", *session.posargs)
+        return
+
     _run_test_tier(
         session,
         "all-except-scientific",

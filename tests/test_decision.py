@@ -175,9 +175,12 @@ def test_decision_computation_overlap_is_an_assertion_not_a_value_error():
 @pytest.mark.slow
 @pytest.mark.integration
 def test_constructor_invariants_survive_optimized_python():
+    import os
     import subprocess
     import sys
     from pathlib import Path
+
+    from scripts.run_test_tier import _clean_pytest_environment
 
     checks = [
         "tests/test_decision.py::test_decision_refusal_carries_code",
@@ -207,6 +210,7 @@ def test_constructor_invariants_survive_optimized_python():
             "no:tach",
             *checks,
         ],
+        env=_clean_pytest_environment(os.environ),
         cwd=Path(__file__).resolve().parents[1],
         capture_output=True,
         text=True,

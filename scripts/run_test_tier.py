@@ -38,6 +38,16 @@ from scripts._test_impact import (
 )
 from scripts._test_tier_policy import TIER_MARKERS
 
+
+def _clean_pytest_environment(environment: Mapping[str, str]) -> dict[str, str]:
+    """Remove pytest and coverage controls inherited by a fresh pytest run."""
+    return {
+        name: value
+        for name, value in environment.items()
+        if not name.startswith(("PYTEST_", "COV_CORE_", "COVERAGE_"))
+    }
+
+
 _TIMEOUT_STATUS = 124
 
 
@@ -423,10 +433,9 @@ def _affected_environment(identity: dict[str, object]) -> dict[str, str | None]:
 
 def _affected_runner_environment(identity: dict[str, object]) -> dict[str, str | None]:
     environment: dict[str, str | None] = _affected_environment(identity)
-    cleared_names = {
-        name for name in os.environ if name.startswith(("PYTEST_", "COV_CORE_", "COVERAGE_"))
-    }
-    environment.update(dict.fromkeys(cleared_names))
+    for name in os.environ:
+        if name.startswith(("PYTEST_", "COV_CORE_", "COVERAGE_")):
+            environment[name] = None
     environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     return environment
 

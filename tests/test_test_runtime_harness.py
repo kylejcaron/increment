@@ -11,14 +11,27 @@ from typing import Any
 
 import pytest
 
-from scripts.run_test_tier import run_with_budget
+from scripts.run_test_tier import _clean_pytest_environment, run_with_budget
+
+
+def test_clean_pytest_environment_removes_inherited_controls():
+    environment = {
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+        "PYTEST_ADDOPTS": "-n 0",
+        "PYTEST_CURRENT_TEST": "test_outer",
+        "COV_CORE_SOURCE": "increment",
+        "COVERAGE_FILE": ".coverage",
+        "PATH": "/bin",
+    }
+
+    assert _clean_pytest_environment(environment) == {"PATH": "/bin"}
 
 
 @pytest.mark.slow
 @pytest.mark.parametrize("github_actions", [None, "false", "true"])
 def test_root_runtime_budget_is_local_only(github_actions):
     repository = Path(__file__).parents[1]
-    environment = dict(os.environ)
+    environment = _clean_pytest_environment(os.environ)
     if github_actions is None:
         environment.pop("GITHUB_ACTIONS", None)
     else:
