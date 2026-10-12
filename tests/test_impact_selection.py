@@ -1359,8 +1359,10 @@ def _run_affected(
     *pytest_args: str,
     env_overrides: dict[str, str | None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    from scripts.run_test_tier import _clean_pytest_environment
+
     environment: dict[str, str] = {
-        **os.environ,
+        **_clean_pytest_environment(os.environ),
         "PYTHONPATH": os.pathsep.join((str(project), os.environ.get("PYTHONPATH", ""))),
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         "PYTEST_ADDOPTS": "",
@@ -1734,6 +1736,8 @@ def _run_make_affected(
     evidence: Path,
     pytest_args: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    from scripts.run_test_tier import _clean_pytest_environment
+
     runner = (
         f"uv run --no-sync --project {project} --extra demo --extra tables --extra dashboard "
         "python -m scripts.run_test_tier"
@@ -1750,6 +1754,7 @@ def _run_make_affected(
             f"PYTEST_ARGS={arguments}",
         ],
         cwd=root,
+        env=_clean_pytest_environment(os.environ),
         capture_output=True,
         text=True,
         timeout=90,
