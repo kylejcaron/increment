@@ -1259,7 +1259,7 @@ def _stable_log_cross_ratio(nt: float, nd: float, nc: float, cd: float) -> float
     cdm, cde = math.frexp(cd)
     treatment_exponent = nte + cde
     control_exponent = nce + nde
-    if abs(treatment_exponent - control_exponent) <= 1:
+    if abs(treatment_exponent - control_exponent) <= 2:
         treatment_product = _two_product(ntm, cdm)
         control_product = _two_product(ncm, ndm)
         common_exponent = max(treatment_exponent, control_exponent)

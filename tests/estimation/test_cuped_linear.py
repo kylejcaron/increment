@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import math
 import pickle
+from decimal import Decimal, localcontext
 
 import numpy as np
 import pytest
@@ -1248,6 +1249,37 @@ def test_ratio_cross_product_log_effect_is_denominator_unit_invariant(denominato
     assert fit.ratio("t", scale="log").estimate == pytest.approx(
         math.log1p(2**-52), rel=1e-12, abs=0
     )
+
+
+@pytest.mark.parametrize("base", [2.0**50, math.ldexp(1.0, -1022), math.ldexp(1.0, 1023)])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_log_ratio_preserves_cross_product_effect_at_exponent_boundaries(base, reverse):
+    neighbor = math.nextafter(base, 0.0)
+    control_numerator, treatment_numerator = (neighbor, base) if reverse else (base, neighbor)
+    control_denominator, treatment_denominator = (base, neighbor) if reverse else (neighbor, base)
+    arm = np.array(["c", "c", "t", "t"])
+    fit = fit_cuped_linear(
+        None,
+        arm,
+        control="c",
+        arm_order=("c", "t"),
+        numerator=np.array(
+            [control_numerator, control_numerator, treatment_numerator, treatment_numerator]
+        ),
+        denominator=np.array(
+            [control_denominator, control_denominator, treatment_denominator, treatment_denominator]
+        ),
+    )
+    with localcontext() as context:
+        context.prec = 120
+        numerator_cross = Decimal.from_float(treatment_numerator) * Decimal.from_float(
+            control_denominator
+        )
+        denominator_cross = Decimal.from_float(control_numerator) * Decimal.from_float(
+            treatment_denominator
+        )
+        expected = float((numerator_cross / denominator_cross).ln())
+    assert fit.ratio("t", scale="log").estimate == pytest.approx(expected, rel=1e-12, abs=0)
 
 
 def test_scaled_opposite_sign_covariate_offsets_do_not_overflow():
