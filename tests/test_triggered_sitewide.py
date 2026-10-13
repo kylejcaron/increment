@@ -457,21 +457,24 @@ def test_assigned_sitewide_uses_experiment_end_for_native_and_artifact(tmp_path)
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
-def test_triggered_sitewide_refuses_missing_outcome_watermark_on_native_and_artifact(tmp_path):
+def test_sitewide_refuses_missing_outcome_watermark_on_native_and_artifact(tmp_path):
     analysis = _analysis(tmp_path, watermark=None)
     adopted = None
     try:
-        with pytest.raises(CapabilityError) as native_refused:
-            analysis.sitewide("revenue", population="triggered")
-        assert native_refused.value.code == ("facade.analysis.sitewide_outcomes_incomplete")
+        native_codes = {}
+        for population in ("assigned", "triggered"):
+            with pytest.raises(CapabilityError) as native_refused:
+                analysis.sitewide("revenue", population=population)
+            native_codes[population] = native_refused.value.code
         adopted = _publish_and_adopt(
             native_connection(_native_source(analysis)),
             analysis,
             kinds=("site_volume", "trigger_population", "assignment_counts"),
         )
-        with pytest.raises(CapabilityError) as artifact_refused:
-            adopted.sitewide("revenue", population="triggered")
-        assert artifact_refused.value.code == native_refused.value.code
+        for population in ("assigned", "triggered"):
+            with pytest.raises(CapabilityError) as artifact_refused:
+                adopted.sitewide("revenue", population=population)
+            assert artifact_refused.value.code == native_codes[population]
     finally:
         if adopted is None:
             analysis.close()

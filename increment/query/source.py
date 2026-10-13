@@ -1861,6 +1861,10 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 "site-volume coverage does not match the experiment calendar window",
                 context={"route": "republish matching site_volume and trigger_population evidence"},
             )
+        self._require_sitewide_outcome_completeness(measure_keys)
+        return trigger_extension, count_extension, binding, measure_keys
+
+    def _require_sitewide_outcome_completeness(self, measure_keys: frozenset[str]) -> None:
         certified_edges = tuple(
             measure.certified_edge
             for measure in self._manifest.measures
@@ -1872,21 +1876,6 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             or len(certified_edges) != len(measure_keys)
             or any(edge is None or edge < end_day for edge in certified_edges)
         ):
-            refuse(
-                _SITEWIDE_OUTCOMES_INCOMPLETE,
-                route="re-run after the outcome feeds are complete through the experiment end.",
-            )
-        return trigger_extension, count_extension, binding, measure_keys
-
-    def _require_sitewide_outcome_completeness(self, measure_keys: frozenset[str]) -> None:
-        outcome_edge = _outcome_edge(
-            self._manifest.measures,
-            self._ensure("measure_stats"),
-            measure_keys,
-            self._snapshot.execute,
-        )
-        end_day = self._artifact_experiment.end_day
-        if end_day is None or outcome_edge is None or outcome_edge < end_day:
             refuse(
                 _SITEWIDE_OUTCOMES_INCOMPLETE,
                 route="re-run after the outcome feeds are complete through the experiment end.",
