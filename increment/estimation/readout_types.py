@@ -71,15 +71,17 @@ _UNSUPPORTED_REFUSALS = refusals(
 _CELL_FAILURE_REFUSALS = refusals(
     InvalidRequestError,
     {
+        # Templates name {observed_arms} so only producers that know the requested arm is the
+        # one lacking observations render them; other contexts fall back to code and context.
         "readout.cell.missing_arm": (
-            "Metric {metric} has no observations for requested arm {group_id}; check the "
-            "observed group label and control spelling, then correct the source or requested "
-            "contrast and rerun"
+            "Metric {metric} has no observations for requested arm {group_id} (observed arms: "
+            "{observed_arms}); check the observed group label and control spelling, then "
+            "correct the source or requested contrast and rerun"
         ),
         "readout.cell.missing_metric_observations": (
-            "Metric {metric} has no usable observations for arm {group_id}; check the metric's "
-            "missing-value policy and the values available in that arm, then correct the data "
-            "or policy and rerun"
+            "Metric {metric} has no usable observations for arm {group_id} (arms with "
+            "observations: {observed_arms}); check the metric's missing-value policy and the "
+            "values available in that arm, then correct the data or policy and rerun"
         ),
         "readout.cell.unsupported_request": "Requested cell is unsupported: {reason}",
     },
@@ -790,10 +792,11 @@ def render_readout_failure(
 ) -> str | None:
     """Render a registered readout refusal without changing its stored identity.
 
-    ``identity`` supplies the cell's own coordinates (for example ``metric`` and
-    ``group_id``) for templates whose stored context omits them; stored context
-    wins. Returns ``None`` when the code is unregistered or its template still
-    lacks a required key, so callers fall back to the code and context.
+    ``identity`` supplies the cell's own coordinates (for example ``metric``) for
+    templates whose stored context omits them; stored context wins. Sequences
+    render as comma-separated text (``none`` when empty). Returns ``None`` when
+    the code is unregistered or its template still lacks a required key, so
+    callers fall back to the code and context.
     """
     if code is None:
         return None
@@ -813,7 +816,10 @@ def render_readout_failure(
     if spec is None:
         return None
     known_identity = {key: value for key, value in (identity or {}).items() if value is not None}
-    values = {**known_identity, **thaw(context or {})}
+    values = {
+        key: (", ".join(map(str, value)) or "none") if isinstance(value, list | tuple) else value
+        for key, value in {**known_identity, **thaw(context or {})}.items()
+    }
     if not spec.keys <= values.keys():
         return None
     try:

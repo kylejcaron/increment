@@ -198,8 +198,10 @@ def test_registered_cell_failure_renders_its_spec_explanation():
         if cell.key.metric == "guard"
     )
     assert guard.failure_code in _CELL_FAILURE_REFUSALS
-    expected = _CELL_FAILURE_REFUSALS[guard.failure_code].render(**dict(guard.failure_context))
-    assert guard.failure_message == expected
+    expected = guard.failure_message
+    assert expected is not None and not expected.startswith(guard.failure_code)
+    assert "guard" in expected and "treatment" in expected
+    assert "control" in expected and "'control'" not in expected
     source_id = next(iter(cast(Any, results).metadata.scope.by_source))
     columns = cast(
         Any,
@@ -214,27 +216,57 @@ def test_registered_cell_failure_renders_its_spec_explanation():
     assert expected in render_readout_text(interpretation)
 
 
-def test_failure_rendering_uses_cell_identity_and_falls_back_without_crashing():
+def test_failure_rendering_fills_metric_and_falls_back_without_naming_an_unknown_arm():
     from increment.estimation.readout_types import render_readout_failure
 
-    # Day-axis producers store observed counts but not the metric/arm the template names.
-    context = {"observed_units": 0}
+    # Randomized scope records the requested arm and the observed arms: render it.
+    complete = {"group_id": "treatment", "observed_arms": ["control"]}
     rendered = render_readout_failure(
-        "readout.cell.missing_arm",
-        context,
-        identity={"metric": "revenue", "group_id": "treatment"},
+        "readout.cell.missing_arm", complete, identity={"metric": "revenue"}
     )
     assert rendered is not None
-    assert "revenue" in rendered and "treatment" in rendered
-    # Without identity the template cannot be filled; callers get None and fall back to code+context.
-    assert render_readout_failure("readout.cell.missing_arm", context) is None
+    assert "revenue" in rendered and "treatment" in rendered and "control" in rendered
+    # Day-axis and compliance contexts do not say which arm lacks observations: fall back.
+    for context in ({"observed_units": 0}, {"group_id": "treatment", "control_group": "control"}):
+        assert (
+            render_readout_failure("readout.cell.missing_arm", context, identity={"metric": "m"})
+            is None
+        )
     # Stored context wins over identity.
     stored = render_readout_failure(
         "readout.cell.missing_arm",
-        {"metric": "stored", "group_id": "arm_b"},
-        identity={"metric": "identity", "group_id": "arm_a"},
+        {"metric": "stored", **complete},
+        identity={"metric": "identity"},
     )
     assert stored is not None and "stored" in stored and "identity" not in stored
+
+
+def test_compliance_date_missing_control_does_not_blame_the_treatment_arm():
+    import datetime as dt
+
+    from increment._day_axis import _missing_compliance_rows
+    from increment._interpretation import interpret_readout
+    from increment._source_types import ComplianceArm, ComplianceSummary
+
+    summary = ComplianceSummary(
+        "s", "clicked", 7, True, None, None, (ComplianceArm("treatment", 20, 10),)
+    )
+    rows = _missing_compliance_rows(
+        summary,
+        dt.date(2024, 1, 3),
+        arm_roster=("control", "treatment"),
+        control_group="control",
+        population="assigned",
+        inference=None,
+        reason="missing_arm",
+    )
+    (row,) = rows
+    assert row.unavailable == "no_control_arm"
+    (group,) = interpret_readout(rows, None).groups
+    (cell,) = group.source_cells
+    assert cell.failure_message is not None
+    assert "requested arm treatment" not in cell.failure_message
+    assert cell.failure_message.startswith("readout.cell.missing_arm")
 
 
 def test_v1_readout_envelope_refuses_with_recompute_route():
