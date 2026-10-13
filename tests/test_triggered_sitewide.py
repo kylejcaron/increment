@@ -1375,3 +1375,25 @@ def test_count_mean_sharing_conversion_recipe_keeps_converter_total(tmp_path):
             analysis.close()
         else:
             _close_parity_analysis(adopted)
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_legacy_site_volume_manifest_reopens_without_digest_change(tmp_path):
+    analysis = _analysis(tmp_path, trigger=False)
+    adopted = None
+    try:
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(analysis)),
+            analysis,
+            kinds=("site_volume",),
+        )
+        manifest = _moment_source(adopted)._manifest
+        extension = next(item for item in manifest.extensions if item.kind == "site_volume")
+        assert extension.extension_version == 1
+        assert "distinct_unit_counts" not in extension.model_dump(mode="json")
+        assert adopted.sitewide("revenue").absolute_impact is not None
+    finally:
+        if adopted is None:
+            analysis.close()
+        else:
+            _close_parity_analysis(adopted)
