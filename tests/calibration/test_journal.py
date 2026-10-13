@@ -178,3 +178,26 @@ def test_reopen_does_not_repair_a_tampered_committed_chain(tmp_path):
         DrawJournal(tmp_path, case_id="c1", block_size=2)
     assert journal.read_bytes() == tampered
     assert tampered != before
+
+
+def test_close_leaves_an_unfinished_draw_out_of_the_chain_so_a_resume_restarts_it(tmp_path):
+    journal = DrawJournal(tmp_path, case_id="c1", block_size=4)
+    journal.started(0)
+    journal.completed(0, tally=("ok",))
+    journal.started(1)
+    totals = journal.close()
+    assert (totals.started, totals.completed) == (1, 1)
+    assert verify(tmp_path, case_id="c1") == totals
+
+    resumed = DrawJournal(tmp_path, case_id="c1", block_size=4)
+    assert resumed.totals().completed == 1
+    resumed.started(1)
+    resumed.completed(1, tally=("ok",))
+    final = resumed.close()
+    assert (final.started, final.completed, dict(final.counters)) == (2, 2, {"ok": 2})
+    assert verify(tmp_path, case_id="c1") == final
+
+    untouched = DrawJournal(tmp_path / "untouched", case_id="c1", block_size=4)
+    untouched.started(0)
+    assert untouched.close().blocks == 0
+    assert not (tmp_path / "untouched" / JOURNAL_NAME).read_bytes()

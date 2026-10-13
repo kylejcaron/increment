@@ -209,6 +209,7 @@ class DrawJournal:
             raise JournalError(f"draw {index} was not started or was already completed")
         block["pending"].remove(index)
         block["completed"] += 1
+        block["last_completed"] = max(block.get("last_completed", index), index)
         self._completed += 1
         for name in tally:
             block["counters"][name] = block["counters"].get(name, 0) + 1
@@ -301,10 +302,23 @@ class DrawJournal:
         )
 
     def close(self) -> JournalTotals:
-        """Seal any partial blocks and finalize both logs."""
+        """Seal any partial blocks and finalize both logs.
+
+        A draw that started but never completed (an interrupted run) is left
+        out of the chain entirely, so the resumed run restarts it instead of
+        overlapping a sealed range.
+        """
         if not self._closed:
             while self._active:
                 finished = self._active.pop(0)
+                unfinished = len(finished["pending"])
+                if unfinished:
+                    self._started -= unfinished
+                    finished["started"] -= unfinished
+                    finished["pending"].clear()
+                    if not finished["completed"]:
+                        continue
+                    finished["last"] = finished["last_completed"]
                 self._first, self._last = finished["first"], finished["last"]
                 self._seal(finished)
             self._exceptions.flush()

@@ -1,16 +1,32 @@
-"""Preregistered mixed-covariate linear CUPED certification (Revision 7).
+"""Preregistered mixed-covariate linear CUPED certification (Revision 7, amended by Revision 8).
 
-Run ``uv run python -m calibration.cuped_linear --campaign smoke --output DIR``.
-The full profile uses 107,100 eligible draws per statistic. Smoke exercises the
-same designs, but cannot certify them. Coverage uses an exact binomial lower
-bound; mean false-coverage proportion uses a bounded-observation KL upper bound.
-Both spend the shared 67-statistic allocation, including the 12 sitewide slots
-owned by the separate campaign. A failed gate never licenses a Normal interval.
+Commands, run from the checkout with BLAS pinned to one thread per worker
+(``OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1``)::
+
+    uv run python -m calibration.cuped_linear --campaign reduced --project
+    uv run python -m calibration.cuped_linear --campaign reduced --output DIR --workers 8
+    uv run python -m calibration.cuped_linear --campaign full --output DIR --workers 8
+    uv run python -m calibration.cuped_linear --campaign smoke --output DIR
+
+``full`` keeps the Revision 7 gates: 107,100 eligible draws per statistic at the
+strict tolerance 1/200 (coverage lower bound >= .945, mean false-coverage
+proportion upper bound <= .055). ``reduced`` is the Revision 8 amendment at the
+enumerated reduced tolerance 1/100 (lower bound >= .94, upper bound <= .06) with
+28,000 eligible draws, sized by the same helpers so that a nominal statistic
+passes with probability at least 1-.1/67 and true coverage .92 (mean false
+coverage proportion .08) fails with probability at least .99. Both spend the
+shared 67-statistic allocation, including the 12 sitewide slots owned by the
+separate campaign, and ``--project`` prints the projected CPU-hours from the
+measured per-attempt costs. Smoke exercises the same designs but cannot
+certify them. Revision 8 also declares eight edge cells outside the gated set
+before any coverage outcome exists; see ``manifest_record``. A failed gate never
+licenses a Normal interval.
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import math
@@ -21,7 +37,7 @@ import time
 from collections import Counter
 from collections.abc import Mapping
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from fractions import Fraction
 from pathlib import Path
@@ -29,20 +45,32 @@ from types import MappingProxyType
 
 import numpy as np
 from scipy.special import gammainc, gammaincc
+from scipy.stats import binom
 
 from calibration.journal import DrawJournal, verify
-from calibration.profile import CalibrationProfile, CellSet
 from increment.errors import CodedError
 from increment.estimation.cuped_linear import fit_cuped_linear
 from tests.mc import coverage_lower_bound, family_eta, kl_chernoff_upper_bound, mcse
 
 FAMILY_SIZE = 67
 ETA = family_eta(0.01, FAMILY_SIZE)
-FULL_REPLICATIONS = 107_100
-SMOKE_REPLICATIONS = 3
 ALPHA = 0.05
-COVERAGE_FLOOR = 0.945
-FCP_CEILING = 0.055
+NOMINAL_COVERAGE = Fraction(19, 20)
+NOMINAL_FCP = Fraction(1, 20)
+# The enumerated tolerances of calibration/profiles.yaml; a profile never
+# supplies a free value. A gate sits one tolerance inside nominal and the
+# detectable alternative three tolerances outside it, as in Revision 7.
+TOLERANCES = MappingProxyType({"strict": Fraction(1, 200), "reduced": Fraction(1, 100)})
+PROFILE_TOLERANCES = MappingProxyType({"smoke": "strict", "full": "strict", "reduced": "reduced"})
+REPLICATIONS = MappingProxyType({"smoke": 3, "full": 107_100, "reduced": 28_000})
+FULL_REPLICATIONS = REPLICATIONS["full"]
+REDUCED_REPLICATIONS = REPLICATIONS["reduced"]
+SMOKE_REPLICATIONS = REPLICATIONS["smoke"]
+PRECISION_REPLICATIONS = 4000
+PASS_TARGET = 1 - 0.1 / FAMILY_SIZE
+FAIL_TARGET = 0.99
+COVERAGE_FLOOR = float(NOMINAL_COVERAGE - TOLERANCES["strict"])
+FCP_CEILING = float(NOMINAL_FCP + TOLERANCES["strict"])
 BOUNDARY_CANDIDATES = MappingProxyType(
     {
         "p": (203, 53, 8),
@@ -52,21 +80,154 @@ BOUNDARY_CANDIDATES = MappingProxyType(
         "minimum_level_arm_count": (2, 5, 10),
     }
 )
-PROFILES = MappingProxyType(
-    {
-        name: CalibrationProfile(
-            name=name,
-            campaign="cuped_linear",
-            tolerance="strict",
-            delta=0.005,
-            tolerance_fraction=Fraction(1, 200),
-            cells=CellSet("all", "every-case", (), id_field="id", axis_field=None),
-            stopping="fixed",
-            sequential_rule=None,
-        )
-        for name in ("smoke", "full")
+PROFILES = tuple(PROFILE_TOLERANCES)
+
+
+@dataclass(frozen=True, slots=True)
+class Gates:
+    """One profile's frozen acceptance rule.
+
+    This campaign's rule is the C.9 one: the certificate is the exact one-sided
+    bound at ``ETA``, the statistic passes when that bound clears the floor or
+    ceiling, and the replication count is sized so that a nominal statistic
+    passes with probability at least ``PASS_TARGET`` and the detectable
+    alternative fails with probability at least ``FAIL_TARGET``. It is not the
+    I15 operating-point design of ``calibration.stopping``, whose false-failure
+    budget at ``k* = ceil(R (q + delta/2))`` is ``ETA`` itself; that design
+    needs 118,700 strict and 32,000 reduced replications, and the preregistered
+    campaign never declared it.
+    """
+
+    profile: str
+    tolerance: str
+    replications: int
+    coverage_floor: float
+    fcp_ceiling: float
+    detectable_coverage: float
+    detectable_fcp: float
+    stopping: str = "fixed"
+    certificate: str = (
+        "exact one-sided bound at eta: Clopper-Pearson for coverage, KL-Chernoff for mean FCP"
+    )
+
+
+def gates(campaign: str) -> Gates:
+    tolerance = PROFILE_TOLERANCES[campaign]
+    delta = TOLERANCES[tolerance]
+    return Gates(
+        campaign,
+        tolerance,
+        REPLICATIONS[campaign],
+        float(NOMINAL_COVERAGE - delta),
+        float(NOMINAL_FCP + delta),
+        float(NOMINAL_COVERAGE - 3 * delta),
+        float(NOMINAL_FCP + 3 * delta),
+    )
+
+
+def _largest(replications: int, admissible) -> int:
+    low, high = 0, replications
+    while low < high:
+        middle = (low + high + 1) // 2
+        if admissible(middle):
+            low = middle
+        else:
+            high = middle - 1
+    return low
+
+
+def sizing(
+    replications: int, floor: float, ceiling: float, detectable: tuple[float, float]
+) -> dict:
+    """Helper-derived miss cutoffs and the binomial pass/fail probabilities they imply."""
+    coverage_cutoff = _largest(
+        replications, lambda k: coverage_lower_bound(replications - k, replications, ETA) >= floor
+    )
+    fcp_cutoff = _largest(
+        replications,
+        lambda k: kl_chernoff_upper_bound(k / replications, replications, ETA) <= ceiling,
+    )
+    nominal = float(NOMINAL_FCP)
+    edge = (1 - floor, ceiling)
+    record = {
+        "replications": replications,
+        "coverage_floor": floor,
+        "fcp_ceiling": ceiling,
+        "coverage_miss_cutoff": coverage_cutoff,
+        "coverage_pass_at_nominal": float(binom.cdf(coverage_cutoff, replications, nominal)),
+        "coverage_false_acceptance_at_tolerance_edge": float(
+            binom.cdf(coverage_cutoff, replications, edge[0])
+        ),
+        "coverage_fail_at_detectable": float(
+            binom.sf(coverage_cutoff, replications, 1 - detectable[0])
+        ),
+        "fcp_cutoff": fcp_cutoff,
+        "fcp_pass_at_nominal": float(binom.cdf(fcp_cutoff, replications, nominal)),
+        "fcp_false_acceptance_at_tolerance_edge": float(
+            binom.cdf(fcp_cutoff, replications, edge[1])
+        ),
+        "fcp_fail_at_detectable": float(binom.sf(fcp_cutoff, replications, detectable[1])),
     }
-)
+    passes = min(record["coverage_pass_at_nominal"], record["fcp_pass_at_nominal"])
+    fails = min(record["coverage_fail_at_detectable"], record["fcp_fail_at_detectable"])
+    record["satisfied"] = passes >= PASS_TARGET and fails >= FAIL_TARGET
+    record["family_all_pass_lower_bound"] = 1 - FAMILY_SIZE * (1 - passes)
+    return record
+
+
+@functools.cache
+def derive_replications(
+    floor: float, ceiling: float, detectable: tuple[float, float], step: int = 100
+) -> dict:
+    """The smallest multiple of *step* whose cutoffs meet both targets.
+
+    C.9 scanned the lattice linearly; the targets are met on every lattice
+    point past the first satisfied one, so a galloping search locates the same
+    point, and the slow lattice test checks that identity for both profiles.
+    """
+    satisfied = functools.cache(
+        lambda replications: sizing(replications, floor, ceiling, detectable)["satisfied"]
+    )
+    low, high = 0, step
+    while not satisfied(high):
+        low, high = high, 2 * high
+        if high > 1_000_000:
+            raise ValueError("no replication count under one million satisfies the targets")
+    while high - low > step:
+        middle = (low + high) // 2 // step * step
+        if satisfied(middle):
+            high = middle
+        else:
+            low = middle
+    return sizing(high, floor, ceiling, detectable)
+
+
+def profile_sizing(campaign: str) -> dict:
+    gate = gates(campaign)
+    detectable = (gate.detectable_coverage, gate.detectable_fcp)
+    frozen = sizing(gate.replications, gate.coverage_floor, gate.fcp_ceiling, detectable)
+    derived = derive_replications(gate.coverage_floor, gate.fcp_ceiling, detectable)
+    return {
+        "profile": campaign,
+        "tolerance": gate.tolerance,
+        "detectable_coverage": gate.detectable_coverage,
+        "detectable_fcp": gate.detectable_fcp,
+        "pass_target": PASS_TARGET,
+        "fail_target": FAIL_TARGET,
+        "frozen": frozen,
+        "derived_replications": derived["replications"],
+        "frozen_matches_derivation": derived["replications"] == gate.replications,
+    }
+
+
+def sizing_alternatives() -> list[dict]:
+    """Replications at the detectable .92 for each candidate floor; the floor sets R."""
+    rows = []
+    for floor in (Fraction(189, 200), Fraction(47, 50), Fraction(187, 200), Fraction(93, 100)):
+        delta = NOMINAL_COVERAGE - floor
+        record = derive_replications(float(floor), float(NOMINAL_FCP + delta), (0.92, 0.08))
+        rows.append({key: record[key] for key in ("coverage_floor", "fcp_ceiling", "replications")})
+    return rows
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +245,7 @@ class Cell:
     heterogeneous: bool = False
     failure_boundary: tuple[str, ...] = ()
     failure_consequence: str = "Refuse the named projection in its corresponding design region."
+    gating: str = "gated"
 
 
 def _manifest() -> tuple[Cell, ...]:
@@ -190,23 +352,198 @@ def _manifest() -> tuple[Cell, ...]:
             failure_consequence="Block the three-metric D9 BH output.",
         )
     )
-    return tuple(rows)
+    return tuple(
+        replace(row, gating=EDGE_CELLS[row.id]) if row.id in EDGE_CELLS else row for row in rows
+    )
 
 
+# Revision 8 edge cells, declared before any coverage outcome existed from the
+# frozen admission probe below; ``manifest_record`` states each cell's basis.
+EDGE_CELLS = MappingProxyType(
+    {
+        "D4-7": "descriptive_only",
+        "D5-2": "unsupported_by_support_region",
+        "D5b-5": "unsupported_by_support_region",
+        "D5b-6": "unsupported_by_support_region",
+        "D5b-7": "unsupported_by_support_region",
+        "D5b-8": "unsupported_by_support_region",
+        "D5b-FCR-3": "unsupported_by_support_region",
+        "D5b-FCR-4": "unsupported_by_support_region",
+    }
+)
+# Measured support admission and fit/admission CPU seconds per attempt, 1000
+# contiguous frozen seeds per cell, from the descriptive probe at source
+# 6d67ad86 (fit and admission only; public BH/reintervaling overhead excluded).
+ADMISSION_ATTEMPTS = 1000
+ADMISSION_PROVENANCE = MappingProxyType(
+    {
+        "source_sha": "6d67ad86903548ca221d05f52cc79f2565bb78e1",
+        "source_digest": "ef417a328531ba54f9f3adac0c08ea69aad5846cd9a92ad9375c8b5efb9199f3",
+        "summary_sha256": "27c4737d0c847263320562404dcd062e4220572a3412ef4abc8d457283dd4dd8",
+        "summary_path": ".test-evidence/cuped-linear-admission-pre-c2/summary.json",
+        "command": "uv run python -m calibration.cuped_linear --campaign smoke --eligibility-attempts 1000 --output .test-evidence/cuped-linear-admission-pre-c2 --workers 2",
+        "attempts_per_cell": ADMISSION_ATTEMPTS,
+        "scope": "fit and support admission only, before the public route existed; excludes public BH/reintervaling overhead and projection-specific refusals",
+    }
+)
+ADMISSION = MappingProxyType(
+    {
+        "D3-1": (373, 0.002853234),
+        "D3-2": (985, 0.00407022),
+        "D3-3": (998, 0.005865957),
+        "D3-4": (1000, 0.006016889),
+        "D3b-1": (373, 0.002748545),
+        "D3b-2": (373, 0.002650005),
+        "D3b-3": (985, 0.004125042),
+        "D3b-4": (985, 0.004140911),
+        "D3b-5": (998, 0.005668277),
+        "D3b-6": (998, 0.005729878),
+        "D3b-7": (1000, 0.005806306),
+        "D3b-8": (1000, 0.006020945),
+        "D4-1": (1000, 0.017372443),
+        "D4-2": (865, 0.032937579),
+        "D4-3": (1000, 0.526154534),
+        "D4-4": (824, 0.152043471),
+        "D4-5": (1000, 0.022921941),
+        "D4-6": (1000, 0.048666195),
+        "D4-7": (21, 0.12367619),
+        "D4-8": (1000, 0.087545184),
+        "D4-9": (1000, 0.190723561),
+        "D4-10": (507, 0.255909108),
+        "D4-11": (865, 0.03346853),
+        "D5-1": (662, 0.002244201),
+        "D5-2": (1, 0.001538648),
+        "D5-3": (986, 0.005263982),
+        "D5-4": (740, 0.005231157),
+        "D5b-1": (662, 0.002410079),
+        "D5b-2": (662, 0.001874178),
+        "D5b-3": (662, 0.002014568),
+        "D5b-4": (662, 0.001538553),
+        "D5b-5": (1, 0.001420538),
+        "D5b-6": (1, 0.00150858),
+        "D5b-7": (1, 0.001527164),
+        "D5b-8": (1, 0.001966639),
+        "D5b-9": (986, 0.005338767),
+        "D5b-10": (986, 0.004505668),
+        "D5b-11": (986, 0.004349983),
+        "D5b-12": (986, 0.004291758),
+        "D5b-13": (740, 0.004225056),
+        "D5b-14": (740, 0.004587079),
+        "D5b-15": (740, 0.004559773),
+        "D5b-16": (740, 0.004480623),
+        "D5b-FCR-1": (428, 0.00289877),
+        "D5b-FCR-2": (428, 0.002907539),
+        "D5b-FCR-3": (0, 0.003003137),
+        "D5b-FCR-4": (0, 0.003056858),
+        "D5b-FCR-5": (971, 0.009064282),
+        "D5b-FCR-6": (971, 0.009064291),
+        "D5b-FCR-7": (543, 0.009370609),
+        "D5b-FCR-8": (543, 0.008832987),
+        "D9-1": (1000, 0.001424598),
+        "D9-2": (1000, 0.001439892),
+        "D9-3": (1000, 0.003098384),
+        "D9-4": (1000, 0.00554111),
+    }
+)
 MANIFEST = _manifest()
+GATED = tuple(cell for cell in MANIFEST if cell.gating == "gated")
+PRECISION_CELL = Cell(
+    "D8",
+    "descriptive",
+    "mean",
+    "absolute",
+    2000,
+    failure_consequence="Precision is descriptive; no acceptance threshold.",
+)
+
+
+def admission_summary(identifier: str) -> dict:
+    admitted, cpu_seconds = ADMISSION[identifier]
+    return {
+        "attempts": ADMISSION_ATTEMPTS,
+        "admitted": admitted,
+        "admitted_fraction": admitted / ADMISSION_ATTEMPTS,
+        "confidence_interval_95": [
+            coverage_lower_bound(admitted, ADMISSION_ATTEMPTS, 0.025),
+            1 - coverage_lower_bound(ADMISSION_ATTEMPTS - admitted, ADMISSION_ATTEMPTS, 0.025),
+        ],
+        "cpu_seconds_per_attempt": cpu_seconds,
+    }
+
+
+def cost_projection(campaign: str) -> dict:
+    """Projected fit/admission CPU-hours for one profile from the frozen probe."""
+    gate = gates(campaign)
+    rows = []
+    hours = attempts_total = 0.0
+    for cell in (*GATED, PRECISION_CELL):
+        # D8 reuses the D3-4 design, so it shares that cell's measured cost.
+        measured = admission_summary("D3-4" if cell.id == "D8" else cell.id)
+        target = PRECISION_REPLICATIONS if cell.id == "D8" else gate.replications
+        attempts = target / measured["admitted_fraction"]
+        cell_hours = measured["cpu_seconds_per_attempt"] * attempts / 3600
+        hours += cell_hours
+        attempts_total += attempts
+        rows.append(
+            {
+                "cell": cell.id,
+                "eligible_replications": target,
+                "admitted_fraction": measured["admitted_fraction"],
+                "projected_attempts": attempts,
+                "cpu_seconds_per_attempt": measured["cpu_seconds_per_attempt"],
+                "projected_cpu_hours": cell_hours,
+            }
+        )
+    return {
+        "profile": campaign,
+        "eligible_replications": gate.replications,
+        "gated_cells": len(GATED),
+        "projected_cpu_hours": hours,
+        "projected_attempts": attempts_total,
+        "cells": rows,
+        "provenance": dict(ADMISSION_PROVENANCE),
+    }
 
 
 def manifest_record() -> dict:
+    gated = Counter(cell.statistic for cell in GATED)
     return {
-        "revision": 7,
+        "revision": 8,
         "family_size": FAMILY_SIZE,
+        "family_size_note": "m=67 is the Revision 7 shared allocation and is retained for eta although the edge cells below no longer count toward it; the retained allocation is conservative.",
         "owned_statistics": {"coverage": 46, "fcp": 9},
+        "gated_statistics": {"coverage": gated["coverage"], "fcp": gated["fcp"]},
         "excluded_statistics": "T1/T4: 12 coverage slots in the shared family",
         "eta": ETA,
-        "eligible_replications": FULL_REPLICATIONS,
         "alpha": ALPHA,
-        "coverage_floor": COVERAGE_FLOOR,
-        "fcp_ceiling": FCP_CEILING,
+        "profiles": {
+            name: {**asdict(gates(name)), "sizing": profile_sizing(name)}
+            for name in ("full", "reduced")
+        },
+        "sizing_alternatives": {
+            "detectable_coverage": 0.92,
+            "detectable_fcp": 0.08,
+            "rows": sizing_alternatives(),
+            "note": "At the detectable .92 the nominal pass target sets R through the floor alone; every candidate floor fails .92 with probability 1.0 to double precision.",
+        },
+        "edge_cells": {
+            identifier: {
+                "gating": gating,
+                "admission": admission_summary(identifier),
+                "basis": "exact 95% upper admission bound below .01; the design region n/arm=100 with sigma_den=1.5 is refused by the M1 denominator-precision bound and is unsupported; no other D5b family is blocked"
+                if gating == "unsupported_by_support_region"
+                else "admission .021 leaves the cell unreachable inside the attempt limit; its L=.20 boundary is gated by D4-10 and the admission rate is the reported descriptive",
+            }
+            for identifier, gating in EDGE_CELLS.items()
+        },
+        "edge_cell_evidence": dict(ADMISSION_PROVENANCE),
+        "commands": {
+            "environment": "OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1",
+            "project": "uv run python -m calibration.cuped_linear --campaign reduced --project",
+            "reduced": "uv run python -m calibration.cuped_linear --campaign reduced --output .test-evidence/cuped-linear-reduced --workers 8",
+            "full": "uv run python -m calibration.cuped_linear --campaign full --output .test-evidence/cuped-linear-full --workers 8",
+            "smoke": "uv run python -m calibration.cuped_linear --campaign smoke --output .test-evidence/cuped-linear-smoke",
+        },
         "support_region": {
             "p": 203,
             "k_max": 200,
@@ -221,7 +558,7 @@ def manifest_record() -> dict:
         "seeds": {
             "design": "1000 + attempted_replication",
             "noise": "910000 + attempted_replication",
-            "independent_metric": "1000 + attempted_replication + 10000000 * metric_index",
+            "independent_metric": "SeedSequence(1000 + attempted_replication, spawn_key=(metric_index,)) for metric_index >= 1; metric 0 is the frozen C.3 seed, so streams never collide within the attempt limit",
             "chunk": "attempted_replication = 100 * chunk_size * chunk_index + offset; unused reserved indices are not reassigned",
         },
         "attempt_limit": "100 * target eligible replications per cell; exhaustion refuses the region",
@@ -272,9 +609,19 @@ class Draw:
     truth: float
 
 
-def mean_design(cell: Cell, replication: int) -> Draw:
+def design_stream(replication: int, metric: int = 0) -> np.random.SeedSequence:
+    """The frozen C.3 seed ``1000 + replication`` for a cell's first metric.
+
+    Further independent metrics of one family are spawned from that seed by
+    metric index, so no attempted replication of any profile can share a
+    stream with another metric; an additive offset would wrap past 1e7 draws.
+    """
+    return np.random.SeedSequence(1000 + replication, spawn_key=(metric,) if metric else ())
+
+
+def mean_design(cell: Cell, replication: int, metric: int = 0) -> Draw:
     """The C.3 law, preserving unavailable history as null, never dropping units."""
-    rng = np.random.default_rng(1000 + replication)
+    rng = np.random.default_rng(design_stream(replication, metric))
     n = cell.n
     treatment = rng.random(n) < cell.allocation
     history = rng.random(n) < 0.7
@@ -337,8 +684,8 @@ def population_ratio(rate_lift: float) -> float:
     return float(numerator / denominator)
 
 
-def ratio_design(cell: Cell, replication: int) -> Draw:
-    rng = np.random.default_rng(1000 + replication)
+def ratio_design(cell: Cell, replication: int, metric: int = 0) -> Draw:
+    rng = np.random.default_rng(design_stream(replication, metric))
     n = cell.n
     treatment = np.arange(n) < n // 2
     history = rng.random(n) < 0.7
@@ -361,8 +708,8 @@ def ratio_design(cell: Cell, replication: int) -> Draw:
     )
 
 
-def wls_design(cell: Cell, replication: int) -> Draw:
-    rng = np.random.default_rng(1000 + replication)
+def wls_design(cell: Cell, replication: int, metric: int = 0) -> Draw:
+    rng = np.random.default_rng(design_stream(replication, metric))
     treatment = np.arange(cell.n) < cell.n // 2
     x = rng.normal(size=cell.n)
     effect = cell.effect * 10 if cell.scale == "relative" else cell.effect
@@ -379,12 +726,12 @@ def wls_design(cell: Cell, replication: int) -> Draw:
     return Draw(np.where(treatment, "t", "c"), {"x": x}, {"x": "continuous"}, outcomes, truth)
 
 
-def generate(cell: Cell, replication: int) -> Draw:
+def generate(cell: Cell, replication: int, metric: int = 0) -> Draw:
     if cell.generator in ("mean", "relative_mean"):
-        return mean_design(cell, replication)
+        return mean_design(cell, replication, metric)
     if cell.generator in ("ratio", "ratio_family"):
-        return ratio_design(cell, replication)
-    return wls_design(cell, replication)
+        return ratio_design(cell, replication, metric)
+    return wls_design(cell, replication, metric)
 
 
 def fit_draw(draw: Draw):
@@ -525,7 +872,7 @@ def family_members(cell: Cell, replication: int) -> tuple[tuple[Draw, str], ...]
                 encoded_p=1,
                 effect=0.05 if metric == 0 else 0.0,
             )
-        members.append((generate(member, replication + 10_000_000 * metric), member.scale))
+        members.append((generate(member, replication, metric), member.scale))
     return tuple(members)
 
 
@@ -864,11 +1211,21 @@ def summarize(cell: Cell, records: list[dict], target: int, campaign: str) -> di
         observed = sum(record["fcp_sum"] for record in records) / eligible
         bound = kl_chernoff_upper_bound(observed, eligible, ETA)
         diagnostic_mcse = diagnostics["fcp"]["mcse"]
+    gate = gates(campaign)
     passed = bound is not None and (
-        bound >= COVERAGE_FLOOR if cell.statistic == "coverage" else bound <= FCP_CEILING
+        bound >= gate.coverage_floor if cell.statistic == "coverage" else bound <= gate.fcp_ceiling
     )
-    evaluated = campaign == "full" and status == "complete" and cell.statistic != "descriptive"
+    evaluated = campaign != "smoke" and status == "complete" and cell.statistic != "descriptive"
     certified = evaluated and passed
+    measured = (
+        {
+            name: cpu / eligible * (PRECISION_REPLICATIONS if cell.id == "D8" else count) / 3600
+            for name, count in REPLICATIONS.items()
+            if name != "smoke"
+        }
+        if status == "complete"
+        else None
+    )
     return {
         "cell": cell.id,
         "statistic": cell.statistic,
@@ -887,12 +1244,7 @@ def summarize(cell: Cell, records: list[dict], target: int, campaign: str) -> di
         "cpu_seconds_per_attempt": cpu / attempted if attempted else None,
         "cpu_seconds_per_eligible": cpu / eligible if eligible else None,
         "seconds_per_eligible": elapsed / eligible if eligible else None,
-        "projected_full_cpu_hours": cpu
-        / eligible
-        * (4000 if cell.id == "D8" else FULL_REPLICATIONS)
-        / 3600
-        if status == "complete"
-        else None,
+        "projected_cpu_hours": measured,
         "diagnostics": diagnostics,
         "refusal_codes": dict(sum((Counter(r["refusal_codes"]) for r in records), Counter())),
         "concerns": [r["concern"] for r in records if "concern" in r],
@@ -902,25 +1254,20 @@ def summarize(cell: Cell, records: list[dict], target: int, campaign: str) -> di
 def run_campaign(output: Path, campaign: str, workers: int = 1, chunk_size: int = 100) -> dict:
     if campaign not in PROFILES or workers < 1 or chunk_size < 1:
         raise ValueError("unknown campaign or nonpositive workers/chunk size")
-    target = FULL_REPLICATIONS if campaign == "full" else SMOKE_REPLICATIONS
+    target = REPLICATIONS[campaign]
     chunk_size = min(chunk_size, target)
     identity = _identity()
     frozen = manifest_record()
+    gate = gates(campaign)
     binding = {
         "manifest": frozen,
         "identity": identity,
         "campaign": campaign,
         "chunk_size": chunk_size,
         "profile": {
-            "name": campaign,
-            "tolerance": PROFILES[campaign].tolerance,
-            "stopping": "fixed",
-            "certification": {
-                identifier: selected and campaign == "full"
-                for identifier, selected in PROFILES[campaign]
-                .certification(frozen["cells"])
-                .items()
-            },
+            **asdict(gate),
+            "certification": {cell.id: campaign != "smoke" for cell in GATED},
+            "excluded": {cell.id: cell.gating for cell in MANIFEST if cell.gating != "gated"},
         },
     }
     manifest_path = output / "manifest.json"
@@ -929,17 +1276,11 @@ def run_campaign(output: Path, campaign: str, workers: int = 1, chunk_size: int 
     ):
         raise ValueError("output belongs to a different frozen source/profile; use a new directory")
     _atomic_json(manifest_path, binding)
-    precision = Cell(
-        "D8",
-        "descriptive",
-        "mean",
-        "absolute",
-        2000,
-        failure_consequence="Precision is descriptive; no acceptance threshold.",
-    )
-    cells = (*MANIFEST, precision)
-    targets = {cell.id: target for cell in MANIFEST}
-    targets["D8"] = 4000 if campaign == "full" else SMOKE_REPLICATIONS
+    projected = cost_projection(campaign)
+    print(json.dumps({"projection": projected}, sort_keys=True), flush=True)
+    cells = (*GATED, PRECISION_CELL)
+    targets = {cell.id: target for cell in GATED}
+    targets["D8"] = SMOKE_REPLICATIONS if campaign == "smoke" else PRECISION_REPLICATIONS
     jobs = [
         (
             cell,
@@ -969,19 +1310,28 @@ def run_campaign(output: Path, campaign: str, workers: int = 1, chunk_size: int 
         summaries.append(summary)
         _atomic_json(output / cell.id / "summary.json", summary)
         print(json.dumps(summary, sort_keys=True), flush=True)
+    certifying = campaign != "smoke"
     result = {
         "campaign": campaign,
         "identity": identity,
         "elapsed_seconds": time.perf_counter() - started,
         "cells": summaries[:-1],
         "precision": summaries[-1],
-        "full_campaign_executed": campaign == "full",
-        "projected_full_cpu_hours": sum(s["projected_full_cpu_hours"] or 0 for s in summaries),
-        "projection_complete": all(s["projected_full_cpu_hours"] is not None for s in summaries),
+        "excluded": binding["profile"]["excluded"],
+        "full_campaign_executed": certifying,
+        "projection": projected,
+        "measured_projection_cpu_hours": {
+            name: sum((s["projected_cpu_hours"] or {}).get(name, 0) for s in summaries)
+            for name in REPLICATIONS
+            if name != "smoke"
+        },
+        "measured_projection_complete": all(
+            s["projected_cpu_hours"] is not None for s in summaries
+        ),
         "status": "blocked"
         if any(s["status"] != "complete" for s in summaries)
         else "failed"
-        if campaign == "full" and any(not s["gate_passed"] for s in summaries[:-1])
+        if certifying and any(not s["gate_passed"] for s in summaries[:-1])
         else "smoke_complete"
         if campaign == "smoke"
         else "certified",
@@ -1051,27 +1401,34 @@ def run_admission_cell(job: tuple) -> dict:
     lower = coverage_lower_bound(admitted, attempts, 0.025)
     upper = 1 - coverage_lower_bound(attempts - admitted, attempts, 0.025)
     cpu_per_attempt = cpu / attempts
+    profiles = {name: count for name, count in REPLICATIONS.items() if name != "smoke"}
     result = {
         "cell": cell.id,
         "attempts": attempts,
         "admitted": admitted,
         "admitted_fraction": fraction,
         "confidence_interval_95": [lower, upper],
-        "projected_attempts": FULL_REPLICATIONS / fraction if fraction else None,
-        "projected_attempts_interval_95": [
-            FULL_REPLICATIONS / upper if upper else None,
-            FULL_REPLICATIONS / lower if lower else None,
-        ],
+        "projected_attempts": {
+            name: count / fraction if fraction else None for name, count in profiles.items()
+        },
+        "projected_attempts_interval_95": {
+            name: [count / upper if upper else None, count / lower if lower else None]
+            for name, count in profiles.items()
+        },
         "elapsed_seconds": elapsed,
         "cpu_seconds": cpu,
         "cpu_seconds_per_attempt": cpu_per_attempt,
-        "projected_cpu_hours": cpu_per_attempt * FULL_REPLICATIONS / fraction / 3600
-        if fraction
-        else None,
-        "projected_cpu_hours_interval_95": [
-            cpu_per_attempt * FULL_REPLICATIONS / upper / 3600 if upper else None,
-            cpu_per_attempt * FULL_REPLICATIONS / lower / 3600 if lower else None,
-        ],
+        "projected_cpu_hours": {
+            name: cpu_per_attempt * count / fraction / 3600 if fraction else None
+            for name, count in profiles.items()
+        },
+        "projected_cpu_hours_interval_95": {
+            name: [
+                cpu_per_attempt * count / upper / 3600 if upper else None,
+                cpu_per_attempt * count / lower / 3600 if lower else None,
+            ]
+            for name, count in profiles.items()
+        },
         "over_ten_attempts_per_eligible": fraction < 0.1,
         "violations": {
             key: value
@@ -1114,8 +1471,16 @@ def run_admission_probe(output: Path, attempts: int, workers: int) -> dict:
         "identity": identity,
         "cells": records,
         "elapsed_seconds": time.perf_counter() - started,
-        "projected_cpu_hours": sum(record["projected_cpu_hours"] or 0 for record in records),
-        "projection_complete": all(record["projected_cpu_hours"] is not None for record in records),
+        "projected_cpu_hours": {
+            name: sum(record["projected_cpu_hours"][name] or 0 for record in records)
+            for name in REPLICATIONS
+            if name != "smoke"
+        },
+        "projection_complete": all(
+            value is not None
+            for record in records
+            for value in record["projected_cpu_hours"].values()
+        ),
         "over_ten_attempts_cells": [
             record["cell"] for record in records if record["over_ten_attempts_per_eligible"]
         ],
@@ -1127,10 +1492,15 @@ def run_admission_probe(output: Path, attempts: int, workers: int) -> dict:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--campaign", choices=tuple(PROFILES), required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--campaign", choices=PROFILES, required=True)
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--chunk-size", type=int, default=100)
+    parser.add_argument(
+        "--project",
+        action="store_true",
+        help="print the profile's projected CPU-hours from the frozen measured costs and exit",
+    )
     parser.add_argument(
         "--eligibility-attempts",
         type=int,
@@ -1138,9 +1508,16 @@ def main(argv=None) -> int:
         help="separate descriptive support-admission probe with contiguous frozen seeds; no gates",
     )
     args = parser.parse_args(argv)
+    if args.project:
+        print(json.dumps(cost_projection(args.campaign), sort_keys=True, indent=2))
+        return 0
+    if args.output is None:
+        parser.error("--output is required unless --project is given")
     if args.eligibility_attempts:
         if args.campaign != "smoke":
-            parser.error("the descriptive eligibility probe is separate from the full campaign")
+            parser.error(
+                "the descriptive eligibility probe is separate from the certifying profiles"
+            )
         run_admission_probe(args.output.resolve(), args.eligibility_attempts, args.workers)
         return 0
     result = run_campaign(args.output.resolve(), args.campaign, args.workers, args.chunk_size)

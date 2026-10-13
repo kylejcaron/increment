@@ -28,13 +28,20 @@ from increment.estimation.cuped import fit_cuped
 from tests.mc import nominal_band
 
 
-def test_revision_seven_manifest_has_shared_family_allocation():
-    from calibration.cuped_linear import ETA, FAMILY_SIZE, FULL_REPLICATIONS, MANIFEST
+def test_revision_eight_manifest_keeps_the_shared_family_allocation():
+    from calibration.cuped_linear import (
+        EDGE_CELLS,
+        ETA,
+        FAMILY_SIZE,
+        GATED,
+        REPLICATIONS,
+        gates,
+    )
     from tests.mc import family_eta
 
     assert FAMILY_SIZE == 67
     assert ETA == family_eta(0.01, 67)
-    assert FULL_REPLICATIONS == 107_100
+    assert REPLICATIONS == {"smoke": 3, "full": 107_100, "reduced": 28_000}
     assert len(MANIFEST) == 55
     assert Counter(cell.statistic for cell in MANIFEST) == {"coverage": 46, "fcp": 9}
     assert len({cell.id for cell in MANIFEST}) == 55
@@ -42,6 +49,63 @@ def test_revision_seven_manifest_has_shared_family_allocation():
         f"D4-{i}" for i in range(1, 12)
     ]
     assert all(cell.failure_consequence for cell in MANIFEST)
+    assert Counter(cell.statistic for cell in GATED) == {"coverage": 40, "fcp": 7}
+    assert {cell.id: cell.gating for cell in MANIFEST if cell.gating != "gated"} == dict(EDGE_CELLS)
+    assert gates("full") == gates("full").__class__(
+        "full", "strict", 107_100, 0.945, 0.055, 0.935, 0.065
+    )
+    assert gates("reduced") == gates("reduced").__class__(
+        "reduced", "reduced", 28_000, 0.94, 0.06, 0.92, 0.08
+    )
+
+
+def test_edge_cells_are_declared_from_the_frozen_admission_evidence():
+    from calibration.cuped_linear import ADMISSION_PROVENANCE, EDGE_CELLS, admission_summary
+
+    assert ADMISSION_PROVENANCE["source_sha"] == "6d67ad86903548ca221d05f52cc79f2565bb78e1"
+    for identifier, gating in EDGE_CELLS.items():
+        upper = admission_summary(identifier)["confidence_interval_95"][1]
+        if gating == "unsupported_by_support_region":
+            assert upper < 0.01
+        else:
+            assert identifier == "D4-7" and 0.01 < upper < 0.05
+    assert all(
+        admission_summary(cell.id)["confidence_interval_95"][1] >= 0.01
+        for cell in MANIFEST
+        if cell.gating == "gated"
+    )
+
+
+@pytest.mark.parametrize("name", ["full", "reduced"])
+def test_each_profile_states_an_acceptance_rule_it_meets(name):
+    from calibration.cuped_linear import ETA, FAIL_TARGET, PASS_TARGET, gates, profile_sizing
+
+    record = profile_sizing(name)
+    frozen = record["frozen"]
+    assert record["frozen_matches_derivation"]
+    assert frozen["satisfied"]
+    assert frozen["coverage_pass_at_nominal"] >= PASS_TARGET
+    assert frozen["fcp_pass_at_nominal"] >= PASS_TARGET
+    assert frozen["coverage_fail_at_detectable"] >= FAIL_TARGET
+    assert frozen["fcp_fail_at_detectable"] >= FAIL_TARGET
+    assert frozen["coverage_false_acceptance_at_tolerance_edge"] <= ETA
+    assert frozen["fcp_false_acceptance_at_tolerance_edge"] <= ETA
+    assert frozen["family_all_pass_lower_bound"] >= 0.90
+    assert gates(name).stopping == "fixed"
+
+
+def test_cost_projection_covers_only_gated_cells(capsys):
+    from calibration.cuped_linear import GATED, cost_projection, main
+
+    projected = cost_projection("reduced")
+    assert [row["cell"] for row in projected["cells"]] == [*(c.id for c in GATED), "D8"]
+    assert projected["projected_cpu_hours"] == pytest.approx(
+        sum(row["projected_cpu_hours"] for row in projected["cells"])
+    )
+    assert projected["projected_cpu_hours"] < cost_projection("full")["projected_cpu_hours"]
+    assert main(["--campaign", "reduced", "--project"]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["projected_cpu_hours"] == projected["projected_cpu_hours"]
 
 
 def test_fast_smoke_preserves_design_and_interval_truth():
@@ -332,7 +396,7 @@ def test_d9_independently_constructed_weighted_hat_trace_and_welch():
 
 
 def test_full_gate_cutoffs_match_revision_seven_sizing():
-    from calibration.cuped_linear import ETA, FULL_REPLICATIONS
+    from calibration.cuped_linear import ETA, FULL_REPLICATIONS, REDUCED_REPLICATIONS
     from tests.mc import coverage_lower_bound, kl_chernoff_upper_bound
 
     r = FULL_REPLICATIONS
@@ -340,6 +404,31 @@ def test_full_gate_cutoffs_match_revision_seven_sizing():
     assert coverage_lower_bound(r - 5610, r, ETA) < 0.945
     assert kl_chernoff_upper_bound(5568 / r, r, ETA) <= 0.055
     assert kl_chernoff_upper_bound(5569 / r, r, ETA) > 0.055
+    r = REDUCED_REPLICATIONS
+    assert coverage_lower_bound(r - 1530, r, ETA) >= 0.94
+    assert coverage_lower_bound(r - 1531, r, ETA) < 0.94
+    assert kl_chernoff_upper_bound(1509 / r, r, ETA) <= 0.06
+    assert kl_chernoff_upper_bound(1510 / r, r, ETA) > 0.06
+
+
+@pytest.mark.slow
+@pytest.mark.numerical_certification
+@pytest.mark.parametrize("name", ["full", "reduced"])
+def test_galloping_sizing_matches_the_linear_lattice_scan(name):
+    from calibration.cuped_linear import gates, sizing
+
+    gate = gates(name)
+    detectable = (gate.detectable_coverage, gate.detectable_fcp)
+    first = next(
+        r
+        for r in range(100, gate.replications + 1, 100)
+        if sizing(r, gate.coverage_floor, gate.fcp_ceiling, detectable)["satisfied"]
+    )
+    assert first == gate.replications
+    assert all(
+        sizing(r, gate.coverage_floor, gate.fcp_ceiling, detectable)["satisfied"]
+        for r in range(gate.replications, gate.replications + 5001, 100)
+    )
 
 
 @pytest.mark.slow
@@ -393,7 +482,7 @@ def test_support_admission_probe_is_descriptive_and_resumable(tmp_path):
     assert first["admitted_fraction"] == 1
     assert 0 < first["confidence_interval_95"][0] < 1
     assert first["confidence_interval_95"][1] == 1
-    assert first["projected_attempts"] == 107_100
+    assert first["projected_attempts"] == {"full": 107_100, "reduced": 28_000}
     assert first["gated"] is False
     assert run_admission_cell(job) == first
 
@@ -472,3 +561,93 @@ def test_family_refuses_an_unavailable_projection_before_public_selection(monkey
     result = trial(cell, 0)
     assert result["status"] == "refused"
     assert result["code"] == "estimation.cuped_linear.nonpositive_component"
+
+
+def test_metric_streams_never_collide_within_any_profile_attempt_limit():
+    from calibration.cuped_linear import REPLICATIONS, design_stream, family_members
+
+    limit = 100 * max(REPLICATIONS.values())
+    assert limit == 10_710_000
+    assert design_stream(7).entropy == 1007 and design_stream(7).spawn_key == ()
+    assert np.random.default_rng(design_stream(7)).random() == np.random.default_rng(1007).random()
+    assert design_stream(7, 2).spawn_key == (2,)
+    # Distinct (entropy, spawn_key) pairs for every attempt and metric: entropy
+    # is injective in the replication and the spawn key separates metrics.
+    keys = {
+        (design_stream(r, m).entropy, design_stream(r, m).spawn_key)
+        for r in (0, limit - 1)
+        for m in range(3)
+    }
+    assert len(keys) == 6
+    for metric in (1, 2):
+        crossover = 10_000_000 * metric
+        assert (design_stream(crossover, 0).entropy, design_stream(crossover, 0).spawn_key) != (
+            design_stream(0, metric).entropy,
+            design_stream(0, metric).spawn_key,
+        )
+    cell = next(item for item in MANIFEST if item.id == "D9-4")
+    late = family_members(cell, 10_000_000)
+    early = family_members(cell, 0)
+    assert not np.array_equal(late[0][0].outcomes[0], early[1][0].outcomes[0])
+    assert len({draw.outcomes[0][:8].tobytes() for draw, _ in early}) == 3
+
+
+def test_interrupted_chunk_resumes_without_overlapping_its_journal(tmp_path, monkeypatch):
+    import calibration.cuped_linear as campaign
+    from calibration.journal import verify
+
+    cell = next(item for item in MANIFEST if item.id == "D3-4")
+    job = (cell, str(tmp_path / "run"), 0, 3, 3, {"source": "fixed"})
+    original = campaign.trial
+    seen = []
+
+    def interrupting(cell, replication):
+        seen.append(replication)
+        if len(seen) == 2:
+            raise KeyboardInterrupt
+        return original(cell, replication)
+
+    monkeypatch.setattr(campaign, "trial", interrupting)
+    with pytest.raises(KeyboardInterrupt):
+        run_chunk(job)
+    directory = tmp_path / "run" / cell.id / "chunks" / "000000"
+    interrupted = verify(directory, case_id=f"{cell.id}:0")
+    assert (interrupted.started, interrupted.completed) == (1, 1)
+    monkeypatch.setattr(campaign, "trial", original)
+    resumed = run_chunk(job)
+    clean = run_chunk((cell, str(tmp_path / "clean"), 0, 3, 3, {"source": "fixed"}))
+    assert resumed["status"] == "complete"
+    assert (resumed["hits"], resumed["attempted"], resumed["diagnostics"]) == (
+        clean["hits"],
+        clean["attempted"],
+        clean["diagnostics"],
+    )
+    totals = verify(directory, case_id=f"{cell.id}:0")
+    assert totals.started == totals.completed == resumed["attempted"]
+    assert totals.digest == resumed["journal_digest"]
+
+
+def test_interrupted_admission_probe_resumes_without_overlapping_its_journal(tmp_path, monkeypatch):
+    import calibration.cuped_linear as campaign
+    from calibration.journal import verify
+
+    cell = next(item for item in MANIFEST if item.id == "D3-4")
+    job = (cell, str(tmp_path), 3, {"source": "fixed"})
+    original = campaign.admission_trial
+    seen = []
+
+    def interrupting(cell, replication):
+        seen.append(replication)
+        if len(seen) == 2:
+            raise KeyboardInterrupt
+        return original(cell, replication)
+
+    monkeypatch.setattr(campaign, "admission_trial", interrupting)
+    with pytest.raises(KeyboardInterrupt):
+        campaign.run_admission_cell(job)
+    monkeypatch.setattr(campaign, "admission_trial", original)
+    resumed = campaign.run_admission_cell(job)
+    assert resumed["admitted"] == 3
+    totals = verify(tmp_path / cell.id, case_id=cell.id)
+    assert totals.started == totals.completed == 3
+    assert totals.digest == resumed["journal_digest"]
