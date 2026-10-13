@@ -3,6 +3,7 @@
 Commands, run from the checkout with BLAS pinned to one thread per worker
 (``OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1``)::
 
+    uv run python -m calibration.cuped_linear --campaign reduced --prerequisites
     uv run python -m calibration.cuped_linear --campaign reduced --project
     uv run python -m calibration.cuped_linear --campaign reduced --output DIR --workers 8
     uv run python -m calibration.cuped_linear --campaign full --output DIR --workers 8
@@ -14,13 +15,21 @@ proportion upper bound <= .055). ``reduced`` is the Revision 8 amendment at the
 enumerated reduced tolerance 1/100 (lower bound >= .94, upper bound <= .06) with
 28,000 eligible draws, sized by the same helpers so that a nominal statistic
 passes with probability at least 1-.1/67 and true coverage .92 (mean false
-coverage proportion .08) fails with probability at least .99. Both spend the
-shared 67-statistic allocation, including the 12 sitewide slots owned by the
-separate campaign, and ``--project`` prints the projected CPU-hours from the
-measured per-attempt costs. Smoke exercises the same designs but cannot
-certify them. Revision 8 also declares eight edge cells outside the gated set
-before any coverage outcome exists; see ``manifest_record``. A failed gate never
-licenses a Normal interval.
+coverage proportion .08) fails with probability at least .99; coverage numbers
+are exact binomial, FCP numbers are a Bernoulli benchmark carried beside their
+bounded-observation guarantees. Both spend the shared 67-statistic allocation,
+including the 12 sitewide slots owned by the separate campaign, and
+``--project`` prints the projected CPU-hours from the measured per-attempt
+costs. Smoke exercises the same designs but cannot certify them. Revision 8
+also declares eight edge cells outside the gated set before any coverage
+outcome exists; see ``manifest_record``. A failed gate never licenses a Normal
+interval.
+
+Every profile needs two production prerequisites, probed before any draw:
+``fit_cuped_linear`` must refuse a fit outside the M1 support region with the
+registered ``estimation.cuped_linear.support_region`` code and the harness
+observables, and the public ``cuped_linear`` route must run. Without them the
+campaign refuses with ``calibration.cuped_linear.prerequisite``.
 """
 
 from __future__ import annotations
@@ -33,22 +42,25 @@ import math
 import os
 import platform
 import subprocess
+import sys
 import time
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass, replace
 from enum import Enum
 from fractions import Fraction
 from pathlib import Path
 from types import MappingProxyType
+from typing import cast
 
 import numpy as np
 from scipy.special import gammainc, gammaincc
 from scipy.stats import binom
 
 from calibration.journal import DrawJournal, verify
-from increment.errors import CodedError
+from increment.errors import CodedError, refusals, refuse
+from increment.estimation import cuped_linear as production
 from increment.estimation.cuped_linear import fit_cuped_linear
 from tests.mc import coverage_lower_bound, family_eta, kl_chernoff_upper_bound, mcse
 
@@ -66,11 +78,52 @@ REPLICATIONS = MappingProxyType({"smoke": 3, "full": 107_100, "reduced": 28_000}
 FULL_REPLICATIONS = REPLICATIONS["full"]
 REDUCED_REPLICATIONS = REPLICATIONS["reduced"]
 SMOKE_REPLICATIONS = REPLICATIONS["smoke"]
-PRECISION_REPLICATIONS = 4000
+# D8 is descriptive: 4000 eligible draws under a certifying profile, the smoke
+# count under smoke, in projection and execution alike.
+PRECISION_REPLICATIONS = MappingProxyType({"smoke": 3, "full": 4000, "reduced": 4000})
 PASS_TARGET = 1 - 0.1 / FAMILY_SIZE
 FAIL_TARGET = 0.99
-COVERAGE_FLOOR = float(NOMINAL_COVERAGE - TOLERANCES["strict"])
-FCP_CEILING = float(NOMINAL_FCP + TOLERANCES["strict"])
+# The Revision 7 family: 58 coverage and 9 mean-FCP slots. The all-pass union
+# bound keeps this split although the edge cells no longer count toward m.
+FAMILY_SLOTS = (58, 9)
+# M1, the frozen support region. Production must refuse a fit outside it with
+# the registered code and these observables; the harness audits every fit it
+# receives against the same limits and blocks, never filters, a returned fit
+# outside them.
+SUPPORT_REGION = MappingProxyType(
+    {
+        "p": 203,
+        "k_max": 200,
+        "leverage_ratio": 0.20,
+        "max_leverage": 0.45,
+        "ratio_denominator_precision": 0.15,
+    }
+)
+SUPPORT_REQUIREMENTS = MappingProxyType(
+    {"minimum_level_arm_count": 2, "full_rank": True, "positive_residual_df": True}
+)
+# The harness recomputes rho_D from the raw draw while production reads it off
+# scale-normalized moments; equal up to rounding, so a harness excess inside
+# this relative tolerance is not a violation.
+DENOMINATOR_PRECISION_TOLERANCE = 1e-12
+SUPPORT_REGION_CODE = "estimation.cuped_linear.support_region"
+PUBLIC_ROUTE_UNFINISHED_CODE = "estimation.engine.cuped_linear_unfinished"
+
+
+class PrerequisiteError(CodedError):
+    """A production prerequisite of the campaign is absent from this build."""
+
+
+_REFUSALS = refusals(
+    PrerequisiteError,
+    {
+        "calibration.cuped_linear.prerequisite": (
+            "production prerequisites are absent from this build: {missing!r}; the campaign "
+            "cannot attempt a draw until the production slice that provides them is merged",
+            ("details",),
+        ),
+    },
+)
 BOUNDARY_CANDIDATES = MappingProxyType(
     {
         "p": (203, 53, 8),
@@ -136,10 +189,73 @@ def _largest(replications: int, admissible) -> int:
     return low
 
 
+def _relative_entropy(x: float, u: float) -> float:
+    """Bernoulli relative entropy ``KL(x || u)`` for ``x`` in ``[0, 1)``, ``u`` in ``(0, 1)``."""
+    low = (1 - x) * math.log((1 - x) / (1 - u))
+    return low if x == 0 else x * math.log(x / u) + low
+
+
+def fcp_threshold(replications: int, ceiling: float) -> float:
+    """The largest mean FCP whose KL certificate at ``ETA`` still clears *ceiling*.
+
+    ``kl_chernoff_upper_bound(x, R, ETA) <= ceiling`` exactly when
+    ``R * KL(x || ceiling) >= log(1/ETA)`` with ``x <= ceiling``, so the pass
+    region of the FCP gate is ``mean <= x*`` for this real root, not an
+    integer miss count: the per-replication FCP is fractional. Zero when even
+    an all-zero observation cannot certify at *replications*.
+    """
+    from scipy.optimize import brentq
+
+    budget = -math.log(ETA)
+    if replications * _relative_entropy(0.0, ceiling) < budget:
+        return 0.0
+    return float(
+        brentq(
+            lambda x: replications * _relative_entropy(x, ceiling) - budget,
+            0.0,
+            ceiling - 1e-12,
+            xtol=1e-15,
+            rtol=1e-15,
+        )
+    )
+
+
+def bounded_tail(replications: int, threshold: float, mean: float) -> float:
+    """Hoeffding's relative-entropy bound for iid summands in ``[0, 1]``.
+
+    For any iid ``X_i`` in ``[0, 1]`` with mean *mean*, ``P(mean(X) >= t)`` for
+    ``t > mean`` and ``P(mean(X) <= t)`` for ``t < mean`` are both at most
+    ``exp(-R * KL(t || mean))`` (Hoeffding 1963, Theorem 1). Unlike the
+    binomial tail it holds for the fractional per-replication FCP, at the
+    price of being a bound rather than an exact probability. On the wrong
+    side of *mean* the tail is not small and the bound is the trivial one.
+    """
+    return math.exp(-replications * _relative_entropy(threshold, mean))
+
+
+def _pass_bound(replications: int, threshold: float, mean: float) -> float:
+    """Lower bound on ``P(mean(X) <= threshold)`` at *mean*; trivial unless above it."""
+    return 1 - bounded_tail(replications, threshold, mean) if threshold > mean else 0.0
+
+
+def _fail_bound(replications: int, threshold: float, mean: float) -> float:
+    """Lower bound on ``P(mean(X) > threshold)`` at *mean*; trivial unless below it."""
+    return 1 - bounded_tail(replications, threshold, mean) if threshold < mean else 0.0
+
+
 def sizing(
     replications: int, floor: float, ceiling: float, detectable: tuple[float, float]
 ) -> dict:
-    """Helper-derived miss cutoffs and the binomial pass/fail probabilities they imply."""
+    """Helper-derived cutoffs and the operating probabilities they imply.
+
+    Coverage events are indicators, so their binomial pass and fail
+    probabilities are exact. A replication's FCP is ``misses / selected``,
+    fractional in ``[0, 1]``; its binomial numbers are the Bernoulli member of
+    that bounded class, reported as a benchmark, and the ``_bound`` fields are
+    the guarantees that hold for every member. ``satisfied`` is the C.9
+    benchmark criterion that sizes the frozen profiles; ``satisfied_bounded``
+    additionally needs the FCP guarantees to meet the same targets.
+    """
     coverage_cutoff = _largest(
         replications, lambda k: coverage_lower_bound(replications - k, replications, ETA) >= floor
     )
@@ -147,6 +263,7 @@ def sizing(
         replications,
         lambda k: kl_chernoff_upper_bound(k / replications, replications, ETA) <= ceiling,
     )
+    threshold = fcp_threshold(replications, ceiling)
     nominal = float(NOMINAL_FCP)
     edge = (1 - floor, ceiling)
     record = {
@@ -162,22 +279,41 @@ def sizing(
             binom.sf(coverage_cutoff, replications, 1 - detectable[0])
         ),
         "fcp_cutoff": fcp_cutoff,
+        "fcp_threshold_mean": threshold,
+        "fcp_claim": "binomial FCP numbers are the Bernoulli benchmark of a fractional [0, 1] observation; the _bound fields hold for every bounded law",
         "fcp_pass_at_nominal": float(binom.cdf(fcp_cutoff, replications, nominal)),
+        "fcp_pass_at_nominal_bound": _pass_bound(replications, threshold, nominal),
         "fcp_false_acceptance_at_tolerance_edge": float(
             binom.cdf(fcp_cutoff, replications, edge[1])
         ),
+        "fcp_false_acceptance_at_tolerance_edge_bound": ETA,
         "fcp_fail_at_detectable": float(binom.sf(fcp_cutoff, replications, detectable[1])),
+        "fcp_fail_at_detectable_bound": _fail_bound(replications, threshold, detectable[1]),
     }
-    passes = min(record["coverage_pass_at_nominal"], record["fcp_pass_at_nominal"])
-    fails = min(record["coverage_fail_at_detectable"], record["fcp_fail_at_detectable"])
-    record["satisfied"] = passes >= PASS_TARGET and fails >= FAIL_TARGET
-    record["family_all_pass_lower_bound"] = 1 - FAMILY_SIZE * (1 - passes)
+    coverage_slots, fcp_slots = FAMILY_SLOTS
+    for suffix in ("", "_bound"):
+        passes = min(record["coverage_pass_at_nominal"], record["fcp_pass_at_nominal" + suffix])
+        fails = min(
+            record["coverage_fail_at_detectable"], record["fcp_fail_at_detectable" + suffix]
+        )
+        record["satisfied" + (suffix and "_bounded")] = (
+            passes >= PASS_TARGET and fails >= FAIL_TARGET
+        )
+        record["family_all_pass_lower_bound" + (suffix and "_bounded")] = (
+            1
+            - coverage_slots * (1 - record["coverage_pass_at_nominal"])
+            - fcp_slots * (1 - record["fcp_pass_at_nominal" + suffix])
+        )
     return record
 
 
 @functools.cache
 def derive_replications(
-    floor: float, ceiling: float, detectable: tuple[float, float], step: int = 100
+    floor: float,
+    ceiling: float,
+    detectable: tuple[float, float],
+    criterion: str = "satisfied",
+    step: int = 100,
 ) -> dict:
     """The smallest multiple of *step* whose cutoffs meet both targets.
 
@@ -186,7 +322,7 @@ def derive_replications(
     point, and the slow lattice test checks that identity for both profiles.
     """
     satisfied = functools.cache(
-        lambda replications: sizing(replications, floor, ceiling, detectable)["satisfied"]
+        lambda replications: sizing(replications, floor, ceiling, detectable)[criterion]
     )
     low, high = 0, step
     while not satisfied(high):
@@ -207,6 +343,9 @@ def profile_sizing(campaign: str) -> dict:
     detectable = (gate.detectable_coverage, gate.detectable_fcp)
     frozen = sizing(gate.replications, gate.coverage_floor, gate.fcp_ceiling, detectable)
     derived = derive_replications(gate.coverage_floor, gate.fcp_ceiling, detectable)
+    bounded = derive_replications(
+        gate.coverage_floor, gate.fcp_ceiling, detectable, "satisfied_bounded"
+    )
     return {
         "profile": campaign,
         "tolerance": gate.tolerance,
@@ -217,6 +356,8 @@ def profile_sizing(campaign: str) -> dict:
         "frozen": frozen,
         "derived_replications": derived["replications"],
         "frozen_matches_derivation": derived["replications"] == gate.replications,
+        "bounded_replications": bounded["replications"],
+        "bounded_note": "replications at which the FCP guarantees for every bounded law also meet the targets; the frozen count is sized on the Bernoulli benchmark, so the FCP pass target is a benchmark claim there",
     }
 
 
@@ -384,6 +525,8 @@ ADMISSION_PROVENANCE = MappingProxyType(
         "command": "uv run python -m calibration.cuped_linear --campaign smoke --eligibility-attempts 1000 --output .test-evidence/cuped-linear-admission-pre-c2 --workers 2",
         "attempts_per_cell": ADMISSION_ATTEMPTS,
         "scope": "fit and support admission only, before the public route existed; excludes public BH/reintervaling overhead and projection-specific refusals",
+        "streams": "measured with metric>=1 drawn from generate(rep + 10000000*metric) and D4 noise from default_rng(910000+rep); both were re-keyed to spawned SeedSequences afterwards. The laws are unchanged, so each rate still estimates the same admission probability, but the probe's exceptional records are not reproducible at the current seeds; the D5b-FCR-3/4 exclusion rests on metric 0 alone (999/1000 refused)",
+        "cost": "CPU seconds per attempt measured at 6d67ad86, where the per-fit support audit cost no sizing computation; the audit now reads SUPPORT_REGION directly, so the figures carry over to the current hot path",
     }
 )
 ADMISSION = MappingProxyType(
@@ -479,7 +622,7 @@ def cost_projection(campaign: str) -> dict:
     for cell in (*GATED, PRECISION_CELL):
         # D8 reuses the D3-4 design, so it shares that cell's measured cost.
         measured = admission_summary("D3-4" if cell.id == "D8" else cell.id)
-        target = PRECISION_REPLICATIONS if cell.id == "D8" else gate.replications
+        target = PRECISION_REPLICATIONS[campaign] if cell.id == "D8" else gate.replications
         attempts = target / measured["admitted_fraction"]
         cell_hours = measured["cpu_seconds_per_attempt"] * attempts / 3600
         hours += cell_hours
@@ -503,6 +646,143 @@ def cost_projection(campaign: str) -> dict:
         "cells": rows,
         "provenance": dict(ADMISSION_PROVENANCE),
     }
+
+
+def _registry_codes(module) -> frozenset[str]:
+    """Every coded refusal a module registers at its top level."""
+    from increment.errors import RefusalSpec
+
+    codes = set()
+    for value in vars(module).values():
+        if isinstance(value, RefusalSpec):
+            codes.add(value.code)
+        elif isinstance(value, Mapping):
+            codes.update(spec.code for spec in value.values() if isinstance(spec, RefusalSpec))
+    return frozenset(codes)
+
+
+def _support_region_probe() -> dict:
+    """Fit one tiny design outside M1 and one inside; production must refuse only the first."""
+    rng = np.random.default_rng(67)
+    arms = np.array(["c"] * 15 + ["t"] * 15)
+    outside = {f"x{j}": rng.normal(size=30) for j in range(8)}
+    y = 10 + rng.normal(size=30)
+    status = {"registered": SUPPORT_REGION_CODE in _registry_codes(production)}
+    try:
+        fit = fit_draw(Draw(arms, outside, dict.fromkeys(outside, "continuous"), (y,), 0.0))
+    except CodedError as error:
+        status["refusal"] = error.code
+        violations: tuple[tuple[str, float, float], ...] = ()
+        if error.code == SUPPORT_REGION_CODE:
+            context_violations = error.context.get("violations")
+            if isinstance(context_violations, tuple):
+                violations = cast("tuple[tuple[str, float, float], ...]", context_violations)
+        observed = {name: (value, bound) for name, value, bound in violations}
+        status["observables_match"] = observed.get("leverage_ratio") == (
+            8 / 15,
+            SUPPORT_REGION["leverage_ratio"],
+        )
+    else:
+        status["refusal"] = None
+        status["observables_match"] = False
+        status["returned_fit_violations"] = support_violations(
+            fit, Draw(arms, outside, dict.fromkeys(outside, "continuous"), (y,), 0.0)
+        )
+    inside = Draw(arms, {"x0": outside["x0"]}, {"x0": "continuous"}, (y,), 0.0)
+    try:
+        status["inside_fits"] = not support_violations(fit_draw(inside), inside)
+    except CodedError as error:
+        status["inside_fits"] = False
+        status["inside_refusal"] = error.code
+    status["satisfied"] = bool(
+        status["registered"]
+        and status["refusal"] == SUPPORT_REGION_CODE
+        and status["observables_match"]
+        and status["inside_fits"]
+    )
+    return status
+
+
+def _public_route_probe() -> dict:
+    """Run the smallest public cuped_linear analysis; the unfinished code means no route."""
+    import pandas as pd
+
+    from increment import Analysis, AnalysisPlan, Method
+    from increment.breakout.estimates import LiftEstimates
+    from increment.frame import CupedCovariate, MetricSpec
+
+    rng = np.random.default_rng(67)
+    x = rng.normal(size=40)
+    frame = pd.DataFrame(
+        {
+            "unit": np.arange(40),
+            "arm": ["c"] * 20 + ["t"] * 20,
+            "x": x,
+            "outcome": 10 + 2 * x + rng.normal(size=40),
+        }
+    )
+    metric = MetricSpec(
+        name="outcome",
+        covariates=(CupedCovariate(name="x", kind="continuous", missing="impute-indicator"),),
+        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
+    )
+    analysis = Analysis.from_unit_summary(
+        frame,
+        unit="unit",
+        group="arm",
+        control="c",
+        metrics=[metric],
+        plan=AnalysisPlan(primary="outcome"),
+    )
+    try:
+        rows = analysis.run()
+    except CodedError as error:
+        if error.code != PUBLIC_ROUTE_UNFINISHED_CODE:
+            raise
+        return {"refusal": error.code, "satisfied": False}
+    returned = isinstance(rows, LiftEstimates) and any(row.metric == "outcome" for row in rows)
+    return {"refusal": None, "satisfied": bool(returned)}
+
+
+@dataclass(frozen=True, slots=True)
+class Prerequisite:
+    requirement: str
+    probe: Callable[[], dict]
+
+
+PREREQUISITES = MappingProxyType(
+    {
+        "support_region_refusal": Prerequisite(
+            f"fit_cuped_linear refuses a fit outside M1 with {SUPPORT_REGION_CODE}, naming the harness observables {tuple(SUPPORT_REGION)} with the same bounds; the harness audits every returned fit and blocks, never filters, one outside M1",
+            _support_region_probe,
+        ),
+        "public_route": Prerequisite(
+            f"Analysis.run() with Method(name='linear', variance_reduction='cuped_linear') returns LiftEstimates rows instead of {PUBLIC_ROUTE_UNFINISHED_CODE}; the FCP families and the public D7 sentinel select and reinterval through it",
+            _public_route_probe,
+        ),
+    }
+)
+
+
+def prerequisites(*names: str) -> dict:
+    """Probe the named production prerequisites (all by default)."""
+    return {
+        name: {"requirement": PREREQUISITES[name].requirement, **PREREQUISITES[name].probe()}
+        for name in (names or tuple(PREREQUISITES))
+    }
+
+
+def require_prerequisites(*names: str) -> dict:
+    """Refuse with the coded prerequisite error unless every named prerequisite holds."""
+    status = prerequisites(*names)
+    missing = tuple(name for name, entry in status.items() if not entry["satisfied"])
+    if missing:
+        refuse(
+            _REFUSALS["calibration.cuped_linear.prerequisite"],
+            missing=missing,
+            details={name: status[name] for name in missing},
+        )
+    return status
 
 
 def manifest_record() -> dict:
@@ -532,7 +812,7 @@ def manifest_record() -> dict:
                 "admission": admission_summary(identifier),
                 "basis": "exact 95% upper admission bound below .01; the design region n/arm=100 with sigma_den=1.5 is refused by the M1 denominator-precision bound and is unsupported; no other D5b family is blocked"
                 if gating == "unsupported_by_support_region"
-                else "admission .021 leaves the cell unreachable inside the attempt limit; its L=.20 boundary is gated by D4-10 and the admission rate is the reported descriptive",
+                else "the admitted draws are exactly the balanced allocations: L<=.20 with n=2000 and p=200 needs n_t=n_c=1000, P=C(2000,1000)/2^2000=.01784, observed 21/1000 all balanced; a degenerate fixed-design subset of the declared random-allocation cell, at .124 CPU-s/attempt (about 46 reduced / 175 full CPU-hours); its L=.20 boundary is gated by D4-10 and the admission rate is the reported descriptive",
             }
             for identifier, gating in EDGE_CELLS.items()
         },
@@ -544,21 +824,18 @@ def manifest_record() -> dict:
             "full": "uv run python -m calibration.cuped_linear --campaign full --output .test-evidence/cuped-linear-full --workers 8",
             "smoke": "uv run python -m calibration.cuped_linear --campaign smoke --output .test-evidence/cuped-linear-smoke",
         },
-        "support_region": {
-            "p": 203,
-            "k_max": 200,
-            "leverage_ratio": 0.20,
-            "max_leverage": 0.45,
-            "ratio_denominator_precision": 0.15,
-            "minimum_level_arm_count": 2,
-            "full_rank": True,
-            "positive_residual_df": True,
+        "prerequisites": {name: entry.requirement for name, entry in PREREQUISITES.items()}
+        | {
+            "check": "run_campaign probes both before any draw and refuses with calibration.cuped_linear.prerequisite when either is absent; --prerequisites prints the probe"
         },
+        "support_region": {**SUPPORT_REGION, **SUPPORT_REQUIREMENTS},
+        "support_audit": f"the harness recomputes ratio_denominator_precision from the raw draw and allows a relative excess of {DENOMINATOR_PRECISION_TOLERANCE} over the bound for rounding against production's normalized-moment value; p, k_max, leverage_ratio and max_leverage are read off the fit",
         "boundary_candidates": dict(BOUNDARY_CANDIDATES),
         "seeds": {
-            "design": "1000 + attempted_replication",
-            "noise": "910000 + attempted_replication",
-            "independent_metric": "SeedSequence(1000 + attempted_replication, spawn_key=(metric_index,)) for metric_index >= 1; metric 0 is the frozen C.3 seed, so streams never collide within the attempt limit",
+            "design": "SeedSequence(1000 + attempted_replication): default_rng(1000 + attempted_replication), the C.3 seed",
+            "noise": "SeedSequence(1000 + attempted_replication, spawn_key=(0, 1)); C.3's literal 910000 + attempted_replication shares the design entropy space and is not used",
+            "independent_metric": "SeedSequence(1000 + attempted_replication, spawn_key=(metric_index,)) for metric_index >= 1; metric 0 is the frozen C.3 seed",
+            "collision_freedom": "every stream of a cell is keyed by (1000 + attempted_replication, spawn_key) with a distinct spawn_key per role, so no two draws of any profile share a stream at any chunk size",
             "chunk": "attempted_replication = 100 * chunk_size * chunk_index + offset; unused reserved indices are not reassigned",
         },
         "attempt_limit": "100 * target eligible replications per cell; exhaustion refuses the region",
@@ -591,9 +868,19 @@ def manifest_record() -> dict:
                 "spec": "A.6 structural-zero-variance rule; A.10 line 226",
                 "resolution": "The all-null refusal fixture declares missing='refuse'. With indicator-plus-zero declared, an all-null numeric column is structurally constant and is omitted with disclosure; a separate exact test requires all rows to remain.",
             },
+            {
+                "id": "D4-noise-stream",
+                "spec": "A.10 line 206 (noise from default_rng(910000+rep))",
+                "resolution": "The literal noise seed shares the design entropy space: default_rng(910000+rep) is the design stream of attempted replication rep+909000, which the chunk layout attempts at chunk size 10. The noise columns are iid N(0,1) from the design SeedSequence spawned at (0, 1) instead: the same law, collision-free at every chunk size.",
+            },
+            {
+                "id": "FCP-operating-claims",
+                "spec": "A.10 line 131 and C.9 (binomial sizing)",
+                "resolution": "Coverage pass/fail probabilities are exact binomial. A replication's FCP is fractional, so its binomial numbers are the Bernoulli benchmark; the sizing record also carries Hoeffding relative-entropy bounds valid for every [0, 1] law and the replication count at which those bounds meet the targets. The runtime KL certificate is valid either way.",
+            },
         ],
         "diagnostics": {
-            "D8": "4000 eligible replications; variance ratios vs unadjusted and scalar x1; reported, never gated",
+            "D8": "4000 eligible replications under a certifying profile; variance ratios vs unadjusted and scalar x1; reported, never gated",
             "point_bias_width_leverage_dof_rejection": "Descriptive means with Monte Carlo standard errors; never gates",
         },
         "cells": [asdict(cell) for cell in MANIFEST],
@@ -609,6 +896,9 @@ class Draw:
     truth: float
 
 
+NOISE_KEY = (0, 1)
+
+
 def design_stream(replication: int, metric: int = 0) -> np.random.SeedSequence:
     """The frozen C.3 seed ``1000 + replication`` for a cell's first metric.
 
@@ -617,6 +907,16 @@ def design_stream(replication: int, metric: int = 0) -> np.random.SeedSequence:
     stream with another metric; an additive offset would wrap past 1e7 draws.
     """
     return np.random.SeedSequence(1000 + replication, spawn_key=(metric,) if metric else ())
+
+
+def noise_stream(replication: int) -> np.random.SeedSequence:
+    """The D4 pure-noise columns, spawned from the design seed at ``NOISE_KEY``.
+
+    C.3's literal ``default_rng(910000 + replication)`` is the design stream of
+    attempted replication ``replication + 909000``, which the chunk layout
+    reaches at chunk size 10; a spawn key no metric uses cannot collide.
+    """
+    return np.random.SeedSequence(1000 + replication, spawn_key=NOISE_KEY)
 
 
 def mean_design(cell: Cell, replication: int, metric: int = 0) -> Draw:
@@ -658,7 +958,7 @@ def mean_design(cell: Cell, replication: int, metric: int = 0) -> Draw:
     }
     noise_p = cell.encoded_p - (cell.k_country + 3)
     if noise_p > 0:
-        noise = np.random.default_rng(910000 + replication).normal(size=(n, noise_p))
+        noise = np.random.default_rng(noise_stream(replication)).normal(size=(n, noise_p))
         for column in range(noise_p):
             covariates[f"noise_{column}"] = noise[:, column]
             kinds[f"noise_{column}"] = "continuous"
@@ -750,7 +1050,8 @@ def fit_draw(draw: Draw):
 
 def support_violations(fit, draw: Draw) -> dict:
     """Audit returned evidence; never turn a missing production guard into eligibility."""
-    limits = manifest_record()["support_region"]
+    limits = dict(SUPPORT_REGION)
+    limits["ratio_denominator_precision"] *= 1 + DENOMINATOR_PRECISION_TOLERANCE
     k_max = max((len(level) for level in fit.layout.levels if level is not None), default=0)
     observables = {
         "p": fit.p,
@@ -769,7 +1070,7 @@ def support_violations(fit, draw: Draw) -> dict:
             for a in ("c", "t")
         )
     return {
-        key: {"value": value, "bound": limits[key]}
+        key: {"value": value, "bound": SUPPORT_REGION[key]}
         for key, value in observables.items()
         if value > limits[key]
     }
@@ -1219,7 +1520,10 @@ def summarize(cell: Cell, records: list[dict], target: int, campaign: str) -> di
     certified = evaluated and passed
     measured = (
         {
-            name: cpu / eligible * (PRECISION_REPLICATIONS if cell.id == "D8" else count) / 3600
+            name: cpu
+            / eligible
+            * (PRECISION_REPLICATIONS[name] if cell.id == "D8" else count)
+            / 3600
             for name, count in REPLICATIONS.items()
             if name != "smoke"
         }
@@ -1254,6 +1558,9 @@ def summarize(cell: Cell, records: list[dict], target: int, campaign: str) -> di
 def run_campaign(output: Path, campaign: str, workers: int = 1, chunk_size: int = 100) -> dict:
     if campaign not in PROFILES or workers < 1 or chunk_size < 1:
         raise ValueError("unknown campaign or nonpositive workers/chunk size")
+    # Before any draw or output: a missing production guard would otherwise
+    # surface only as the first blocked cell.
+    satisfied = require_prerequisites()
     target = REPLICATIONS[campaign]
     chunk_size = min(chunk_size, target)
     identity = _identity()
@@ -1266,6 +1573,7 @@ def run_campaign(output: Path, campaign: str, workers: int = 1, chunk_size: int 
         "chunk_size": chunk_size,
         "profile": {
             **asdict(gate),
+            "prerequisites": satisfied,
             "certification": {cell.id: campaign != "smoke" for cell in GATED},
             "excluded": {cell.id: cell.gating for cell in MANIFEST if cell.gating != "gated"},
         },
@@ -1280,7 +1588,7 @@ def run_campaign(output: Path, campaign: str, workers: int = 1, chunk_size: int 
     print(json.dumps({"projection": projected}, sort_keys=True), flush=True)
     cells = (*GATED, PRECISION_CELL)
     targets = {cell.id: target for cell in GATED}
-    targets["D8"] = SMOKE_REPLICATIONS if campaign == "smoke" else PRECISION_REPLICATIONS
+    targets["D8"] = PRECISION_REPLICATIONS[campaign]
     jobs = [
         (
             cell,
@@ -1502,6 +1810,11 @@ def main(argv=None) -> int:
         help="print the profile's projected CPU-hours from the frozen measured costs and exit",
     )
     parser.add_argument(
+        "--prerequisites",
+        action="store_true",
+        help="probe the production prerequisites, print the result and exit 1 if any is absent",
+    )
+    parser.add_argument(
         "--eligibility-attempts",
         type=int,
         default=0,
@@ -1511,8 +1824,12 @@ def main(argv=None) -> int:
     if args.project:
         print(json.dumps(cost_projection(args.campaign), sort_keys=True, indent=2))
         return 0
+    if args.prerequisites:
+        status = prerequisites()
+        print(json.dumps(status, sort_keys=True, indent=2, default=str))
+        return 0 if all(entry["satisfied"] for entry in status.values()) else 1
     if args.output is None:
-        parser.error("--output is required unless --project is given")
+        parser.error("--output is required unless --project or --prerequisites is given")
     if args.eligibility_attempts:
         if args.campaign != "smoke":
             parser.error(
@@ -1520,7 +1837,12 @@ def main(argv=None) -> int:
             )
         run_admission_probe(args.output.resolve(), args.eligibility_attempts, args.workers)
         return 0
-    result = run_campaign(args.output.resolve(), args.campaign, args.workers, args.chunk_size)
+    try:
+        result = run_campaign(args.output.resolve(), args.campaign, args.workers, args.chunk_size)
+    except PrerequisiteError as error:
+        refusal = {"code": error.code, "message": str(error), **_context_value(error.context)}
+        print(json.dumps(refusal, sort_keys=True, indent=2, default=str), file=sys.stderr)
+        return 1
     return 0 if result["status"] in ("smoke_complete", "certified") else 1
 
 

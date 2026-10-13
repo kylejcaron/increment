@@ -201,3 +201,63 @@ def test_close_leaves_an_unfinished_draw_out_of_the_chain_so_a_resume_restarts_i
     untouched.started(0)
     assert untouched.close().blocks == 0
     assert not (tmp_path / "untouched" / JOURNAL_NAME).read_bytes()
+
+
+def test_close_rolls_back_completions_that_follow_an_unfinished_draw(tmp_path):
+    journal = DrawJournal(tmp_path, case_id="c1", block_size=4)
+    journal.started(0)
+    journal.started(1)
+    journal.completed(1, {"draw": 1}, tally=("ok",), exceptional=True)
+    totals = journal.close()
+    assert (totals.blocks, totals.started, totals.completed, totals.exceptional) == (0, 0, 0, 0)
+    assert dict(totals.counters) == {}
+    assert not (tmp_path / JOURNAL_NAME).read_bytes()
+    assert not (tmp_path / "exceptions.jsonl").read_bytes()
+
+    resumed = DrawJournal(tmp_path, case_id="c1", block_size=4)
+    assert resumed.totals().completed == 0
+    for index in (0, 1):
+        resumed.started(index)
+        resumed.completed(index, {"draw": index}, tally=("ok",), exceptional=index == 1)
+    final = resumed.close()
+    assert (final.started, final.completed, final.exceptional) == (2, 2, 1)
+    assert verify(tmp_path, case_id="c1") == final
+    retained = [
+        json.loads(line)["draw"]
+        for line in (tmp_path / "exceptions.jsonl").read_text().splitlines()
+    ]
+    assert retained == [1]
+
+
+def test_close_keeps_the_contiguous_prefix_across_blocks_and_drops_later_records(tmp_path):
+    journal = DrawJournal(tmp_path, case_id="c1", block_size=2, exception_limit=1)
+    for index in range(5):
+        journal.started(index)
+    journal.completed(0, {"draw": 0}, tally=("ok",), exceptional=True)
+    journal.completed(2, {"draw": 2}, tally=("ok", "late"), exceptional=True)
+    journal.completed(4, {"draw": 4}, tally=("ok",))
+    totals = journal.close()
+    assert (totals.blocks, totals.started, totals.completed) == (1, 1, 1)
+    assert (totals.exceptional, totals.exceptional_dropped) == (1, 0)
+    assert dict(totals.counters) == {"ok": 1}
+    assert verify(tmp_path, case_id="c1") == totals
+    retained = [
+        json.loads(line)["draw"]
+        for line in (tmp_path / "exceptions.jsonl").read_text().splitlines()
+    ]
+    assert retained == [0]
+
+    resumed = DrawJournal(tmp_path, case_id="c1", block_size=2, exception_limit=1)
+    assert resumed.totals().completed == 1
+    for index in range(1, 5):
+        resumed.started(index)
+        resumed.completed(index, {"draw": index}, tally=("ok",), exceptional=index == 2)
+    final = resumed.close()
+    assert (final.started, final.completed, final.exceptional, final.exceptional_dropped) == (
+        5,
+        5,
+        2,
+        1,
+    )
+    assert dict(final.counters) == {"ok": 5}
+    assert verify(tmp_path, case_id="c1") == final

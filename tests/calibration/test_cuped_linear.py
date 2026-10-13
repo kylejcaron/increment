@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import math
 from collections import Counter
@@ -57,6 +58,27 @@ def test_revision_eight_manifest_keeps_the_shared_family_allocation():
     assert gates("reduced") == gates("reduced").__class__(
         "reduced", "reduced", 28_000, 0.94, 0.06, 0.92, 0.08
     )
+    from calibration.cuped_linear import SUPPORT_REGION, manifest_record, support_violations
+
+    record = manifest_record()
+    assert record["revision"] == 8
+    assert set(record["prerequisites"]) == {"support_region_refusal", "public_route", "check"}
+    assert record["support_region"] == {
+        **SUPPORT_REGION,
+        "minimum_level_arm_count": 2,
+        "full_rank": True,
+        "positive_residual_df": True,
+    }
+    assert "balanced allocations" in record["edge_cells"]["D4-7"]["basis"]
+    assert record["diagnostics"]["D8"].startswith("4000 eligible replications under a certifying")
+    assert "spawn_key=(0, 1)" in record["seeds"]["noise"]
+    assert {note["id"] for note in record["interpretation_notes"]} >= {
+        "D4-noise-stream",
+        "FCP-operating-claims",
+        "D9-frozen-fixture",
+    }
+    # The per-fit audit reads the module constant, not a rebuilt record.
+    assert "manifest_record" not in inspect.getsource(support_violations)
 
 
 def test_edge_cells_are_declared_from_the_frozen_admission_evidence():
@@ -78,24 +100,67 @@ def test_edge_cells_are_declared_from_the_frozen_admission_evidence():
 
 @pytest.mark.parametrize("name", ["full", "reduced"])
 def test_each_profile_states_an_acceptance_rule_it_meets(name):
-    from calibration.cuped_linear import ETA, FAIL_TARGET, PASS_TARGET, gates, profile_sizing
+    from calibration.cuped_linear import (
+        ETA,
+        FAIL_TARGET,
+        PASS_TARGET,
+        bounded_tail,
+        fcp_threshold,
+        gates,
+        profile_sizing,
+    )
+    from tests.mc import kl_chernoff_upper_bound
 
+    gate = gates(name)
     record = profile_sizing(name)
     frozen = record["frozen"]
     assert record["frozen_matches_derivation"]
     assert frozen["satisfied"]
     assert frozen["coverage_pass_at_nominal"] >= PASS_TARGET
-    assert frozen["fcp_pass_at_nominal"] >= PASS_TARGET
     assert frozen["coverage_fail_at_detectable"] >= FAIL_TARGET
-    assert frozen["fcp_fail_at_detectable"] >= FAIL_TARGET
     assert frozen["coverage_false_acceptance_at_tolerance_edge"] <= ETA
-    assert frozen["fcp_false_acceptance_at_tolerance_edge"] <= ETA
     assert frozen["family_all_pass_lower_bound"] >= 0.90
-    assert gates(name).stopping == "fixed"
+    assert gate.stopping == "fixed"
+    # FCP: the Bernoulli benchmark meets the targets; the bounded-observation
+    # guarantees are reported beside it and are weaker at the frozen count.
+    assert frozen["fcp_pass_at_nominal"] >= PASS_TARGET
+    assert frozen["fcp_fail_at_detectable"] >= FAIL_TARGET
+    assert frozen["fcp_false_acceptance_at_tolerance_edge"] <= ETA
+    r, threshold = gate.replications, frozen["fcp_threshold_mean"]
+    assert kl_chernoff_upper_bound(threshold - 1e-9, r, ETA) <= gate.fcp_ceiling
+    assert kl_chernoff_upper_bound(threshold + 1e-9, r, ETA) > gate.fcp_ceiling
+    assert frozen["fcp_cutoff"] / r <= threshold < (frozen["fcp_cutoff"] + 1) / r
+    assert frozen["fcp_pass_at_nominal_bound"] == 1 - bounded_tail(r, threshold, 0.05)
+    assert frozen["fcp_fail_at_detectable_bound"] >= FAIL_TARGET
+    assert frozen["fcp_false_acceptance_at_tolerance_edge_bound"] == ETA
+    assert 0.98 < frozen["fcp_pass_at_nominal_bound"] < PASS_TARGET
+    assert not frozen["satisfied_bounded"]
+    assert frozen["family_all_pass_lower_bound_bounded"] < frozen["family_all_pass_lower_bound"]
+    assert record["bounded_replications"] > gate.replications
+    assert fcp_threshold(record["bounded_replications"], gate.fcp_ceiling) > threshold
+
+
+def test_bounded_tail_is_hoeffding_relative_entropy_and_dominates_the_binomial():
+    from scipy.stats import binom
+
+    from calibration.cuped_linear import bounded_tail
+
+    for r, threshold, mean in ((28_000, 0.0539, 0.05), (107_100, 0.052, 0.05)):
+        bound = bounded_tail(r, threshold, mean)
+        assert bound == pytest.approx(
+            math.exp(
+                -r
+                * (
+                    threshold * math.log(threshold / mean)
+                    + (1 - threshold) * math.log((1 - threshold) / (1 - mean))
+                )
+            )
+        )
+        assert binom.sf(math.floor(r * threshold), r, mean) <= bound
 
 
 def test_cost_projection_covers_only_gated_cells(capsys):
-    from calibration.cuped_linear import GATED, cost_projection, main
+    from calibration.cuped_linear import GATED, PRECISION_REPLICATIONS, cost_projection, main
 
     projected = cost_projection("reduced")
     assert [row["cell"] for row in projected["cells"]] == [*(c.id for c in GATED), "D8"]
@@ -106,6 +171,153 @@ def test_cost_projection_covers_only_gated_cells(capsys):
     assert main(["--campaign", "reduced", "--project"]) == 0
     printed = json.loads(capsys.readouterr().out)
     assert printed["projected_cpu_hours"] == projected["projected_cpu_hours"]
+    precision = {
+        name: next(row for row in cost_projection(name)["cells"] if row["cell"] == "D8")
+        for name in ("smoke", "full", "reduced")
+    }
+    assert {name: row["eligible_replications"] for name, row in precision.items()} == dict(
+        PRECISION_REPLICATIONS
+    )
+    assert precision["smoke"]["eligible_replications"] == 3
+
+
+def test_prerequisites_are_probed_and_refuse_the_campaign_before_any_draw(
+    tmp_path, monkeypatch, capsys
+):
+    import calibration.cuped_linear as campaign
+    from calibration.cuped_linear import (
+        PREREQUISITES,
+        PrerequisiteError,
+        prerequisites,
+        require_prerequisites,
+        run_campaign,
+    )
+
+    status = prerequisites()
+    assert set(status) == {"support_region_refusal", "public_route"} == set(PREREQUISITES)
+    assert all(isinstance(entry["satisfied"], bool) for entry in status.values())
+    assert status["support_region_refusal"]["registered"] == (
+        status["support_region_refusal"]["refusal"] == "estimation.cuped_linear.support_region"
+    )
+    assert status["support_region_refusal"]["inside_fits"]
+
+    absent = {
+        name: {**entry, "satisfied": False, "refusal": None} for name, entry in status.items()
+    }
+
+    def select(table):
+        return lambda *names: {k: v for k, v in table.items() if not names or k in names}
+
+    monkeypatch.setattr(campaign, "prerequisites", select(absent))
+    monkeypatch.setattr(campaign, "run_chunk", lambda job: pytest.fail("a draw was attempted"))
+    with pytest.raises(PrerequisiteError) as raised:
+        run_campaign(tmp_path / "out", "smoke")
+    assert raised.value.code == "calibration.cuped_linear.prerequisite"
+    assert raised.value.context["missing"] == ("support_region_refusal", "public_route")
+    assert set(raised.value.context["details"]) == set(absent)  # ty: ignore[invalid-argument-type]
+    assert not (tmp_path / "out").exists()
+    with pytest.raises(PrerequisiteError) as raised:
+        require_prerequisites("public_route")
+    assert raised.value.context["missing"] == ("public_route",)
+    assert campaign.main(["--campaign", "smoke", "--output", str(tmp_path / "cli")]) == 1
+    rendered = json.loads(capsys.readouterr().err)
+    assert rendered["code"] == "calibration.cuped_linear.prerequisite"
+    assert rendered["missing"] == ["support_region_refusal", "public_route"]
+    assert not (tmp_path / "cli").exists()
+    assert campaign.main(["--campaign", "smoke", "--prerequisites"]) == 1
+    assert set(json.loads(capsys.readouterr().out)) == set(absent)
+
+    present = {name: {**entry, "satisfied": True} for name, entry in status.items()}
+    monkeypatch.setattr(campaign, "prerequisites", select(present))
+    assert require_prerequisites() == present
+
+
+def test_support_region_probe_judges_the_registered_refusal_and_its_observables(monkeypatch):
+    import calibration.cuped_linear as campaign
+    from increment.errors import InvalidRequestError
+
+    probe = campaign._support_region_probe()
+    assert probe["registered"] == (
+        "estimation.cuped_linear.support_region" in campaign._registry_codes(campaign.production)
+    )
+    if probe["refusal"] is None:
+        assert "leverage_ratio" in probe["returned_fit_violations"]
+        assert probe["returned_fit_violations"]["leverage_ratio"]["value"] == 8 / 15
+        assert not probe["satisfied"]
+
+    real = campaign.fit_draw
+
+    def refusing(violations):
+        def fit(draw):
+            if len(draw.covariates) == 1:
+                return real(draw)
+            raise InvalidRequestError(
+                "outside",
+                code="estimation.cuped_linear.support_region",
+                context={"region": "M1", "violations": violations},
+            )
+
+        return fit
+
+    monkeypatch.setattr(campaign, "fit_draw", refusing((("leverage_ratio", 8 / 15, 0.2),)))
+    monkeypatch.setattr(
+        campaign,
+        "_registry_codes",
+        lambda module: frozenset({"estimation.cuped_linear.support_region"}),
+    )
+    refused = campaign._support_region_probe()
+    assert refused["refusal"] == "estimation.cuped_linear.support_region"
+    assert refused["observables_match"] and refused["registered"] and refused["inside_fits"]
+    assert refused["satisfied"]
+
+    monkeypatch.setattr(campaign, "fit_draw", refusing((("p_over_n", 8 / 15, 0.2),)))
+    assert not campaign._support_region_probe()["satisfied"]
+
+    def over_refusing(draw):
+        raise InvalidRequestError(
+            "everything",
+            code="estimation.cuped_linear.support_region",
+            context={"region": "M1", "violations": (("leverage_ratio", 8 / 15, 0.2),)},
+        )
+
+    monkeypatch.setattr(campaign, "fit_draw", over_refusing)
+    over = campaign._support_region_probe()
+    assert over["observables_match"] and not over["inside_fits"] and not over["satisfied"]
+
+
+def test_denominator_precision_audit_allows_only_rounding_over_the_bound(monkeypatch):
+    import calibration.cuped_linear as campaign
+
+    cell = next(item for item in MANIFEST if item.id == "D5-3")
+    draw = generate(cell, 0)
+    fit = fit_draw(draw)
+    bound = campaign.SUPPORT_REGION["ratio_denominator_precision"]
+    den = draw.outcomes[1]
+
+    def precision(draw):
+        return max(
+            den[draw.arms == a].std(ddof=1)
+            / math.sqrt((draw.arms == a).sum())
+            / den[draw.arms == a].mean()
+            for a in ("c", "t")
+        )
+
+    assert precision(draw) < bound
+    for factor in (1 + 1e-13, 1 + 1e-11):
+        target = bound * factor
+        scaled = den.copy()
+        for arm in ("c", "t"):
+            mask = draw.arms == arm
+            mean = den[mask].mean()
+            centered = den[mask] - mean
+            spread = centered.std(ddof=1) / math.sqrt(mask.sum()) / mean
+            scaled[mask] = mean + centered * (target / spread)
+        adjusted = replace(draw, outcomes=(draw.outcomes[0], scaled))
+        violations = campaign.support_violations(fit, adjusted)
+        assert ("ratio_denominator_precision" in violations) == (
+            factor > 1 + campaign.DENOMINATOR_PRECISION_TOLERANCE
+        )
+    assert violations["ratio_denominator_precision"]["bound"] == bound
 
 
 def test_fast_smoke_preserves_design_and_interval_truth():
@@ -160,7 +372,11 @@ def test_representative_coverage_sentinel(identifier, tmp_path):
 
 @pytest.mark.slow
 @pytest.mark.numerical_certification
-def test_d1_scalar_point_and_anchor_equal_scalar_moments():
+def test_d1_scalar_point_and_anchor_equal_scalar_moments(record_property):
+    from scipy.stats import t as student_t
+
+    from increment.estimation.armstats import welch_satterthwaite_df
+
     rng = np.random.default_rng(20261012)
     arms = np.array(["c"] * 40 + ["t"] * 60)
     x = rng.normal(size=100)
@@ -183,9 +399,19 @@ def test_d1_scalar_point_and_anchor_equal_scalar_moments():
     scalar = fit_cuped(stats)
     assert fit.theta[0] == pytest.approx(scalar.theta, abs=1e-12)
     assert fit.anchor[0] == pytest.approx(scalar.mean_x_pooled, abs=1e-12)
-    assert fit.absolute("t").estimate == pytest.approx(
+    matrix = fit.absolute("t")
+    assert matrix.estimate == pytest.approx(
         scalar.adjusted_mean(stats[1]) - scalar.adjusted_mean(stats[0]), abs=1e-12
     )
+    # Descriptive: the HC2 + t(K_BM) width against the scalar route's Welch
+    # width from the same residual variances; reported, never gated.
+    components = [scalar.residual_var(arm, scalar.theta) / arm.n for arm in stats]
+    welch_df = welch_satterthwaite_df(components[0], stats[0].n - 1, components[1], stats[1].n - 1)
+    scalar_width = 2 * student_t.ppf(0.975, welch_df) * math.sqrt(sum(components))
+    ratio = (matrix.upper - matrix.lower) / scalar_width
+    assert math.isfinite(ratio) and ratio > 0
+    record_property("d1_interval_width_ratio_matrix_over_scalar", ratio)
+    record_property("d1_reference_dof", {"matrix": matrix.dof, "scalar_welch": welch_df})
 
 
 @pytest.mark.slow
@@ -492,10 +718,15 @@ def test_support_admission_probe_is_descriptive_and_resumable(tmp_path):
 def test_d7_declared_unrelated_metric_does_not_change_public_inference():
     import pandas as pd
 
+    from calibration.cuped_linear import require_prerequisites
     from increment import Analysis, AnalysisPlan, Method
     from increment.breakout.estimates import LiftEstimates
     from increment.frame import CupedCovariate, MetricSpec
 
+    # The public route is a production prerequisite: until it is merged this
+    # refuses with calibration.cuped_linear.prerequisite, and afterwards the
+    # comparison below runs unchanged.
+    require_prerequisites("public_route")
     draw = generate(next(c for c in MANIFEST if c.id == "D3-4"), 0)
     frame = pd.DataFrame(
         {
@@ -564,13 +795,37 @@ def test_family_refuses_an_unavailable_projection_before_public_selection(monkey
 
 
 def test_metric_streams_never_collide_within_any_profile_attempt_limit():
-    from calibration.cuped_linear import REPLICATIONS, design_stream, family_members
+    from calibration.cuped_linear import (
+        NOISE_KEY,
+        REPLICATIONS,
+        design_stream,
+        family_members,
+        noise_stream,
+    )
 
     limit = 100 * max(REPLICATIONS.values())
     assert limit == 10_710_000
     assert design_stream(7).entropy == 1007 and design_stream(7).spawn_key == ()
     assert np.random.default_rng(design_stream(7)).random() == np.random.default_rng(1007).random()
     assert design_stream(7, 2).spawn_key == (2,)
+    # The noise stream of replication r and the design stream of r + 909000
+    # share the C.3 entropy space; a spawn key no metric uses separates them.
+    assert noise_stream(7).entropy == 1007 and noise_stream(7).spawn_key == NOISE_KEY
+    assert NOISE_KEY not in {(), (1,), (2,)} and len(NOISE_KEY) == 2
+    literal = np.random.default_rng(910_007)
+    colliding = np.random.default_rng(design_stream(909_007))
+    assert literal.random() == colliding.random()
+    assert (
+        np.random.default_rng(noise_stream(7)).random() != np.random.default_rng(910_007).random()
+    )
+    assert (noise_stream(7).entropy, noise_stream(7).spawn_key) != (
+        design_stream(909_007).entropy,
+        design_stream(909_007).spawn_key,
+    )
+    d4 = next(item for item in MANIFEST if item.id == "D4-5")
+    noise = generate(d4, 7).covariates["noise_0"]
+    assert noise.shape == (d4.n,) and abs(noise.mean()) < 0.1 and abs(noise.std() - 1) < 0.1
+    assert not np.array_equal(noise, np.random.default_rng(910_007).normal(size=(d4.n, 42))[:, 0])
     # Distinct (entropy, spawn_key) pairs for every attempt and metric: entropy
     # is injective in the replication and the spawn key separates metrics.
     keys = {

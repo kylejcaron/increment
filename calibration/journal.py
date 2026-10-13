@@ -175,17 +175,20 @@ class DrawJournal:
                 {
                     "first": index,
                     "last": index,
+                    "order": [],
                     "started": 0,
                     "completed": 0,
                     "exceptional": 0,
                     "dropped": 0,
                     "counters": {},
                     "pending": set(),
+                    "draws": {},
                     "records": [],
                 }
             )
         block = self._active[-1]
         block["last"] = index
+        block["order"].append(index)
         block["started"] += 1
         block["pending"].add(index)
         self._started += 1
@@ -209,8 +212,8 @@ class DrawJournal:
             raise JournalError(f"draw {index} was not started or was already completed")
         block["pending"].remove(index)
         block["completed"] += 1
-        block["last_completed"] = max(block.get("last_completed", index), index)
         self._completed += 1
+        draw = {"tally": tuple(tally), "exceptional": exceptional, "retained": False}
         for name in tally:
             block["counters"][name] = block["counters"].get(name, 0) + 1
             self._counters[name] = self._counters.get(name, 0) + 1
@@ -222,7 +225,9 @@ class DrawJournal:
                 self._dropped += 1
             else:
                 self._retained += 1
+                draw["retained"] = True
                 block["records"].append({"case_id": self._case_id, "draw": index, "record": record})
+        block["draws"][index] = draw
         while (
             self._active
             and self._active[0]["started"] == self._block_size
@@ -301,24 +306,59 @@ class DrawJournal:
             digest=self._digest,
         )
 
-    def close(self) -> JournalTotals:
-        """Seal any partial blocks and finalize both logs.
+    def _roll_back(self, block: dict[str, Any], indices: list[int]) -> None:
+        """Forget *indices* of an unsealed block as if they had never started."""
+        for index in indices:
+            block["started"] -= 1
+            self._started -= 1
+            block["pending"].discard(index)
+            draw = block["draws"].pop(index, None)
+            if draw is None:
+                continue
+            block["completed"] -= 1
+            self._completed -= 1
+            for name in draw["tally"]:
+                for counters in (block["counters"], self._counters):
+                    counters[name] -= 1
+                    if not counters[name]:
+                        del counters[name]
+            if draw["exceptional"]:
+                block["exceptional"] -= 1
+                self._exceptional -= 1
+                if draw["retained"]:
+                    self._retained -= 1
+                else:
+                    block["dropped"] -= 1
+                    self._dropped -= 1
+        block["records"] = [row for row in block["records"] if row["draw"] not in indices]
 
-        A draw that started but never completed (an interrupted run) is left
-        out of the chain entirely, so the resumed run restarts it instead of
-        overlapping a sealed range.
+    def close(self) -> JournalTotals:
+        """Seal the contiguous completed prefix and finalize both logs.
+
+        An interrupted run leaves draws that started but never completed. The
+        chain keeps only the draws completed before the first unfinished one,
+        in start order; later completions are rolled back with their tallies
+        and records, so a resume inferred from the completed count re-runs
+        exactly the draws the chain does not vouch for and never overlaps a
+        sealed range.
         """
         if not self._closed:
+            truncated = False
             while self._active:
                 finished = self._active.pop(0)
-                unfinished = len(finished["pending"])
-                if unfinished:
-                    self._started -= unfinished
-                    finished["started"] -= unfinished
-                    finished["pending"].clear()
-                    if not finished["completed"]:
+                kept = 0
+                if not truncated:
+                    for index in finished["order"]:
+                        if index in finished["pending"]:
+                            truncated = True
+                            break
+                        kept += 1
+                if kept < len(finished["order"]):
+                    self._roll_back(finished, finished["order"][kept:])
+                    if not kept:
                         continue
-                    finished["last"] = finished["last_completed"]
+                    finished["first"] = min(finished["order"][:kept])
+                    finished["last"] = max(finished["order"][:kept])
                 self._first, self._last = finished["first"], finished["last"]
                 self._seal(finished)
             self._exceptions.flush()
