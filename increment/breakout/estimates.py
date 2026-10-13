@@ -1066,10 +1066,13 @@ class EstimateList[M: BaseModel](list[M]):
 
         return concat_collection(self, other)
 
+    def _has_readout_cells(self) -> bool:
+        return self._model in (LiftEstimate, BreakoutEstimate, DailyMetricValue, DailyLiftEstimate)
+
     def __repr__(self) -> str:
         from increment._interpretation import interpret_readout, render_readout_text
 
-        if self.metadata is None:
+        if self.metadata is None or not self._has_readout_cells():
             return super().__repr__()
         return render_readout_text(interpret_readout(self, self.metadata))
 
@@ -1080,7 +1083,23 @@ class EstimateList[M: BaseModel](list[M]):
 
         from increment.breakout.projection import to_frame
 
-        frame = nw.from_native(to_frame(self, model=self._model, backend=backend), eager_only=True)
+        native = to_frame(self, model=self._model, backend=backend)
+        if not self._has_readout_cells():
+            frame = nw.from_native(native, eager_only=True).with_columns(
+                nw.lit(None if self.metadata is None else self.metadata.partial).alias(
+                    "view_partial"
+                )
+            )
+            result = cast(Any, frame.to_native())
+            if backend == "pandas":
+                import pandas as pd
+
+                result["view_partial"] = pd.array(
+                    [None if self.metadata is None else self.metadata.partial] * len(result),
+                    dtype="boolean",
+                )
+            return result
+        frame = nw.from_native(native, eager_only=True)
         from increment._interpretation import interpret_readout, readout_evidence_columns
 
         interpretation = interpret_readout(self, self.metadata)
