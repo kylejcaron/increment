@@ -199,7 +199,8 @@ def test_absolute_margin_repr_matches_exported_additive_interpretation():
 
     assert "effect direction not established" in latency["effect_interpretation"]
     assert "effect direction supported" not in latency["effect_interpretation"]
-    assert latency["effect_interpretation"] in rendered
+    exported = latency["effect_interpretation"].removeprefix("Interpretation: ")
+    assert f"latency interpretation: {exported}" in rendered.splitlines()
 
 
 def test_absolute_margin_uses_additive_interval_not_relative_interval():

@@ -1075,7 +1075,7 @@ def _render_effect(row):
         lines.append(effect + ".")
     interpretation = render_effect_interpretation(row)
     if interpretation is not None:
-        lines.append(interpretation)
+        lines.append(f"{row.metric} {interpretation[0].lower()}{interpretation[1:]}")
     if getattr(row, "abs_diff", None) is not None:
         low = getattr(row, "abs_lb", None)
         high = getattr(row, "abs_ub", None)
