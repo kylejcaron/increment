@@ -214,6 +214,29 @@ def test_registered_cell_failure_renders_its_spec_explanation():
     assert expected in render_readout_text(interpretation)
 
 
+def test_failure_rendering_uses_cell_identity_and_falls_back_without_crashing():
+    from increment.estimation.readout_types import render_readout_failure
+
+    # Day-axis producers store observed counts but not the metric/arm the template names.
+    context = {"observed_units": 0}
+    rendered = render_readout_failure(
+        "readout.cell.missing_arm",
+        context,
+        identity={"metric": "revenue", "group_id": "treatment"},
+    )
+    assert rendered is not None
+    assert "revenue" in rendered and "treatment" in rendered
+    # Without identity the template cannot be filled; callers get None and fall back to code+context.
+    assert render_readout_failure("readout.cell.missing_arm", context) is None
+    # Stored context wins over identity.
+    stored = render_readout_failure(
+        "readout.cell.missing_arm",
+        {"metric": "stored", "group_id": "arm_b"},
+        identity={"metric": "identity", "group_id": "arm_a"},
+    )
+    assert stored is not None and "stored" in stored and "identity" not in stored
+
+
 def test_v1_readout_envelope_refuses_with_recompute_route():
     results = _run_mean(_mean_frame())
     payload = json.loads(results.model_dump_json())

@@ -782,8 +782,19 @@ class StreamingDigest:
         ).hexdigest()
 
 
-def render_readout_failure(code: str | None, context: Mapping[str, Any] | None) -> str | None:
-    """Render a registered readout refusal without changing its stored identity."""
+def render_readout_failure(
+    code: str | None,
+    context: Mapping[str, Any] | None,
+    *,
+    identity: Mapping[str, Any] | None = None,
+) -> str | None:
+    """Render a registered readout refusal without changing its stored identity.
+
+    ``identity`` supplies the cell's own coordinates (for example ``metric`` and
+    ``group_id``) for templates whose stored context omits them; stored context
+    wins. Returns ``None`` when the code is unregistered or its template still
+    lacks a required key, so callers fall back to the code and context.
+    """
     if code is None:
         return None
     spec = next(
@@ -801,8 +812,12 @@ def render_readout_failure(code: str | None, context: Mapping[str, Any] | None) 
     )
     if spec is None:
         return None
+    known_identity = {key: value for key, value in (identity or {}).items() if value is not None}
+    values = {**known_identity, **thaw(context or {})}
+    if not spec.keys <= values.keys():
+        return None
     try:
-        return spec.render(**thaw(context or {}))
+        return spec.render(**values)
     except (KeyError, TypeError, ValueError):
         return None
 
