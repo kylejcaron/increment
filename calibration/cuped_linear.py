@@ -144,7 +144,10 @@ class Gates:
     bound at ``ETA``, the statistic passes when that bound clears the floor or
     ceiling, and the replication count is sized so that a nominal statistic
     passes with probability at least ``PASS_TARGET`` and the detectable
-    alternative fails with probability at least ``FAIL_TARGET``. It is not the
+    alternative fails with probability at least ``FAIL_TARGET``. Coverage meets
+    both exactly; for fractional FCP observations they hold for the Bernoulli
+    benchmark only, and the bounded-observation guarantee is reported beside it.
+    It is not the
     I15 operating-point design of ``calibration.stopping``, whose false-failure
     budget at ``k* = ceil(R (q + delta/2))`` is ``ETA`` itself; that design
     needs 118,700 strict and 32,000 reduced replications, and the preregistered
