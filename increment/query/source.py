@@ -47,7 +47,6 @@ from increment.query.artifact_extensions import read_extension, read_unit_covari
 from increment.query.artifact_reader import (
     _ARTIFACT_GRAIN,
     LAZY_DIGEST_VERIFICATION,
-    _outcome_edge,
     _TriggeredReductionInputs,
     restrict_to_units,
 )
@@ -1860,14 +1859,17 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 "site-volume coverage does not match the experiment calendar window",
                 context={"route": "republish matching site_volume and trigger_population evidence"},
             )
-        outcome_edge = _outcome_edge(
-            self._manifest.measures,
-            self._ensure("measure_stats"),
-            measure_keys,
-            self._snapshot.execute,
+        certified_edges = tuple(
+            measure.certified_edge
+            for measure in self._manifest.measures
+            if measure.measure_key in measure_keys
         )
         end_day = self._artifact_experiment.end_day
-        if end_day is None or outcome_edge is None or outcome_edge < end_day:
+        if (
+            end_day is None
+            or len(certified_edges) != len(measure_keys)
+            or any(edge is None or edge < end_day for edge in certified_edges)
+        ):
             refuse(
                 _SITEWIDE_OUTCOMES_INCOMPLETE,
                 route="re-run after the outcome feeds are complete through the experiment end.",

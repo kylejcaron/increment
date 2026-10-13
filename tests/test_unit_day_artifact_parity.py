@@ -1556,6 +1556,79 @@ def test_partial_watermark_ratio_native_matches_artifact_spine(tmp_path: Path) -
         native.close()
 
 
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_triggered_sitewide_ratio_requires_certified_watermark_for_each_component(
+    tmp_path: Path,
+) -> None:
+    cutoff = datetime(2030, 1, 1, tzinfo=UTC)
+    watermark = datetime(2025, 2, 16, 0, 0, tzinfo=UTC)
+    definitions = _triggered_definitions(tmp_path, window_days=None)
+    import yaml
+
+    payload = yaml.safe_load(definitions.read_text())
+    experiment_def = next(
+        item for item in payload["experiments"] if item["name"] == "new_onboarding_v2"
+    )
+    experiment_def["plan"]["primary"] = "revenue_per_session"
+    experiment_def["plan"]["secondaries"] = [
+        name for name in experiment_def["plan"]["secondaries"] if name != "revenue_per_session"
+    ]
+    ratio_def = next(item for item in payload["metrics"] if item["name"] == "revenue_per_session")
+    ratio_def["denominator"]["aggregation"] = "sum"
+    ratio_def["numerator"].pop("window_days", None)
+    ratio_def["denominator"].pop("window_days", None)
+    ratio_def["denominator"]["fact"] = "session_end_unwatermarked"
+    experiment_def["breakouts"][0]["source"] = "event_log"
+    experiment_def["factors"][0]["source"] = "event_log"
+    event_log_source = next(item for item in payload["fact_sources"] if item["name"] == "event_log")
+    payload["fact_sources"].append(
+        {
+            "name": "unwatermarked_sessions",
+            "sql": event_log_source["sql"],
+            "timestamp_column": "event_at",
+            "entities": ["user_id", "session_id"],
+            "properties": event_log_source["properties"],
+            "facts": [
+                {
+                    "name": "session_end_unwatermarked",
+                    "column": "duration_s",
+                    "description": "Session ended with duration in seconds",
+                }
+            ],
+        }
+    )
+    definitions.write_text(yaml.safe_dump(payload, sort_keys=False))
+    _, native, context, store = _native(
+        definitions=definitions,
+        source_snapshot_evidence=SourceSnapshotEvidence(cutoff, {"event_log": watermark}),
+    )
+    try:
+        with pytest.raises(CapabilityError) as native_refused:
+            native.sitewide("revenue_per_session", population="triggered")
+        reference = native.publish_unit_day_artifact(
+            store,
+            extensions=_extensions(context, "trigger_population", "assignment_counts"),
+        )
+        source = _artifact_source(store, reference, context)
+        try:
+            from types import SimpleNamespace
+
+            artifact_metric = _metric(source, "revenue_per_session")
+            with pytest.raises(CapabilityError) as artifact_refused:
+                source._triggered_sitewide_preflight(
+                    artifact_metric,
+                    SimpleNamespace(
+                        first_ds=source._artifact_experiment.start_day,
+                        last_ds=source._artifact_experiment.end_day,
+                    ),
+                )
+            assert artifact_refused.value.code == native_refused.value.code
+        finally:
+            source.close()
+    finally:
+        native.close()
+
+
 @pytest.mark.filterwarnings("ignore:fetch_arrow_table\\(\\) is deprecated:DeprecationWarning")
 def test_unknown_completeness_caps_maturity_at_cutoff(tmp_path: Path) -> None:
     cutoff = datetime(2025, 2, 15, 12, tzinfo=UTC)

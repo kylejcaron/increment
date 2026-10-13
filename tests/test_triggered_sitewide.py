@@ -357,6 +357,29 @@ def test_triggered_sitewide_refuses_incomplete_calendar_outcomes(tmp_path):
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_triggered_sitewide_refuses_missing_outcome_watermark_on_native_and_artifact(tmp_path):
+    analysis = _analysis(tmp_path, watermark=None)
+    adopted = None
+    try:
+        with pytest.raises(CapabilityError) as native_refused:
+            analysis.sitewide("revenue", population="triggered")
+        assert native_refused.value.code == ("facade.analysis.sitewide_outcomes_incomplete")
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(analysis)),
+            analysis,
+            kinds=("site_volume", "trigger_population", "assignment_counts"),
+        )
+        with pytest.raises(CapabilityError) as artifact_refused:
+            adopted.sitewide("revenue", population="triggered")
+        assert artifact_refused.value.code == native_refused.value.code
+    finally:
+        if adopted is None:
+            analysis.close()
+        else:
+            _close_parity_analysis(adopted)
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_triggered_sitewide_scales_complete_three_arm_roster(tmp_path):
     events = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5)
     third_arm_rows = []
