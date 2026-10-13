@@ -92,18 +92,27 @@ def _load_cuped_breakout_frames(
         config.metric.name: _runtime_method_roles(methods_by_metric[config.metric.name])
         for config in configs
     }
-    # A breakout-scoped moments source owns the dimensions and aggregate
-    # rows, but delegates exact unit evidence to its retained source.
-    evidence_source = getattr(src, "_source", None) or src
+    import narwhals as nw
+
+    from increment._source_types import CUPED_BREAKOUT_DIMENSION_COLUMN
+    from increment.sources import BreakoutMomentsSource
+
     for config in configs:
         name = config.metric.name
         if any(method.variance_reduction == "cuped_linear" for method in methods_by_metric[name]):
-            frames[name] = evidence_source.unit_frame(
-                config.metric,
-                covariates=tuple(
-                    dict.fromkeys((dimension, *(item.name for item in config.covariates)))
-                ),
-            )
+            names = tuple(item.name for item in config.covariates)
+            if isinstance(src, BreakoutMomentsSource):
+                frames[name] = src.unit_frame(config.metric, covariates=names)
+            else:
+                frame = nw.from_native(
+                    src.unit_frame(
+                        config.metric, covariates=tuple(dict.fromkeys((dimension, *names)))
+                    ),
+                    eager_only=True,
+                )
+                frames[name] = frame.with_columns(
+                    nw.col(dimension).alias(CUPED_BREAKOUT_DIMENSION_COLUMN)
+                ).to_native()
     return frames, covariates, roles
 
 

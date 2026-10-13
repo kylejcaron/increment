@@ -116,3 +116,21 @@ def test_independent_mean_t_reintervalization_updates_reference_for_json_replay(
     assert projected.lift is not None
     assert projected.lift.alpha == pytest.approx(0.02)
     assert LiftEstimate.model_validate_json(projected.model_dump_json()) == projected
+
+
+@pytest.mark.parametrize("alternative", ["greater", "less", "two-sided"])
+def test_opened_independent_mean_reintervalization_rebuilds_central_state(alternative):
+    from increment.estimation.results import open_bound_from_two_sided_at_target
+
+    row = _independent_mean_row().reintervalize(0.025, interval_alternative="greater")
+    opened = open_bound_from_two_sided_at_target(row)
+    assert opened.require_lift().open_side == "upper"
+    projected = opened.reintervalize(0.01, interval_alternative=alternative)
+    assert projected.require_lift().open_side is None
+    assert projected.require_lift().lb is not None
+    assert projected.require_lift().ub is not None
+    assert projected.independent_mean_reference is not None
+    assert projected.independent_mean_reference.interval == "central"
+    restored = LiftEstimate.model_validate_json(projected.model_dump_json())
+    assert restored == projected
+    assert restored.p_value() == pytest.approx(projected.p_value())

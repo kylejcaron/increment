@@ -24,6 +24,10 @@ from increment.errors import (
     refusals,
 )
 
+#: Unit-frame column retaining the resolved breakout dimension separately from covariates.
+CUPED_BREAKOUT_DIMENSION_COLUMN = "__breakout_dimension"
+
+
 if TYPE_CHECKING:
     from narwhals.typing import IntoDataFrame
 

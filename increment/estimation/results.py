@@ -668,6 +668,10 @@ class _RowIdentity(CodedModel, BaseModel):
     # Stored at the declared relative null on the metric's good side; None for
     # absolute-margin nulls.
     posterior_prob_favorable: float | None = None
+    absolute_error_code: str | None = None
+    absolute_error_context: Mapping[str, object] | None = None
+    relative_error_code: str | None = None
+    relative_error_context: Mapping[str, object] | None = None
     failure_code: str | None = None
     failure_context: Mapping[str, object] | None = None
     source_snapshot_id: str | None = None
@@ -715,6 +719,8 @@ class _RowIdentity(CodedModel, BaseModel):
         for name in (
             "sampling_reason_context",
             "posterior_reason_context",
+            "absolute_error_context",
+            "relative_error_context",
             "failure_context",
             "decision_scope_reason_context",
             "weight_diagnostics_reason_context",
@@ -793,6 +799,8 @@ class _RowIdentity(CodedModel, BaseModel):
     @field_serializer(
         "sampling_reason_context",
         "posterior_reason_context",
+        "absolute_error_context",
+        "relative_error_context",
         "failure_context",
         "decision_scope_reason_context",
         "weight_diagnostics_reason_context",
@@ -1479,7 +1487,7 @@ class LiftEstimate(_RowIdentity):
     def reintervalize(
         self, alpha: float, *, interval_alternative: str | None = None
     ) -> LiftEstimate:
-        """Reinvert persisted inference; bootstrap roots are never regenerated."""
+        """Rebuild central persisted inference; bootstrap roots are never regenerated."""
         if (
             self.reference_kind == "t"
             and self.lift is not None
@@ -1511,6 +1519,7 @@ class LiftEstimate(_RowIdentity):
                     ),
                     "alpha": alpha_eff,
                     "level": 1.0 - alpha_eff,
+                    "open_side": None,
                 }
             )
             abs_lb = self.abs_lb
@@ -1541,7 +1550,11 @@ class LiftEstimate(_RowIdentity):
                     "alternative": alternative,
                     "independent_mean_reference": (
                         self.independent_mean_reference.model_copy(
-                            update={"alpha": alpha, "alternative": alternative}
+                            update={
+                                "alpha": alpha,
+                                "alternative": alternative,
+                                "interval": "central",
+                            }
                         )
                         if self.independent_mean_reference is not None
                         else None

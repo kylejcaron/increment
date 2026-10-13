@@ -10,7 +10,7 @@ from increment import readouts
 from increment._analysis_config import _Unset
 from increment._day_axis import _TRIGGER_UNSUPPORTED
 from increment._literals import Correction
-from increment._source_operations import BreakoutSourcesOperation
+from increment._source_operations import BreakoutSourcesOperation, ReadoutSnapshotOperation
 from increment._source_types import classify_source
 from increment._whole_window import _ANALYSIS_OPERATION, _require_analysis_operation
 from increment.breakout.estimates import BreakoutEstimates
@@ -230,6 +230,16 @@ class BreakoutReadouts:
             if not self._experiment.breakouts or not req.metrics:
                 return BreakoutEstimates([])
             req = self.validate_request(req)
+        if route == "native":
+            with cast(ReadoutSnapshotOperation, self._src).readout_snapshot(
+                metrics=req.metrics, population="assigned", include_breakouts=True
+            ) as pinned:
+                return BreakoutReadouts(src=pinned, experiment=self._experiment)._run_slices(
+                    req, route
+                )
+        return self._run_slices(req, route)
+
+    def _run_slices(self, req: BreakoutRequest, route: BreakoutRoute) -> BreakoutEstimates:
         results: BreakoutEstimates | None = None
         for breakout_slice in self._slices(req, route):
             segment_results = readouts.breakout(

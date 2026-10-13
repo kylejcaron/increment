@@ -108,14 +108,9 @@ def _load_metric_rows(
         getattr(method, "variance_reduction", None) == "cuped_linear" for method in methods
     )
     if has_linear and not _snapshot_active:
-        snapshot_source = getattr(src, "_source", src)
-        snapshot = getattr(snapshot_source, "readout_snapshot", None)
+        snapshot = getattr(src, "readout_snapshot", None)
         if snapshot is not None:
-            population = (
-                "triggered"
-                if getattr(snapshot_source, "_population", None) == "triggered"
-                else "assigned"
-            )
+            population = getattr(src, "population", "assigned")
             with snapshot(metrics=(metric,), population=population) as pinned:
                 return _load_metric_rows(
                     pinned,

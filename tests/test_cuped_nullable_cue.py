@@ -14,7 +14,7 @@ from increment.semantics.models import CupedCovariate
 def test_public_linear_cuped_accepts_nan_history_as_imputed_missingness():
     rows = []
     for arm, shift in (("control", 0.0), ("treatment", 1.0)):
-        for index in range(8):
+        for index in range(24):
             prior = np.nan if index < 2 else float(index)
             rows.append(
                 {

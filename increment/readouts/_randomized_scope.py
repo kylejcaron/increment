@@ -85,7 +85,7 @@ def _randomized_cell_record(cell, row, failure, config, snapshot_id, advisories=
     )
 
     evidence = None
-    if row is not None and failure is None and row.lift is not None:
+    if row is not None and failure is None:
         try:
             evidence = PValueEvidence(
                 cell.hypothesis(), cell.method, row.p_value(), row.reference_kind

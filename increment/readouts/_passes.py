@@ -28,6 +28,7 @@ _CELL_ESTIMATION_GUARD_CODES = frozenset(
         "estimation.cuped_linear.level_support",
         "estimation.cuped_linear.rank_deficiency",
         "estimation.cuped_linear.leverage",
+        "estimation.cuped_linear.support_region",
         "estimation.cuped_linear.residual_df",
         "estimation.cuped_linear.nonpositive_component",
         "estimation.cuped_linear.nonfinite_projection",
@@ -542,7 +543,7 @@ def _estimate_pass(  # noqa: PLR0913, PLR0915
                 groups = sorted(evidence.observed_arms - {design.control_group})
                 for group_id in groups:
                     hypothesis = ArmHypothesisKey(metric.name, group_id, "itt")
-                    failure_context = {**exc.context, "method": method.name}
+                    failure_context = exc.context
                     if method_roles[method.name] == "decision":
                         failures[hypothesis] = DecisionFailure(
                             hypothesis, exc.code, failure_context

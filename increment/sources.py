@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from fractions import Fraction
 from numbers import Integral, Real
 from pathlib import Path
@@ -1364,6 +1365,24 @@ class MomentsSource(SequentialSourceMixin):
     def context(self) -> SourceContext:
         return self._context
 
+    @property
+    def population(self) -> Literal["assigned", "triggered"]:
+        return getattr(self._source, "population", "assigned")
+
+    @contextmanager
+    def readout_snapshot(self, *, metrics, population, uptake_facts=(), include_breakouts=False):
+        snapshot = getattr(self._source, "readout_snapshot", None)
+        if snapshot is None:
+            yield self
+            return
+        with snapshot(
+            metrics=metrics,
+            population=self.population,
+            uptake_facts=uptake_facts,
+            include_breakouts=include_breakouts,
+        ) as pinned:
+            yield pinned
+
     def moments(
         self,
         metric,
@@ -1635,11 +1654,13 @@ class BreakoutMomentsSource(SequentialSourceMixin):
         plan: AnalysisPlan | CompiledDecisionPlan | None = None,
         configs: Sequence[ResolvedMetricConfig] | None = None,
         _source: Any | None = None,
+        population: Literal["assigned", "triggered"] = "assigned",
     ) -> None:
         self._source = _source
         self._rows = [dict(r) for r in rows]
         self._dimension = dimension
         self._source_name = source_name
+        self._population = population
         metric_catalog = tuple(cast("Metric", metric) for metric in metrics)
         from increment.decision import CompiledDecisionPlan
         from increment.plan import compile_decision_plan, validate_compiled_encouragement_plan
@@ -1717,7 +1738,17 @@ class BreakoutMomentsSource(SequentialSourceMixin):
         *,
         covariates: Sequence[str] = (),
         outcome_stage: Literal["transformed", "raw"] = "transformed",
-    ) -> NoReturn:
+    ) -> Any:
+        if self._source is not None:
+            from increment.semantics.models import Breakout
+
+            return self._source.breakout_unit_frame(
+                metric,
+                breakout=Breakout(property=self._dimension, source=self._source_name),
+                covariates=covariates,
+                population=self._population,
+                outcome_stage=outcome_stage,
+            )
         if outcome_stage == "raw":
             from increment.winsor import winsor_refuse
 

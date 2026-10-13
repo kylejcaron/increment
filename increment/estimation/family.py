@@ -319,6 +319,7 @@ _CONSERVATIVE_NONREJECTION_CODES = frozenset(
         "estimation.cuped_linear.nonpositive_component",
         "estimation.cuped_linear.nonfinite_projection",
         "estimation.cuped_linear.missing_refused",
+        "estimation.cuped_linear.support_region",
     }
 )
 

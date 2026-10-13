@@ -55,11 +55,11 @@ def test_public_run_routes_mixed_covariate_fit():
 
     frame = pa.table(
         {
-            "unit": [f"{arm}{i}" for arm in ("c", "t") for i in range(8)],
-            "arm": ["c"] * 8 + ["t"] * 8,
-            "revenue": [float(i + (arm == "t") * 2) for arm in ("c", "t") for i in range(8)],
-            "prior": [float(i % 4) for _arm in ("c", "t") for i in range(8)],
-            "region": ["north", "north", "south", "south"] * 4,
+            "unit": [f"{arm}{i}" for arm in ("c", "t") for i in range(16)],
+            "arm": ["c"] * 16 + ["t"] * 16,
+            "revenue": [float(i + (arm == "t") * 2) for arm in ("c", "t") for i in range(16)],
+            "prior": [float(i % 4) for _arm in ("c", "t") for i in range(16)],
+            "region": ["north", "north", "south", "south"] * 8,
         }
     )
     metric = MetricSpec(
@@ -102,12 +102,12 @@ def test_public_run_routes_joint_ratio_cuped_projection():
 
     frame = pa.table(
         {
-            "unit": [f"{arm}{i}" for arm in ("c", "t") for i in range(8)],
-            "arm": ["c"] * 8 + ["t"] * 8,
-            "revenue": [float(4 + i + (arm == "t") * 2) for arm in ("c", "t") for i in range(8)],
-            "orders": [float(2 + i % 3 + (arm == "t")) for arm in ("c", "t") for i in range(8)],
-            "prior": [float(i % 4) for _arm in ("c", "t") for i in range(8)],
-            "region": ["north", "north", "south", "south"] * 4,
+            "unit": [f"{arm}{i}" for arm in ("c", "t") for i in range(16)],
+            "arm": ["c"] * 16 + ["t"] * 16,
+            "revenue": [float(4 + i + (arm == "t") * 2) for arm in ("c", "t") for i in range(16)],
+            "orders": [float(2 + i % 3 + (arm == "t")) for arm in ("c", "t") for i in range(16)],
+            "prior": [float(i % 4) for _arm in ("c", "t") for i in range(16)],
+            "region": ["north", "north", "south", "south"] * 8,
         }
     )
     metric = MetricSpec(
@@ -180,7 +180,7 @@ def test_public_run_routes_joint_ratio_cuped_projection():
     assert shifted_result.source != result.source
     assert shifted_result[0].source_snapshot_id != row.source_snapshot_id
 
-    with_sibling = frame.append_column("sibling", pa.array([float(i) for i in range(16)]))
+    with_sibling = frame.append_column("sibling", pa.array([float(i) for i in range(32)]))
     sibling_rows = Analysis.from_unit_summary(
         with_sibling,
         unit="unit",

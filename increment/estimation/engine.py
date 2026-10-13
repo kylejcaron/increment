@@ -1635,6 +1635,7 @@ def _lift_decision_bundle(  # noqa: PLR0915
             evidence[hypothesis] = evidence_row
     for metric, group_id, estimand, code, context in cuped_failures:
         hypothesis = ArmHypothesisKey(metric, group_id, estimand)
+        evidence.pop(hypothesis, None)
         failures[hypothesis] = DecisionFailure(hypothesis, code, dict(context))
     advisories: dict[Any, tuple[ReadoutAdvisory, ...]] = (
         {
@@ -3278,7 +3279,10 @@ def estimate_cuped_linear(
                         reference_df=absolute.dof,
                         dof=absolute.dof,
                         scale="linear",
+                        posterior_available=False if prior is not None else None,
                         relative_unavailable_reason="nonpositive_arm_mean",
+                        relative_error_code=exc.code,
+                        relative_error_context=exc.context,
                         posterior_reason_code=(
                             "estimation.results.lift.t_posterior_sufficient_statistics"
                             if prior is not None
@@ -3377,6 +3381,8 @@ def estimate_cuped_linear(
                 reference_df=relative.dof,
                 dof=relative.dof,
                 scale="log",
+                absolute_error_code=None if absolute_error is None else absolute_error.code,
+                absolute_error_context=None if absolute_error is None else absolute_error.context,
                 posterior_available=False if prior is not None else None,
                 posterior_reason_code=(
                     "estimation.results.lift.t_posterior_sufficient_statistics"

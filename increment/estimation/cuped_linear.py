@@ -15,7 +15,14 @@ from scipy.linalg import qr as scipy_qr
 from increment.errors import InvalidRequestError, RefusalSpec, refusals, refuse
 from increment.estimation._adjust.encoding import is_null
 from increment.estimation._tails import student_t_isf, two_sided_critical_value
-from increment.estimation.variance import stable_log_ratio
+from increment.estimation.armstats import ArmStats
+from increment.estimation.variance import ratio_denominator_precision, stable_log_ratio
+
+M1_MAX_ENCODED_COVARIATES = 203
+M1_MAX_CATEGORICAL_LEVELS = 200
+M1_MAX_LEVERAGE_RATIO = 0.20
+M1_MAX_LEVERAGE = 0.45
+M1_MAX_RATIO_DENOMINATOR_PRECISION = 0.15
 
 _REFUSALS = refusals(
     InvalidRequestError,
@@ -34,6 +41,11 @@ _REFUSALS = refusals(
             template="encoded covariates are rank deficient: columns={columns!r}, partners={partners!r}",
         ),
         "estimation.cuped_linear.leverage": "unit leverage is too close to one: row={row}, leverage={leverage}",
+        "estimation.cuped_linear.support_region": RefusalSpec(
+            "estimation.cuped_linear.support_region",
+            InvalidRequestError,
+            template="fit is outside support region {region!r}: violations={violations!r}",
+        ),
         "estimation.cuped_linear.residual_df": "residual degrees of freedom must be positive; got {df}",
         "estimation.cuped_linear.nonpositive_component": "adjusted component {family!r} for arm {arm!r} must be positive for a log or ratio projection; got {value}",
         "estimation.cuped_linear.nonfinite_projection": RefusalSpec(
@@ -311,6 +323,9 @@ class _LinearCupedCalculator:
             )
 
     def _family_score(self, family: int, j: np.ndarray) -> np.ndarray:
+        scale = float(np.max(np.abs(j), initial=0.0))
+        if scale:
+            j = j / scale
         d = self._contrast_x(j)
         contrast = np.concatenate([j, -d])
         coefficients = np.linalg.solve(
@@ -326,7 +341,7 @@ class _LinearCupedCalculator:
                 float(j.sum()) / sum(self.n_by_arm) * (self._x[mask] @ self._slopes[family])
             )
         influence = self._design @ coefficients * self._weights
-        return influence * residual / np.sqrt(1 - self.leverage) + anchor_score
+        return (influence * residual / np.sqrt(1 - self.leverage) + anchor_score) * scale
 
     def _bm_dof(self, j: np.ndarray) -> float:
         d = self._contrast_x(j)
@@ -341,6 +356,7 @@ class _LinearCupedCalculator:
 
     def _stacked_bm(self, jac: np.ndarray) -> float:
         narm = len(self.arm_order)
+        jac = jac / float(np.max(np.abs(jac)))
         contrasts = []
         for family in range(2):
             j = jac[family * narm : (family + 1) * narm]
@@ -917,6 +933,31 @@ def _fit_covariate_slopes(x, indices, centered_outcomes, layout):
     )
 
 
+def _raw_denominator_precision(numerator, denominator, arm):
+    """Apply the raw-arm denominator statistic on scale-normalized moments."""
+    normalized = []
+    for values in (numerator, denominator):
+        scale = float(np.max(np.abs(values)))
+        normalized.append(values / scale if scale else values)
+    num, den = normalized
+    ref_num, ref_den = float(num.mean()), float(den.mean())
+    centered_num, centered_den = num - ref_num, den - ref_den
+    stats = ArmStats(
+        study_id="cuped_linear",
+        metric="ratio",
+        group_id=str(arm),
+        n=len(den),
+        ref_y=ref_num,
+        cy1=math.fsum(centered_num),
+        cy2=float(centered_num @ centered_num),
+        ref_den=ref_den,
+        cden1=math.fsum(centered_den),
+        cden2=float(centered_den @ centered_den),
+        cyden=float(centered_num @ centered_den),
+    )
+    return ratio_denominator_precision(stats)
+
+
 def _fit_calculator(groups, order, counts, outcomes, x, layout, control, coordinate_offsets):
     n = len(groups)
     indices = tuple(np.flatnonzero(groups == arm) for arm in order)
@@ -991,6 +1032,42 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control, coordin
             "estimation.cuped_linear.leverage",
             row=int(leverage.argmax()),
             leverage=float(leverage.max()),
+        )
+    categorical_levels = max(
+        (
+            len(levels)
+            for kind, levels in zip(layout.kinds, layout.levels, strict=True)
+            if kind == "categorical" and levels is not None
+        ),
+        default=0,
+    )
+    violations = []
+    for observable, value, bound in (
+        ("p", float(p), float(M1_MAX_ENCODED_COVARIATES)),
+        ("k_max", float(categorical_levels), float(M1_MAX_CATEGORICAL_LEVELS)),
+        ("leverage_ratio", float(p / min(counts)), float(M1_MAX_LEVERAGE_RATIO)),
+        ("max_leverage", float(leverage.max()), float(M1_MAX_LEVERAGE)),
+    ):
+        if value > bound:
+            violations.append((observable, value, bound))
+    if len(outcomes) == 2:
+        precision = max(
+            _raw_denominator_precision(outcomes[0][idx], outcomes[1][idx], order[a])
+            for a, idx in enumerate(indices)
+        )
+        if precision > M1_MAX_RATIO_DENOMINATOR_PRECISION:
+            violations.append(
+                (
+                    "ratio_denominator_precision",
+                    float(precision),
+                    float(M1_MAX_RATIO_DENOMINATOR_PRECISION),
+                )
+            )
+    if violations:
+        _fail(
+            "estimation.cuped_linear.support_region",
+            region="M1",
+            violations=tuple(violations),
         )
     components = tuple(
         tuple(_readonly(outcome[idx]) for idx in indices) for outcome in centered_outcomes
@@ -1291,9 +1368,9 @@ def _projection_statistics(value: float, se: float, dof: float) -> tuple[float, 
     if not np.isfinite((value, se, dof)).all() or se < 0 or dof <= 0:
         _fail(
             "estimation.cuped_linear.nonfinite_projection",
-            value=float(value),
-            se=float(se),
-            dof=float(dof),
+            value=float(value) if math.isfinite(value) else repr(float(value)),
+            se=float(se) if math.isfinite(se) else repr(float(se)),
+            dof=float(dof) if math.isfinite(dof) else repr(float(dof)),
         )
     return float(value), float(se), float(dof)
 

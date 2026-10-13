@@ -6,6 +6,9 @@ import pyarrow as pa
 import pytest
 
 from increment import Analysis, AnalysisPlan, Method, MetricSpec
+from increment._source_types import MomentSource
+from increment.breakout.estimates import BreakoutEstimate
+from increment.estimation.decision_types import PValueEvidence
 from increment.estimation.inference import Normal
 from increment.estimation.results import LiftEstimate
 from increment.frame import CupedCovariate
@@ -122,7 +125,8 @@ def test_relative_projection_failure_keeps_absolute_guardrail_inference() -> Non
         _rows(nonpositive=True),
         plan=AnalysisPlan(guardrails=[ExperimentMetric(metric="outcome", margin_abs=0.01)]),
     )
-    (row,) = cast(list[LiftEstimate], list(analysis.run()))
+    results = analysis.run(prior=Normal(mu=0.0, sigma=0.1))
+    (row,) = cast(list[LiftEstimate], list(results))
 
     assert row.lift is None
     assert row.abs_diff is not None and row.abs_diff < 0.0
@@ -130,4 +134,114 @@ def test_relative_projection_failure_keeps_absolute_guardrail_inference() -> Non
     assert row.abs_lb is not None and row.abs_ub is not None
     assert row.abs_reference_kind == "t" and row.abs_reference_df is not None
     assert row.relative_unavailable_reason == "nonpositive_arm_mean"
+    assert row.failure_code is None
+    assert row.relative_error_code == "estimation.cuped_linear.nonpositive_component"
+    assert row.relative_error_context == {"family": "outcome", "arm": "treatment", "value": -1.0}
     assert row.p_value() is not None
+    assert row.posterior_available is False
+    assert row.posterior_reason_code == "estimation.results.lift.t_posterior_sufficient_statistics"
+    assert results.metadata is not None
+    (record,) = results.metadata.cells
+    assert record.sampling is not None and record.sampling.available is True
+    assert isinstance(record.sampling.evidence, PValueEvidence)
+    assert record.sampling.evidence.p_value == pytest.approx(row.p_value())
+    assert record.posterior is not None and record.posterior.available is False
+    assert record.posterior.reason_code == row.posterior_reason_code
+    from increment.estimation.readout_types import ReadoutResults
+
+    restored = ReadoutResults.model_validate_json(results.model_dump_json())
+    assert restored.metadata == results.metadata
+    restored_row = restored[0]
+    assert isinstance(restored_row, LiftEstimate)
+    assert restored_row.p_value() == pytest.approx(row.p_value())
+
+
+@pytest.mark.parametrize("override", ["decision", "sensitivity"])
+def test_undeclared_linear_override_refuses_before_evidence_acquisition(override):
+    from increment.errors import CodedError
+    from increment.readouts import run
+    from tests.test_cuped_linear_acceptance import _summary_source
+
+    source = _summary_source(metric=MetricSpec(name="revenue"))
+    linear = Method(name="linear", variance_reduction="cuped_linear")
+    with pytest.raises(CodedError) as raised:
+        if override == "decision":
+            run(cast(MomentSource, source), decision_method=linear)
+        else:
+            run(cast(MomentSource, source), sensitivity_methods=[linear])
+    assert raised.value.code == "facade.analysis_config.cuped_linear_covariates"
+    assert source.read_calls == 0
+
+
+def test_m1_unavailable_readouts_replay_exact_fit_refusal():
+    import copy
+    import pickle
+
+    import numpy as np
+
+    from increment.errors import CodedError
+    from increment.estimation.cuped_linear import fit_cuped_linear
+    from increment.estimation.readout_types import ReadoutResults
+
+    arms = np.repeat(["control", "treatment"], 10)
+    phase = np.tile(np.arange(10) * 2 * np.pi / 10, 2)
+    x = np.column_stack((np.sin(phase), np.cos(phase), np.sin(2 * phase)))
+    y = 10 + np.arange(20) / 10
+    covariates = {f"x{i}": x[:, i] for i in range(3)}
+    kinds = dict.fromkeys(covariates, "continuous")
+    with pytest.raises(CodedError) as raised:
+        fit_cuped_linear(
+            y,
+            arms,
+            control="control",
+            arm_order=("control", "treatment"),
+            covariates=covariates,
+            kinds=kinds,
+        )
+    expected = raised.value
+    frame = pa.table(
+        {
+            "unit": [f"u{i}" for i in range(20)],
+            "arm": arms,
+            "day": [1] * 20,
+            "segment": ["all"] * 20,
+            "outcome": y,
+            **covariates,
+        }
+    )
+    metric = MetricSpec(
+        name="outcome",
+        covariates=tuple(CupedCovariate(name=name, kind="continuous") for name in covariates),
+        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
+    )
+    analysis = Analysis.from_unit_panel(
+        frame,
+        unit="unit",
+        group="arm",
+        date="day",
+        control="control",
+        metrics=[metric],
+        breakouts=["segment"],
+    )
+    headline = analysis.run()
+    with pytest.warns():
+        breakout = analysis.run_breakout()
+    for results in (headline, breakout):
+        for restored in (
+            results,
+            copy.deepcopy(results),
+            pickle.loads(pickle.dumps(results)),
+            ReadoutResults.model_validate_json(results.model_dump_json()),
+        ):
+            (row,) = restored
+            assert isinstance(row, (LiftEstimate, BreakoutEstimate))
+            assert row.lift is None and row.sampling_available is False
+            assert row.failure_code == expected.code
+            assert row.failure_context == expected.context
+            assert row.sampling_reason_context == expected.context
+            assert restored.metadata is not None
+            (record,) = restored.metadata.cells
+            assert record.failure is not None and record.failure.context == expected.context
+            assert record.sampling is not None and record.sampling.available is False
+            with pytest.raises(TypeError):
+                cast(dict[str, object], row.failure_context)["region"] = "changed"

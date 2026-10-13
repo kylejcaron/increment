@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import pyarrow as pa
 import pytest
 
 from increment import Analysis, AnalysisPlan, Method, MetricSpec, MultiplicitySpec
+from increment.estimation.results import LiftEstimate
 from increment.frame import CupedCovariate
 
 
@@ -74,6 +75,18 @@ def test_public_breakout_localizes_failed_cuped_projection_and_keeps_siblings() 
     assert by_segment["south"].lift is not None
     assert by_segment["unsupported"].lift is None
     assert by_segment["unsupported"].excluded == "estimation_failed"
+    unavailable = by_segment["unsupported"]
+    assert unavailable.failure_code == "estimation.cuped_linear.level_support"
+    assert unavailable.failure_context is not None
+    assert unavailable.failure_context["column"] == "pre"
+    assert unavailable.sampling_available is False
+    assert unavailable.sampling_reason_code == unavailable.failure_code
+    assert rows.metadata is not None
+    record = next(r for r in rows.metadata.cells if r.cell.dimension_value == "unsupported")
+    assert record.failure is not None and record.failure.code == unavailable.failure_code
+    assert record.sampling is not None and record.sampling.available is False
+    assert record.sampling.reason_code == unavailable.failure_code
+    assert record.sampling.reason_context == unavailable.failure_context
 
 
 def test_public_breakout_sensitivity_failure_does_not_enter_decision_family() -> None:
@@ -89,6 +102,11 @@ def test_public_breakout_sensitivity_failure_does_not_enter_decision_family() ->
     assert (
         next(row for row in unsupported if row.method == "linear").excluded == "estimation_failed"
     )
+    failed = next(row for row in unsupported if row.method == "linear")
+    assert failed.failure_code == "estimation.cuped_linear.level_support"
+    assert failed.failure_context is not None
+    assert failed.failure_context["column"] == "pre"
+    assert failed.sampling_available is False
     assert all(
         row.family_axes == ("metric", "arm", "segment") for row in rows if row.method == "plain"
     )
@@ -127,6 +145,7 @@ def test_public_breakout_keeps_all_conversion_methods_in_mixed_cuped_request() -
     ]
     metric = MetricSpec(
         name="conversion",
+        type="conversion",
         covariate="pre",
         value_column="converted",
         decision_method=methods[0],
@@ -245,9 +264,35 @@ def test_public_breakout_retains_relative_ratio_when_absolute_projection_overflo
 
     assert row.lift is not None
     assert row.abs_diff is None and row.abs_se is None
-    assert row.failure_code is not None
-    assert row.failure_context is not None
-    assert row.failure_context["projection"] == "absolute"
+    assert row.absolute_error_code == "estimation.cuped_linear.nonfinite_projection"
+    assert row.absolute_error_context is not None
+    assert set(row.absolute_error_context) == {"value", "se", "dof"}
+    assert row.discovery is True
+    (headline,) = analysis.run()
+    assert isinstance(headline, LiftEstimate)
+    assert headline.absolute_error_code == row.absolute_error_code
+    assert headline.absolute_error_context == row.absolute_error_context
+    import copy
+    import pickle
+
+    from increment.breakout.estimates import BreakoutEstimate
+
+    for estimate in (headline, row):
+        model = BreakoutEstimate if estimate is row else LiftEstimate
+        for restored in (
+            model.model_validate_json(estimate.model_dump_json()),
+            copy.deepcopy(estimate),
+            pickle.loads(pickle.dumps(estimate)),
+        ):
+            assert isinstance(restored, (LiftEstimate, BreakoutEstimate))
+            assert restored.absolute_error_code == estimate.absolute_error_code
+            assert restored.absolute_error_context == estimate.absolute_error_context
+            if isinstance(estimate, LiftEstimate):
+                assert isinstance(restored, LiftEstimate)
+                assert restored.p_value() == pytest.approx(estimate.p_value())
+            assert restored.require_lift().value == pytest.approx(estimate.require_lift().value)
+            with pytest.raises(TypeError):
+                cast(dict[str, object], restored.absolute_error_context)["value"] = 0
 
 
 def test_public_breakout_localizes_nonpositive_adjusted_arm_with_positive_raw_mean() -> None:
@@ -295,3 +340,272 @@ def test_public_breakout_localizes_nonpositive_adjusted_arm_with_positive_raw_me
     assert by_cell[("north", "treatment")].lift is not None
     assert by_cell[("south", "treatment")].lift is None
     assert by_cell[("south", "treatment")].excluded == "estimation_failed"
+    refused = by_cell[("south", "treatment")]
+    assert refused.failure_code == "estimation.cuped_linear.nonpositive_component"
+    assert refused.failure_context == {
+        "family": "outcome",
+        "arm": "treatment",
+        "value": pytest.approx(-45.0),
+    }
+    assert refused.sampling_available is False
+
+
+def test_native_breakout_moments_and_units_share_snapshot(tmp_path, monkeypatch):
+    from tests.analysis_factory import _native_source
+    from tests.covariate_cases import _CATEGORICAL_DESIGN, categorical_defs_and_con
+
+    path, con, _units = categorical_defs_and_con(tmp_path)
+    path.write_text(
+        path.read_text()
+        .replace(_CATEGORICAL_DESIGN, "")
+        .replace(
+            "    plan: {primary: revenue}",
+            "    plan: {primary: {metric: revenue, covariates: "
+            "[{name: region, kind: categorical, property: region, source: events}]}}\n"
+            "    breakouts: [{property: region, source: events}]",
+        )
+    )
+    analysis = Analysis.from_definitions("cat_test", path, con, store="none")
+    source = _native_source(analysis)
+    original = type(source).unit_frame
+    methods: dict[str, Any] = {
+        "decision_method": Method(name="plain"),
+        "sensitivity_methods": [Method(name="linear", variance_reduction="cuped_linear")],
+    }
+    baseline = analysis.run_breakout(**methods)
+    mutated = False
+
+    def mutate_before_units(self, *args, **kwargs):
+        nonlocal mutated
+        if not mutated:
+            mutated = True
+            con.raw_sql(
+                "UPDATE cat_events SET revenue = revenue * 2 "
+                "WHERE event = 'purchase' AND user_id IN "
+                "(SELECT user_id FROM cat_events WHERE group_id = 'treatment')"
+            )
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(source), "unit_frame", mutate_before_units)
+    try:
+        after = analysis.run_breakout(**methods)
+        assert mutated
+        assert [(r.dimension_value, r.method) for r in after] == [
+            (r.dimension_value, r.method) for r in baseline
+        ]
+        assert [r.require_lift().value for r in after] == pytest.approx(
+            [r.require_lift().value for r in baseline], rel=1e-10, abs=1e-10
+        )
+    finally:
+        analysis.close()
+        con.disconnect()
+
+
+def test_triggered_native_breakout_linear_matches_triggered_unit_oracle(tmp_path):
+    import datetime as dt
+
+    import ibis
+    import narwhals as nw
+
+    from increment import SourceSnapshotEvidence
+    from increment.estimation.engine import estimate_cuped_linear
+    from tests.analysis_factory import _native_source
+    from tests.test_analysis_trigger import _defs_yaml, _events, _with_preassignment_region
+
+    path = tmp_path / "breakout-trigger.yaml"
+    text = (
+        _defs_yaml()
+        .replace(
+            "      - name: saw_surface\n        column: null",
+            "      - name: saw_surface\n        column: null\n    properties:\n"
+            "      - {name: region, column: region, dtype: string, as_of: pre_exposure}",
+        )
+        .replace(
+            "    plan:\n      secondaries: [revenue]",
+            "    plan: {primary: {metric: revenue, decision_method: "
+            "{name: linear, variance_reduction: cuped_linear}, covariates: "
+            "[{name: region, kind: categorical, property: region, source: events}]}, secondaries: [median]}\n"
+            "    breakouts: [{property: region, source: events}]",
+        )
+    )
+    text = text.replace(
+        "experiments:",
+        "  - name: median\n    type: quantile\n"
+        "    quantile: 0.5\n    entity: user_id\n    fact: revenue\n"
+        "    aggregation: sum\n    window_days: 7\nexperiments:",
+    )
+    path.write_text(text)
+    con = ibis.duckdb.connect()
+    con.create_table(
+        "events", obj=_with_preassignment_region(_events(n_per_arm=100, trigger_rate=0.5))
+    )
+    analysis = Analysis.from_definitions(
+        "exp",
+        path,
+        con,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
+            {"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
+        ),
+    )
+    try:
+        (headline,) = analysis.run(metrics=["revenue"], population="triggered")
+        companion = next(
+            row
+            for row in analysis.run(metrics=["revenue", "median"], population="triggered")
+            if row.metric == "revenue"
+        )
+        assert isinstance(headline, LiftEstimate) and isinstance(companion, LiftEstimate)
+        assert companion.require_lift().value == pytest.approx(
+            headline.require_lift().value, rel=1e-10
+        )
+        assert companion.analysis_population == "triggered"
+        source = _native_source(analysis)
+        metric = next(m for m in source.context.metrics if m.name == "revenue")
+        declarations = next(
+            c.covariates for c in source.context.configs if c.metric.name == "revenue"
+        )
+        frame = nw.from_native(
+            source.unit_frame(metric, covariates=("region",), population="triggered"),
+            eager_only=True,
+        )
+        actual = analysis.run_breakout(metrics=["revenue"], population="triggered")
+        for row in actual:
+            cell = frame.filter(nw.col("region") == row.dimension_value)
+            expected = estimate_cuped_linear(
+                metric,
+                cell.to_native(),
+                control_group="C",
+                method=Method(name="linear", variance_reduction="cuped_linear"),
+                method_role="decision",
+                covariates=declarations,
+                alpha=0.05,
+                alternative="two-sided",
+            ).results[0]
+            assert row.analysis_population == "triggered"
+            assert row.require_lift().value == pytest.approx(
+                expected.require_lift().value, rel=1e-10
+            )
+            assert row.n_control is not None and row.n_treat is not None
+            assert row.n_control + row.n_treat == cell.shape[0]
+    finally:
+        analysis.close()
+        con.disconnect()
+
+
+def test_breakout_equivalent_linear_methods_share_one_fit_per_cell(monkeypatch):
+    import increment.estimation.cuped_linear as cuped_linear
+
+    original = cuped_linear.fit_cuped_linear
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cuped_linear, "fit_cuped_linear", counted)
+    rows = _breakout_analysis().run_breakout(
+        sensitivity_methods=[Method(name="other-linear", variance_reduction="cuped_linear")]
+    )
+    assert {(r.dimension_value, r.method) for r in rows} == {
+        (segment, method) for segment in ("north", "south") for method in ("linear", "other-linear")
+    }
+    assert all(r.lift is not None for r in rows)
+    assert calls == 2
+
+
+def test_breakout_unit_evidence_keeps_qualified_source_and_distinct_covariate(tmp_path):
+    import datetime as dt
+    import warnings
+
+    import yaml
+
+    from tests.covariate_cases import categorical_defs_and_con
+
+    path, con, units = categorical_defs_and_con(tmp_path)
+    definitions = yaml.safe_load(path.read_text())
+    definitions["fact_sources"].append(
+        {
+            "name": "profiles",
+            "sql": "SELECT * FROM profiles",
+            "timestamp_column": "ts",
+            "entities": ["user_id"],
+            "facts": [{"name": "profile", "column": None}],
+            "properties": [
+                {"name": "region", "column": "region", "dtype": "string", "as_of": "pre_exposure"}
+            ],
+        }
+    )
+    experiment = definitions["experiments"][0]
+    experiment.pop("design")
+    experiment["breakouts"] = [
+        {"property": "region", "source": source} for source in ("events", "profiles")
+    ]
+    experiment["plan"] = {
+        "primary": {
+            "metric": "revenue",
+            "decision_method": {"name": "linear", "variance_reduction": "cuped_linear"},
+            "covariates": [
+                {"name": "region", "kind": "continuous", "property": "tenure", "source": "events"}
+            ],
+        }
+    }
+    profiles = {unit: ("a" if int(unit[1:]) % 2 else "b") for unit in units}
+    con.create_table(
+        "profiles",
+        obj=[
+            {"user_id": unit, "ts": dt.datetime(2025, 7, 20), "region": value, "event": "profile"}
+            for unit, value in profiles.items()
+        ],
+    )
+    path.write_text(yaml.safe_dump(definitions))
+    analysis = Analysis.from_definitions("cat_test", path, con)
+    try:
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            actual = analysis.run_breakout()
+        for source in ("events", "profiles"):
+            oracle = Analysis.from_unit_panel(
+                pa.Table.from_pylist(
+                    [
+                        {
+                            "unit": unit,
+                            "group": values["variant"],
+                            "day": 1,
+                            "revenue": values["revenue"],
+                            "region": values["tenure"],
+                            "segment": values["region"] if source == "events" else profiles[unit],
+                        }
+                        for unit, values in units.items()
+                    ]
+                ),
+                unit="unit",
+                group="group",
+                date="day",
+                control="control",
+                metrics=[
+                    MetricSpec(
+                        name="revenue",
+                        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
+                        covariates=(CupedCovariate(name="region", kind="continuous"),),
+                    )
+                ],
+                breakouts=["segment"],
+            )
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                expected = {row.dimension_value: row for row in oracle.run_breakout()}
+            qualified = [row for row in actual if row.source == source]
+            assert {row.dimension_value for row in qualified} == set(expected)
+            for row in qualified:
+                reference = expected[row.dimension_value]
+                assert row.n_treat == reference.n_treat and row.n_control == reference.n_control
+                assert row.failure_code == reference.failure_code
+                if reference.lift is not None:
+                    assert row.require_lift().value == pytest.approx(
+                        reference.require_lift().value, rel=1e-10
+                    )
+    finally:
+        analysis.close()
+        con.disconnect()
