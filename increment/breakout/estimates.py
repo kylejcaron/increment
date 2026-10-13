@@ -544,6 +544,10 @@ _FAMILY_VIEW_FIELDS = (
     "abs_reference_kind",
     "abs_reference_df",
     "abs_alpha",
+    "absolute_error_code",
+    "absolute_error_context",
+    "relative_error_code",
+    "relative_error_context",
     "prior_shrunk",
     "sampling_available",
     "sampling_reason_code",
@@ -2087,7 +2091,117 @@ def _estimate_lift_computation_or_reason(
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
     method_roles: Mapping[str, Literal["decision", "sensitivity"]] | None,
     route_alpha: float | None = None,
+    unit_frame: Any | None = None,
+    covariates: Sequence[Any] = (),
 ) -> tuple[DecisionComputation[LiftEstimate] | None, str | None]:
+    linear_methods = [
+        method for method in methods or () if method.variance_reduction == "cuped_linear"
+    ]
+    if linear_methods:
+        from increment.decision import ArmHypothesisKey, DecisionComputation, DecisionFailure
+        from increment.errors import CodedError
+        from increment.estimation.engine import estimate_cuped_linear
+
+        if unit_frame is None:
+            return None, "per-unit evidence is unavailable for this breakout cell"
+        # The slice gate has already excluded rows (few units, nonpositive means) from
+        # ``summary``; the fit sees exactly the arms that gate admitted.
+        admitted = [str(row["group_id"]) for row in summary if str(row["metric"]) == metric.name]
+        unit_frame = (
+            nw.from_native(unit_frame, eager_only=True)
+            .filter(nw.col("group_id").cast(nw.String).is_in(admitted))
+            .to_native()
+        )
+        results: list[LiftEstimate] = []
+        failures: dict[Any, Any] = {}
+        evidence: dict[Any, Any] = {}
+        advisories: dict[Any, Any] = {}
+        cache: dict[str, tuple[Any | None, CodedError | None]] = {}
+        for method in linear_methods:
+            role = (method_roles or {}).get(method.name, "decision")
+            cache_key = method.model_dump_json(exclude={"name"})
+            try:
+                cached = cache.get(cache_key)
+                if cached is not None:
+                    bundle, error = cached
+                    if error is not None:
+                        raise error
+                    assert bundle is not None
+                    bundle = DecisionComputation(
+                        results=tuple(
+                            row.model_copy(
+                                update={
+                                    "method": method.name,
+                                    "method_role": role,
+                                }
+                            )
+                            for row in bundle.results
+                        ),
+                        evidence=bundle.evidence if role == "decision" else {},
+                        failures={
+                            key: DecisionFailure(
+                                key,
+                                failure.code,
+                                {
+                                    **failure.context,
+                                    "method": method.name,
+                                },
+                            )
+                            for key, failure in bundle.failures.items()
+                        },
+                        advisories=bundle.advisories,
+                    )
+                else:
+                    bundle = estimate_cuped_linear(
+                        metric,
+                        unit_frame,
+                        control_group=control_group,
+                        method=method,
+                        method_role=role,
+                        covariates=covariates,
+                        alpha=alpha,
+                        alternative=alternative,
+                        prior=prior,
+                    )
+                    cache[cache_key] = (bundle, None)
+                results.extend(bundle.results)
+                evidence.update(bundle.evidence)
+                advisories.update(bundle.advisories)
+                failures.update(bundle.failures)
+            except CodedError as exc:
+                if not exc.code.startswith("estimation.cuped_linear.") or exc.code == (
+                    "estimation.cuped_linear.covariate_input"
+                ):
+                    raise
+                cache.setdefault(cache_key, (None, exc))
+                groups = {
+                    str(value)
+                    for value in nw.from_native(unit_frame, eager_only=True)
+                    .get_column("group_id")
+                    .to_list()
+                    if str(value) != control_group
+                }
+                for group_id in groups:
+                    results.append(
+                        LiftEstimate(
+                            metric=metric.name,
+                            group_id=group_id,
+                            method=method.name,
+                            method_role=role,
+                            alternative=alternative,
+                            failure_code=exc.code,
+                            failure_context=exc.context,
+                            sampling_available=False,
+                            sampling_reason_code=exc.code,
+                            sampling_reason_context=exc.context,
+                        )
+                    )
+        return DecisionComputation[LiftEstimate](
+            results=tuple(results),
+            evidence=evidence,
+            failures=failures,
+            advisories=advisories,
+        ), None
     try:
         computation = _estimate_lift(
             metrics=[metric],
@@ -2361,15 +2475,22 @@ def _mixed_binomial_method_groups(
     *,
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
     prior: Prior | None,
-) -> tuple[list[Method], list[Method]] | None:
-    """Return exact and legacy lanes for a mixed binary-metric request."""
+) -> tuple[list[Method], list[Method], list[Method]] | None:
+    """Separate exact binomial, linear CUPED and legacy scalar-CUPED lanes."""
     if metric.type not in ("conversion", "retention"):
         return None
     if inference is not None or prior is not None:
         return None
-    exact = [method for method in configured if method.variance_reduction != "cuped"]
+    exact = [
+        method
+        for method in configured
+        if method.variance_reduction not in ("cuped", "cuped_linear")
+    ]
+    linear = [method for method in configured if method.variance_reduction == "cuped_linear"]
     legacy = [method for method in configured if method.variance_reduction == "cuped"]
-    return (exact, legacy) if exact and legacy else None
+    if legacy and (exact or linear):
+        return exact, linear, legacy
+    return None
 
 
 _BINOMIAL_UNUSED_ADJUSTMENT_FIELDS = frozenset(
@@ -2421,6 +2542,7 @@ class _UnavailableCell(NamedTuple):
     method: Method
     method_role: Literal["decision", "sensitivity"]
     reason: ExclusionReason
+    failure: Any | None = None
 
 
 _BreakoutCellOutcome = _EstimatedCell | _UnavailableCell
@@ -2456,6 +2578,8 @@ class _BreakoutContext(NamedTuple):
     # The smallest level a ``correction="bh"`` family decides a p-value at (``q`` over its
     # hypothesis count), in ``alpha``'s convention; ``None`` outside a BH family.
     route_alpha: float | None
+    unit_frames_by_metric: Mapping[str, Mapping[str, Any]] | None
+    covariates_by_metric: Mapping[str, Sequence[Any]] | None
 
 
 class _BreakoutRowsPass(NamedTuple):
@@ -2672,6 +2796,8 @@ def _breakout_cell_outcomes(
     unestimable: Mapping[tuple[str, str], ExclusionReason],
     method_unestimable: Mapping[tuple[str, str, str], ExclusionReason],
     context: _BreakoutContext,
+    method_failures: Mapping[tuple[str, str, str], Any],
+    original_failures: Mapping[tuple[str, str], Any],
 ) -> tuple[_BreakoutCellOutcome, ...]:
     """Create one immutable result-or-reason outcome for every requested cell."""
     successful = {(estimate.metric, estimate.group_id, estimate.method) for estimate in estimates}
@@ -2695,6 +2821,7 @@ def _breakout_cell_outcomes(
                     method,
                     role_map.get(method_name, "decision"),
                     reason,
+                    method_failures.get((metric_name, group_id, method_name)),
                 )
             )
     for (metric_name, group_id), reason in sorted(unestimable.items()):
@@ -2707,7 +2834,15 @@ def _breakout_cell_outcomes(
         role_map = _derive_method_roles(configured, roles)
         outcomes.extend(
             _UnavailableCell(
-                metric_name, group_id, method, role_map.get(method.name, "decision"), reason
+                metric_name,
+                group_id,
+                method,
+                role_map.get(method.name, "decision"),
+                reason,
+                method_failures.get(
+                    (metric_name, group_id, method.name),
+                    original_failures.get((metric_name, group_id)),
+                ),
             )
             for method in configured
             # A method-specific exclusion already produced this method's row.
@@ -2736,11 +2871,13 @@ def _warn_breakout_route2_pairs(
         )
 
 
-def _estimate_breakout_slice_metrics(  # noqa: PLR0915
+def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
     prepared: _PreparedLiftSlice,
     context: _BreakoutContext,
 ) -> _BreakoutMetricPass:
     """Estimate each live breakout metric and retain immutable cell outcomes."""
+    from increment.decision import ArmHypothesisKey, DecisionFailure
+
     declared_names = {m.name for m in context.metrics}
     unknown_metrics = {str(r["metric"]) for r in prepared.live_rows} - declared_names
     if unknown_metrics:
@@ -2753,6 +2890,7 @@ def _estimate_breakout_slice_metrics(  # noqa: PLR0915
     _warn_breakout_route2_pairs(prepared, context)
     estimates: list[LiftEstimate] = []
     method_unestimable: dict[tuple[str, str, str], ExclusionReason] = {}
+    method_failures: dict[tuple[str, str, str], Any] = {}
     computations: dict[tuple[str, str], DecisionComputation] = {}
     metric_rows: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
     skip_reason_by_metric: dict[str, str] = {}
@@ -2788,12 +2926,18 @@ def _estimate_breakout_slice_metrics(  # noqa: PLR0915
                 inference=context.inference,
                 prior=metric_prior,
             )
-            groups = list(mixed_groups) if mixed_groups is not None else [configured]
-            for group_index, method_group in enumerate(groups):
+            groups = [group for group in mixed_groups if group] if mixed_groups is not None else []
+            if mixed_groups is None:
+                ordinary = [m for m in configured if m.variance_reduction != "cuped_linear"]
+                linear = [m for m in configured if m.variance_reduction == "cuped_linear"]
+                groups = [group for group in (ordinary, linear) if group]
+            for method_group in groups:
+                legacy_lane = method_group[0].variance_reduction == "cuped"
+                exact_lane = method_group[0].variance_reduction not in ("cuped", "cuped_linear")
                 method_rows = rows
-                if mixed_groups is not None and group_index == 0:
+                if mixed_groups is not None and exact_lane:
                     method_rows = _unadjusted_binomial_rows(rows)
-                elif mixed_groups is not None:
+                elif mixed_groups is not None and legacy_lane:
                     legacy_prepared = _prepare_lift_slice(
                         rows,
                         control_group=context.control_group,
@@ -2819,9 +2963,125 @@ def _estimate_breakout_slice_metrics(  # noqa: PLR0915
                     alternative=context.alternative,
                     methods=method_group,
                     inference=context.inference,
-                    method_roles=resolved_roles,
                     route_alpha=context.route_alpha,
+                    method_roles={
+                        method.name: resolved_roles[method.name] for method in method_group
+                    },
+                    unit_frame=(
+                        context.unit_frames_by_metric.get(metric.name, {}).get(
+                            context.segment_value
+                        )
+                        if context.unit_frames_by_metric is not None
+                        else None
+                    ),
+                    covariates=(context.covariates_by_metric or {}).get(metric.name, ()),
                 )
+                if computation is not None:
+                    decision_failures: dict[Any, Any] = {}
+                    projected_results = list(computation.results)
+                    for hypothesis, failure in computation.failures.items():
+                        if not isinstance(hypothesis, ArmHypothesisKey):
+                            continue
+                        method_name = failure.context.get(
+                            "method", method_group[0].name if len(method_group) == 1 else None
+                        )
+                        if method_name is not None:
+                            method_failures[
+                                (metric.name, str(hypothesis.group_id), str(method_name))
+                            ] = failure
+                        if failure.context.get("projection") == "absolute":
+                            projected_results = [
+                                result.model_copy(
+                                    update={
+                                        "failure_code": failure.code,
+                                        "failure_context": dict(failure.context),
+                                    }
+                                )
+                                if result.metric == metric.name
+                                and result.group_id == str(hypothesis.group_id)
+                                and (method_name is None or result.method == method_name)
+                                else result
+                                for result in projected_results
+                            ]
+                        elif resolved_roles.get(method_name, "decision") == "sensitivity":
+                            method_unestimable[
+                                (metric.name, str(hypothesis.group_id), str(method_name))
+                            ] = "estimation_failed"
+                        else:
+                            decision_failures[hypothesis] = failure
+                    linear_names = {
+                        method.name
+                        for method in method_group
+                        if method.variance_reduction == "cuped_linear"
+                    }
+                    failed_linear_results = {
+                        (result.group_id, result.method)
+                        for result in projected_results
+                        if result.lift is None
+                        and result.method in linear_names
+                        and (
+                            result.failure_code is not None
+                            or result.relative_unavailable_reason is not None
+                        )
+                    }
+                    for group_id, method_name in failed_linear_results:
+                        method_unestimable[(metric.name, group_id, method_name)] = (
+                            "estimation_failed"
+                        )
+                        failed_row = next(
+                            result
+                            for result in projected_results
+                            if result.group_id == group_id and result.method == method_name
+                        )
+                        failure_code, failure_context = (
+                            (failed_row.failure_code, failed_row.failure_context)
+                            if failed_row.failure_code is not None
+                            else (failed_row.relative_error_code, failed_row.relative_error_context)
+                        )
+                        assert failure_code is not None and failure_context is not None
+                        method_failures[(metric.name, group_id, method_name)] = failure = (
+                            DecisionFailure(
+                                ArmHypothesisKey(metric.name, group_id, "itt"),
+                                failure_code,
+                                failure_context,
+                            )
+                        )
+                        if resolved_roles.get(method_name, "decision") == "decision":
+                            decision_failures[failure.hypothesis] = failure
+                    if (
+                        projected_results != list(computation.results)
+                        or len(decision_failures) != len(computation.failures)
+                        or failed_linear_results
+                    ):
+                        from increment.decision import DecisionComputation
+
+                        failed_hypotheses = {
+                            hypothesis
+                            for hypothesis, failure in computation.failures.items()
+                            if failure.context.get("projection") != "absolute"
+                        }
+                        failed_groups = {group_id for group_id, _method in failed_linear_results}
+                        failed_hypotheses.update(
+                            key
+                            for key in computation.evidence
+                            if getattr(key, "metric", None) == metric.name
+                            and getattr(key, "group_id", None) in failed_groups
+                        )
+                        computation = DecisionComputation(
+                            results=tuple(
+                                result
+                                for result in projected_results
+                                if result.lift is not None
+                                or (result.group_id, result.method) not in failed_linear_results
+                            ),
+                            evidence={
+                                key: value
+                                for key, value in computation.evidence.items()
+                                if key not in failed_hypotheses
+                            },
+                            failures=decision_failures,
+                            advisories=computation.advisories,
+                        )
                 if computation is not None and computation.failures:
                     _keep_non_guard_failures(computation.failures, original_failures)
                     _record_failed_pairs(computation.failures, unestimable)
@@ -2870,7 +3130,14 @@ def _estimate_breakout_slice_metrics(  # noqa: PLR0915
             _breakout_unavailable_computation(unestimable, context, original_failures)
         )
     return _BreakoutMetricPass(
-        _breakout_cell_outcomes(estimates, unestimable, method_unestimable, context),
+        _breakout_cell_outcomes(
+            estimates,
+            unestimable,
+            method_unestimable,
+            context,
+            method_failures,
+            original_failures,
+        ),
         computations,
         metric_rows,
     )
@@ -2928,6 +3195,19 @@ def _append_breakout_slice_rows(
                 alternative=context.alternative,
                 lift=None,
                 excluded=outcome.reason,
+                failure_code=None if outcome.failure is None else outcome.failure.code,
+                failure_context=None if outcome.failure is None else outcome.failure.context,
+                sampling_available=False,
+                sampling_reason_code=(
+                    f"breakout.{outcome.reason}"
+                    if outcome.failure is None
+                    else outcome.failure.code
+                ),
+                sampling_reason_context=(
+                    {"reason": outcome.reason}
+                    if outcome.failure is None
+                    else outcome.failure.context
+                ),
                 role="exploratory",
             )
         )
@@ -2969,7 +3249,7 @@ def _breakout_family_cells(
     ]
 
 
-def _apply_breakout_family_correction(
+def _apply_breakout_family_correction(  # noqa: PLR0915
     results: list[BreakoutEstimate],
     context: _BreakoutFamilyContext,
 ) -> list[BreakoutEstimate]:
@@ -3064,6 +3344,24 @@ def _apply_breakout_family_correction(
             (method for method in metric_methods if method.name == decision_name),
             metric_methods[0] if metric_methods else Method(name="unadjusted"),
         )
+        if decision_method.variance_reduction == "cuped_linear":
+            selected_alpha = _fcr_alpha_for(alternative, outcome.fcr_alpha)
+
+            def reissue_cuped_row(
+                row: LiftEstimate,
+                *,
+                selected_alpha: float = selected_alpha,
+                alternative: str = alternative,
+            ) -> LiftEstimate:
+                projected = row.reintervalize(selected_alpha, interval_alternative=alternative)
+                return open_bound_from_two_sided_at_target(projected)
+
+            reestimated[(segment_value, metric_name)] = [
+                reissue_cuped_row(row)
+                for (cell_segment, cell_metric, _group), row in canonical_rows.items()
+                if cell_segment == segment_value and cell_metric == metric_name
+            ]
+            continue
         re_estimates, _reason, _failures = _estimate_lift_or_reason(
             metrics=[metrics_by_name[metric_name]],
             summary=metric_rows,
@@ -3225,6 +3523,8 @@ def run_breakout(  # noqa: PLR0913
     | None = None,
     methods_by_metric: Mapping[str, list[Method]] | None = None,
     _prior_by_metric: Mapping[str, Prior | None] | None = None,
+    unit_frames_by_metric: Mapping[str, Mapping[str, Any]] | None = None,
+    covariates_by_metric: Mapping[str, Sequence[Any]] | None = None,
     policy_name: Literal["compiled_plan", "default_exploratory"] = "default_exploratory",
 ) -> BreakoutEstimates:
     """Estimate lift for every distinct value of a dimension. Partitions
@@ -3263,6 +3563,12 @@ def run_breakout(  # noqa: PLR0913
         Per-arm floor flagging ``low_reliability=True`` (default 50).
     _prior_by_metric : Mapping[str, Prior | None] | None
         Internal per-metric prior override used by compiled-plan callers.
+    unit_frames_by_metric : Mapping[str, Mapping[str, Any]] | None
+        Optional per-unit evidence for CUPED metrics, already split by segment
+        label (``"__null__"`` for a missing value) and holding only declared
+        covariates alongside the unit outcome columns.
+    covariates_by_metric : Mapping[str, Sequence[Any]] | None
+        Declared covariates corresponding to ``unit_frames_by_metric``.
 
     Raises
     ------
@@ -3382,6 +3688,8 @@ def run_breakout(  # noqa: PLR0913
             reliability_floor,
             resolved_methods,
             route_alpha,
+            unit_frames_by_metric,
+            covariates_by_metric,
         )
         prepared = _prepare_lift_slice(
             segment_rows,

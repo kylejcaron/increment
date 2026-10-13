@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from increment._finite_sample_refusals import refuse_finite_sample_metric_type
 from increment._literals import PreferredDirection
@@ -170,7 +170,7 @@ class MetricSpec(_ExplicitOnlyFields, CodedModel, BaseModel):
     covariate_missing: Literal["impute", "zero", "error"] = "impute"
     decision_method: Method | None = None
     sensitivity_methods: tuple[Method, ...] = ()
-    covariates: tuple[CupedCovariate, ...] = ()
+    covariates: tuple[CupedCovariate, ...] = Field(default=(), exclude_if=lambda value: not value)
     prior: Normal | None = None
     preferred_direction: PreferredDirection | None = None
 
@@ -213,7 +213,11 @@ class MetricSpec(_ExplicitOnlyFields, CodedModel, BaseModel):
 
     @model_validator(mode="after")
     def _validate_cuped_covariates(self) -> MetricSpec:
-        if self.covariate is not None and self.covariates:
+        if (
+            self.covariate is not None
+            and self.covariates
+            and self.covariate not in {covariate.name for covariate in self.covariates}
+        ):
             _raise("frame.metric.scalar_and_set_covariates", name=self.name)
         names = [covariate.name for covariate in self.covariates]
         if len(names) != len(set(names)):

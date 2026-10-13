@@ -406,15 +406,23 @@ def validate_request(request: ReadoutRequest) -> None:
     _validate_estimands(request)
     _validate_identification(request)
 
+    from increment._analysis_config import validate_readout_covariates
     from increment.estimation.adjust import validate_readout_adjustment
     from increment.estimation.encouragement import validate_readout_encouragement
-    from increment.estimation.engine import validate_readout_engine
+    from increment.estimation.engine import (
+        refuse_cuped_linear_sequential,
+        validate_readout_engine,
+    )
     from increment.estimation.inference import validate_readout_inference
     from increment.plan import validate_readout_plan
     from increment.sequential_source import validate_sequential_request
     from increment.sources import validate_readout_source
 
-    validate_sequential_request(request)
+    validate_readout_covariates(request)
+    validate_sequential_request(
+        request,
+        refuse_cuped_linear=refuse_cuped_linear_sequential,
+    )
     validate_readout_plan(request)
     # Semantic/engine validators run before source capability checks so a
     # request's established metric/test refusal wins over a missing grain or

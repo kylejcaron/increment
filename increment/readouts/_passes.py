@@ -21,6 +21,17 @@ _CELL_ESTIMATION_GUARD_CODES = frozenset(
     {
         "estimation.cuped.covariate_zero_variance",
         "estimation.variance.ratio_moments_nonpositive_denominator_mean",
+        "estimation.cuped_linear.arm_counts",
+        "estimation.cuped_linear.invalid_arms",
+        "estimation.cuped_linear.nonfinite",
+        "estimation.cuped_linear.missing_refused",
+        "estimation.cuped_linear.level_support",
+        "estimation.cuped_linear.rank_deficiency",
+        "estimation.cuped_linear.leverage",
+        "estimation.cuped_linear.support_region",
+        "estimation.cuped_linear.residual_df",
+        "estimation.cuped_linear.nonpositive_component",
+        "estimation.cuped_linear.nonfinite_projection",
     }
 )
 
@@ -355,10 +366,15 @@ def _raise_if_all_lift_cells_refused(
             failure["code"],
         )
     )
+    if failures and all(
+        isinstance(failure["code"], str) and failure["code"].startswith("estimation.cuped_linear.")
+        for failure in failures
+    ):
+        return
     _raise("readout.estimate_lift_every", failures=failures)
 
 
-def _estimate_pass(  # noqa: PLR0913
+def _estimate_pass(  # noqa: PLR0913, PLR0915
     src: MomentSource,
     metric: Metric,
     evidence: Any,
@@ -434,6 +450,160 @@ def _estimate_pass(  # noqa: PLR0913
             computation,
         )
 
+    if hasattr(evidence, "unit_frame") and any(
+        method.variance_reduction == "cuped_linear" for method in methods
+    ):
+        from increment.estimation.engine import estimate_cuped_linear
+
+        linear_methods = [
+            method for method in methods if method.variance_reduction == "cuped_linear"
+        ]
+        ordinary_methods = [
+            method for method in methods if method.variance_reduction != "cuped_linear"
+        ]
+        computations = []
+        rows_est = []
+        refused = []
+        linear_cache: dict[str, tuple[Any | None, CodedError | None]] = {}
+        if ordinary_methods:
+            ordinary, ordinary_refused, ordinary_computation = _estimate_lift_cells(
+                metric=metric,
+                summary=list(evidence.rows),
+                control_group=design.control_group,
+                methods=ordinary_methods,
+                prior=config.prior,
+                alpha=alpha_for,
+                alternative=test.alternative,
+                inference=inference,
+                null_lift=getattr(test, "null_lift", 0.0),
+                null_abs=getattr(test, "null_abs", None),
+                preferred_direction=metric.declared_preferred_direction,
+                cluster=src.context.cluster,
+                advisory_seen=advisory_seen,
+                method_roles={
+                    method.name: method_roles[method.name] for method in ordinary_methods
+                },
+                family=retry == "family",
+                route_alpha=route_alpha,
+            )
+            rows_est.extend(ordinary)
+            refused.extend(ordinary_refused)
+            computations.append(ordinary_computation)
+        from increment.decision import ArmHypothesisKey, DecisionComputation, DecisionFailure
+
+        for method in linear_methods:
+            cache_key = method.model_dump_json(exclude={"name"})
+            cached = linear_cache.get(cache_key)
+            try:
+                if cached is not None:
+                    cached_bundle, cached_error = cached
+                    if cached_error is not None:
+                        raise cached_error
+                    assert cached_bundle is not None
+                    reused_results = tuple(
+                        row.model_copy(
+                            update={
+                                "method": method.name,
+                                "method_role": method_roles[method.name],
+                            }
+                        )
+                        for row in cached_bundle.results
+                    )
+                    linear = DecisionComputation[LiftEstimate](
+                        results=reused_results,
+                        evidence=cached_bundle.evidence
+                        if method_roles[method.name] == "decision"
+                        else {},
+                        failures=cached_bundle.failures
+                        if method_roles[method.name] == "decision"
+                        else {},
+                        advisories=cached_bundle.advisories,
+                    )
+                else:
+                    linear = estimate_cuped_linear(
+                        metric,
+                        evidence.unit_frame,
+                        control_group=design.control_group,
+                        method=method,
+                        method_role=method_roles[method.name],
+                        covariates=config.covariates,
+                        alpha=alpha_for,
+                        alternative=test.alternative,
+                        null_abs=getattr(test, "null_abs", None),
+                        null_lift=getattr(test, "null_lift", 0.0),
+                        prior=config.prior,
+                    )
+                    linear_cache[cache_key] = (linear, None)
+            except CodedError as exc:
+                if exc.code not in _CELL_ESTIMATION_GUARD_CODES:
+                    raise
+                if cache_key not in linear_cache:
+                    linear_cache[cache_key] = (None, exc)
+                failures: dict[Any, DecisionFailure] = {}
+                groups = sorted(evidence.observed_arms - {design.control_group})
+                for group_id in groups:
+                    hypothesis = ArmHypothesisKey(metric.name, group_id, "itt")
+                    failure_context = exc.context
+                    if method_roles[method.name] == "decision":
+                        failures[hypothesis] = DecisionFailure(
+                            hypothesis, exc.code, failure_context
+                        )
+                    else:
+                        posterior_context = (
+                            {
+                                "metric": metric.name,
+                                "group_id": group_id,
+                                "reference_df": None,
+                                "missing": "HC2/BM score statistics needed to compose the declared prior",
+                            }
+                            if config.prior is not None
+                            else None
+                        )
+                        rows_est.append(
+                            LiftEstimate(
+                                metric=metric.name,
+                                group_id=group_id,
+                                method=method.name,
+                                method_role="sensitivity",
+                                alternative=test.alternative,
+                                preferred_direction=metric.declared_preferred_direction,
+                                null_lift=getattr(test, "null_lift", 0.0),
+                                null_abs=getattr(test, "null_abs", None),
+                                failure_code=exc.code,
+                                failure_context=failure_context,
+                                posterior_available=False if config.prior is not None else None,
+                                posterior_reason_code=(
+                                    "estimation.results.lift.t_posterior_sufficient_statistics"
+                                    if config.prior is not None
+                                    else None
+                                ),
+                                posterior_reason_context=posterior_context,
+                            )
+                        )
+                    refused.append((metric.name, group_id, method.name, str(exc)))
+                computations.append(
+                    DecisionComputation[LiftEstimate](results=(), evidence={}, failures=failures)
+                )
+            else:
+                rows_est.extend(linear.results)
+                computations.append(linear)
+                # An arm the fit withheld under an estimator-domain refusal is a
+                # refused cell, exactly as the unadjusted per-arm path reports it.
+                for row in linear.results:
+                    code = row.failure_code
+                    if code is None or code.startswith("estimation.cuped_linear."):
+                        continue
+                    refused.append((metric.name, row.group_id, method.name, code))
+                    _warn(
+                        "readouts.run.cell_refused",
+                        metric_name=metric.name,
+                        group_id=row.group_id,
+                        method_name=method.name,
+                        reason=code,
+                        stacklevel=3,
+                    )
+        computation = _merge_decision_computations(computations)
+        return [row.model_copy(update={"role": role}) for row in rows_est], refused, computation
     if retry in ("whole", "whole_asof"):
         computation = _estimate_lift(
             metrics=[metric],

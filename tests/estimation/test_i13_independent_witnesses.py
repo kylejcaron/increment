@@ -269,7 +269,8 @@ def test_adjusted_sidecar_keeps_its_distinct_reference():
 
 
 def test_absolute_t_tail_does_not_inherit_normal_primary_reference():
-    from increment.errors import InvalidRequestError
+    from scipy.stats import t
+
     from increment.estimation.inference import infer_lift
 
     row = infer_lift(
@@ -286,10 +287,7 @@ def test_absolute_t_tail_does_not_inherit_normal_primary_reference():
         method_role="decision",
     )
     assert row.reference_kind == "normal" and row.abs_reference_kind == "t"
-    with pytest.raises(InvalidRequestError) as error:
-        row.p_value()
-    assert error.value.code == "estimation.results.lift.p_value_cluster_robust_null_abs"
-    assert error.value.context["reference_df"] == 2.0
+    assert row.p_value() == pytest.approx(2.0 * t(df=2.0).sf(2.5))
 
 
 @pytest.mark.parametrize("backend", ("pandas", "polars", "pyarrow"))

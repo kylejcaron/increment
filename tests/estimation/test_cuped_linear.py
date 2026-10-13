@@ -4,6 +4,7 @@ import copy
 import math
 import pickle
 from decimal import Decimal, localcontext
+from typing import cast
 
 import numpy as np
 import pytest
@@ -11,6 +12,20 @@ from scipy import stats
 
 from increment.errors import InvalidRequestError
 from increment.estimation.cuped_linear import fit_cuped_linear
+
+
+def _fit_repeated_design(y, arms, *, repetitions=4, **options):
+    """Repeat a numerical witness's units to keep it within the support region."""
+    for family in ("numerator", "denominator"):
+        if family in options:
+            options[family] = np.repeat(options[family], repetitions)
+    if "covariates" in options:
+        options["covariates"] = {
+            name: np.repeat(values, repetitions) for name, values in options["covariates"].items()
+        }
+    return fit_cuped_linear(
+        None if y is None else np.repeat(y, repetitions), np.repeat(arms, repetitions), **options
+    )
 
 
 def _reference(y, arm, x, arm_order, treatment, control):
@@ -173,7 +188,7 @@ def test_scalar_point_matches_scalar_cuped_moment_fit():
 def test_categorical_missing_token_is_distinct_and_rows_are_retained():
     arm = np.array(["c"] * 8 + ["t"] * 8)
     category = np.array(["<null>", "a", None, "a", "<null>", "a", None, "a"] * 2, dtype=object)
-    fit = fit_cuped_linear(
+    fit = _fit_repeated_design(
         np.arange(16.0),
         arm,
         control="c",
@@ -189,14 +204,14 @@ def test_categorical_missing_token_is_distinct_and_rows_are_retained():
     assert category_levels[:2] == ("<null>", "a")
     assert category_levels[2] is MISSING_CATEGORY
     assert category_levels[2] != "<null>"
-    assert fit.p == 2 and sum(fit.n_by_arm) == 16
+    assert fit.p == 2 and sum(fit.n_by_arm) == 64
 
 
 def test_numeric_missing_history_is_retained_and_identical_masks_share_indicator():
     arm = np.array(["c"] * 8 + ["t"] * 8)
     history = np.array([1.0, 3.0, 2.0, 5.0, None, None, None, None] * 2, dtype=object)
     second = np.array([4.0, 1.0, 5.0, 2.0, None, None, None, None] * 2, dtype=object)
-    fit = fit_cuped_linear(
+    fit = _fit_repeated_design(
         np.arange(16.0),
         arm,
         control="c",
@@ -205,7 +220,7 @@ def test_numeric_missing_history_is_retained_and_identical_masks_share_indicator
         kinds={"history": "continuous", "second": "continuous"},
         missing={"history": "impute-indicator", "second": "impute-indicator"},
     )
-    assert sum(fit.n_by_arm) == 16
+    assert sum(fit.n_by_arm) == 64
     assert fit.layout.shared_indicators == (("history", "second"),)
     assert fit.layout.encoded_columns[-1] == "missing[history,second]"
 
@@ -293,6 +308,7 @@ def test_ratio_projection_uses_joint_component_covariance():
         ("leverage", "estimation.cuped_linear.leverage"),
         ("df", "estimation.cuped_linear.residual_df"),
         ("arm_constant", "estimation.cuped_linear.rank_deficiency"),
+        ("support_l", "estimation.cuped_linear.support_region"),
     ],
 )
 def test_fit_refusals_have_stable_codes(case, code):
@@ -323,6 +339,13 @@ def test_fit_refusals_have_stable_codes(case, code):
         arm = np.array(["c"] * 3 + ["t"] * 3)
         y = np.arange(6, dtype=float)
         x = rng.normal(size=(6, 4))
+        covariates = {f"x{i}": x[:, i] for i in range(4)}
+        kinds = {f"x{i}": "continuous" for i in range(4)}
+    elif case == "support_l":
+        rng = np.random.default_rng(101)
+        arm = np.array(["c"] * 8 + ["t"] * 8)
+        y = rng.normal(size=16)
+        x = rng.normal(size=(16, 4))
         covariates = {f"x{i}": x[:, i] for i in range(4)}
         kinds = {f"x{i}": "continuous" for i in range(4)}
     elif case == "nonfinite":
@@ -850,7 +873,7 @@ def test_three_arm_family_projections_match_joint_covariance():
     arm = np.repeat(["c", "t", "other"], 2)
     x = np.tile([-1.0, 1.0], 3)
     y = np.array([1.0, 3.0, 3.0, 5.0, 5.0, 7.0])
-    mean_fit = fit_cuped_linear(
+    mean_fit = _fit_repeated_design(
         y,
         arm,
         control="c",
@@ -872,7 +895,7 @@ def test_three_arm_family_projections_match_joint_covariance():
 
     numerator = np.array([1.0, 3.0, 3.0, 5.0, 5.0, 7.0])
     denominator = np.full(6, 2.0)
-    fit = fit_cuped_linear(
+    fit = _fit_repeated_design(
         None,
         arm,
         control="c",
@@ -909,20 +932,20 @@ def test_hc2_projection_retains_residual_variance_under_cancellation():
     arm = np.array(["c", "c", "t", "t"])
     x = np.array([-1.0, 1.0, -1.0, 1.0])
     y = np.array([-(2**30), 2**30, -(2**30), 2**30 + 2], dtype=float)
-    fit = fit_cuped_linear(
+    fit = _fit_repeated_design(
         y, arm, control="c", arm_order=("c", "t"), covariates={"x": x}, kinds={"x": "continuous"}
     )
-    assert fit.absolute("t").se == pytest.approx(1.0)
+    assert fit.absolute("t").se == pytest.approx(1 / math.sqrt(13))
 
 
 def test_small_scale_scores_and_log_ratios_do_not_underflow():
     arm = np.array(["c", "c", "t", "t"])
-    fit = fit_cuped_linear(
+    fit = _fit_repeated_design(
         np.array([-2e-170, 0.0, -4e-170, 0.0]), arm, control="c", arm_order=("c", "t")
     )
-    assert fit.absolute("t").se == pytest.approx(math.sqrt(5) * 1e-170, rel=1e-12, abs=0)
+    assert fit.absolute("t").se == pytest.approx(math.sqrt(5 / 7) * 1e-170, rel=1e-12, abs=0)
 
-    ratio_fit = fit_cuped_linear(
+    ratio_fit = _fit_repeated_design(
         None,
         arm,
         control="c",
@@ -930,12 +953,12 @@ def test_small_scale_scores_and_log_ratios_do_not_underflow():
         numerator=np.array([1e-170, 3e-170, 1e-170, 3e-170]),
         denominator=np.ones(4),
     )
-    assert ratio_fit.ratio("t", scale="log").se == pytest.approx(math.sqrt(0.5))
+    assert ratio_fit.ratio("t", scale="log").se == pytest.approx(math.sqrt(0.5 / 7))
 
 
 def test_small_relative_effect_survives_log_rounding():
     arm = np.array(["c", "c", "t", "t"])
-    fit = fit_cuped_linear(
+    fit = _fit_repeated_design(
         np.array([2**50, 2**50, 2**50 + 0.25, 2**50 + 0.25]), arm, control="c", arm_order=("c", "t")
     )
     assert fit.relative("t").estimate == pytest.approx(math.log1p(2**-52), rel=1e-12, abs=0)
@@ -962,7 +985,7 @@ def test_large_covariate_offset_preserves_slope_and_zero_residual_uncertainty():
     arm = np.array(["c"] * 4 + ["t"] * 4)
     x = np.tile(1e16 + np.array([0.0, 2.0, 4.0, 6.0]), 2)
     y = np.r_[np.array([0.0, 2.0, 4.0, 6.0]), np.array([1.0, 3.0, 5.0, 7.0])]
-    fit = fit_cuped_linear(
+    fit = _fit_repeated_design(
         y, arm, control="c", arm_order=("c", "t"), covariates={"x": x}, kinds={"x": "continuous"}
     )
     assert fit.theta[0] == pytest.approx(1.0)
@@ -971,8 +994,8 @@ def test_large_covariate_offset_preserves_slope_and_zero_residual_uncertainty():
 
 def test_interval_overflow_is_coded_refusal():
     arm = np.array(["c", "c", "t", "t"])
-    fit = fit_cuped_linear(
-        np.array([-2e150, 0.0, -4e150, 0.0]), arm, control="c", arm_order=("c", "t")
+    fit = _fit_repeated_design(
+        np.array([-2e300, 0.0, -4e300, 0.0]), arm, control="c", arm_order=("c", "t")
     )
     with pytest.raises(InvalidRequestError) as raised:
         fit.absolute("t", alpha=1e-320)
@@ -981,15 +1004,16 @@ def test_interval_overflow_is_coded_refusal():
 
 def test_nonfinite_absolute_ratio_projection_does_not_abort_log_ratio_fit():
     arm = np.array(["c", "c", "t", "t"])
-    fit = fit_cuped_linear(
+    fit = _fit_repeated_design(
         None,
         arm,
         control="c",
         arm_order=("c", "t"),
         numerator=np.full(4, 1.5e308),
-        denominator=np.array([0.0, 2.0, 0.0, 2.0]),
+        denominator=np.array([0.0, 2e-10, 0.0, 2e-10]),
+        repetitions=32,
     )
-    assert fit.ratio("t", scale="log").se == pytest.approx(math.sqrt(2.0))
+    assert fit.ratio("t", scale="log").se == pytest.approx(math.sqrt(2 / 63))
     with pytest.raises(InvalidRequestError) as raised:
         fit.ratio("t", scale="absolute")
     assert raised.value.code == "estimation.cuped_linear.nonfinite_projection"
@@ -999,7 +1023,7 @@ def test_nonfinite_absolute_ratio_projection_does_not_abort_log_ratio_fit():
 def test_ratio_log_effect_survives_component_log_rounding(denominator_scale):
     arm = np.array(["c", "c", "t", "t"])
     base = 2**50
-    fit = fit_cuped_linear(
+    fit = _fit_repeated_design(
         None,
         arm,
         control="c",
@@ -1053,7 +1077,7 @@ def test_near_collinear_bm_dof_matches_dense_eigenvalue_reference(epsilon):
 def test_large_between_arm_covariate_offset_preserves_within_arm_design():
     arm = np.array(["c"] * 4 + ["t"] * 4)
     x = np.r_[np.full(4, 2**54), [0.25, 0.75, 0.25, 0.75]]
-    fit = fit_cuped_linear(
+    fit = _fit_repeated_design(
         np.arange(8.0),
         arm,
         control="c",
@@ -1062,7 +1086,7 @@ def test_large_between_arm_covariate_offset_preserves_within_arm_design():
         kinds={"x": "continuous"},
     )
     assert fit.p == 1
-    assert fit.max_leverage == pytest.approx(0.5)
+    assert fit.max_leverage == pytest.approx(0.125)
 
 
 def test_correlation_scaled_pivot_refuses_numerically_dependent_column():
@@ -1097,10 +1121,13 @@ def test_categorical_sequence_detects_nan_before_string_coercion():
 
 
 def test_cached_interval_overflow_does_not_poison_other_alpha():
-    arm = np.array(["c", "c", "t", "t"])
+    arm = np.array(["c"] * 4 + ["t"] * 4)
     fit = fit_cuped_linear(
-        np.array([-1e308, 0.0, -1e308, 0.0]), arm, control="c", arm_order=("c", "t")
+        np.tile([-1e308, 0.0, 0.0, 0.0], 2), arm, control="c", arm_order=("c", "t")
     )
+    with pytest.raises(InvalidRequestError) as raised:
+        fit.absolute("t", alpha=1e-10)
+    assert raised.value.code == "estimation.cuped_linear.nonfinite_projection"
     projection = fit.absolute("t", alpha=0.5)
     assert np.isfinite(
         (projection.estimate, projection.se, projection.lower, projection.upper)
@@ -1169,7 +1196,7 @@ def test_large_well_conditioned_bm_dof_matches_closed_form_reference():
 
 def test_alpha_specific_interval_overflow_does_not_poison_finite_interval():
     arm = np.array(["c", "c", "t", "t"])
-    fit = fit_cuped_linear(
+    fit = _fit_repeated_design(
         np.array([-3e306, -1e306, 1.76e308, 1.78e308]),
         arm,
         control="c",
@@ -1177,8 +1204,8 @@ def test_alpha_specific_interval_overflow_does_not_poison_finite_interval():
     )
     projection = fit.absolute("t", alpha=0.9)
     assert projection.estimate == pytest.approx(1.79e308, rel=1e-12)
-    assert projection.se == pytest.approx(1.414213562e306, rel=1e-8)
-    assert projection.dof == pytest.approx(2.0)
+    assert projection.se == pytest.approx(math.sqrt(2 / 7) * 1e306, rel=1e-8)
+    assert projection.dof == pytest.approx(14.0)
 
 
 def test_covariate_arm_offset_difference_survives_scaling():
@@ -1186,7 +1213,7 @@ def test_covariate_arm_offset_difference_survives_scaling():
     arm = np.array(["c"] * 4 + ["t"] * 4)
     x = np.r_[base + np.array([0.0, 4.0, 8.0, 12.0]), base + np.array([4.0, 8.0, 12.0, 16.0])]
     y = np.array([0.0, 4.0, 8.0, 12.0, 5.0, 9.0, 13.0, 17.0])
-    fit = fit_cuped_linear(
+    fit = _fit_repeated_design(
         y,
         arm,
         control="c",
@@ -1200,7 +1227,7 @@ def test_covariate_arm_offset_difference_survives_scaling():
 def test_ratio_log_effect_survives_large_within_arm_ratio():
     arm = np.array(["c", "c", "t", "t"])
     base = 2**50
-    fit = fit_cuped_linear(
+    fit = _fit_repeated_design(
         None,
         arm,
         control="c",
@@ -1216,7 +1243,7 @@ def test_ratio_log_effect_survives_large_within_arm_ratio():
 def test_homogeneous_numpy_bytes_categories_remain_supported():
     arm = np.repeat(["c", "t"], 4)
     category = np.array([b"a", b"a", b"b", b"b"] * 2, dtype="S1")
-    fit = fit_cuped_linear(
+    fit = _fit_repeated_design(
         np.arange(8.0),
         arm,
         control="c",
@@ -1231,7 +1258,7 @@ def test_homogeneous_numpy_bytes_categories_remain_supported():
 def test_ratio_cross_product_log_effect_is_denominator_unit_invariant(denominator_scale):
     arm = np.array(["c", "c", "t", "t"])
     base = 2**50
-    fit = fit_cuped_linear(
+    fit = _fit_repeated_design(
         None,
         arm,
         control="c",
@@ -1258,7 +1285,7 @@ def test_log_ratio_preserves_cross_product_effect_at_exponent_boundaries(base, r
     control_numerator, treatment_numerator = (neighbor, base) if reverse else (base, neighbor)
     control_denominator, treatment_denominator = (base, neighbor) if reverse else (neighbor, base)
     arm = np.array(["c", "c", "t", "t"])
-    fit = fit_cuped_linear(
+    fit = _fit_repeated_design(
         None,
         arm,
         control="c",
@@ -1286,7 +1313,7 @@ def test_scaled_opposite_sign_covariate_offsets_do_not_overflow():
     arm = np.array(["c"] * 4 + ["t"] * 4)
     x = np.r_[[-10.0, -9.0, -8.0, -7.0], [10.0, 11.0, 12.0, 13.0]] * 1e307
     y = np.array([10.0, 11.0, 12.0, 13.0, 31.0, 32.0, 33.0, 34.0])
-    fit = fit_cuped_linear(
+    fit = _fit_repeated_design(
         y,
         arm,
         control="c",
@@ -1295,3 +1322,115 @@ def test_scaled_opposite_sign_covariate_offsets_do_not_overflow():
         kinds={"x": "continuous"},
     )
     assert fit.absolute("t").estimate == pytest.approx(1.0, abs=1e-12)
+
+
+@pytest.mark.parametrize(
+    "observable", ["p", "k_max", "leverage_ratio", "max_leverage", "ratio_denominator_precision"]
+)
+def test_m1_support_refusal_retains_exact_observable_contract(observable):
+    rng = np.random.default_rng(501)
+    n_arm, width = (1030, 204) if observable == "p" else (40, 1)
+    if observable == "k_max":
+        n_arm, width = 1206, 0
+    elif observable == "leverage_ratio":
+        n_arm, width = 10, 3
+    arms = np.repeat(["c", "t"], n_arm)
+    x = rng.normal(size=(2 * n_arm, width))
+    if observable == "leverage_ratio":
+        phase = np.tile(np.arange(n_arm) * 2 * np.pi / n_arm, 2)
+        x = np.column_stack((np.sin(phase), np.cos(phase), np.sin(2 * phase)))
+    covariates = {f"x{i}": x[:, i] for i in range(width)}
+    kinds = dict.fromkeys(covariates, "continuous")
+    if observable == "k_max":
+        covariates = {"category": np.tile(np.repeat(np.arange(201).astype(str), 6), 2)}
+        kinds = {"category": "categorical"}
+    if observable == "max_leverage":
+        covariates["x0"][:] = 0
+        covariates["x0"][[0, n_arm]] = 100
+    y = 10 + rng.normal(size=2 * n_arm)
+    options = {}
+    if observable == "ratio_denominator_precision":
+        denominator = np.tile(np.r_[np.ones(n_arm // 2), np.full(n_arm // 2, 1000.0)], 2)
+        covariates = {"x0": denominator}
+        options = {"numerator": y, "denominator": denominator}
+        y = None
+    with pytest.raises(InvalidRequestError) as raised:
+        fit_cuped_linear(
+            y,
+            arms,
+            control="c",
+            arm_order=("c", "t"),
+            covariates=covariates,
+            kinds=kinds,
+            numerator=options.get("numerator"),
+            denominator=options.get("denominator"),
+        )
+    error = raised.value
+    assert error.code == "estimation.cuped_linear.support_region"
+    assert set(error.context) == {"region", "violations"}
+    assert error.context["region"] == "M1"
+    raw_violations = error.context["violations"]
+    assert isinstance(raw_violations, tuple)
+    violations = {
+        name: (value, bound)
+        for name, value, bound in cast(tuple[tuple[str, float, float], ...], raw_violations)
+    }
+    assert set(violations) == {observable}
+    assert (
+        violations[observable][1]
+        == {
+            "p": 203,
+            "k_max": 200,
+            "leverage_ratio": 0.20,
+            "max_leverage": 0.45,
+            "ratio_denominator_precision": 0.15,
+        }[observable]
+    )
+    assert violations[observable][0] > violations[observable][1]
+    for restored in (copy.deepcopy(error), pickle.loads(pickle.dumps(error))):
+        assert restored.code == error.code and restored.context == error.context
+        with pytest.raises(TypeError):
+            cast(dict[str, object], restored.context)["region"] = "changed"
+
+
+def test_m1_inside_every_bound_preserves_mean_and_ratio_inference():
+    rng = np.random.default_rng(502)
+    arms = np.repeat(["c", "t"], 40)
+    category = np.tile(np.repeat(["a", "b", "c", "d"], 10), 2)
+    covariates = {"category": category, "x": rng.normal(size=80)}
+    kinds = {"category": "categorical", "x": "continuous"}
+    y = 10 + (arms == "t") + rng.normal(size=80)
+    for options in ({}, {"numerator": y, "denominator": 5 + rng.uniform(size=80)}):
+        fit = fit_cuped_linear(
+            None if options else y,
+            arms,
+            control="c",
+            arm_order=("c", "t"),
+            covariates=covariates,
+            kinds=kinds,
+            numerator=options.get("numerator"),
+            denominator=options.get("denominator"),
+        )
+        assert fit.p <= 203
+        assert max(len(levels or ()) for levels in fit.layout.levels) <= 200
+        assert fit.p / fit.n_min <= 0.20
+        assert fit.max_leverage <= 0.45
+        projection = fit.ratio("t") if options else fit.relative("t")
+        assert projection.lower < projection.estimate < projection.upper
+
+
+def test_nonpositive_raw_denominator_arm_is_refused_under_the_fit_code():
+    arms = np.repeat(["c", "t", "z"], 8)
+    numerator = np.arange(24, dtype=float) + 1
+    denominator = np.r_[np.full(16, 2.0), np.zeros(8)]
+    with pytest.raises(InvalidRequestError) as raised:
+        fit_cuped_linear(
+            None,
+            arms,
+            control="c",
+            arm_order=("c", "t", "z"),
+            numerator=numerator,
+            denominator=denominator,
+        )
+    assert raised.value.code == "estimation.cuped_linear.nonpositive_component"
+    assert raised.value.context == {"family": "denominator", "arm": "z", "value": 0.0}

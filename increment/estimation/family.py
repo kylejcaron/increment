@@ -312,6 +312,14 @@ _CONSERVATIVE_NONREJECTION_CODES = frozenset(
         "breakout.nonpositive_mean",
         "breakout.zero_variance",
         "breakout.extreme_ratio",
+        "estimation.cuped_linear.level_support",
+        "estimation.cuped_linear.rank_deficiency",
+        "estimation.cuped_linear.leverage",
+        "estimation.cuped_linear.residual_df",
+        "estimation.cuped_linear.nonpositive_component",
+        "estimation.cuped_linear.nonfinite_projection",
+        "estimation.cuped_linear.missing_refused",
+        "estimation.cuped_linear.support_region",
     }
 )
 
