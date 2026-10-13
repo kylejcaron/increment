@@ -2429,6 +2429,7 @@ def test_clustered_overview_fallback_preserves_each_metric_collection(
 
     from increment import Analysis
     from increment.breakout.estimates import LiftEstimates
+    from increment.dashboard import render_dashboard
     from increment.dashboard._app import build_payload
 
     added = ("added_revenue", "added_duration", "p90_revenue")
@@ -2459,6 +2460,7 @@ def test_clustered_overview_fallback_preserves_each_metric_collection(
 
         details = render_metric_details(snapshot, metric="added_revenue").text
         assert "added_revenue" in details
+        assert render_dashboard(analysis, snapshot=snapshot) is not None
         payload = build_payload(analysis, snapshot=snapshot)
         notes = payload["overview"]["overall"]["notes"]
         assert any("p90_revenue" in note and refusal[2].code in note for note in notes)
