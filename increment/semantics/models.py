@@ -48,6 +48,7 @@ from increment.semantics.design import (
     _serialize_allocation,
     _validate_allocation_semantics,
 )
+from increment.semantics.randomization import AssignmentSpec
 from increment.semantics.rational import DeclaredRational
 from increment.semantics.sequential import (
     ASYMPTOTIC_LAWS,
@@ -2244,6 +2245,11 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
     allocation_scheme: AllocationScheme | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+    #: Optional replayable fixed assignment law. Assignment logs remain separate
+    #: from exposure facts; analysis does not infer replay evidence from outcomes.
+    assignment_contract: AssignmentSpec | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     #: Optional non-randomized identification mechanism. Absent means
     #: Randomized, built from control_group/allocation above -- see
     #: resolved_design(). mechanism: "randomized" is not a valid value
@@ -2271,6 +2277,19 @@ class Experiment(AliasMixin, _ExplicitOnlyFields, _Base):
     @model_validator(mode="after")
     def _check_allocation(self):
         _validate_allocation_semantics(self.control_group, self.allocation)
+        if self.assignment_contract is not None:
+            self.assignment_contract.validate_analysis(
+                experiment=self.name,
+                identity_key=self.cluster or self.unit,
+                control_group=self.control_group,
+                allocation=self.allocation,
+                allocation_scheme=self.allocation_scheme,
+                randomized=self.design is None,
+            )
+            object.__setattr__(
+                self, "allocation", _freeze_allocation(self.assignment_contract.allocation)
+            )
+            object.__setattr__(self, "allocation_scheme", "independent")
         if isinstance(self.design, ObservationalDeclaration) and self.allocation_scheme is not None:
             from increment.errors import refuse
 

@@ -33,6 +33,7 @@ import pytest
 from increment import SequentialCell, SourceSnapshotEvidence
 from increment._analysis_config import UNSET, _Unset
 from increment.analysis import Analysis
+from increment.assignment import assign
 from increment.errors import CodedError, IncrementWarning
 from increment.estimation.conversion_delta import delta_interval
 from increment.estimation.conversion_route import dense_min_count
@@ -57,6 +58,7 @@ from increment.semantics.models import (
     InferenceSpec,
     NormalPriorSpec,
 )
+from increment.semantics.randomization import AssignmentSpec
 from increment.semantics.sequential import SequentialCompliancePolicy
 from increment.sequential_source import native_observation_mapping
 from tests.analysis_factory import (
@@ -268,7 +270,11 @@ def _publish_and_adopt(
 
 
 def _export_and_replay(
-    analysis: Analysis, metrics: list[MetricSpec], *, plan: AnalysisPlan | None = None
+    analysis: Analysis,
+    metrics: list[MetricSpec],
+    *,
+    plan: AnalysisPlan | None = None,
+    design: Randomized | None = None,
 ) -> Analysis:
     """Export `analysis`'s moments and replay them through `from_moments`.
     `analysis` (the caller's already-built source, e.g. a from_unit_summary
@@ -280,7 +286,13 @@ def _export_and_replay(
             path = Path(td) / "moments.parquet"
             analysis.export(path)
             rows = pq.read_table(path).to_pylist()
-        return Analysis.from_moments(rows, control="control", metrics=metrics, plan=plan)
+        return Analysis.from_moments(
+            rows,
+            control="control" if design is None else None,
+            metrics=metrics,
+            plan=plan,
+            design=design,
+        )
     finally:
         _close_parity_analysis(analysis)
 
@@ -831,6 +843,89 @@ def _fixture_rows(rows: list[dict[str, Any]], fixture: _Fixture) -> list[dict[st
     return rows
 
 
+def _assignment_contract_rows(
+    rows: list[dict[str, Any]], contract: AssignmentSpec
+) -> list[dict[str, Any]]:
+    assigned = {
+        row["user_id"]: assign(contract, row["user_id"])
+        for row in rows
+        if row["event"] == "exposure"
+    }
+    retained = [
+        row
+        for row in rows
+        if row["user_id"] not in assigned or assigned[row["user_id"]].arm is not None
+    ]
+    for row in retained:
+        if row["event"] == "exposure":
+            row["group_id"] = assigned[row["user_id"]].arm
+    return retained
+
+
+def _declare_assignment_contract(
+    definitions: dict[str, Any], contract: AssignmentSpec | None
+) -> Randomized | None:
+    if contract is None:
+        return None
+    definitions["experiments"][0]["assignment_contract"] = contract.model_dump(mode="json")
+    return contract.design()
+
+
+def _assignment_integrity_probe(
+    contract: AssignmentSpec, rows: list[dict[str, Any]]
+) -> Callable[[Any], None]:
+    from .comparison import nested_close
+
+    counts = dict.fromkeys(contract.allocation, 0)
+    for row in rows:
+        if row["event"] == "exposure":
+            counts[row["group_id"]] += 1
+    signatures: list[dict[str, Any]] = []
+
+    def probe(results: Any) -> None:
+        sources = results.metadata.scope.by_source
+        assert sources
+        (integrity,) = next(iter(sources.values())).integrity
+        assert integrity.construction == "always_valid"
+        assert integrity.analysis_population == "assigned"
+        assert integrity.randomization_grain == "unit"
+        assert integrity.expected == contract.allocation
+        assert integrity.observed == counts
+        signature = {
+            name: dict(value) if isinstance(value, Mapping) else value
+            for name in type(integrity).model_fields
+            for value in (getattr(integrity, name),)
+        }
+        if signatures:
+            assert nested_close(signature, signatures[0])
+        else:
+            signatures.append(signature)
+
+    return probe
+
+
+def _fixed_horizon_rows(
+    *,
+    rounded_events: bool,
+    ratio_numerics: Literal["rescaled", "neighboring"] | None,
+    fixture: _Fixture,
+    assignment_contract: AssignmentSpec | None,
+) -> list[dict[str, Any]]:
+    rows = (
+        _neighboring_ratio_event_rows()
+        if ratio_numerics == "neighboring"
+        else _rounded_event_rows_for_parity()
+        if rounded_events
+        else _covariate_rescaled_event_rows()
+        if ratio_numerics == "rescaled"
+        else ds.event_rows()
+    )
+    rows = _fixture_rows(rows, fixture)
+    if assignment_contract is None:
+        return rows
+    return _assignment_contract_rows(rows, assignment_contract)
+
+
 def _fixed_horizon_case(
     *,
     id: str,
@@ -843,6 +938,7 @@ def _fixed_horizon_case(
     prior: Prior | None | _Unset = UNSET,
     warehouse: _Warehouse = _DUCKDB,
     fixture: _Fixture = _NO_FIXTURE,
+    assignment_contract: AssignmentSpec | None = None,
 ) -> ParityCase:
     """Mean/ratio/conversion(/CUPED-mean, when *include_cuped*), fixed
     horizon, under a real two-secondary(-plus-CUPED-sensitivity) plan
@@ -855,16 +951,12 @@ def _fixed_horizon_case(
     do with CUPED, and dropping the covariate metric keeps that case's
     row set focused on breakouts alone.
     """
-    rows = (
-        _neighboring_ratio_event_rows()
-        if ratio_numerics == "neighboring"
-        else _rounded_event_rows_for_parity()
-        if rounded_events
-        else _covariate_rescaled_event_rows()
-        if ratio_numerics == "rescaled"
-        else ds.event_rows()
+    rows = _fixed_horizon_rows(
+        rounded_events=rounded_events,
+        ratio_numerics=ratio_numerics,
+        fixture=fixture,
+        assignment_contract=assignment_contract,
     )
-    rows = _fixture_rows(rows, fixture)
     definitions_plan, frame_plan = _fixed_horizon_plans(include_cuped, ratio_numerics is not None)
     if clear_bound_prior:
         treated_units = {row["user_id"] for row in rows if row["group_id"] == "treatment"}
@@ -887,6 +979,7 @@ def _fixed_horizon_case(
         definitions_plan = frame_plan = AnalysisPlan(primary="revenue")
     defs_dict = ds.definitions_dict(plan=definitions_plan, breakout=breakout)
     _drop_revenue_window(defs_dict, active=rounded_events)
+    assignment_design = _declare_assignment_contract(defs_dict, assignment_contract)
     fixture.declare_store_dtype(defs_dict)
     defs_dict["dialect"] = warehouse.dialect
     defs_dict["metrics"].extend(
@@ -935,9 +1028,10 @@ def _fixed_horizon_case(
             frame,
             unit="user_id",
             group="variant",
-            control="control",
+            control="control" if assignment_design is None else None,
             metrics=summary_metrics,
             plan=frame_plan,
+            design=assignment_design,
         )
 
     panel_metrics = _fixed_horizon_frame_metrics(
@@ -959,9 +1053,10 @@ def _fixed_horizon_case(
             unit="user_id",
             group="variant",
             date="date",
-            control="control",
+            control="control" if assignment_design is None else None,
             metrics=panel_metrics,
             plan=frame_plan,
+            design=assignment_design,
             breakouts=("store",) if breakout else (),
         )
 
@@ -1004,11 +1099,12 @@ def _fixed_horizon_case(
             frame,
             unit="user_id",
             group="variant",
-            control="control",
+            control="control" if assignment_design is None else None,
             metrics=summary_metrics,
             plan=frame_plan,
+            design=assignment_design,
         )
-        return _export_and_replay(summary, replay_metrics)
+        return _export_and_replay(summary, replay_metrics, design=assignment_design)
 
     return ParityCase(
         id=id,
@@ -1023,7 +1119,11 @@ def _fixed_horizon_case(
         breakout_dimension="store" if breakout else None,
         prior=None if clear_bound_prior else prior,
         require_selection=clear_bound_prior,
-        readout_probe=_assert_neighboring_ratio_rows if ratio_numerics == "neighboring" else None,
+        readout_probe=_assignment_integrity_probe(assignment_contract, rows)
+        if assignment_contract is not None
+        else _assert_neighboring_ratio_rows
+        if ratio_numerics == "neighboring"
+        else None,
         # Publishing, adopting and replaying an artifact on every run stays under
         # 2s, far above this module's ~40ms ordinary-case budget.
         slow=True,
@@ -9041,6 +9141,35 @@ def _triggered_sitewide_population_results_case() -> ParityCase:
 
 
 PARITY_CASES: tuple[ParityCase, ...] = (
+    _fixed_horizon_case(
+        id="versioned_assignment_contract",
+        breakout=False,
+        assignment_contract=AssignmentSpec.model_validate(
+            {
+                "experiment": "exp",
+                "version": "1",
+                "salt": "exp-salt",
+                "eligibility_version": "all-v1",
+                "control_group": "control",
+                "arms": [
+                    {"name": "control", "buckets": 7000},
+                    {"name": "treatment", "buckets": 3000},
+                ],
+                "layer": {
+                    "name": "product",
+                    "version": "1",
+                    "salt": "layer-salt",
+                    "experiments": [{"name": "exp", "buckets": 10000}],
+                    "namespace": {
+                        "name": "web",
+                        "version": "1",
+                        "salt": "namespace-salt",
+                        "identity_key": "user_id",
+                    },
+                },
+            }
+        ),
+    ),
     _triggered_sitewide_population_results_case(),
     *_triggered_day_axis_cases(),
     _triggered_sequential_case(),

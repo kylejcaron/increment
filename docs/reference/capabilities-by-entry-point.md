@@ -1,5 +1,24 @@
 # Capabilities by entry point
 
+## Versioned parallel assignment contracts
+
+The `versioned_assignment_contract` case in `tests/test_parity_harness.py`
+assigns the same units with a 70/30 fixed contract and compares emitted
+mean/CUPED, ratio, and conversion rows across the five parallel ingresses.
+Replay auditing is a separate operation over raw enrollment logs.
+
+| Entry point | Declared assignment law | Automatic replay |
+|---|---|---|
+| `from_definitions` | Derived and validated from `Experiment.assignment_contract` | No; provide separate assignment logs to `audit_assignments()` |
+| `from_unit_day_artifact` | Preserved through the published experiment declaration | No; artifact outcomes are not enrollment logs |
+| `from_unit_summary` | Pass `design=contract.design()` | No; supply the assignment-grain log separately |
+| `from_unit_panel` | Pass `design=contract.design()` | No; repeated panel observations are not enrollment logs |
+| `from_moments` | Pass `design=contract.design()` | No; aggregate moments cannot replay unit identity |
+| `from_switchback_panel` | Outside this parallel fixed-allocation contract | No; use the existing switchback assignment declaration |
+
+See [assignment contracts](../guides/assignment-contracts.md) for encoding,
+version/stickiness semantics, exclusion checks, and statistical assumptions.
+
 This page records, for each of the six `Analysis` entry points, which capabilities run and which refuse.
 The [Method compatibility reference](../guides/compatibility.md) is organised by metric type and method; neither page restates the other's cells.
 Where they disagree, the probe and harness results govern: `scripts/probe_capability_table.py`, `tests/test_composition_matrix.py` and `tests/parity_harness/matrix.py`.

@@ -32,7 +32,7 @@ depends_on = ["increment.errors"]
 
 [[modules]]
 path = "increment.semantics"
-depends_on = ["increment._finite_sample_refusals", "increment._immutable", "increment._literals", "increment.winsor", "increment.errors", "increment._canonical", "increment._artifact_identity"]
+depends_on = ["increment._finite_sample_refusals", "increment._immutable", "increment._labels", "increment._literals", "increment.winsor", "increment.errors", "increment._canonical", "increment._artifact_identity"]
 
 [[modules]]
 path = "increment._canonical"
@@ -647,3 +647,7 @@ expose = ["_FrozenMapping"]
 from = ["increment._multiplicity"]
 expose = ["MultiplicityFamily", "guarantee_for_correction"]
 
+
+[[modules]]
+path = "increment.assignment"
+depends_on = ["increment.errors", "increment.estimation", "increment.semantics"]

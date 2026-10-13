@@ -1,0 +1,194 @@
+{
+  "spec": {
+    "schema_version": 1,
+    "algorithm": "sha256-json-v1",
+    "experiment": "checkout",
+    "version": "1",
+    "salt": "experiment-salt",
+    "eligibility_version": "all-v1",
+    "layer": {
+      "namespace": {
+        "name": "web",
+        "version": "1",
+        "salt": "namespace-salt",
+        "identity_key": "user_id",
+        "holdout_buckets": 1000
+      },
+      "name": "product",
+      "version": "1",
+      "salt": "layer-salt",
+      "experiments": [
+        {
+          "name": "checkout",
+          "buckets": 6000
+        },
+        {
+          "name": "search",
+          "buckets": 3000
+        }
+      ]
+    },
+    "control_group": "control",
+    "arms": [
+      {
+        "name": "control",
+        "buckets": 8000
+      },
+      {
+        "name": "treatment",
+        "buckets": 2000
+      }
+    ]
+  },
+  "canonical_spec": "{\"algorithm\":\"sha256-json-v1\",\"arms\":[{\"buckets\":8000,\"name\":\"control\"},{\"buckets\":2000,\"name\":\"treatment\"}],\"control_group\":\"control\",\"eligibility_version\":\"all-v1\",\"experiment\":\"checkout\",\"layer\":{\"experiments\":[{\"buckets\":6000,\"name\":\"checkout\"},{\"buckets\":3000,\"name\":\"search\"}],\"name\":\"product\",\"namespace\":{\"holdout_buckets\":1000,\"identity_key\":\"user_id\",\"name\":\"web\",\"salt\":\"namespace-salt\",\"version\":\"1\"},\"salt\":\"layer-salt\",\"version\":\"1\"},\"salt\":\"experiment-salt\",\"schema_version\":1,\"version\":\"1\"}",
+  "fingerprint": "3812cac55aca4bbbb7f0b8e055e37b8c4287aab552a840bc08d36772c3b5a33a",
+  "vectors": [
+    {
+      "unit_id": "0",
+      "eligible": true,
+      "holdout_bucket": 8709,
+      "layer_bucket": 1689,
+      "arm_bucket": 859,
+      "record": {
+        "unit_id": "0",
+        "eligible": true,
+        "specification_version": "1",
+        "contract_fingerprint": "3812cac55aca4bbbb7f0b8e055e37b8c4287aab552a840bc08d36772c3b5a33a",
+        "status": "assigned",
+        "arm": "control"
+      }
+    },
+    {
+      "unit_id": "4",
+      "eligible": true,
+      "holdout_bucket": 241,
+      "layer_bucket": 6499,
+      "arm_bucket": 7170,
+      "record": {
+        "unit_id": "4",
+        "eligible": true,
+        "specification_version": "1",
+        "contract_fingerprint": "3812cac55aca4bbbb7f0b8e055e37b8c4287aab552a840bc08d36772c3b5a33a",
+        "status": "holdout",
+        "arm": null
+      }
+    },
+    {
+      "unit_id": "é",
+      "eligible": true,
+      "holdout_bucket": 2291,
+      "layer_bucket": 6957,
+      "arm_bucket": 5302,
+      "record": {
+        "unit_id": "é",
+        "eligible": true,
+        "specification_version": "1",
+        "contract_fingerprint": "3812cac55aca4bbbb7f0b8e055e37b8c4287aab552a840bc08d36772c3b5a33a",
+        "status": "outside_layer",
+        "arm": null
+      }
+    },
+    {
+      "unit_id": "é",
+      "eligible": true,
+      "holdout_bucket": 3378,
+      "layer_bucket": 7231,
+      "arm_bucket": 2294,
+      "record": {
+        "unit_id": "é",
+        "eligible": true,
+        "specification_version": "1",
+        "contract_fingerprint": "3812cac55aca4bbbb7f0b8e055e37b8c4287aab552a840bc08d36772c3b5a33a",
+        "status": "outside_layer",
+        "arm": null
+      }
+    },
+    {
+      "unit_id": "用户",
+      "eligible": true,
+      "holdout_bucket": 2477,
+      "layer_bucket": 4280,
+      "arm_bucket": 6325,
+      "record": {
+        "unit_id": "用户",
+        "eligible": true,
+        "specification_version": "1",
+        "contract_fingerprint": "3812cac55aca4bbbb7f0b8e055e37b8c4287aab552a840bc08d36772c3b5a33a",
+        "status": "assigned",
+        "arm": "control"
+      }
+    },
+    {
+      "unit_id": "a|b",
+      "eligible": true,
+      "holdout_bucket": 3252,
+      "layer_bucket": 6531,
+      "arm_bucket": 1852,
+      "record": {
+        "unit_id": "a|b",
+        "eligible": true,
+        "specification_version": "1",
+        "contract_fingerprint": "3812cac55aca4bbbb7f0b8e055e37b8c4287aab552a840bc08d36772c3b5a33a",
+        "status": "outside_layer",
+        "arm": null
+      }
+    },
+    {
+      "unit_id": "a\u0000b",
+      "eligible": true,
+      "holdout_bucket": 2527,
+      "layer_bucket": 8177,
+      "arm_bucket": 6262,
+      "record": {
+        "unit_id": "a\u0000b",
+        "eligible": true,
+        "specification_version": "1",
+        "contract_fingerprint": "3812cac55aca4bbbb7f0b8e055e37b8c4287aab552a840bc08d36772c3b5a33a",
+        "status": "outside_layer",
+        "arm": null
+      }
+    },
+    {
+      "unit_id": "\"\\\b\t\n\f\r\u001f/😀",
+      "eligible": true,
+      "holdout_bucket": 3732,
+      "layer_bucket": 5534,
+      "arm_bucket": 1070,
+      "record": {
+        "unit_id": "\"\\\b\t\n\f\r\u001f/😀",
+        "eligible": true,
+        "specification_version": "1",
+        "contract_fingerprint": "3812cac55aca4bbbb7f0b8e055e37b8c4287aab552a840bc08d36772c3b5a33a",
+        "status": "assigned",
+        "arm": "control"
+      }
+    },
+    {
+      "unit_id": "6",
+      "eligible": true,
+      "holdout_bucket": 5044,
+      "layer_bucket": 1178,
+      "arm_bucket": 9418,
+      "record": {
+        "unit_id": "6",
+        "eligible": true,
+        "specification_version": "1",
+        "contract_fingerprint": "3812cac55aca4bbbb7f0b8e055e37b8c4287aab552a840bc08d36772c3b5a33a",
+        "status": "assigned",
+        "arm": "treatment"
+      }
+    },
+    {
+      "unit_id": "0",
+      "eligible": false,
+      "record": {
+        "unit_id": "0",
+        "eligible": false,
+        "specification_version": "1",
+        "contract_fingerprint": "3812cac55aca4bbbb7f0b8e055e37b8c4287aab552a840bc08d36772c3b5a33a",
+        "status": "ineligible",
+        "arm": null
+      }
+    }
+  ]
+}

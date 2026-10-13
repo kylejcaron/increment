@@ -91,6 +91,7 @@ nav:
       - Quantile Metrics: guides/quantile-metrics.md
       - Heterogeneity and Rollout: guides/heterogeneity-and-rollout.md
       - SRM Diagnostics: guides/srm-diagnostics.md
+      - Assignment Contracts: guides/assignment-contracts.md
   - Examples:
       - DataFrame Analysis Tutorial: examples/analysis_from_a_dataframe.md
       - Warehouse Analysis: examples/analysis_from_a_warehouse.md

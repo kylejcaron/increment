@@ -8,6 +8,21 @@ from tests.capability_contracts import ParityDeclaration
 
 PARITY_DECLARATIONS = MappingProxyType(
     {
+        "versioned_assignment_contract": ParityDeclaration(
+            attempted=(
+                "from_definitions",
+                "from_unit_day_artifact",
+                "from_unit_summary",
+                "from_unit_panel",
+                "from_moments",
+            ),
+            waive=(
+                (
+                    "from_switchback_panel",
+                    "SOURCE: a fixed parallel assignment contract does not declare switchback orders.",
+                ),
+            ),
+        ),
         "triggered_sequential_asymptotic_mean": ParityDeclaration(
             attempted=("from_definitions", "from_unit_day_artifact", "from_moments"),
             waive=(
