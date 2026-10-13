@@ -187,14 +187,16 @@ def test_cross_ingress_sensitivity_parity(method):
                 assert isinstance(row, LiftEstimate)
                 rows.append(row)
             assert {row.group_id for row in rows} == {"treat_a", "treat_b"}
-            dumps[ingress] = {
-                row.group_id: completed(
+            dumps[ingress] = {}
+            for row in rows:
+                result = completed(
                     CONFOUNDING_SENSITIVITY,
                     ingress,
                     lambda row=row: confounding_sensitivity(row, outcome="binary"),
-                ).model_dump()
-                for row in rows
-            }
+                )
+                assert result.analysis_population == row.analysis_population
+                assert result.source_snapshot_id == row.source_snapshot_id
+                dumps[ingress][row.group_id] = result.model_dump(exclude={"source_snapshot_id"})
         finally:
             _close_parity_analysis(analysis)
     for ingress, actual in dumps.items():

@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 from scipy.optimize import brentq
+from scipy.stats import norm
 
 from increment.errors import CodedError, InvalidRequestError, UnsupportedRequestError
 from increment.estimation.confounding import (
@@ -363,13 +364,86 @@ def test_refusals_round_trip(overrides, kwargs, code):
             cast(Any, clone.context)["new"] = "changed"
 
 
+@pytest.mark.parametrize("risk_ratio", [0.8, 1.2])
+def test_all_real_without_displayed_limits_gives_one(risk_ratio):
+    reference = JointContrastReference(a=(risk_ratio - 1) * 0.1, c=0.1, var_a=0, var_c=1, cov_ac=0)
+    relative = RelativeConfidenceSet(reference=reference, alpha=0.05, alternative="greater")
+    assert relative.geometry == "all_real"
+    lift = relative.estimate()
+    assert lift is not None and lift.lb is None and lift.ub is None
+    row = _row(
+        risk_ratio,
+        alternative="greater",
+        lift=lift,
+        scale="linear",
+        relative_confidence_set=relative,
+        abs_diff=reference.a,
+    )
+    result = confounding_sensitivity(row, outcome="binary")
+    assert result.bias_factor_interval == result.e_value_interval == 1.0
+    assert result.interval_unavailable_reason is None
+
+
+@pytest.mark.parametrize(
+    ("alternative", "sign", "risk_ratio", "limit", "bias_factor", "equal_strength"),
+    [
+        ("greater", -1, 0.8, 0.9, 1.0540925533894598, 1.292878142824106),
+        ("less", 1, 1.2, 1.1, 1.0488088481701516, 1.2750634654265705),
+    ],
+)
+def test_directional_all_real_uses_displayed_threshold_side_limit(
+    alternative, sign, risk_ratio, limit, bias_factor, equal_strength
+):
+    c = float(norm.isf(0.05)) / 2
+    reference = JointContrastReference(a=sign * c / 5, c=c, var_a=0, var_c=0.25, cov_ac=0)
+    relative = RelativeConfidenceSet(reference=reference, alpha=0.05, alternative=alternative)
+    assert relative.geometry == "all_real"
+    lift = relative.estimate()
+    assert lift is not None
+    row = _row(
+        risk_ratio,
+        alternative=alternative,
+        lift=lift,
+        scale="linear",
+        relative_confidence_set=relative,
+        abs_diff=reference.a,
+    )
+    result = confounding_sensitivity(row, outcome="binary")
+    assert result.observed_risk_ratio == pytest.approx(risk_ratio, rel=1e-12)
+    displayed_limit = (
+        result.interval_upper_risk_ratio if risk_ratio < 1 else result.interval_lower_risk_ratio
+    )
+    assert displayed_limit == pytest.approx(limit, rel=1e-12)
+    assert result.bias_factor_interval == pytest.approx(bias_factor, rel=1e-12)
+    assert result.e_value_interval == pytest.approx(equal_strength, rel=1e-12)
+    assert result.interval_level == lift.level
+    assert result.interval_unavailable_reason is None
+
+
+@pytest.mark.parametrize("analysis_population", ["assigned", "triggered"])
 @pytest.mark.parametrize("estimand", ["ate", "overlap_subpopulation_ate"])
-def test_result_preserves_input_and_identity(estimand):
-    row = _row(1.4, 1.2, 1.8, estimand=estimand, population="overlap population")
+def test_result_preserves_input_and_identity(estimand, analysis_population):
+    row = _row(
+        1.4,
+        1.2,
+        1.8,
+        estimand=estimand,
+        population="overlap population",
+        analysis_population=analysis_population,
+        source_snapshot_id=f"snapshot-{analysis_population}",
+    )
     before = row.model_dump()
     result = confounding_sensitivity(row, outcome="binary")
     assert row.model_dump() == before
-    for field in ("metric", "group_id", "method", "estimand", "population"):
+    for field in (
+        "metric",
+        "group_id",
+        "method",
+        "estimand",
+        "population",
+        "analysis_population",
+        "source_snapshot_id",
+    ):
         assert getattr(result, field) == getattr(row, field)
     assert isinstance(result.assumptions, tuple)
     assert result.assumptions and all(isinstance(item, str) for item in result.assumptions)
@@ -383,8 +457,18 @@ def test_result_preserves_input_and_identity(estimand):
     assert result.threshold_risk_ratio == 1.0
 
 
-def test_result_round_trips():
-    result = confounding_sensitivity(_row(0.8, 0.71, 0.91), outcome="binary")
+@pytest.mark.parametrize("analysis_population", ["assigned", "triggered"])
+def test_result_round_trips(analysis_population):
+    row = _row(
+        0.8,
+        0.71,
+        0.91,
+        analysis_population=analysis_population,
+        source_snapshot_id=f"snapshot-{analysis_population}",
+    )
+    result = confounding_sensitivity(row, outcome="binary")
+    assert result.analysis_population == analysis_population
+    assert result.source_snapshot_id == row.source_snapshot_id
     assert ConfoundingSensitivity.model_validate(result.model_dump()) == result
     assert pickle.loads(pickle.dumps(result)) == result
     with pytest.raises(ValidationError) as frozen:

@@ -331,7 +331,7 @@ def render_reference() -> str:
         + '\n<section id="confounding-sensitivity-interactions">'
         + "<h2>Observational confounding sensitivity</h2>"
         + "<p>For fixed-horizon IPTW/AIPW conversion risk ratios, "
-        + '<a href="observational.md#how-strong-would-an-omitted-confounder-need-to-be">'
+        + '<a href="../observational/#how-strong-would-an-omitted-confounder-need-to-be">'
         + "confounding sensitivity</a> transforms an existing LiftEstimate; "
         + "binary outcome is caller-attested, not verified. Robustness is not identification.</p>"
         + '<div class="compatibility-scroll"><table class="compatibility-pairs">'

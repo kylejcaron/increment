@@ -69,6 +69,7 @@ class ConfoundingSensitivity(CodedModel, BaseModel):
 
     Interval sensitivity inherits the row's reported interval and level,
     including any family adjustment; it does not supply a new coverage guarantee.
+    Analysis population and source snapshot identity are copied from the row.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -78,6 +79,8 @@ class ConfoundingSensitivity(CodedModel, BaseModel):
     method: str
     estimand: Literal["ate", "overlap_subpopulation_ate"]
     population: str | None
+    analysis_population: Literal["assigned", "triggered"]
+    source_snapshot_id: str | None
     outcome_attested: Literal["binary"]
     bound: Literal["marginal_squared_bounding_factor"]
     observed_risk_ratio: float = Field(gt=0.0, allow_inf_nan=False)
@@ -149,13 +152,12 @@ def _interval_bias_factor(
         relative is not None and relative.geometry in ("unavailable", "empty")
     ):
         return None
-    if relative is not None and relative.geometry == "all_real":
-        return 1.0
     lift = estimate.lift
     assert lift is not None
+    all_real = relative is not None and relative.geometry == "all_real"
     if observed_risk_ratio > threshold_risk_ratio:
         if lift.lb is None:
-            return None
+            return 1.0 if all_real else None
         limit = 1.0 + lift.lb
         return (
             1.0
@@ -164,14 +166,14 @@ def _interval_bias_factor(
         )
     if observed_risk_ratio < threshold_risk_ratio:
         if lift.ub is None:
-            return None
+            return 1.0 if all_real else None
         limit = 1.0 + lift.ub
         return (
             1.0
             if limit >= threshold_risk_ratio
             else tipping_bias_factor(limit, threshold_risk_ratio)
         )
-    return 1.0 if lift.lb is not None and lift.ub is not None else None
+    return 1.0 if (lift.lb is not None and lift.ub is not None) or all_real else None
 
 
 def confounding_sensitivity(
@@ -235,6 +237,8 @@ def confounding_sensitivity(
         method=estimate.method,
         estimand=estimate.estimand,
         population=estimate.population,
+        analysis_population=estimate.analysis_population,
+        source_snapshot_id=estimate.source_snapshot_id,
         outcome_attested="binary",
         bound="marginal_squared_bounding_factor",
         observed_risk_ratio=observed_risk_ratio,

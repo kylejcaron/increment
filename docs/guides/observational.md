@@ -949,8 +949,9 @@ finally:
 The threshold above is a 5% increase, not the no-effect RR of one.
 `bias_factor_point` is the smallest B that could move the causal RR to that threshold;
 `e_value_point` is the equal strength m with B(m, m) = m²/(2m − 1).
-Interval fields use the reported limit nearest the threshold, at `interval_level`;
-a crossing gives one; a missing relevant limit gives null and `interval_limit_unavailable`.
+Interval fields use the displayed threshold-side limit at `interval_level`, even if the directional
+test set is `all_real`; one means a crossing or `all_real` without that limit.
+Unavailable/empty sets or other missing limits give null and `interval_limit_unavailable`.
 
 This is a **conservative marginal** bound: RR_true is between RR_obs/B² and
 RR_obs·B², not the usual conditional E-value applied directly to RR_obs.
