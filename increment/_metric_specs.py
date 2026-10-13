@@ -209,7 +209,11 @@ class MetricSpec(CodedModel, BaseModel):
 
     @model_validator(mode="after")
     def _validate_cuped_covariates(self) -> MetricSpec:
-        if self.covariate is not None and self.covariates:
+        if (
+            self.covariate is not None
+            and self.covariates
+            and self.covariate not in {covariate.name for covariate in self.covariates}
+        ):
             _raise("frame.metric.scalar_and_set_covariates", name=self.name)
         names = [covariate.name for covariate in self.covariates]
         if len(names) != len(set(names)):

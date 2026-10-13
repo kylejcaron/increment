@@ -115,20 +115,25 @@ def test_public_breakout_keeps_all_conversion_methods_in_mixed_cuped_request() -
                         "group": group,
                         "day": 1,
                         "segment": segment,
-                        "pre": "a" if index % 2 else "b",
+                        "pre": float(index),
+                        "region": "a" if index % 2 else "b",
                         "converted": int(index < (8 if group == "control" else 14)),
                     }
                 )
     methods = [
         Method(name="plain"),
+        Method(name="scalar", variance_reduction="cuped"),
         Method(name="linear", variance_reduction="cuped_linear"),
     ]
     metric = MetricSpec(
         name="conversion",
-        type="conversion",
+        covariate="pre",
         value_column="converted",
         decision_method=methods[0],
-        covariates=(CupedCovariate(name="pre", kind="categorical"),),
+        covariates=(
+            CupedCovariate(name="pre", kind="continuous"),
+            CupedCovariate(name="region", kind="categorical"),
+        ),
     )
     analysis = Analysis.from_unit_panel(
         pa.Table.from_pylist(rows),
