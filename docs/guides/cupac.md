@@ -183,7 +183,7 @@ and [CUPED guide](cuped.md) for current path- and method-specific rules.
 
 | Interaction | CUPAC behavior |
 |---|---|
-| Mean and ratio metrics | Fixed-horizon mean and ratio are measured by the Task 1 Monte Carlo campaign; ratio numerator and denominator slopes are separate. Other metric types inherit CUPED's own availability rules. |
+| Mean and ratio metrics | Fixed-horizon mean and ratio behavior is measured in the [Monte Carlo evidence above](#measured-evidence); ratio numerator and denominator slopes are separate. Other metric types inherit CUPED's own availability rules. |
 | Unit panel | Supported for the fixed-horizon per-unit collapse when the prediction is unit-constant; a varying prediction is refused by code. |
 | Clustering and breakouts | No new support is implied; apply the existing CUPED compatibility rules for the requested source and metric. |
 | Winsorization and multiplicity | The external prediction does not change method composition or multiplicity roles. Any combination must satisfy CUPED's existing rules and retain the declared decision/sensitivity roles. |
