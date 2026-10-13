@@ -33,11 +33,14 @@ window. Site volume remains the full-site total, not a trigger-filtered total.
 Both assigned and triggered sitewide require a randomized identification
 design. Observational and encouragement designs refuse before loading
 sitewide evidence; use `Analysis.run()` for their estimands.
-When native source snapshot evidence is supplied, every outcome feed must be
-certified complete through the experiment end; artifact outcome edges must
-cover the same calendar end. An incomplete feed refuses before reduction.
-Native analyses without snapshot evidence retain their existing behavior.
-Re-run after all outcome feeds are certified through the experiment end.
+Outcomes must reach the experiment end. The triggered reading needs every
+outcome feed certified complete through the end day by a watermark in
+`SourceSnapshotEvidence` (or published with the artifact). The assigned
+reading refuses when the snapshot cutoff or a declared watermark stops before
+the end day, and otherwise proceeds as before; a native analysis without
+snapshot evidence has no edge to check. Either refusal names
+`facade.analysis.sitewide_outcomes_incomplete`; re-run once the outcome feeds
+reach the experiment end.
 The assigned/triggered `snapshot_id` equality is content-bound only for
 artifacts; native identity reflects declared `SourceSnapshotEvidence`, not
 table contents.

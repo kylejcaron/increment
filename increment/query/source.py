@@ -1861,21 +1861,36 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 "site-volume coverage does not match the experiment calendar window",
                 context={"route": "republish matching site_volume and trigger_population evidence"},
             )
-        self._require_sitewide_outcome_completeness(measure_keys)
+        self._require_sitewide_outcome_completeness(measure_keys, certified=True)
         return trigger_extension, count_extension, binding, measure_keys
 
-    def _require_sitewide_outcome_completeness(self, measure_keys: frozenset[str]) -> None:
-        certified_edges = tuple(
-            measure.certified_edge
-            for measure in self._manifest.measures
-            if measure.measure_key in measure_keys
-        )
+    def _require_sitewide_outcome_completeness(
+        self, measure_keys: frozenset[str], *, certified: bool
+    ) -> None:
+        """Refuse outcomes known to stop before the experiment end day.
+
+        Triggered membership needs every edge certified. Assigned readings use
+        each measure's best published edge and, like a native analysis without
+        snapshot evidence, proceed when a legacy publication recorded none.
+        """
+        measures = [item for item in self._manifest.measures if item.measure_key in measure_keys]
         end_day = self._artifact_experiment.end_day
-        if (
-            end_day is None
-            or len(certified_edges) != len(measure_keys)
-            or any(edge is None or edge < end_day for edge in certified_edges)
-        ):
+        if certified:
+            edges = [item.certified_edge for item in measures]
+            incomplete = (
+                end_day is None
+                or len(edges) != len(measure_keys)
+                or any(edge is None or edge < end_day for edge in edges)
+            )
+        else:
+            known = [
+                item.certified_edge if item.certified_edge is not None else item.observed_edge
+                for item in measures
+            ]
+            incomplete = end_day is not None and any(
+                edge is not None and edge < end_day for edge in known
+            )
+        if incomplete:
             refuse(
                 _SITEWIDE_OUTCOMES_INCOMPLETE,
                 route="re-run after the outcome feeds are complete through the experiment end.",
@@ -1946,7 +1961,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 if isinstance(binding, RatioMetricMeasure)
                 else frozenset({binding.measure_key})
             )
-            self._require_sitewide_outcome_completeness(measure_keys)
+            self._require_sitewide_outcome_completeness(measure_keys, certified=False)
         conversion_site_total = self._conversion_site_total(metric, binding, extension)
         rows = self._read_extension(
             extension,

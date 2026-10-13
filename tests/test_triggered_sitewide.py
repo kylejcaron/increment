@@ -457,24 +457,31 @@ def test_assigned_sitewide_uses_experiment_end_for_native_and_artifact(tmp_path)
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
-def test_sitewide_refuses_missing_outcome_watermark_on_native_and_artifact(tmp_path):
+def test_missing_outcome_watermark_refuses_triggered_but_not_assigned_sitewide(tmp_path):
+    # The cutoff covers the experiment end, but no feed watermark certifies it.
     analysis = _analysis(tmp_path, watermark=None)
     adopted = None
     try:
-        native_codes = {}
-        for population in ("assigned", "triggered"):
-            with pytest.raises(CapabilityError) as native_refused:
-                analysis.sitewide("revenue", population=population)
-            native_codes[population] = native_refused.value.code
+        native_assigned = analysis.sitewide("revenue")
+        with pytest.raises(CapabilityError) as native_refused:
+            analysis.sitewide("revenue", population="triggered")
+        assert native_refused.value.code == "facade.analysis.sitewide_outcomes_incomplete"
         adopted = _publish_and_adopt(
             native_connection(_native_source(analysis)),
             analysis,
             kinds=("site_volume", "trigger_population", "assignment_counts"),
         )
-        for population in ("assigned", "triggered"):
-            with pytest.raises(CapabilityError) as artifact_refused:
-                adopted.sitewide("revenue", population=population)
-            assert artifact_refused.value.code == native_codes[population]
+        artifact_assigned = adopted.sitewide("revenue")
+        assert isinstance(native_assigned, SitewideImpact)
+        assert isinstance(artifact_assigned, SitewideImpact)
+        assert artifact_assigned.delta == pytest.approx(native_assigned.delta)
+        assert artifact_assigned.site_total_volume == pytest.approx(
+            native_assigned.site_total_volume
+        )
+        assert artifact_assigned.absolute_impact == pytest.approx(native_assigned.absolute_impact)
+        with pytest.raises(CapabilityError) as artifact_refused:
+            adopted.sitewide("revenue", population="triggered")
+        assert artifact_refused.value.code == native_refused.value.code
     finally:
         if adopted is None:
             analysis.close()

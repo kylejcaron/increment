@@ -1046,10 +1046,16 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         evidence = self._require_source_snapshot_evidence(operation="triggered_observation_edges")
         return self._metric_snapshot_edges(metric, evidence)
 
-    def _require_sitewide_outcome_completeness(self, metric: Metric) -> None:
+    def _require_sitewide_outcome_completeness(self, metric: Metric, *, certified: bool) -> None:
+        """Refuse outcomes known to stop before the experiment end day.
+
+        Triggered membership needs certified feed edges; assigned readings use
+        the effective snapshot edge, which already honours declared watermarks.
+        """
         end_day = self._experiment.end_day
-        _, certified_edge = self.triggered_observation_edges(metric)
-        if end_day is None or certified_edge is None or certified_edge < end_day:
+        observed_edge, certified_edge = self.triggered_observation_edges(metric)
+        edge = certified_edge if certified else observed_edge
+        if end_day is None or edge is None or edge < end_day:
             _refuse(
                 _SITEWIDE_OUTCOMES_INCOMPLETE,
                 route="re-run after the outcome feeds are complete through the experiment end.",
@@ -1074,7 +1080,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 offered={"calendar_window": "unwindowed sum or conversion"},
                 route="declare an unwindowed sum or conversion metric and experiment end aligned to the calendar window",
             )
-        self._require_sitewide_outcome_completeness(metric)
+        self._require_sitewide_outcome_completeness(metric, certified=True)
 
     def triggered_health_evidence(self) -> Any:
         from increment._source_operations import TriggeredHealthEvidence, TriggeredHealthFeed
@@ -2290,8 +2296,11 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             self._validate_trigger_capability(operation="sitewide_evidence")
             self._validate_mixed_assignments()
         else:
-            if self._session.source_snapshot_evidence is not None:
-                self._require_sitewide_outcome_completeness(metric)
+            if (
+                self._session.source_snapshot_evidence is not None
+                and self._experiment.end_day is not None
+            ):
+                self._require_sitewide_outcome_completeness(metric, certified=False)
             self._note_reduction()
         exposures = self._get_exposures()
         if population == "triggered":
