@@ -124,15 +124,20 @@ def _(alt, experiment, mo):
         units=("user_id", "size"), scored=("prediction", "count")
     )
     coverage["prediction_coverage"] = coverage["scored"] / coverage["units"]
-    mo.md("## Prediction coverage by randomized arm")
-    mo.ui.table(coverage)
     coverage_plot = (
         alt.Chart(coverage)
         .mark_bar()
         .encode(x="variant:N", y="prediction_coverage:Q", color="variant:N")
         .properties(title="Prediction coverage before adjustment", width=420)
     )
-    coverage_plot
+
+    mo.vstack(
+        [
+            mo.md("## Prediction coverage by randomized arm"),
+            mo.ui.table(coverage),
+            coverage_plot,
+        ]
+    )
     return coverage, coverage_plot
 
 
@@ -157,12 +162,16 @@ def _(alt, experiment, mo, np):
         .encode(x="prediction:Q", y="revenue:Q")
         .properties(title="Predictor calibration on control units", width=420)
     )
-    mo.md(
-        f"Predictor calibration (not interval coverage): control-arm slope "
-        f"**{calibration_slope:.3f}**, intercept **{calibration_intercept:.3f}**, "
-        f"$R^2$ **{calibration_r2:.3f}**."
+    mo.vstack(
+        [
+            mo.md(
+                f"Predictor calibration (not interval coverage): control-arm slope "
+                f"**{calibration_slope:.3f}**, intercept **{calibration_intercept:.3f}**, "
+                f"$R^2$ **{calibration_r2:.3f}**."
+            ),
+            calibration_plot,
+        ]
     )
-    calibration_plot
     return calibration, calibration_intercept, calibration_plot, calibration_r2, calibration_slope
 
 
@@ -214,13 +223,17 @@ def _(Analysis, Method, MetricSpec, TRUE_LIFT, alt, experiment, mo, pd):
         .encode(x="lower:Q", x2="upper:Q", y="method:N", color="method:N")
         .properties(title="Relative-lift intervals", width=420)
     )
-    mo.md(
-        f"The known relative-lift truth is **{TRUE_LIFT:.3%}**; the observed "
-        f"CUPED/unadjusted interval-width ratio is **{width_ratio:.3f}**."
+    mo.vstack(
+        [
+            mo.md(
+                f"The known relative-lift truth is **{TRUE_LIFT:.3%}**; the observed "
+                f"CUPED/unadjusted interval-width ratio is **{width_ratio:.3f}**."
+            ),
+            mo.ui.table(method_table),
+            mo.ui.table(truth_summary),
+            interval_chart,
+        ]
     )
-    mo.ui.table(method_table)
-    mo.ui.table(truth_summary)
-    interval_chart
     return (
         CUPED,
         UNADJUSTED,
@@ -387,23 +400,32 @@ def _(
     assert imputation_warnings
     imputation_diagnostic = str(imputation_warnings[0].message)
     assert abs(imputed_lift.value - TRUE_LIFT) > 0.005
-    mo.md(
-        f"The `error` policy refuses with **{missing_error_code}**. In this fixed-seed "
-        "example, predictions are missing selectively in the treatment arm; pooled-mean "
-        "imputation then produces a biased CUPED lift. This is why the recipe recommends "
-        '`covariate_missing="error"`. Use `impute` only when scoring is pre-assignment '
-        "and missingness cannot depend on assignment."
+    mo.vstack(
+        [
+            mo.md(
+                f"The `error` policy refuses with "
+                f"`{missing_error_code}`. In this fixed-seed example, predictions "
+                "are missing selectively in the treatment arm; pooled-mean imputation "
+                "then produces a biased CUPED lift. This is why the recipe recommends "
+                '`covariate_missing="error"`. Use `impute` only when scoring is '
+                "pre-assignment and missingness cannot depend on assignment."
+            ),
+            mo.md(f"Captured imputation warning: `{imputation_diagnostic}`"),
+            mo.ui.table(missingness),
+            mo.ui.table(imputation_result),
+        ]
     )
-    mo.md(f"Observed imputation diagnostic: `{imputation_diagnostic}`")
-    mo.ui.table(missingness)
-    mo.ui.table(imputation_result)
     return imputation_result, missing_error_code, missingness, imputation_diagnostic
 
 
 @app.cell
 def _(mo, provenance_frame):
-    mo.md("## CUPAC provenance record")
-    mo.ui.table(provenance_frame)
+    mo.vstack(
+        [
+            mo.md("## CUPAC provenance record"),
+            mo.ui.table(provenance_frame),
+        ]
+    )
     return
 
 

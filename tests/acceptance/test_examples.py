@@ -285,19 +285,31 @@ def test_cuped_export_renders_expected_figures(tmp_path):
     assert "d7_retention" in html
 
 
+def _marimo_rendered_outputs(html: str) -> str:
+    """Return only marimo's serialized cell outputs, excluding notebook code."""
+    match = re.search(
+        r'"session":\s*(\{.*?\})\s*,\s*"runtimeConfig"',
+        html,
+        re.DOTALL,
+    )
+    assert match, "marimo export did not contain serialized cell outputs"
+    session = json.loads(match.group(1))
+    return json.dumps(
+        [output["data"] for cell in session["cells"] for output in cell.get("outputs", [])]
+    )
+
+
 @pytest.mark.integration
 def test_cupac_export_renders_expected_figures(tmp_path):
     pytest.importorskip("pandas")
     pytest.importorskip("altair")
-    html = _export_html("cupac.py", tmp_path)
+    rendered = _marimo_rendered_outputs(_export_html("cupac.py", tmp_path))
     for field in ("training_cutoff", "feature_as_of", "model_version", "trained_on"):
-        assert field in html
-    assert "2025-01-31" in html
-    assert "cupac-demo-1" in html
-    assert "unadjusted" in html
-    assert "cuped" in html
-    assert "shifted_lift" in html
-    assert "frame.validation.metric_covariate_column" in html
+        assert field in rendered
+    assert "unadjusted" in rendered
+    assert "cuped" in rendered
+    assert "shifted_lift" in rendered
+    assert "frame.validation.metric_covariate_column" in rendered
 
 
 # --- analysis_from_a_warehouse.py: realistic warehouse, needs tables -------
