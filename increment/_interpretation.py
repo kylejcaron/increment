@@ -70,14 +70,11 @@ def _unscoped_cell(row) -> InterpretedCell:
     failure_message = render_readout_failure(
         failure_code,
         failure_context,
-        identity={
-            "metric": getattr(row, "metric", None),
-            "group_id": getattr(row, "group_id", None),
-        },
+        identity={"metric": getattr(row, "metric", None)},
     )
     if failure_code is not None and failure_message is None:
         failure_message = f"{failure_code}: {_json(failure_context) or '{}'}"
-    elif getattr(row, "unavailable", None) is not None:
+    elif failure_message is None and getattr(row, "unavailable", None) is not None:
         failure_message = f"Unavailable: {row.unavailable}"
     return InterpretedCell(
         key=CellKey.from_row(row),
@@ -227,11 +224,15 @@ def interpret_readout(rows, metadata: ReadoutMetadata | None) -> ReadoutInterpre
                     failure_message = render_readout_failure(
                         failure_code,
                         failure_context,
-                        identity={"metric": cell.metric, "group_id": cell.group_id},
+                        identity={"metric": cell.metric},
                     )
                     if failure_code is not None and failure_message is None:
                         failure_message = f"{failure_code}: {_json(failure_context) or '{}'}"
-                    elif row is not None and getattr(row, "unavailable", None) is not None:
+                    elif (
+                        failure_message is None
+                        and row is not None
+                        and getattr(row, "unavailable", None) is not None
+                    ):
                         failure_message = f"Unavailable: {row.unavailable}"
                     sampling_available = (
                         sampling.available if sampling is not None else _has_sampling_result(row)
