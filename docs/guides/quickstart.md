@@ -181,16 +181,20 @@ readout_table(recovered)
 ```
 
 If you only receive serialized result rows, the result/table import does not
-configure an analysis:
+configure an analysis. Rows alone do not carry the collection's scope, so the
+table reports scope and integrity as unknown; receive the whole collection
+when those qualifications matter.
 
 ```python
 from increment.results import LiftEstimate
 from increment.tables import estimates_to_readout, readout_table
 
 
-def display_received_result(result: LiftEstimate) -> None:
-    rows = estimates_to_readout([result])
-    readout_table(rows)
+def received_result_table(result: LiftEstimate):
+    return readout_table(estimates_to_readout([result]))
+
+
+received_result_table(recovered[0])
 ```
 
 See [Reading results](reading-results.md) for scale, uncertainty, availability,
