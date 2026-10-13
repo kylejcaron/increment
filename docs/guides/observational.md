@@ -905,7 +905,8 @@ designs only) cannot read covariates from an artifact; use `from_definitions`.
 
 For a fixed-horizon IPTW/AIPW conversion RR, apply `confounding_sensitivity`. Eligibility
 comes from the row's declared `metric_type`: `conversion` or `retention` rows are accepted,
-other types are refused, and a row carrying no metric type gives `metric_type_unavailable`.
+other types are refused, and a row carrying no metric type gives `metric_type_unavailable`
+(after the estimand check: an ITT or compliance row gets `estimand_unsupported` first).
 
 ```python
 import numpy as np
@@ -945,13 +946,12 @@ finally:
     conversion_analysis.close()
 ```
 
-The threshold above is a 5% increase, not the no-effect RR of one.
-`bias_factor_point` is the smallest B that could move the causal RR to that threshold;
-`e_value_point` is the equal strength m with B(m, m) = m²/(2m − 1).
-Interval fields use the displayed threshold-side limit at `interval_level`, even if the directional
-test set is `all_real`; one means a crossing, a point at the threshold with any displayed limit,
-or `all_real` without that limit. Unavailable/empty sets or other missing limits give null and
-`interval_limit_unavailable`.
+The threshold above is a 5% increase, not the no-effect RR of one. `bias_factor_point` is the
+smallest B that could move the causal RR to that threshold; `e_value_point` is the equal
+strength m with B(m, m) = m²/(2m − 1). Interval fields use the displayed threshold-side limit
+at `interval_level`, even if the directional test set is `all_real`; one means a crossing, a
+point at the threshold with any displayed limit, or `all_real` without that limit.
+Unavailable/empty sets or other missing limits give null and `interval_limit_unavailable`.
 
 This is a **conservative marginal** bound: RR_true is between RR_obs/B² and
 RR_obs·B², not the usual conditional E-value applied directly to RR_obs.
