@@ -360,6 +360,19 @@ def _scoped_randomized_results(
             "plr_slope",
             "overlap_subpopulation_ate",
         )
+        config = method_info[(cell.metric, cell.group_id, cell.method, cell.method_role)][1]
+        test = method_info[(cell.metric, cell.group_id, cell.method, cell.method_role)][2]
+        metric = next(item for item in selected if item.name == cell.metric)
+        prior_context = (
+            {
+                "metric": cell.metric,
+                "group_id": cell.group_id,
+                "reference_df": None,
+                "missing": "HC2/BM score statistics needed to compose the declared prior",
+            }
+            if config.prior is not None
+            else None
+        )
         failure = cell_failures.get(cell)
         row = result_by_cell.get((cell.metric, cell.group_id, cell.method, cell.method_role))
         if row is None and failure is not None:
@@ -373,17 +386,22 @@ def _scoped_randomized_results(
                 value_scale=cell.value_scale,
                 alternative=cell.alternative,
                 inference=cell.inference,
-                role=plan.procedures[cell.metric].role if plan.declared else None,
+                preferred_direction=metric.declared_preferred_direction,
+                null_lift=getattr(test, "null_lift", 0.0),
+                null_abs=getattr(test, "null_abs", None),
                 lift=None,
                 failure_code=failure.code,
                 failure_context=failure.context,
                 sampling_available=False,
                 sampling_reason_code=failure.code,
                 sampling_reason_context=failure.context,
-                posterior_available=False
-                if method_info[(cell.metric, cell.group_id, cell.method, cell.method_role)][1].prior
-                is not None
-                else None,
+                posterior_available=False if config.prior is not None else None,
+                posterior_reason_code=(
+                    "estimation.results.lift.t_posterior_sufficient_statistics"
+                    if config.prior is not None
+                    else None
+                ),
+                posterior_reason_context=prior_context,
             )
         if row is not None:
             row = row.model_copy(
@@ -403,7 +421,6 @@ def _scoped_randomized_results(
                 }
             )
             output.append(row)
-        config = method_info[(cell.metric, cell.group_id, cell.method, cell.method_role)][1]
         advisories = advisories_by_identity.get(
             (
                 cell.metric,

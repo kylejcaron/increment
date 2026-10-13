@@ -3240,23 +3240,66 @@ def estimate_cuped_linear(
             )
         except CodedError as exc:
             failure_context = {**exc.context, "metric": metric.name, "group_id": arm}
-            results.append(
-                LiftEstimate(
-                    metric=metric.name,
-                    group_id=arm,
-                    method=method.name,
-                    method_role=method_role,
-                    estimand="itt",
-                    alternative=alternative,
-                    preferred_direction=metric.declared_preferred_direction,
-                    null_lift=null_lift,
-                    null_abs=null_abs,
-                    failure_code=exc.code,
-                    failure_context=failure_context,
+            if absolute is not None and exc.code == "estimation.cuped_linear.nonpositive_component":
+                posterior_context = (
+                    {
+                        "metric": metric.name,
+                        "group_id": arm,
+                        "reference_df": absolute.dof,
+                        "missing": "HC2/BM score statistics needed to compose the declared prior",
+                    }
+                    if prior is not None
+                    else None
                 )
-            )
-            if method_role == "decision":
-                cuped_failures.append((metric.name, arm, "itt", exc.code, failure_context))
+                results.append(
+                    LiftEstimate(
+                        metric=metric.name,
+                        group_id=arm,
+                        method=method.name,
+                        method_role=method_role,
+                        estimand="itt",
+                        alternative=alternative,
+                        preferred_direction=metric.declared_preferred_direction,
+                        null_lift=null_lift,
+                        null_abs=null_abs,
+                        abs_diff=absolute.estimate,
+                        abs_se=absolute.se,
+                        abs_lb=absolute.lower,
+                        abs_ub=absolute.upper,
+                        abs_reference_kind="t",
+                        abs_reference_df=absolute.dof,
+                        abs_alpha=alpha_eff,
+                        reference_kind="t",
+                        reference_df=absolute.dof,
+                        dof=absolute.dof,
+                        scale="linear",
+                        relative_unavailable_reason="nonpositive_arm_mean",
+                        posterior_reason_code=(
+                            "estimation.results.lift.t_posterior_sufficient_statistics"
+                            if prior is not None
+                            else None
+                        ),
+                        posterior_reason_context=posterior_context,
+                    )
+                )
+            else:
+                results.append(
+                    LiftEstimate(
+                        metric=metric.name,
+                        group_id=arm,
+                        method=method.name,
+                        method_role=method_role,
+                        estimand="itt",
+                        alternative=alternative,
+                        preferred_direction=metric.declared_preferred_direction,
+                        null_lift=null_lift,
+                        null_abs=null_abs,
+                        failure_code=exc.code,
+                        failure_context=failure_context,
+                    )
+                )
+                if method_role == "decision":
+                    cuped_failures.append((metric.name, arm, "itt", exc.code, failure_context))
             continue
         if absolute_error is not None and null_abs is not None and method_role == "decision":
             failure_context = {

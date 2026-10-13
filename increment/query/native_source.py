@@ -440,7 +440,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         events = self._build_events_table_for_exposure(self._experiment.exposure, dim_joined=False)
         return events.select("unit_id", "experiment_id").distinct()
 
-    def _pinned_source(
+    def _pinned_source(  # noqa: PLR0915
         self,
         *,
         metrics: Sequence[Metric] | None = None,
@@ -508,6 +508,22 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         # every readout of this design needs `unit_frame`'s covariate join
         # to resolve, not only an explicit publish request.
         self._add_observational_covariate_sources(sources, property_source_names)
+        for metric in self._metrics if metrics is None else metrics:
+            binding = self._experiment.bindings.get(metric.name)
+            if binding is None:
+                continue
+            for covariate in binding.covariates:
+                if covariate.measure is not None:
+                    add_fact(covariate.measure.fact)
+                else:
+                    property_name = covariate.property or covariate.name
+                    fact_source = self._resolve_unit_covariate_source(
+                        property_name,
+                        declared_source=covariate.source,
+                        kind=covariate.kind,
+                    )
+                    sources[fact_source.name] = fact_source
+                    property_source_names.add(fact_source.name)
         site_volume_source_names, site_volume_dim_names = self._site_volume_scope_names(
             site_volume_metrics, sources
         )
@@ -3084,9 +3100,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                 design=self._context.design,
                 plan=self._context.plan,
                 path="warehouse",
-                _trusted_trigger_name=self.context.trigger_name,
-                _source_snapshot_evidence=self._session.source_snapshot_evidence,
-                _source=self,
+                _source=self if population == "assigned" else self.triggered_source(),
                 configs=self.context.configs,
                 _source_identity_record=identity_record,
             )
@@ -3103,7 +3117,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             _trusted_trigger_name=self.context.trigger_name,
             _source_snapshot_evidence=self._session.source_snapshot_evidence,
             _source_identity_record=identity_record,
-            _source=self,
+            _source=self if population == "assigned" else self.triggered_source(),
             configs=self.context.configs,
         )
 

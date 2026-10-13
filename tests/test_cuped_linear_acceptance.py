@@ -240,7 +240,9 @@ def test_cuped_linear_nonpositive_arm_failure_preserves_positive_sibling() -> No
     by_arm = {row.group_id: row for row in result}
     assert by_arm["positive"].lift is not None
     assert by_arm["nonpositive"].lift is None
-    assert by_arm["nonpositive"].failure_code == "estimation.cuped_linear.nonpositive_component"
+    assert by_arm["nonpositive"].failure_code is None
+    assert by_arm["nonpositive"].relative_unavailable_reason == "nonpositive_arm_mean"
+    assert by_arm["nonpositive"].abs_diff is not None
 
 
 def test_cuped_linear_absolute_ratio_projection_failure_preserves_log_ratio() -> None:

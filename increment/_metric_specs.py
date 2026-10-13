@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from increment._finite_sample_refusals import refuse_finite_sample_metric_type
 from increment._literals import PreferredDirection
@@ -166,7 +166,7 @@ class MetricSpec(CodedModel, BaseModel):
     covariate_missing: Literal["impute", "zero", "error"] = "impute"
     decision_method: Method | None = None
     sensitivity_methods: tuple[Method, ...] = ()
-    covariates: tuple[CupedCovariate, ...] = ()
+    covariates: tuple[CupedCovariate, ...] = Field(default=(), exclude_if=lambda value: not value)
     prior: Normal | None = None
     preferred_direction: PreferredDirection | None = None
 

@@ -2311,15 +2311,22 @@ def _mixed_binomial_method_groups(
     *,
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
     prior: Prior | None,
-) -> tuple[list[Method], list[Method]] | None:
-    """Return exact and legacy lanes for a mixed binary-metric request."""
+) -> tuple[list[Method], list[Method], list[Method]] | None:
+    """Separate exact binomial, linear CUPED and legacy scalar-CUPED lanes."""
     if metric.type not in ("conversion", "retention"):
         return None
     if inference is not None or prior is not None:
         return None
-    exact = [method for method in configured if method.variance_reduction != "cuped"]
+    exact = [
+        method
+        for method in configured
+        if method.variance_reduction not in ("cuped", "cuped_linear")
+    ]
+    linear = [method for method in configured if method.variance_reduction == "cuped_linear"]
     legacy = [method for method in configured if method.variance_reduction == "cuped"]
-    return (exact, legacy) if exact and legacy else None
+    if legacy and (exact or linear):
+        return exact, linear, legacy
+    return None
 
 
 _BINOMIAL_UNUSED_ADJUSTMENT_FIELDS = frozenset(
@@ -2689,15 +2696,20 @@ def _warn_breakout_route2_pairs(
 
 
 def _cuped_breakout_cell_frame(unit_frame: Any, *, dimension: str, value: str) -> Any:
+    """Select a segment's unit evidence, including its null-valued segment."""
     frame = nw.from_native(unit_frame, eager_only=True)
-    return frame.filter(nw.col(dimension).cast(nw.String) == value).drop(dimension).to_native()
+    segment = nw.col(dimension).cast(nw.String)
+    predicate = nw.col(dimension).is_null() if value == "__null__" else segment == value
+    return frame.filter(predicate).to_native()
 
 
-def _estimate_breakout_slice_metrics(  # noqa: PLR0915
+def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
     prepared: _PreparedLiftSlice,
     context: _BreakoutContext,
 ) -> _BreakoutMetricPass:
     """Estimate each live breakout metric and retain immutable cell outcomes."""
+    from increment.decision import ArmHypothesisKey, DecisionFailure
+
     declared_names = {m.name for m in context.metrics}
     unknown_metrics = {str(r["metric"]) for r in prepared.live_rows} - declared_names
     if unknown_metrics:
@@ -2745,18 +2757,18 @@ def _estimate_breakout_slice_metrics(  # noqa: PLR0915
                 inference=context.inference,
                 prior=metric_prior,
             )
-            groups = list(mixed_groups) if mixed_groups is not None else [configured]
-            if mixed_groups is not None:
-                groups = list(mixed_groups)
-            else:
+            groups = [group for group in mixed_groups if group] if mixed_groups is not None else []
+            if mixed_groups is None:
                 ordinary = [m for m in configured if m.variance_reduction != "cuped_linear"]
                 linear = [m for m in configured if m.variance_reduction == "cuped_linear"]
                 groups = [group for group in (ordinary, linear) if group]
-            for group_index, method_group in enumerate(groups):
+            for method_group in groups:
+                legacy_lane = method_group[0].variance_reduction == "cuped"
+                exact_lane = method_group[0].variance_reduction not in ("cuped", "cuped_linear")
                 method_rows = rows
-                if mixed_groups is not None and group_index == 0:
+                if mixed_groups is not None and exact_lane:
                     method_rows = _unadjusted_binomial_rows(rows)
-                elif mixed_groups is not None:
+                elif mixed_groups is not None and legacy_lane:
                     legacy_prepared = _prepare_lift_slice(
                         rows,
                         control_group=context.control_group,
@@ -2798,6 +2810,129 @@ def _estimate_breakout_slice_metrics(  # noqa: PLR0915
                     ),
                     covariates=(context.covariates_by_metric or {}).get(metric.name, ()),
                 )
+                if computation is not None:
+                    decision_failures: dict[Any, Any] = {}
+                    projected_results = list(computation.results)
+                    for hypothesis, failure in computation.failures.items():
+                        if not isinstance(hypothesis, ArmHypothesisKey):
+                            continue
+                        method_name = failure.context.get(
+                            "method", method_group[0].name if len(method_group) == 1 else None
+                        )
+                        if failure.context.get("projection") == "absolute":
+                            projected_results = [
+                                result.model_copy(
+                                    update={
+                                        "failure_code": failure.code,
+                                        "failure_context": dict(failure.context),
+                                    }
+                                )
+                                if result.metric == metric.name
+                                and result.group_id == str(hypothesis.group_id)
+                                and (method_name is None or result.method == method_name)
+                                else result
+                                for result in projected_results
+                            ]
+                        elif resolved_roles.get(method_name, "decision") == "sensitivity":
+                            method_unestimable[
+                                (metric.name, str(hypothesis.group_id), str(method_name))
+                            ] = "estimation_failed"
+                        else:
+                            decision_failures[hypothesis] = failure
+                    linear_names = {
+                        method.name
+                        for method in method_group
+                        if method.variance_reduction == "cuped_linear"
+                    }
+                    for index, result in enumerate(projected_results):
+                        if (
+                            metric.type == "ratio"
+                            and result.method in linear_names
+                            and result.lift is not None
+                            and result.abs_diff is None
+                            and result.failure_code is None
+                        ):
+                            projected_results[index] = result.model_copy(
+                                update={
+                                    "failure_code": "estimation.cuped_linear.projection_unavailable",
+                                    "failure_context": {
+                                        "metric": metric.name,
+                                        "group_id": result.group_id,
+                                        "projection": "absolute",
+                                    },
+                                }
+                            )
+                    failed_linear_results = {
+                        (result.group_id, result.method)
+                        for result in projected_results
+                        if result.lift is None
+                        and result.method in linear_names
+                        and (
+                            result.failure_code is not None
+                            or result.relative_unavailable_reason is not None
+                        )
+                    }
+                    for group_id, method_name in failed_linear_results:
+                        method_unestimable[(metric.name, group_id, method_name)] = (
+                            "estimation_failed"
+                        )
+                        failed_row = next(
+                            result
+                            for result in projected_results
+                            if result.group_id == group_id and result.method == method_name
+                        )
+                        if resolved_roles.get(method_name, "decision") == "decision":
+                            hypothesis = ArmHypothesisKey(metric.name, group_id, "itt")
+                            failure_code = failed_row.failure_code or (
+                                "estimation.cuped_linear.nonpositive_component"
+                                if failed_row.relative_unavailable_reason == "nonpositive_arm_mean"
+                                else "estimation.cuped_linear.nonfinite_projection"
+                            )
+                            decision_failures[hypothesis] = DecisionFailure(
+                                hypothesis,
+                                failure_code,
+                                {
+                                    **(failed_row.failure_context or {}),
+                                    "metric": metric.name,
+                                    "group_id": group_id,
+                                    "method": method_name,
+                                    "projection": "relative",
+                                },
+                            )
+                    if (
+                        projected_results != list(computation.results)
+                        or len(decision_failures) != len(computation.failures)
+                        or failed_linear_results
+                    ):
+                        from increment.decision import DecisionComputation
+
+                        failed_hypotheses = {
+                            hypothesis
+                            for hypothesis, failure in computation.failures.items()
+                            if failure.context.get("projection") != "absolute"
+                        }
+                        failed_groups = {group_id for group_id, _method in failed_linear_results}
+                        failed_hypotheses.update(
+                            key
+                            for key in computation.evidence
+                            if getattr(key, "metric", None) == metric.name
+                            and getattr(key, "group_id", None) in failed_groups
+                        )
+                        computation = DecisionComputation(
+                            results=tuple(
+                                result
+                                for result in projected_results
+                                if result.lift is not None
+                                or (result.group_id, result.method) not in failed_linear_results
+                            ),
+                            evidence={
+                                key: value
+                                for key, value in computation.evidence.items()
+                                if key not in failed_hypotheses
+                            },
+                            failures=decision_failures,
+                            advisories=computation.advisories,
+                        )
                 if computation is not None and computation.failures:
                     _keep_non_guard_failures(computation.failures, original_failures)
                     _record_failed_pairs(computation.failures, unestimable)
@@ -2945,7 +3080,7 @@ def _breakout_family_cells(
     ]
 
 
-def _apply_breakout_family_correction(
+def _apply_breakout_family_correction(  # noqa: PLR0915
     results: list[BreakoutEstimate],
     context: _BreakoutFamilyContext,
 ) -> list[BreakoutEstimate]:
@@ -3042,8 +3177,34 @@ def _apply_breakout_family_correction(
         )
         if decision_method.variance_reduction == "cuped_linear":
             selected_alpha = _fcr_alpha_for(alternative, outcome.fcr_alpha)
+
+            def reissue_cuped_row(
+                row: LiftEstimate,
+                *,
+                selected_alpha: float = selected_alpha,
+                alternative: str = alternative,
+                metric_name: str = metric_name,
+            ) -> LiftEstimate:
+                projected = row.reintervalize(selected_alpha, interval_alternative=alternative)
+                if (
+                    metrics_by_name[metric_name].type == "ratio"
+                    and projected.lift is not None
+                    and projected.abs_diff is None
+                ):
+                    projected = projected.model_copy(
+                        update={
+                            "failure_code": "estimation.cuped_linear.projection_unavailable",
+                            "failure_context": {
+                                "metric": metric_name,
+                                "group_id": projected.group_id,
+                                "projection": "absolute",
+                            },
+                        }
+                    )
+                return open_bound_from_two_sided_at_target(projected)
+
             reestimated[(segment_value, metric_name)] = [
-                row.reintervalize(selected_alpha, interval_alternative=alternative)
+                reissue_cuped_row(row)
                 for (cell_segment, cell_metric, _group), row in canonical_rows.items()
                 if cell_segment == segment_value and cell_metric == metric_name
             ]

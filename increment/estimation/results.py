@@ -1489,15 +1489,26 @@ class LiftEstimate(_RowIdentity):
         ):
             alternative = interval_alternative or self.alternative
             alpha_eff = alpha if alternative == "two-sided" else 2.0 * alpha
-            critical = float(_t.isf(alpha_eff / 2.0, self.reference_df))
+            critical = tail_isf(
+                student_t_isf, alpha_eff / 2.0, self.reference_df, what="t reintervalization"
+            )
             location = self.lift.log_mean
             scale = self.lift.log_se
-            lower = location - critical * scale
-            upper = location + critical * scale
+            lower, upper = wald_bounds(
+                location, critical, scale, what="t reintervalization endpoint"
+            )
             lift = self.lift.model_copy(
                 update={
-                    "lb": math.expm1(lower) if self.scale == "log" else lower,
-                    "ub": math.expm1(upper) if self.scale == "log" else upper,
+                    "lb": (
+                        resolvable_expm1(lower, what="t reintervalization endpoint")
+                        if self.scale == "log"
+                        else lower
+                    ),
+                    "ub": (
+                        resolvable_expm1(upper, what="t reintervalization endpoint")
+                        if self.scale == "log"
+                        else upper
+                    ),
                     "alpha": alpha_eff,
                     "level": 1.0 - alpha_eff,
                 }
@@ -1509,15 +1520,32 @@ class LiftEstimate(_RowIdentity):
                 and self.abs_se is not None
                 and self.abs_reference_df is not None
             ):
-                abs_critical = float(_t.isf(alpha_eff / 2.0, self.abs_reference_df))
-                abs_lb = self.abs_diff - abs_critical * self.abs_se
-                abs_ub = self.abs_diff + abs_critical * self.abs_se
+                abs_critical = tail_isf(
+                    student_t_isf,
+                    alpha_eff / 2.0,
+                    self.abs_reference_df,
+                    what="absolute t reintervalization",
+                )
+                abs_lb, abs_ub = wald_bounds(
+                    self.abs_diff,
+                    abs_critical,
+                    self.abs_se,
+                    what="absolute t reintervalization endpoint",
+                )
             return self.model_copy(
                 update={
                     "lift": lift,
                     "abs_lb": abs_lb,
                     "abs_ub": abs_ub,
                     "abs_alpha": alpha_eff if abs_lb is not None else None,
+                    "alternative": alternative,
+                    "independent_mean_reference": (
+                        self.independent_mean_reference.model_copy(
+                            update={"alpha": alpha, "alternative": alternative}
+                        )
+                        if self.independent_mean_reference is not None
+                        else None
+                    ),
                 }
             )
         if self.confidence_set is None:
@@ -1912,7 +1940,7 @@ class LiftEstimate(_RowIdentity):
             if self.abs_reference_df is None:
                 _raise(
                     "estimation.results.lift.p_value_cluster_robust_null_abs",
-                    reference_df=None,
+                    reference_df=self.reference_df,
                     group_id=self.group_id,
                     metric=self.metric,
                 )

@@ -373,7 +373,7 @@ def _raise_if_all_lift_cells_refused(
     _raise("readout.estimate_lift_every", failures=failures)
 
 
-def _estimate_pass(  # noqa: PLR0913
+def _estimate_pass(  # noqa: PLR0913, PLR0915
     src: MomentSource,
     metric: Metric,
     evidence: Any,
@@ -463,6 +463,7 @@ def _estimate_pass(  # noqa: PLR0913
         computations = []
         rows_est = []
         refused = []
+        linear_cache: dict[str, tuple[Any | None, CodedError | None]] = {}
         if ordinary_methods:
             ordinary, ordinary_refused, ordinary_computation = _estimate_lift_cells(
                 metric=metric,
@@ -490,23 +491,53 @@ def _estimate_pass(  # noqa: PLR0913
         from increment.decision import ArmHypothesisKey, DecisionComputation, DecisionFailure
 
         for method in linear_methods:
+            cache_key = method.model_dump_json(exclude={"name"})
+            cached = linear_cache.get(cache_key)
             try:
-                linear = estimate_cuped_linear(
-                    metric,
-                    evidence.unit_frame,
-                    control_group=design.control_group,
-                    method=method,
-                    method_role=method_roles[method.name],
-                    covariates=config.covariates,
-                    alpha=alpha_for,
-                    alternative=test.alternative,
-                    null_abs=getattr(test, "null_abs", None),
-                    null_lift=getattr(test, "null_lift", 0.0),
-                    prior=config.prior,
-                )
+                if cached is not None:
+                    cached_bundle, cached_error = cached
+                    if cached_error is not None:
+                        raise cached_error
+                    assert cached_bundle is not None
+                    reused_results = tuple(
+                        row.model_copy(
+                            update={
+                                "method": method.name,
+                                "method_role": method_roles[method.name],
+                            }
+                        )
+                        for row in cached_bundle.results
+                    )
+                    linear = DecisionComputation[LiftEstimate](
+                        results=reused_results,
+                        evidence=cached_bundle.evidence
+                        if method_roles[method.name] == "decision"
+                        else {},
+                        failures=cached_bundle.failures
+                        if method_roles[method.name] == "decision"
+                        else {},
+                        advisories=cached_bundle.advisories,
+                    )
+                else:
+                    linear = estimate_cuped_linear(
+                        metric,
+                        evidence.unit_frame,
+                        control_group=design.control_group,
+                        method=method,
+                        method_role=method_roles[method.name],
+                        covariates=config.covariates,
+                        alpha=alpha_for,
+                        alternative=test.alternative,
+                        null_abs=getattr(test, "null_abs", None),
+                        null_lift=getattr(test, "null_lift", 0.0),
+                        prior=config.prior,
+                    )
+                    linear_cache[cache_key] = (linear, None)
             except CodedError as exc:
                 if exc.code not in _CELL_ESTIMATION_GUARD_CODES:
                     raise
+                if cache_key not in linear_cache:
+                    linear_cache[cache_key] = (None, exc)
                 failures: dict[Any, DecisionFailure] = {}
                 groups = sorted(evidence.observed_arms - {design.control_group})
                 for group_id in groups:
@@ -517,6 +548,16 @@ def _estimate_pass(  # noqa: PLR0913
                             hypothesis, exc.code, failure_context
                         )
                     else:
+                        posterior_context = (
+                            {
+                                "metric": metric.name,
+                                "group_id": group_id,
+                                "reference_df": None,
+                                "missing": "HC2/BM score statistics needed to compose the declared prior",
+                            }
+                            if config.prior is not None
+                            else None
+                        )
                         rows_est.append(
                             LiftEstimate(
                                 metric=metric.name,
@@ -524,8 +565,18 @@ def _estimate_pass(  # noqa: PLR0913
                                 method=method.name,
                                 method_role="sensitivity",
                                 alternative=test.alternative,
+                                preferred_direction=metric.declared_preferred_direction,
+                                null_lift=getattr(test, "null_lift", 0.0),
+                                null_abs=getattr(test, "null_abs", None),
                                 failure_code=exc.code,
                                 failure_context=failure_context,
+                                posterior_available=False if config.prior is not None else None,
+                                posterior_reason_code=(
+                                    "estimation.results.lift.t_posterior_sufficient_statistics"
+                                    if config.prior is not None
+                                    else None
+                                ),
+                                posterior_reason_context=posterior_context,
                             )
                         )
                     refused.append((metric.name, group_id, method.name, str(exc)))

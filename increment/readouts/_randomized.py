@@ -257,7 +257,7 @@ def _reintervalize_cuped_secondary(  # noqa: PLR0913
     ordinary_rows, refused, computation = _estimate_pass(
         src,
         metric,
-        evidence,
+        evidence.rows if hasattr(evidence, "rows") else evidence,
         test,
         config,
         design,

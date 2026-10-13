@@ -1901,7 +1901,9 @@ class ExperimentMetric(_Base):
     prior: NormalPriorSpec | None = None
     margin: float | None = Field(default=None, gt=0.0, allow_inf_nan=False)
     margin_abs: float | None = Field(default=None, gt=0.0, allow_inf_nan=False)
-    covariates: tuple[CupedCovariateBinding, ...] = ()
+    covariates: tuple[CupedCovariateBinding, ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )
 
     @model_validator(mode="after")
     def _margins_mutually_exclusive(self) -> "ExperimentMetric":

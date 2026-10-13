@@ -696,12 +696,188 @@ def test_cuped_linear_definition_and_restored_artifact_match_frame_journey(tmp_p
         plan=AnalysisPlan(primary="revenue"),
     )
 
-    frame_result = cast(list[LiftEstimate], list(dataframe.run()))
-    native_result = cast(list[LiftEstimate], list(native.run()))
-    artifact_result = cast(list[LiftEstimate], list(restored.run()))
+    frame_result = cast(list[LiftEstimate], dataframe.run())
+    native_result = cast(list[LiftEstimate], native.run())
+    artifact_result = cast(list[LiftEstimate], restored.run())
     expected = next(row for row in frame_result if row.group_id == "treatment").require_lift()
+
+    def source_signature(result):
+        metadata = result.metadata
+        assert metadata is not None
+        scope = metadata.scope
+        cell_signature = set()
+        evidence_signature = {}
+        for row in result:
+            cell = next(
+                key
+                for key in scope.cells
+                if key.metric == row.metric
+                and key.group_id == row.group_id
+                and key.method == row.method
+                and key.method_role == row.method_role
+                and key.analysis_population == row.analysis_population
+            )
+            assert row.source_snapshot_id in scope.by_source
+            assert cell in scope.decision_cells
+            source_scope = scope.by_source[row.source_snapshot_id]
+            assert source_scope.source_snapshot_id == row.source_snapshot_id
+            assert source_scope.decision_complete_by_population[row.analysis_population] is True
+            record = next(
+                item
+                for item in metadata.cells
+                if item.cell == cell and item.source_snapshot_id == row.source_snapshot_id
+            )
+            assert record.sampling is not None
+            assert record.sampling.available == row.sampling_available
+            assert record.sampling.evidence is not None
+            cell_signature.add(
+                (
+                    cell.kind,
+                    cell.metric,
+                    cell.group_id,
+                    cell.method,
+                    cell.method_role,
+                    cell.estimand,
+                    cell.analysis_population,
+                )
+            )
+            evidence = record.sampling.evidence
+            evidence_signature[(cell.metric, cell.group_id, cell.method)] = (
+                record.sampling.available,
+                evidence.p_value,
+                evidence.reference,
+            )
+        scope_signature = (
+            frozenset(cell_signature),
+            tuple(scope.populations),
+            tuple(sorted((key, value) for key, value in scope.by_source.items())),
+        )
+        return scope_signature, evidence_signature
+
+    expected_scope, expected_evidence = source_signature(frame_result)
     for result in (native_result, artifact_result):
         actual = next(row for row in result if row.group_id == "treatment").require_lift()
         assert actual.value == pytest.approx(expected.value, rel=1e-10, abs=1e-10)
         assert actual.lb == pytest.approx(expected.lb, rel=1e-10, abs=1e-10)
         assert actual.ub == pytest.approx(expected.ub, rel=1e-10, abs=1e-10)
+        scope, evidence = source_signature(result)
+        assert scope[:2] == expected_scope[:2]
+        assert evidence == expected_evidence
+
+
+def test_cuped_evidence_digest_accepts_infinities_without_rewriting_values():
+    import polars as pl
+
+    from increment.readouts._metric_rows import _frame_digest_and_arms
+
+    frame = pl.DataFrame({"group_id": ["C", "T"], "covariate": [float("inf"), float("-inf")]})
+    first = _frame_digest_and_arms(frame)
+    second = _frame_digest_and_arms(frame)
+    assert first == second
+    assert frame.get_column("covariate").to_list() == [float("inf"), float("-inf")]
+
+
+def test_linear_readout_keeps_moments_and_units_on_one_snapshot(tmp_path, monkeypatch):
+    import pytest
+
+    from increment import Method
+    from tests.covariate_cases import covariate_defs_and_con
+
+    defs_path, con, *_ = covariate_defs_and_con(tmp_path)
+    defs_path.write_text(
+        defs_path.read_text().replace(
+            "    plan: {secondaries: [revenue]}",
+            "    plan: {primary: {metric: revenue, decision_method: "
+            "{name: linear, variance_reduction: cuped_linear}, covariates: "
+            "[{name: pre_tenure, kind: continuous, property: tenure, source: events}]}}",
+        )
+    )
+    analysis = Analysis.from_definitions("cov_test", defs_path, con, store="none")
+    try:
+        baseline = next(
+            row.require_lift()
+            for row in cast(
+                list[LiftEstimate],
+                analysis.run(
+                    decision_method=Method(name="plain"),
+                    sensitivity_methods=[Method(name="linear", variance_reduction="cuped_linear")],
+                ),
+            )
+            if row.group_id == "treatment" and row.method == "linear"
+        )
+        source = analysis._src
+        original = type(source).unit_frame
+        mutated = False
+
+        def mutate_before_units(self, *args, **kwargs):
+            nonlocal mutated
+            if not mutated:
+                mutated = True
+                con.raw_sql(
+                    "UPDATE cov_events SET revenue = revenue * 2 "
+                    "WHERE event = 'purchase' AND user_id BETWEEN 'u10' AND 'u19'"
+                )
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(type(source), "unit_frame", mutate_before_units)
+        after = next(
+            row.require_lift()
+            for row in cast(
+                list[LiftEstimate],
+                analysis.run(
+                    decision_method=Method(name="plain"),
+                    sensitivity_methods=[Method(name="linear", variance_reduction="cuped_linear")],
+                ),
+            )
+            if row.group_id == "treatment" and row.method == "linear"
+        )
+        assert mutated
+        assert after.value == pytest.approx(baseline.value, rel=1e-10, abs=1e-10)
+    finally:
+        analysis.close()
+        con.disconnect()
+
+
+def test_infinite_cuped_covariate_is_localized_by_estimator(tmp_path):
+    import pyarrow as pa
+
+    from increment import Method, MetricSpec
+    from increment.frame import CupedCovariate
+
+    rows = [
+        {
+            "unit": f"{group}-{index}",
+            "group": group,
+            "revenue": float(index + (group == "treatment")),
+            "pre": float("inf") if group == "treatment" and index == 0 else float(index),
+        }
+        for group in ("control", "treatment")
+        for index in range(12)
+    ]
+    analysis = Analysis.from_unit_summary(
+        pa.Table.from_pylist(rows),
+        unit="unit",
+        group="group",
+        control="control",
+        metrics=[
+            MetricSpec(
+                name="revenue",
+                decision_method=Method(name="linear", variance_reduction="cuped_linear"),
+                covariates=(CupedCovariate(name="pre", kind="continuous"),),
+            )
+        ],
+    )
+    results = cast(
+        list[LiftEstimate],
+        list(
+            analysis.run(
+                decision_method=Method(name="plain"),
+                sensitivity_methods=[Method(name="linear", variance_reduction="cuped_linear")],
+            )
+        ),
+    )
+    treatment = next(
+        row for row in results if row.group_id == "treatment" and row.method == "linear"
+    )
+    assert treatment.lift is None
+    assert treatment.failure_code == "estimation.cuped_linear.nonfinite"

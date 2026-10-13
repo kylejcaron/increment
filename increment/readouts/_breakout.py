@@ -92,10 +92,13 @@ def _load_cuped_breakout_frames(
         config.metric.name: _runtime_method_roles(methods_by_metric[config.metric.name])
         for config in configs
     }
+    # A breakout-scoped moments source owns the dimensions and aggregate
+    # rows, but delegates exact unit evidence to its retained source.
+    evidence_source = getattr(src, "_source", None) or src
     for config in configs:
         name = config.metric.name
         if any(method.variance_reduction == "cuped_linear" for method in methods_by_metric[name]):
-            frames[name] = src.unit_frame(
+            frames[name] = evidence_source.unit_frame(
                 config.metric,
                 covariates=tuple(
                     dict.fromkeys((dimension, *(item.name for item in config.covariates)))

@@ -35,10 +35,18 @@ def _frame_digest_and_arms(frame):
     digest = StreamingDigest()
 
     for row in frame.iter_rows(named=True):
+        normalized = {}
         for name, value in row.items():
-            if isinstance(value, float) and math.isnan(value):
-                row[name] = None
-        digest.update(row)
+            if isinstance(value, float):
+                if math.isnan(value):
+                    normalized[name] = None
+                elif math.isinf(value):
+                    normalized[name] = {"__float__": "+inf" if value > 0 else "-inf"}
+                else:
+                    normalized[name] = value
+            else:
+                normalized[name] = value
+        digest.update(normalized)
     arms: set[str] = set()
     if "group_id" in frame.columns:
         arms = {
@@ -88,6 +96,7 @@ def _load_metric_rows(
     control_group: str,
     methods: Sequence[Any] = (),
     covariates: Sequence[Any] = (),
+    _snapshot_active: bool = False,
 ) -> MetricRows:
     """Load one metric's rows once.
 
@@ -95,6 +104,28 @@ def _load_metric_rows(
     (`_refuse_unsupported_quantile`, which needs `test`/`cluster` -- outside
     this function's contract) call it before `_load_metric_rows`.
     """
+    has_linear = any(
+        getattr(method, "variance_reduction", None) == "cuped_linear" for method in methods
+    )
+    if has_linear and not _snapshot_active:
+        snapshot_source = getattr(src, "_source", src)
+        snapshot = getattr(snapshot_source, "readout_snapshot", None)
+        if snapshot is not None:
+            population = (
+                "triggered"
+                if getattr(snapshot_source, "_population", None) == "triggered"
+                else "assigned"
+            )
+            with snapshot(metrics=(metric,), population=population) as pinned:
+                return _load_metric_rows(
+                    pinned,
+                    metric,
+                    by=by,
+                    control_group=control_group,
+                    methods=methods,
+                    covariates=covariates,
+                    _snapshot_active=True,
+                )
     if getattr(getattr(metric, "winsorization", None), "has_percentile", False):
         import narwhals as nw
 
@@ -160,9 +191,6 @@ def _load_metric_rows(
     _refuse_unsupported_by(metric, by)
     rows = cast("list[Mapping[str, Any]]", src.moments(metric, grain="total", by=by))
     observed, moments_sha256, moments_count = _rows_digest_and_arms(rows)
-    has_linear = any(
-        getattr(method, "variance_reduction", None) == "cuped_linear" for method in methods
-    )
     if has_linear:
         observed, moments_sha256, moments_count = _rows_raw_digest_and_arms(rows)
     if not has_linear:
