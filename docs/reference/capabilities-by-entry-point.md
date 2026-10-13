@@ -193,6 +193,11 @@ is admitted under `InferenceSpec(kind="asymptotic_mean")`: fitted coefficients
 use retained joint moments, whose confidence sequence accounts for their
 estimation; pre-period coefficients use the scalar-mean adjustment. The exact
 Bernoulli e-process route (`AlwaysValid`) admits neither form of CUPED.
+
+Externally trained prediction columns are supported on `from_unit_summary`,
+`from_unit_panel`, and `from_moments`, but are not expressible on
+`from_definitions` or `from_unit_day_artifact`; see the
+[CUPAC guide](../guides/cupac.md) for the measured parity and provenance details.
 "Checkpoint replay" means `from_moments` cannot start a sequential process,
 because it holds no per-unit source to register against, but reproduces an
 exported checkpoint exactly. On the warehouse the covariate for a ratio metric

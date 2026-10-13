@@ -461,6 +461,7 @@ EXAMPLE_NOTEBOOKS = (
     "triggered_population_dashboard",
     "observational",
     "cuped",
+    "cupac",
     "breakout",
     "power",
     "hte",

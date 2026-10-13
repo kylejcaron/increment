@@ -285,6 +285,21 @@ def test_cuped_export_renders_expected_figures(tmp_path):
     assert "d7_retention" in html
 
 
+@pytest.mark.integration
+def test_cupac_export_renders_expected_figures(tmp_path):
+    pytest.importorskip("pandas")
+    pytest.importorskip("altair")
+    html = _export_html("cupac.py", tmp_path)
+    for field in ("training_cutoff", "feature_as_of", "model_version", "trained_on"):
+        assert field in html
+    assert "2025-01-31" in html
+    assert "cupac-demo-1" in html
+    assert "unadjusted" in html
+    assert "cuped" in html
+    assert "shifted_lift" in html
+    assert "frame.validation.metric_covariate_column" in html
+
+
 # --- analysis_from_a_warehouse.py: realistic warehouse, needs tables -------
 
 
