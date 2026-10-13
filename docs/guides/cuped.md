@@ -604,7 +604,12 @@ at most 200 levels in any categorical covariate, encoded width divided by
 the smallest arm size at most 0.20, and maximum unit leverage at most 0.45.
 Ratio fits additionally require each raw arm denominator's relative
 standard error, `sqrt(var_den / n) / mean_den`, at most 0.15; adjustment
-does not substitute its residual variance for this check. Full rank,
+does not substitute its residual variance for this check. An arm whose raw
+denominator mean is not positive cannot form the ratio estimand at all: it
+is withheld from the fit and reported as its own refused cell under the
+same `estimation.variance.ratio_moments_nonpositive_denominator_mean`
+code an unadjusted row carries, while its siblings keep their adjusted
+evidence; a control arm in that state refuses every contrast. Full rank,
 positive residual degrees of freedom, and at least two observations per
 categorical level in every arm are also required.
 

@@ -587,6 +587,21 @@ def _estimate_pass(  # noqa: PLR0913, PLR0915
             else:
                 rows_est.extend(linear.results)
                 computations.append(linear)
+                # An arm the fit withheld under an estimator-domain refusal is a
+                # refused cell, exactly as the unadjusted per-arm path reports it.
+                for row in linear.results:
+                    code = row.failure_code
+                    if code is None or code.startswith("estimation.cuped_linear."):
+                        continue
+                    refused.append((metric.name, row.group_id, method.name, code))
+                    _warn(
+                        "readouts.run.cell_refused",
+                        metric_name=metric.name,
+                        group_id=row.group_id,
+                        method_name=method.name,
+                        reason=code,
+                        stacklevel=3,
+                    )
         computation = _merge_decision_computations(computations)
         return [row.model_copy(update={"role": role}) for row in rows_est], refused, computation
     if retry in ("whole", "whole_asof"):

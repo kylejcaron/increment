@@ -1417,3 +1417,20 @@ def test_m1_inside_every_bound_preserves_mean_and_ratio_inference():
         assert fit.max_leverage <= 0.45
         projection = fit.ratio("t") if options else fit.relative("t")
         assert projection.lower < projection.estimate < projection.upper
+
+
+def test_nonpositive_raw_denominator_arm_is_refused_under_the_fit_code():
+    arms = np.repeat(["c", "t", "z"], 8)
+    numerator = np.arange(24, dtype=float) + 1
+    denominator = np.r_[np.full(16, 2.0), np.zeros(8)]
+    with pytest.raises(InvalidRequestError) as raised:
+        fit_cuped_linear(
+            None,
+            arms,
+            control="c",
+            arm_order=("c", "t", "z"),
+            numerator=numerator,
+            denominator=denominator,
+        )
+    assert raised.value.code == "estimation.cuped_linear.nonpositive_component"
+    assert raised.value.context == {"family": "denominator", "arm": "z", "value": 0.0}

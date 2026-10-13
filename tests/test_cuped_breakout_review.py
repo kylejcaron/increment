@@ -739,3 +739,108 @@ def test_readout_rows_forward_projection_refusal_sidecars() -> None:
         assert converted["absolute_error_context"] == estimate.absolute_error_context
         assert converted["relative_error_code"] is None
         assert converted["relative_error_context"] is None
+
+
+def _ratio_rows_with_dead_arm(*, dead_control: bool = False) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for segment in ("north", "south"):
+        for group in ("control", "treatment", "dead"):
+            zero = group == "dead" or (dead_control and group == "control")
+            for index in range(18):
+                rows.append(
+                    {
+                        "unit": f"{segment}-{group}-{index}",
+                        "group": group,
+                        "day": 1,
+                        "segment": segment,
+                        "pre": ("a", "b", "c")[index % 3],
+                        "revenue": float(10 + index % 5 + (group == "treatment") * 2),
+                        "orders": 0.0 if zero else float(2 + index % 3),
+                    }
+                )
+    return rows
+
+
+def _ratio_analysis(rows: list[dict[str, Any]], method: Method) -> Analysis:
+    metric = MetricSpec(
+        name="rpo",
+        type="ratio",
+        numerator="revenue",
+        denominator="orders",
+        decision_method=method,
+        covariates=(CupedCovariate(name="pre", kind="categorical"),),
+    )
+    return Analysis.from_unit_panel(
+        pa.Table.from_pylist(rows),
+        unit="unit",
+        group="group",
+        date="day",
+        control="control",
+        metrics=[metric],
+        breakouts=["segment"],
+    )
+
+
+def test_zero_denominator_arm_is_withheld_like_the_unadjusted_path() -> None:
+    linear = _ratio_analysis(
+        _ratio_rows_with_dead_arm(), Method(name="linear", variance_reduction="cuped_linear")
+    )
+    unadjusted = _ratio_analysis(_ratio_rows_with_dead_arm(), Method(name="unadjusted"))
+
+    def by_arm(analysis: Analysis) -> dict[str, LiftEstimate]:
+        with pytest.warns():
+            rows = list(analysis.run())
+        estimates = [row for row in rows if isinstance(row, LiftEstimate)]
+        assert len(estimates) == len(rows)
+        return {row.group_id: row for row in estimates}
+
+    linear_run = by_arm(linear)
+    unadjusted_run = by_arm(unadjusted)
+    assert set(linear_run) == set(unadjusted_run) == {"dead", "treatment"}
+    assert linear_run["treatment"].lift is not None
+    assert linear_run["treatment"].failure_code is None
+    dead = linear_run["dead"]
+    assert dead.lift is None
+    assert dead.failure_code == unadjusted_run["dead"].failure_code
+    assert dead.failure_context == {"metric": "rpo", "group_id": "dead", "d_bar": 0.0}
+    assert dead.sampling_available is False
+
+    with pytest.warns():
+        linear_cells = {(row.dimension_value, row.group_id): row for row in linear.run_breakout()}
+    with pytest.warns():
+        unadjusted_cells = {
+            (row.dimension_value, row.group_id): row for row in unadjusted.run_breakout()
+        }
+    assert set(linear_cells) == set(unadjusted_cells)
+    for key, reference in unadjusted_cells.items():
+        cell = linear_cells[key]
+        assert cell.excluded == reference.excluded
+        assert (cell.lift is None) == (reference.lift is None)
+    assert linear_cells[("north", "dead")].excluded == "nonpositive_mean"
+    adjusted = linear_cells[("north", "treatment")].require_lift()
+    raw = unadjusted_cells[("north", "treatment")].require_lift()
+    assert adjusted.log_se is not None and raw.log_se is not None
+    assert adjusted.log_se < raw.log_se
+
+
+def test_zero_denominator_control_fails_every_linear_contrast_without_abort() -> None:
+    from increment.errors import CodedError
+
+    linear = _ratio_analysis(
+        _ratio_rows_with_dead_arm(dead_control=True),
+        Method(name="linear", variance_reduction="cuped_linear"),
+    )
+    unadjusted = _ratio_analysis(
+        _ratio_rows_with_dead_arm(dead_control=True), Method(name="unadjusted")
+    )
+    for analysis in (linear, unadjusted):
+        with pytest.raises(CodedError) as raised, pytest.warns():
+            analysis.run()
+        assert raised.value.code == "readout.estimate_lift_every"
+        if analysis is linear:
+            failures = cast(list[dict[str, Any]], raised.value.context["failures"])
+            assert {failure["group_id"] for failure in failures} == {"dead", "treatment"}
+            assert {failure["context"]["group_id"] for failure in failures} == {"control"}
+            assert {failure["code"] for failure in failures} == {
+                "estimation.variance.ratio_moments_nonpositive_denominator_mean"
+            }

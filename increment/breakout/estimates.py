@@ -1997,6 +1997,14 @@ def _estimate_lift_computation_or_reason(
 
         if unit_frame is None:
             return None, "per-unit evidence is unavailable for this breakout cell"
+        # The slice gate has already excluded rows (few units, nonpositive means) from
+        # ``summary``; the fit sees exactly the arms that gate admitted.
+        admitted = [str(row["group_id"]) for row in summary if str(row["metric"]) == metric.name]
+        unit_frame = (
+            nw.from_native(unit_frame, eager_only=True)
+            .filter(nw.col("group_id").cast(nw.String).is_in(admitted))
+            .to_native()
+        )
         results: list[LiftEstimate] = []
         failures: dict[Any, Any] = {}
         evidence: dict[Any, Any] = {}

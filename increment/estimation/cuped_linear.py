@@ -934,13 +934,29 @@ def _fit_covariate_slopes(x, indices, centered_outcomes, layout):
 
 
 def _raw_denominator_precision(numerator, denominator, arm):
-    """Apply the raw-arm denominator statistic on scale-normalized moments."""
+    """Apply the raw-arm denominator statistic on scale-normalized moments.
+
+    The statistic shares ``ratio_moments``' domain, so an arm whose raw
+    denominator mean is not positive is refused here under this fit's own
+    code rather than the variance helper's. The sign is judged on the
+    normalized scale, where no sum can overflow; the retained value is the
+    raw mean recovered from it.
+    """
     normalized = []
+    scales = []
     for values in (numerator, denominator):
         scale = float(np.max(np.abs(values)))
         normalized.append(values / scale if scale else values)
+        scales.append(scale)
     num, den = normalized
     ref_num, ref_den = float(num.mean()), float(den.mean())
+    if ref_den <= 0:
+        _fail(
+            "estimation.cuped_linear.nonpositive_component",
+            family="denominator",
+            arm=arm,
+            value=ref_den * scales[1],
+        )
     centered_num, centered_den = num - ref_num, den - ref_den
     stats = ArmStats(
         study_id="cuped_linear",
