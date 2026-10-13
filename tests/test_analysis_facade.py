@@ -1148,6 +1148,20 @@ def sitewide_con():
     return con
 
 
+def _unwindowed_sitewide_analysis(definitions_path, con):
+    original = Analysis.from_definitions("new_onboarding_v2", definitions_path, con)
+    try:
+        metrics = [
+            metric.model_copy(update={"window_days": None})
+            if metric.name == "purchase_rate"
+            else metric
+            for metric in original.metrics
+        ]
+        return make_analysis_like(original, metrics)
+    finally:
+        original.close()
+
+
 def test_sitewide_unknown_metric_is_coded(seeded_defs, seeded_con):
     analysis = Analysis.from_definitions("new_onboarding_v2", seeded_defs, seeded_con)
     with pytest.raises(InvalidRequestError) as raised:
@@ -1162,7 +1176,7 @@ def test_sitewide_control_group_missing_is_coded(seeded_defs, sitewide_con):
         "UPDATE analytics.event_log SET group_id = 'treatment' "
         "WHERE experiment_id = 'new_onboarding_v2' AND group_id = 'control'"
     )
-    with Analysis.from_definitions("new_onboarding_v2", seeded_defs, sitewide_con) as analysis:
+    with _unwindowed_sitewide_analysis(seeded_defs, sitewide_con) as analysis:
         with pytest.raises(InvalidRequestError) as raised:
             analysis.sitewide("purchase_rate")
     assert raised.value.code == "facade.analysis.sitewide_control_missing"
@@ -1175,7 +1189,7 @@ def test_sitewide_no_treatment_arm_is_coded(seeded_defs, sitewide_con):
         "DELETE FROM analytics.event_log "
         "WHERE experiment_id = 'new_onboarding_v2' AND group_id = 'treatment'"
     )
-    with Analysis.from_definitions("new_onboarding_v2", seeded_defs, sitewide_con) as analysis:
+    with _unwindowed_sitewide_analysis(seeded_defs, sitewide_con) as analysis:
         with pytest.raises(InvalidRequestError) as raised:
             analysis.sitewide("purchase_rate")
     assert raised.value.code == "facade.analysis.sitewide_no_treatment_arm"
@@ -1191,7 +1205,7 @@ def test_sitewide_multiple_arms_require_explicit_arm_is_coded(seeded_defs, sitew
         "WHERE experiment_id = 'new_onboarding_v2' AND group_id = 'treatment' "
         "ORDER BY user_id LIMIT 50)"
     )
-    with Analysis.from_definitions("new_onboarding_v2", seeded_defs, sitewide_con) as analysis:
+    with _unwindowed_sitewide_analysis(seeded_defs, sitewide_con) as analysis:
         with pytest.raises(InvalidRequestError) as raised:
             analysis.sitewide("purchase_rate")
     assert raised.value.code == "facade.analysis.sitewide_arm_required"
@@ -1199,7 +1213,7 @@ def test_sitewide_multiple_arms_require_explicit_arm_is_coded(seeded_defs, sitew
 
 
 def test_sitewide_named_arm_not_enrolled_is_coded(seeded_defs, sitewide_con):
-    with Analysis.from_definitions("new_onboarding_v2", seeded_defs, sitewide_con) as analysis:
+    with _unwindowed_sitewide_analysis(seeded_defs, sitewide_con) as analysis:
         with pytest.raises(InvalidRequestError) as raised:
             analysis.sitewide("purchase_rate", arm="not_an_arm")
     assert raised.value.code == "facade.analysis.sitewide_arm_not_enrolled"

@@ -128,6 +128,7 @@ def _conversion_analysis(tmp_path, events, *, count_metric=False):
                 "aggregation": "count",
             },
         )
+        payload["experiments"][0]["plan"]["secondaries"].append("aaa_count")
         definitions = yaml.safe_dump(payload, sort_keys=False)
     definitions_path = tmp_path / "conversion-sitewide.yml"
     definitions_path.write_text(definitions)
@@ -1056,30 +1057,48 @@ def test_assigned_sitewide_observational_design_refuses_before_evidence(tmp_path
         analysis.close()
 
 
-def test_triggered_sitewide_windowed_metric_refuses_before_data_load(tmp_path, monkeypatch):
-    definitions = tmp_path / "windowed.yml"
-    definitions.write_text(_defs_yaml(end="2024-01-10"))
-    con = ibis.duckdb.connect()
-    con.create_table("events", obj=_events(n_per_arm=20))
-    analysis = Analysis.from_definitions(
-        "exp",
-        definitions,
-        con,
-        source_snapshot_evidence=SourceSnapshotEvidence(
-            observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-        ),
-    )
+@pytest.mark.parametrize("population", ["assigned", "triggered"])
+@pytest.mark.parametrize("ingress", ["native", "artifact"])
+def test_windowed_sitewide_metric_refuses_before_data_load(
+    tmp_path, monkeypatch, population, ingress
+):
+    from tests.capability_consumers_auxiliary import assert_refusal
+
+    analysis = _analysis(tmp_path, windowed=True)
+    adopted = None
     try:
+        if ingress == "artifact":
+            adopted = _publish_and_adopt(
+                native_connection(_native_source(analysis)),
+                analysis,
+                kinds=("site_volume", "trigger_population", "assignment_counts"),
+            )
+            target = adopted
+        else:
+            target = analysis
         monkeypatch.setattr(
-            _moment_source(analysis),
+            _moment_source(target),
             "sitewide_evidence",
             lambda *args, **kwargs: pytest.fail("loaded incompatible sitewide evidence"),
         )
         with pytest.raises(CapabilityError) as refused:
-            analysis.sitewide("revenue", population="triggered")
-        assert refused.value.code == "facade.analysis.sitewide_triggered_metric_unaligned"
+            target.sitewide("revenue", population=population)
+        assert refused.value.code == "facade.analysis.sitewide_metric_unaligned"
+        assert refused.value.context["metric"] == "revenue"
+        assert refused.value.context["metric_type"] == "mean"
+        assert refused.value.context["window_days"] == 7
+        ingress_name = "definitions" if ingress == "native" else "artifact"
+        assert_refusal(
+            "triggered_auxiliary_reads",
+            f"sitewide_{ingress_name}_metric_unaligned_refused",
+            refused.value,
+            stage="read",
+        )
     finally:
-        analysis.close()
+        if adopted is None:
+            analysis.close()
+        else:
+            _close_parity_analysis(adopted)
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
@@ -1312,41 +1331,19 @@ def test_clustered_assigned_sitewide_artifact_matches_native(tmp_path):
             _close_parity_analysis(adopted)
 
 
-@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
-def test_windowed_sitewide_artifact_clamps_maturity_to_calendar_end(tmp_path):
-    events = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5).to_pylist()
-    for row in events:
-        if row["user_id"] == "C99":
-            if row["event"] == "enrolled":
-                row["ts"] = dt.datetime(2024, 1, 8)
-            elif row["event"] == "revenue":
-                row["ts"] = (
-                    dt.datetime(2024, 1, 9) if row["ts"].day == 8 else dt.datetime(2024, 1, 10)
-                )
+def test_windowed_assigned_sitewide_refuses_before_evidence_load(tmp_path):
     analysis = _analysis(
         tmp_path,
-        pa.Table.from_pylist(events),
+        _events(n_per_arm=100, trigger_rate=0.2, effect=0.5),
         windowed=True,
         observation_end="2024-01-16T00:00:00",
     )
-    adopted = None
     try:
-        native = analysis.sitewide("revenue")
-        adopted = _publish_and_adopt(
-            native_connection(_native_source(analysis)),
-            analysis,
-            kinds=("site_volume", "trigger_population", "assignment_counts"),
-        )
-        artifact = adopted.sitewide("revenue")
-        assert native.n_control == 99
-        assert artifact.n_control == pytest.approx(native.n_control)
-        assert artifact.n_treatment == pytest.approx(native.n_treatment)
-        assert artifact.absolute_impact == pytest.approx(native.absolute_impact, rel=1e-12)
+        with pytest.raises(CapabilityError) as refused:
+            analysis.sitewide("revenue")
+        assert refused.value.code == "facade.analysis.sitewide_metric_unaligned"
     finally:
-        if adopted is None:
-            analysis.close()
-        else:
-            _close_parity_analysis(adopted)
+        analysis.close()
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
@@ -1377,6 +1374,42 @@ def test_count_mean_sharing_conversion_recipe_keeps_converter_total(tmp_path):
         assert isinstance(native, SitewideImpact)
         assert isinstance(artifact, SitewideImpact)
         assert artifact.site_total_volume == pytest.approx(native.site_total_volume)
+    finally:
+        if adopted is None:
+            analysis.close()
+        else:
+            _close_parity_analysis(adopted)
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_count_metric_sitewide_counts_events_alike_on_both_ingresses(tmp_path):
+    rows = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5).to_pylist()
+    conversions = [
+        {**row, "event": "converted", "ts": dt.datetime(2024, 1, day), "value": 1.0}
+        for row in rows
+        if row["event"] == "enrolled" and int(row["user_id"][1:]) % 3 == 0
+        for day in (3, 5)
+    ]
+    events = pa.concat_tables([pa.Table.from_pylist(rows), pa.Table.from_pylist(conversions)])
+    analysis = _conversion_analysis(tmp_path, events, count_metric=True)
+    adopted = None
+    try:
+        populations = ("assigned", "triggered")
+        native = [analysis.sitewide("aaa_count", population=item) for item in populations]
+        assert isinstance(native[0], SitewideImpact)
+        assert native[0].site_total_volume == pytest.approx(len(conversions))
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(analysis)),
+            analysis,
+            kinds=("site_volume", "trigger_population", "assignment_counts"),
+        )
+        for population, expected in zip(populations, native, strict=True):
+            artifact = adopted.sitewide("aaa_count", population=population)
+            assert isinstance(expected, SitewideImpact)
+            assert isinstance(artifact, SitewideImpact)
+            assert artifact.site_total_volume == pytest.approx(expected.site_total_volume)
+            assert artifact.absolute_impact == pytest.approx(expected.absolute_impact)
+            assert artifact.relative_impact == pytest.approx(expected.relative_impact)
     finally:
         if adopted is None:
             analysis.close()

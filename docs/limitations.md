@@ -288,6 +288,14 @@ Both assigned and triggered `Analysis.sitewide()` require randomized
 identification. Observational and encouragement designs refuse before
 sitewide evidence is loaded; use `Analysis.run()` for their estimands.
 
+Both populations refuse windowed metrics and components with non-additive
+aggregation (anything but sum or count). Site volume is an additive total
+across the experiment calendar window `[start, end]`; a per-unit window
+anchored at each enrollment or a non-additive per-unit outcome cannot align
+with it. The limitation is inherent to that site-volume construction, not a
+missing estimator. Declare an unwindowed sum or count metric on the
+experiment; unwindowed conversion metrics are also supported.
+
 For the triggered population, the estimate omits any reach effect among
 never-triggered units and does not adjust for multiplicity or provide
 anytime-valid inference. It uses assignment-anchored experiment-calendar
@@ -1733,11 +1741,11 @@ are warehouse-native operations: the former preserves pre-assignment property
 values, while the latter dates triggered cohorts at their first eligible
 trigger. Artifacts do not retain the raw enrollment timeline or provide the
 dashboard aggregation operation, so those reads refuse with source-specific
-capability reasons. Triggered sitewide is available only for mean, ratio and
-unwindowed conversion metrics with sum-aggregated components and explicit
-trigger and site-volume evidence; it uses calendar-window outcomes restricted
-to finalized membership and remains conditional on
-the assumptions above. CATE, CATE
+capability reasons. Triggered sitewide is available only for unwindowed mean,
+ratio and conversion metrics whose components use sum or count aggregation,
+with explicit trigger and site-volume evidence; it uses calendar-window
+outcomes restricted to finalized membership and remains conditional on the
+assumptions above. CATE, CATE
 validation, and targeting use the triggered unit population when the source
 provides triggered outcomes and pre-assignment covariates; artifacts require
 the corresponding trigger, metric, and unit-covariate evidence. Missing

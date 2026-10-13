@@ -1485,6 +1485,7 @@ def test_dimension_extension_missing_an_exposure_key_refuses_on_read(monkeypatch
         native.close()
 
 
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_site_volume_extension_read_through_read_extension_accepts_exposure_keys(
     tmp_path,
 ) -> None:
@@ -1494,7 +1495,7 @@ def test_site_volume_extension_read_through_read_extension_accepts_exposure_keys
     from increment import Analysis
     from tests.test_unit_day_artifact_facade import _definitions, _extensions, _native
 
-    definitions = _definitions(tmp_path, site_volume_only=True)
+    definitions = _definitions(tmp_path, site_volume_only=True, unwindowed_purchase=True)
     con, native, context, store = _native(
         definitions=definitions,
         source_snapshot_evidence=SourceSnapshotEvidence(
@@ -1555,6 +1556,7 @@ def test_extension_relation_publishes_and_reopens_under_digest_format_one() -> N
         native.close()
 
 
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_site_volume_publication_deduplicates_shared_physical_recipes(tmp_path) -> None:
     """Logical names sharing a recipe publish one physical row set and adopt independently."""
     import yaml
@@ -1563,7 +1565,7 @@ def test_site_volume_publication_deduplicates_shared_physical_recipes(tmp_path) 
     from increment.estimation.sitewide import SitewideImpact
     from tests.test_unit_day_artifact_facade import _definitions, _extensions, _native
 
-    definitions = _definitions(tmp_path, site_volume_only=True)
+    definitions = _definitions(tmp_path, site_volume_only=True, unwindowed_purchase=True)
     payload = yaml.safe_load(definitions.read_text())
     original = next(metric for metric in payload["metrics"] if metric["name"] == "purchase_rate")
     payload["metrics"].append({**original, "name": "purchase_rate_copy"})
@@ -1576,7 +1578,6 @@ def test_site_volume_publication_deduplicates_shared_physical_recipes(tmp_path) 
             "preferred_direction": "increase",
             "fact": "purchase",
             "aggregation": "sum",
-            "window_days": 7,
         }
     )
     experiment = next(

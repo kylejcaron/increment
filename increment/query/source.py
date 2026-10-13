@@ -1817,13 +1817,18 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         )
         if any(
             getattr(component, "window_days", None) is not None
-            or (metric.type != "conversion" and getattr(component, "aggregation", None) != "sum")
+            or (
+                metric.type != "conversion"
+                and getattr(component, "aggregation", None) not in ("sum", "count")
+            )
             for component in components
         ):
             raise ArtifactContractError(
                 "artifact.evidence.unavailable",
-                "triggered sitewide requires an unwindowed sum metric",
-                context={"route": "use a calendar-aligned unwindowed sum metric"},
+                "triggered sitewide requires an unwindowed sum, count or conversion metric",
+                context={
+                    "route": "use a calendar-aligned unwindowed sum, count or conversion metric"
+                },
             )
         binding = next(
             item for item in self._manifest.metric_measures if item.metric_name == metric.name

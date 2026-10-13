@@ -15,7 +15,7 @@ from increment import Analysis
 from increment.errors import CapabilityError, InvalidRequestError
 from increment.estimation.sitewide import SitewideImpact, SitewideRatioImpact
 from increment.plan import compile_decision_plan
-from increment.semantics.models import MeanMetric, QuantileMetric
+from increment.semantics.models import MeanMetric, Measure, QuantileMetric, RatioMetric
 from tests.analysis_factory import _make_event_log_table, make_analysis, make_analysis_like
 
 _REVENUE_PER_USER = MeanMetric(
@@ -23,11 +23,17 @@ _REVENUE_PER_USER = MeanMetric(
     entity="user_id",
     fact="purchase",
     aggregation="sum",
-    window_days=14,
 )
 
 
 _REVENUE_PER_USER_PLAN = compile_decision_plan(None, [_REVENUE_PER_USER], path="warehouse")
+_REVENUE_PER_SESSION = RatioMetric(
+    name="revenue_per_session",
+    entity="user_id",
+    numerator=Measure(fact="purchase", aggregation="sum"),
+    denominator=Measure(fact="session_end", aggregation="count"),
+)
+_REVENUE_PER_SESSION_PLAN = compile_decision_plan(None, [_REVENUE_PER_SESSION], path="warehouse")
 
 
 def _site_noise_rows() -> list[dict]:
@@ -195,24 +201,17 @@ class TestSitewide:
         assert raised.value.code == "estimation.sitewide.alpha"
 
     def test_ratio_metric_includes_non_exposed_site_noise(self, pricing_site_noise_con):
-        """``revenue_per_session`` (RatioMetric: purchase-revenue sum /
-        session_end count) sitewide() sums BOTH parts over the whole
-        site - the noise unit's purchase AND session_end must both be
-        counted, proving the no-exposure-join behavior for a ratio
-        metric too.
-
-        Numerator: same $883.45 as the sum-metric test (same purchase
-        fact, same window). Denominator: 40 exposed units' one session
-        each, plus the noise unit's one session_end, plus
-        ``_make_event_log_table``'s own ``u_keepalive`` session_end row
-        (2025-03-25, also inside pricing_tier_test's open-ended window)
-        = 42.
-        """
+        """An unwindowed ``revenue_per_session`` (purchase-revenue sum /
+        session_end count) sums BOTH parts over the whole site: the noise
+        unit's purchase and session_end both count. Denominator: 40 exposed
+        units' one session each, the noise unit's session_end, and the
+        ``u_keepalive`` session_end inside the open-ended window = 42."""
         a = Analysis(
             "pricing_tier_test",
             definitions_path="examples/definitions/",
             con=pricing_site_noise_con,
         )
+        a = make_analysis_like(a, [_REVENUE_PER_SESSION], plan=_REVENUE_PER_SESSION_PLAN)
         result = a.sitewide("revenue_per_session")
         assert isinstance(result, SitewideRatioImpact)
         assert result.analysis_population == "assigned"
@@ -220,6 +219,17 @@ class TestSitewide:
         assert result.n_treatment == 20
         assert result.site_total_numerator == pytest.approx(200.0 + 560.0 + 123.45)
         assert result.site_total_denominator == pytest.approx(42.0)
+
+    def test_windowed_ratio_refuses_before_evidence(self, pricing_site_noise_con):
+        a = Analysis(
+            "pricing_tier_test",
+            definitions_path="examples/definitions/",
+            con=pricing_site_noise_con,
+        )
+        with pytest.raises(CapabilityError) as refused:
+            a.sitewide("revenue_per_session")
+        assert refused.value.code == "facade.analysis.sitewide_metric_unaligned"
+        assert refused.value.context["window_days"] == (7, 7)
 
     def test_raises_capability_error_on_seam_family(self):
         """``sitewide()`` needs a native ``Analysis.from_definitions``
@@ -272,6 +282,7 @@ class TestSitewide:
             definitions_path="examples/definitions/",
             con=pricing_site_noise_con,
         )
+        a = make_analysis_like(a, [_REVENUE_PER_SESSION], plan=_REVENUE_PER_SESSION_PLAN)
         source = _native_source(a)
         complete = source.sitewide_evidence
         monkeypatch.setattr(

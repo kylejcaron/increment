@@ -493,7 +493,13 @@ def test_switchback_default_q_survives_plan_round_trip():
     assert len(analysis.run()) == 1
 
 
-def _switchback_analysis(reference=None, *, probability_ct=0.5, value_shift=0.0):
+def _switchback_analysis(
+    reference=None,
+    *,
+    probability_ct=0.5,
+    value_shift=0.0,
+    aggregation: str = "mean",
+):
     import pandas as pd
 
     from increment.analysis import Analysis
@@ -532,7 +538,7 @@ def _switchback_analysis(reference=None, *, probability_ct=0.5, value_shift=0.0)
         period="period",
         step="step",
         group="group",
-        metrics={"value": "mean"},
+        metrics={"value": aggregation},
         identification=Randomized(
             control_group="control", allocation={"control": 0.5, "treatment": 0.5}
         ),

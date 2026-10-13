@@ -332,16 +332,16 @@ MATRIX: dict[str, dict[str, Cell]] = {
     },
     "sitewide": {
         "mean": S(
-            note="randomized identification only; triggered sitewide requires unwindowed sum outcomes and complete calendar-window evidence"
+            note="randomized identification only; an unwindowed sum or count outcome aligns with the calendar-window site total; windowed or non-additive metrics are refused for both populations"
         ),
         "conversion": S(
-            note="randomized identification only; distinct converters are counted over the whole window; triggered conversion requires an unwindowed metric, and artifacts need the version-4 site_volume extension"
+            note="randomized identification only; unwindowed conversion is supported; windowed conversion is refused for both populations because per-unit outcomes cannot align with the whole site window"
         ),
         "ratio": S(
             note=(
-                "randomized identification only; numerator and denominator get "
-                "independent site sums; triggered sitewide requires unwindowed sum "
-                "components and complete calendar-window evidence"
+                "randomized identification only; numerator and denominator get independent site sums; "
+                "both components must be unwindowed sums or counts; windowed or non-additive components are refused "
+                "for both populations"
             )
         ),
         "retention": R(

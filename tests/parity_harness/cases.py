@@ -16,8 +16,9 @@ import numbers
 import os
 import random
 import tempfile
+import warnings
 from collections.abc import Callable, Iterable, Mapping
-from contextlib import ExitStack, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from functools import partial
@@ -662,6 +663,22 @@ def _covariate_rescaled_event_rows() -> list[dict[str, Any]]:
     return rows
 
 
+def _drop_revenue_window(defs_dict: dict[str, Any], *, active: bool) -> None:
+    """Declare ``revenue`` unwindowed so the case can also read it site-wide."""
+    if active:
+        revenue = next(metric for metric in defs_dict["metrics"] if metric["name"] == "revenue")
+        revenue.pop("window_days", None)
+
+
+@contextmanager
+def _ignoring_unwindowed_revenue(active: bool):
+    """Silence the unwindowed-metric notice for the case that declares one."""
+    with warnings.catch_warnings():
+        if active:
+            warnings.filterwarnings("ignore", message=r"metric 'revenue' has window_days=None")
+        yield
+
+
 def _publish_rounded_artifact(con: Any, native: Analysis) -> Analysis:
     from increment.estimation.sitewide import SitewideImpact
 
@@ -869,6 +886,7 @@ def _fixed_horizon_case(
     if unselected_winsorized_sibling:
         definitions_plan = frame_plan = AnalysisPlan(primary="revenue")
     defs_dict = ds.definitions_dict(plan=definitions_plan, breakout=breakout)
+    _drop_revenue_window(defs_dict, active=rounded_events)
     fixture.declare_store_dtype(defs_dict)
     defs_dict["dialect"] = warehouse.dialect
     defs_dict["metrics"].extend(
@@ -892,12 +910,14 @@ def _fixed_horizon_case(
 
     def build_definitions() -> Analysis:
         con = warehouse.connect(rows)
-        analysis = make_analysis(con, route_defs("from_definitions"), experiment="exp")
+        with _ignoring_unwindowed_revenue(rounded_events):
+            analysis = make_analysis(con, route_defs("from_definitions"), experiment="exp")
         return _track_connection(analysis, con)
 
     def build_artifact() -> Analysis:
         con = warehouse.connect(rows)
-        native = make_analysis(con, route_defs("from_unit_day_artifact"), experiment="exp")
+        with _ignoring_unwindowed_revenue(rounded_events):
+            native = make_analysis(con, route_defs("from_unit_day_artifact"), experiment="exp")
         return (_publish_rounded_artifact if rounded_events else _publish_and_adopt)(con, native)
 
     summary_metrics = _fixed_horizon_frame_metrics(

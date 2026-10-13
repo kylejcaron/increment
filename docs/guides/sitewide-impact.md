@@ -492,6 +492,14 @@ precision; adding units inside each cluster adds little.
   independently of exposure, and a quantile is a distributional
   statistic that is not additive across events. Both raise
   `CapabilityError` before any moments are even built.
+- **Windowed or non-additive metrics (both populations).** The site total is an
+  additive sum of all site events over the experiment calendar window
+  `[start, end]`. A per-unit outcome window anchored at each unit's enrollment
+  (or a non-additive aggregation such as `avg_event`, `min`, or `count_distinct`)
+  cannot align with that total; ratio components are subject to the same
+  rule. Both assigned and triggered calls refuse before loading evidence.
+  Declare an unwindowed metric with sum- or count-aggregated components on the
+  experiment instead. Unwindowed conversion metrics remain supported.
 - **A clustered experiment's metric type.** `Analysis.sitewide()`
   recognizes a declared cluster for `mean`, `conversion`, `retention`,
   and `ratio` metrics; any other type raises `CapabilityError` naming
@@ -547,8 +555,7 @@ dialect: duckdb
 
 fact_sources:
   - name: event_log
-    sql: |
-      SELECT * FROM analytics.event_log
+    sql: SELECT * FROM analytics.event_log
     timestamp_column: event_at
     entities:
       - user_id
@@ -560,8 +567,8 @@ fact_sources:
         column: revenue
         description: A purchase event with its revenue amount
       - name: session_end
-        column: null
-        description: A session ended (occurrence-only event)
+        column: session_count
+        description: One per session end event, for additive session totals
 """)
 Path("definitions/exposures.yaml").write_text("""\
 exposures:
@@ -575,25 +582,22 @@ Path("definitions/metrics.yaml").write_text("""\
 metrics:
   - type: mean
     name: revenue_per_user
-    description: "Total purchase revenue per user in a 1-day observation window"
+    description: "Total purchase revenue per user over the full calendar window"
     entity: user_id
     preferred_direction: increase
     fact: purchase
     aggregation: sum
-    window_days: 1
   - type: ratio
     name: revenue_per_session
-    description: "Revenue per session (ratio of sums)"
+    description: "Revenue per session (ratio of additive sums)"
     entity: user_id
     preferred_direction: increase
     numerator:
       fact: purchase
       aggregation: sum
-      window_days: 1
     denominator:
       fact: session_end
-      aggregation: count
-      window_days: 1
+      aggregation: sum
 """)
 Path("definitions/experiments.yaml").write_text("""\
 experiments:
@@ -634,7 +638,7 @@ import warnings
 import ibis
 import polars as pl
 
-from increment import Analysis
+from increment import Analysis, IncrementWarning
 
 random.seed(4)
 start = dt.datetime(2025, 3, 1, 9, 0)
@@ -649,6 +653,7 @@ for i in range(200):
             "user_id": user,
             "event": "page_view",
             "revenue": None,
+            "session_count": None,
             "experiment_id": "site_launch",
             "group_id": group,
             "store_id": None,
@@ -704,13 +709,22 @@ for d in range(30):
             "store_id": None,
         }
     )
-events = pl.DataFrame(rows).with_columns(pl.col("store_id").cast(pl.Utf8))
+events = pl.DataFrame(rows).with_columns(
+    pl.when(pl.col("event") == "session_end")
+    .then(1)
+    .otherwise(None)
+    .cast(pl.Int64)
+    .alias("session_count"),
+    pl.col("store_id").cast(pl.Utf8),
+)
 
 con = ibis.duckdb.connect()  # in-memory; swap for Snowflake/BigQuery/Postgres
 con.create_database("analytics")
 con.create_table("event_log", events.to_arrow(), database="analytics")
 
-analysis = Analysis.from_definitions("site_launch", "definitions/", con)
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", IncrementWarning)
+    analysis = Analysis.from_definitions("site_launch", "definitions/", con)
 
 sum_result = analysis.sitewide("revenue_per_user")
 print(f"observed site volume:   {sum_result.site_total_volume:,.2f}")
@@ -757,7 +771,7 @@ detectable amount.
 The second experiment, `store_rollout`, declares `cluster: store_id`.
 The store ID comes from exposure (`page_view`) rows, as described in
 [The data model](data-model.md#randomization-grain-vs-analysis-grain).
-Background purchases keep `data_as_of` past every enrolled user's 1-day observation window.
+Background purchases keep `data_as_of` through the experiment calendar window.
 
 ```python
 random.seed(7)
@@ -811,7 +825,7 @@ for arm_name in ("control", "treatment"):
                 )
         store_i += 1
 
-# Background purchases occur after enrolled users' one-day observation windows close.
+# Background purchases cover the experiment's full calendar window.
 for d in range(30):
     cluster_rows.append(
         {
@@ -836,10 +850,20 @@ for d in range(30):
         }
     )
 
-all_events = pl.concat([events, pl.DataFrame(cluster_rows)])
+cluster_events = pl.DataFrame(cluster_rows).with_columns(
+    pl.when(pl.col("event") == "session_end")
+    .then(1)
+    .otherwise(None)
+    .cast(pl.Int64)
+    .alias("session_count"),
+    pl.col("store_id").cast(pl.Utf8),
+)
+all_events = pl.concat([events, cluster_events.select(events.columns)])
 con.create_table("event_log", all_events.to_arrow(), database="analytics", overwrite=True)
 
-cluster_analysis = Analysis.from_definitions("store_rollout", "definitions/", con)
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", IncrementWarning)
+    cluster_analysis = Analysis.from_definitions("store_rollout", "definitions/", con)
 
 with warnings.catch_warnings(record=True) as cluster_warnings:
     # This is the documented cluster-population advisory, not an error in

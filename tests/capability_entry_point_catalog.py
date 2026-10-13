@@ -1496,15 +1496,25 @@ _AUXILIARY_ROWS: tuple[EntryRow, ...] = (
         (
             "sitewide_definitions_assigned_supported",
             "sitewide_assigned_observational_refused",
+            "sitewide_definitions_metric_unaligned_refused",
         ),
-        ("sitewide_artifact_assigned_supported",),
+        (
+            "sitewide_artifact_assigned_supported",
+            "sitewide_artifact_metric_unaligned_refused",
+        ),
         _other_auxiliary_bindings("sitewide"),
     ),
     _triggered_auxiliary_row(
         "triggered-read-sitewide",
         "`sitewide(population='triggered')` with a declared trigger",
-        ("sitewide_definitions_triggered_supported",),
-        ("sitewide_artifact_triggered_supported",),
+        (
+            "sitewide_definitions_triggered_supported",
+            "sitewide_definitions_metric_unaligned_refused",
+        ),
+        (
+            "sitewide_artifact_triggered_supported",
+            "sitewide_artifact_metric_unaligned_refused",
+        ),
         (
             ("unit summary", "sitewide_from_unit_summary_triggered_population_refused"),
             ("unit panel", "sitewide_from_unit_panel_triggered_population_refused"),

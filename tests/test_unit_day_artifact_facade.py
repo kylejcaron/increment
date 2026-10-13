@@ -161,6 +161,7 @@ def _definitions(
     second_breakout_source: bool = False,
     cuped_metrics: tuple[str, ...] = (),
     site_volume_only: bool = False,
+    unwindowed_purchase: bool = False,
     open_ended: bool = False,
     empty_plan: bool = False,
     observation_end: str | None = None,
@@ -193,6 +194,9 @@ def _definitions(
         experiment["end"] = None
     if empty_plan:
         experiment["plan"] = {}
+    if unwindowed_purchase:
+        purchase = next(item for item in payload["metrics"] if item["name"] == "purchase_rate")  # ty: ignore[not-iterable]
+        purchase.pop("window_days", None)
     if site_volume_only:
         experiment["plan"] = {"secondaries": ["purchase_rate"]}
     if cuped_metrics:
@@ -670,9 +674,10 @@ def test_artifact_run_returns_assigned_and_triggered(tmp_path: Path) -> None:
 
 
 # Guards site-volume lookup from confusing a metric's logical name with its physical measure key.
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_site_volume_serves_logical_metric_names(tmp_path: Path) -> None:
 
-    definitions = _definitions(tmp_path, site_volume_only=True)
+    definitions = _definitions(tmp_path, site_volume_only=True, unwindowed_purchase=True)
     _con, native, context, store = _native(definitions=definitions)
     metric = next(item for item in native.metrics if item.name == "purchase_rate")
     assert metric.name != metric.fact
@@ -1121,14 +1126,16 @@ def test_artifact_assignment_counts_preserve_audit_counts_and_registered_refusal
 
 
 @pytest.mark.filterwarnings("ignore:sitewide under a declared cluster")
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_clustered_sitewide_supplies_assignment_counts(tmp_path: Path) -> None:
     from tests.test_analysis_trigger import _clustered_trigger_events, _defs_yaml_clustered
 
     con = ibis.duckdb.connect()
     con.create_table("cluster_trigger_events", obj=_clustered_trigger_events(n_stores_per_arm=40))
-    definitions = tmp_path / "clustered.yml"
+    definitions = tmp_path / "definitions.yaml"
+    definitions_text = _defs_yaml_clustered(trigger=None).replace("    window_days: 7\n", "")
     definitions.write_text(
-        _defs_yaml_clustered(trigger=None).replace(
+        definitions_text.replace(
             "start: 2024-01-01T00:00:00", "start: 2024-01-01T00:00:00\n    end: 2024-01-09T00:00:00"
         )
     )
@@ -1488,6 +1495,7 @@ def test_triggered_assignment_count_publication_requires_snapshot_evidence_befor
         native.close()
 
 
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_site_volume_extension_counts_non_enrolled_units_in_window(tmp_path: Path) -> None:
     """Regression: the enrolled-unit semi-join must not shrink site_volume's
     whole-population reading to enrolled units only. The site branch counts every
@@ -1496,7 +1504,7 @@ def test_site_volume_extension_counts_non_enrolled_units_in_window(tmp_path: Pat
     any exposure table still counts", tests/query/test_builders.py:6008). Seeds one
     purchase event for a user who is never exposed at all, inside the experiment
     window, and asserts the whole-site reading includes it."""
-    definitions = _definitions(tmp_path, site_volume_only=True)
+    definitions = _definitions(tmp_path, site_volume_only=True, unwindowed_purchase=True)
     con, native, context, store = _native(definitions=definitions)
     con.raw_sql(
         """
@@ -1524,6 +1532,7 @@ def test_site_volume_extension_counts_non_enrolled_units_in_window(tmp_path: Pat
     assert result.site_total_volume == pytest.approx(float(expected_events))  # ty: ignore[unresolved-attribute]
 
 
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 @pytest.mark.parametrize(
     ("day_boundary", "window_start", "window_end"),
     [
@@ -1541,6 +1550,7 @@ def test_site_volume_coverage_ends_at_the_enrollment_end_not_the_observation_end
     definitions = _definitions(
         tmp_path,
         site_volume_only=True,
+        unwindowed_purchase=True,
         observation_end="2025-03-01",
         day_boundary=day_boundary,
     )
@@ -1615,6 +1625,7 @@ def test_site_volume_context_without_observation_end_is_unchanged(
     assert entry.canonical_definition_json == frozen["site_volume_definition_json"]
 
 
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_site_volume_extension_matches_unpinned_total_when_filtered_on_a_joined_dim(
     tmp_path: Path,
 ) -> None:
@@ -1678,7 +1689,6 @@ def test_site_volume_extension_matches_unpinned_total_when_filtered_on_a_joined_
             "preferred_direction": "increase",
             "fact": "loyalty_purchase",
             "aggregation": "sum",
-            "window_days": 14,
             "filters": [{"property": "loyalty_tier", "op": "equals", "values": ["gold"]}],
         }
     )
