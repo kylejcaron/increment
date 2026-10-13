@@ -572,13 +572,12 @@ Path("definitions/metrics.yaml").write_text("""\
 metrics:
   - type: mean
     name: revenue_per_user
-    description: "Total purchase revenue per user over 14 days"
+    description: "Total purchase revenue per user in a 1-day observation window"
     entity: user_id
     preferred_direction: increase
     fact: purchase
     aggregation: sum
-    window_days: 14
-
+    window_days: 1
   - type: ratio
     name: revenue_per_session
     description: "Revenue per session (ratio of sums)"
@@ -587,11 +586,11 @@ metrics:
     numerator:
       fact: purchase
       aggregation: sum
-      window_days: 14
+      window_days: 1
     denominator:
       fact: session_end
       aggregation: count
-      window_days: 14
+      window_days: 1
 """)
 Path("definitions/experiments.yaml").write_text("""\
 experiments:
@@ -755,8 +754,7 @@ detectable amount.
 The second experiment, `store_rollout`, declares `cluster: store_id`.
 The store ID comes from exposure (`page_view`) rows, as described in
 [The data model](data-model.md#randomization-grain-vs-analysis-grain).
-Background purchases keep `data_as_of` past every enrolled store's
-14-day window close.
+Background purchases keep `data_as_of` past every enrolled user's 1-day observation window.
 
 ```python
 random.seed(7)
