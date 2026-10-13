@@ -681,7 +681,7 @@ def _assert_duration_guard_change_is_not_regressed(
     tmp_path: Path, baseline_seconds: float, current_seconds: float
 ):
     evidence = tmp_path / "evidence"
-    nodeids = ["tests/a.py::t1", "tests/a.py::t2", "tests/c.py::t3", "tests/d.py::t4"]
+    nodeids = ["tests/a.py::t1", "tests/b.py::t2", "tests/c.py::t3", "tests/d.py::t4"]
     current = [current_seconds, 1.0, 1.0, 1.0]
     baseline_values = [baseline_seconds, 1.0, 1.0, 1.0]
     _write_run(
@@ -748,6 +748,31 @@ def test_duration_guard_shard_case_work_regression(tmp_path: Path):
         for line in result.stdout.splitlines()
         if line.startswith("::warning::")
     )
+
+
+def test_duration_guard_caps_annotations_with_file_and_shard_regressions(tmp_path: Path):
+    evidence = tmp_path / "evidence"
+    baseline = tmp_path / "baseline.json"
+    durations = {f"tests/test_{index}.py::t": 10.0 for index in range(5)}
+    events = [
+        _event(phase, 18 if phase == "call" else 0, nodeid=nodeid, canonical_nodeid=nodeid)
+        for nodeid in durations
+        for phase in ("setup", "call", "teardown")
+    ]
+    _write_run(evidence, events=events)
+    baseline.write_text(json.dumps(durations))
+
+    result = _run_report(evidence, "--duration-baseline", str(baseline))
+    guard_annotations = [
+        line
+        for line in result.stdout.splitlines()
+        if line.startswith("::warning::Runtime regression")
+    ]
+
+    assert result.returncode == 0
+    assert len(guard_annotations) <= 6
+    assert any("tests/test_0.py" in line for line in guard_annotations)
+    assert any("shard case work" in line for line in guard_annotations)
 
 
 def test_duration_guard_inconclusive_when_coverage_low(tmp_path: Path):

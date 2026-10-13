@@ -678,6 +678,13 @@ def _github_warning(message: str) -> None:
 
 
 def _emit_duration_guard_annotations(guard: Mapping[str, Any]) -> None:
+    shard = guard["shard_case_work"]
+    shard_summary = (
+        f"; shard case work regressed from {shard['baseline_seconds']:.3f}s "
+        f"to {shard['current_seconds']:.3f}s"
+        if shard["regressed"]
+        else ""
+    )
     if guard["status"] == "inconclusive":
         summary = (
             f"Runtime regression comparison inconclusive ({', '.join(guard['reasons'])}); "
@@ -691,17 +698,11 @@ def _emit_duration_guard_annotations(guard: Mapping[str, Any]) -> None:
             f"Runtime regression summary: {len(guard['regressed_files'])} regressed files; "
             f"{guard['compared_tests']} compared tests"
         )
-    _github_warning(summary)
+    _github_warning(summary + shard_summary)
     for item in [file for file in guard["files"] if file["regressed"]][:5]:
         _github_warning(
             f"Runtime regression for {item['file']}: "
             f"{item['baseline_seconds']:.3f}s to {item['current_seconds']:.3f}s"
-        )
-    if guard["shard_case_work"]["regressed"]:
-        shard = guard["shard_case_work"]
-        _github_warning(
-            f"Runtime regression for shard case work: "
-            f"{shard['baseline_seconds']:.3f}s to {shard['current_seconds']:.3f}s"
         )
 
 
