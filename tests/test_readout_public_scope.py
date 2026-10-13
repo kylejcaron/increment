@@ -106,7 +106,7 @@ def test_default_repr_qualifies_comparisons_families_and_interval_meaning():
     assert rendered.count("Multiplicity (primary)") == 1
     assert rendered.count("Multiplicity (secondary)") == 1
     assert "family" in rendered
-    assert "inconclusive about direction" in rendered
+    assert "does not reject; inconclusive" in rendered
     assert "direction supported" in rendered
     assert "not evidence of no effect" in rendered
     assert "Selection:" in rendered
@@ -123,7 +123,7 @@ def test_readout_table_uses_qualification_bullets_and_keeps_interpretation_per_r
     assert "Interpretation:" not in subtitle and "Interpretation:" not in html
     assert "Interval interpretation" in html
     assert 'th[id="Interval-interpretation"]{width:18em' in html
-    assert "Excludes null — increase supported" in html
+    assert "Excludes zero — increase established" in html
     assert results[0].source_snapshot_id not in subtitle
 
 
@@ -136,6 +136,29 @@ def test_readout_table_escapes_user_text_in_qualification_list():
 
     assert "<img" not in subtitle
     assert "&lt;img src=x&gt;" in subtitle
+
+
+def test_readout_table_preserves_title_and_subtitle_without_notes():
+    table = readout_table(
+        [
+            {
+                "metric": "revenue",
+                "method": "unadjusted",
+                "lift": 0.1,
+                "lower": 0.0,
+                "higher": 0.2,
+                "stat_sig": False,
+                "group_id": "treatment",
+            }
+        ],
+        title="Experiment A",
+        subtitle="Week 1",
+    )
+
+    html = table.gt().as_raw_html()
+
+    assert "Experiment A" in html
+    assert "Week 1" in html
 
 
 def test_absolute_margin_repr_matches_exported_additive_interpretation():
@@ -174,7 +197,8 @@ def test_absolute_margin_repr_matches_exported_additive_interpretation():
     latency = next(row for row in estimates_to_readout(results) if row["metric"] == "latency")
     rendered = repr(results)
 
-    assert "direction supported (decrease)" in latency["effect_interpretation"]
+    assert "effect direction not established" in latency["effect_interpretation"]
+    assert "effect direction supported" not in latency["effect_interpretation"]
     assert latency["effect_interpretation"] in rendered
 
 
@@ -197,6 +221,30 @@ def test_absolute_margin_uses_additive_interval_not_relative_interval():
 
     assert "direction supported (decrease)" in row["effect_interpretation"]
     assert "increase supported" not in row["effect_interpretation"]
+
+
+def test_margin_success_below_zero_does_not_claim_increase():
+    from increment.tables import estimates_to_readout
+
+    estimate = LiftEstimate(
+        metric="latency",
+        group_id="treatment",
+        method="unadjusted",
+        method_role="decision",
+        lift=Estimate(value=-0.03, lb=-0.04, ub=-0.02, level=0.95),
+        null_lift=0.0,
+        null_abs=-0.05,
+        abs_diff=-0.03,
+        abs_lb=-0.04,
+        abs_ub=-0.02,
+        alternative="greater",
+    )
+    (row,) = estimates_to_readout([estimate])
+
+    assert "rejects the null" in row["effect_interpretation"]
+    assert "margin met" in row["effect_interpretation"]
+    assert "effect direction supported (decrease)" in row["effect_interpretation"]
+    assert "increase" not in row["effect_interpretation"]
 
 
 def test_absolute_margin_without_additive_interval_does_not_fall_back_to_relative():
@@ -250,6 +298,54 @@ def test_estimate_frames_preserve_unknown_nullable_evidence_and_daily_values():
     assert daily["unavailable_cell_count"].tolist() == [0]
 
 
+def test_daily_mean_repr_shows_values_without_treatment_control_contrast():
+    values = DailyMetricValues(
+        [
+            DailyMetricValue(
+                ds=date(2024, 1, 1),
+                metric="revenue",
+                group_id="control",
+                value=Estimate(value=10.0, lb=9.0, ub=11.0, level=0.95),
+                n=100,
+            ),
+            DailyMetricValue(
+                ds=date(2024, 1, 1),
+                metric="revenue",
+                group_id="treatment",
+                value=Estimate(value=12.0, lb=11.0, ub=13.0, level=0.95),
+                n=100,
+            ),
+        ]
+    )
+
+    from increment._interpretation import interpret_readout, render_readout_text
+
+    rendered = render_readout_text(interpret_readout(values, None))
+
+    assert "absolute mean" in rendered
+    assert "10" in rendered and "12" in rendered
+    assert "arm control" in rendered and "arm treatment" in rendered
+    assert "treatment vs control" not in rendered
+    assert "Interpretation:" not in rendered
+
+
+def test_daily_unavailable_reason_is_preserved_in_readout():
+    values = DailyMetricValues(
+        [
+            DailyMetricValue(
+                ds=date(2024, 1, 1),
+                metric="revenue",
+                group_id="treatment",
+                value=None,
+                unavailable="few_units",
+                n=1,
+            )
+        ]
+    )
+
+    assert "few_units" in repr(values)
+
+
 def test_row_only_readout_table_retains_roster_and_family_qualifications():
     from increment.tables import estimates_to_readout
 
@@ -262,6 +358,15 @@ def test_row_only_readout_table_retains_roster_and_family_qualifications():
     assert "roster" in direct_html.lower()
     assert "family" in row_only_html.lower()
     assert "roster" in row_only_html.lower()
+
+
+def test_empty_breakout_table_keeps_segment_schema():
+    pytest.importorskip("coeftable")
+    from increment.breakout.estimates import BreakoutEstimates
+
+    html = readout_table(BreakoutEstimates([]), nest_by="segment").gt().as_raw_html()
+
+    assert "Scope and integrity unknown" in html
 
 
 def test_interpretation_labels_distinct_source_snapshots():
@@ -915,8 +1020,11 @@ def test_unavailable_estimate_repr_keeps_identity_and_failure_reason(estimate_ty
         "null_lift": 0.0,
         "lift": None,
         "failure_code": "readout.cell.missing_metric_observations",
-        "failure_context": {"reason": "missing_metric_observations"},
-        "decision_scope_complete": False,
+        "failure_context": {
+            "reason": "missing_metric_observations",
+            "metric": "guard",
+            "group_id": "treatment",
+        },
     }
     if estimate_type is DailyLiftEstimate:
         fields.update(
@@ -947,6 +1055,13 @@ def test_unavailable_estimate_repr_keeps_identity_and_failure_reason(estimate_ty
     assert "treatment" in rendered
     assert "readout.cell.missing_metric_observations" in rendered
     assert "missing_metric_observations" in rendered
+    from increment._interpretation import interpret_readout, render_readout_text
+
+    collection_text = render_readout_text(interpret_readout([row], None))
+    if estimate_type is BreakoutEstimate:
+        assert "country US" in collection_text
+    elif estimate_type is DailyLiftEstimate:
+        assert "date 2025-01-01" in collection_text
 
 
 def test_cell_reason_preserves_persisted_failure():
@@ -1012,6 +1127,18 @@ def test_missing_arm_for_one_metric_is_a_typed_cell_failure_while_another_observ
     assert "treatment" in rendered
     assert "readout.cell.missing_metric_observations" in rendered
     assert "reason=" in rendered
+
+    from increment.tables import readout_table
+
+    failed_repr = repr(results)
+    assert "unavailable guard:" in failed_repr.lower()
+    failed_table = readout_table(results).gt().as_raw_html()
+    assert "guard" in failed_table
+    corrected = _analysis(_frame(guard_constant=False)).run()
+    assert corrected.metadata.scope.decision_complete("assigned") is True
+    assert "guard" in repr(corrected)
+    corrected_table = readout_table(corrected).gt().as_raw_html()
+    assert "guard" in corrected_table
     assert failed.lift is None
 
     path = tmp_path / "partial-required-cell.parquet"
@@ -1277,6 +1404,9 @@ def test_failed_multiarm_secondary_keeps_full_family_and_sensitivity_provenance(
     from increment.tables import readout_table
 
     html = readout_table(readout).gt().as_raw_html()
+    assert "treatment_a vs control" in html
+    assert "treatment_b vs control" in html
+    assert "required cells" in html.lower()
     assert "Unadjusted for multiplicity" not in html
     restored = ReadoutResults.model_validate_json(results.model_dump_json())
     assert restored.metadata == results.metadata

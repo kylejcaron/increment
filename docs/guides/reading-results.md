@@ -29,31 +29,37 @@ The `readout_table` coeftable keeps per-row estimate evidence compact:
 decision-scope completeness, partial-view state, integrity, availability,
 multiplicity, and advisories appear as source-attributed qualification bullets
 in the header. Source identifiers are abbreviated there; the full identifiers
-remain in result objects and evidence columns. Each effect row uses a compact
-interval-interpretation label; the full restrained explanation remains in
-the collection `repr`. Failure rows keep a concise `Failure` column with their
-full structured context on the result object.
+remain in result objects and evidence columns. Each effect row includes a
+compact interval-interpretation label; the full restrained explanation remains
+in the collection `repr`. Failure rows keep the registered failure explanation
+in a `Failure` column and their full structured context on the result object.
 
 Scoped result collections also carry qualifications in their default
 `repr`: integrity and scope completeness precede availability, multiplicity,
-advisories, and effects. A failed integrity check is not hidden by an
-otherwise favorable estimate, and `not_rejected` means no detected mismatch,
-not proof of valid randomization. The collection display includes retained
-scope even when filtering leaves no visible rows.
+advisories, row qualifications, and effects. A failed integrity check is not
+hidden by an otherwise favorable estimate, and `not_rejected` means no
+detected mismatch, not proof of valid randomization. The collection display
+includes retained scope even when filtering leaves no visible rows.
 
-For an effect with a retained interval and tested null, the collection display
-states whether the interval excludes the null in one direction or contains it.
-Containment is described as inconclusive about direction, not as evidence of
-no effect. Secondary selection status is shown separately from this interval
-interpretation; neither is a ship/no-ship verdict.
+Interpretation separates the tested-null outcome from effect direction.
+An interval containing the tested null is inconclusive, not evidence of no
+effect. Excluding a nonzero margin can meet that test without establishing an
+increase or decrease: direction is stated only when the interval also excludes
+zero on the result's own axis. Absolute-native estimates and contrasts use
+additive intervals; relative rows with an absolute margin use their retained
+additive interval; sequential ratio bounds are interpreted after conversion to
+lift coordinates. Daily arm means are values, not treatment/control contrasts.
+Secondary selection status is shown separately from interval evidence; neither
+is a ship/no-ship verdict.
 
-`LiftEstimates.to_frame()` and `ContrastResults.to_frame()` keep evidence
-portable in scalar and canonical-JSON columns, including `analysis_population`,
-`source_snapshot_id`, `integrity_status`/`integrity_code`/`integrity_context`,
-required/available/hidden cell counts and reasons, advisory disclosures, and
-multiplicity family status. `estimates_to_readout()` carries the same columns;
-use it when exporting or saving flattened readout rows. Null numeric evidence
-remains numeric null rather than a serialized placeholder.
+`to_frame()` on scoped collections and `estimates_to_readout()` retain portable
+scalar and canonical-JSON evidence columns, including comparison identity,
+`analysis_population`, `source_snapshot_id`, integrity status/code/context,
+required/available/hidden counts, unavailable identities and reasons,
+advisory codes/messages/context, posterior-unavailability reasons, and
+multiplicity family status. Nested disclosures are canonical JSON strings;
+numeric nulls remain numeric nulls. These fields retain source and population
+attribution across flattened and concatenated results.
 
 `readout_table(collection)` retains collection qualifications in its header.
 The zero-visible-row view is a deliberate exception to tables' usual reliance

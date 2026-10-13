@@ -3,13 +3,13 @@
 Requires the tables extra (``coeftable`` and ``pandas``). Must not be
 imported from ``increment.analysis``.
 
-``readout_table`` accepts a narwhals-supported native frame (pandas,
-polars, pyarrow, ...), a list of row dicts, or - via ``trend=`` - a raw
-``Sequence[DailyLiftEstimate]``, converted internally via
-``increment.breakout.projection.to_frame`` and renamed to the main
-table's ``segment`` column convention (``dimension_value`` -> ``segment``;
-``method`` already matches). Other per-day result lists convert via that
-same function directly instead.
+``readout_table`` accepts a scoped estimate collection, a narwhals-supported
+native frame (pandas, polars, pyarrow, ...), or a list of row dicts. Its
+``trend=`` option accepts a raw ``Sequence[DailyLiftEstimate]``, converted
+internally via ``increment.breakout.projection.to_frame`` and renamed to the
+main table's ``segment`` column convention (``dimension_value`` -> ``segment``;
+``method`` already matches). Other per-day result lists convert via that same
+function directly instead.
 """
 
 from __future__ import annotations
@@ -43,6 +43,9 @@ if TYPE_CHECKING:
     from coeftable import CoefTable, Theme
     from coeftable.theme import Direction
     from narwhals.typing import IntoDataFrame
+
+    from increment.breakout.estimates import EstimateList
+    from increment.estimation.contrast_results import ContrastResults
 
 
 _REFUSALS = refusals(
@@ -183,6 +186,7 @@ def _base_liftestimate_to_row(
         "stat_sig": _stat_sig(est),
         "null_lift": getattr(est, "null_lift", 0.0),
         "null_abs": getattr(est, "null_abs", None),
+        "abs_diff": getattr(est, "abs_diff", None),
         "abs_lb": getattr(est, "abs_lb", None),
         "abs_ub": getattr(est, "abs_ub", None),
         "relative_confidence_set": relative,
@@ -368,6 +372,7 @@ def contrast_results_to_readout(
                 "preferred_direction": result.preferred_direction,
                 "note": result.identifying_assumption,
                 "identifying_assumption": result.identifying_assumption,
+                "effect_interpretation": render_effect_interpretation(result),
                 "inference": result.inference,
                 "analysis_population": "assigned",
                 "role": result.role,
@@ -794,6 +799,7 @@ def _readout_evidence_notes(frame: Any) -> list[str]:
         + _family_notes(frame, populations, sources)
         + _advisory_notes(frame, populations, sources)
         + _cell_evidence_notes(frame, populations, sources)
+        + _row_qualification_notes(frame, populations, sources)
     )
 
 
@@ -818,20 +824,67 @@ def _integrity_notes(frame, populations, sources) -> list[str]:
     contexts = _column_values(frame, "integrity_code")
     required = _column_values(frame, "required_cell_count")
     available = _column_values(frame, "available_cell_count")
+    comparisons = _column_values(frame, "comparison")
     notes = []
     seen = set()
     for index, status in enumerate(statuses):
         if _is_missing(status):
             continue
-        identity = (status, *_row_attribution(populations, sources, index))
+        comparison = None if comparisons is None else comparisons[index]
+        identity = (status, *_row_attribution(populations, sources, index), comparison)
         if identity in seen:
             continue
         seen.add(identity)
         detail = "" if contexts is None or _is_missing(contexts[index]) else f" ({contexts[index]})"
-        note = f"Integrity {status}{detail}{_attribution_suffix(_display_attribution(populations, sources, index))}"
+        display = (*_display_attribution(populations, sources, index), comparison)
+        note = f"Integrity {status}{detail}{_attribution_suffix(display)}"
         if required is not None and available is not None:
             note += f"; required cells {required[index]}, available {available[index]}"
         notes.append(note + ".")
+    return notes
+
+
+def _row_qualification_notes(frame, populations, sources) -> list[str]:
+    notes = []
+    seen = set()
+    row_notes = _column_values(frame, "note")
+    advisory_values = _column_values(frame, "advisories")
+    posterior = _column_values(frame, "posterior_available")
+    posterior_codes = _column_values(frame, "posterior_reason_code")
+    posterior_contexts = _column_values(frame, "posterior_reason_context")
+    for index in range(len(frame)):
+        attribution = _row_attribution(populations, sources, index)
+        suffix = _attribution_suffix(_display_attribution(populations, sources, index))
+        note = None if row_notes is None else row_notes[index]
+
+        if (
+            posterior is not None
+            and not _is_missing(posterior[index])
+            and not bool(posterior[index])
+        ):
+            code = None if posterior_codes is None else posterior_codes[index]
+            context = None if posterior_contexts is None else posterior_contexts[index]
+            if isinstance(context, str):
+                try:
+                    context = json.loads(context)
+                except json.JSONDecodeError:
+                    pass
+            reason = _failure_disclosure(code, context, limit=None)
+            text = f"Posterior unavailable: {reason}{suffix}."
+            if (text, attribution) not in seen:
+                seen.add((text, attribution))
+                notes.append(text)
+        advisory_codes: set[str] = set()
+        if advisory_values is not None and not _is_missing(advisory_values[index]):
+            for item in json.loads(advisory_values[index]):
+                code = item.get("code")
+                if isinstance(code, str):
+                    advisory_codes.add(code)
+        if isinstance(note, str) and not any(code in note for code in advisory_codes):
+            text = f"Qualification: {note}{suffix}"
+            if (text, attribution) not in seen:
+                seen.add((text, attribution))
+                notes.append(text)
     return notes
 
 
@@ -930,16 +983,59 @@ def _cell_evidence_notes(frame, populations, sources) -> list[str]:
 
 def _compact_interval_interpretation(value: Any) -> str:
     text = str(value)
-    if "interval contains the tested null" in text:
-        return "Contains null — inconclusive"
-    for direction in ("increase", "decrease"):
-        if f"direction supported ({direction})" in text:
-            return f"Excludes null — {direction} supported"
-    if "spans opposing directions" in text:
-        return "Excludes null — mixed directions"
-    if "direction opposite the declared alternative" in text:
-        return "Excludes null — opposite direction"
+    if "does not reject; inconclusive" in text:
+        return "Contains tested null — inconclusive"
+    if "excludes zero" in text:
+        if "effect direction supported (increase)" in text:
+            return "Excludes zero — increase established"
+        if "effect direction supported (decrease)" in text:
+            return "Excludes zero — decrease established"
+        return "Excludes zero — direction not established"
+    if "rejects the null" in text:
+        if "effect direction supported (increase)" in text:
+            return "Rejects null — margin met; increase established"
+        if "effect direction supported (decrease)" in text:
+            return "Rejects null — margin met; decrease established"
+        return "Rejects null — margin met; direction not established"
+    if "does not meet the declared alternative" in text:
+        return "Does not meet declared alternative"
     return text
+
+
+def _row_qualification_columns(frame: Any, n: int) -> dict[str, list[str]]:
+    columns = {}
+    notes = _column_values(frame, "note")
+    if notes is not None and any(not _is_missing(value) for value in notes):
+        columns["Qualification"] = ["" if _is_missing(value) else str(value) for value in notes]
+    posterior = _column_values(frame, "posterior_available")
+    codes = _column_values(frame, "posterior_reason_code") or [None] * n
+    contexts = _column_values(frame, "posterior_reason_context") or [None] * n
+    if posterior is not None and any(
+        not _is_missing(value) and not bool(value) for value in posterior
+    ):
+        columns["Posterior availability"] = [
+            ""
+            if _is_missing(available) or bool(available)
+            else _failure_disclosure(code, context, limit=None)
+            for available, code, context in zip(posterior, codes, contexts, strict=True)
+        ]
+    additive = _column_values(frame, "abs_diff")
+    if additive is not None and any(not _is_missing(value) for value in additive):
+        lower = _column_values(frame, "abs_lb") or [None] * n
+        upper = _column_values(frame, "abs_ub") or [None] * n
+        columns["Additive effect"] = [
+            ""
+            if _is_missing(point)
+            else f"{point:.6g}"
+            + (
+                f"; interval [{'−∞' if _is_missing(low) else f'{low:.6g}'}, "
+                f"{'+∞' if _is_missing(high) else f'{high:.6g}'}]"
+                if not _is_missing(low) or not _is_missing(high)
+                else "; interval unavailable"
+            )
+            for point, low, high in zip(additive, lower, upper, strict=True)
+        ]
+    return columns
 
 
 def _rendered_metadata_columns(
@@ -1014,6 +1110,7 @@ def _rendered_metadata_columns(
             "" if _is_missing(value) else _compact_interval_interpretation(value)
             for value in interpretations
         ]
+    columns.update(_row_qualification_columns(frame, n))
     levels = _column_values(frame, "level")
     if show_interval_level and levels is not None:
         distinct = {v for v in levels if not _is_missing(v)}
@@ -1507,7 +1604,7 @@ def _readout_input_frame(data: Any, nw: Any, pd: Any) -> tuple[Any, tuple[str, .
 
 # Keep trend labels aligned with ``_resolve_trend_frame``.
 def readout_table(
-    data: IntoDataFrame | list[dict[str, Any]],
+    data: IntoDataFrame | list[dict[str, Any]] | EstimateList[Any] | ContrastResults,
     *,
     title: str = "Experiment Readout",
     subtitle: str = "",
@@ -1532,9 +1629,9 @@ def readout_table(
     declared favorability. ``estimates_to_readout`` emits explicitly
     posterior-qualified values which are rendered only when
     ``advisory=True``; a shifted ``null_lift`` also draws a dashed forest
-    reference line. Row caveats (``note``, ``excluded``,
-    ``low_reliability``, ``inference``) ride along in the frame and
-    render nowhere.
+    reference line. Row ``note`` values and posterior refusal reasons are
+    rendered as qualifications; ``excluded``, ``low_reliability``, and
+    ``inference`` remain available in the input frame.
 
     For ``binomial_set`` rows, the table adds a ``Numerical qualification``
     column. Its values identify ``scipy_special_function_error_model_conditional_v1``
@@ -1578,6 +1675,10 @@ def readout_table(
     import pandas as pd
 
     frame, scope_header = _readout_input_frame(data, nw, pd)
+    if nest_by == "segment" and not len(frame) and "segment" not in frame.columns:
+        frame = frame.with_columns(
+            nw.new_series("segment", [], dtype=nw.String, backend=nw.get_native_namespace(frame))
+        )
     if nest_by == "segment" and frame["method"].n_unique() > 1:
         _raise("tables.readout_table_nest")
 
@@ -1724,7 +1825,7 @@ def readout_table(
                 + f"{body}</ul>"
             ),
         )
-    elif notes or subtitle:
+    elif not title and (notes or subtitle):
         title = " • ".join(([subtitle] if subtitle else []) + notes)
         subtitle = ""
     return table.header(title, subtitle)

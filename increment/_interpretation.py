@@ -69,6 +69,8 @@ def _unscoped_cell(row) -> InterpretedCell:
     failure_message = render_readout_failure(failure_code, failure_context)
     if failure_code is not None and failure_message is None:
         failure_message = f"{failure_code}: {_json(failure_context) or '{}'}"
+    elif getattr(row, "unavailable", None) is not None:
+        failure_message = f"Unavailable: {row.unavailable}"
     return InterpretedCell(
         key=CellKey.from_row(row),
         required=False,
@@ -182,9 +184,13 @@ def interpret_readout(rows, metadata: ReadoutMetadata | None) -> ReadoutInterpre
                 treatment = cell.group_id if cell.kind != "contrast" else cell.treatment_group
                 row = row_by_key.get((source_id, cell))
                 control = (
-                    cell.control_group
-                    or getattr(row, "control_group", None)
-                    or getattr(roster, "control_group", None)
+                    None
+                    if _is_daily_value(row)
+                    else (
+                        cell.control_group
+                        or getattr(row, "control_group", None)
+                        or getattr(roster, "control_group", None)
+                    )
                 )
                 by_comparison.setdefault((control, treatment), []).append(cell)
             for (control, treatment), cells in sorted(
@@ -213,6 +219,8 @@ def interpret_readout(rows, metadata: ReadoutMetadata | None) -> ReadoutInterpre
                     failure_message = render_readout_failure(failure_code, failure_context)
                     if failure_code is not None and failure_message is None:
                         failure_message = f"{failure_code}: {_json(failure_context) or '{}'}"
+                    elif row is not None and getattr(row, "unavailable", None) is not None:
+                        failure_message = f"Unavailable: {row.unavailable}"
                     sampling_available = (
                         sampling.available if sampling is not None else _has_sampling_result(row)
                     )
@@ -338,6 +346,15 @@ def readout_evidence_columns(
         return {
             "source_snapshot_id": group.source_snapshot_id,
             "analysis_population": group.population,
+            "control_group": group.control_group,
+            "treatment_group": group.treatment_group,
+            "comparison": (
+                None
+                if group.treatment_group is None
+                else f"{group.treatment_group} vs {group.control_group}"
+                if group.control_group is not None
+                else f"arm {group.treatment_group}"
+            ),
             "integrity_status": group.integrity_status,
             "integrity_code": group.integrity_code,
             "integrity_context": _json(group.integrity_context),
@@ -403,6 +420,16 @@ def readout_evidence_columns(
     return {
         "source_snapshot_id": source_snapshot_id,
         "analysis_population": getattr(row, "analysis_population", None),
+        "control_group": getattr(row, "control_group", None),
+        "treatment_group": getattr(row, "treatment_group", None) or getattr(row, "group_id", None),
+        "comparison": (
+            f"{getattr(row, 'treatment_group', None) or getattr(row, 'group_id', None)} vs "
+            f"{getattr(row, 'control_group', None)}"
+            if getattr(row, "control_group", None) is not None
+            else f"arm {getattr(row, 'group_id', None)}"
+            if getattr(row, "group_id", None) is not None
+            else None
+        ),
         "integrity_status": "unknown",
         "integrity_code": None,
         "integrity_context": None,
@@ -444,22 +471,52 @@ def _row_display_order(row):
     )
 
 
-def _render_group_label(group, *, metadata_known: bool, show_source: bool) -> str:
+def _is_daily_value(row) -> bool:
+    return hasattr(row, "value") and hasattr(row, "ds") and not hasattr(row, "lift")
+
+
+def _row_identity(row) -> tuple[str, ...]:
+    details = []
+    for attribute, label in (
+        ("dimension_value", getattr(row, "dimension", None) or "segment"),
+        ("ds", "date"),
+        ("method", "method"),
+        ("estimand", "estimand"),
+    ):
+        value = getattr(row, attribute, None)
+        if value is not None:
+            details.append(f"{label} {value}")
+    if getattr(row, "discovery", None) is not None:
+        details.append("selected" if row.discovery else "not selected")
+    return tuple(details)
+
+
+def _group_comparison(group, *, metadata_known: bool, include_dates: bool = False) -> str:
+    daily = bool(group.visible_rows) and all(_is_daily_value(row) for row in group.visible_rows)
+    if daily:
+        comparison = f"arm {group.treatment_group or 'unknown'}"
+        dates = sorted({str(row.ds) for row in group.visible_rows})
+        if include_dates and dates:
+            comparison += f"; date {', '.join(dates)}"
+        return comparison
     if group.control_group is not None and group.treatment_group is not None:
-        comparison = f"{group.treatment_group} vs {group.control_group}"
-    elif group.treatment_group is not None:
+        return f"{group.treatment_group} vs {group.control_group}"
+    if group.treatment_group is not None:
         control = (
             "control identity unknown"
             if not metadata_known
             else "control identity unavailable in retained scope"
         )
-        comparison = f"treatment {group.treatment_group}; {control}"
-    else:
-        comparison = (
-            "comparison unknown"
-            if not metadata_known
-            else "comparison not represented by retained scope"
-        )
+        return f"treatment {group.treatment_group}; {control}"
+    return (
+        "comparison unknown"
+        if not metadata_known
+        else "comparison not represented by retained scope"
+    )
+
+
+def _render_group_label(group, *, metadata_known: bool, show_source: bool) -> str:
+    comparison = _group_comparison(group, metadata_known=metadata_known, include_dates=True)
     source = (
         f" [{_display_source(group.source_snapshot_id)}]"
         if show_source and group.source_snapshot_id is not None
@@ -483,87 +540,102 @@ def render_readout_text(interpretation: ReadoutInterpretation) -> str:
             )
         )
         visible_rows = sorted(group.visible_rows, key=_row_display_order)
-        if group.integrity_status == "failed":
-            lines.append(f"Integrity: failed ({group.integrity_code or 'mismatch'}).")
-        elif group.integrity_status == "not_rejected":
-            lines.append(
-                "Integrity: not_rejected — no detected mismatch; not proof of valid randomization."
-            )
-        else:
-            lines.append(f"Integrity: {group.integrity_status} (not success).")
-        if group.partial:
-            lines.append("View: partial; do not treat visible cells as a complete decision.")
-        if group.decision_complete is None:
-            lines.append("Decision scope completeness: unknown.")
-        else:
-            state = "complete" if group.decision_complete else "incomplete"
-            lines.append(f"Decision scope completeness: {state}.")
-        if group.roster_complete is None:
-            lines.append("Population roster completeness: unknown.")
-        else:
-            state = "complete" if group.roster_complete else "incomplete"
-            source = group.roster_source or "source unknown"
-            lines.append(f"Population roster completeness: {state} ({source}).")
-        if group.required_cells:
-            required_available = sum(item.available for item in group.required_cells)
-            lines.append(
-                f"Required cells: {len(group.required_cells)}; available: {required_available}."
-            )
-        for item in group.unavailable_cells:
-            if item.visible:
-                lines.append(
-                    f"Unavailable {item.key.metric}: "
-                    f"{item.failure_message or item.failure_code or 'reason unavailable'}"
-                )
-        for item in group.hidden_cells:
-            if item.failure_message:
-                lines.append(f"Cell {item.key.metric} hidden by filter; {item.failure_message}")
-            else:
-                lines.append(f"Cell {item.key.metric} hidden by filter.")
-        families_by_id = {family.family_id: family for family in group.retained_families}
-        multiplicity = set()
-        for row in visible_rows:
-            role = getattr(row, "role", None) or "outcome"
-            family = families_by_id.get(getattr(row, "family_id", None))
-            status = getattr(row, "multiplicity_status", None)
-            if status is None and family is not None:
-                status = "adjusted" if family.family is not None else "exploratory_unadjusted"
-            if status is not None or family is not None:
-                multiplicity.add(
-                    (role, status or "unknown", "retained scope" if family is None else family.name)
-                )
-        for role, status, family_name in sorted(
-            multiplicity, key=lambda item: (_ROLE_ORDER.get(item[0], 3), item[2], item[1])
-        ):
-            lines.append(f"Multiplicity ({role}): {status}; family {family_name}.")
-        if not multiplicity and group.retained_families:
-            labels = sorted({family.name for family in group.retained_families})
-            lines.append(f"Multiplicity: retained scope; family {', '.join(labels)}.")
-        for advisory in group.advisories:
-            lines.append(f"Advisory {advisory.code}: {advisory.message}")
-        advisory_codes = {item.code for item in group.advisories}
-        cells_by_key = {item.key: item for item in group.source_cells}
-        for row in visible_rows:
-            cell = cells_by_key.get(CellKey.from_row(row))
-            if cell is not None and cell.posterior_available is False:
-                lines.append(
-                    f"Posterior unavailable {cell.posterior_reason_code}: "
-                    f"{_reason(cell.posterior_reason_context)}"
-                )
-            if getattr(row, "note", None) and not any(code in row.note for code in advisory_codes):
-                lines.append(f"Qualification: {row.note}")
-            lines.extend(_render_effect(row))
-            if getattr(row, "role", None) == "secondary":
-                discovery = getattr(row, "discovery", None)
-                selection = (
-                    "selected"
-                    if discovery is True
-                    else "not selected"
-                    if discovery is False
-                    else "not recorded"
-                )
-                lines.append(f"Selection: {selection}; separate from interval evidence.")
+        lines.extend(_render_group_scope(group, visible_rows))
+        lines.extend(_render_group_rows(group, visible_rows))
     return "\n".join(lines)
+
+
+def _render_group_scope(group, visible_rows) -> list[str]:
+    lines = []
+    if group.integrity_status == "failed":
+        lines.append(f"Integrity: failed ({group.integrity_code or 'mismatch'}).")
+    elif group.integrity_status == "not_rejected":
+        lines.append(
+            "Integrity: not_rejected — no detected mismatch; not proof of valid randomization."
+        )
+    else:
+        lines.append(f"Integrity: {group.integrity_status} (not success).")
+    if group.partial:
+        lines.append("View: partial; do not treat visible cells as a complete decision.")
+    if group.decision_complete is None:
+        lines.append("Decision scope completeness: unknown.")
+    else:
+        state = "complete" if group.decision_complete else "incomplete"
+        lines.append(f"Decision scope completeness: {state}.")
+    if group.roster_complete is None:
+        lines.append("Population roster completeness: unknown.")
+    else:
+        state = "complete" if group.roster_complete else "incomplete"
+        source = group.roster_source or "source unknown"
+        lines.append(f"Population roster completeness: {state} ({source}).")
+    if group.required_cells:
+        required_available = sum(item.available for item in group.required_cells)
+        lines.append(
+            f"Required cells: {len(group.required_cells)}; available: {required_available}."
+        )
+    for item in group.unavailable_cells:
+        if item.visible:
+            lines.append(
+                f"Unavailable {item.key.metric}: "
+                f"{item.failure_message or item.failure_code or 'reason unavailable'}"
+            )
+    for item in group.hidden_cells:
+        if item.failure_message:
+            lines.append(f"Cell {item.key.metric} hidden by filter; {item.failure_message}")
+        else:
+            lines.append(f"Cell {item.key.metric} hidden by filter.")
+    families_by_id = {family.family_id: family for family in group.retained_families}
+    multiplicity = set()
+    for row in visible_rows:
+        role = getattr(row, "role", None) or "outcome"
+        family = families_by_id.get(getattr(row, "family_id", None))
+        status = getattr(row, "multiplicity_status", None)
+        if status is None and family is not None:
+            status = "adjusted" if family.family is not None else "exploratory_unadjusted"
+        if status is not None or family is not None:
+            multiplicity.add(
+                (role, status or "unknown", "retained scope" if family is None else family.name)
+            )
+    for role, status, family_name in sorted(
+        multiplicity, key=lambda item: (_ROLE_ORDER.get(item[0], 3), item[2], item[1])
+    ):
+        lines.append(f"Multiplicity ({role}): {status}; family {family_name}.")
+    if not multiplicity and group.retained_families:
+        labels = sorted({family.name for family in group.retained_families})
+        lines.append(f"Multiplicity: retained scope; family {', '.join(labels)}.")
+    for advisory in group.advisories:
+        lines.append(f"Advisory {advisory.code}: {advisory.message}")
+    return lines
+
+
+def _render_group_rows(group, visible_rows) -> list[str]:
+    lines = []
+    advisory_codes = {item.code for item in group.advisories}
+    cells_by_key = {item.key: item for item in group.source_cells}
+    for row in visible_rows:
+        cell = cells_by_key.get(CellKey.from_row(row))
+        if cell is not None and cell.posterior_available is False:
+            lines.append(
+                f"Posterior unavailable {cell.posterior_reason_code}: "
+                f"{_reason(cell.posterior_reason_context)}"
+            )
+        if getattr(row, "note", None) and not any(code in row.note for code in advisory_codes):
+            lines.append(f"Qualification: {row.note}")
+        lines.extend(_render_effect(row))
+        identity = _row_identity(row)
+        if identity:
+            lines.append(f"Result identity: {'; '.join(identity)}.")
+        if getattr(row, "role", None) == "secondary":
+            discovery = getattr(row, "discovery", None)
+            selection = (
+                "selected"
+                if discovery is True
+                else "not selected"
+                if discovery is False
+                else "not recorded"
+            )
+            lines.append(f"Selection: {selection}; separate from interval evidence.")
+    return lines
 
 
 def _display_source(source_id: str | None) -> str | None:
@@ -579,15 +651,26 @@ def render_readout_qualifications(interpretation: ReadoutInterpretation) -> tupl
     """Return compact, source-attributed qualifications for a rendered table header."""
     if not interpretation.groups:
         return ("Scope and integrity unknown.",)
+    comparisons = [
+        _group_comparison(group, metadata_known=interpretation.metadata_known)
+        for group in interpretation.groups
+    ]
     attribution_count = len(
-        {(group.population, group.source_snapshot_id) for group in interpretation.groups}
+        {
+            (group.population, group.source_snapshot_id, comparison)
+            for group, comparison in zip(interpretation.groups, comparisons, strict=True)
+        }
     )
     repeat_attribution = attribution_count > 1
     bullets: list[str] = []
-    for group in interpretation.groups:
+    for group, comparison in zip(interpretation.groups, comparisons, strict=True):
         attribution = [
             value
-            for value in (group.population, _display_source(group.source_snapshot_id))
+            for value in (
+                group.population,
+                _display_source(group.source_snapshot_id),
+                comparison if repeat_attribution else None,
+            )
             if value
         ]
         suffix = "" if not attribution else f" [{', '.join(attribution)}]"
@@ -596,16 +679,6 @@ def render_readout_qualifications(interpretation: ReadoutInterpretation) -> tupl
             attribution_suffix = group_suffix if repeat_attribution or not bullets else ""
             bullets.append(text + attribution_suffix)
 
-        comparison = (
-            f"{group.treatment_group} vs {group.control_group}"
-            if group.control_group is not None and group.treatment_group is not None
-            else f"treatment {group.treatment_group}; control identity "
-            + ("unknown" if not interpretation.metadata_known else "unavailable in retained scope")
-            if group.treatment_group is not None
-            else "comparison unknown"
-            if not interpretation.metadata_known
-            else "comparison not represented by retained scope"
-        )
         add_bullet(f"Comparison: {comparison}")
         integrity = f"Integrity: {group.integrity_status}"
         if group.integrity_code:
@@ -678,6 +751,18 @@ def render_readout_qualifications(interpretation: ReadoutInterpretation) -> tupl
             context = _json(advisory.context)
             detail = "" if not context else f"; context {context}"
             add_bullet(f"Advisory {advisory.code}: {advisory.message}{detail}")
+        cells_by_key = {item.key: item for item in group.source_cells}
+        advisory_codes = {advisory.code for advisory in group.advisories}
+        for row in group.visible_rows:
+            cell = cells_by_key.get(CellKey.from_row(row))
+            if cell is not None and cell.posterior_available is False:
+                add_bullet(
+                    f"Posterior unavailable {cell.posterior_reason_code}: "
+                    f"{_reason(cell.posterior_reason_context)}"
+                )
+            note = getattr(row, "note", None)
+            if note and not any(code in note for code in advisory_codes):
+                add_bullet(f"Qualification: {note}")
     return tuple(bullets)
 
 
@@ -703,6 +788,24 @@ def _retained_intervals(row, estimate, scale: str):
         or getattr(row, "sampling_available", None) is False
     ):
         return (), None
+    sequential = getattr(row, "sequential_result", None)
+    if sequential is not None:
+        bounds = sequential.bounds
+        if bounds.status == "unavailable":
+            return (), None
+        components = getattr(bounds, "components", None)
+        ratio_intervals = (
+            tuple((component.lower, component.upper) for component in components)
+            if components is not None
+            else ((bounds.lower, bounds.upper),)
+        )
+        return tuple(
+            (
+                None if lower is None else lower - 1.0,
+                None if upper is None else upper - 1.0,
+            )
+            for lower, upper in ratio_intervals
+        ), getattr(bounds, "level", None)
     confidence_set = getattr(row, "confidence_set", None)
     if confidence_set is not None:
         interval = getattr(confidence_set, "additive" if scale == "absolute" else "relative", None)
@@ -729,8 +832,13 @@ def _retained_intervals(row, estimate, scale: str):
             if estimate is None or (estimate.lb is None and estimate.ub is None):
                 return (), getattr(estimate, "level", None)
             return ((estimate.lb, estimate.ub),), getattr(estimate, "level", None)
-        lower = getattr(row, "abs_lb", None)
-        upper = getattr(row, "abs_ub", None)
+        if getattr(row, "null_abs", None) is not None:
+            lower = getattr(row, "abs_lb", None)
+            upper = getattr(row, "abs_ub", None)
+        elif estimate is not None:
+            lower, upper = estimate.lb, estimate.ub
+        else:
+            lower = upper = None
         if lower is None and upper is None:
             return (), getattr(estimate, "level", None)
         return ((lower, upper),), getattr(estimate, "level", None)
@@ -740,78 +848,79 @@ def _retained_intervals(row, estimate, scale: str):
     binomial = getattr(row, "binomial_set", None)
     if binomial is not None:
         return ((binomial.lower, binomial.upper),), binomial.level
-    sequential = getattr(row, "sequential_result", None)
-    if sequential is not None:
-        bounds = sequential.bounds
-        if bounds.status == "unavailable":
-            return (), None
-        components = getattr(bounds, "components", None)
-        intervals = (
-            tuple((component.lower, component.upper) for component in components)
-            if components is not None
-            else ((bounds.lower, bounds.upper),)
-        )
-        return intervals, getattr(bounds, "level", None)
     if estimate is None or (estimate.lb is None and estimate.ub is None):
         return (), None
     return ((estimate.lb, estimate.ub),), getattr(estimate, "level", None)
 
 
 def _interval_interpretation(row, estimate, scale: str, *, contrast: bool):
-    null = (
-        getattr(row, "null_abs", None)
-        if contrast or scale == "absolute"
-        else getattr(row, "null_lift", None)
-    )
+    null_abs = getattr(row, "null_abs", None)
+    null_lift = getattr(row, "null_lift", None)
+    absolute_native = scale == "absolute" and null_abs is None
+    null = null_abs if null_abs is not None else 0.0 if absolute_native or contrast else null_lift
     alternative = getattr(row, "alternative", None)
     if null is None or alternative is None:
         return None
     intervals, level = _retained_intervals(row, estimate, scale)
     if not intervals:
-        if getattr(row, "null_abs", None) is not None:
+        if null_abs is not None:
             return "Interpretation: unavailable; the additive interval is not retained."
         return None
     contains_null = any(
         (lower is None or lower <= null) and (upper is None or null <= upper)
         for lower, upper in intervals
     )
-    if contains_null:
-        return (
-            "Interpretation: interval contains the tested null; inconclusive about "
-            "direction, not evidence of no effect."
-        )
-    directions = {
-        "increase" if lower is not None and lower > null else "decrease"
-        for lower, upper in intervals
-        if (lower is not None and lower > null) or (upper is not None and upper < null)
-    }
     level_note = "" if level is None else f" at {level:.1%} confidence"
-    if len(directions) != 1:
-        return f"Interpretation: confidence set excludes the tested null{level_note} but spans opposing directions."
-    direction = next(iter(directions))
-    if alternative == "greater" and direction != "increase":
-        return (
-            f"Interpretation: interval excludes the tested null{level_note} in the "
-            "direction opposite the declared alternative."
+    if contains_null:
+        return "Interpretation: does not reject; inconclusive, not evidence of no effect."
+    if null == 0:
+        outcome = f"excludes zero{level_note}"
+    else:
+        outcome = f"rejects the null{level_note} (margin met)"
+
+    alternative_direction = {"greater": "increase", "less": "decrease"}.get(alternative)
+    if alternative_direction is not None:
+        compatible = all(
+            (lower is not None and lower > null)
+            if alternative_direction == "increase"
+            else (upper is not None and upper < null)
+            for lower, upper in intervals
         )
-    if alternative == "less" and direction != "decrease":
-        return (
-            f"Interpretation: interval excludes the tested null{level_note} in the "
-            "direction opposite the declared alternative."
-        )
-    return (
-        f"Interpretation: interval excludes the tested null{level_note}; "
-        f"direction supported ({direction})."
-    )
+        if not compatible:
+            side = "below" if alternative_direction == "increase" else "above"
+            return (
+                f"Interpretation: does not support the declared alternative; "
+                f"interval lies entirely {side} the tested null."
+            )
+
+    zero_directions = set()
+    for lower, upper in intervals:
+        if lower is not None and lower > 0:
+            zero_directions.add("increase")
+        elif upper is not None and upper < 0:
+            zero_directions.add("decrease")
+        else:
+            zero_directions.add("undetermined")
+    if zero_directions == {"increase"}:
+        direction_note = "effect direction supported (increase)"
+    elif zero_directions == {"decrease"}:
+        direction_note = "effect direction supported (decrease)"
+    else:
+        direction_note = "effect direction not established"
+    return f"Interpretation: {outcome}; {direction_note}."
 
 
 def render_effect_interpretation(row) -> str | None:
     """Render a restrained interpretation from a row's retained interval and null."""
+    if hasattr(row, "value") and not hasattr(row, "lift") and not hasattr(row, "estimate"):
+        return None
     contrast = hasattr(row, "control_group")
     scale = (
         "absolute"
-        if contrast or getattr(row, "null_abs", None) is not None
-        else getattr(row, "value_scale", "relative")
+        if contrast
+        or getattr(row, "null_abs", None) is not None
+        or getattr(row, "value_scale", "relative") == "absolute"
+        else "relative"
     )
     estimate = getattr(row, "lift", None) or getattr(row, "estimate", None)
     return _interval_interpretation(row, estimate, scale, contrast=contrast)
@@ -897,6 +1006,21 @@ def _endpoint_text(endpoint, *, lower: bool):
 def _render_effect(row):
     lines = []
     role = getattr(row, "role", None) or "outcome"
+    if _is_daily_value(row):
+        value = getattr(row, "value", None)
+        if value is not None:
+            effect = (
+                f"{row.metric} (absolute mean, arm {row.group_id}, date {row.ds}): "
+                f"{value.value:.6g}"
+            )
+            if value.lb is not None or value.ub is not None:
+                low = "−∞" if value.lb is None else f"{value.lb:.6g}"
+                high = "+∞" if value.ub is None else f"{value.ub:.6g}"
+                effect += f", set [{low}, {high}]"
+                if value.level is not None:
+                    effect += f" at {value.level:.3g} confidence"
+            lines.append(effect + ".")
+        return lines
     contrast = hasattr(row, "control_group")
     scale = "absolute" if contrast else getattr(row, "value_scale", "relative")
     label = (
@@ -931,6 +1055,13 @@ def _render_effect(row):
                 f"{row.metric} additive effect: {row.abs_diff:.6g}; additive interval unavailable."
             )
 
+    lines.extend(_render_confidence_geometry(row))
+    lines.extend(_render_test_null(row, contrast=contrast, scale=scale))
+    return lines
+
+
+def _render_confidence_geometry(row) -> list[str]:
+    lines = []
     binomial = getattr(row, "binomial_set", None)
     if binomial is not None:
         high = "+∞" if binomial.upper is None else f"{binomial.upper:.6g}"
@@ -982,14 +1113,18 @@ def _render_effect(row):
                         f"{_endpoint_text(interval.upper, lower=False)}]; "
                         f"qualification {confidence_set.qualification}."
                     )
+    return lines
+
+
+def _render_test_null(row, *, contrast: bool, scale: str) -> list[str]:
     null_abs = getattr(row, "null_abs", None)
     null_lift = getattr(row, "null_lift", None)
     null = null_abs if null_abs is not None else null_lift
-    if getattr(row, "alternative", None) and null is not None:
-        unit = (
-            "absolute units"
-            if null_abs is not None or contrast or scale == "absolute"
-            else "relative lift"
-        )
-        lines.append(f"Test alternative: {row.alternative}; null ({unit}): {null:.6g}.")
-    return lines
+    if not getattr(row, "alternative", None) or null is None:
+        return []
+    unit = (
+        "absolute units"
+        if null_abs is not None or contrast or scale == "absolute"
+        else "relative lift"
+    )
+    return [f"Test alternative: {row.alternative}; null ({unit}): {null:.6g}."]
