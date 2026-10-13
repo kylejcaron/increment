@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -18,7 +19,7 @@ from increment.dashboard import (
     render_metric_details,
 )
 from increment.dashboard._app import build_payload, document
-from increment.dashboard._data import estimate_for_metric, row_for_metric
+from increment.dashboard._data import decision_rows, estimate_for_metric, row_for_metric
 from increment.errors import InvalidRequestError
 from tests.test_analysis_trigger import _events, _write_defs
 from tests.test_compatibility_js import _node_gate, _resolve_node, _running_in_ci
@@ -26,7 +27,9 @@ from tests.test_compatibility_js import _node_gate, _resolve_node, _running_in_c
 pytestmark = pytest.mark.filterwarnings("ignore::increment.errors.IncrementWarning")
 
 
-def _triggered_dashboard(tmp_path, *, sequential=False, extra_metric=False):
+def _triggered_dashboard(
+    tmp_path, *, sequential=False, extra_metric=False, fail_assigned_integrity=False
+):
     definitions = _write_defs(tmp_path, allocation_scheme="independent")
     plan = "primary: revenue\n      alternative: two-sided"
     if sequential:
@@ -45,7 +48,18 @@ def _triggered_dashboard(tmp_path, *, sequential=False, extra_metric=False):
         )
     definitions.write_text(definitions_text)
     con = ibis.duckdb.connect()
-    con.create_table("events", obj=_events(n_per_arm=40, trigger_rate=0.5, effect=0.8))
+    events = _events(n_per_arm=40, trigger_rate=0.5, effect=0.8)
+    if fail_assigned_integrity:
+        import pyarrow as pa
+
+        rows = events.select(["user_id", "group_id"]).to_pylist()
+        retained = [
+            index
+            for index, row in enumerate(rows)
+            if row["group_id"] != "C" or int(row["user_id"][1:]) < 10
+        ]
+        events = events.take(pa.array(retained))
+    con.create_table("events", obj=events)
     return Analysis.from_definitions(
         "exp",
         definitions,
@@ -122,6 +136,27 @@ def test_dashboard_snapshot_retains_population_specific_headline_and_group_evide
         assigned_row = row_for_metric(snapshot, "revenue", population="assigned")
         assert default_row is not None and default_row["analysis_population"] == "triggered"
         assert assigned_row is not None and assigned_row["analysis_population"] == "assigned"
+        assert set(snapshot.population_collections) == {"assigned", "triggered"}
+        retained_family_names = {}
+        for population in ("assigned", "triggered"):
+            collection = snapshot.population_collections[population]
+            assert collection.metadata is not None
+            scoped_rows = decision_rows(snapshot, population=population)
+            assert scoped_rows
+            assert {row["analysis_population"] for row in scoped_rows} == {population}
+            integrity = next(
+                item
+                for source in collection.metadata.scope.by_source.values()
+                for item in source.integrity
+                if item.analysis_population == population
+            )
+            assert {row["integrity_status"] for row in scoped_rows} == {integrity.status.value}
+            retained_family_names[population] = {
+                family["name"]
+                for row in scoped_rows
+                for family in json.loads(row["retained_family"])
+            }
+        assert retained_family_names["assigned"] == retained_family_names["triggered"]
         payload = build_payload(analysis, snapshot=snapshot)
         assert payload["defaultPopulation"] == "triggered"
         assert payload["populationOptions"] == ["assigned", "triggered"]
@@ -341,6 +376,71 @@ def test_explicit_triggered_sequential_run_returns_triggered_checkpoint_rows(tmp
         details = render_metric_details(snapshot, metric="revenue", population="triggered").text
         assert "readout.cell.unsupported_request" not in details
         assert "triggered" in details
+    finally:
+        analysis.close()
+
+
+@pytest.mark.slow
+def test_triggered_sequential_qualification_uses_selected_population(tmp_path):
+    from increment.dashboard._format import allocation_evidence
+
+    analysis = _triggered_dashboard(tmp_path, sequential=True)
+    try:
+        analysis.capture_sequential(finalized=True, as_of=dt.date(2024, 1, 15))
+        snapshot = prepare_dashboard(
+            analysis,
+            config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
+        )
+        assert snapshot.allocation is not None
+        assert snapshot.triggered_allocation is not None
+        assigned_evidence = allocation_evidence(snapshot.allocation)
+        triggered_evidence = allocation_evidence(snapshot.triggered_allocation)
+
+        assigned = render_header(snapshot, population="assigned").text
+        triggered = render_header(snapshot, population="triggered").text
+        assert "Dashboard allocation check (assigned" in assigned
+        assert assigned_evidence in assigned
+        assert "Dashboard triggered-population balance check (triggered" in triggered
+        assert triggered_evidence in triggered
+        assert "Dashboard allocation check (assigned" not in triggered
+
+        payload = build_payload(analysis, snapshot=snapshot)
+        assigned_payload = payload["populationViews"]["assigned"]["qualifications"]
+        triggered_payload = payload["populationViews"]["triggered"]["qualifications"]
+        assert assigned_evidence in assigned_payload
+        assert triggered_evidence in triggered_payload
+        assert "Dashboard allocation check (assigned" not in triggered_payload
+    finally:
+        analysis.close()
+
+
+@pytest.mark.slow
+def test_triggered_sequential_view_retains_failed_assigned_integrity(tmp_path):
+    analysis = _triggered_dashboard(tmp_path, sequential=True, fail_assigned_integrity=True)
+    try:
+        analysis.capture_sequential(finalized=True, as_of=dt.date(2024, 1, 15))
+        snapshot = prepare_dashboard(
+            analysis,
+            config=DashboardConfig(expected_allocation={"C": 0.5, "T": 0.5}),
+        )
+        assert snapshot.readout_collection is not None
+        assert snapshot.readout_collection.metadata is not None
+        assigned_integrity = next(
+            item
+            for source in snapshot.readout_collection.metadata.scope.by_source.values()
+            for item in source.integrity
+            if item.analysis_population == "assigned"
+        )
+        assert assigned_integrity.status == "failed"
+
+        expected = "Analysis assignment check (assigned population): failed."
+        triggered_header = render_header(snapshot, population="triggered").text
+        assert expected in triggered_header
+        assert "Analysis assignment check (assigned population): unknown" not in triggered_header
+        payload = build_payload(analysis, snapshot=snapshot)
+        triggered_payload = payload["populationViews"]["triggered"]["qualifications"]
+        assert expected in triggered_payload
+        assert expected in document(payload)
     finally:
         analysis.close()
 

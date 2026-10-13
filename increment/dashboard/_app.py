@@ -32,6 +32,7 @@ from increment.dashboard._data import (
     load_explore,
     metric_names,
     readout_csv,
+    readout_interpretation_text,
     row_for_metric,
     show_exploratory_metrics,
 )
@@ -51,12 +52,11 @@ from increment.dashboard._format import (
     missing_html,
     monitoring_sentence,
     null_text,
+    outcome_label,
     percent_text,
     population_label,
     primary_method,
     primary_tone,
-    result_caveats,
-    result_outcome_text,
     robust_fence,
     tail_word,
     timestamp_label,
@@ -67,7 +67,7 @@ from increment.dashboard._html import (
     render_details,
     render_health,
     render_metric_details,
-    results_notes,
+    render_results,
     results_table,
     results_warnings,
     temporal_figure,
@@ -199,10 +199,17 @@ def build_payload(analysis: Analysis, *, snapshot: DashboardSnapshot) -> dict[st
             if population == default
             else snapshot.population_estimates.get(population, snapshot.estimates)
         )
-        rows = snapshot.readout_rows if population == default else enriched_rows(estimates)
+        collection = snapshot.population_collections.get(population, snapshot.readout_collection)
+        rows = (
+            snapshot.readout_rows
+            if population == default
+            else enriched_rows(collection if collection is not None else estimates)
+        )
         scoped = replace(
             snapshot,
             estimates=tuple(estimates),
+            readout_collection=collection,
+            population_collections=snapshot.population_collections or {population: collection},
             population_estimates={population: tuple(estimates)},
             readout_rows=rows,
             group_data=tuple(
@@ -243,22 +250,25 @@ def _build_payload_for_population(
         scopes[key] = {"label": label, "dimension": dimension, "source": source}
         breakouts[key] = (source, dimension)
     table = results_table(snapshot) + results_warnings(snapshot)
+    qualifications = readout_interpretation_text(snapshot)
     return {
         "title": snapshot.title,
         "theme": asdict(snapshot.config.theme),
         "description": snapshot.description or "",
         "meta": _meta(snapshot),
         "primary": _primary(snapshot),
+        "qualifications": qualifications,
         "healthStatus": health_status(snapshot),
         "healthReport": (
             None if snapshot.health is None else snapshot.health.model_dump(mode="json")
         ),
         "report": {
             "results": _styled(table),
+            "qualifications": qualifications,
             "notes": _report_notes(snapshot),
             "context": _report_context(snapshot),
         },
-        "results": _styled(table + results_notes(snapshot)),
+        "results": _styled(render_results(snapshot).text),
         "health": _styled(render_health(snapshot).text),
         "provenance": _styled(render_details(snapshot).text),
         "metrics": [_metric_payload(snapshot, model.name) for model in all_metrics(snapshot)],
@@ -443,9 +453,6 @@ def _allocation_warnings(
         warnings.append(f"{population_label.capitalize()} history is unavailable.")
     elif not history:
         warnings.append(f"No {population_label} history was captured.")
-    caveats = len(result_caveats(snapshot.readout_rows))
-    if caveats:
-        warnings.append(f"{caveats} result caveat{'s' if caveats != 1 else ''} listed in Health.")
     return warnings
 
 
@@ -501,6 +508,7 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
     and each unavailability reason is kept as the engine reported it.
     """
     rows = snapshot.readout_rows
+    notes: list[str] = []
     if not rows:
         return []
     several_arms = len({row.get("group_id") for row in rows}) > 1
@@ -522,13 +530,13 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
         if name(row) not in names:
             names.append(name(row))
     if len(groups) == 1:
-        notes = [f"All results: {next(iter(groups))}."]
+        notes.append(f"All results: {next(iter(groups))}.")
     else:
-        notes = [
+        notes.append(
             "Intervals by metric: "
             + "; ".join(f"{label} ({', '.join(names)})" for label, names in groups.items())
             + "."
-        ]
+        )
     levels = {float(row["level"]) for row in rows if not is_missing(row.get("level"))}
     if len(levels) > 1:
         notes.append("Interval levels differ; compare each interval only with its own level.")
@@ -564,15 +572,11 @@ def _report_notes(snapshot: DashboardSnapshot) -> list[str]:
     if any(row.get("family_guarantee") == "asymptotic_sequential" for row in rows):
         notes.append("The sequential family guarantee is asymptotic, not finite-sample.")
     for row in rows:
-        notes.append(f"{row.get('metric')}: {result_outcome_text(row, arm=several_arms)}")
+        notes.append(f"{name(row)}: {outcome_label(row)}")
         confidence_set = complete_confidence_set_text(row)
         retained = _plain(confidence_set) if confidence_set else ""
         if retained:
             notes.append(f"{name(row)}: {retained}")
-        for caveat in result_caveats([row]):
-            reason = _plain(caveat).partition(": ")[2]
-            if reason and reason not in retained:
-                notes.append(f"{name(row)}: {reason}")
     return notes
 
 
@@ -772,6 +776,14 @@ def _render_entry(
         return {
             "html": _styled(f'<p class="inc-dashboard-note">{missing_html(reason)}</p>'),
             "caption": f"{subject} · {title} · no points",
+            "notes": [reason],
+            "pointCount": 0,
+        }
+    if getattr(rows[0], "ds", None) is None:
+        reason = "The captured response has no date axis, so this time series is unavailable."
+        return {
+            "html": _styled(f'<p class="inc-dashboard-note">{missing_html(reason)}</p>'),
+            "caption": f"{subject} · {title} · date axis unavailable",
             "notes": [reason],
             "pointCount": 0,
         }

@@ -95,6 +95,37 @@ dashboard remains assigned-only.
 Switching populations retains the selected Readout metric and Explore scope,
 metric, and series controls when those selections exist in both views.
 
+The selected population's interpretation is shown with its source identity,
+integrity, required-scope completeness and retained family. Switching assigned
+and triggered populations changes the selected evidence, not the family that
+was retained when each population was analyzed. Filtering a failed guardrail
+out of the visible rows does not make the primary's required scope complete.
+
+Summary, Readout, and Report distinguish the analysis-design assignment check
+from the dashboard's configured allocation check. The first uses retained
+analysis integrity evidence; if the design did not declare an allocation, it
+is shown as not run, never as a pass. The second compares the selected
+population with `DashboardConfig.expected_allocation` and reports its own
+evidence. When that dashboard check detects a mismatch, its source and
+population are named before effect summaries.
+
+The integrity code `integrity.allocation_missing_or_nonconstant` refers to
+missing or nonconstant declared target allocation weights; it does not mean
+that the observed group counts are unavailable. The observed allocation
+diagnostic is reported separately.
+
+For the Triggered view, the assigned-population integrity result remains
+visible as the assignment check; it is not replaced by triggered-population
+integrity metadata. Relative configured allocation weights are displayed as
+normalized shares (for example, `{control: 1, treatment: 1}` means 50% / 50%).
+The complete dashboard also retains the date window, inference description,
+and configured source label in the hero metadata beside the qualifications.
+
+The complete dashboard places the selected qualifications in the hero before
+the primary effect and at the start of Report before its effect and results
+table. An added metric's inspector uses that metric's captured collection
+evidence and retained qualifications, not the confirmatory Readout's rows.
+
 Assigned allocation checks describe assignment integrity. Triggered allocation
 checks describe balance in the triggered cohort and are not assignment-integrity
 checks. Triggered-cohort inference is appropriate only if triggering is
@@ -267,8 +298,16 @@ trajectory, rather than claiming a new inference for each daily value.
 CSV downloads neutralize formula-leading string cells with an apostrophe.
 Numeric cells remain numeric and unavailable numbers remain empty.
 Confidence-set cells contain unrounded JSON metadata, omitting retained
-samples and solver references. This CSV is a readout, not a portable inference
-checkpoint.
+samples and solver references. Scoped readouts also carry the source/population,
+integrity status and context, required-cell availability, filtered/hidden
+identities and reasons, retained family, and retained advisory codes and
+explanations. Nested evidence is canonical JSON, not Python representations;
+numeric nulls remain empty numeric cells. Filtering a row does not discard the
+collection's required scope: visible rows report the view as partial and keep
+the original family. A CSV is a row transport, so filtering every row leaves
+no row to carry metadata; keep the scoped collection or its saved result when
+an empty view must retain its full scope. This CSV is a readout, not a portable
+inference checkpoint.
 
 `ExploreView` is the literal type `"cumulative_lift" | "daily_values" |
 "cumulative_values" | "segments"`. An unknown metric/view, a daily-values or
