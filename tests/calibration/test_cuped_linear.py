@@ -458,3 +458,17 @@ def test_d6_all_null_imputed_column_is_disclosed_without_population_loss():
     assert fit.p == 0
     assert fit.layout.structural_omissions == ("x",)
     assert fit.n_by_arm == (40, 60)
+
+
+def test_family_refuses_an_unavailable_projection_before_public_selection(monkeypatch):
+    import calibration.cuped_linear as campaign
+
+    cell = next(item for item in MANIFEST if item.id == "D9-4")
+    members = campaign.family_members(cell, 0)
+    draw, scale = members[1]
+    negative_mean = replace(draw, outcomes=(-draw.outcomes[0],))
+    altered = (members[0], (negative_mean, scale), members[2])
+    monkeypatch.setattr(campaign, "family_members", lambda *_: altered)
+    result = trial(cell, 0)
+    assert result["status"] == "refused"
+    assert result["code"] == "estimation.cuped_linear.nonpositive_component"

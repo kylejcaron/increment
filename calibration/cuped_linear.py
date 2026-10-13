@@ -552,6 +552,7 @@ def family_trial(cell: Cell, replication: int) -> dict:
                 "replication": replication,
                 "metric": metric,
             }
+        projection(fit, scale)
         draws.append(draw)
         scales.append(scale)
     frame = {"unit": np.arange(cell.n), "arm": draws[0].arms}
