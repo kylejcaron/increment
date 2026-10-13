@@ -209,7 +209,7 @@ def build_payload(analysis: Analysis, *, snapshot: DashboardSnapshot) -> dict[st
             snapshot,
             estimates=tuple(estimates),
             readout_collection=collection,
-            population_collections={population: collection} if collection is not None else {},
+            population_collections=snapshot.population_collections or {population: collection},
             population_estimates={population: tuple(estimates)},
             readout_rows=rows,
             group_data=tuple(
@@ -776,6 +776,14 @@ def _render_entry(
         return {
             "html": _styled(f'<p class="inc-dashboard-note">{missing_html(reason)}</p>'),
             "caption": f"{subject} · {title} · no points",
+            "notes": [reason],
+            "pointCount": 0,
+        }
+    if getattr(rows[0], "ds", None) is None:
+        reason = "The captured response has no date axis, so this time series is unavailable."
+        return {
+            "html": _styled(f'<p class="inc-dashboard-note">{missing_html(reason)}</p>'),
+            "caption": f"{subject} · {title} · date axis unavailable",
             "notes": [reason],
             "pointCount": 0,
         }

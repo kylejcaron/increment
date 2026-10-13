@@ -15,6 +15,7 @@ import json
 import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from functools import partial
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
@@ -929,12 +930,24 @@ def enriched_rows(
 
 def _analysis_integrity_qualification(group) -> str:
     status = group.integrity_status
+    population = group.population or "unknown"
+    label = (
+        "Analysis assignment check (assigned population)"
+        if population == "assigned"
+        else f"Analysis integrity check ({population} population)"
+    )
     if status == "not_checked_missing_declaration":
-        text = "Analysis assignment check: not run — no allocation declared on the analysis design"
+        if group.integrity_code == "integrity.allocation_scheme_missing":
+            detail = "the allocation scheme is not declared on the analysis design"
+        elif group.integrity_code == "integrity.allocation_missing_or_nonconstant":
+            detail = "allocation counts are missing or nonconstant"
+        else:
+            detail = "the required assignment declaration is incomplete"
+        text = f"{label}: not checked — {detail}"
     elif status == "unknown":
-        text = "Analysis assignment check: unknown; missing integrity metadata is not a pass"
+        text = f"{label}: unknown; missing integrity metadata is not a pass"
     else:
-        text = f"Analysis assignment check: {status}"
+        text = f"{label}: {status}"
     if group.integrity_code:
         text += f" (code {group.integrity_code})"
     return text + "."
@@ -952,8 +965,10 @@ def _dashboard_allocation_qualification(
         allocation = snapshot.allocation
         refusal = snapshot.allocation_refusal
         name = "Dashboard allocation check"
+    expected_weights = snapshot.config.expected_allocation
+    total_weight = sum(expected_weights.values())
     expected = " / ".join(
-        f"{arm} {100 * weight:g}%" for arm, weight in snapshot.config.expected_allocation.items()
+        f"{arm} {100 * weight / total_weight:g}%" for arm, weight in expected_weights.items()
     )
     prefix = f"{name} ({selected}, configured expected {expected})"
     if allocation is None:
@@ -989,6 +1004,32 @@ def readout_interpretation_text(
         group for group in interpretation.groups if group.population in (None, selected_population)
     ]
     rendered = []
+    if selected_population == "triggered":
+        assigned_collection = snapshot.population_collections.get("assigned")
+        assigned_metadata = None if assigned_collection is None else assigned_collection.metadata
+        assigned_rows = (
+            snapshot.population_estimates.get("assigned", ())
+            if assigned_collection is None
+            else assigned_collection
+        )
+        assigned = interpret_readout(assigned_rows, assigned_metadata)
+        assignment_groups = {
+            group.source_snapshot_id: group
+            for group in assigned.groups
+            if group.population == "assigned"
+        }
+        if assignment_groups:
+            for source_id, group in assignment_groups.items():
+                rendered.append(
+                    f"Source snapshot: {source_id or 'unknown'}\n"
+                    + _analysis_integrity_qualification(group)
+                )
+        else:
+            rendered.append(
+                "Source snapshot: unknown\n"
+                "Analysis assignment check (assigned population): unknown; "
+                "missing integrity metadata is not a pass."
+            )
     for group in groups:
         population = group.population or selected_population
         allocation_text, mismatch = _dashboard_allocation_qualification(snapshot, population)
@@ -1066,7 +1107,7 @@ def _population_snapshot(
         snapshot,
         estimates=tuple(estimates),
         readout_collection=collection,
-        population_collections={population: collection},
+        population_collections=snapshot.population_collections or {population: collection},
         population_estimates={population: tuple(estimates)},
         readout_rows=snapshot.readout_rows if is_default else enriched_rows(collection),
         allocation=allocation,
@@ -1291,6 +1332,10 @@ def _cell_place(cell: Any) -> str:
     return f"{dimension} = {cell.dimension_value}"
 
 
+def _collection_with_metadata(collection, metadata, rows):
+    return cast(Any, collection)(rows, metadata=metadata)
+
+
 def _capture_explore(
     pinned: Analysis,
     *,
@@ -1310,6 +1355,47 @@ def _capture_explore(
             scopes=scopes,
         )
     )
+
+
+def _capture_overview(
+    captures: dict[ExploreKey, DashboardExploreCapture],
+    *,
+    population: Literal["assigned", "triggered"],
+    view: str,
+    breakout: BreakoutChoice | None,
+    declared: tuple[str, ...],
+    added: tuple[str, ...],
+    read: Callable[[list[str], list[str]], Sequence[Any]],
+    collection: Callable[[Iterable[Any]], Sequence[Any]],
+) -> None:
+    """Capture overview rows and preserve their own readout metadata."""
+    key = (population, view, None, False, breakout)
+    try:
+        answered = read(list(declared), list(added))
+    except CodedError:
+        rows: list[Any] = []
+        metadata = None
+        for name in (*declared, *added):
+            one = (population, view, name, False, breakout)
+            try:
+                part = read([name] if name in declared else [], [name] if name in added else [])
+            except CodedError as exc:
+                captures[one] = DashboardExploreCapture.refused(one, exc)
+            else:
+                if metadata is None:
+                    metadata = copy.copy(getattr(part, "metadata", None))
+                rows.extend(
+                    row
+                    for row in part
+                    if getattr(row, "analysis_population", population) == population
+                )
+    else:
+        rows = [
+            row for row in answered if getattr(row, "analysis_population", population) == population
+        ]
+        metadata = copy.copy(getattr(answered, "metadata", None))
+    collection_factory = partial(_collection_with_metadata, collection, metadata)
+    captures[key] = DashboardExploreCapture.answered(key, rows, collection=collection_factory)
 
 
 def _capture_explore_population(
@@ -1402,70 +1488,35 @@ def _capture_explore_population(
                         key, rows, collection=type(batch)
                     )
 
-    def overview_read(
-        view: str,
-        breakout: BreakoutChoice | None,
-        declared: tuple[str, ...],
-        read: Callable[[list[str], list[str]], Sequence[Any]],
-        collection: Callable[[Iterable[Any]], Sequence[Any]],
-        *,
-        population: Literal["assigned", "triggered"],
-    ) -> None:
-        """One read of every metric; on a refusal, each metric alone, keeping its own refusal."""
-        key = (population, view, None, False, breakout)
-        try:
-            answered = read(list(declared), list(added))
-            captures[key] = DashboardExploreCapture.answered(
-                key,
-                [
-                    row
-                    for row in answered
-                    if getattr(row, "analysis_population", population) == population
-                ],
-                collection=collection,
-            )
-            return
-        except CodedError:
-            pass
-        rows: list[Any] = []
-        for name in (*declared, *added):
-            one = (population, view, name, False, breakout)
-            try:
-                part = read([name] if name in declared else [], [name] if name in added else [])
-            except CodedError as exc:
-                captures[one] = DashboardExploreCapture.refused(one, exc)
-            else:
-                rows.extend(
-                    row
-                    for row in part
-                    if getattr(row, "analysis_population", population) == population
-                )
-        captures[key] = DashboardExploreCapture.answered(key, rows, collection=collection)
-
-    def extra(added_names: list[str]) -> dict[str, Any]:
-        return {"exploratory_metrics": added_names} if added_names else {}
-
     if added:
-        overview_read(
-            _OVERVIEW_WHOLE,
-            None,
-            (),
-            lambda _, added_names: pinned.run(
-                metrics=[], population=population, **extra(added_names)
-            ),
-            LiftEstimates,
+        _capture_overview(
+            captures,
             population=population,
+            view=_OVERVIEW_WHOLE,
+            breakout=None,
+            declared=(),
+            added=added,
+            read=lambda _, added_names: pinned.run(
+                metrics=[],
+                population=population,
+                **({"exploratory_metrics": added_names} if added_names else {}),
+            ),
+            collection=LiftEstimates,
         )
     for breakout, reader in scopes:
-        overview_read(
-            _OVERVIEW_SEGMENTS,
-            breakout,
-            names,
-            lambda declared, added_names, reader=reader: reader.uncorrected_segments(
-                metrics=declared, population=population, **extra(added_names)
-            ),
-            BreakoutEstimates,
+        _capture_overview(
+            captures,
             population=population,
+            view=_OVERVIEW_SEGMENTS,
+            breakout=breakout,
+            declared=names,
+            added=added,
+            read=lambda declared, added_names, reader=reader: reader.uncorrected_segments(
+                metrics=declared,
+                population=population,
+                **({"exploratory_metrics": added_names} if added_names else {}),
+            ),
+            collection=BreakoutEstimates,
         )
     return tuple(captures.values())
 

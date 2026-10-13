@@ -1594,6 +1594,8 @@ def temporal_figure(
     warning in place of a chart.
     """
     frame = data.to_frame()
+    if "ds_basis" not in frame:
+        return _status("warn", "Date-basis metadata is unavailable for this captured view.")
     if (
         not frame["ds_basis"].dropna().nunique()
         or (frame.groupby("metric")["ds_basis"].nunique() != 1).any()

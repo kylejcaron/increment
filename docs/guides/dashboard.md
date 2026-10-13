@@ -109,6 +109,13 @@ population with `DashboardConfig.expected_allocation` and reports its own
 evidence. When that dashboard check detects a mismatch, its source and
 population are named before effect summaries.
 
+For the Triggered view, the assigned-population integrity result remains
+visible as the assignment check; it is not replaced by triggered-population
+integrity metadata. Relative configured allocation weights are displayed as
+normalized shares (for example, `{control: 1, treatment: 1}` means 50% / 50%).
+The complete dashboard also retains the date window, inference description,
+and configured source label in the hero metadata beside the qualifications.
+
 The complete dashboard places the selected qualifications in the hero before
 the primary effect and at the start of Report before its effect and results
 table. An added metric's inspector uses that metric's captured collection

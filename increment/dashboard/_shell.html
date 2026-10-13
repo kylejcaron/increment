@@ -912,6 +912,7 @@ button.metric-select:hover { color: var(--accent); text-decoration: underline; }
     document.title = str(data.title) || 'Experiment dashboard';
     $('hero-title').textContent = str(data.title);
     $('hero-description').textContent = [str(data.description), str(data.populationDisclaimer)].filter(Boolean).join(' ');
+    $('hero-meta').textContent = str(data.meta);
     $('hero-qualifications').textContent = str(data.qualifications);
     $('hero-qualifications').hidden = !str(data.qualifications);
     const box = $('hero-primary');

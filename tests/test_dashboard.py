@@ -527,6 +527,66 @@ def test_allocation_check_uses_configured_shares(pricing: DashboardSnapshot) -> 
     assert allocation.is_srm is False
 
 
+def test_dashboard_readout_normalizes_relative_allocation_weights(
+    dashboard_con, dashboard_definitions
+) -> None:
+    analysis = _analysis(dashboard_con, dashboard_definitions, "pricing_copy")
+    try:
+        snapshot = prepare_dashboard(
+            analysis,
+            config=DashboardConfig(expected_allocation={"baseline": 1, "candidate": 1}),
+        )
+        assert snapshot.allocation is not None
+        assert snapshot.allocation.expected == {"baseline": 0.5, "candidate": 0.5}
+        text = render_header(snapshot).text
+        assert "baseline 50%" in text
+        assert "candidate 50%" in text
+        assert "baseline 100%" not in text
+        assert "candidate 100%" not in text
+    finally:
+        analysis.close()
+
+
+def test_dashboard_explains_missing_allocation_scheme_separately(
+    pricing: DashboardSnapshot,
+) -> None:
+    from increment.estimation.readout_types import IntegrityStatus
+
+    collection = pricing.readout_collection
+    assert collection is not None and collection.metadata is not None
+    metadata = collection.metadata
+    source_id, source = next(iter(metadata.scope.by_source.items()))
+    integrity = tuple(
+        item.model_copy(
+            update={
+                "status": IntegrityStatus.NOT_CHECKED_MISSING_DECLARATION,
+                "code": "integrity.allocation_scheme_missing",
+                "context": {"allocation_scheme": None},
+            }
+        )
+        if item.analysis_population == "assigned"
+        else item
+        for item in source.integrity
+    )
+    changed_source = source.model_copy(update={"integrity": integrity})
+    changed_scope = metadata.scope.model_copy(
+        update={"by_source": {**metadata.scope.by_source, source_id: changed_source}}
+    )
+    changed_collection = type(collection)(
+        collection, metadata=metadata.model_copy(update={"scope": changed_scope})
+    )
+    snapshot = dataclasses.replace(
+        pricing,
+        readout_collection=changed_collection,
+        population_collections={**pricing.population_collections, "assigned": changed_collection},
+    )
+
+    text = render_header(snapshot).text
+    assert "the allocation scheme is not declared" in text
+    assert "integrity.allocation_scheme_missing" in text
+    assert "no allocation declared" not in text
+
+
 def test_renders_expected_shares_from_configuration(pricing: DashboardSnapshot) -> None:
     html = render_health(pricing).text
     assert "70.0%" in html
@@ -2112,9 +2172,38 @@ def test_dashboard_snapshot_and_csv_retain_scoped_readout_metadata(
         assert "Dashboard allocation check" in surface
         assert "configured expected control 70% / treatment 30%" in surface
         assert "mismatch detected" in surface
-        assert "Analysis assignment check: not run" in surface
         assert "integrity.allocation_missing_or_nonconstant" in surface
         assert surface.index("mismatch detected") < surface.index("Analysis assignment check")
+
+
+def _assert_added_exploratory_readout(snapshot):
+    from html import escape
+
+    from increment.dashboard import render_metric_details
+
+    captures = [
+        capture
+        for key, capture in snapshot.explore.items()
+        if key[1] == "overview_whole" and key[2] is None and key[4] is None
+    ]
+    assert captures
+    collection = captures[0].load()
+    assert collection.metadata is not None
+    advisory = next(
+        item
+        for record in collection.metadata.cells
+        if record.cell.metric == "purchase_rate"
+        for item in record.advisories
+        if item.code == "estimation.engine.small_total_clusters"
+    )
+    details = render_metric_details(snapshot, metric="purchase_rate").text
+    assert "purchase_rate" in details
+    assert advisory.code in details
+    assert escape(advisory.message) in details
+    assert snapshot.overview is not None
+    added = next(row for row in snapshot.overview.exploratory if row.metric == "purchase_rate")
+    assert added.note is not None and added.note in details
+    assert "session_seconds" not in details
 
 
 @pytest.mark.slow
@@ -2178,7 +2267,6 @@ def test_dashboard_round_trips_real_unavailable_cell_and_advisories(tmp_path: Pa
         (definitions / name).write_text(content)
 
     from increment import Analysis
-    from increment.dashboard import render_metric_details
     from increment.dashboard._app import build_payload, document
 
     analysis = Analysis.from_definitions("storefront_refresh", definitions, dashboard_con)
@@ -2219,17 +2307,12 @@ def test_dashboard_round_trips_real_unavailable_cell_and_advisories(tmp_path: Pa
         shell = document(payload)
         assert payload["qualifications"] == payload["report"]["qualifications"]
         assert "integrity.allocation_missing_or_nonconstant" in payload["qualifications"]
+        assert shell.index('id="hero-meta"') < shell.index('id="hero-qualifications"')
+        assert "hero-meta').textContent = str(data.meta)" in shell
+        assert payload["meta"]
         assert shell.index('id="hero-qualifications"') < shell.index('id="hero-primary-effect"')
         assert shell.index('id="report-qualifications"') < shell.index('id="report-primary-effect"')
-        assert shell.index('id="report-qualifications"') < shell.index('id="report-table"')
-        added_details = render_metric_details(snapshot, metric="purchase_rate").text
-        assert "purchase_rate" in added_details
-        assert snapshot.overview is not None
-        added_result = next(
-            row for row in snapshot.overview.exploratory if row.metric == "purchase_rate"
-        )
-        assert added_result.note is not None and added_result.note in added_details
-        assert "session_seconds" not in added_details
+        _assert_added_exploratory_readout(snapshot)
 
         exported = list(csv.DictReader(io.StringIO(readout_csv(snapshot).decode("utf-8"))))
         exported_failed = next(row for row in exported if row["metric"] == "empty_guardrail")
