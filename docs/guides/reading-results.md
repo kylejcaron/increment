@@ -211,14 +211,8 @@ df = pl.DataFrame(
     {
         "user_id": [f"u{i:03d}" for i in range(n)],
         "variant": arms,
-        "revenue": [
-            10.0 + (i * 7) % 11 + (arm == "treatment")
-            for i, arm in enumerate(arms)
-        ],
-        "converted": [
-            int(arm == "treatment" and i % 5 < 2)
-            for i, arm in enumerate(arms)
-        ],
+        "revenue": [10.0 + (i * 7) % 11 + (arm == "treatment") for i, arm in enumerate(arms)],
+        "converted": [int(arm == "treatment" and i % 5 < 2) for i, arm in enumerate(arms)],
     }
 )
 results = Analysis.from_unit_summary(
@@ -248,6 +242,7 @@ decision_table = results.to_frame(backend="polars")[
         "multiplicity_status",
     ]
 ]
+```
 
 ```text
 assigned — treatment vs control
@@ -256,13 +251,13 @@ Decision scope completeness: complete.
 Population roster completeness: complete (declared_allocation).
 Required cells: 2; available: 2.
 Multiplicity (outcome): undeclared_plan; family retained scope.
-Interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
+converted interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
 converted additive effect: 0.36036, set [0.270641, 0.45008].
 converted binomial set central: [1.61559, +∞] at 0.95 confidence.
 converted test alternative: two-sided; null (relative lift): 0.
 converted result identity: method unadjusted; method role decision; estimand itt.
 revenue (outcome, relative lift): 0.0946974, set [0.0327365, 0.160376] at 0.95 confidence.
-Interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
+revenue interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
 revenue additive effect: 1.39812, set [0.504942, 2.29129].
 revenue test alternative: two-sided; null (relative lift): 0.
 revenue result identity: method unadjusted; method role decision; estimand itt.
@@ -444,6 +439,7 @@ unbounded end, and that bound is `None`:
 ```python
 from increment import AnalysisPlan, MetricSpec
 
+n = 100
 purchases = pl.DataFrame(
     {
         "user_id": [f"u{i:03d}" for i in range(2 * n)],

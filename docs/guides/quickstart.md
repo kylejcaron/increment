@@ -57,6 +57,8 @@ because the generator used independent Bernoulli assignments. Do not declare
 this law for blocked or otherwise constrained assignment.
 
 ```python
+import warnings
+
 from increment import Analysis, AnalysisPlan, MetricSpec, Randomized
 
 design = Randomized(
@@ -74,19 +76,24 @@ metrics = [
         preferred_direction="decrease",
     ),
 ]
-analysis = Analysis.from_unit_summary(
-    df,
-    unit="user_id",
-    group="variant",
-    design=design,
-    metrics=metrics,
-    plan=plan,
-)
-results = analysis.run()
+with warnings.catch_warnings(record=True) as analysis_warnings:
+    warnings.simplefilter("always")
+    analysis = Analysis.from_unit_summary(
+        df,
+        unit="user_id",
+        group="variant",
+        design=design,
+        metrics=metrics,
+        plan=plan,
+    )
+    results = analysis.run()
+for captured_warning in analysis_warnings:
+    print(f"Warning: {captured_warning.message}")
 print(results)
 ```
 
 ```text
+Warning: metric 'complaints': missing='drop' excludes rows with 537 null/NaN value(s) from this metric's moments (complete-case). This is unbiased only when missingness is unrelated to the values; if null means "no events", missing='zero' keeps every unit.
 assigned — treatment vs control
 Integrity: not_rejected — no detected mismatch; not proof of valid randomization.
 Decision scope completeness: incomplete.
@@ -96,13 +103,17 @@ Unavailable complaints: Metric complaints has no usable observations for arm tre
 Multiplicity (primary): declared_plan; family primary.
 Multiplicity (guardrail): declared_plan; family guardrail.
 revenue (primary, relative lift): 0.115788, set [0.0621892, 0.172092] at 0.95 confidence.
-Interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
+revenue interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
 revenue additive effect: 1.15169, set [0.638286, 1.6651].
 revenue test alternative: two-sided; null (relative lift): 0.
 revenue result identity: method unadjusted; method role decision; estimand itt.
 complaints test alternative: less; null (relative lift): 0.
 complaints result identity: method unadjusted; method role decision; estimand itt.
 ```
+
+This is a complete-case warning: dropping rows is unbiased only when
+missingness is unrelated to outcomes; use `missing="zero"` only when null
+means no events.
 
 The relative lift is about 11.6%; the additive effect is about 1.15 revenue
 units. The interval describes uncertainty about the effect, not the range
@@ -146,7 +157,7 @@ revenue (primary, relative lift): 0.115788, set [0.0621892, 0.172092] at 0.95 co
 revenue test alternative: two-sided; null (relative lift): 0.
 revenue result identity: method unadjusted; method role decision; estimand itt.
 complaints (guardrail, relative lift): -0.137803, set [-1, 0.666805] at 0.9 confidence.
-Interpretation: does not reject; inconclusive, not evidence of no effect.
+complaints interpretation: does not reject; inconclusive, not evidence of no effect.
 complaints additive effect: -0.00535734, set [-0.0249109, 0.0141962].
 complaints binomial set upper_bound: [-1, 0.666805] at 0.9 confidence.
 complaints test alternative: less; null (relative lift): 0.

@@ -114,12 +114,12 @@ Required cells: 2; available: 2.
 Multiplicity (primary): declared_plan; family primary.
 Multiplicity (secondary): declared_plan; family secondary.
 sessions (primary, relative lift): 0.129354, set [0.0912107, 0.16883] at 0.95 confidence.
-Interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
+sessions interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
 sessions additive effect: 0.519393, set [0.373532, 0.665254].
 sessions test alternative: two-sided; null (relative lift): 0.
 sessions result identity: method unadjusted; method role decision; estimand itt.
 signups (secondary, relative lift): -0.0085373, set [-0.0224037, 0.00552583] at 0.95 confidence.
-Interpretation: does not reject; inconclusive, not evidence of no effect.
+signups interpretation: does not reject; inconclusive, not evidence of no effect.
 signups additive effect: -0.000861552, set [-0.00227681, 0.000553707].
 signups test alternative: two-sided; null (relative lift): 0.
 signups result identity: method unadjusted; method role decision; estimand itt; not selected.
@@ -209,12 +209,12 @@ Required cells: 2; available: 2.
 Multiplicity (primary): declared_plan; family primary.
 Multiplicity (secondary): declared_plan; family secondary.
 sessions (primary, relative lift): 0.129354, set [0.0706467, 0.191773] at 0.95 confidence.
-Interpretation: excludes zero; effect direction supported (increase).
+sessions interpretation: excludes zero; effect direction supported (increase).
 sessions sequential ratio confidence set bounded: [1.07065, 1.19177].
 sessions test alternative: two-sided; null (relative lift): 0.
 sessions result identity: method unadjusted; method role decision; estimand itt.
 signups (secondary, relative lift): -0.0085373, set [-0.0300719, 0.0134716] at 0.95 confidence.
-Interpretation: does not reject; inconclusive, not evidence of no effect.
+signups interpretation: does not reject; inconclusive, not evidence of no effect.
 signups sequential ratio confidence set bounded: [0.969928, 1.01347].
 signups test alternative: two-sided; null (relative lift): 0.
 signups result identity: method unadjusted; method role decision; estimand itt; not selected.
