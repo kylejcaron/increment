@@ -25,18 +25,20 @@ def _randomized_source(
     from increment._canonical import canonical_digest_bytes
     from increment.readouts._source_digest import component, composite_source
 
-    components = [
-        component(
-            kind=kind,
-            metric=metric.name,
-            population=population,
-            sha256=digest,
-            source=source,
-            dimension=dimension,
-        )
-        for metric in selected
-        for kind, digest, _count in (evidence_components[metric.name],)
-    ]
+    components = []
+
+    for metric in selected:
+        for kind, digest, count in evidence_components[metric.name]:
+            item = component(
+                kind=kind,
+                metric=metric.name,
+                population=population,
+                sha256=digest,
+                source=source,
+                dimension=dimension,
+            )
+            item["count"] = count
+            components.append(item)
     if assignment_counts is not None:
         components.append(
             component(

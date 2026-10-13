@@ -6,7 +6,12 @@ import pickle
 import pytest
 from pydantic import ValidationError
 
+from increment.analysis import Analysis
 from increment.errors import DefinitionError
+from increment.estimation.cuped_linear import fit_cuped_linear
+from increment.estimation.engine import Method
+from increment.estimation.results import LiftEstimate
+from increment.frame import MetricSpec
 from increment.semantics.models import (
     CupedCovariate,
     CupedCovariateBinding,
@@ -44,7 +49,177 @@ def test_measure_covariates_accept_numeric_measure_aggregations(aggregation):
     assert binding.measure.aggregation == aggregation
 
 
-def test_direct_lift_estimator_refuses_unwired_cuped_linear():
+def test_public_run_routes_mixed_covariate_fit():
+    import numpy as np
+    import pyarrow as pa
+
+    frame = pa.table(
+        {
+            "unit": [f"{arm}{i}" for arm in ("c", "t") for i in range(8)],
+            "arm": ["c"] * 8 + ["t"] * 8,
+            "revenue": [float(i + (arm == "t") * 2) for arm in ("c", "t") for i in range(8)],
+            "prior": [float(i % 4) for _arm in ("c", "t") for i in range(8)],
+            "region": ["north", "north", "south", "south"] * 4,
+        }
+    )
+    metric = MetricSpec(
+        name="revenue",
+        covariates=(
+            CupedCovariate(name="prior", kind="continuous"),
+            CupedCovariate(name="region", kind="categorical"),
+        ),
+        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
+    )
+    analysis = Analysis.from_unit_summary(
+        frame, unit="unit", group="arm", control="c", metrics=[metric]
+    )
+
+    (row,) = analysis.run()
+    assert isinstance(row, LiftEstimate)
+    expected = (
+        fit_cuped_linear(
+            np.asarray(frame["revenue"].to_pylist()),
+            frame["arm"].to_pylist(),
+            control="c",
+            arm_order=("c", "t"),
+            covariates={
+                "prior": np.asarray(frame["prior"].to_pylist()),
+                "region": np.asarray(frame["region"].to_pylist(), dtype=object),
+            },
+            kinds={"prior": "continuous", "region": "categorical"},
+            missing={"prior": "refuse", "region": "refuse"},
+        )
+        .relative("t")
+        .estimate
+    )
+
+    assert row.require_lift().value == pytest.approx(np.expm1(expected))
+
+
+def test_public_run_routes_joint_ratio_cuped_projection():
+    import numpy as np
+    import pyarrow as pa
+
+    frame = pa.table(
+        {
+            "unit": [f"{arm}{i}" for arm in ("c", "t") for i in range(8)],
+            "arm": ["c"] * 8 + ["t"] * 8,
+            "revenue": [float(4 + i + (arm == "t") * 2) for arm in ("c", "t") for i in range(8)],
+            "orders": [float(2 + i % 3 + (arm == "t")) for arm in ("c", "t") for i in range(8)],
+            "prior": [float(i % 4) for _arm in ("c", "t") for i in range(8)],
+            "region": ["north", "north", "south", "south"] * 4,
+        }
+    )
+    metric = MetricSpec(
+        name="aov",
+        type="ratio",
+        numerator="revenue",
+        denominator="orders",
+        covariates=(
+            CupedCovariate(name="prior", kind="continuous"),
+            CupedCovariate(name="region", kind="categorical"),
+        ),
+        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
+    )
+    analysis = Analysis.from_unit_summary(
+        frame, unit="unit", group="arm", control="c", metrics=[metric]
+    )
+
+    result = analysis.run()
+    (row,) = result
+    assert isinstance(row, LiftEstimate)
+    expected = (
+        fit_cuped_linear(
+            None,
+            frame["arm"].to_pylist(),
+            control="c",
+            arm_order=("c", "t"),
+            covariates={
+                "prior": np.asarray(frame["prior"].to_pylist()),
+                "region": np.asarray(frame["region"].to_pylist(), dtype=object),
+            },
+            kinds={"prior": "continuous", "region": "categorical"},
+            missing={"prior": "refuse", "region": "refuse"},
+            numerator=np.asarray(frame["revenue"].to_pylist()),
+            denominator=np.asarray(frame["orders"].to_pylist()),
+        )
+        .ratio("t", scale="log")
+        .estimate
+    )
+
+    assert row.require_lift().value == pytest.approx(np.expm1(expected))
+
+    reissued = row.reintervalize(0.01)
+    assert reissued.require_lift().value == pytest.approx(row.require_lift().value)
+    new_lift = reissued.require_lift()
+    old_lift = row.require_lift()
+    assert new_lift.ub is not None and new_lift.lb is not None
+    assert old_lift.ub is not None and old_lift.lb is not None
+    assert new_lift.ub - new_lift.lb > old_lift.ub - old_lift.lb
+    assert result.metadata is not None
+    assert any(
+        advisory.code == "estimation.cuped_linear.fit"
+        for record in result.metadata.cells
+        for advisory in record.advisories
+    )
+
+    shifted = frame.set_column(
+        frame.schema.get_field_index("prior"),
+        "prior",
+        pa.array([value + 1.0 for value in frame["prior"].to_pylist()]),
+    ).set_column(
+        frame.schema.get_field_index("region"),
+        "region",
+        pa.array(
+            ["south" if value == "north" else "north" for value in frame["region"].to_pylist()]
+        ),
+    )
+    shifted_result = Analysis.from_unit_summary(
+        shifted, unit="unit", group="arm", control="c", metrics=[metric]
+    ).run()
+    assert shifted_result.source != result.source
+    assert shifted_result[0].source_snapshot_id != row.source_snapshot_id
+
+    with_sibling = frame.append_column("sibling", pa.array([float(i) for i in range(16)]))
+    sibling_rows = Analysis.from_unit_summary(
+        with_sibling,
+        unit="unit",
+        group="arm",
+        control="c",
+        metrics=[metric, MetricSpec(name="sibling")],
+    ).run()
+    revenue_row = next(item for item in sibling_rows if item.metric == "aov")
+    assert isinstance(revenue_row, LiftEstimate)
+    assert revenue_row.require_lift().value == pytest.approx(row.require_lift().value)
+
+
+def test_cuped_linear_level_support_failure_remains_a_cell():
+    import pyarrow as pa
+
+    frame = pa.table(
+        {
+            "unit": [f"{arm}{i}" for arm in ("c", "t") for i in range(8)],
+            "arm": ["c"] * 8 + ["t"] * 8,
+            "revenue": [float(i + (arm == "t")) for arm in ("c", "t") for i in range(8)],
+            "region": ["north"] * 8 + ["north"] * 4 + ["south"] * 4,
+        }
+    )
+    metric = MetricSpec(
+        name="revenue",
+        covariates=(CupedCovariate(name="region", kind="categorical"),),
+        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
+    )
+    result = Analysis.from_unit_summary(
+        frame, unit="unit", group="arm", control="c", metrics=[metric]
+    ).run()
+
+    assert len(result) == 1
+    assert isinstance(result[0], LiftEstimate)
+    assert result[0].failure_code == "estimation.cuped_linear.level_support"
+    assert result[0].lift is None
+
+
+def test_aggregate_lift_estimator_requires_per_unit_cuped_evidence():
     from increment.errors import UnsupportedRequestError
     from increment.estimation.engine import Method, estimate_lift
     from increment.semantics.models import MeanMetric
@@ -57,7 +232,7 @@ def test_direct_lift_estimator_refuses_unwired_cuped_linear():
             methods=[Method(name="linear", variance_reduction="cuped_linear")],
         )
 
-    assert raised.value.code == "estimation.engine.cuped_linear_unfinished"
+    assert raised.value.code == "estimation.engine.cuped_linear_unit_evidence"
 
 
 def test_definition_covariate_requires_exactly_one_binding():

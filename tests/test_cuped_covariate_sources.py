@@ -480,7 +480,7 @@ def test_measure_and_property_covariate_names_are_scoped_by_metric(tmp_path):
     }
 
 
-def test_cuped_linear_run_refuses_as_unfinished_before_acquisition(tmp_path):
+def test_cuped_linear_observational_route_refuses_before_acquisition(tmp_path):
     import pytest
 
     from increment.errors import UnsupportedRequestError
@@ -500,7 +500,7 @@ def test_cuped_linear_run_refuses_as_unfinished_before_acquisition(tmp_path):
     with pytest.raises(UnsupportedRequestError) as raised:
         analysis.run()
 
-    assert raised.value.code == "estimation.engine.cuped_linear_unfinished"
+    assert raised.value.code == "estimation.engine.cuped_linear_observational"
 
 
 def test_from_moments_refuses_cuped_linear_with_unit_source_route():

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class MetricRows:
-    """One metric's rows, loaded exactly once, quantile or moments-shaped."""
+    """One metric's aggregate rows and/or per-unit estimator evidence."""
 
     rows: tuple[Mapping[str, Any], ...]
     unit_frame: Any | None
@@ -25,6 +25,7 @@ class MetricRows:
     evidence_kind: str
     evidence_sha256: str
     evidence_count: int
+    evidence_components: tuple[tuple[str, str, int], ...] = ()
 
 
 def _frame_digest_and_arms(frame):
@@ -55,6 +56,15 @@ def _rows_digest_and_arms(rows):
     return frozenset(arms), digest.hexdigest(), digest.count
 
 
+def _rows_raw_digest_and_arms(rows):
+    from increment.estimation.readout_types import StreamingDigest
+
+    digest = StreamingDigest()
+    digest.update_rows(rows)
+    arms = frozenset(str(row["group_id"]) for row in rows if row.get("group_id") is not None)
+    return arms, digest.hexdigest(), digest.count
+
+
 def _rows_digest(rows):
     from increment.estimation.readout_types import StreamingDigest
 
@@ -65,7 +75,13 @@ def _rows_digest(rows):
 
 
 def _load_metric_rows(
-    src: MomentSource, metric: Metric, *, by: Sequence[str], control_group: str
+    src: MomentSource,
+    metric: Metric,
+    *,
+    by: Sequence[str],
+    control_group: str,
+    methods: Sequence[Any] = (),
+    covariates: Sequence[Any] = (),
 ) -> MetricRows:
     """Load one metric's rows once.
 
@@ -137,13 +153,40 @@ def _load_metric_rows(
         )
     _refuse_unsupported_by(metric, by)
     rows = cast("list[Mapping[str, Any]]", src.moments(metric, grain="total", by=by))
-    observed, evidence_sha256, evidence_count = _rows_digest_and_arms(rows)
+    observed, moments_sha256, moments_count = _rows_digest_and_arms(rows)
+    has_linear = any(
+        getattr(method, "variance_reduction", None) == "cuped_linear" for method in methods
+    )
+    if has_linear:
+        observed, moments_sha256, moments_count = _rows_raw_digest_and_arms(rows)
+    if not has_linear:
+        return MetricRows(
+            rows=tuple(rows),
+            unit_frame=None,
+            observed_arms=observed,
+            n_treatment_arms=len(observed - {control_group}),
+            evidence_kind="moments_rows",
+            evidence_sha256=moments_sha256,
+            evidence_count=moments_count,
+            evidence_components=(("moments_rows", moments_sha256, moments_count),),
+        )
+
+    import narwhals as nw
+
+    covariate_names = tuple(item.name for item in covariates)
+    native = src.unit_frame(metric, covariates=covariate_names)
+    frame = nw.from_native(native, eager_only=True)
+    unit_arms, unit_sha256, unit_count = _frame_digest_and_arms(frame)
     return MetricRows(
         rows=tuple(rows),
-        unit_frame=None,
-        observed_arms=observed,
-        n_treatment_arms=len(observed - {control_group}),
-        evidence_kind="moments_rows",
-        evidence_sha256=evidence_sha256,
-        evidence_count=evidence_count,
+        unit_frame=native,
+        observed_arms=observed | unit_arms,
+        n_treatment_arms=len((observed | unit_arms) - {control_group}),
+        evidence_kind="mixed_rows",
+        evidence_sha256="",
+        evidence_count=moments_count + unit_count,
+        evidence_components=(
+            ("moments_rows", moments_sha256, moments_count),
+            ("unit_evidence_rows", unit_sha256, unit_count),
+        ),
     )

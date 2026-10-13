@@ -129,10 +129,40 @@ _REFUSALS = refusals(
         "estimation.engine.arm.invalid_count": "{what} is {value!r}, not a finite integer-valued count -- ArmStats.n rejects a fractional value at direct construction, so the untyped dataframe ingress must too instead of silently truncating it (int(2.9) == 2) into a different arm size than the row declared. Round or fix the upstream aggregation so 'n' is integral.",
         "estimation.engine.ratio.negative_variance": "ratio_abs_diff_se refused these moments: {reason} -- a deficit at this scale means the numerator/denominator moments violate Cauchy-Schwarz (an infeasible covariance), not merely cancelled, so reporting a clamped zero-SE (maximal confidence) would be the most dangerous possible failure mode for a decision number.",
         "estimation.engine.method.name_without_variance": "Method(name={self!r}) without its matching variance_reduction would label an unadjusted estimate as CUPED-adjusted.",
-        "estimation.engine.cuped_linear_unfinished": RefusalSpec(
-            "estimation.engine.cuped_linear_unfinished",
+        "estimation.engine.cuped_linear_unit_evidence": RefusalSpec(
+            "estimation.engine.cuped_linear_unit_evidence",
             UnsupportedRequestError,
-            template="cuped_linear is declared for metric {metric!r}, but its estimator is not available in this build. Use variance_reduction='none' or scalar variance_reduction='cuped' with covariate=.",
+            template="cuped_linear for metric {metric!r} requires per-unit outcomes and declared covariates; use a per-unit analysis entry point instead of aggregate moments.",
+            keys=frozenset({"metric"}),
+        ),
+        "estimation.engine.cuped_linear_observational": RefusalSpec(
+            "estimation.engine.cuped_linear_observational",
+            UnsupportedRequestError,
+            template="cuped_linear is a randomized mean/ratio estimator and cannot be used with observational metric {metric!r}; choose an observational estimator or a randomized design.",
+            keys=frozenset({"metric"}),
+        ),
+        "estimation.engine.cuped_linear_cluster": RefusalSpec(
+            "estimation.engine.cuped_linear_cluster",
+            UnsupportedRequestError,
+            template="cuped_linear does not support clustered assignment (cluster={cluster!r}); choose an unadjusted clustered method or scalar CUPED where supported.",
+            keys=frozenset({"cluster"}),
+        ),
+        "estimation.engine.cuped_linear_sequential": RefusalSpec(
+            "estimation.engine.cuped_linear_sequential",
+            UnsupportedRequestError,
+            template="cuped_linear is fixed-horizon only and cannot be used with sequential inference; use an unadjusted sequential method or scalar CUPED's registered sequential route.",
+            keys=frozenset(),
+        ),
+        "estimation.engine.cuped_linear_winsorization": RefusalSpec(
+            "estimation.engine.cuped_linear_winsorization",
+            UnsupportedRequestError,
+            template="cuped_linear cannot be composed with winsorization for metric {metric!r}; choose one supported construction.",
+            keys=frozenset({"metric"}),
+        ),
+        "estimation.engine.cuped_linear_encouragement": RefusalSpec(
+            "estimation.engine.cuped_linear_encouragement",
+            UnsupportedRequestError,
+            template="cuped_linear is not available for encouragement design metric {metric!r}; use an encouragement-supported method without mixed CUPED.",
             keys=frozenset({"metric"}),
         ),
         "estimation.engine.method.name_iptw_does": "Method(name='iptw') does not accept outcome_learner/folds -- IPTW fits one propensity model with no cross-fitting; set propensity_learner (mapped to iptw_estimate's learner=) instead, or use Method(name='dml') / Method(name='aipw') for cross-fit outcome-model pluggability.",
@@ -923,13 +953,37 @@ def reject_completed_windows_on_unbounded_retention(
         _refuse("breakout.retention.completion", fn_name=fn_name, names=open_bands)
 
 
-def reject_unfinished_cuped_linear(
-    metrics: Sequence[Metric], method_catalog: Sequence[Sequence[Method]]
+def _reject_cuped_linear_aggregate(
+    metrics: Sequence[Metric], methods: Sequence[Method] | None
 ) -> None:
-    """Refuse cuped_linear until its estimator is wired into readout."""
-    for metric, metric_methods in zip(metrics, method_catalog, strict=True):
-        if any(method.variance_reduction == "cuped_linear" for method in metric_methods):
-            _refuse("estimation.engine.cuped_linear_unfinished", metric=metric.name)
+    if methods is None:
+        return
+    for metric in metrics:
+        if any(method.variance_reduction == "cuped_linear" for method in methods):
+            _refuse("estimation.engine.cuped_linear_unit_evidence", metric=metric.name)
+
+
+def _validate_cuped_linear_compatibility(request: ReadoutRequest) -> None:
+    metrics = tuple(request.metrics)
+    methods = request.estimation_methods
+    linear_by_metric = {
+        metric.name: any(method.variance_reduction == "cuped_linear" for method in metric_methods)
+        for metric, metric_methods in zip(metrics, methods, strict=True)
+    }
+    mechanism = getattr(request.design, "mechanism", None)
+    if request.cluster is not None and any(linear_by_metric.values()):
+        _refuse("estimation.engine.cuped_linear_cluster", cluster=request.cluster)
+    if isinstance(request.plan.inference, SEQUENTIAL_POLICIES) and any(linear_by_metric.values()):
+        _refuse("estimation.engine.cuped_linear_sequential")
+    for metric in metrics:
+        if not linear_by_metric[metric.name]:
+            continue
+        if getattr(getattr(metric, "winsorization", None), "has_percentile", False):
+            _refuse("estimation.engine.cuped_linear_winsorization", metric=metric.name)
+        if mechanism == "encouragement":
+            _refuse("estimation.engine.cuped_linear_encouragement", metric=metric.name)
+        if mechanism == "observational":
+            _refuse("estimation.engine.cuped_linear_observational", metric=metric.name)
 
 
 def validate_readout_engine(request: ReadoutRequest) -> None:
@@ -943,7 +997,7 @@ def validate_readout_engine(request: ReadoutRequest) -> None:
     mechanism = getattr(design, "mechanism", None)
     method_catalog = request.estimation_methods
     methods = [method for metric_methods in method_catalog for method in metric_methods]
-    reject_unfinished_cuped_linear(metrics, method_catalog)
+    _validate_cuped_linear_compatibility(request)
     if mechanism != "observational":
         for metric_methods in method_catalog:
             _validate_methods(metric_methods)
@@ -1409,6 +1463,7 @@ def _lift_decision_bundle(  # noqa: PLR0915
     *,
     inference: AsymptoticMean | AlwaysValid | MixedFamily | None,
     sequential_snapshot=None,
+    cuped_advisory: ReadoutAdvisory | None = None,
 ) -> DecisionComputation[LiftEstimate]:
     """Attach one typed decision value to every decision presentation row."""
     from increment.estimation.decision_types import (
@@ -1568,11 +1623,20 @@ def _lift_decision_bundle(  # noqa: PLR0915
             failures[hypothesis] = failure_row
         else:
             evidence[hypothesis] = evidence_row
+    advisories: dict[Any, tuple[ReadoutAdvisory, ...]] = (
+        {
+            ArmHypothesisKey(result.metric, result.group_id, result.estimand): (cuped_advisory,)
+            for result in output_results
+        }
+        if cuped_advisory is not None
+        else {}
+    )
     return DecisionComputation(
         results=tuple(output_results),
         evidence=evidence,
         failures=failures,
         sequential_snapshot=sequential_snapshot,
+        advisories=advisories,
     )
 
 
@@ -3085,6 +3149,115 @@ def _lift_for_method(  # noqa: PLR0913
     )
 
 
+def estimate_cuped_linear(
+    metric: Metric,
+    unit_frame: Any,
+    *,
+    control_group: str,
+    method: Method,
+    method_role: Literal["decision", "sensitivity"],
+    covariates: Sequence[Any],
+    alpha: float,
+    alternative: str,
+    null_lift: float = 0.0,
+    null_abs: float | None = None,
+) -> Any:
+    """Fit mixed-covariate CUPED once and project one randomized metric."""
+    import numpy as np
+
+    from increment.estimation.cuped_linear import fit_cuped_linear
+
+    frame = nw.from_native(unit_frame, eager_only=True)
+    arms = frame.get_column("group_id").to_list()
+    arm_order = tuple(dict.fromkeys((control_group, *map(str, arms))))
+    declarations = tuple(covariates)
+    covariate_arrays = {
+        item.name: np.asarray(frame.get_column(item.name).to_list(), dtype=object)
+        for item in declarations
+    }
+    kinds = {item.name: item.kind for item in declarations}
+    missing = {item.name: item.missing for item in declarations}
+    ratio = getattr(metric, "type", None) == "ratio"
+    fit = fit_cuped_linear(
+        None if ratio else np.asarray(frame.get_column("y").to_list(), dtype=float),
+        arms,
+        control=control_group,
+        arm_order=arm_order,
+        covariates=covariate_arrays,
+        kinds=kinds,
+        missing=missing,
+        numerator=np.asarray(frame.get_column("y").to_list(), dtype=float) if ratio else None,
+        denominator=np.asarray(frame.get_column("y_den").to_list(), dtype=float) if ratio else None,
+    )
+    alpha_eff = alpha if alternative == "two-sided" else 2.0 * alpha
+    results = []
+    context = {
+        "metric": metric.name,
+        "n_min": fit.n_min,
+        "p": fit.p,
+        "max_leverage": fit.max_leverage,
+        "mean_leverage": fit.mean_leverage,
+        "reference_df": fit.dof,
+        "structural_drops": fit.layout.structural_omissions,
+        "shared_missingness_indicators": fit.layout.shared_indicators,
+    }
+    advisory = ReadoutAdvisory(
+        code="estimation.cuped_linear.fit",
+        context=context,
+        message=(
+            f"Mixed CUPED fit: minimum arm size {fit.n_min}, {fit.p} encoded covariates, "
+            f"maximum leverage {fit.max_leverage:.3g}, reference df {fit.dof:.3g}."
+        ),
+    )
+    for arm in arm_order:
+        if arm == control_group:
+            continue
+        absolute = (
+            fit.ratio(arm, scale="absolute", alpha=alpha_eff)
+            if ratio
+            else fit.absolute(arm, alpha=alpha_eff)
+        )
+        relative = (
+            fit.ratio(arm, scale="log", alpha=alpha_eff)
+            if ratio
+            else fit.relative(arm, alpha=alpha_eff)
+        )
+        lift = Estimate(
+            value=math.expm1(relative.estimate),
+            lb=math.expm1(relative.lower),
+            ub=math.expm1(relative.upper),
+            level=1.0 - alpha_eff,
+            alpha=alpha_eff,
+            log_mean=relative.estimate,
+            log_se=relative.se,
+        )
+        results.append(
+            LiftEstimate(
+                metric=metric.name,
+                group_id=arm,
+                method=method.name,
+                method_role=method_role,
+                estimand="itt",
+                lift=lift,
+                alternative=alternative,
+                null_lift=null_lift,
+                null_abs=null_abs,
+                abs_diff=absolute.estimate,
+                abs_se=absolute.se,
+                abs_lb=absolute.lower,
+                abs_ub=absolute.upper,
+                abs_reference_kind="t",
+                abs_reference_df=absolute.dof,
+                abs_alpha=alpha_eff,
+                reference_kind="t",
+                reference_df=relative.dof,
+                dof=relative.dof,
+                scale="log",
+            )
+        )
+    return _lift_decision_bundle(results, inference=None, cuped_advisory=advisory)
+
+
 def estimate_lift(  # noqa: PLR0913
     metrics: Sequence[Metric],
     summary: SequentialSnapshot
@@ -3172,8 +3345,7 @@ def estimate_lift(  # noqa: PLR0913
     total clusters emits the qualified-reference warning (see
     ``check_total_clusters``).
     """
-    if methods:
-        reject_unfinished_cuped_linear(metrics, [methods] * len(metrics))
+    _reject_cuped_linear_aggregate(metrics, methods)
 
     return _estimate_lift(
         metrics,
@@ -3336,6 +3508,7 @@ def _estimate_lift(  # noqa: PLR0913
         sequential_refuse(
             "source.invalid", "an exact snapshot requires its registered runtime policy"
         )
+    _reject_cuped_linear_aggregate(metrics, methods)
     prepared = _prepare_lift_estimation(
         metrics,
         summary,

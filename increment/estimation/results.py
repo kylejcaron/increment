@@ -1478,6 +1478,42 @@ class LiftEstimate(_RowIdentity):
 
     def reintervalize(self, alpha: float) -> LiftEstimate:
         """Reinvert persisted inference; bootstrap roots are never regenerated."""
+        if (
+            self.reference_kind == "t"
+            and self.lift is not None
+            and self.lift.log_mean is not None
+            and self.lift.log_se is not None
+            and self.reference_df is not None
+        ):
+            critical = float(_t.isf(alpha / 2.0, self.reference_df))
+            log_mean = self.lift.log_mean
+            log_se = self.lift.log_se
+            lift = self.lift.model_copy(
+                update={
+                    "lb": math.expm1(log_mean - critical * log_se),
+                    "ub": math.expm1(log_mean + critical * log_se),
+                    "alpha": alpha,
+                    "level": 1.0 - alpha,
+                }
+            )
+            abs_lb = self.abs_lb
+            abs_ub = self.abs_ub
+            if (
+                self.abs_diff is not None
+                and self.abs_se is not None
+                and self.abs_reference_df is not None
+            ):
+                abs_critical = float(_t.isf(alpha / 2.0, self.abs_reference_df))
+                abs_lb = self.abs_diff - abs_critical * self.abs_se
+                abs_ub = self.abs_diff + abs_critical * self.abs_se
+            return self.model_copy(
+                update={
+                    "lift": lift,
+                    "abs_lb": abs_lb,
+                    "abs_ub": abs_ub,
+                    "abs_alpha": alpha if abs_lb is not None else None,
+                }
+            )
         if self.confidence_set is None:
             winsor_refuse(
                 "reinversion_required", "This operation requires a persisted winsor confidence set."
