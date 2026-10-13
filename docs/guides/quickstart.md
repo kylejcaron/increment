@@ -142,7 +142,6 @@ recovered = Analysis.from_unit_summary(
     plan=plan,
 ).run()
 print(recovered)
-print(recovered.to_frame(backend="polars"))
 ```
 
 ```text
@@ -154,6 +153,8 @@ Required cells: 2; available: 2.
 Multiplicity (primary): declared_plan; family primary.
 Multiplicity (guardrail): declared_plan; family guardrail.
 revenue (primary, relative lift): 0.115788, set [0.0621892, 0.172092] at 0.95 confidence.
+revenue interpretation: excludes zero at 95.0% confidence; effect direction supported (increase).
+revenue additive effect: 1.15169, set [0.638286, 1.6651].
 revenue test alternative: two-sided; null (relative lift): 0.
 revenue result identity: method unadjusted; method role decision; estimand itt.
 complaints (guardrail, relative lift): -0.137803, set [-1, 0.666805] at 0.9 confidence.
@@ -169,10 +170,37 @@ decrease, but its 90% interval includes zero, so it does not reject the
 one-sided null; that is inconclusive, not proof of safety or no effect.
 
 `repr(results)` and `print(results)` are the ordinary collection summary.
-`results.to_frame()` keeps numeric result columns and qualification columns;
-selecting only effect columns is a deliberate loss of evidence. For an
-optional rendered table install `increment[tables]`, then keep the consumer
-import distinct from authoring imports:
+`results.to_frame()` keeps every numeric result column and qualification
+column. Selecting a few columns for display is fine; dropping the
+qualification columns from what you store or share is a deliberate loss of
+evidence:
+
+```python
+frame = recovered.to_frame(backend="polars")
+print(frame.shape)
+print(
+    frame.select(
+        "metric", "role", "lift", "lb", "ub", "integrity_status", "decision_scope_complete"
+    )
+)
+```
+
+```text
+(2, 126)
+shape: (2, 7)
+┌────────────┬───────────┬───────────┬──────────┬──────────┬──────────────────┬────────────────────┐
+│ metric     ┆ role      ┆ lift      ┆ lb       ┆ ub       ┆ integrity_status ┆ decision_scope_com │
+│ ---        ┆ ---       ┆ ---       ┆ ---      ┆ ---      ┆ ---              ┆ plete              │
+│ str        ┆ str       ┆ f64       ┆ f64      ┆ f64      ┆ str              ┆ ---                │
+│            ┆           ┆           ┆          ┆          ┆                  ┆ bool               │
+╞════════════╪═══════════╪═══════════╪══════════╪══════════╪══════════════════╪════════════════════╡
+│ revenue    ┆ primary   ┆ 0.115788  ┆ 0.062189 ┆ 0.172092 ┆ not_rejected     ┆ true               │
+│ complaints ┆ guardrail ┆ -0.137803 ┆ -1.0     ┆ 0.666805 ┆ not_rejected     ┆ true               │
+└────────────┴───────────┴───────────┴──────────┴──────────┴──────────────────┴────────────────────┘
+```
+
+For an optional rendered table install `increment[tables]`, then keep the
+consumer import distinct from authoring imports:
 
 ```python
 from increment.tables import readout_table
