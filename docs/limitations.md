@@ -945,6 +945,26 @@ or change the separate unit-cycle research obligations.
 Evidence status for these campaigns is recorded under
 [Unvalidated regimes](validation.md#unvalidated-regimes).
 
+### Joint launch contrasts require two independently randomized binary experiments
+
+`estimate_overlap_effects` reads each launch combination from the joint
+assignment cell where it was actually assigned. That identification needs the
+two assignments to be independent within the jointly eligible population, so
+every combination has positive probability and cell membership is unrelated to
+outcomes. Dependent or mutually exclusive layers break that (CONSTRUCTION,
+`overlap.design.joint_law_unsupported`): an exclusive layer never assigns the
+both-treated cell, and a dependent law confounds cells with the assignment
+rule. Their joint effects need a separate construction; analyze each
+experiment on its own through `Analysis` meanwhile. Larger factorials,
+multi-arm experiments, and sequential monitoring of joint contrasts likewise
+lack an established construction here and are not expressible.
+
+A contrast that needs an empty cell, or a cell with one unit, is reported
+unavailable rather than extrapolated; no combination of the observed cells
+identifies it. The interval is asymptotic in the per-cell counts and is
+calibrated only where every cell is expected to hold at least 30 units
+(`EV-OVERLAP-CAL` in [validation](validation.md#in-repo-derivations-and-calibration-evidence)).
+
 ### Off-policy evaluation of logged decisions is calibrated only under a fixed logger
 
 `estimate_policy_contrast` evaluates a target policy against a reference policy from a

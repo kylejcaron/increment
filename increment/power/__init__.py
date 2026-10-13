@@ -41,6 +41,13 @@ from increment.power.core import (
     required_sample_size,
 )
 from increment.power.curve import PowerCurve, PowerCurvePoint, power_curve
+from increment.power.overlap import (
+    OverlapPowerSimulation,
+    overlap_contrast_power,
+    overlap_contrast_se,
+    overlap_minimum_detectable_effect,
+    simulate_overlap_power,
+)
 from increment.power.pairwise import (
     segment_pairwise_achieved_power,
     segment_pairwise_minimum_detectable_effect,
@@ -81,4 +88,9 @@ __all__ = [
     "segment_pairwise_minimum_detectable_effect",
     "joint_q_power_fixed",
     "joint_q_power_random",
+    "OverlapPowerSimulation",
+    "overlap_contrast_power",
+    "overlap_contrast_se",
+    "overlap_minimum_detectable_effect",
+    "simulate_overlap_power",
 ]

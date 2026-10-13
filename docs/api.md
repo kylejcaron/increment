@@ -512,6 +512,38 @@ frame. Exactly one route is required; the estimator and admission bounds are unc
 
 ::: increment.results.PolicyValueContrast
 
+## Overlapping experiments
+
+Joint launch evidence for two concurrently randomized binary experiments on
+their jointly eligible units. This family uses its own ingress
+(`OverlapCells.from_frame` / `from_table`) rather than an `Analysis`
+constructor; see the [guide](guides/overlapping-experiments.md) for the
+contrasts, the checks, and multiplicity.
+
+::: increment.estimate_overlap_effects
+
+::: increment.OverlapDesign
+
+::: increment.OverlapExperiment
+
+::: increment.ExperimentColumns
+
+::: increment.OverlapCells
+
+::: increment.overlap_contrast_power
+
+::: increment.overlap_minimum_detectable_effect
+
+::: increment.simulate_overlap_power
+
+::: increment.results.OverlapReadout
+
+::: increment.results.OverlapEffect
+
+::: increment.results.CellMoments
+
+::: increment.results.EligibilityAudit
+
 ## Switchback results
 
 ::: increment.estimation.contrast_results.ContrastResult

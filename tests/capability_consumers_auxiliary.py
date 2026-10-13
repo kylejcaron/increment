@@ -1149,6 +1149,60 @@ CONSUMER_CONTRACTS: tuple[ConsumerContract, ...] = (
         ),
     ),
     ConsumerContract(
+        "overlap_family_boundary",
+        tuple(
+            _expectation(
+                f"analysis_ingress_{ingress}_not_expressible",
+                "estimate_overlap_effects()",
+                ingress,
+                "Analysis ingresses carry one experiment's arms, not two experiments' joint cells",
+                "not_expressible",
+                "tests.overlap.test_readout::test_root_and_results_exports_resolve_to_the_family",
+                reason="Joint launch evidence is a separate family-owned estimand, not an Analysis readout.",
+            )
+            for ingress in (
+                "from_unit_summary",
+                "from_unit_panel",
+                "from_switchback_panel",
+                "from_definitions",
+                "from_unit_day_artifact",
+                "from_moments",
+            )
+        )
+        + (
+            _expectation(
+                "frame_and_table_contrasts_supported",
+                "estimate_overlap_effects()",
+                "OverlapCells.from_frame/from_table",
+                "two independently randomized binary experiments on their jointly eligible units",
+                "supported",
+                "tests.overlap.test_ingress::test_every_ingress_emits_the_pandas_rows",
+            ),
+            _expectation(
+                "dependent_joint_law_refused",
+                "OverlapDesign()",
+                "OverlapDesign",
+                "joint_law is dependent or mutually_exclusive",
+                "refused",
+                "tests.overlap.test_readout::test_design_refusals_are_coded_and_survive_round_trips",
+                codes=("overlap.design.joint_law_unsupported",),
+                reason="Dependent or exclusive layers leave launch combinations unassigned or confounded with the law.",
+                stage="construction",
+            ),
+            _expectation(
+                "guardrail_role_refused",
+                "estimate_overlap_effects(roles=...)",
+                "OverlapCells.from_frame/from_table",
+                "a metric is declared as a guardrail",
+                "refused",
+                "tests.overlap.test_readout::test_request_refusals_are_coded",
+                codes=("overlap.multiplicity.guardrail_unfinished",),
+                reason="Non-inferiority guardrails over joint launch contrasts are not implemented.",
+                stage="construction",
+            ),
+        ),
+    ),
+    ConsumerContract(
         "stored_bool_null_continuation",
         (
             _expectation(

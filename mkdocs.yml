@@ -84,6 +84,7 @@ nav:
       - Power Analysis: guides/power-analysis.md
       - Sitewide Impact: guides/sitewide-impact.md
       - Logged-Policy Evaluation: guides/logged-policy.md
+      - Overlapping Experiments: guides/overlapping-experiments.md
       - A/B Testing Dashboard: guides/dashboard.md
       - Registered Sequential Inference: guides/sequential-inference.md
       - Priors and Bayesian Decisions: guides/priors-and-decisions.md

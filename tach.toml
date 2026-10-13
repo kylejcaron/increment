@@ -312,13 +312,14 @@ depends_on = [
   "increment.estimation", "increment.plan", "increment.semantics", "increment.sources",
   "increment._source_identity", "increment.sequential_source", "increment.sequential_state",
   "increment._artifact_identity",
+  "increment._overlap",
 ]
 
 [[modules]]
 path = "increment.power"
 depends_on = [
   "increment.estimation",
-  "increment.power.core", "increment.power.curve", "increment.power.pairwise", "increment.power.switchback", "increment.power.unit_cycle",
+  "increment.power.core", "increment.power.overlap", "increment.power.curve", "increment.power.pairwise", "increment.power.switchback", "increment.power.unit_cycle",
 ]
 
 [[modules]]
@@ -516,6 +517,18 @@ depends_on = ["increment._canonical", "increment._source_operations", "increment
 [[modules]]
 path = "increment.reporting"
 depends_on = ["increment.errors", "increment.estimation", "increment.query", "increment.semantics"]
+
+[[modules]]
+path = "increment._overlap"
+depends_on = ["increment.errors"]
+
+[[modules]]
+path = "increment.overlap"
+depends_on = ["increment._overlap", "increment.errors", "increment.estimation", "increment.query"]
+
+[[modules]]
+path = "increment.power.overlap"
+depends_on = ["increment._overlap", "increment.overlap"]
 
 [[modules]]
 path = "increment.logged_policy"

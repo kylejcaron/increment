@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         TargetingSelection,
     )
     from increment.logged_policy import PolicyValueContrast
+    from increment.overlap import CellMoments, EligibilityAudit, OverlapEffect, OverlapReadout
     from increment.power import (
         PowerCurve,
         PowerCurvePoint,
@@ -129,6 +130,10 @@ __all__ = [
     "SitewideRatioImpact",
     "AllocationBalance",
     "PolicyValueContrast",
+    "OverlapReadout",
+    "OverlapEffect",
+    "CellMoments",
+    "EligibilityAudit",
     "ExperimentHealth",
     "HealthCheck",
 ]
@@ -198,6 +203,10 @@ _LAZY_IMPORTS = {
     "AllocationBalance": ("increment.estimation.sitewide", "AllocationBalance"),
     "SitewideRatioImpact": ("increment.estimation.sitewide", "SitewideRatioImpact"),
     "PolicyValueContrast": ("increment.logged_policy", "PolicyValueContrast"),
+    "OverlapReadout": ("increment.overlap", "OverlapReadout"),
+    "OverlapEffect": ("increment.overlap", "OverlapEffect"),
+    "CellMoments": ("increment.overlap", "CellMoments"),
+    "EligibilityAudit": ("increment.overlap", "EligibilityAudit"),
     "ExperimentHealth": ("increment.estimation.health", "ExperimentHealth"),
     "HealthCheck": ("increment.estimation.health", "HealthCheck"),
 }

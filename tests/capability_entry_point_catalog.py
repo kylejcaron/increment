@@ -1428,6 +1428,21 @@ _INGRESS_ROWS: tuple[EntryRow, ...] = (
         family=(_consumer("logged_policy_family_boundary", "logged_trace_contrast_supported"),),
     ),
     _row(
+        "overlap-joint-launch",
+        "Overlapping experiments: joint launch contrasts",
+        {
+            ingress: (
+                _consumer("overlap_family_boundary", f"analysis_ingress_{ingress}_not_expressible"),
+            )
+            for ingress in INGRESSES
+        },
+        family=(
+            _consumer("overlap_family_boundary", "frame_and_table_contrasts_supported"),
+            _consumer("overlap_family_boundary", "dependent_joint_law_refused"),
+            _consumer("overlap_family_boundary", "guardrail_role_refused"),
+        ),
+    ),
+    _row(
         "tabular-policy-persistence",
         "TabularPolicy persistence (JSON dump and validate)",
         {
