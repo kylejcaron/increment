@@ -140,8 +140,10 @@ class SitewideReadouts:
                 "TriggeredCountsOperation", self._src
             ).triggered_counts()
             expected = getattr(self._src.context.design, "allocation", None)
+            # An assigned arm nobody in which triggered is a zero, not a missing arm.
+            support = {**dict.fromkeys(evidence.assigned_counts or {}, 0), **triggered_counts}
             srm = sample_ratio_mismatch(
-                complete_srm_support(triggered_counts, expected=expected),
+                complete_srm_support(support, expected=expected),
                 expected=expected,
                 inference="fixed",
                 alpha=0.001,

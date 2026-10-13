@@ -597,6 +597,43 @@ def test_triggered_sitewide_retains_assigned_arm_with_zero_members(tmp_path):
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_triggered_balance_counts_assigned_arm_with_no_members(tmp_path):
+    # No declared allocation: the balance check compares equal shares, and an
+    # assigned arm nobody in which triggered must count as zero, not vanish.
+    rows = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5).to_pylist()
+    rows += [
+        {
+            "user_id": f"U{index}",
+            "group_id": "U",
+            "ts": dt.datetime(2024, 1, 2),
+            "event": "enrolled",
+            "value": 0.0,
+            "experiment_id": "exp",
+        }
+        for index in range(100)
+    ]
+    analysis = _analysis(tmp_path, pa.Table.from_pylist(rows))
+    adopted = None
+    try:
+        native = analysis.sitewide("revenue", arm="T", population="triggered")
+        adopted = _publish_and_adopt(
+            native_connection(_native_source(analysis)),
+            analysis,
+            kinds=("site_volume", "trigger_population", "assignment_counts"),
+        )
+        artifact = adopted.sitewide("revenue", arm="T", population="triggered")
+        for result in (native, artifact):
+            assert result.allocation_balance is not None
+            assert result.allocation_balance.status == "failed"
+        assert artifact.allocation_balance == native.allocation_balance
+    finally:
+        if adopted is None:
+            analysis.close()
+        else:
+            _close_parity_analysis(adopted)
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_triggered_sitewide_artifact_without_membership_refuses_before_snapshot_read(
     tmp_path, monkeypatch
 ):
