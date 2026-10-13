@@ -485,7 +485,7 @@ def _run_prepared(
     advisory_seen: set[tuple[object, ...]] = set()
     observed_arms: set[str] = set()
     observed_by_metric: dict[str, set[str]] = {}
-    evidence_components: dict[str, tuple[str, str, int]] = {}
+    evidence_components: dict[str, tuple[tuple[str, str, int], ...]] = {}
     computations: list[Any] = []
     out, refused_cells, secondary_entries, computations = _estimate_randomized_non_secondary(
         src,
