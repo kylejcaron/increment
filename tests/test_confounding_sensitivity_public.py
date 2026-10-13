@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import polars as pl
 import pytest
@@ -25,7 +27,7 @@ from tests.parity_harness.cases import (
 )
 from tests.parity_harness.comparison import nested_close
 
-_RISKS = np.array([[0.08, 0.20], [0.12, 0.28], [0.06, 0.16]])
+_RISKS = np.array([[0.08, 0.20], [0.30, 0.45], [0.06, 0.16]])
 
 
 def _frame(*, trimmed=False, three_arms=False):
@@ -95,9 +97,35 @@ def test_iptw_and_aipw_rows_report_marginal_risk_ratio(clustered):
         for row in rows:
             assert isinstance(row, LiftEstimate)
             assert row.estimand == "ate"
-            _assert_rr_scale(row, (0.12 + 0.28) / (0.08 + 0.20))
+            _assert_rr_scale(row, (0.30 + 0.45) / (0.08 + 0.20))
             if clustered:
                 assert row.n_clusters == 2_000
+    finally:
+        analysis.close()
+
+
+@pytest.mark.parametrize("method", ["iptw", "aipw"])
+@pytest.mark.parametrize("scale", ["log", "absolute"])
+def test_marginal_risk_ratio_check_rejects_other_scales(method, scale):
+    analysis = _analysis(_frame())
+    try:
+        (row,) = analysis.run(decision_method=Method(name=method))
+        assert isinstance(row, LiftEstimate)
+        lift = row.require_lift()
+        assert lift.lb is not None and lift.ub is not None
+        if scale == "log":
+            transformed = {
+                "value": math.log1p(lift.value),
+                "lb": math.log1p(lift.lb),
+                "ub": math.log1p(lift.ub),
+            }
+        else:
+            assert row.abs_diff is not None
+            assert row.abs_lb is not None and row.abs_ub is not None
+            transformed = {"value": row.abs_diff, "lb": row.abs_lb, "ub": row.abs_ub}
+        mutant = row.model_copy(update={"lift": lift.model_copy(update=transformed)})
+        with pytest.raises(AssertionError):
+            _assert_rr_scale(mutant, _RISKS[1].mean() / _RISKS[0].mean())
     finally:
         analysis.close()
 
@@ -112,7 +140,7 @@ def test_trimmed_rows_are_accepted_with_population():
         for row in rows:
             assert isinstance(row, LiftEstimate)
             assert row.estimand == "overlap_subpopulation_ate"
-            result = _assert_rr_scale(row, 0.12 / 0.08)
+            result = _assert_rr_scale(row, 0.30 / 0.08)
             assert result.population == row.population is not None
     finally:
         analysis.close()
@@ -127,7 +155,7 @@ def test_three_arm_rows_are_bounded_over_all_arms():
         assert {(row.group_id, row.method) for row in rows} == {
             (arm, method) for arm in ("t1", "t2") for method in ("iptw", "aipw")
         }
-        expected = {"t1": (0.12 + 0.28) / (0.08 + 0.20), "t2": (0.06 + 0.16) / (0.08 + 0.20)}
+        expected = {"t1": (0.30 + 0.45) / (0.08 + 0.20), "t2": (0.06 + 0.16) / (0.08 + 0.20)}
         for row in rows:
             assert isinstance(row, LiftEstimate)
             assert row.estimand == "ate"

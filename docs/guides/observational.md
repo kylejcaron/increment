@@ -915,7 +915,7 @@ conversion_rng = np.random.default_rng(20261013)
 conversion_n = 4_000
 segments = conversion_rng.integers(0, 2, size=conversion_n)
 converted_treatment = conversion_rng.random(conversion_n) < np.where(segments == 0, 0.3, 0.7)
-risk = np.array([[0.08, 0.20], [0.12, 0.28]])[converted_treatment.astype(int), segments]
+risk = np.array([[0.08, 0.20], [0.30, 0.45]])[converted_treatment.astype(int), segments]
 conversion_units = pl.DataFrame(
     {
         "unit": np.arange(conversion_n),
