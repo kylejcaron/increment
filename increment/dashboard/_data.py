@@ -940,7 +940,7 @@ def _analysis_integrity_qualification(group) -> str:
         if group.integrity_code == "integrity.allocation_scheme_missing":
             detail = "the allocation scheme is not declared on the analysis design"
         elif group.integrity_code == "integrity.allocation_missing_or_nonconstant":
-            detail = "allocation counts are missing or nonconstant"
+            detail = "the declared target allocation weights are missing or nonconstant"
         else:
             detail = "the required assignment declaration is incomplete"
         text = f"{label}: not checked — {detail}"
@@ -1373,22 +1373,35 @@ def _capture_overview(
     try:
         answered = read(list(declared), list(added))
     except CodedError:
-        rows: list[Any] = []
-        metadata = None
+        parts: list[LiftEstimates | BreakoutEstimates] = []
         for name in (*declared, *added):
             one = (population, view, name, False, breakout)
             try:
-                part = read([name] if name in declared else [], [name] if name in added else [])
+                part = cast(
+                    LiftEstimates | BreakoutEstimates,
+                    read([name] if name in declared else [], [name] if name in added else []),
+                )
             except CodedError as exc:
                 captures[one] = DashboardExploreCapture.refused(one, exc)
             else:
-                if metadata is None:
-                    metadata = copy.copy(getattr(part, "metadata", None))
-                rows.extend(
-                    row
-                    for row in part
-                    if getattr(row, "analysis_population", population) == population
+                part = part.filter(
+                    lambda row: getattr(row, "analysis_population", population) == population
                 )
+                captures[one] = DashboardExploreCapture.answered(
+                    one,
+                    part,
+                    collection=partial(_collection_with_metadata, type(part), part.metadata),
+                )
+                parts.append(part)
+        if parts:
+            merged = parts[0]
+            for part in parts[1:]:
+                merged = merged.concat(part)
+            rows = list(merged)
+            metadata = copy.copy(merged.metadata)
+        else:
+            rows = []
+            metadata = None
     else:
         rows = [
             row for row in answered if getattr(row, "analysis_population", population) == population

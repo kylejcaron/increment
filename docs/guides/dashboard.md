@@ -109,6 +109,11 @@ population with `DashboardConfig.expected_allocation` and reports its own
 evidence. When that dashboard check detects a mismatch, its source and
 population are named before effect summaries.
 
+The integrity code `integrity.allocation_missing_or_nonconstant` refers to
+missing or nonconstant declared target allocation weights; it does not mean
+that the observed group counts are unavailable. The observed allocation
+diagnostic is reported separately.
+
 For the Triggered view, the assigned-population integrity result remains
 visible as the assignment check; it is not replaced by triggered-population
 integrity metadata. Relative configured allocation weights are displayed as

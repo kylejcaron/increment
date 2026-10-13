@@ -587,6 +587,43 @@ def test_dashboard_explains_missing_allocation_scheme_separately(
     assert "no allocation declared" not in text
 
 
+def test_dashboard_names_declared_weights_not_observed_counts(pricing: DashboardSnapshot) -> None:
+    from increment.estimation.readout_types import IntegrityStatus
+
+    collection = pricing.readout_collection
+    assert collection is not None and collection.metadata is not None
+    metadata = collection.metadata
+    source_id, source = next(iter(metadata.scope.by_source.items()))
+    integrity = tuple(
+        item.model_copy(
+            update={
+                "status": IntegrityStatus.NOT_CHECKED_MISSING_DECLARATION,
+                "code": "integrity.allocation_missing_or_nonconstant",
+                "context": {"allocation": None},
+            }
+        )
+        if item.analysis_population == "assigned"
+        else item
+        for item in source.integrity
+    )
+    changed_source = source.model_copy(update={"integrity": integrity})
+    changed_scope = metadata.scope.model_copy(
+        update={"by_source": {**metadata.scope.by_source, source_id: changed_source}}
+    )
+    changed_collection = type(collection)(
+        collection, metadata=metadata.model_copy(update={"scope": changed_scope})
+    )
+    snapshot = dataclasses.replace(
+        pricing,
+        readout_collection=changed_collection,
+        population_collections={**pricing.population_collections, "assigned": changed_collection},
+    )
+    text = render_header(snapshot).text
+    assert "integrity.allocation_missing_or_nonconstant" in text
+    assert "declared target allocation weights" in text
+    assert "allocation counts are missing or nonconstant" not in text
+
+
 def test_renders_expected_shares_from_configuration(pricing: DashboardSnapshot) -> None:
     html = render_health(pricing).text
     assert "70.0%" in html
@@ -2329,5 +2366,101 @@ def test_dashboard_round_trips_real_unavailable_cell_and_advisories(tmp_path: Pa
             if item["code"] == "estimation.engine.small_total_clusters"
         )
         assert exported_advisory["message"] == advisory["message"]
+    finally:
+        analysis.close()
+
+
+@pytest.mark.slow
+def test_clustered_overview_fallback_preserves_each_metric_collection(
+    tmp_path: Path, dashboard_con
+):
+    facts = FACT_SOURCES.replace(
+        "SELECT * FROM analytics.event_log",
+        "SELECT *, concat(group_id, '_', country_code) AS store_id FROM analytics.event_log",
+    ).replace(
+        "    properties:\n",
+        "    properties:\n"
+        "      - name: store_id\n"
+        "        column: store_id\n"
+        "        dtype: string\n"
+        "        as_of: static\n",
+        1,
+    )
+    metrics = (
+        METRICS
+        + """
+  - type: mean
+    name: added_revenue
+    entity: user_id
+    preferred_direction: increase
+    fact: purchase
+    aggregation: sum
+    window_days: 14
+  - type: mean
+    name: added_duration
+    entity: user_id
+    preferred_direction: decrease
+    fact: session_end
+    aggregation: sum
+    window_days: 14
+  - type: quantile
+    name: p90_revenue
+    quantile: 0.9
+    entity: user_id
+    fact: purchase
+    aggregation: sum
+    window_days: 14
+"""
+    )
+    experiments = EXPERIMENTS.replace(
+        "    unit: user_id\n", "    unit: user_id\n    cluster: store_id\n", 1
+    ).replace("    breakouts:\n      - property: country\n        source: event_log\n", "")
+    definitions = tmp_path / "definitions"
+    definitions.mkdir()
+    for name, content in (
+        ("fact_sources.yaml", facts),
+        ("exposures.yaml", EXPOSURES),
+        ("metrics.yaml", metrics),
+        ("experiments.yaml", experiments),
+    ):
+        (definitions / name).write_text(content)
+
+    from typing import cast
+
+    from increment import Analysis
+    from increment.breakout.estimates import LiftEstimates
+    from increment.dashboard._app import build_payload
+
+    added = ("added_revenue", "added_duration", "p90_revenue")
+    analysis = Analysis.from_definitions("storefront_refresh", definitions, dashboard_con)
+    try:
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            snapshot = prepare_dashboard(
+                analysis,
+                config=DashboardConfig(
+                    expected_allocation={"control": 0.5, "treatment": 0.5},
+                    exploratory_metrics=added,
+                ),
+            )
+        capture = snapshot.explore[("assigned", "overview_whole", None, False, None)]
+        collection = cast(LiftEstimates, capture.load())
+        assert {row.metric for row in collection} >= set(added[:2])
+        assert collection.metadata is not None
+        assert {record.cell.metric for record in collection.metadata.cells} >= set(added[:2])
+
+        overview = snapshot.overview
+        assert overview is not None
+        assert {row.metric for row in overview.exploratory} >= set(added[:2])
+        refusal = next(item for item in overview.refusals if item[0] == "p90_revenue")
+        assert refusal[2].code == "arm.metric.quantile_cluster"
+
+        details = render_metric_details(snapshot, metric="added_revenue").text
+        assert "added_revenue" in details
+        payload = build_payload(analysis, snapshot=snapshot)
+        notes = payload["overview"]["overall"]["notes"]
+        assert any("p90_revenue" in note and refusal[2].code in note for note in notes)
     finally:
         analysis.close()
