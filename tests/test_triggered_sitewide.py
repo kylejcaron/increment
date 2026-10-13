@@ -18,7 +18,7 @@ from increment.query.artifact_contract import ArtifactContractError
 from tests.analysis_factory import _moment_source as _arm_moment_source
 from tests.analysis_factory import _native_source, native_connection
 from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
-from tests.test_analysis_trigger import _defs_yaml, _events
+from tests.test_analysis_trigger import _defs_yaml, _events, _with_preassignment_region
 
 
 def _moment_source(analysis: Analysis) -> Any:
@@ -39,6 +39,7 @@ def _analysis(
     observation_end=None,
     source_snapshot_evidence=True,
     on_mixed_assignment="error",
+    observational=False,
 ):
     tmp_path.mkdir(parents=True, exist_ok=True)
     definitions = _defs_yaml(
@@ -51,6 +52,20 @@ def _analysis(
             definitions.replace("    type: mean\n", "    type: conversion\n")
             .replace("    fact: revenue\n", "    fact: saw_surface\n")
             .replace("    aggregation: sum\n", "")
+        )
+    if observational:
+        definitions = definitions.replace(
+            "    facts:\n",
+            "    properties:\n"
+            "      - {name: region, column: region, dtype: string, as_of: pre_exposure}\n"
+            "    facts:\n",
+        ).replace(
+            "    plan:\n",
+            "    design:\n"
+            "      mechanism: observational\n"
+            "      covariates:\n"
+            "        - {property: region, source: events}\n"
+            "    plan:\n",
         )
     if day_boundary is not None:
         definitions = definitions.replace(
@@ -67,10 +82,12 @@ def _analysis(
     definitions_path = tmp_path / "triggered-sitewide.yml"
     definitions_path.write_text(definitions)
     con = ibis.duckdb.connect()
-    con.create_table(
-        "events",
-        obj=_events(n_per_arm=100, trigger_rate=0.2, effect=0.5) if events is None else events,
+    source_events = (
+        _events(n_per_arm=100, trigger_rate=0.2, effect=0.5) if events is None else events
     )
+    if observational:
+        source_events = _with_preassignment_region(source_events)
+    con.create_table("events", obj=source_events)
     return Analysis.from_definitions(
         "exp",
         definitions_path,
@@ -317,32 +334,23 @@ def test_triggered_sitewide_artifact_matches_native_evidence(tmp_path):
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
-def test_triggered_sitewide_artifact_respects_certified_outcome_edge(tmp_path):
+def test_triggered_sitewide_refuses_incomplete_calendar_outcomes(tmp_path):
     analysis = _analysis(tmp_path, watermark=dt.datetime(2024, 1, 8, tzinfo=dt.UTC))
     adopted = None
     try:
-        native_result = analysis.sitewide("revenue", population="triggered")
-        native = _moment_source(analysis).sitewide_evidence(
-            analysis.metrics[0], include_ratio=False, population="triggered"
+        with pytest.raises(CapabilityError) as native_refused:
+            analysis.sitewide("revenue", population="triggered")
+        assert native_refused.value.code == (
+            "facade.analysis.sitewide_triggered_outcomes_incomplete"
         )
         adopted = _publish_and_adopt(
             native_connection(_native_source(analysis)),
             analysis,
             kinds=("site_volume", "trigger_population", "assignment_counts"),
         )
-        artifact_result = adopted.sitewide("revenue", population="triggered")
-        artifact = _moment_source(adopted).sitewide_evidence(
-            adopted.metrics[0], include_ratio=False, population="triggered"
-        )
-        assert {arm.group_id: arm.n for arm in native.arm_stats} == {
-            arm.group_id: arm.n for arm in artifact.arm_stats
-        }
-        assert {arm.group_id: arm.mean_y() for arm in native.arm_stats} == pytest.approx(
-            {arm.group_id: arm.mean_y() for arm in artifact.arm_stats}, rel=1e-12
-        )
-        assert artifact_result.absolute_impact == pytest.approx(
-            native_result.absolute_impact, rel=1e-12
-        )
+        with pytest.raises(CapabilityError) as artifact_refused:
+            adopted.sitewide("revenue", population="triggered")
+        assert artifact_refused.value.code == native_refused.value.code
     finally:
         if adopted is None:
             analysis.close()
@@ -351,65 +359,7 @@ def test_triggered_sitewide_artifact_respects_certified_outcome_edge(tmp_path):
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
-def test_triggered_sitewide_censoring_reports_observed_scaled_members(tmp_path):
-    events = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5)
-    late_member_rows = pa.Table.from_pylist(
-        [
-            {
-                "user_id": "late-member",
-                "group_id": "C",
-                "ts": dt.datetime(2024, 1, 9),
-                "event": event,
-                "value": None if event == "enrolled" else 1.0,
-                "experiment_id": "exp",
-            }
-            for event in ("enrolled", "saw_surface")
-        ],
-        schema=events.schema,
-    )
-    analysis = _analysis(
-        tmp_path,
-        events=pa.concat_tables([events, late_member_rows]),
-        watermark=dt.datetime(2024, 1, 8, tzinfo=dt.UTC),
-    )
-    adopted = None
-    try:
-        native_result = analysis.sitewide("revenue", population="triggered")
-        native_evidence = _native_source(analysis).sitewide_evidence(
-            analysis.metrics[0], include_ratio=False, population="triggered"
-        )
-        adopted = _publish_and_adopt(
-            native_connection(_native_source(analysis)),
-            analysis,
-            kinds=("site_volume", "trigger_population", "assignment_counts"),
-        )
-        artifact_result = adopted.sitewide("revenue", population="triggered")
-        artifact_evidence = _moment_source(adopted).sitewide_evidence(
-            adopted.metrics[0], include_ratio=False, population="triggered"
-        )
-        native_counts = native_evidence.population_counts
-        artifact_counts = artifact_evidence.population_counts
-        assert native_counts is not None
-        assert artifact_counts is not None
-        assert native_counts["C"] == artifact_counts["C"]
-        assert (
-            native_counts["C"]
-            == next(arm.n for arm in native_evidence.arm_stats if arm.group_id == "C") + 1
-        )
-        assert native_result.scaled_units == artifact_result.scaled_units
-        assert native_result.scaled_units == sum(
-            arm.n for arm in native_evidence.arm_stats if arm.group_id in {"C", "T"}
-        )
-        assert native_result.unobserved_members == artifact_result.unobserved_members == 1
-    finally:
-        if adopted is None:
-            analysis.close()
-        else:
-            _close_parity_analysis(adopted)
-
-
-@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
-def test_triggered_sitewide_counts_censored_members_in_every_scaled_arm(tmp_path):
+def test_triggered_sitewide_scales_complete_three_arm_roster(tmp_path):
     events = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5)
     third_arm_rows = []
     for index in range(20):
@@ -419,11 +369,6 @@ def test_triggered_sitewide_counts_censored_members_in_every_scaled_arm(tmp_path
             *([("saw_surface", 0.0, dt.datetime(2024, 1, 2), unit)] if triggered else []),
             ("revenue", 1.0 + index / 10, dt.datetime(2024, 1, 8), unit),
         ]
-    # Enrolled after the outcome feed's watermark: a member whose outcomes are censored.
-    third_arm_rows += [
-        ("enrolled", 0.0, dt.datetime(2024, 1, 9), "U-late"),
-        ("saw_surface", 0.0, dt.datetime(2024, 1, 9), "U-late"),
-    ]
     extra = pa.Table.from_pylist(
         [
             {
@@ -441,7 +386,7 @@ def test_triggered_sitewide_counts_censored_members_in_every_scaled_arm(tmp_path
     analysis = _analysis(
         tmp_path,
         events=pa.concat_tables([events, extra]),
-        watermark=dt.datetime(2024, 1, 8, 12, tzinfo=dt.UTC),
+        third_arm=True,
     )
     adopted = None
     try:
@@ -449,12 +394,12 @@ def test_triggered_sitewide_counts_censored_members_in_every_scaled_arm(tmp_path
         evidence = _moment_source(analysis).sitewide_evidence(
             analysis.metrics[0], include_ratio=False, population="triggered"
         )
-        observed = {arm.group_id: arm.n for arm in evidence.arm_stats}
-        assert evidence.population_counts["U"] == 6
-        assert observed["U"] == 5
-        assert native.other_arm_ids == ("U",)
-        assert native.scaled_units == sum(observed.values()) == round(native.n_enrolled)
-        assert native.unobserved_members == 1
+        assert evidence.population_counts["U"] == 5
+        assert native.scaled_units == round(native.n_enrolled)
+        assert native.scaled_units == sum(
+            arm.n for arm in evidence.arm_stats if arm.group_id in {"C", "T", "U"}
+        )
+        assert native.unobserved_members == 0
         adopted = _publish_and_adopt(
             native_connection(_native_source(analysis)),
             analysis,
@@ -462,8 +407,7 @@ def test_triggered_sitewide_counts_censored_members_in_every_scaled_arm(tmp_path
         )
         artifact = adopted.sitewide("revenue", arm="T", population="triggered")
         assert artifact.scaled_units == native.scaled_units
-        assert artifact.unobserved_members == native.unobserved_members == 1
-        assert artifact.absolute_impact == pytest.approx(native.absolute_impact, rel=1e-12)
+        assert artifact.unobserved_members == 0
     finally:
         if adopted is None:
             analysis.close()
@@ -610,17 +554,23 @@ def test_triggered_sitewide_retains_assigned_arm_with_zero_members(tmp_path):
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
-def test_triggered_sitewide_artifact_without_membership_refuses_with_republish_route(tmp_path):
+def test_triggered_sitewide_artifact_without_membership_refuses_before_snapshot_read(
+    tmp_path, monkeypatch
+):
     analysis = _analysis(tmp_path)
     adopted = None
     try:
         adopted = _publish_and_adopt(
             native_connection(_native_source(analysis)), analysis, kinds=("site_volume",)
         )
+        artifact_source = _moment_source(adopted)
+        monkeypatch.setattr(
+            type(artifact_source._snapshot),
+            "execute",
+            lambda *args, **kwargs: pytest.fail("read snapshot before required extension checks"),
+        )
         with pytest.raises(ArtifactContractError) as raised:
-            _moment_source(adopted).sitewide_evidence(
-                adopted.metrics[0], include_ratio=False, population="triggered"
-            )
+            adopted.sitewide("revenue", population="triggered")
         for restored in (
             copy.deepcopy(raised.value),
             pickle.loads(pickle.dumps(raised.value)),
@@ -786,6 +736,22 @@ def test_triggered_sitewide_evidence_applies_mixed_assignment_policy(tmp_path, p
             )
             assert increment_warning.code == "query.integrity.mixed_assignments_excluded"
             assert evidence.analysis_population == "triggered"
+    finally:
+        analysis.close()
+
+
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_triggered_sitewide_observational_design_refuses_before_evidence(tmp_path, monkeypatch):
+    analysis = _analysis(tmp_path, observational=True)
+    try:
+        monkeypatch.setattr(
+            _moment_source(analysis),
+            "sitewide_evidence",
+            lambda *args, **kwargs: pytest.fail("acquired observational sitewide evidence"),
+        )
+        with pytest.raises(CapabilityError) as refused:
+            analysis.sitewide("revenue", population="triggered")
+        assert refused.value.code == "facade.analysis.sitewide_triggered_observational"
     finally:
         analysis.close()
 

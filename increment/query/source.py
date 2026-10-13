@@ -133,6 +133,11 @@ _SQL_CLUSTER = RefusalSpec(
     template="cluster_counts() is unavailable on {source}: {because}. The randomization-grain count needs a declared cluster column; build the source with from_unit_summary(..., cluster=...) or analyse from definitions declaring Experiment.cluster.",
 )
 
+_TRIGGERED_SITEWIDE_OUTCOMES_INCOMPLETE = RefusalSpec(
+    "facade.analysis.sitewide_triggered_outcomes_incomplete",
+    CapabilityError,
+    template="triggered sitewide requires every outcome feed to be certified complete through the experiment calendar end; {route}",
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -1808,6 +1813,72 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             trigger_anchors={str(row["unit_id"]): row["first_trigger_ts"] for row in rows},
         )
 
+    def _triggered_sitewide_preflight(
+        self, metric: Metric, extension: Any
+    ) -> tuple[Any, Any, Any, frozenset[str]]:
+        components = (
+            (metric.numerator, metric.denominator) if isinstance(metric, RatioMetric) else (metric,)
+        )
+        if any(
+            getattr(component, "window_days", None) is not None
+            or getattr(component, "aggregation", None) != "sum"
+            for component in components
+        ):
+            raise ArtifactContractError(
+                "artifact.evidence.unavailable",
+                "triggered sitewide requires an unwindowed sum metric",
+                context={"route": "use a calendar-aligned unwindowed sum metric"},
+            )
+        binding = next(
+            item for item in self._manifest.metric_measures if item.metric_name == metric.name
+        )
+        measure_keys = (
+            frozenset({binding.numerator_measure_key, binding.denominator_measure_key})
+            if isinstance(binding, RatioMetricMeasure)
+            else frozenset({binding.measure_key})
+        )
+        try:
+            trigger_extension = self._extension(
+                {
+                    "kind": "trigger_population",
+                    "trigger_name": self._artifact_experiment.trigger,
+                }
+            )
+            count_extension = self._extension(
+                {"kind": "assignment_counts", "populations": ("assigned", "triggered")}
+            )
+        except ArtifactContractError as exc:
+            raise ArtifactContractError(
+                "artifact.extension.missing",
+                "triggered sitewide requires trigger membership and assignment counts",
+                context={
+                    "route": "republish with trigger_population and assignment_counts extensions"
+                },
+            ) from exc
+        if (
+            self._artifact_experiment.end is None
+            or extension.first_ds != self._artifact_experiment.start_day
+            or extension.last_ds != self._artifact_experiment.end_day
+        ):
+            raise ArtifactContractError(
+                "artifact.extension.invalid",
+                "site-volume coverage does not match the experiment calendar window",
+                context={"route": "republish matching site_volume and trigger_population evidence"},
+            )
+        outcome_edge = _outcome_edge(
+            self._manifest.measures,
+            self._ensure("measure_stats"),
+            measure_keys,
+            self._snapshot.execute,
+        )
+        end_day = self._artifact_experiment.end_day
+        if end_day is None or outcome_edge is None or outcome_edge < end_day:
+            refuse(
+                _TRIGGERED_SITEWIDE_OUTCOMES_INCOMPLETE,
+                route="re-run after the outcome feeds are complete through the experiment end.",
+            )
+        return trigger_extension, count_extension, binding, measure_keys
+
     def sitewide_evidence(
         self,
         metric: Metric,
@@ -1846,6 +1917,14 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 f"site-volume evidence is absent for metric {metric.name!r}",
                 context={"route": "republish with this metric's site_volume extension"},
             )
+        if population == "triggered":
+            trigger_extension, count_extension, binding, measure_keys = (
+                self._triggered_sitewide_preflight(metric, extension)
+            )
+        else:
+            binding = next(
+                item for item in self._manifest.metric_measures if item.metric_name == metric.name
+            )
         rows = self._read_extension(
             extension,
             request=entry.request.model_dump(mode="json") if entry is not None else None,
@@ -1854,9 +1933,6 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         for row in rows:
             key = str(row["measure_key"])
             by_measure[key] = by_measure.get(key, 0.0) + float(row["sum_value"])
-        binding = next(
-            item for item in self._manifest.metric_measures if item.metric_name == metric.name
-        )
         if isinstance(binding, RatioMetricMeasure):
             site_total = by_measure.get(binding.numerator_measure_key, 0.0)
             site_den = by_measure.get(binding.denominator_measure_key, 0.0)
@@ -1874,55 +1950,10 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         assigned_counts = dict(Counter(group_by_unit.values()))
         membership_cutoff = None
         if population == "triggered":
-            components = (
-                (metric.numerator, metric.denominator)
-                if isinstance(metric, RatioMetric)
-                else (metric,)
-            )
-            if any(
-                getattr(component, "window_days", None) is not None
-                or getattr(component, "aggregation", None) != "sum"
-                for component in components
-            ):
-                raise ArtifactContractError(
-                    "artifact.evidence.unavailable",
-                    "triggered sitewide requires an unwindowed sum metric",
-                    context={"route": "use a calendar-aligned unwindowed sum metric"},
-                )
-            try:
-                trigger_extension = self._extension(
-                    {
-                        "kind": "trigger_population",
-                        "trigger_name": self._artifact_experiment.trigger,
-                    }
-                )
-                count_extension = self._extension(
-                    {"kind": "assignment_counts", "populations": ("assigned", "triggered")}
-                )
-            except ArtifactContractError as exc:
-                raise ArtifactContractError(
-                    "artifact.extension.missing",
-                    "triggered sitewide requires trigger membership and assignment counts",
-                    context={
-                        "route": "republish with trigger_population and assignment_counts extensions"
-                    },
-                ) from exc
             count_rows = self._read_extension(
                 count_extension, request=_artifact_request(count_extension)
             )
             membership_cutoff = trigger_extension.observation_cutoff_ts
-            if (
-                self._artifact_experiment.end is None
-                or extension.first_ds != self._artifact_experiment.start_day
-                or extension.last_ds != self._artifact_experiment.end_day
-            ):
-                raise ArtifactContractError(
-                    "artifact.extension.invalid",
-                    "site-volume coverage does not match the experiment calendar window",
-                    context={
-                        "route": "republish matching site_volume and trigger_population evidence"
-                    },
-                )
             trigger_rows = self._trigger_population_rows(operation="sitewide_evidence")
             self._validate_trigger_population_counts(count_rows, trigger_rows)
             member_ids = frozenset(str(row["unit_id"]) for row in trigger_rows)
@@ -1935,25 +1966,11 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             # one generation; a pinned publish writes that generation at one cutoff,
             # so membership, calendar measures, and site volume share that cutoff.
             # Adoption trusts the caller-pinned generation.
-            measure_keys = (
-                frozenset({binding.numerator_measure_key, binding.denominator_measure_key})
-                if isinstance(binding, RatioMetricMeasure)
-                else frozenset({binding.measure_key})
-            )
             moment_rows = super()._reduce(
                 metric,
                 "total",
                 population_units=member_ids,
-                calendar_end=min(
-                    cast(dt.date, self._artifact_experiment.end_day),
-                    _outcome_edge(
-                        self._manifest.measures,
-                        self._ensure("measure_stats"),
-                        measure_keys,
-                        self._snapshot.execute,
-                    )
-                    or cast(dt.date, self._artifact_experiment.end_day),
-                ),
+                calendar_end=cast(dt.date, self._artifact_experiment.end_day),
             )
         else:
             population_counts = assigned_counts.copy()

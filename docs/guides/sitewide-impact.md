@@ -29,6 +29,13 @@ trigger-anchored observation windows; late triggers can belong to the
 membership while their outcome contribution still comes from the fixed
 experiment window. Site volume remains the full-site total, not a
 trigger-filtered total.
+
+Triggered sitewide is supported only for randomized designs. Native sources
+must provide certified completeness watermarks for every outcome feed (both
+ratio components, when applicable) through the experiment end; artifact
+outcome edges must cover the same calendar end. An incomplete feed refuses
+before reduction. Re-run after all outcome feeds are certified through the
+experiment end.
 The assigned/triggered `snapshot_id` equality is content-bound only for
 artifacts; native identity reflects declared `SourceSnapshotEvidence`, not
 table contents.

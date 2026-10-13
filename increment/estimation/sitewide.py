@@ -331,8 +331,9 @@ class SitewideImpact(BaseModel):
         Units the impact scales (``n_enrolled``, rounded): every observed
         unit in the control, target and other co-enrolled arms.
     unobserved_members : int
-        Members of those arms omitted from outcome reduction by
-        outcome-edge censoring.
+        Members across the complete requested population roster omitted from
+        outcome reduction. Triggered sitewide requires complete calendar
+        coverage, so this is zero for supported triggered requests.
     multiplicity_status, adjustment : str
         Sitewide results are exploratory and unadjusted; triggered results do
         not inherit a registered analysis family.
@@ -442,9 +443,9 @@ class SitewideRatioImpact(BaseModel):
     scaled_units : int
         Units the impact scales (``n_enrolled``, rounded): every observed
         unit in the control, target and other co-enrolled arms.
-    unobserved_members : int
-        Members of those arms omitted from outcome reduction by
-        outcome-edge censoring.
+        Members across the complete requested population roster omitted from
+        outcome reduction. Triggered sitewide requires complete calendar
+        coverage, so this is zero for supported triggered requests.
     multiplicity_status, adjustment : str
         Sitewide results are exploratory and unadjusted; triggered results do
         not inherit a registered analysis family.
@@ -1118,6 +1119,7 @@ def sitewide_impact(
         n_treatment=target.n_units,
         n_enrolled=n_exp,
         other_arm_ids=tuple(arm.group_id for arm in others),
+        scaled_units=round(n_exp),
         site_total_volume=site_total_volume,
         baseline_volume=baseline_volume,
         absolute_impact=absolute_impact,
@@ -1326,6 +1328,7 @@ def sitewide_impact_ratio(  # noqa: PLR0915
         n_control=control.n_units,
         n_treatment=target.n_units,
         n_enrolled=n_exp,
+        scaled_units=round(n_exp),
         other_arm_ids=tuple(other_ids),
         site_total_numerator=site_total_numerator,
         site_total_denominator=site_total_denominator,

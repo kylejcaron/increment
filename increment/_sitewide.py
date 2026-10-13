@@ -100,6 +100,16 @@ _TRIGGERED_SITEWIDE_SEQUENTIAL = RefusalSpec(
     CapabilityError,
     template="triggered sitewide is fixed-horizon and cannot use a registered sequential plan; use a fixed-horizon plan.",
 )
+_TRIGGERED_SITEWIDE_OBSERVATIONAL = RefusalSpec(
+    "facade.analysis.sitewide_triggered_observational",
+    CapabilityError,
+    template="triggered sitewide requires a randomized identification design; observational and encouragement designs are unsupported. Use assigned sitewide reading or run().",
+)
+_TRIGGERED_SITEWIDE_OUTCOMES_INCOMPLETE = RefusalSpec(
+    "facade.analysis.sitewide_triggered_outcomes_incomplete",
+    CapabilityError,
+    template="triggered sitewide requires every outcome feed to be certified complete through the experiment calendar end; {route}",
+)
 # Retention and quantile are refused by validate_site_volume_metric.
 _CLUSTER_COMPATIBLE_METRIC_TYPES = ("mean", "conversion", "ratio")
 
@@ -159,8 +169,6 @@ class SitewideReadouts:
         )
         # Every enrolled arm is scaled (n_enrolled); cluster-grain populations are
         # normalized floats, so round before reporting a unit count.
-        contributing = (evidence.control_group, result.treatment_group, *result.other_arm_ids)
-        selected_members = sum(population_counts.get(group_id, 0) for group_id in contributing)
         scaled_units = round(result.n_enrolled)
         return result.model_copy(
             update={
@@ -169,7 +177,7 @@ class SitewideReadouts:
                 "membership_cutoff": evidence.membership_cutoff,
                 "snapshot_id": evidence.snapshot_id,
                 "scaled_units": scaled_units,
-                "unobserved_members": max(0, selected_members - scaled_units),
+                "unobserved_members": max(0, sum(population_counts.values()) - scaled_units),
                 "multiplicity_status": "exploratory_unadjusted",
                 "adjustment": "unadjusted",
                 "assumptions": assumptions,
@@ -180,6 +188,8 @@ class SitewideReadouts:
     def _validate_triggered_metric(self, metric_name: str, metric: Metric) -> None:
         experiment = self._experiment
         assert experiment is not None
+        if experiment.resolved_design().mechanism != "randomized":
+            _refuse(_TRIGGERED_SITEWIDE_OBSERVATIONAL)
         if experiment.cluster is not None:
             _refuse(
                 _TRIGGERED_SITEWIDE_CLUSTER,

@@ -240,6 +240,26 @@ for _key, _operation, _evidence in _TRIGGER_READS:
                     "supported",
                     "tests.test_triggered_sitewide::test_triggered_sitewide_artifact_matches_native_evidence",
                 ),
+                _expectation(
+                    "sitewide_triggered_observational_refused",
+                    _operation,
+                    "from_definitions",
+                    "sitewide requested with population='triggered' on an observational trigger experiment",
+                    "refused",
+                    "tests.test_triggered_sitewide::test_triggered_sitewide_observational_design_refuses_before_evidence",
+                    codes=("facade.analysis.sitewide_triggered_observational",),
+                    reason="Triggered sitewide has no adjusted observational construction.",
+                ),
+                _expectation(
+                    "sitewide_triggered_incomplete_outcomes_refused",
+                    _operation,
+                    "from_definitions",
+                    "sitewide requested with population='triggered' before outcome feeds cover experiment end",
+                    "refused",
+                    "tests.test_triggered_sitewide::test_triggered_sitewide_refuses_incomplete_calendar_outcomes",
+                    codes=("facade.analysis.sitewide_triggered_outcomes_incomplete",),
+                    reason="Sitewide outcomes and site volume must use the same complete calendar interval.",
+                ),
                 *(
                     _expectation(
                         f"sitewide_{ingress}_triggered_population_refused",

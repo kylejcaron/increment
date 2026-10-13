@@ -25,7 +25,7 @@ from increment._analysis_config import effective_methods, overlay_configs, resol
 from increment._moment_plan import COMPLIANCE_ARM_FROM_CLUSTER_ROW
 from increment._source_operations import DashboardGroupData
 from increment._window import NO_DATA_SIGNAL, resolve_window_days
-from increment.errors import CodedError
+from increment.errors import CapabilityError, CodedError, RefusalSpec
 from increment.errors import refuse as _refuse
 from increment.estimation._readout_refusals import refuse_observational_quantile
 from increment.query._native_dashboard import (
@@ -147,6 +147,13 @@ if TYPE_CHECKING:
     from increment.semantics.design import Observational, Randomized
     from increment.sequential_state import SequentialCheckpoint
     from increment.sources import Grain, MomentSource
+
+
+_TRIGGERED_SITEWIDE_OUTCOMES_INCOMPLETE = RefusalSpec(
+    "facade.analysis.sitewide_triggered_outcomes_incomplete",
+    CapabilityError,
+    template="triggered sitewide requires every outcome feed to be certified complete through the experiment calendar end; {route}",
+)
 
 
 class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin):
@@ -1045,6 +1052,36 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         """Return the effective event edge and optional certification edge for one metric."""
         evidence = self._require_source_snapshot_evidence(operation="triggered_observation_edges")
         return self._metric_snapshot_edges(metric, evidence)
+
+    def _require_sitewide_outcome_completeness(self, metric: Metric) -> None:
+        end_day = self._experiment.end_day
+        _, certified_edge = self.triggered_observation_edges(metric)
+        if end_day is None or certified_edge is None or certified_edge < end_day:
+            _refuse(
+                _TRIGGERED_SITEWIDE_OUTCOMES_INCOMPLETE,
+                route="re-run after the outcome feeds are complete through the experiment end.",
+            )
+
+    def _validate_triggered_sitewide_metric(self, metric: Metric) -> None:
+        components = (
+            (metric.numerator, metric.denominator) if isinstance(metric, RatioMetric) else (metric,)
+        )
+        if self._experiment.end is None or any(
+            getattr(component, "window_days", None) is not None
+            or getattr(component, "aggregation", None) != "sum"
+            for component in components
+        ):
+            _refuse_operation(
+                operation="sitewide_evidence",
+                request={
+                    "metric": metric.name,
+                    "window_days": getattr(metric, "window_days", None),
+                    "aggregation": getattr(metric, "aggregation", None),
+                },
+                offered={"calendar_window": "unwindowed sum"},
+                route="declare an unwindowed sum metric and experiment end aligned to the calendar window",
+            )
+        self._require_sitewide_outcome_completeness(metric)
 
     def triggered_health_evidence(self) -> Any:
         from increment._source_operations import TriggeredHealthEvidence, TriggeredHealthFeed
@@ -2257,26 +2294,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             )
         validate_site_volume_metric(metric)
         if population == "triggered":
-            components = (
-                (metric.numerator, metric.denominator)
-                if isinstance(metric, RatioMetric)
-                else (metric,)
-            )
-            if self._experiment.end is None or any(
-                getattr(component, "window_days", None) is not None
-                or getattr(component, "aggregation", None) != "sum"
-                for component in components
-            ):
-                _refuse_operation(
-                    operation="sitewide_evidence",
-                    request={
-                        "metric": metric.name,
-                        "window_days": getattr(metric, "window_days", None),
-                        "aggregation": getattr(metric, "aggregation", None),
-                    },
-                    offered={"calendar_window": "unwindowed sum"},
-                    route="declare an unwindowed sum metric and experiment end aligned to the calendar window",
-                )
+            self._validate_triggered_sitewide_metric(metric)
         if population == "triggered":
             self._validate_trigger_capability(operation="sitewide_evidence")
             self._validate_mixed_assignments()
