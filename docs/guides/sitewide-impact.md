@@ -23,21 +23,21 @@ When an experiment declares `trigger:`, the default `population="assigned"`
 still reports the assignment-based intent-to-treat whole-site impact. You
 can also request `population="triggered"`: this scales the lift among units
 in finalized trigger membership by the number of triggered enrolled units.
-The triggered reading uses the experiment's calendar window (`start .. end`)
-for outcomes. In particular, triggered sitewide does **not** use `run()`'s
-trigger-anchored observation windows; late triggers can belong to the
-membership while their outcome contribution still comes from the fixed
-experiment window. Site volume remains the full-site total, not a
-trigger-filtered total.
+Both readings use the experiment's calendar window (`start .. end`) for
+outcomes. In particular, sitewide does **not** use `run()`'s trigger-anchored
+observation windows or include outcomes after the experiment end, even when
+`observation_end` is later. Late triggers can belong to triggered membership
+while their outcome contribution still comes from the fixed experiment
+window. Site volume remains the full-site total, not a trigger-filtered total.
 
 Both assigned and triggered sitewide require a randomized identification
 design. Observational and encouragement designs refuse before loading
 sitewide evidence; use `Analysis.run()` for their estimands.
-Native sources must provide certified completeness watermarks for every
-outcome feed (both ratio components, when applicable) through the experiment
-end; artifact outcome edges must cover the same calendar end. An incomplete
-feed refuses before reduction. Re-run after all outcome feeds are certified
-through the experiment end.
+When native source snapshot evidence is supplied, every outcome feed must be
+certified complete through the experiment end; artifact outcome edges must
+cover the same calendar end. An incomplete feed refuses before reduction.
+Native analyses without snapshot evidence retain their existing behavior.
+Re-run after all outcome feeds are certified through the experiment end.
 The assigned/triggered `snapshot_id` equality is content-bound only for
 artifacts; native identity reflects declared `SourceSnapshotEvidence`, not
 table contents.

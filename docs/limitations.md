@@ -295,6 +295,14 @@ outcomes rather than `run()`'s trigger-anchored windows. Use the
 assigned-population sitewide result when these conditional assumptions are
 not defensible.
 
+Assigned and triggered arm outcomes and the site total use only the
+experiment-calendar window (`start .. end`), even if `observation_end` is
+later. With native source snapshot evidence, every outcome feed must be
+certified through the experiment end; artifacts must publish outcome edges
+through that day. An incomplete certified window refuses with
+`facade.analysis.sitewide_outcomes_incomplete`. A native analysis without
+snapshot evidence retains its existing behavior.
+
 Population counts retain every assigned arm, including explicit zero counts
 for arms with no triggered members. The estimator scales all triggered members
 in the complete requested roster; `unobserved_members` counts members across

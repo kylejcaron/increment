@@ -86,7 +86,6 @@ from increment.query.builders import (
     unit_day_panel,
     unit_day_spine_stats,
     unit_totals,
-    validate_site_volume_metric,
     window_bound_stats,
     winsorize_unit_totals,
 )
@@ -2286,13 +2285,13 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     "per-unit transformed experiment metric"
                 ),
             )
-        validate_site_volume_metric(metric)
         if population == "triggered":
             self._validate_triggered_sitewide_metric(metric)
-        if population == "triggered":
             self._validate_trigger_capability(operation="sitewide_evidence")
             self._validate_mixed_assignments()
         else:
+            if self._session.source_snapshot_evidence is not None:
+                self._require_sitewide_outcome_completeness(metric)
             self._note_reduction()
         exposures = self._get_exposures()
         if population == "triggered":
@@ -2312,7 +2311,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             cluster, operation="sitewide_evidence"
         )
         original_experiment = self._experiment
-        if population == "triggered":
+        if self._experiment.end is not None:
             self._experiment = self._experiment.model_copy(
                 update={"observation_end": self._experiment.end}
             )

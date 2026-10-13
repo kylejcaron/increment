@@ -1920,6 +1920,23 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             binding = next(
                 item for item in self._manifest.metric_measures if item.metric_name == metric.name
             )
+            measure_keys = (
+                frozenset({binding.numerator_measure_key, binding.denominator_measure_key})
+                if isinstance(binding, RatioMetricMeasure)
+                else frozenset({binding.measure_key})
+            )
+            outcome_edge = _outcome_edge(
+                self._manifest.measures,
+                self._ensure("measure_stats"),
+                measure_keys,
+                self._snapshot.execute,
+            )
+            end_day = self._artifact_experiment.end_day
+            if end_day is None or outcome_edge is None or outcome_edge < end_day:
+                refuse(
+                    _SITEWIDE_OUTCOMES_INCOMPLETE,
+                    route="re-run after the outcome feeds are complete through the experiment end.",
+                )
         rows = self._read_extension(
             extension,
             request=entry.request.model_dump(mode="json") if entry is not None else None,
@@ -1961,15 +1978,18 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             # one generation; a pinned publish writes that generation at one cutoff,
             # so membership, calendar measures, and site volume share that cutoff.
             # Adoption trusts the caller-pinned generation.
-            moment_rows = super()._reduce(
+            moment_rows = self._reduce(
                 metric,
                 "total",
-                population_units=member_ids,
-                calendar_end=cast(dt.date, self._artifact_experiment.end_day),
+                calendar_end=self._artifact_experiment.end_day,
             )
         else:
             population_counts = assigned_counts.copy()
-            moment_rows = self.moments(metric)
+            moment_rows = self._reduce(
+                metric,
+                "total",
+                calendar_end=self._artifact_experiment.end_day,
+            )
         cluster_counts = None
         unit_counts = None
         if self.context.cluster is not None:
