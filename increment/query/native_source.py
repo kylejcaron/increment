@@ -86,7 +86,6 @@ from increment.query.builders import (
     unit_day_panel,
     unit_day_spine_stats,
     unit_totals,
-    validate_site_volume_metric,
     window_bound_stats,
     winsorize_unit_totals,
 )
@@ -105,6 +104,7 @@ from increment.query.integrity import (
 )
 from increment.query.native_contract import (
     _NATIVE_COVARIATE_RESERVED,
+    _OUTCOMES_INCOMPLETE_ROUTES,
     _SITEWIDE_OUTCOMES_INCOMPLETE,
     DayEvidenceSource,
     SitewideEvidence,
@@ -1047,13 +1047,19 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         evidence = self._require_source_snapshot_evidence(operation="triggered_observation_edges")
         return self._metric_snapshot_edges(metric, evidence)
 
-    def _require_sitewide_outcome_completeness(self, metric: Metric) -> None:
+    def _require_sitewide_outcome_completeness(self, metric: Metric, *, certified: bool) -> None:
+        """Refuse outcomes known to stop before the experiment end day.
+
+        Triggered membership needs certified feed edges; assigned readings use
+        the effective snapshot edge, which already honours declared watermarks.
+        """
         end_day = self._experiment.end_day
-        _, certified_edge = self.triggered_observation_edges(metric)
-        if end_day is None or certified_edge is None or certified_edge < end_day:
+        observed_edge, certified_edge = self.triggered_observation_edges(metric)
+        edge = certified_edge if certified else observed_edge
+        if end_day is None or edge is None or edge < end_day:
             _refuse(
                 _SITEWIDE_OUTCOMES_INCOMPLETE,
-                route="re-run after the outcome feeds are complete through the experiment end.",
+                route=_OUTCOMES_INCOMPLETE_ROUTES[certified],
             )
 
     def _validate_triggered_sitewide_metric(self, metric: Metric) -> None:
@@ -1062,7 +1068,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         if self._experiment.end is None or any(
             getattr(component, "window_days", None) is not None
-            or getattr(component, "aggregation", None) != "sum"
+            or getattr(component, "aggregation", None) not in ("sum", "count")
             for component in components
         ):
             _refuse_operation(
@@ -1072,10 +1078,10 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     "window_days": getattr(metric, "window_days", None),
                     "aggregation": getattr(metric, "aggregation", None),
                 },
-                offered={"calendar_window": "unwindowed sum"},
-                route="declare an unwindowed sum metric and experiment end aligned to the calendar window",
+                offered={"calendar_window": "unwindowed sum or count"},
+                route="declare an unwindowed sum or count metric and an experiment end aligned to the calendar window",
             )
-        self._require_sitewide_outcome_completeness(metric)
+        self._require_sitewide_outcome_completeness(metric, certified=True)
 
     def triggered_health_evidence(self) -> Any:
         from increment._source_operations import TriggeredHealthEvidence, TriggeredHealthFeed
@@ -2286,13 +2292,16 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
                     "per-unit transformed experiment metric"
                 ),
             )
-        validate_site_volume_metric(metric)
         if population == "triggered":
             self._validate_triggered_sitewide_metric(metric)
-        if population == "triggered":
             self._validate_trigger_capability(operation="sitewide_evidence")
             self._validate_mixed_assignments()
         else:
+            if (
+                self._session.source_snapshot_evidence is not None
+                and self._experiment.end_day is not None
+            ):
+                self._require_sitewide_outcome_completeness(metric, certified=False)
             self._note_reduction()
         exposures = self._get_exposures()
         if population == "triggered":
@@ -2312,7 +2321,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
             cluster, operation="sitewide_evidence"
         )
         original_experiment = self._experiment
-        if population == "triggered":
+        if self._experiment.end is not None:
             self._experiment = self._experiment.model_copy(
                 update={"observation_end": self._experiment.end}
             )

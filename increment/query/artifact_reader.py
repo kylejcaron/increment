@@ -1306,6 +1306,14 @@ class ArtifactMomentSource(SequentialSourceMixin):
                 experiment=experiment,
                 uptake_events=uptake_events if grain == "asof" else None,
             )
+        if calendar_end is not None:
+            outcome_spine_edge = (
+                calendar_end
+                if outcome_spine_edge is None
+                else min(outcome_spine_edge, calendar_end)
+            )
+            spine_edge = calendar_end if spine_edge is None else min(spine_edge, calendar_end)
+            metric_edge = calendar_end if metric_edge is None else min(metric_edge, calendar_end)
         end_date_expr = _day_edge_scalar(spine_edge)
         spine = panel_spine(exposures, experiment, end_date=end_date_expr)
 

@@ -83,11 +83,19 @@ _SITEWIDE_ARM_NOT_ENROLLED = RefusalSpec(
     template="arm {arm!r} is not an enrolled non-control arm for metric {metric!r} (control_group is {control_group!r}). Enrolled non-control arms: {arms!r}",
 )
 
-
-_TRIGGERED_SITEWIDE_METRIC_UNALIGNED = RefusalSpec(
-    "facade.analysis.sitewide_triggered_metric_unaligned",
+_SITEWIDE_METRIC_UNALIGNED = RefusalSpec(
+    "facade.analysis.sitewide_metric_unaligned",
     CapabilityError,
-    template="triggered sitewide requires an unwindowed mean or ratio metric with sum-aggregated components and a declared experiment end; {metric!r} has {metric_type!r}, window_days={window_days!r}, aggregation={aggregation!r}. A conversion counts converted units, which the event-count site total cannot match. Use an unwindowed sum metric over the experiment window.",
+    template="sitewide() cannot align metric {metric!r} (type={metric_type!r}, "
+    "window_days={window_days!r}, aggregation={aggregation!r}) with the calendar-window "
+    "site total. Route: {route}",
+)
+
+_TRIGGERED_SITEWIDE_END_MISSING = RefusalSpec(
+    "facade.analysis.sitewide_triggered_end_missing",
+    CapabilityError,
+    template="triggered sitewide requires a declared experiment end; provide an end aligned "
+    "to the calendar window or use assigned sitewide.",
 )
 
 _TRIGGERED_SITEWIDE_CLUSTER = RefusalSpec(
@@ -182,11 +190,32 @@ class SitewideReadouts:
             }
         )
 
-    def _validate_triggered_metric(self, metric_name: str, metric: Metric) -> None:
+    def _validate_metric_alignment(self, metric: Metric) -> None:
+        # Site volume adds each event over the calendar window; unit-level
+        # outcomes must be additive totals over that same window.
+        components = (
+            (metric.numerator, metric.denominator) if isinstance(metric, RatioMetric) else (metric,)
+        )
+        windows = tuple(getattr(component, "window_days", None) for component in components)
+        aggregations = tuple(getattr(component, "aggregation", None) for component in components)
+        additive = all(aggregation in ("sum", "count") for aggregation in aggregations)
+        if (
+            metric.type == "conversion"
+            or any(window is not None for window in windows)
+            or not additive
+        ):
+            _refuse(
+                _SITEWIDE_METRIC_UNALIGNED,
+                metric=metric.name,
+                metric_type=metric.type,
+                window_days=windows if isinstance(metric, RatioMetric) else windows[0],
+                aggregation=aggregations if isinstance(metric, RatioMetric) else aggregations[0],
+                route="declare an unwindowed sum or count metric on the experiment",
+            )
+
+    def _validate_triggered_metric(self) -> None:
         experiment = self._experiment
         assert experiment is not None
-        if experiment.resolved_design().mechanism != "randomized":
-            _refuse(_SITEWIDE_REQUIRES_RANDOMIZED)
         if experiment.cluster is not None:
             _refuse(
                 _TRIGGERED_SITEWIDE_CLUSTER,
@@ -194,30 +223,15 @@ class SitewideReadouts:
             )
         if experiment.plan.inference is not None:
             _refuse(_TRIGGERED_SITEWIDE_SEQUENTIAL)
-        components = (
-            (metric.numerator, metric.denominator) if isinstance(metric, RatioMetric) else (metric,)
-        )
-        aggregation = getattr(metric, "aggregation", None)
-        window_days = getattr(metric, "window_days", None)
-        if (
-            experiment.end is None
-            or metric.type not in ("mean", "ratio")
-            or any(
-                getattr(component, "window_days", None) is not None
-                or getattr(component, "aggregation", None) != "sum"
-                for component in components
-            )
-        ):
-            _refuse(
-                _TRIGGERED_SITEWIDE_METRIC_UNALIGNED,
-                metric=metric_name,
-                metric_type=metric.type,
-                window_days=window_days,
-                aggregation=aggregation,
-            )
+        if experiment.end is None:
+            _refuse(_TRIGGERED_SITEWIDE_END_MISSING)
 
     def run(self, req: SitewideRequest) -> SitewideImpact | SitewideRatioImpact:
         _validate_alpha(req.alpha)
+        if self._experiment is not None and (
+            self._experiment.resolved_design().mechanism != "randomized"
+        ):
+            _refuse(_SITEWIDE_REQUIRES_RANDOMIZED)
         source = self._src
         if classify_source(source) == "artifact":
             if "sitewide_evidence" not in source.operations:
@@ -247,8 +261,6 @@ class SitewideReadouts:
         if getattr(metric, "winsorization", None) is not None:
             _refuse(_SITEWIDE_WINSORIZED_METRIC, metric=req.metric_name)
         assert self._experiment is not None
-        if req.population == "triggered":
-            self._validate_triggered_metric(req.metric_name, metric)
         cluster = self._experiment.cluster
         if cluster is not None and metric.type not in _CLUSTER_COMPATIBLE_METRIC_TYPES:
             _refuse(
@@ -258,6 +270,9 @@ class SitewideReadouts:
                 cluster=cluster,
             )
         validate_site_volume_metric(metric)
+        self._validate_metric_alignment(metric)
+        if req.population == "triggered":
+            self._validate_triggered_metric()
         evidence = src.sitewide_evidence(
             metric,
             include_ratio=isinstance(metric, RatioMetric),

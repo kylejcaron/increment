@@ -40,6 +40,7 @@ def _defs_yaml(
     allocation_scheme: str | None = None,
     end: str | None = None,
     observation_end: str | None = None,
+    window_days: int | None = 7,
 ) -> str:
     trigger_line = f"    trigger: {trigger}\n" if trigger else ""
     scheme_line = (
@@ -49,6 +50,7 @@ def _defs_yaml(
     )
     end_line = f"    end: {end}\n" if end else ""
     observation_end_line = f"    observation_end: {observation_end}\n" if observation_end else ""
+    window_line = f"    window_days: {window_days}\n" if window_days is not None else ""
     return f"""
 dialect: duckdb
 fact_sources:
@@ -74,8 +76,7 @@ metrics:
     entity: user_id
     fact: revenue
     aggregation: sum
-    window_days: 7
-experiments:
+{window_line}experiments:
   - name: exp
     exposure: assignment
 {trigger_line}{end_line}{observation_end_line}    unit: user_id
@@ -87,9 +88,18 @@ experiments:
 """
 
 
-def _write_defs(tmp_path, trigger="saw_surface", *, allocation_scheme=None, end=None):
+def _write_defs(
+    tmp_path, trigger="saw_surface", *, allocation_scheme=None, end=None, window_days=7
+):
     p = tmp_path / "defs.yml"
-    p.write_text(_defs_yaml(trigger, allocation_scheme=allocation_scheme, end=end))
+    p.write_text(
+        _defs_yaml(
+            trigger,
+            allocation_scheme=allocation_scheme,
+            end=end,
+            window_days=window_days,
+        )
+    )
     return p
 
 
@@ -595,17 +605,24 @@ def _analysis(
     on_mixed_assignment="error",
     allocation_scheme=None,
     end=None,
+    window_days=7,
 ):
     con = ibis.duckdb.connect()
     con.create_table("events", obj=table)
     return Analysis.from_definitions(
         "exp",
-        _write_defs(tmp_path, trigger, allocation_scheme=allocation_scheme, end=end),
+        _write_defs(
+            tmp_path,
+            trigger,
+            allocation_scheme=allocation_scheme,
+            end=end,
+            window_days=window_days,
+        ),
         con,
         on_mixed_assignment=on_mixed_assignment,
         source_snapshot_evidence=SourceSnapshotEvidence(
             observation_cutoff_ts=dt.datetime(2024, 1, 16, tzinfo=dt.UTC),
-            complete_through_by_feed={"events": dt.datetime(2024, 1, 16, tzinfo=dt.UTC)},
+            complete_through_by_feed={"events": dt.datetime(2024, 1, 17, tzinfo=dt.UTC)},
         ),
     )
 
@@ -1897,18 +1914,23 @@ def test_triggered_factor_group_and_allocation_preserve_population(tmp_path):
             _close_parity_analysis(adopted)
 
 
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_sitewide_reports_assigned_impact_for_triggered_experiment(tmp_path):
     from tests.analysis_factory import _native_source, native_connection
     from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
 
     analysis = _analysis(
-        tmp_path, _events(n_per_arm=100, trigger_rate=0.2, effect=0.5), end="2024-01-16"
+        tmp_path,
+        _events(n_per_arm=100, trigger_rate=0.2, effect=0.5),
+        end="2024-01-15",
+        window_days=None,
     )
     untriggered = _analysis(
         tmp_path,
         _events(n_per_arm=100, trigger_rate=0.2, effect=0.5),
         trigger=None,
-        end="2024-01-16",
+        end="2024-01-15",
+        window_days=None,
     )
     adopted = None
     try:
@@ -1938,9 +1960,8 @@ def test_sitewide_reports_assigned_impact_for_triggered_experiment(tmp_path):
             artifact_result,
         )
 
-        with pytest.raises(CapabilityError) as refused:
-            analysis.sitewide("revenue", population="triggered")
-        assert refused.value.code == "facade.analysis.sitewide_triggered_metric_unaligned"
+        triggered_result = analysis.sitewide("revenue", population="triggered")
+        assert triggered_result.analysis_population == "triggered"
     finally:
         analysis.close()
         untriggered.close()
@@ -1948,6 +1969,7 @@ def test_sitewide_reports_assigned_impact_for_triggered_experiment(tmp_path):
             _close_parity_analysis(adopted)
 
 
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_sitewide_site_volume_excludes_events_after_the_snapshot_cutoff(tmp_path):
     from tests.analysis_factory import _native_source, native_connection
     from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
@@ -1964,8 +1986,10 @@ def test_sitewide_site_volume_excludes_events_after_the_snapshot_cutoff(tmp_path
         },
         schema=base.schema,
     )
-    with_late = _analysis(tmp_path, pa.concat_tables([base, late]), end="2024-01-16")
-    without_late = _analysis(tmp_path, base, end="2024-01-16")
+    with_late = _analysis(
+        tmp_path, pa.concat_tables([base, late]), end="2024-01-15", window_days=None
+    )
+    without_late = _analysis(tmp_path, base, end="2024-01-15", window_days=None)
     adopted = None
     try:
         native = with_late.sitewide("revenue")
@@ -1986,20 +2010,21 @@ def test_sitewide_site_volume_excludes_events_after_the_snapshot_cutoff(tmp_path
             _close_parity_analysis(adopted)
 
 
-def test_sitewide_triggered_population_without_trigger_refuses_before_loading(
-    tmp_path, monkeypatch
-):
-    analysis = _analysis(tmp_path, _events(n_per_arm=10), trigger=None)
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_triggered_sitewide_requires_an_experiment_end_before_loading(tmp_path, monkeypatch):
+    analysis = _analysis(tmp_path, _events(n_per_arm=10), end=None, window_days=None)
     try:
         from tests.analysis_factory import _native_source
 
         source = _native_source(analysis)
         monkeypatch.setattr(
-            source, "sitewide_evidence", lambda *args, **kwargs: pytest.fail("loaded sitewide data")
+            source,
+            "sitewide_evidence",
+            lambda *args, **kwargs: pytest.fail("loaded sitewide data"),
         )
         with pytest.raises(CapabilityError) as refused:
             analysis.sitewide("revenue", population="triggered")
-        assert refused.value.code == "facade.analysis.sitewide_triggered_metric_unaligned"
+        assert refused.value.code == "facade.analysis.sitewide_triggered_end_missing"
     finally:
         analysis.close()
 

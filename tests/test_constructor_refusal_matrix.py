@@ -248,7 +248,12 @@ _MATRIX: tuple[
     ("from_definitions", "trigger", "source.native.operation", None),
     # sitewide
     *(
-        (family, "sitewide", "facade.analysis.operation", {"operation": "sitewide_evidence"})
+        (
+            family,
+            "sitewide",
+            "facade.analysis.operation",
+            {"operation": "sitewide_evidence"},
+        )
         for family in ("from_unit_summary", "from_unit_panel", "from_moments")
     ),
     ("from_definitions", "sitewide", "query.builders.site_volume_metric_type", None),

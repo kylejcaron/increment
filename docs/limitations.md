@@ -284,20 +284,36 @@ detect some treatment-dependent trigger rates, but its non-rejection does not
 prove either assumption; equal marginal trigger rates do not rule out
 treatment-dependent membership or timing.
 
-It supports unwindowed mean and ratio metrics with sum-aggregated components
-and randomized, unit-randomized, fixed-horizon experiments with a declared
-end. Every numerator and denominator outcome feed must be certified complete
-through that experiment calendar end; otherwise the triggered request refuses
-before reduction and can be retried after those feeds are complete. A
-conversion counts converted units while the site total counts events, so
-conversions refuse; clustered experiments, observational and encouragement
-designs, registered sequential plans and winsorized metrics also refuse.
+Both assigned and triggered `Analysis.sitewide()` require randomized
+identification. Observational and encouragement designs refuse before
+sitewide evidence is loaded; use `Analysis.run()` for their estimands.
 
-The estimate omits any reach effect among never-triggered units and does not
-adjust for multiplicity or provide anytime-valid inference. It uses
-assignment-anchored experiment-calendar outcomes rather than `run()`'s
-trigger-anchored windows. Use the assigned-population sitewide result when
-these conditional assumptions are not defensible.
+Both populations refuse conversion metrics with
+`facade.analysis.sitewide_metric_unaligned`: a converter indicator is a
+per-unit maximum over events, not an additive event total, so it cannot align
+with the site's whole-window total. To read conversion events site-wide,
+declare a `count` metric (mean metric, `aggregation: count`) on the conversion
+fact. Windowed metrics and components with non-additive aggregation (anything
+but sum or count) use the same refusal because a per-unit window or
+non-additive outcome cannot align with the additive site total.
+
+For the triggered population, the estimate omits any reach effect among
+never-triggered units and does not adjust for multiplicity or provide
+anytime-valid inference. It uses assignment-anchored experiment-calendar
+outcomes rather than `run()`'s trigger-anchored windows. Use the
+assigned-population sitewide result when these conditional assumptions are
+not defensible.
+
+Assigned and triggered arm outcomes and the site total use only the
+experiment-calendar window (`start .. end`), even if `observation_end` is
+later. Triggered readings need every outcome feed certified complete through
+the end day by a watermark. Assigned readings refuse when the snapshot cutoff
+or a declared watermark stops before the end day; without certification they
+assume the loaded outcomes are complete, as a native analysis without
+snapshot evidence always has. Both refusals use
+`facade.analysis.sitewide_outcomes_incomplete`.
+Conversion metrics do not have a sitewide total through `sitewide()`; use a
+count metric on the conversion fact to count site events.
 
 Population counts retain every assigned arm, including explicit zero counts
 for arms with no triggered members. The estimator scales all triggered members
@@ -320,8 +336,8 @@ the assigned and triggered readings each covered 95.12%–95.66% for absolute
 and relative impact at nominal 95%; every Clopper–Pearson lower bound, at a
 family-allocated error of 7.5e-5, cleared 94.5%. The campaign checks the
 Normal-reference intervals the sitewide functions report; it does not cover
-multi-arm netting, clustered designs, or uncertainty about future traffic or
-trigger reach.
+count metrics, multi-arm netting, clustered designs, or uncertainty about
+future traffic or trigger reach.
 
 Calibration does not establish the real-world assumptions needed to interpret
 the triggered result as whole-site impact. The explicit assumption-failure
@@ -1725,10 +1741,11 @@ are warehouse-native operations: the former preserves pre-assignment property
 values, while the latter dates triggered cohorts at their first eligible
 trigger. Artifacts do not retain the raw enrollment timeline or provide the
 dashboard aggregation operation, so those reads refuse with source-specific
-capability reasons. Triggered sitewide is available only for aligned sum
-metrics with explicit trigger and site-volume evidence; it uses calendar-
-window outcomes restricted to finalized membership and remains conditional on
-the assumptions above. CATE, CATE
+capability reasons. Triggered sitewide is available only for unwindowed mean
+and ratio metrics whose components use sum or count aggregation, with explicit
+trigger and site-volume evidence; it uses calendar-window
+outcomes restricted to finalized membership and remains conditional on the
+assumptions above. CATE, CATE
 validation, and targeting use the triggered unit population when the source
 provides triggered outcomes and pre-assignment covariates; artifacts require
 the corresponding trigger, metric, and unit-covariate evidence. Missing

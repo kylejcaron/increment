@@ -332,16 +332,18 @@ MATRIX: dict[str, dict[str, Cell]] = {
     },
     "sitewide": {
         "mean": S(
-            note="assigned impact supports triggers; triggered impact requires a randomized design, an unwindowed calendar-aligned sum metric, and complete outcome feeds through experiment end"
+            note="randomized identification only; an unwindowed sum or count outcome aligns with the calendar-window site total; windowed or non-additive metrics are refused for both populations"
         ),
-        "conversion": S(
-            note="assigned impact supports triggers; triggered impact requires a randomized design, an unwindowed calendar-aligned sum metric, and complete outcome feeds through experiment end"
+        "conversion": R(
+            "converter indicators are not additive across events; use a count metric on the conversion fact",
+            CapabilityError,
+            code="facade.analysis.sitewide_metric_unaligned",
         ),
         "ratio": S(
             note=(
-                "numerator and denominator get independent site sums; triggered impact "
-                "requires randomized design and complete outcome feeds through experiment "
-                "end, with unwindowed sum components"
+                "randomized identification only; numerator and denominator get independent site sums; "
+                "both components must be unwindowed sums or counts; windowed or non-additive components are refused "
+                "for both populations"
             )
         ),
         "retention": R(
@@ -408,7 +410,7 @@ PAIRS: dict[tuple[str, str], Cell] = {
     ),
     ("cluster", "sitewide"): S(
         warns="enrolled units exhaust the treated population",
-        note="mean/conversion/retention/ratio decompose over cluster-grain moments via from_clusters",
+        note="additive mean/ratio components decompose over cluster-grain moments via from_clusters; conversion is refused as non-additive",
         advisory=(
             "Clustered sitewide can miss treated units with no exposure row, "
             "so the relative-impact estimate is a lower bound; the "

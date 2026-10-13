@@ -1934,12 +1934,18 @@ class Analysis:
 
         Native (:meth:`from_definitions`) and adopted artifact sources with a
         published site-volume extension combine enrolled-arm moments with
-        whole-site volume evidence. ``population="assigned"`` scales the
-        assignment-window lift to all enrolled units. For a triggered
-        experiment, ``population="triggered"`` scales the trigger-stratum lift
-        to units in finalized trigger membership, while outcomes remain aligned
-        to the experiment's calendar window; it requires a sum metric and
-        discloses the conditional membership assumptions on the result.
+        whole-site volume evidence. Both populations require an additive metric
+        aligned with the calendar-window site total: metrics must be unwindowed
+        and use sum or count aggregation. Conversion metrics are refused because
+        their per-unit indicator is not additive across event records; declare a
+        count metric on the conversion fact to read conversion events site-wide.
+        ``population="assigned"`` scales the assignment-window lift
+        to all enrolled units. For a triggered experiment,
+        ``population="triggered"`` scales the trigger-stratum lift to units in
+        finalized trigger membership, while outcomes remain aligned to the
+        experiment's calendar window; it additionally requires a declared
+        experiment end and discloses the conditional membership assumptions
+        on the result.
 
         One result per call, for one treatment arm - required when
         more than one non-control arm is enrolled. Every other
@@ -1971,12 +1977,13 @@ class Analysis:
         Raises
         ------
         CapabilityError
-            On a seam-family instance, a
-            :class:`RetentionMetric`/:class:`QuantileMetric` (no
-            site-wide reading), or a clustered metric that doesn't
-            decompose or whose arms' mean cluster sizes differ by more
-            than 20%. Spillover caveat: unexposed units in a treated
-            cluster bias the reported relative impact low.
+            On a seam-family instance. A windowed or non-additive metric
+            cannot align its per-unit outcome with site volume; use an
+            unwindowed sum or count metric declared on the experiment.
+            Triggered sitewide also requires a declared experiment end. Retention and quantile metrics have no
+            site-wide reading; clustered metrics must decompose and their arms'
+            mean cluster sizes must be within 20%. Spillover caveat: unexposed
+            units in a treated cluster bias the reported relative impact low.
         ValueError
             *metric_name* is not declared, has no enrolled arm, or
             ``arm`` names an arm that isn't enrolled; ``alpha`` is not
