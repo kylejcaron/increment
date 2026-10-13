@@ -59,8 +59,13 @@ jobs:
         if: always() && hashFiles('.test-evidence/run-*/run.json') != ''
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          PYTHON_VERSION: ${{ matrix.python-version }}
         run: |
           args=()
+          if [ "$PYTHON_VERSION" = "3.13" ]; then
+            # The weights come from 3.13; 3.12 uses coverage instrumentation and 3.14 is a different interpreter.
+            args+=(--duration-baseline .github/fast-test-durations.json)
+          fi
           if [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ]; then
             args+=(--base "$BASE_SHA")
           fi

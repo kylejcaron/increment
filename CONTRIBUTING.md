@@ -180,6 +180,18 @@ malformed or legacy evidence remains explicitly uncertain. Warnings never
 retag source or fail a run because a test exceeded five seconds; inspect shared
 fixture/setup costs and repeat under representative conditions before retagging.
 
+On the fast tier, Python 3.13 compares complete test nodeids with
+`.github/fast-test-durations.json`; the shard figure is summed case-work seconds,
+not wall time. Provisional regression thresholds are 1.5x and 2s per file,
+1.25x and 30s per shard. The guard only warns and never fails a run;
+`inconclusive` means the run or baseline coverage is insufficient for comparison.
+Read the file and test rows; investigate shared setup and contention first, then
+optimize genuine regressions. Mark a test `slow` only when its workload is
+intentionally expensive and its required execution remains covered. For an
+intentional increase, refresh the weights through the complete hosted procedure
+below in the same PR and state the reason. The slow tier has no complete hosted
+baseline, so it remains covered by the 5s/10s advisories.
+
 Record each family's contract, current source anchor, expensive workload,
 disposition (keep, optimize, split, reclassify or remove genuinely redundant
 coverage), required execution gate and exact parameter identities. Group
