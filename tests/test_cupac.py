@@ -219,7 +219,7 @@ def test_cupac_precision_tracks_prediction_quality(metric):
         )
         control = frame.loc[frame["variant"] == "control"]
         slopes[scenario] = np.polyfit(control["prediction"], control["revenue"], 1)[0]
-        if scenario == "useful" and metric == "mean":
+        if metric == "mean":
             by_arm = frame.groupby("variant")
             centered_prediction = frame["prediction"] - by_arm["prediction"].transform("mean")
             centered_revenue = frame["revenue"] - by_arm["revenue"].transform("mean")
