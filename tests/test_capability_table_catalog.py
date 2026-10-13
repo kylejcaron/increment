@@ -100,7 +100,11 @@ def test_linear_cuped_interactions_are_explicitly_classified():
         "ratio": ("supported", None),
         "clustering": ("unfinished", "estimation.engine.cuped_linear_cluster"),
         "sequential": ("unfinished", "estimation.engine.cuped_linear_sequential"),
-        "winsorization": ("unfinished", "estimation.engine.cuped_linear_winsorization"),
+        "winsorization_fixed_value": ("supported", None),
+        "winsorization_percentile": (
+            "unfinished",
+            "estimation.engine.cuped_linear_winsorization",
+        ),
         "breakouts": ("supported", None),
         "multiplicity_roles": ("supported", None),
         "triggered_population": ("supported", None),
@@ -111,10 +115,11 @@ def test_linear_cuped_interactions_are_explicitly_classified():
     assert routes["scalar_cuped"]
     assert routes["clustering"]
     assert "6rhs" in routes["sequential"]
-    assert routes["winsorization"]
+    assert routes["winsorization_fixed_value"]
+    assert routes["winsorization_percentile"]
 
 
-def test_cuped_interaction_catalog_rows_cover_all_ingresses():
+def test_cuped_interaction_catalog_rows_cover_ingress_specific_outcomes():
     from tests.capability_contracts import CUPED_LINEAR_INTERACTIONS
     from tests.capability_entry_point_catalog import ENTRY_ROWS, resolve_cell
 
@@ -129,7 +134,9 @@ def test_cuped_interaction_catalog_rows_cover_all_ingresses():
             "from_unit_day_artifact",
         ):
             display = resolve_cell(row.bindings[ingress])[0][1]
-            assert display.status == interaction.status.replace("mathematically_unsound", "unsound")
+            disposition = interaction.for_ingress(ingress)
+            assert display.status == disposition.status
+            assert display.codes == ((disposition.code,) if disposition.code else ())
         for ingress, code in (
             ("from_moments", "facade.analysis_config.cuped_linear_moments"),
             ("from_switchback_panel", "source.frame.switchback.metric"),
@@ -137,6 +144,29 @@ def test_cuped_interaction_catalog_rows_cover_all_ingresses():
             display = resolve_cell(row.bindings[ingress])[0][1]
             assert display.status == "source_limited"
             assert display.codes == (code,)
+
+    summary_breakout = resolve_cell(
+        rows["cuped-linear-interaction-breakouts"].bindings["from_unit_summary"]
+    )[0][1]
+    assert (summary_breakout.status, summary_breakout.codes) == (
+        "source_limited",
+        ("facade.analysis.operation",),
+    )
+    for ingress in ("from_unit_summary", "from_unit_panel"):
+        triggered = resolve_cell(
+            rows["cuped-linear-interaction-triggered_population"].bindings[ingress]
+        )[0][1]
+        assert (triggered.status, triggered.codes) == (
+            "source_limited",
+            ("facade.analysis.trigger_unsupported",),
+        )
+    panel_cluster = resolve_cell(
+        rows["cuped-linear-interaction-clustering"].bindings["from_unit_panel"]
+    )[0][1]
+    assert (panel_cluster.status, panel_cluster.codes) == (
+        "source_limited",
+        ("source.frame_panel.cluster_grain",),
+    )
 
 
 def test_linear_cuped_matrix_dispositions_cover_six_ingresses():

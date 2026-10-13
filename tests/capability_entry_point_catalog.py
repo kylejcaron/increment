@@ -220,16 +220,18 @@ def _display_interaction(binding: InteractionBinding) -> CellDisplay:
             stage="construction",
             classification="SOURCE",
         )
+    disposition = interaction.for_ingress(binding.ingress)
     classification = {
         "unfinished": "UNFINISHED",
         "mathematically_unsound": "UNSOUND",
-    }.get(interaction.status, "")
-    status = "unsound" if interaction.status == "mathematically_unsound" else interaction.status
+        "source_limited": "SOURCE",
+    }.get(disposition.status, "")
+    status = "unsound" if disposition.status == "mathematically_unsound" else disposition.status
     return CellDisplay(
         status,
-        (interaction.code,) if interaction.code else (),
-        interaction.route_forward,
-        stage="construction" if status != "supported" else "read",
+        (disposition.code,) if disposition.code else (),
+        disposition.route_forward,
+        stage=disposition.stage,
         classification=classification,
     )
 
@@ -1833,7 +1835,10 @@ def _validate_binding_column(where: str, column: str, binding: Binding) -> None:
         )
         if interaction is None:
             raise ValueError(f"{where}: unknown CUPED interaction {binding.name!r}")
-        _validate_evidence(where, (interaction.evidence,))
+        evidence = interaction.for_ingress(binding.ingress).evidence
+        if evidence is None:
+            raise ValueError(f"{where}: interaction evidence is empty")
+        _validate_evidence(where, (evidence,))
     elif isinstance(binding, (MatrixBinding, CaseBinding)) and binding.ingress != column:
         raise ValueError(f"{where}: binding is for {binding.ingress!r}")
 

@@ -215,6 +215,114 @@ def test_composition_gates_refuse_before_source_acquisition(case: str, expected_
     assert source.read_calls == 0
 
 
+def test_cuped_linear_fixed_upper_value_clipping_matches_preclipped_fit() -> None:
+    upper = 60.0
+    rows = [
+        {
+            "unit": f"{group}-{index}",
+            "group": group,
+            "revenue": 1_000.0 if index == 29 else 12.0 + index,
+            "pre": ("a", "b")[index % 2],
+        }
+        for group in ("control", "treatment")
+        for index in range(30)
+    ]
+    clipped_rows = [{**row, "revenue": min(row["revenue"], upper)} for row in rows]
+
+    clipped = Analysis.from_unit_summary(
+        pa.Table.from_pylist(rows),
+        unit="unit",
+        group="group",
+        control="control",
+        metrics=[_linear_metric(winsorization={"upper_value": upper})],
+    )
+    preclipped = Analysis.from_unit_summary(
+        pa.Table.from_pylist(clipped_rows),
+        unit="unit",
+        group="group",
+        control="control",
+        metrics=[_linear_metric()],
+    )
+    try:
+        clipped_rows_by_arm = {
+            row.group_id: row for row in cast(list[LiftEstimate], list(clipped.run()))
+        }
+        preclipped_rows_by_arm = {
+            row.group_id: row for row in cast(list[LiftEstimate], list(preclipped.run()))
+        }
+        for arm, row in clipped_rows_by_arm.items():
+            baseline = preclipped_rows_by_arm[arm]
+            assert row.lift is not None and baseline.lift is not None
+            assert row.lift.value == pytest.approx(baseline.lift.value)
+            assert row.lift.log_se == pytest.approx(baseline.lift.log_se)
+            assert row.dof == pytest.approx(baseline.dof)
+            assert (row.lift.lb, row.lift.ub) == pytest.approx((baseline.lift.lb, baseline.lift.ub))
+    finally:
+        clipped.close()
+        preclipped.close()
+
+
+def test_cuped_linear_interactions_preserve_ingress_specific_refusals() -> None:
+    from increment.errors import CapabilityError
+
+    summary_rows = [
+        {
+            "unit": f"{group}-{index}",
+            "group": group,
+            "revenue": 10.0 + index,
+            "pre": ("a", "b")[index % 2],
+            "exposure_date": "2025-01-01",
+        }
+        for group in ("control", "treatment")
+        for index in range(24)
+    ]
+    summary = Analysis.from_unit_summary(
+        pa.Table.from_pylist(summary_rows),
+        unit="unit",
+        group="group",
+        control="control",
+        metrics=[_linear_metric()],
+    )
+    try:
+        with pytest.raises(CapabilityError) as breakout:
+            summary.run_breakout()
+        assert breakout.value.code == "facade.analysis.operation"
+        with pytest.raises(CapabilityError) as triggered_summary:
+            summary.run(population="triggered")
+        assert triggered_summary.value.code == "facade.analysis.trigger_unsupported"
+    finally:
+        summary.close()
+
+    panel_rows = _panel_rows()
+    panel = Analysis.from_unit_panel(
+        pa.Table.from_pylist(panel_rows),
+        unit="unit",
+        group="group",
+        date="day",
+        control="control",
+        metrics=[_linear_metric()],
+    )
+    try:
+        with pytest.raises(CapabilityError) as triggered_panel:
+            panel.run(population="triggered")
+        assert triggered_panel.value.code == "facade.analysis.trigger_unsupported"
+    finally:
+        panel.close()
+
+    clustered_rows = [{**row, "cluster": row["unit"].split("-")[0]} for row in panel_rows]
+    with pytest.raises(CapabilityError) as panel_cluster:
+        Analysis.from_unit_panel(
+            pa.Table.from_pylist(clustered_rows),
+            unit="unit",
+            group="group",
+            date="day",
+            control="control",
+            metrics=[_linear_metric()],
+            cluster="cluster",
+        )
+    assert panel_cluster.value.code == "source.frame_panel.cluster_grain"
+
+
 def test_cuped_linear_nonpositive_arm_failure_preserves_positive_sibling() -> None:
     rows = [
         {

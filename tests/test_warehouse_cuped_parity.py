@@ -104,13 +104,22 @@ def test_mixed_cuped_parity_detects_a_changed_ingress_covariate():
     summary = matrix_cases.linear_cuped_frame_case(rows, panel=False)
     panel = matrix_cases.linear_cuped_frame_case(rows, panel=True, corrupt=True)
     try:
-        left = next(
-            row for row in summary.run() if row.metric == "revenue" and row.group_id == "treatment"
-        )
-        right = next(
-            row for row in panel.run() if row.metric == "revenue" and row.group_id == "treatment"
-        )
-        assert not nested_close(left.model_dump(mode="json"), right.model_dump(mode="json"))
+
+        def statistical_outputs(analysis):
+            return {
+                (row.metric, row.group_id, row.method, row.method_role): {
+                    "estimate": row.lift.value if row.lift is not None else None,
+                    "se": row.lift.log_se if row.lift is not None else None,
+                    "dof": row.dof,
+                    "interval": ((row.lift.lb, row.lift.ub) if row.lift is not None else None),
+                    "sampling_available": row.sampling_available,
+                    "posterior_available": row.posterior_available,
+                    "failure": (row.sampling_reason_code, row.sampling_reason_context),
+                }
+                for row in analysis.run()
+            }
+
+        assert not nested_close(statistical_outputs(summary), statistical_outputs(panel))
     finally:
         summary.close()
         panel.close()
