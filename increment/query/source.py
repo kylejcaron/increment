@@ -65,6 +65,7 @@ from increment.query.builders import (
 )
 from increment.query.native_contract import (
     _NATIVE_COVARIATE_RESERVED,
+    _OUTCOMES_INCOMPLETE_ROUTES,
     _SITEWIDE_OUTCOMES_INCOMPLETE,
     DimensionedDayEvidence,
     SitewideEvidence,
@@ -1891,7 +1892,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         if incomplete:
             refuse(
                 _SITEWIDE_OUTCOMES_INCOMPLETE,
-                route="re-run after the outcome feeds are complete through the experiment end.",
+                route=_OUTCOMES_INCOMPLETE_ROUTES[certified],
             )
 
     def sitewide_evidence(

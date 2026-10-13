@@ -104,6 +104,7 @@ from increment.query.integrity import (
 )
 from increment.query.native_contract import (
     _NATIVE_COVARIATE_RESERVED,
+    _OUTCOMES_INCOMPLETE_ROUTES,
     _SITEWIDE_OUTCOMES_INCOMPLETE,
     DayEvidenceSource,
     SitewideEvidence,
@@ -1058,7 +1059,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         if end_day is None or edge is None or edge < end_day:
             _refuse(
                 _SITEWIDE_OUTCOMES_INCOMPLETE,
-                route="re-run after the outcome feeds are complete through the experiment end.",
+                route=_OUTCOMES_INCOMPLETE_ROUTES[certified],
             )
 
     def _validate_triggered_sitewide_metric(self, metric: Metric) -> None:

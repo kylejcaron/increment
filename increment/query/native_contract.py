@@ -223,8 +223,12 @@ _NATIVE_COVARIATE_RESERVED = RefusalSpec(
 )
 
 # Shared by every source so an incomplete outcome window refuses with one code.
+_OUTCOMES_INCOMPLETE_ROUTES = {
+    True: "certify every outcome feed through the experiment end day with a watermark and re-run.",
+    False: "extend the snapshot cutoff and any declared watermarks through the experiment end day and re-run.",
+}
 _SITEWIDE_OUTCOMES_INCOMPLETE = RefusalSpec(
     "facade.analysis.sitewide_outcomes_incomplete",
     CapabilityError,
-    template="sitewide() requires every outcome feed to be certified complete through the experiment calendar end; {route}",
+    template="sitewide() outcome evidence does not reach the experiment calendar end; {route}",
 )
