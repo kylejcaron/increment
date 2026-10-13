@@ -328,10 +328,10 @@ class SitewideImpact(BaseModel):
         declared source snapshot evidence, not table contents; artifact
         identity is generation-based.
     scaled_units : int
-        Number of units in the selected control and treatment arms actually
-        used to scale impact after outcome-edge censoring.
+        Units the impact scales (``n_enrolled``, rounded): every observed
+        unit in the control, target and other co-enrolled arms.
     unobserved_members : int
-        Selected finalized members omitted from outcome reduction by
+        Members of those arms omitted from outcome reduction by
         outcome-edge censoring.
     multiplicity_status, adjustment : str
         Sitewide results are exploratory and unadjusted; triggered results do
@@ -440,10 +440,10 @@ class SitewideRatioImpact(BaseModel):
         declared source snapshot evidence, not table contents; artifact
         identity is generation-based.
     scaled_units : int
-        Number of units in the selected control and treatment arms actually
-        used to scale impact after outcome-edge censoring.
+        Units the impact scales (``n_enrolled``, rounded): every observed
+        unit in the control, target and other co-enrolled arms.
     unobserved_members : int
-        Selected finalized members omitted from outcome reduction by
+        Members of those arms omitted from outcome reduction by
         outcome-edge censoring.
     multiplicity_status, adjustment : str
         Sitewide results are exploratory and unadjusted; triggered results do
