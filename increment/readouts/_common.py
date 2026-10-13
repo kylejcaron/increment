@@ -200,18 +200,7 @@ def _runtime_methods(
     config: ResolvedMetricConfig,
     design: Randomized | Encouragement | Observational,
 ) -> list[Method]:
-    methods = list(effective_methods(config, design=design))
-    if (
-        any(method.variance_reduction == "cuped_linear" for method in methods)
-        and not config.covariates
-    ):
-        from increment._analysis_config import _raise as refuse_analysis_config
-
-        refuse_analysis_config(
-            "facade.analysis_config.cuped_linear_covariates",
-            metric=config.metric.name,
-        )
-    return methods
+    return list(effective_methods(config, design=design))
 
 
 def _runtime_method_roles(

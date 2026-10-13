@@ -1059,7 +1059,7 @@ def _fit_calculator(groups, order, counts, outcomes, x, layout, control, coordin
             violations.append(
                 (
                     "ratio_denominator_precision",
-                    float(precision),
+                    _canonical_float(precision),
                     float(M1_MAX_RATIO_DENOMINATOR_PRECISION),
                 )
             )
@@ -1364,13 +1364,19 @@ def _check_alpha(alpha: float) -> None:
         _fail("estimation.cuped_linear.invalid_alpha", alpha=alpha)
 
 
+def _canonical_float(value: float) -> float | str:
+    """Retain a refusal observable as a finite float or its canonical text form."""
+    value = float(value)
+    return value if math.isfinite(value) else repr(value)
+
+
 def _projection_statistics(value: float, se: float, dof: float) -> tuple[float, float, float]:
     if not np.isfinite((value, se, dof)).all() or se < 0 or dof <= 0:
         _fail(
             "estimation.cuped_linear.nonfinite_projection",
-            value=float(value) if math.isfinite(value) else repr(float(value)),
-            se=float(se) if math.isfinite(se) else repr(float(se)),
-            dof=float(dof) if math.isfinite(dof) else repr(float(dof)),
+            value=_canonical_float(value),
+            se=_canonical_float(se),
+            dof=_canonical_float(dof),
         )
     return float(value), float(se), float(dof)
 

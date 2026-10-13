@@ -609,3 +609,133 @@ def test_breakout_unit_evidence_keeps_qualified_source_and_distinct_covariate(tm
     finally:
         analysis.close()
         con.disconnect()
+
+
+def test_native_breakout_override_without_covariates_refuses_before_queries(tmp_path, monkeypatch):
+    from increment.errors import CodedError
+    from tests.covariate_cases import _CATEGORICAL_DESIGN, categorical_defs_and_con
+
+    path, con, _units = categorical_defs_and_con(tmp_path)
+    path.write_text(
+        path.read_text()
+        .replace(_CATEGORICAL_DESIGN, "")
+        .replace(
+            "    plan: {primary: revenue}",
+            "    plan: {primary: revenue}\n    breakouts: [{property: region, source: events}]",
+        )
+    )
+    analysis = Analysis.from_definitions("cat_test", path, con)
+    materializations = 0
+    original = con.to_pyarrow
+
+    def counted(*args: Any, **kwargs: Any) -> Any:
+        nonlocal materializations
+        materializations += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(con, "to_pyarrow", counted)
+    try:
+        with pytest.raises(CodedError) as raised:
+            analysis.run_breakout(
+                decision_method=Method(name="linear", variance_reduction="cuped_linear")
+            )
+        assert raised.value.code == "facade.analysis_config.cuped_linear_covariates"
+        assert materializations == 0
+    finally:
+        analysis.close()
+        con.disconnect()
+
+
+def test_breakout_covariate_named_like_internal_dimension_keeps_its_values() -> None:
+    rows: list[dict[str, Any]] = []
+    for segment in ("north", "south"):
+        for group in ("control", "treatment"):
+            for index in range(18):
+                rows.append(
+                    {
+                        "unit": f"{segment}-{group}-{index}",
+                        "group": group,
+                        "day": 1,
+                        "segment": segment,
+                        "pre": ("a", "b", "c")[index % 3],
+                        "revenue": float(index % 3 * 4 + index + (group == "treatment") * 2),
+                    }
+                )
+    table = pa.Table.from_pylist(rows)
+
+    def run(covariate: str) -> dict[str, Any]:
+        frame = table.rename_columns(
+            [covariate if name == "pre" else name for name in table.column_names]
+        )
+        metric = MetricSpec(
+            name="revenue",
+            decision_method=Method(name="linear", variance_reduction="cuped_linear"),
+            covariates=(CupedCovariate(name=covariate, kind="categorical"),),
+        )
+        analysis = Analysis.from_unit_panel(
+            frame,
+            unit="unit",
+            group="group",
+            date="day",
+            control="control",
+            metrics=[metric],
+            breakouts=["segment"],
+        )
+        return {row.dimension_value: row for row in analysis.run_breakout()}
+
+    reference = run("pre")
+    colliding = run("__breakout_dimension")
+    assert set(colliding) == set(reference) == {"north", "south"}
+    for segment, expected in reference.items():
+        actual = colliding[segment]
+        assert actual.require_lift().value == pytest.approx(expected.require_lift().value)
+        assert actual.require_lift().lb == pytest.approx(expected.require_lift().lb)
+        assert actual.discovery == expected.discovery
+
+
+def test_readout_rows_forward_projection_refusal_sidecars() -> None:
+    from increment.tables import estimates_to_readout
+
+    rows: list[dict[str, Any]] = []
+    for group in ("control", "treatment"):
+        for index in range(18):
+            rows.append(
+                {
+                    "unit": f"{group}-{index}",
+                    "group": group,
+                    "day": 1,
+                    "segment": "all",
+                    "pre": ("a", "b", "c")[index % 3],
+                    "revenue": 1e150 * (1.0 + index / 1000.0 + (group == "treatment") / 100.0),
+                    "orders": 1e-150,
+                }
+            )
+    metric = MetricSpec(
+        name="revenue_per_order",
+        type="ratio",
+        numerator="revenue",
+        denominator="orders",
+        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
+        covariates=(CupedCovariate(name="pre", kind="categorical"),),
+    )
+    analysis = Analysis.from_unit_panel(
+        pa.Table.from_pylist(rows),
+        unit="unit",
+        group="group",
+        date="day",
+        control="control",
+        metrics=[metric],
+        breakouts=["segment"],
+    )
+    (headline,) = analysis.run()
+    (segment,) = analysis.run_breakout()
+    assert isinstance(headline, LiftEstimate)
+    for estimate in (headline, segment):
+        (converted,) = estimates_to_readout([estimate])
+        assert converted["lift"] == pytest.approx(estimate.require_lift().value)
+        assert converted["failure_code"] is None
+        assert converted["abs_lb"] is None and converted["abs_ub"] is None
+        assert converted["absolute_error_code"] == "estimation.cuped_linear.nonfinite_projection"
+        assert converted["absolute_error_context"] == estimate.absolute_error_context
+        assert converted["relative_error_code"] is None
+        assert converted["relative_error_context"] is None

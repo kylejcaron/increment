@@ -245,3 +245,100 @@ def test_m1_unavailable_readouts_replay_exact_fit_refusal():
             assert record.sampling is not None and record.sampling.available is False
             with pytest.raises(TypeError):
                 cast(dict[str, object], row.failure_context)["region"] = "changed"
+
+
+def _m1_rejected_frame() -> tuple[pa.Table, MetricSpec, Any]:
+    import numpy as np
+
+    from increment.errors import CodedError
+    from increment.estimation.cuped_linear import fit_cuped_linear
+
+    arms = np.repeat(["control", "treatment"], 10)
+    phase = np.tile(np.arange(10) * 2 * np.pi / 10, 2)
+    x = np.column_stack((np.sin(phase), np.cos(phase), np.sin(2 * phase)))
+    y = 10 + np.arange(20) / 10
+    covariates = {f"x{i}": x[:, i] for i in range(3)}
+    with pytest.raises(CodedError) as raised:
+        fit_cuped_linear(
+            y,
+            arms,
+            control="control",
+            arm_order=("control", "treatment"),
+            covariates=covariates,
+            kinds=dict.fromkeys(covariates, "continuous"),
+        )
+    frame = pa.table(
+        {"unit": [f"u{i}" for i in range(20)], "arm": arms, "outcome": y, **covariates}
+    )
+    metric = MetricSpec(
+        name="outcome",
+        covariates=tuple(CupedCovariate(name=name, kind="continuous") for name in covariates),
+        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
+    )
+    return frame, metric, raised.value
+
+
+@pytest.mark.parametrize("companion", ["plain", "linear-sensitivity"])
+def test_m1_decision_refusal_survives_companion_sensitivity_method(companion: str) -> None:
+    frame, metric, expected = _m1_rejected_frame()
+    analysis = Analysis.from_unit_summary(
+        frame, unit="unit", group="arm", control="control", metrics=[metric]
+    )
+    sensitivity = (
+        Method(name="plain")
+        if companion == "plain"
+        else Method(name=companion, variance_reduction="cuped_linear")
+    )
+
+    results = analysis.run(sensitivity_methods=[sensitivity])
+
+    by_method = {row.method: row for row in results}
+    linear = by_method["linear"]
+    assert isinstance(linear, LiftEstimate)
+    assert linear.failure_code == expected.code
+    assert linear.failure_context == expected.context
+    assert results.metadata is not None
+    decision = next(record for record in results.metadata.cells if record.cell.method == "linear")
+    assert decision.failure is not None
+    assert decision.failure.code == expected.code
+    assert decision.failure.context == expected.context
+    assert linear.decision_scope_complete is False
+
+
+def test_nonfinite_support_observable_is_retained_canonically() -> None:
+    from increment.estimation.readout_types import ReadoutResults
+
+    rows = [
+        {
+            "unit": f"{group}-{index}",
+            "arm": group,
+            "revenue": float(index + 1),
+            "orders": [1.0, -1.0, 1e-320, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0][index],
+            "pre": ("a", "b")[index % 2],
+        }
+        for group in ("control", "treatment")
+        for index in range(10)
+    ]
+    metric = MetricSpec(
+        name="revenue_per_order",
+        type="ratio",
+        numerator="revenue",
+        denominator="orders",
+        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
+        covariates=(CupedCovariate(name="pre", kind="categorical"),),
+    )
+    analysis = Analysis.from_unit_summary(
+        pa.Table.from_pylist(rows), unit="unit", group="arm", control="control", metrics=[metric]
+    )
+
+    results = analysis.run()
+
+    (row,) = results
+    assert isinstance(row, LiftEstimate)
+    assert row.lift is None
+    assert row.failure_code == "estimation.cuped_linear.support_region"
+    assert row.failure_context is not None
+    assert row.failure_context["violations"] == (("ratio_denominator_precision", "inf", 0.15),)
+    restored = ReadoutResults.model_validate_json(results.model_dump_json())
+    assert restored[0].failure_context == row.failure_context
+    assert restored.metadata == results.metadata

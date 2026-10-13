@@ -3578,7 +3578,7 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         population: Literal["assigned", "triggered"] = "assigned",
         outcome_stage: Literal["transformed", "raw"] = "transformed",
     ) -> pa.Table:
-        from increment._source_types import CUPED_BREAKOUT_DIMENSION_COLUMN
+        from increment._source_types import breakout_dimension_column
 
         units = self.unit_frame(
             metric, covariates=covariates, population=population, outcome_stage=outcome_stage
@@ -3594,7 +3594,8 @@ class DefinitionsMomentSource(_NativeMaterializationMixin, SequentialSourceMixin
         )
         dimensions = self._con.to_pyarrow(
             properties.select(
-                "unit_id", **{CUPED_BREAKOUT_DIMENSION_COLUMN: properties[breakout.property]}
+                "unit_id",
+                **{breakout_dimension_column(covariates): properties[breakout.property]},
             )
         )
         return units.join(dimensions, keys="unit_id", join_type="left outer")

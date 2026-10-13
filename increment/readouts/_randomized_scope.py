@@ -174,15 +174,16 @@ def _randomized_cell_registry(
                     config,
                     test,
                 )
+    # Decision computations only register decision-role failures, so a failure
+    # without a method discriminator belongs to the metric's one decision cell.
     for hypothesis, failure in methodless_failures:
-        candidates = {
-            method_name
-            for metric_name, group_id, method_name, _role in method_info
-            if metric_name == hypothesis.metric and group_id == hypothesis.group_id
-        }
-        if len(candidates) == 1:
-            method = next(iter(candidates))
-            failure_by_cell[(hypothesis.metric, hypothesis.group_id, method)] = failure
+        for metric_name, group_id, method_name, role in method_info:
+            if (
+                role == "decision"
+                and metric_name == hypothesis.metric
+                and group_id == hypothesis.group_id
+            ):
+                failure_by_cell.setdefault((metric_name, group_id, method_name), failure)
     return failure_by_cell, method_info, cells, decision_cells
 
 

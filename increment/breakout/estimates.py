@@ -2463,7 +2463,7 @@ class _BreakoutContext(NamedTuple):
     # The smallest level a ``correction="bh"`` family decides a p-value at (``q`` over its
     # hypothesis count), in ``alpha``'s convention; ``None`` outside a BH family.
     route_alpha: float | None
-    unit_frames_by_metric: Mapping[str, Any] | None
+    unit_frames_by_metric: Mapping[str, Mapping[str, Any]] | None
     covariates_by_metric: Mapping[str, Sequence[Any]] | None
 
 
@@ -2756,20 +2756,6 @@ def _warn_breakout_route2_pairs(
         )
 
 
-def _cuped_breakout_cell_frame(unit_frame: Any, *, value: str) -> Any:
-    """Select a segment's unit evidence, including its null-valued segment."""
-    from increment._source_types import CUPED_BREAKOUT_DIMENSION_COLUMN
-
-    frame = nw.from_native(unit_frame, eager_only=True)
-    segment = nw.col(CUPED_BREAKOUT_DIMENSION_COLUMN).cast(nw.String)
-    predicate = (
-        nw.col(CUPED_BREAKOUT_DIMENSION_COLUMN).is_null()
-        if value == "__null__"
-        else segment == value
-    )
-    return frame.filter(predicate).to_native()
-
-
 def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
     prepared: _PreparedLiftSlice,
     context: _BreakoutContext,
@@ -2867,12 +2853,10 @@ def _estimate_breakout_slice_metrics(  # noqa: C901, PLR0915
                         method.name: resolved_roles[method.name] for method in method_group
                     },
                     unit_frame=(
-                        _cuped_breakout_cell_frame(
-                            context.unit_frames_by_metric[metric.name],
-                            value=context.segment_value,
+                        context.unit_frames_by_metric.get(metric.name, {}).get(
+                            context.segment_value
                         )
                         if context.unit_frames_by_metric is not None
-                        and metric.name in context.unit_frames_by_metric
                         else None
                     ),
                     covariates=(context.covariates_by_metric or {}).get(metric.name, ()),
@@ -3424,7 +3408,7 @@ def run_breakout(  # noqa: PLR0913
     | None = None,
     methods_by_metric: Mapping[str, list[Method]] | None = None,
     _prior_by_metric: Mapping[str, Prior | None] | None = None,
-    unit_frames_by_metric: Mapping[str, Any] | None = None,
+    unit_frames_by_metric: Mapping[str, Mapping[str, Any]] | None = None,
     covariates_by_metric: Mapping[str, Sequence[Any]] | None = None,
     policy_name: Literal["compiled_plan", "default_exploratory"] = "default_exploratory",
 ) -> BreakoutEstimates:
@@ -3464,9 +3448,10 @@ def run_breakout(  # noqa: PLR0913
         Per-arm floor flagging ``low_reliability=True`` (default 50).
     _prior_by_metric : Mapping[str, Prior | None] | None
         Internal per-metric prior override used by compiled-plan callers.
-    unit_frames_by_metric : Mapping[str, Any] | None
-        Optional per-unit evidence frames for CUPED metrics, partitioned by
-        the requested breakout dimension before fitting each segment.
+    unit_frames_by_metric : Mapping[str, Mapping[str, Any]] | None
+        Optional per-unit evidence for CUPED metrics, already split by segment
+        label (``"__null__"`` for a missing value) and holding only declared
+        covariates alongside the unit outcome columns.
     covariates_by_metric : Mapping[str, Sequence[Any]] | None
         Declared covariates corresponding to ``unit_frames_by_metric``.
 

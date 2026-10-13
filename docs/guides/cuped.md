@@ -610,11 +610,16 @@ categorical level in every arm are also required.
 
 An out-of-region fit emits an unavailable cell with
 `estimation.cuped_linear.support_region` and its retained observable
-violations, rather than an unadjusted substitute. Breakout cells fit
-separately and may therefore be unavailable even when the whole-population
-fit is supported. Assigned and triggered results retain their own
-populations; aggregate and per-unit evidence share one source snapshot,
-including the resolved fact source of each breakout.
+violations, rather than an unadjusted substitute. Each violation is
+`(observable, value, bound)`; an observable that is not finite is kept as
+its text form (`"inf"`, `"nan"`) so the refusal survives JSON replay. The
+decision cell keeps this refusal whatever sensitivity methods accompany it,
+and a call-time `cuped_linear` override on a metric without declared
+covariates is refused on every ingress before any source query. Breakout
+cells fit separately and may therefore be unavailable even when the
+whole-population fit is supported. Assigned and triggered results retain
+their own populations; aggregate and per-unit evidence share one source
+snapshot, including the resolved fact source of each breakout.
 
 Relative and absolute projections have separate availability. A usable
 relative estimate survives an absolute-projection refusal, whose exact
@@ -623,7 +628,8 @@ code and context are retained in `absolute_error_code` and
 inference when a nonpositive adjusted mean prevents relative lift.
 The relative projection's exact refusal is likewise retained in
 `relative_error_code` and `relative_error_context`, without labeling the
-usable absolute projection as failed.
+usable absolute projection as failed. `estimates_to_readout` forwards all
+four projection fields alongside the usable estimate.
 Declared priors do not change sampling inference; a posterior unsupported
 by the retained HC2/BM statistics is explicitly unavailable.
 

@@ -1548,7 +1548,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         import narwhals as nw
         import pyarrow as pa
 
-        from increment._source_types import CUPED_BREAKOUT_DIMENSION_COLUMN
+        from increment._source_types import breakout_dimension_column
 
         if population == "triggered" and self._population_units is None:
             return cast("_ArtifactFacadeSource", self.triggered_source()).breakout_unit_frame(
@@ -1578,7 +1578,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             pa.table(
                 {
                     "unit_id": [str(value) for value in units["unit_id"].to_list()],
-                    CUPED_BREAKOUT_DIMENSION_COLUMN: [
+                    breakout_dimension_column(covariates): [
                         values.get(str(value)) for value in units["unit_id"].to_list()
                     ],
                 }

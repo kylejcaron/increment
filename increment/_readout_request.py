@@ -406,6 +406,7 @@ def validate_request(request: ReadoutRequest) -> None:
     _validate_estimands(request)
     _validate_identification(request)
 
+    from increment._analysis_config import validate_readout_covariates
     from increment.estimation.adjust import validate_readout_adjustment
     from increment.estimation.encouragement import validate_readout_encouragement
     from increment.estimation.engine import (
@@ -417,6 +418,7 @@ def validate_request(request: ReadoutRequest) -> None:
     from increment.sequential_source import validate_sequential_request
     from increment.sources import validate_readout_source
 
+    validate_readout_covariates(request)
     validate_sequential_request(
         request,
         refuse_cuped_linear=refuse_cuped_linear_sequential,

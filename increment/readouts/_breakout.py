@@ -76,17 +76,38 @@ def _scoped_breakout_results(
     )
 
 
+def _segment_unit_frames(frame: Any, column: str) -> dict[str, Any]:
+    """Split per-unit evidence by its segment label, retaining every declared covariate.
+
+    Labels follow the moments wire: string identity, lower-cased booleans and
+    ``"__null__"`` for a missing value. The segment column itself is dropped
+    so a cell fits only its declared covariates.
+    """
+    import narwhals as nw
+
+    units = nw.from_native(frame, eager_only=True)
+    label = nw.col(column).cast(nw.String)
+    if isinstance(units.schema[column], nw.Boolean):
+        label = nw.when(nw.col(column)).then(nw.lit("true")).otherwise(nw.lit("false"))
+    label = nw.when(nw.col(column).is_null()).then(nw.lit("__null__")).otherwise(label)
+    labelled = units.with_columns(label.alias(column))
+    return {
+        value: labelled.filter(nw.col(column) == value).drop(column).to_native()
+        for value in labelled.get_column(column).unique().to_list()
+    }
+
+
 def _load_cuped_breakout_frames(
     src: MomentSource,
     configs: Sequence[Any],
     methods_by_metric: Mapping[str, list[Method]],
     dimension: str,
 ) -> tuple[
-    dict[str, Any],
+    dict[str, Mapping[str, Any]],
     dict[str, Sequence[Any]],
     dict[str, dict[str, Literal["decision", "sensitivity"]]],
 ]:
-    frames: dict[str, Any] = {}
+    frames: dict[str, Mapping[str, Any]] = {}
     covariates = {config.metric.name: config.covariates for config in configs}
     roles = {
         config.metric.name: _runtime_method_roles(methods_by_metric[config.metric.name])
@@ -94,25 +115,28 @@ def _load_cuped_breakout_frames(
     }
     import narwhals as nw
 
-    from increment._source_types import CUPED_BREAKOUT_DIMENSION_COLUMN
+    from increment._source_types import breakout_dimension_column
     from increment.sources import BreakoutMomentsSource
 
     for config in configs:
         name = config.metric.name
         if any(method.variance_reduction == "cuped_linear" for method in methods_by_metric[name]):
             names = tuple(item.name for item in config.covariates)
+            column = breakout_dimension_column(names)
             if isinstance(src, BreakoutMomentsSource):
-                frames[name] = src.unit_frame(config.metric, covariates=names)
+                frame = src.unit_frame(config.metric, covariates=names)
             else:
-                frame = nw.from_native(
-                    src.unit_frame(
-                        config.metric, covariates=tuple(dict.fromkeys((dimension, *names)))
-                    ),
-                    eager_only=True,
+                frame = (
+                    nw.from_native(
+                        src.unit_frame(
+                            config.metric, covariates=tuple(dict.fromkeys((dimension, *names)))
+                        ),
+                        eager_only=True,
+                    )
+                    .with_columns(nw.col(dimension).alias(column))
+                    .to_native()
                 )
-                frames[name] = frame.with_columns(
-                    nw.col(dimension).alias(CUPED_BREAKOUT_DIMENSION_COLUMN)
-                ).to_native()
+            frames[name] = _segment_unit_frames(frame, column)
     return frames, covariates, roles
 
 
