@@ -15,9 +15,15 @@ from increment import Analysis, SourceSnapshotEvidence
 from increment.errors import CapabilityError, DefinitionError
 from increment.estimation.sitewide import SitewideImpact, SitewideRatioImpact
 from increment.query.artifact_contract import ArtifactContractError
+from tests.analysis_factory import _moment_source as _arm_moment_source
 from tests.analysis_factory import _native_source, native_connection
 from tests.parity_harness.cases import _close_parity_analysis, _publish_and_adopt
 from tests.test_analysis_trigger import _defs_yaml, _events
+
+
+def _moment_source(analysis: Analysis) -> Any:
+    """The analysis's source, for evidence operations beyond the moment protocol."""
+    return _arm_moment_source(analysis)
 
 
 def _analysis(
@@ -143,7 +149,7 @@ def test_triggered_sitewide_evidence_uses_calendar_window_member_outcomes(tmp_pa
     )
     adopted = None
     try:
-        source = with_late_outcome._src
+        source = _moment_source(with_late_outcome)
         evidence = source.sitewide_evidence(
             with_late_outcome.metrics[0], include_ratio=False, population="triggered"
         )
@@ -192,7 +198,7 @@ def test_triggered_sitewide_evidence_uses_calendar_window_member_outcomes(tmp_pa
             kinds=("site_volume", "trigger_population", "assignment_counts"),
         )
         artifact_result = adopted.sitewide("revenue", population="triggered")
-        artifact_evidence = adopted._src.sitewide_evidence(
+        artifact_evidence = _moment_source(adopted).sitewide_evidence(
             adopted.metrics[0], include_ratio=False, population="triggered"
         )
         assert {arm.group_id: arm.n for arm in artifact_evidence.arm_stats} == {
@@ -301,7 +307,7 @@ def test_triggered_sitewide_artifact_matches_native_evidence(tmp_path):
             analysis,
             kinds=("site_volume", "trigger_population", "assignment_counts"),
         )
-        artifact = adopted._src.sitewide_evidence(
+        artifact = _moment_source(adopted).sitewide_evidence(
             adopted.metrics[0], include_ratio=False, population="triggered"
         )
         assert artifact.analysis_population == "triggered"
@@ -314,7 +320,7 @@ def test_triggered_sitewide_artifact_matches_native_evidence(tmp_path):
         assert {arm.group_id: arm.mean_y() for arm in artifact.arm_stats} == pytest.approx(
             {arm.group_id: arm.mean_y() for arm in native.arm_stats}, rel=1e-12
         )
-        artifact_assigned = adopted._src.sitewide_evidence(
+        artifact_assigned = _moment_source(adopted).sitewide_evidence(
             adopted.metrics[0], include_ratio=False, population="assigned"
         )
         assert artifact.snapshot_id == artifact_assigned.snapshot_id
@@ -360,7 +366,7 @@ def test_triggered_sitewide_censoring_reports_observed_scaled_members(tmp_path):
             kinds=("site_volume", "trigger_population", "assignment_counts"),
         )
         artifact_result = adopted.sitewide("revenue", population="triggered")
-        artifact_evidence = adopted._src.sitewide_evidence(
+        artifact_evidence = _moment_source(adopted).sitewide_evidence(
             adopted.metrics[0], include_ratio=False, population="triggered"
         )
         native_counts = native_evidence.population_counts
@@ -494,7 +500,7 @@ def test_triggered_sitewide_retains_assigned_arm_with_zero_members(tmp_path):
     adopted = None
     try:
         native_result = analysis.sitewide("revenue", population="triggered")
-        native = analysis._src.sitewide_evidence(
+        native = _moment_source(analysis).sitewide_evidence(
             analysis.metrics[0], include_ratio=False, population="triggered"
         )
         assert native.assigned_counts == {"C": 100, "T": 100, "U": 10}
@@ -506,7 +512,7 @@ def test_triggered_sitewide_retains_assigned_arm_with_zero_members(tmp_path):
             kinds=("site_volume", "trigger_population", "assignment_counts"),
         )
         artifact_result = adopted.sitewide("revenue", population="triggered")
-        artifact = adopted._src.sitewide_evidence(
+        artifact = _moment_source(adopted).sitewide_evidence(
             adopted.metrics[0], include_ratio=False, population="triggered"
         )
         assert artifact.assigned_counts == native.assigned_counts
@@ -531,7 +537,7 @@ def test_triggered_sitewide_artifact_without_membership_refuses_with_republish_r
             native_connection(_native_source(analysis)), analysis, kinds=("site_volume",)
         )
         with pytest.raises(ArtifactContractError) as raised:
-            adopted._src.sitewide_evidence(
+            _moment_source(adopted).sitewide_evidence(
                 adopted.metrics[0], include_ratio=False, population="triggered"
             )
         for restored in (
@@ -579,7 +585,7 @@ def test_triggered_sitewide_artifact_rejects_inconsistent_assignment_counts(tmp_
             analysis,
             kinds=("site_volume", "trigger_population", "assignment_counts"),
         )
-        source = adopted._src
+        source = _moment_source(adopted)
         original_read_extension = source._read_extension
 
         def inconsistent_counts(extension, *, request):
@@ -656,12 +662,12 @@ def test_triggered_sitewide_evidence_refuses_before_resolving_exposures(
     )
     try:
         monkeypatch.setattr(
-            analysis._src,
+            _moment_source(analysis),
             "_get_exposures",
             lambda: pytest.fail("resolved exposures before validating trigger evidence"),
         )
         with pytest.raises(CapabilityError) as refused:
-            analysis._src.sitewide_evidence(
+            _moment_source(analysis).sitewide_evidence(
                 analysis.metrics[0], include_ratio=False, population="triggered"
             )
         assert refused.value.code == code
@@ -685,13 +691,13 @@ def test_triggered_sitewide_evidence_applies_mixed_assignment_policy(tmp_path, p
     try:
         if policy == "error":
             with pytest.raises(InvalidRequestError) as refused:
-                analysis._src.sitewide_evidence(
+                _moment_source(analysis).sitewide_evidence(
                     analysis.metrics[0], include_ratio=False, population="triggered"
                 )
             assert refused.value.code == "query.integrity.mixed_assignment_units"
         else:
             with pytest.warns(IncrementWarning) as warning:
-                evidence = analysis._src.sitewide_evidence(
+                evidence = _moment_source(analysis).sitewide_evidence(
                     analysis.metrics[0], include_ratio=False, population="triggered"
                 )
             increment_warning = next(
@@ -718,7 +724,7 @@ def test_triggered_sitewide_windowed_metric_refuses_before_data_load(tmp_path, m
     )
     try:
         monkeypatch.setattr(
-            analysis._src,
+            _moment_source(analysis),
             "sitewide_evidence",
             lambda *args, **kwargs: pytest.fail("loaded incompatible sitewide evidence"),
         )
@@ -806,7 +812,7 @@ def test_triggered_sitewide_ratio_component_baseline(tmp_path):
         ),
     )
     try:
-        evidence = analysis._src.sitewide_evidence(
+        evidence = _moment_source(analysis).sitewide_evidence(
             analysis.metrics[0], include_ratio=True, population="triggered"
         )
         result = analysis.sitewide("revenue_per_session", population="triggered")
@@ -839,7 +845,7 @@ def test_triggered_sitewide_ratio_component_baseline(tmp_path):
 def test_triggered_sitewide_sum_matches_hand_computation(tmp_path):
     analysis = _analysis(tmp_path)
     try:
-        evidence = analysis._src.sitewide_evidence(
+        evidence = _moment_source(analysis).sitewide_evidence(
             analysis.metrics[0], include_ratio=False, population="triggered"
         )
         result = analysis.sitewide("revenue", population="triggered")
