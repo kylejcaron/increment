@@ -638,7 +638,15 @@ def test_cluster_identity_extension_matches_native_sitewide_evidence(tmp_path: P
         )
     )
     loaded = load(definitions)
-    native = Analysis.from_definitions("exp", definitions, connection)
+    native = Analysis.from_definitions(
+        "exp",
+        definitions,
+        connection,
+        source_snapshot_evidence=SourceSnapshotEvidence(
+            observation_cutoff_ts=datetime(2024, 1, 10, tzinfo=UTC),
+            complete_through_by_feed={"events": datetime(2024, 1, 10, tzinfo=UTC)},
+        ),
+    )
     context = artifact_context(loaded, loaded.experiments[0], "error")
     store = WarehouseArtifactStore(connection, schema_name="artifacts")
     requests = _extensions(context, "cluster_identity", "site_volume")
