@@ -67,7 +67,14 @@ class ReadoutInterpretation:
 def _unscoped_cell(row) -> InterpretedCell:
     failure_code = getattr(row, "failure_code", None)
     failure_context = getattr(row, "failure_context", None)
-    failure_message = render_readout_failure(failure_code, failure_context)
+    failure_message = render_readout_failure(
+        failure_code,
+        failure_context,
+        identity={
+            "metric": getattr(row, "metric", None),
+            "group_id": getattr(row, "group_id", None),
+        },
+    )
     if failure_code is not None and failure_message is None:
         failure_message = f"{failure_code}: {_json(failure_context) or '{}'}"
     elif getattr(row, "unavailable", None) is not None:
@@ -217,7 +224,11 @@ def interpret_readout(rows, metadata: ReadoutMetadata | None) -> ReadoutInterpre
                     else:
                         failure_code = None
                         failure_context = None
-                    failure_message = render_readout_failure(failure_code, failure_context)
+                    failure_message = render_readout_failure(
+                        failure_code,
+                        failure_context,
+                        identity={"metric": cell.metric, "group_id": cell.group_id},
+                    )
                     if failure_code is not None and failure_message is None:
                         failure_message = f"{failure_code}: {_json(failure_context) or '{}'}"
                     elif row is not None and getattr(row, "unavailable", None) is not None:
