@@ -228,6 +228,16 @@ def test_d6_named_refusals(case, code):
         fit.relative("t")
     assert raised.value.code == f"estimation.cuped_linear.{code}"
     assert raised.value.context
+    expected_keys = {
+        "rank_deficiency": {"columns", "partners"},
+        "level_support": {"column", "level", "counts"},
+        "missing_refused": {"name"},
+        "nonpositive_component": {"family", "arm", "value"},
+        "residual_df": {"df"},
+    }
+    assert expected_keys[code] <= set(raised.value.context)
+    with pytest.raises(TypeError):
+        raised.value.context["changed"] = True  # ty: ignore[invalid-assignment]
 
 
 @pytest.mark.slow
@@ -386,3 +396,65 @@ def test_support_admission_probe_is_descriptive_and_resumable(tmp_path):
     assert first["projected_attempts"] == 107_100
     assert first["gated"] is False
     assert run_admission_cell(job) == first
+
+
+@pytest.mark.slow
+@pytest.mark.numerical_certification
+def test_d7_declared_unrelated_metric_does_not_change_public_inference():
+    import pandas as pd
+
+    from increment import Analysis, AnalysisPlan, Method
+    from increment.breakout.estimates import LiftEstimates
+    from increment.frame import CupedCovariate, MetricSpec
+
+    draw = generate(next(c for c in MANIFEST if c.id == "D3-4"), 0)
+    frame = pd.DataFrame(
+        {
+            **draw.covariates,
+            "unit": np.arange(len(draw.arms)),
+            "arm": draw.arms,
+            "outcome": draw.outcomes[0],
+            "unrelated": 10 + np.random.default_rng(912).normal(size=len(draw.arms)),
+        }
+    )
+    target = MetricSpec(
+        name="outcome",
+        covariates=tuple(
+            CupedCovariate(name=name, kind=kind, missing="impute-indicator")
+            for name, kind in draw.kinds.items()
+        ),
+        decision_method=Method(name="linear", variance_reduction="cuped_linear"),
+    )
+    observations = []
+    for include_unrelated in (False, True):
+        metrics = [target, MetricSpec(name="unrelated")] if include_unrelated else [target]
+        plan = AnalysisPlan(
+            primary="outcome", secondaries=("unrelated",) if include_unrelated else ()
+        )
+        analysis = Analysis.from_unit_summary(
+            frame, unit="unit", group="arm", control="c", metrics=metrics, plan=plan
+        )
+        rows = analysis.run()
+        assert isinstance(rows, LiftEstimates)
+        (row,) = [row for row in rows if row.metric == "outcome"]
+        observations.append(
+            (
+                row.abs_diff,
+                row.abs_se,
+                row.abs_reference_df,
+                row.require_lift().value,
+                row.require_lift().log_se,
+            )
+        )
+    assert observations[0] == observations[1]
+
+
+@pytest.mark.slow
+@pytest.mark.numerical_certification
+def test_d6_all_null_imputed_column_is_disclosed_without_population_loss():
+    arms = np.array(["c"] * 40 + ["t"] * 60)
+    y = np.random.default_rng(97).normal(size=100)
+    fit = fit_draw(Draw(arms, {"x": np.full(100, np.nan)}, {"x": "continuous"}, (y,), 0.0))
+    assert fit.p == 0
+    assert fit.layout.structural_omissions == ("x",)
+    assert fit.n_by_arm == (40, 60)

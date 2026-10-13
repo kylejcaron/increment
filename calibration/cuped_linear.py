@@ -227,6 +227,34 @@ def manifest_record() -> dict:
         "attempt_limit": "100 * target eligible replications per cell; exhaustion refuses the region",
         "d9_design": "1000 units/arm, fixed allocation; x ~ N(0,1); y=10+2*x+effect*T+N(0,1); ratio adds .05*den to numerator for an exact absolute ratio shift",
         "ratio_truth": "Exact gamma/lognormal population integration with the generator's clipping; denominator sigma cancels, not a noisy large-sample target",
+        "interpretation_notes": [
+            {
+                "id": "D3b-relative-scale",
+                "spec": "A.10 lines 143-150 and 205; A.5 log-mean Jacobian",
+                "resolution": "The generator fixes relative truth r=0 or .05. The estimator returns a log interval, so gate log1p(r). The event {log1p(r) in log-interval} is identical to {r in the exponentiated interval}; no information is lost.",
+            },
+            {
+                "id": "D5b-FCR-effect-case",
+                "spec": "A.10 lines 171-178 and 205; C.3 lines 715-728",
+                "resolution": "Effect case 1 means rate_lift=.05 in the explicit generator, an additive rate shift. The selected relative-ratio interval is compared with exp(ratio_truth)-1, not literal .05. Effect case 0 uses rate_lift=0 for both independent metrics.",
+            },
+            {
+                "id": "D9-frozen-fixture",
+                "spec": "A.10 lines 179-182 and 229",
+                "resolution": "Dimensions, covariate law and noise were unspecified. The d9_design entry is frozen by the implementer, not inferred from the spec, and requires domain-review sign-off before the full run.",
+                "domain_review_status": "pending",
+            },
+            {
+                "id": "ratio-population-integration",
+                "spec": "A.10 lines 205 and 225; C.3 lines 730-743",
+                "resolution": "Replace the finite large-sample ratio_truth approximation with analytic truncated-gamma integration of the same population law and clipping. This removes truth-estimation error without changing the generator or estimand.",
+            },
+            {
+                "id": "D6-all-null-policy",
+                "spec": "A.6 structural-zero-variance rule; A.10 line 226",
+                "resolution": "The all-null refusal fixture declares missing='refuse'. With indicator-plus-zero declared, an all-null numeric column is structurally constant and is omitted with disclosure; a separate exact test requires all rows to remain.",
+            },
+        ],
         "diagnostics": {
             "D8": "4000 eligible replications; variance ratios vs unadjusted and scalar x1; reported, never gated",
             "point_bias_width_leverage_dof_rejection": "Descriptive means with Monte Carlo standard errors; never gates",
@@ -886,7 +914,12 @@ def run_campaign(output: Path, campaign: str, workers: int = 1, chunk_size: int 
             "name": campaign,
             "tolerance": PROFILES[campaign].tolerance,
             "stopping": "fixed",
-            "certification": PROFILES[campaign].certification(frozen["cells"]),
+            "certification": {
+                identifier: selected and campaign == "full"
+                for identifier, selected in PROFILES[campaign]
+                .certification(frozen["cells"])
+                .items()
+            },
         },
     }
     manifest_path = output / "manifest.json"
