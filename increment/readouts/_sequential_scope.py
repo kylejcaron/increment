@@ -30,12 +30,14 @@ from increment.estimation.results import LiftEstimate
 from increment.estimation.sequential_result import AsymptoticSequentialResult
 from increment.readouts._common import _raise, _require_design
 from increment.readouts._design_scope import ResolvedRoster, resolve_roster
+from increment.readouts._metric_type import declared_metric_type, declared_metric_types
 from increment.readouts._multiplicity_scope import attach_multiplicity_scope
 from increment.readouts._source_digest import component, composite_source
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from increment._literals import MetricType
     from increment.sequential_state import SequentialSnapshot
 
 UNSUPPORTED_CODE = "readout.cell.unsupported_request"
@@ -186,7 +188,12 @@ def _checkpoint_roster(src: Any, design: Any, rows, snapshot: SequentialSnapshot
 
 
 def _unavailable_triggered_cell(
-    cell: Any, assigned_row: LiftEstimate, snapshot_id: str, *, missing: int
+    cell: Any,
+    assigned_row: LiftEstimate,
+    snapshot_id: str,
+    *,
+    metric_type: MetricType | None,
+    missing: int,
 ) -> tuple[LiftEstimate, CellRecord]:
     """An identity-preserving unavailable row for a triggered decision cell.
 
@@ -215,6 +222,7 @@ def _unavailable_triggered_cell(
         role=assigned_row.role,
         lift=None,
         source_snapshot_id=snapshot_id,
+        metric_type=metric_type,
         failure_code=failure.code,
         failure_context=failure.context,
         sampling_available=False,
@@ -343,12 +351,14 @@ def scope_sequential_results(
         "declared_allocation" if getattr(design, "allocation", None) else "observed_union"
     )
 
+    metric_types = declared_metric_types(src.context.metrics)
     output = []
     records: list[CellRecord] = []
     for cell in sorted(assigned_rows, key=cell_order):
         row = assigned_rows[cell].model_copy(
             update={
                 "source_snapshot_id": snapshot_id,
+                "metric_type": declared_metric_type(cell, metric_types),
                 "sampling_available": True,
                 "decision_scope_complete": True,
             }
@@ -364,7 +374,11 @@ def scope_sequential_results(
 
     for cell in sorted(triggered_cells, key=cell_order):
         row, record = _unavailable_triggered_cell(
-            cell, assigned_rows[triggered_cells[cell]], snapshot_id, missing=len(triggered_cells)
+            cell,
+            assigned_rows[triggered_cells[cell]],
+            snapshot_id,
+            metric_type=declared_metric_type(cell, metric_types),
+            missing=len(triggered_cells),
         )
         output.append(row)
         records.append(record)

@@ -15,6 +15,7 @@ from increment.estimation.readout_types import (
     cell_order,
     family_identity,
 )
+from increment.readouts._metric_type import declared_metric_type, declared_metric_types
 from increment.readouts._source_digest import input_evidence
 
 
@@ -437,9 +438,12 @@ def scoped_collection(
         },
     }
     snapshot_id = "sha256:" + sha256(canonical_json_bytes(payload)).hexdigest()
+    metric_types = declared_metric_types(config.metric for config in configs)
     stamped = []
     for row in rows:
         update = {"source_snapshot_id": snapshot_id}
+        if hasattr(row, "metric_type"):
+            update["metric_type"] = declared_metric_type(row, metric_types)
         if hasattr(row, "sampling_available") and row.sampling_available is None:
             update["sampling_available"] = True
         stamped.append(row.model_copy(update=update))

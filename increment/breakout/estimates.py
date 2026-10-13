@@ -566,6 +566,7 @@ _FAMILY_VIEW_FIELDS = (
     "failure_code",
     "failure_context",
     "source_snapshot_id",
+    "metric_type",
     "decision_scope_complete",
     "decision_scope_reason_code",
     "decision_scope_reason_context",

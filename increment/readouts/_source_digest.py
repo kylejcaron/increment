@@ -11,7 +11,7 @@ _FLOAT_INPUT_FIELDS = {"dimension_value", "ds", "n_control", "n_treat", "segment
 
 
 def input_evidence(value: Any, *, field: str | None = None) -> Any:
-    """Keep discrete inputs and counts while excluding float aggregates."""
+    """Keep discrete inputs and counts while excluding float aggregates and row provenance."""
     if isinstance(value, float):
         return value if field in _FLOAT_INPUT_FIELDS else None
     if isinstance(value, int) and not -(2**53) < value < 2**53:
@@ -41,6 +41,7 @@ def input_evidence(value: Any, *, field: str | None = None) -> Any:
                 "failure_code",
                 "failure_context",
                 "inference",
+                "metric_type",
             }
         }
     if isinstance(value, (list, tuple)):

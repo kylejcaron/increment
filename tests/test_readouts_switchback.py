@@ -867,6 +867,7 @@ def test_public_envelope_plan_result_frame_and_readout_roundtrip(backend):
     replay_row = replay.results[0]
     scope_fields = {
         "source_snapshot_id",
+        "metric_type",
         "decision_scope_complete",
         "decision_scope_reason_code",
         "decision_scope_reason_context",
@@ -884,6 +885,7 @@ def test_public_envelope_plan_result_frame_and_readout_roundtrip(backend):
     assert result.source_snapshot_id is not None
     assert result.decision_scope_complete is True
     assert result.decision_scope_reason_code is None
+    assert result.metric_type == "mean"
     from increment.estimation.readout_types import ReadoutResults
 
     restored_collection = ReadoutResults.model_validate_json(results.model_dump_json())
