@@ -741,11 +741,16 @@ def test_readout_rows_forward_projection_refusal_sidecars() -> None:
         assert converted["relative_error_context"] is None
 
 
-def _ratio_rows_with_dead_arm(*, dead_control: bool = False) -> list[dict[str, Any]]:
+def _ratio_rows_with_dead_arm(
+    *,
+    dead_control: bool = False,
+    groups: tuple[str, ...] = ("control", "treatment", "dead"),
+    zero_groups: tuple[str, ...] = ("dead",),
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for segment in ("north", "south"):
-        for group in ("control", "treatment", "dead"):
-            zero = group == "dead" or (dead_control and group == "control")
+        for group in groups:
+            zero = group in zero_groups or (dead_control and group == "control")
             for index in range(18):
                 rows.append(
                     {
@@ -844,3 +849,46 @@ def test_zero_denominator_control_fails_every_linear_contrast_without_abort() ->
             assert {failure["code"] for failure in failures} == {
                 "estimation.variance.ratio_moments_nonpositive_denominator_mean"
             }
+
+
+@pytest.mark.parametrize(
+    "zero_groups",
+    [("treatment",), ("treatment", "dead")],
+    ids=["single_treatment", "every_non_control_arm"],
+)
+def test_every_withheld_contrast_arm_refuses_exactly_like_unadjusted(
+    zero_groups: tuple[str, ...],
+) -> None:
+    from increment.errors import CodedError
+
+    groups = ("control", *zero_groups)
+    linear = _ratio_analysis(
+        _ratio_rows_with_dead_arm(groups=groups, zero_groups=zero_groups),
+        Method(name="linear", variance_reduction="cuped_linear"),
+    )
+    unadjusted = _ratio_analysis(
+        _ratio_rows_with_dead_arm(groups=groups, zero_groups=zero_groups),
+        Method(name="unadjusted"),
+    )
+    outcomes: dict[str, list[dict[str, Any]]] = {}
+    for label, analysis in (("linear", linear), ("unadjusted", unadjusted)):
+        with pytest.raises(CodedError) as raised, pytest.warns():
+            analysis.run()
+        assert raised.value.code == "readout.estimate_lift_every"
+        outcomes[label] = cast(list[dict[str, Any]], raised.value.context["failures"])
+    assert {failure["group_id"] for failure in outcomes["linear"]} == set(zero_groups)
+    for label in ("linear", "unadjusted"):
+        assert {failure["code"] for failure in outcomes[label]} == {
+            "estimation.variance.ratio_moments_nonpositive_denominator_mean"
+        }
+        assert {failure["context"]["group_id"] for failure in outcomes[label]} == set(zero_groups)
+    with pytest.warns():
+        linear_cells = {
+            (row.dimension_value, row.group_id): row.excluded for row in linear.run_breakout()
+        }
+    with pytest.warns():
+        unadjusted_cells = {
+            (row.dimension_value, row.group_id): row.excluded for row in unadjusted.run_breakout()
+        }
+    assert linear_cells == unadjusted_cells
+    assert set(linear_cells.values()) == {"nonpositive_mean"}

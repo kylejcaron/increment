@@ -3195,8 +3195,9 @@ def _withhold_ratio_arms(
     """Withhold ratio arms that cannot form the estimand, as their own cell failures.
 
     Returns the per-unit evidence and arm order left to fit plus the failure
-    rows and decision failures of the withheld arms. A control arm in that
-    state leaves nothing to fit: every contrast carries its refusal.
+    rows and decision failures of the withheld arms. When nothing is left to
+    contrast -- the control arm is withheld, or every non-control arm is --
+    the evidence comes back as ``None`` and every contrast carries its refusal.
     """
     refused = _ratio_denominator_refusals(frame, metric.name)
     results: list[LiftEstimate] = []
@@ -3232,6 +3233,8 @@ def _withhold_ratio_arms(
     if refused:
         frame = frame.filter(~nw.col("group_id").is_in(list(refused)))
         arm_order = tuple(arm for arm in arm_order if arm not in refused)
+    if arm_order == (control_group,):
+        return None, (), results, cuped_failures
     return frame, arm_order, results, cuped_failures
 
 
