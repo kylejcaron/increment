@@ -1934,10 +1934,12 @@ class Analysis:
 
         Native (:meth:`from_definitions`) and adopted artifact sources with a
         published site-volume extension combine enrolled-arm moments with
-        whole-site volume evidence. Both populations require a metric whose
-        per-unit outcome aligns with the calendar-window site total: metrics
-        must be unwindowed and use sum or count aggregation (except unwindowed conversion
-        metrics). ``population="assigned"`` scales the assignment-window lift
+        whole-site volume evidence. Both populations require an additive metric
+        aligned with the calendar-window site total: metrics must be unwindowed
+        and use sum or count aggregation. Conversion metrics are refused because
+        their per-unit indicator is not additive across event records; declare a
+        count metric on the conversion fact to read conversion events site-wide.
+        ``population="assigned"`` scales the assignment-window lift
         to all enrolled units. For a triggered experiment,
         ``population="triggered"`` scales the trigger-stratum lift to units in
         finalized trigger membership, while outcomes remain aligned to the

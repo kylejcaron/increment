@@ -1497,10 +1497,12 @@ _AUXILIARY_ROWS: tuple[EntryRow, ...] = (
             "sitewide_definitions_assigned_supported",
             "sitewide_assigned_observational_refused",
             "sitewide_definitions_metric_unaligned_refused",
+            "sitewide_definitions_conversion_refused",
         ),
         (
             "sitewide_artifact_assigned_supported",
             "sitewide_artifact_metric_unaligned_refused",
+            "sitewide_artifact_conversion_refused",
         ),
         _other_auxiliary_bindings("sitewide"),
     ),
@@ -1510,10 +1512,12 @@ _AUXILIARY_ROWS: tuple[EntryRow, ...] = (
         (
             "sitewide_definitions_triggered_supported",
             "sitewide_definitions_metric_unaligned_refused",
+            "sitewide_definitions_conversion_refused",
         ),
         (
             "sitewide_artifact_triggered_supported",
             "sitewide_artifact_metric_unaligned_refused",
+            "sitewide_artifact_conversion_refused",
         ),
         (
             ("unit summary", "sitewide_from_unit_summary_triggered_population_refused"),

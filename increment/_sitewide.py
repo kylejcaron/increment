@@ -191,25 +191,26 @@ class SitewideReadouts:
         )
 
     def _validate_metric_alignment(self, metric: Metric) -> None:
-        # Site volume adds every event value (one per event for counts) over the
-        # calendar window, so each unit's outcome must be an additive total over
-        # that same window: no per-unit window, no non-additive aggregation.
+        # Site volume adds each event over the calendar window; unit-level
+        # outcomes must be additive totals over that same window.
         components = (
             (metric.numerator, metric.denominator) if isinstance(metric, RatioMetric) else (metric,)
         )
         windows = tuple(getattr(component, "window_days", None) for component in components)
         aggregations = tuple(getattr(component, "aggregation", None) for component in components)
-        additive = metric.type == "conversion" or all(
-            aggregation in ("sum", "count") for aggregation in aggregations
-        )
-        if any(window is not None for window in windows) or not additive:
+        additive = all(aggregation in ("sum", "count") for aggregation in aggregations)
+        if (
+            metric.type == "conversion"
+            or any(window is not None for window in windows)
+            or not additive
+        ):
             _refuse(
                 _SITEWIDE_METRIC_UNALIGNED,
                 metric=metric.name,
                 metric_type=metric.type,
                 window_days=windows if isinstance(metric, RatioMetric) else windows[0],
                 aggregation=aggregations if isinstance(metric, RatioMetric) else aggregations[0],
-                route="declare an unwindowed metric with sum or count aggregation on the experiment",
+                route="declare an unwindowed sum or count metric on the experiment",
             )
 
     def _validate_triggered_metric(self) -> None:

@@ -38,7 +38,7 @@ def _analysis(
     observation_end=None,
     source_snapshot_evidence=True,
     on_mixed_assignment="error",
-    windowed=False,
+    metric_shape="sum",
     observational=False,
 ):
     tmp_path.mkdir(parents=True, exist_ok=True)
@@ -47,8 +47,23 @@ def _analysis(
         end="2024-01-10",
         observation_end=observation_end,
     )
-    if not windowed:
+    if metric_shape != "windowed":
         definitions = definitions.replace("    window_days: 7\n", "")
+    if metric_shape == "ratio_avg_event":
+        definitions = definitions.replace(
+            "  - name: revenue\n"
+            "    type: mean\n"
+            "    entity: user_id\n"
+            "    fact: revenue\n"
+            "    aggregation: sum\n",
+            "  - name: revenue_ratio\n"
+            "    type: ratio\n"
+            "    entity: user_id\n"
+            "    numerator: {fact: revenue, aggregation: sum}\n"
+            "    denominator: {fact: revenue, aggregation: avg_event}\n",
+        ).replace("secondaries: [revenue]", "secondaries: [revenue_ratio]")
+    elif metric_shape == "avg_event":
+        definitions = definitions.replace("    aggregation: sum\n", "    aggregation: avg_event\n")
     if observational:
         definitions = definitions.replace(
             "    facts:\n",
@@ -583,119 +598,6 @@ def test_sitewide_artifact_snapshot_identity_changes_between_publications(tmp_pa
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
-def test_repeated_conversions_use_distinct_site_totals_for_assigned_and_triggered(
-    tmp_path, monkeypatch
-):
-    events = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5)
-    converted = {*[f"C{i}" for i in range(20)], *[f"T{i}" for i in range(60)]}
-    repeated = [
-        {
-            **row,
-            "event": "converted",
-            "ts": dt.datetime(2024, 1, day),
-            "value": 1.0,
-        }
-        for user_id in sorted(converted)
-        for day in (4, 6)
-        for row in events.to_pylist()
-        if row["user_id"] == user_id and row["event"] == "enrolled"
-    ]
-    events = pa.concat_tables([events, pa.Table.from_pylist(repeated, schema=events.schema)])
-    late_converter = next(
-        row for row in events.to_pylist() if row["event"] == "enrolled" and row["user_id"] == "C99"
-    )
-    late_converter = {
-        **late_converter,
-        "event": "converted",
-        "ts": dt.datetime(2024, 1, 12),
-        "value": 1.0,
-    }
-    events = pa.concat_tables(
-        [events, pa.Table.from_pylist([late_converter], schema=events.schema)]
-    )
-    analysis = _conversion_analysis(tmp_path / "native", events)
-    adopted = None
-    try:
-        assigned = analysis.sitewide("revenue")
-        assert isinstance(assigned, SitewideImpact)
-        assert assigned.site_total_volume == pytest.approx(len(converted))
-        assert assigned.delta == pytest.approx(0.6 - 0.2)
-        assert assigned.absolute_impact == pytest.approx((0.6 - 0.2) * 200)
-
-        triggered = analysis.sitewide("revenue", population="triggered")
-        assert isinstance(triggered, SitewideImpact)
-        trigger_members = {
-            row["user_id"] for row in events.to_pylist() if row["event"] == "saw_surface"
-        }
-        triggered_counts = {
-            arm: sum(unit[0] == arm for unit in trigger_members) for arm in ("C", "T")
-        }
-        triggered_converters = {
-            arm: len({unit for unit in converted & trigger_members if unit[0] == arm})
-            for arm in ("C", "T")
-        }
-        expected_trigger_delta = (
-            triggered_converters["T"] / triggered_counts["T"]
-            - triggered_converters["C"] / triggered_counts["C"]
-        )
-        assert triggered.site_total_volume == pytest.approx(len(converted))
-        assert triggered.delta == pytest.approx(expected_trigger_delta)
-        assert triggered.absolute_impact == pytest.approx(
-            expected_trigger_delta * len(trigger_members)
-        )
-
-        adopted = _publish_and_adopt(
-            native_connection(_native_source(analysis)),
-            analysis,
-            kinds=("site_volume", "trigger_population", "assignment_counts"),
-        )
-        artifact_assigned = adopted.sitewide("revenue")
-        artifact_triggered = adopted.sitewide("revenue", population="triggered")
-        source = _moment_source(adopted)
-        site_volume = next(
-            extension
-            for extension in source._manifest.extensions
-            if extension.kind == "site_volume"
-        )
-        assert site_volume.extension_version == 4
-        assert dict(site_volume.distinct_unit_counts or ()) == {
-            source._manifest.metric_measures[0].measure_key: len(converted)
-        }
-        legacy_extensions = tuple(
-            extension.model_copy(update={"extension_version": 1, "distinct_unit_counts": None})
-            if extension.kind == "site_volume"
-            else extension
-            for extension in source._manifest.extensions
-        )
-        monkeypatch.setattr(
-            source,
-            "_manifest",
-            source._manifest.model_copy(update={"extensions": legacy_extensions}),
-        )
-        with pytest.raises(CapabilityError) as missing_distinct_total:
-            adopted.sitewide("revenue")
-        assert (
-            missing_distinct_total.value.code == "facade.analysis.sitewide_conversion_total_missing"
-        )
-        assert "republish" in str(missing_distinct_total.value.context["route"])
-        assert artifact_triggered.n_control == triggered.n_control
-        assert artifact_triggered.n_treatment == triggered.n_treatment
-        for native, artifact in (
-            (assigned, artifact_assigned),
-            (triggered, artifact_triggered),
-        ):
-            assert isinstance(artifact, SitewideImpact)
-            assert artifact.site_total_volume == pytest.approx(len(converted))
-            assert artifact.delta == pytest.approx(native.delta)
-            assert artifact.absolute_impact == pytest.approx(native.absolute_impact)
-    finally:
-        if adopted is None:
-            analysis.close()
-        else:
-            _close_parity_analysis(adopted)
-
-
-@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_triggered_sitewide_non_utc_boundary_matches_artifact(tmp_path):
     analysis = _analysis(tmp_path, day_boundary="UTC+05:00")
     adopted = None
@@ -1064,7 +966,7 @@ def test_windowed_sitewide_metric_refuses_before_data_load(
 ):
     from tests.capability_consumers_auxiliary import assert_refusal
 
-    analysis = _analysis(tmp_path, windowed=True)
+    analysis = _analysis(tmp_path, metric_shape="windowed")
     adopted = None
     try:
         if ingress == "artifact":
@@ -1097,6 +999,57 @@ def test_windowed_sitewide_metric_refuses_before_data_load(
     finally:
         if adopted is None:
             analysis.close()
+        else:
+            _close_parity_analysis(adopted)
+
+
+@pytest.mark.parametrize("population", ["assigned", "triggered"])
+@pytest.mark.parametrize("ingress", ["native", "artifact"])
+@pytest.mark.parametrize("metric_kind", ["conversion", "avg_event_mean", "ratio"])
+@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
+def test_nonadditive_sitewide_metrics_refuse_before_evidence(
+    tmp_path, monkeypatch, population, ingress, metric_kind
+):
+    if metric_kind == "conversion":
+        target_source = _conversion_analysis(
+            tmp_path, _events(n_per_arm=100, trigger_rate=0.2, effect=0.5)
+        )
+        metric_name = "revenue"
+    else:
+        target_source = _analysis(
+            tmp_path, metric_shape="ratio_avg_event" if metric_kind == "ratio" else "avg_event"
+        )
+        metric_name = "revenue_ratio" if metric_kind == "ratio" else "revenue"
+
+    adopted = None
+    try:
+        if ingress == "artifact":
+            adopted = _publish_and_adopt(
+                native_connection(_native_source(target_source)),
+                target_source,
+                kinds=("site_volume", "trigger_population", "assignment_counts"),
+            )
+            target = adopted
+        else:
+            target = target_source
+        monkeypatch.setattr(
+            _moment_source(target),
+            "sitewide_evidence",
+            lambda *args, **kwargs: pytest.fail("loaded incompatible sitewide evidence"),
+        )
+        with pytest.raises(CapabilityError) as refused:
+            target.sitewide(metric_name, population=population)
+        assert refused.value.code == "facade.analysis.sitewide_metric_unaligned"
+        assert refused.value.context["metric"] == metric_name
+        expected_type = (
+            "conversion"
+            if metric_kind == "conversion"
+            else ("ratio" if metric_kind == "ratio" else "mean")
+        )
+        assert refused.value.context["metric_type"] == expected_type
+    finally:
+        if adopted is None:
+            target_source.close()
         else:
             _close_parity_analysis(adopted)
 
@@ -1335,7 +1288,7 @@ def test_windowed_assigned_sitewide_refuses_before_evidence_load(tmp_path):
     analysis = _analysis(
         tmp_path,
         _events(n_per_arm=100, trigger_rate=0.2, effect=0.5),
-        windowed=True,
+        metric_shape="windowed",
         observation_end="2024-01-16T00:00:00",
     )
     try:
@@ -1344,41 +1297,6 @@ def test_windowed_assigned_sitewide_refuses_before_evidence_load(tmp_path):
         assert refused.value.code == "facade.analysis.sitewide_metric_unaligned"
     finally:
         analysis.close()
-
-
-@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
-def test_count_mean_sharing_conversion_recipe_keeps_converter_total(tmp_path):
-    rows = _events(n_per_arm=100, trigger_rate=0.2, effect=0.5).to_pylist()
-    converted = {*(f"C{i}" for i in range(20)), *(f"T{i}" for i in range(60))}
-    conversions = [
-        {
-            **row,
-            "event": "converted",
-            "ts": dt.datetime(2024, 1, 4),
-            "value": 1.0,
-        }
-        for row in rows
-        if row["event"] == "enrolled" and row["user_id"] in converted
-    ]
-    events = pa.concat_tables([pa.Table.from_pylist(rows), pa.Table.from_pylist(conversions)])
-    analysis = _conversion_analysis(tmp_path, events, count_metric=True)
-    adopted = None
-    try:
-        native = analysis.sitewide("revenue")
-        adopted = _publish_and_adopt(
-            native_connection(_native_source(analysis)),
-            analysis,
-            kinds=("site_volume", "trigger_population", "assignment_counts"),
-        )
-        artifact = adopted.sitewide("revenue")
-        assert isinstance(native, SitewideImpact)
-        assert isinstance(artifact, SitewideImpact)
-        assert artifact.site_total_volume == pytest.approx(native.site_total_volume)
-    finally:
-        if adopted is None:
-            analysis.close()
-        else:
-            _close_parity_analysis(adopted)
 
 
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
@@ -1410,28 +1328,6 @@ def test_count_metric_sitewide_counts_events_alike_on_both_ingresses(tmp_path):
             assert artifact.site_total_volume == pytest.approx(expected.site_total_volume)
             assert artifact.absolute_impact == pytest.approx(expected.absolute_impact)
             assert artifact.relative_impact == pytest.approx(expected.relative_impact)
-    finally:
-        if adopted is None:
-            analysis.close()
-        else:
-            _close_parity_analysis(adopted)
-
-
-@pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
-def test_legacy_site_volume_manifest_reopens_without_digest_change(tmp_path):
-    analysis = _analysis(tmp_path, trigger=False)
-    adopted = None
-    try:
-        adopted = _publish_and_adopt(
-            native_connection(_native_source(analysis)),
-            analysis,
-            kinds=("site_volume",),
-        )
-        manifest = _moment_source(adopted)._manifest
-        extension = next(item for item in manifest.extensions if item.kind == "site_volume")
-        assert extension.extension_version == 1
-        assert "distinct_unit_counts" not in extension.model_dump(mode="json")
-        assert adopted.sitewide("revenue").absolute_impact is not None
     finally:
         if adopted is None:
             analysis.close()

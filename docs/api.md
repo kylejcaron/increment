@@ -980,14 +980,16 @@ intent-to-treat whole-site impact, including when the experiment declares a
 trigger. For triggered experiments, `population="triggered"` reports a
 conditional impact scaled to enrolled units in finalized trigger membership.
 Both populations require an unwindowed metric whose components use sum or
-count aggregation (unwindowed conversion metrics are also supported): the
-calendar-window site total cannot align with a per-unit window or a
-non-additive aggregation. This refusal occurs before evidence is loaded, and
-its route is to declare such a metric on the experiment. Triggered sitewide additionally
-requires a declared experiment end. It uses calendar-window outcomes (not
-`run()`'s trigger-anchored windows) and discloses membership assumptions,
-allocation-balance evidence, provenance, and its exploratory unadjusted
-multiplicity status on the result. `SitewideImpact` and `SitewideRatioImpact`
+count aggregation. Conversion metrics refuse with
+`facade.analysis.sitewide_metric_unaligned` before evidence is loaded because
+the converter indicator is not additive across events; declare a count metric
+on the conversion fact to read conversion events site-wide. Windowed and other
+non-additive aggregations use the same refusal.
+Triggered sitewide additionally requires a declared experiment end. It uses
+calendar-window outcomes (not `run()`'s trigger-anchored windows) and
+discloses membership assumptions, allocation-balance evidence, provenance,
+and its exploratory unadjusted multiplicity status on the result.
+`SitewideImpact` and `SitewideRatioImpact`
 include `analysis_population`, `window`, `membership_cutoff`, `snapshot_id`,
 `scaled_units`, `unobserved_members`, `assumptions`, and `allocation_balance`.
 The paired-provenance check is content-bound only for artifacts; native

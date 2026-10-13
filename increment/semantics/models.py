@@ -115,11 +115,6 @@ DEFINITION_REFUSALS: dict[str, RefusalSpec] = {
         DefinitionError,
         _render_definition_message,
     ),
-    "definition.artifact_extension.site_volume_distinct_counts": RefusalSpec(
-        "definition.artifact_extension.site_volume_distinct_counts",
-        DefinitionError,
-        _render_definition_message,
-    ),
     "definition.artifact_json_values": RefusalSpec(
         "definition.artifact_json_values", DefinitionError, _render_definition_message
     ),

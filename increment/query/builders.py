@@ -727,22 +727,6 @@ def site_volume(
         for a `RatioMetric`, else NULL) - same convention as `unit_totals`.
     """
     validate_site_volume_metric(metric)
-    if isinstance(metric, ConversionMetric):
-        converted = metric_events(fact_table, metric, value_column, part="numerator")
-        local_date = _local_date(converted.ts, experiment)
-        converted = converted.filter(local_date >= ibis.literal(experiment.start_day))
-        if experiment.end is not None:
-            converted = converted.filter(local_date <= ibis.literal(experiment.end_day))
-        if observation_cutoff is not None:
-            converted = converted.filter(
-                converted.ts <= _utc_timestamp_literal(converted.ts, observation_cutoff)
-            )
-        distinct_units = converted.aggregate(y=converted.unit_id.nunique().cast("float64"))
-        return (
-            distinct_units.mutate(y_den=ibis.null().cast("float64"))
-            .mutate(metric=ibis.literal(metric.name))
-            .select("metric", "y", "y_den")
-        )
     num = _windowed_fact_sum(
         fact_table,
         metric,

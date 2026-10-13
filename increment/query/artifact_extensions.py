@@ -879,7 +879,6 @@ def _model_site_volume(
     relation: ArtifactRelationRef,
     entry: ArtifactExtensionCatalogEntry,
     definition: Mapping[str, Any],
-    distinct_unit_counts: Mapping[str, int] | None = None,
     **_: Any,
 ) -> ArtifactExtensionRef:
     request: Any = entry.request
@@ -890,11 +889,6 @@ def _model_site_volume(
         last_ds=definition["last_ds"],
         freshness=Freshness.model_validate(definition["freshness"]),
     )
-    if distinct_unit_counts:
-        base.update(
-            extension_version=4,
-            distinct_unit_counts=tuple(sorted(distinct_unit_counts.items())),
-        )
     return SiteVolumeExtension.model_validate(base)
 
 
@@ -929,7 +923,6 @@ def _extension_model(
     definition: Mapping[str, Any],
     rows: Sequence[Mapping[str, Any]],
     audit_counts: tuple[int, int] | None = None,
-    extension_fields: Mapping[str, Any] | None = None,
 ) -> ArtifactExtensionRef:
     return _handler(kind).model(
         relation=relation,
@@ -937,7 +930,6 @@ def _extension_model(
         definition=definition,
         rows=rows,
         audit_counts=audit_counts,
-        **(extension_fields or {}),
     )
 
 
@@ -999,7 +991,6 @@ def encode_extension(
     definition: Mapping[str, Any] | None = None,
     source_recipe: Mapping[str, Any] | None = None,
     experiment_id: str | None = None,
-    extension_fields: Mapping[str, Any] | None = None,
 ) -> ArtifactExtensionRef:
     """Encode one exact catalog request and write it via ``publication``."""
     selected = cast(
@@ -1057,7 +1048,6 @@ def encode_extension(
         definition=trusted_definition,
         rows=evidence,
         audit_counts=audit_counts,
-        extension_fields=extension_fields,
     )
     return extension
 

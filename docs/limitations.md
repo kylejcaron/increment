@@ -288,13 +288,14 @@ Both assigned and triggered `Analysis.sitewide()` require randomized
 identification. Observational and encouragement designs refuse before
 sitewide evidence is loaded; use `Analysis.run()` for their estimands.
 
-Both populations refuse windowed metrics and components with non-additive
-aggregation (anything but sum or count). Site volume is an additive total
-across the experiment calendar window `[start, end]`; a per-unit window
-anchored at each enrollment or a non-additive per-unit outcome cannot align
-with it. The limitation is inherent to that site-volume construction, not a
-missing estimator. Declare an unwindowed sum or count metric on the
-experiment; unwindowed conversion metrics are also supported.
+Both populations refuse conversion metrics with
+`facade.analysis.sitewide_metric_unaligned`: a converter indicator is a
+per-unit maximum over events, not an additive event total, so it cannot align
+with the site's whole-window total. To read conversion events site-wide,
+declare a `count` metric (mean metric, `aggregation: count`) on the conversion
+fact. Windowed metrics and components with non-additive aggregation (anything
+but sum or count) use the same refusal because a per-unit window or
+non-additive outcome cannot align with the additive site total.
 
 For the triggered population, the estimate omits any reach effect among
 never-triggered units and does not adjust for multiplicity or provide
@@ -311,9 +312,8 @@ or a declared watermark stops before the end day; without certification they
 assume the loaded outcomes are complete, as a native analysis without
 snapshot evidence always has. Both refusals use
 `facade.analysis.sitewide_outcomes_incomplete`.
-Conversion site totals count distinct converted units over that same window.
-Artifacts published before site-volume extension version 4 lack this
-whole-window count and refuse conversion sitewide until republished.
+Conversion metrics do not have a sitewide total through `sitewide()`; use a
+count metric on the conversion fact to count site events.
 
 Population counts retain every assigned arm, including explicit zero counts
 for arms with no triggered members. The estimator scales all triggered members

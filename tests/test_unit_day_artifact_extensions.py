@@ -1495,7 +1495,7 @@ def test_site_volume_extension_read_through_read_extension_accepts_exposure_keys
     from increment import Analysis
     from tests.test_unit_day_artifact_facade import _definitions, _extensions, _native
 
-    definitions = _definitions(tmp_path, site_volume_only=True, unwindowed_purchase=True)
+    definitions = _definitions(tmp_path, site_volume_only=True, sitewide_count=True)
     con, native, context, store = _native(
         definitions=definitions,
         source_snapshot_evidence=SourceSnapshotEvidence(
@@ -1506,22 +1506,13 @@ def test_site_volume_extension_read_through_read_extension_accepts_exposure_keys
     ref = native.publish_unit_day_artifact(store, extensions=requests)
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
     try:
-        expected = native.sitewide("purchase_rate")
-        result = adopted.sitewide("purchase_rate")
+        expected = native.sitewide("purchase_count")
+        result = adopted.sitewide("purchase_count")
         assert result.site_total_volume > 0  # ty: ignore[unresolved-attribute]
-        assert result.site_total_volume == pytest.approx(  # ty: ignore[unresolved-attribute]
-            expected.site_total_volume
-        )
+        assert result.site_total_volume == pytest.approx(expected.site_total_volume)  # ty: ignore[unresolved-attribute]
     finally:
         adopted.close()
         native.close()
-
-
-def test_legacy_site_volume_extension_serialization_omits_new_counts_field() -> None:
-    extension = _empty_site_volume_extension()
-
-    assert "distinct_unit_counts" not in extension.model_dump(mode="python")
-    assert "distinct_unit_counts" not in extension.model_dump(mode="json")
 
 
 def test_extension_relation_publishes_and_reopens_under_digest_format_one() -> None:
@@ -1565,10 +1556,10 @@ def test_site_volume_publication_deduplicates_shared_physical_recipes(tmp_path) 
     from increment.estimation.sitewide import SitewideImpact
     from tests.test_unit_day_artifact_facade import _definitions, _extensions, _native
 
-    definitions = _definitions(tmp_path, site_volume_only=True, unwindowed_purchase=True)
+    definitions = _definitions(tmp_path, site_volume_only=True, sitewide_count=True)
     payload = yaml.safe_load(definitions.read_text())
-    original = next(metric for metric in payload["metrics"] if metric["name"] == "purchase_rate")
-    payload["metrics"].append({**original, "name": "purchase_rate_copy"})
+    original = next(metric for metric in payload["metrics"] if metric["name"] == "purchase_count")
+    payload["metrics"].append({**original, "name": "purchase_count_copy"})
     payload["metrics"].append(
         {
             "type": "mean",
@@ -1585,8 +1576,8 @@ def test_site_volume_publication_deduplicates_shared_physical_recipes(tmp_path) 
     )
     experiment["plan"] = {
         "secondaries": [
-            "purchase_rate",
-            "purchase_rate_copy",
+            "purchase_count",
+            "purchase_count_copy",
             "revenue_per_user_site_volume",
         ]
     }
@@ -1603,8 +1594,8 @@ def test_site_volume_publication_deduplicates_shared_physical_recipes(tmp_path) 
         expected = {
             name: native.sitewide(name).site_total_volume
             for name in (
-                "purchase_rate",
-                "purchase_rate_copy",
+                "purchase_count",
+                "purchase_count_copy",
                 "revenue_per_user_site_volume",
             )
         }

@@ -1149,15 +1149,17 @@ def sitewide_con():
 
 
 def _unwindowed_sitewide_analysis(definitions_path, con):
+    from increment.semantics.models import MeanMetric
+
     original = Analysis.from_definitions("new_onboarding_v2", definitions_path, con)
     try:
-        metrics = [
-            metric.model_copy(update={"window_days": None})
-            if metric.name == "purchase_rate"
-            else metric
-            for metric in original.metrics
-        ]
-        return make_analysis_like(original, metrics)
+        count_metric = MeanMetric(
+            name="purchase_event_count",
+            entity="user_id",
+            fact="purchase",
+            aggregation="count",
+        )
+        return make_analysis_like(original, [*original.metrics, count_metric])
     finally:
         original.close()
 
@@ -1178,7 +1180,7 @@ def test_sitewide_control_group_missing_is_coded(seeded_defs, sitewide_con):
     )
     with _unwindowed_sitewide_analysis(seeded_defs, sitewide_con) as analysis:
         with pytest.raises(InvalidRequestError) as raised:
-            analysis.sitewide("purchase_rate")
+            analysis.sitewide("purchase_event_count")
     assert raised.value.code == "facade.analysis.sitewide_control_missing"
     assert raised.value.context["control_group"] == "control"
     assert raised.value.context["available"] == ("treatment",)
@@ -1191,7 +1193,7 @@ def test_sitewide_no_treatment_arm_is_coded(seeded_defs, sitewide_con):
     )
     with _unwindowed_sitewide_analysis(seeded_defs, sitewide_con) as analysis:
         with pytest.raises(InvalidRequestError) as raised:
-            analysis.sitewide("purchase_rate")
+            analysis.sitewide("purchase_event_count")
     assert raised.value.code == "facade.analysis.sitewide_no_treatment_arm"
     assert raised.value.context["control_group"] == "control"
 
@@ -1207,7 +1209,7 @@ def test_sitewide_multiple_arms_require_explicit_arm_is_coded(seeded_defs, sitew
     )
     with _unwindowed_sitewide_analysis(seeded_defs, sitewide_con) as analysis:
         with pytest.raises(InvalidRequestError) as raised:
-            analysis.sitewide("purchase_rate")
+            analysis.sitewide("purchase_event_count")
     assert raised.value.code == "facade.analysis.sitewide_arm_required"
     assert raised.value.context["arms"] == ("treatment", "treatment_b")
 
@@ -1215,7 +1217,7 @@ def test_sitewide_multiple_arms_require_explicit_arm_is_coded(seeded_defs, sitew
 def test_sitewide_named_arm_not_enrolled_is_coded(seeded_defs, sitewide_con):
     with _unwindowed_sitewide_analysis(seeded_defs, sitewide_con) as analysis:
         with pytest.raises(InvalidRequestError) as raised:
-            analysis.sitewide("purchase_rate", arm="not_an_arm")
+            analysis.sitewide("purchase_event_count", arm="not_an_arm")
     assert raised.value.code == "facade.analysis.sitewide_arm_not_enrolled"
     assert raised.value.context["arm"] == "not_an_arm"
 

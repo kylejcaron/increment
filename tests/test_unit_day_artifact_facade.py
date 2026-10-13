@@ -161,7 +161,7 @@ def _definitions(
     second_breakout_source: bool = False,
     cuped_metrics: tuple[str, ...] = (),
     site_volume_only: bool = False,
-    unwindowed_purchase: bool = False,
+    sitewide_count: bool = False,
     open_ended: bool = False,
     empty_plan: bool = False,
     observation_end: str | None = None,
@@ -194,11 +194,20 @@ def _definitions(
         experiment["end"] = None
     if empty_plan:
         experiment["plan"] = {}
-    if unwindowed_purchase:
-        purchase = next(item for item in payload["metrics"] if item["name"] == "purchase_rate")  # ty: ignore[not-iterable]
-        purchase.pop("window_days", None)
+    sitewide_metric = "purchase_rate"
+    if sitewide_count:
+        payload["metrics"].append(  # ty: ignore[unresolved-attribute]
+            {
+                "type": "mean",
+                "name": "purchase_count",
+                "entity": "user_id",
+                "fact": "purchase",
+                "aggregation": "count",
+            }
+        )
+        sitewide_metric = "purchase_count"
     if site_volume_only:
-        experiment["plan"] = {"secondaries": ["purchase_rate"]}
+        experiment["plan"] = {"secondaries": [sitewide_metric]}
     if cuped_metrics:
         method = {"name": "cuped", "variance_reduction": "cuped"}
         plan = experiment["plan"]
@@ -677,15 +686,15 @@ def test_artifact_run_returns_assigned_and_triggered(tmp_path: Path) -> None:
 @pytest.mark.filterwarnings("ignore:metric .* has window_days=None")
 def test_site_volume_serves_logical_metric_names(tmp_path: Path) -> None:
 
-    definitions = _definitions(tmp_path, site_volume_only=True, unwindowed_purchase=True)
+    definitions = _definitions(tmp_path, site_volume_only=True, sitewide_count=True)
     _con, native, context, store = _native(definitions=definitions)
-    metric = next(item for item in native.metrics if item.name == "purchase_rate")
+    metric = next(item for item in native.metrics if item.name == "purchase_count")
     assert metric.name != metric.fact
     selected = _extensions(context, "site_volume")
     assert selected
     ref = native.publish_unit_day_artifact(store, extensions=selected)
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-    result = adopted.sitewide("purchase_rate")
+    result = adopted.sitewide("purchase_count")
     assert result.site_total_volume > 0  # ty: ignore[unresolved-attribute]
 
 
@@ -1504,7 +1513,7 @@ def test_site_volume_extension_counts_non_enrolled_units_in_window(tmp_path: Pat
     any exposure table still counts", tests/query/test_builders.py:6008). Seeds one
     purchase event for a user who is never exposed at all, inside the experiment
     window, and asserts the whole-site reading includes it."""
-    definitions = _definitions(tmp_path, site_volume_only=True, unwindowed_purchase=True)
+    definitions = _definitions(tmp_path, site_volume_only=True, sitewide_count=True)
     con, native, context, store = _native(definitions=definitions)
     con.raw_sql(
         """
@@ -1528,7 +1537,7 @@ def test_site_volume_extension_counts_non_enrolled_units_in_window(tmp_path: Pat
     assert selected
     ref = native.publish_unit_day_artifact(store, extensions=selected)
     adopted = Analysis.from_unit_day_artifact(store, ref, expected_context=context)
-    result = adopted.sitewide("purchase_rate")
+    result = adopted.sitewide("purchase_count")
     assert result.site_total_volume == pytest.approx(float(expected_events))  # ty: ignore[unresolved-attribute]
 
 
@@ -1550,7 +1559,7 @@ def test_site_volume_coverage_ends_at_the_enrollment_end_not_the_observation_end
     definitions = _definitions(
         tmp_path,
         site_volume_only=True,
-        unwindowed_purchase=True,
+        sitewide_count=True,
         observation_end="2025-03-01",
         day_boundary=day_boundary,
     )
@@ -1596,8 +1605,8 @@ def test_site_volume_coverage_ends_at_the_enrollment_end_not_the_observation_end
     assert {row["ds"] for row in rows} == {
         date(2025, 1, 15) + timedelta(days=offset) for offset in range(32)
     }
-    native_total = native.sitewide("purchase_rate").site_total_volume
-    adopted_total = adopted.sitewide("purchase_rate").site_total_volume  # ty: ignore[unresolved-attribute]
+    native_total = native.sitewide("purchase_count").site_total_volume
+    adopted_total = adopted.sitewide("purchase_count").site_total_volume  # ty: ignore[unresolved-attribute]
     assert native_total == pytest.approx(expected)
     assert adopted_total == pytest.approx(expected)
 

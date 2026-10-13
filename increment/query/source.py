@@ -65,7 +65,6 @@ from increment.query.builders import (
 )
 from increment.query.native_contract import (
     _NATIVE_COVARIATE_RESERVED,
-    _SITEWIDE_CONVERSION_TOTAL_MISSING,
     _SITEWIDE_OUTCOMES_INCOMPLETE,
     DimensionedDayEvidence,
     SitewideEvidence,
@@ -80,7 +79,6 @@ from increment.semantics.artifact import (
 from increment.semantics.models import (
     AnalysisPlan,
     Breakout,
-    ConversionMetric,
     Experiment,
     Metric,
     RatioMetric,
@@ -1817,18 +1815,13 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
         )
         if any(
             getattr(component, "window_days", None) is not None
-            or (
-                metric.type != "conversion"
-                and getattr(component, "aggregation", None) not in ("sum", "count")
-            )
+            or getattr(component, "aggregation", None) not in ("sum", "count")
             for component in components
         ):
             raise ArtifactContractError(
                 "artifact.evidence.unavailable",
-                "triggered sitewide requires an unwindowed sum, count or conversion metric",
-                context={
-                    "route": "use a calendar-aligned unwindowed sum, count or conversion metric"
-                },
+                "triggered sitewide requires an unwindowed sum or count metric",
+                context={"route": "use a calendar-aligned unwindowed sum or count metric"},
             )
         binding = next(
             item for item in self._manifest.metric_measures if item.metric_name == metric.name
@@ -1901,22 +1894,6 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 route="re-run after the outcome feeds are complete through the experiment end.",
             )
 
-    @staticmethod
-    def _conversion_site_total(metric: Metric, binding: Any, extension: Any) -> float | None:
-        if not isinstance(metric, ConversionMetric):
-            return None
-        counts = dict(getattr(extension, "distinct_unit_counts", None) or ())
-        measure_key = getattr(binding, "measure_key", None)
-        if getattr(extension, "extension_version", 1) < 4 or measure_key not in counts:
-            refuse(
-                _SITEWIDE_CONVERSION_TOTAL_MISSING,
-                route=(
-                    "republish the artifact with the current site_volume extension to "
-                    "include a distinct-converter total"
-                ),
-            )
-        return float(counts[measure_key])
-
     def sitewide_evidence(
         self,
         metric: Metric,
@@ -1967,7 +1944,6 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
                 else frozenset({binding.measure_key})
             )
             self._require_sitewide_outcome_completeness(measure_keys, certified=False)
-        conversion_site_total = self._conversion_site_total(metric, binding, extension)
         rows = self._read_extension(
             extension,
             request=entry.request.model_dump(mode="json") if entry is not None else None,
@@ -1980,11 +1956,7 @@ class _ArtifactFacadeSource(_ArtifactMomentSource):
             site_total = by_measure.get(binding.numerator_measure_key, 0.0)
             site_den = by_measure.get(binding.denominator_measure_key, 0.0)
         else:
-            site_total = (
-                conversion_site_total
-                if conversion_site_total is not None
-                else by_measure.get(binding.measure_key, 0.0)
-            )
+            site_total = by_measure.get(binding.measure_key, 0.0)
             site_den = None
         from collections import Counter
 

@@ -492,27 +492,21 @@ precision; adding units inside each cluster adds little.
   independently of exposure, and a quantile is a distributional
   statistic that is not additive across events. Both raise
   `CapabilityError` before any moments are even built.
-- **Windowed or non-additive metrics (both populations).** The site total is an
-  additive sum of all site events over the experiment calendar window
-  `[start, end]`. A per-unit outcome window anchored at each unit's enrollment
-  (or a non-additive aggregation such as `avg_event`, `min`, or `count_distinct`)
-  cannot align with that total; ratio components are subject to the same
-  rule. Both assigned and triggered calls refuse before loading evidence.
-  Declare an unwindowed metric with sum- or count-aggregated components on the
-  experiment instead. Unwindowed conversion metrics remain supported.
-- **A clustered experiment's metric type.** `Analysis.sitewide()`
-  recognizes a declared cluster for `mean`, `conversion`, `retention`,
-  and `ratio` metrics; any other type raises `CapabilityError` naming
-  the metric's type and the cluster. In practice that gate never turns
-  away anything reachable today: `TotalMetric` and `ActiveMetric` cannot
-  be declared on any native experiment's `metrics`/`guardrails` at all,
-  clustered or not -- a load-time restriction that predates this feature
-  (they have no per-unit variance the estimation engine can serve;
-  `increment.Report` is the intended path for them instead).
-  `RetentionMetric` still refuses for the site-volume reason above
-  regardless of `cluster`. `mean`, `conversion`, and `ratio` are
-  therefore the metric types that actually produce a clustered sitewide
-  reading.
+- **Windowed or non-additive metrics (both populations).** Site totals cover
+  the experiment calendar window `[start, end]`; a per-unit window or
+  aggregation such as `avg_event`, `min`, or `count_distinct` cannot align.
+  Ratio components follow the same rule. Both paths refuse before evidence is
+  loaded; use an unwindowed sum or count aggregation.
+- **Conversion metrics (both populations).** A converter indicator is a maximum
+  over a unit's events, not an additive event total; it cannot be decomposed
+  into per-unit contributions. Both native and artifact calls refuse before
+  loading evidence with `facade.analysis.sitewide_metric_unaligned`. Declare a
+  `count` metric (mean metric, `aggregation: count`) on the conversion fact to
+  read conversion events site-wide.
+- **A clustered experiment's metric type.** Clustered sitewide readings
+  require additive mean or ratio components that decompose over cluster-grain
+  moments. Conversion metrics refuse as non-additive, and retention/quantile
+  metrics refuse because site volume is undefined for them.
 - **Summary and moments sources.** `from_unit_summary`,
   `from_unit_panel`, and `from_moments` start from pre-melted outcomes or
   moments and cannot provide the whole-site raw-event total required by
@@ -521,11 +515,6 @@ precision; adding units inside each cluster adds little.
   requested metric; see the [artifact operation and extension
   matrix](data-model.md#operation-and-extension-matrix). An artifact without
   this extension cannot supply site-volume evidence.
-- **Older conversion artifacts.** A conversion `site_volume` extension
-  published before version 4 contains per-day event totals, which cannot
-  recover whole-window distinct converters. It refuses with
-  `facade.analysis.sitewide_conversion_total_missing`; republish with the
-  current `site_volume` extension.
 - **Observational and encouragement designs.** Both assigned and triggered
   sitewide require randomized identification; the unadjusted sitewide contrast
   does not implement their estimands. The refusal occurs before evidence is
