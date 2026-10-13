@@ -665,6 +665,10 @@ the package-root and ordinary power-planning exports.
 
 ::: increment.absorb_factor
 
+::: increment.confounding_sensitivity
+
+::: increment.results.ConfoundingSensitivity
+
 `Analysis.health_check()` composes assignment balance, triggered-cohort balance,
 descriptive trigger rates, retained maturity/completeness evidence, and the declared
 trigger assumptions. Use it as a diagnostic alongside estimates, not as an overall

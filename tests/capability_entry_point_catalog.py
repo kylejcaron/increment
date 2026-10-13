@@ -1037,6 +1037,14 @@ _INGRESS_ROWS: tuple[EntryRow, ...] = (
             "assignment-count evidence",
         },
     ),
+    _row(
+        "observational-confounding-sensitivity",
+        "Observational confounding sensitivity (conversion RR)",
+        {
+            ingress: (_consumer("observational-confounding-sensitivity", ingress),)
+            for ingress in INGRESSES
+        },
+    ),
     _case_row(
         "observational-iptw-mean",
         "Observational IPTW covariate adjustment",

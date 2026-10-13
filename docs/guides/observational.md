@@ -901,6 +901,95 @@ read numeric or categorical properties passed to `interact=`/`adjust=` from
 artifact they read only declared covariates, so `estimate_cate` (randomized
 designs only) cannot read covariates from an artifact; use `from_definitions`.
 
+## How strong would an omitted confounder need to be?
+
+For a fixed-horizon IPTW/AIPW conversion RR, apply `confounding_sensitivity`.
+`outcome="binary"` is your attestation, not a property verified from the row.
+
+```python
+import numpy as np
+import polars as pl
+import increment as inc
+
+conversion_rng = np.random.default_rng(20261013)
+conversion_n = 4_000
+segments = conversion_rng.integers(0, 2, size=conversion_n)
+converted_treatment = conversion_rng.random(conversion_n) < np.where(segments == 0, 0.3, 0.7)
+risk = np.array([[0.08, 0.20], [0.12, 0.28]])[converted_treatment.astype(int), segments]
+conversion_units = pl.DataFrame(
+    {
+        "unit": np.arange(conversion_n),
+        "arm": np.where(converted_treatment, "treatment", "control"),
+        "segment": segments,
+        "converted": (conversion_rng.random(conversion_n) < risk).astype(int),
+    }
+)
+conversion_analysis = inc.Analysis.from_unit_summary(
+    conversion_units,
+    unit="unit",
+    group="arm",
+    metrics=[inc.MetricSpec(name="converted", type="conversion")],
+    design=inc.Observational(
+        control_group="control", adjustment=inc.AdjustmentSet(covariates=("segment",))
+    ),
+)
+try:
+    conversion_rows = conversion_analysis.run(
+        decision_method=inc.Method(name="iptw"), sensitivity_methods=[inc.Method(name="aipw")]
+    )
+    for conversion_row in conversion_rows:
+        sensitivity = inc.confounding_sensitivity(
+            conversion_row, outcome="binary", threshold_risk_ratio=1.05
+        )
+        print(sensitivity.model_dump())
+finally:
+    conversion_analysis.close()
+```
+
+The threshold above is a 5% increase, not the no-effect RR of one.
+`bias_factor_point` is the smallest B that could move the causal RR to that threshold;
+`e_value_point` is the equal strength m with B(m, m) = m²/(2m − 1).
+Interval fields use the reported limit nearest the threshold, at `interval_level`;
+a crossing gives one; a missing relevant limit gives null and `interval_limit_unavailable`.
+
+This is a **conservative marginal** bound: RR_true is between RR_obs/B² and
+RR_obs·B², not the usual conditional E-value applied directly to RR_obs.
+Heterogeneous covariate strata can have true marginal RR one but standardized
+observed RR about 2.446 with actual strengths three: the naive conditional
+inversion exceeds four, whereas this marginal tipping strength is below three.
+The construction aggregates the per-arm bounds of Ding & VanderWeele (2016),
+*Epidemiology* 27:368–377, eAppendix Prop. A.8 and §5.2; the equal-strength
+inversion follows VanderWeele & Ding (2017), *Ann Intern Med* 167:268–274.
+
+Assume consistency, positivity and appropriate nuisance-model correctness in
+the reported (possibly trimmed) population, and an omitted U such that (C, U)
+suffices for exchangeability. RR_EU is the maximum confounder prevalence ratio
+over strata and **every pair of cohort arms, in both directions**; RR_UD is the
+maximum outcome-risk ratio over U within strata and arms. This addresses only
+confounding, not selection or measurement bias. **Robustness is not identification**:
+reaching the tipping strength means confounding could explain the effect, not
+that it does. The deterministic bound inherits the row's asymptotic interval,
+including its working-approximation qualifications, rather than adding coverage.
+
+Conversion-row parity is exercised for `from_unit_summary`, `from_unit_panel`,
+`from_definitions` and `from_unit_day_artifact`. Observational adjusted reads from
+`from_moments` refuse upstream with `source.moments.covariate_unavailable`;
+`from_switchback_panel` refuses with `source.frame.switchback.identification`.
+The accepted estimands are `ate` and `overlap_subpopulation_ate`, on relative scale.
+
+| Interaction | Disposition |
+|---|---|
+| CUPED | Not applicable: observational adjustment refuses CUPED. |
+| Ratio metrics | Unsound for this binary-risk bound; attestation cannot detect a mislabelled ratio row. |
+| Clustering | Inherits the row's reported interval; public unit-summary IPTW/AIPW conversion rows with declared dependence clusters are exercised. |
+| Sequential inference | Refused; only `inference="fixed"` is accepted. |
+| Winsorization | Not applicable to the attested binary outcome. |
+| Breakouts | `LiftEstimate` only; `BreakoutEstimate` is not its subclass and is refused. |
+| Multiplicity roles | Uses the reported, possibly family-adjusted, interval, without recomputing it. |
+
+DML's slope and continuous outcomes are not supported. A tighter estimator-scoped
+bound is not supplied by this construction.
+
 ## Current limits
 
 - **`from_unit_panel` covers unwindowed metrics only.** It collapses to a
